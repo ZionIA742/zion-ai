@@ -31,6 +31,15 @@ type MessageRow = {
   created_at: string | null;
 };
 
+type LeadDetailsResponse = {
+  ok: boolean;
+  lead?: Lead;
+  conversation?: Conversation | null;
+  messages?: MessageRow[];
+  error?: string;
+  message?: string;
+};
+
 function formatSender(message: MessageRow) {
   const sender = String(message.sender || "").toLowerCase();
   const direction = String(message.direction || "").toLowerCase();
@@ -132,23 +141,39 @@ export default function LeadPage() {
     setErrorText(null);
     setStatusText(null);
 
-    const { data: leadData, error: leadError } = await supabase
-      .from("leads")
-      .select("id, organization_id, name, phone, state")
-      .eq("id", leadId)
-      .single();
-
-    if (leadError) {
-      console.error("[LeadPage] erro ao buscar lead:", {
-        message: (leadError as any)?.message ?? null,
-        details: (leadError as any)?.details ?? null,
-        hint: (leadError as any)?.hint ?? null,
-        code: (leadError as any)?.code ?? null,
-        full: leadError,
+    try {
+      const response = await fetch(`/api/crm/lead-details/${leadId}`, {
+        method: "GET",
+        cache: "no-store",
       });
 
+      const result = (await response.json()) as LeadDetailsResponse;
+
+      if (!response.ok || !result?.ok) {
+        setErrorText(result?.message || result?.error || "Erro ao carregar dados do lead.");
+
+        if (silent) {
+          setRefreshing(false);
+        } else {
+          setLoading(false);
+        }
+        return;
+      }
+
+      setLead((result.lead ?? null) as Lead | null);
+      setConversation((result.conversation ?? null) as Conversation | null);
+      setMessages(Array.isArray(result.messages) ? result.messages : []);
+
+      if (silent) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
+    } catch (error: any) {
+      console.error("[LeadPage] erro ao carregar dados via API:", error);
+
       setErrorText(
-        (leadError as any)?.message ?? "Erro desconhecido ao buscar o lead."
+        error?.message || "Erro inesperado ao carregar dados do lead."
       );
 
       if (silent) {
@@ -156,90 +181,6 @@ export default function LeadPage() {
       } else {
         setLoading(false);
       }
-      return;
-    }
-
-    const {
-      data: conversationsData,
-      error: conversationsError,
-    } = await supabase
-      .from("conversations")
-      .select("id, organization_id, lead_id, created_at, status, is_human_active")
-      .eq("lead_id", leadId)
-      .order("created_at", { ascending: false })
-      .limit(5);
-
-    if (conversationsError) {
-      console.error("[LeadPage] erro ao buscar conversations:", {
-        message: (conversationsError as any)?.message ?? null,
-        details: (conversationsError as any)?.details ?? null,
-        hint: (conversationsError as any)?.hint ?? null,
-        code: (conversationsError as any)?.code ?? null,
-        full: conversationsError,
-      });
-
-      setErrorText(
-        (conversationsError as any)?.message ??
-          "Erro desconhecido ao buscar a conversa."
-      );
-
-      if (silent) {
-        setRefreshing(false);
-      } else {
-        setLoading(false);
-      }
-      return;
-    }
-
-    const latestConversation =
-      conversationsData && conversationsData.length > 0
-        ? (conversationsData[0] as Conversation)
-        : null;
-
-    let messagesData: MessageRow[] = [];
-    let messagesError: any = null;
-
-    if (latestConversation) {
-      const messagesResult = await supabase
-        .from("messages")
-        .select("id, sender, content, direction, message_type, created_at")
-        .eq("conversation_id", latestConversation.id)
-        .order("created_at", { ascending: true });
-
-      messagesData = (messagesResult.data || []) as MessageRow[];
-      messagesError = messagesResult.error;
-    }
-
-    if (messagesError) {
-      console.error("[LeadPage] erro ao buscar mensagens:", {
-        message: (messagesError as any)?.message ?? null,
-        details: (messagesError as any)?.details ?? null,
-        hint: (messagesError as any)?.hint ?? null,
-        code: (messagesError as any)?.code ?? null,
-        full: messagesError,
-      });
-
-      setErrorText(
-        (messagesError as any)?.message ??
-          "Erro desconhecido ao buscar as mensagens."
-      );
-
-      if (silent) {
-        setRefreshing(false);
-      } else {
-        setLoading(false);
-      }
-      return;
-    }
-
-    setLead(leadData as Lead);
-    setConversation(latestConversation);
-    setMessages(messagesData);
-
-    if (silent) {
-      setRefreshing(false);
-    } else {
-      setLoading(false);
     }
   }
 
