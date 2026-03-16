@@ -1,29 +1,28 @@
-"use client"
+"use client";
 
-import OrgGuard from "@/components/OrgGuard"
-import AppHeader from "@/components/layout/AppHeader"
-import Sidebar from "@/components/layout/Sidebar"
+import OrgGuard from "@/components/OrgGuard";
+import { StoreProvider } from "../../components/StoreProvider";
+import AppHeader from "@/components/layout/AppHeader";
+import Sidebar from "@/components/layout/Sidebar";
 
 export default function AppLayout({
   children,
 }: {
-  children: React.ReactNode
+  children: React.ReactNode;
 }) {
   return (
     <OrgGuard>
-      <div className="flex h-screen bg-gray-100">
-        {/* SIDEBAR */}
-        <Sidebar />
+      <StoreProvider>
+        <div className="flex h-screen bg-gray-100">
+          <Sidebar />
 
-        {/* CONTEÚDO */}
-        <div className="flex-1 flex flex-col">
-          {/* HEADER */}
-          <AppHeader />
+          <div className="flex-1 flex flex-col">
+            <AppHeader />
 
-          {/* ÁREA PRINCIPAL */}
-          <main className="flex-1 p-6 overflow-auto">{children}</main>
+            <main className="flex-1 p-6 overflow-auto">{children}</main>
+          </div>
         </div>
-      </div>
+      </StoreProvider>
     </OrgGuard>
-  )
+  );
 }
