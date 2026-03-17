@@ -500,6 +500,11 @@ function OnboardingContent() {
   const { loading, error, activeStore, organizationId } = useStoreContext();
   const router = useRouter();
 
+  const onboardingCompletedStorageKey = useMemo(() => {
+  if (!organizationId || !activeStore?.id) return null;
+  return `zion_onboarding_completed:${organizationId}:${activeStore.id}`;
+}, [organizationId, activeStore?.id]);
+
   const [currentStep, setCurrentStep] = useState(1);
   const [hydratedFromCache, setHydratedFromCache] = useState(false);
   const [remoteLoaded, setRemoteLoaded] = useState(false);
