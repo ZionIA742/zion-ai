@@ -12,7 +12,6 @@ type Step1FormData = {
   state: string;
   service_regions: string;
   commercial_whatsapp: string;
-
   store_services: string[];
   store_services_other: string;
   service_region_modes: string[];
@@ -26,7 +25,6 @@ type Step2FormData = {
   offers_installation: string;
   offers_technical_visit: string;
   brands_worked: string;
-
   pool_types_selected: string[];
   pool_types_other: string;
   main_store_brand: string;
@@ -42,7 +40,6 @@ type Step3FormData = {
   installation_process: string;
   technical_visit_rules: string;
   important_limitations: string;
-
   installation_process_steps: string[];
   installation_process_other: string;
   technical_visit_rules_selected: string[];
@@ -61,7 +58,6 @@ type Step4FormData = {
   human_help_discount_cases: string;
   human_help_custom_project_cases: string;
   human_help_payment_cases: string;
-
   price_direct_conditions: string[];
   price_direct_rule_other: string;
   human_help_discount_cases_selected: string[];
@@ -78,7 +74,6 @@ type Step5FormData = {
   ai_should_notify_responsible: string;
   final_activation_notes: string;
   confirm_information_is_correct: boolean;
-
   responsible_notification_cases: string[];
   responsible_notification_cases_other: string;
   activation_preferences: string[];
@@ -620,6 +615,31 @@ function OnboardingContent() {
     return `zion_onboarding_current_step:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
 
+  const currentScrollStorageKey = useMemo(() => {
+    if (!organizationId || !activeStore?.id) return null;
+    return `zion_onboarding_scroll:${organizationId}:${activeStore.id}:step:${currentStep}`;
+  }, [organizationId, activeStore?.id, currentStep]);
+
+  const storeHasInstallation = useMemo(
+    () => step1Form.store_services.includes("instalacao_piscinas"),
+    [step1Form.store_services]
+  );
+
+  const storeHasTechnicalVisit = useMemo(
+    () => step1Form.store_services.includes("visita_tecnica"),
+    [step1Form.store_services]
+  );
+
+  const storeSellsChemicals = useMemo(
+    () => step1Form.store_services.includes("venda_produtos_quimicos"),
+    [step1Form.store_services]
+  );
+
+  const storeSellsAccessories = useMemo(
+    () => step1Form.store_services.includes("venda_acessorios"),
+    [step1Form.store_services]
+  );
+
   useEffect(() => {
     if (!organizationId || !activeStore?.id) return;
 
@@ -1070,6 +1090,43 @@ function OnboardingContent() {
     window.localStorage.setItem(currentStepStorageKey, String(currentStep));
   }, [currentStep, currentStepStorageKey]);
 
+  useEffect(() => {
+    if (!currentScrollStorageKey) return;
+
+    const saveScroll = () => {
+      window.sessionStorage.setItem(currentScrollStorageKey, String(window.scrollY));
+    };
+
+    const onPageHide = () => saveScroll();
+
+    window.addEventListener("scroll", saveScroll, { passive: true });
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onPageHide);
+
+    return () => {
+      saveScroll();
+      window.removeEventListener("scroll", saveScroll);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onPageHide);
+    };
+  }, [currentScrollStorageKey]);
+
+  useEffect(() => {
+    if (!hydratedFromCache || !remoteLoaded || !currentScrollStorageKey) return;
+
+    const raw = window.sessionStorage.getItem(currentScrollStorageKey);
+    if (!raw) return;
+
+    const targetY = Number(raw);
+    if (Number.isNaN(targetY)) return;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: targetY, behavior: "auto" });
+      });
+    });
+  }, [hydratedFromCache, remoteLoaded, currentScrollStorageKey, currentStep]);
+
   function clearMessages() {
     setSuccessMessage(null);
     setFormError(null);
@@ -1115,10 +1172,7 @@ function OnboardingContent() {
     setStep5Form((prev) => ({ ...prev, [field]: value }));
   }
 
-  function toggleArrayValue<T extends string>(
-    current: T[],
-    value: T
-  ): T[] {
+  function toggleArrayValue(current: string[], value: string) {
     return current.includes(value)
       ? current.filter((item) => item !== value)
       : [...current, value];
@@ -1227,7 +1281,7 @@ function OnboardingContent() {
 
       setSuccessMessage(nextSuccessMessage);
 
-      if (nextStep) {
+      if (typeof nextStep === "number") {
         setCurrentStep(nextStep);
       }
     } catch (err: any) {
@@ -1289,13 +1343,13 @@ function OnboardingContent() {
   async function saveStep2(e: React.FormEvent) {
     e.preventDefault();
 
-    const normalizeYesNo = (value: string) => value.trim().toLowerCase() === "sim";
-
     if (
       step2Form.pool_types_selected.length === 0 &&
       !step2Form.pool_types_other.trim()
     ) {
-      setFormError("Selecione pelo menos um tipo de piscina ou escreva no campo complementar.");
+      setFormError(
+        "Selecione pelo menos um tipo de piscina ou escreva no campo complementar."
+      );
       return;
     }
 
@@ -1313,13 +1367,10 @@ function OnboardingContent() {
     await upsertAnswers(
       [
         ["pool_types", poolTypesArray],
-        ["sells_chemicals", normalizeYesNo(step2Form.sells_chemicals)],
-        ["sells_accessories", normalizeYesNo(step2Form.sells_accessories)],
-        ["offers_installation", normalizeYesNo(step2Form.offers_installation)],
-        [
-          "offers_technical_visit",
-          normalizeYesNo(step2Form.offers_technical_visit),
-        ],
+        ["sells_chemicals", storeSellsChemicals],
+        ["sells_accessories", storeSellsAccessories],
+        ["offers_installation", storeHasInstallation],
+        ["offers_technical_visit", storeHasTechnicalVisit],
         ["brands_worked", [step2Form.main_store_brand.trim()]],
         ["pool_types_selected", step2Form.pool_types_selected],
         ["pool_types_other", step2Form.pool_types_other.trim()],
@@ -1335,11 +1386,8 @@ function OnboardingContent() {
   async function saveStep3(e: React.FormEvent) {
     e.preventDefault();
 
-    const offersInstallation = step2Form.offers_installation === "sim";
-    const offersTechnicalVisit = step2Form.offers_technical_visit === "sim";
-
     if (
-      offersInstallation &&
+      storeHasInstallation &&
       step3Form.installation_available_days.length === 0 &&
       !step3Form.installation_days_rule.trim()
     ) {
@@ -1350,7 +1398,7 @@ function OnboardingContent() {
     }
 
     if (
-      offersTechnicalVisit &&
+      storeHasTechnicalVisit &&
       step3Form.technical_visit_available_days.length === 0 &&
       !step3Form.technical_visit_days_rule.trim()
     ) {
@@ -1369,7 +1417,7 @@ function OnboardingContent() {
     }
 
     if (
-      offersTechnicalVisit &&
+      storeHasTechnicalVisit &&
       step3Form.technical_visit_rules_selected.length === 0 &&
       !step3Form.technical_visit_rules_other.trim()
     ) {
@@ -1438,8 +1486,6 @@ function OnboardingContent() {
   async function saveStep4(e: React.FormEvent) {
     e.preventDefault();
 
-    const normalizeYesNo = (value: string) => value.trim().toLowerCase() === "sim";
-
     if (step4Form.accepted_payment_methods.length === 0) {
       setFormError("Selecione pelo menos uma forma de pagamento.");
       return;
@@ -1458,7 +1504,9 @@ function OnboardingContent() {
       step4Form.human_help_discount_cases_selected.length === 0 &&
       !step4Form.human_help_discount_cases_other.trim()
     ) {
-      setFormError("Informe em quais casos a IA deve chamar alguém por causa de desconto.");
+      setFormError(
+        "Informe em quais casos a IA deve chamar alguém por causa de desconto."
+      );
       return;
     }
 
@@ -1466,7 +1514,9 @@ function OnboardingContent() {
       step4Form.human_help_custom_project_cases_selected.length === 0 &&
       !step4Form.human_help_custom_project_cases_other.trim()
     ) {
-      setFormError("Informe em quais casos a IA deve chamar alguém por causa de projeto especial.");
+      setFormError(
+        "Informe em quais casos a IA deve chamar alguém por causa de projeto especial."
+      );
       return;
     }
 
@@ -1474,7 +1524,9 @@ function OnboardingContent() {
       step4Form.human_help_payment_cases_selected.length === 0 &&
       !step4Form.human_help_payment_cases_other.trim()
     ) {
-      setFormError("Informe em quais casos a IA deve chamar alguém por causa de pagamento.");
+      setFormError(
+        "Informe em quais casos a IA deve chamar alguém por causa de pagamento."
+      );
       return;
     }
 
@@ -1508,12 +1560,12 @@ function OnboardingContent() {
     await upsertAnswers(
       [
         ["average_ticket", step4Form.average_ticket.trim()],
-        ["can_offer_discount", normalizeYesNo(step4Form.can_offer_discount)],
+        ["can_offer_discount", step4Form.can_offer_discount.trim().toLowerCase() === "sim"],
         ["max_discount_percent", step4Form.max_discount_percent.trim()],
         ["accepted_payment_methods", step4Form.accepted_payment_methods],
         [
           "ai_can_send_price_directly",
-          normalizeYesNo(step4Form.ai_can_send_price_directly),
+          step4Form.ai_can_send_price_directly.trim().toLowerCase() === "sim",
         ],
         ["price_direct_rule", priceDirectRuleText],
         ["human_help_discount_cases", humanHelpDiscountText],
@@ -1556,8 +1608,6 @@ function OnboardingContent() {
   async function saveStep5(e: React.FormEvent) {
     e.preventDefault();
 
-    const normalizeYesNo = (value: string) => value.trim().toLowerCase() === "sim";
-
     const finalActivationNotesText = joinSelectedLabels(
       step5Form.activation_preferences,
       ACTIVATION_PREFERENCE_OPTIONS,
@@ -1570,7 +1620,7 @@ function OnboardingContent() {
         ["responsible_whatsapp", step5Form.responsible_whatsapp.trim()],
         [
           "ai_should_notify_responsible",
-          normalizeYesNo(step5Form.ai_should_notify_responsible),
+          step5Form.ai_should_notify_responsible.trim().toLowerCase() === "sim",
         ],
         ["final_activation_notes", finalActivationNotesText],
         [
@@ -1636,7 +1686,7 @@ function OnboardingContent() {
           <StepBadge
             step={2}
             currentStep={currentStep}
-            title="Catálogo"
+            title="Piscinas"
             onClick={() => {
               clearMessages();
               setCurrentStep(2);
@@ -1679,7 +1729,7 @@ function OnboardingContent() {
 
             <h1 className="text-2xl font-bold text-gray-900 mb-2">
               {currentStep === 1 && "Etapa 1 — Loja"}
-              {currentStep === 2 && "Etapa 2 — O que a loja vende"}
+              {currentStep === 2 && "Etapa 2 — Piscinas"}
               {currentStep === 3 && "Etapa 3 — Operação da loja"}
               {currentStep === 4 && "Etapa 4 — Comercial"}
               {currentStep === 5 && "Etapa 5 — Ativação"}
@@ -1689,7 +1739,7 @@ function OnboardingContent() {
               {currentStep === 1 &&
                 "Vamos preencher os dados principais da loja de forma simples e rápida."}
               {currentStep === 2 &&
-                "Agora vamos dizer o que sua loja vende e quais serviços realmente oferece."}
+                "Agora vamos configurar os tipos de piscina e a marca principal da loja."}
               {currentStep === 3 &&
                 "Agora vamos configurar como a loja funciona no dia a dia."}
               {currentStep === 4 &&
@@ -1773,9 +1823,7 @@ function OnboardingContent() {
                 <SelectorGrid
                   options={STORE_SERVICE_OPTIONS}
                   selectedValues={step1Form.store_services}
-                  onToggle={(value) =>
-                    toggleStep1ArrayField("store_services", value)
-                  }
+                  onToggle={(value) => toggleStep1ArrayField("store_services", value)}
                 />
                 <input
                   type="text"
@@ -1882,16 +1930,12 @@ function OnboardingContent() {
                 <SelectorGrid
                   options={POOL_TYPE_OPTIONS}
                   selectedValues={step2Form.pool_types_selected}
-                  onToggle={(value) =>
-                    toggleStep2ArrayField("pool_types_selected", value)
-                  }
+                  onToggle={(value) => toggleStep2ArrayField("pool_types_selected", value)}
                 />
                 <input
                   type="text"
                   value={step2Form.pool_types_other}
-                  onChange={(e) =>
-                    updateStep2Field("pool_types_other", e.target.value)
-                  }
+                  onChange={(e) => updateStep2Field("pool_types_other", e.target.value)}
                   className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black mt-3"
                   placeholder="Se trabalha com algo além das opções acima, escreva aqui (opcional)"
                 />
@@ -1916,56 +1960,16 @@ function OnboardingContent() {
                 </p>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Sua loja vende produtos químicos?
-                </label>
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step2Form.sells_chemicals}
-                  onChange={(value) =>
-                    updateStep2Field("sells_chemicals", value)
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Sua loja vende acessórios?
-                </label>
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step2Form.sells_accessories}
-                  onChange={(value) =>
-                    updateStep2Field("sells_accessories", value)
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Sua loja faz instalação?
-                </label>
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step2Form.offers_installation}
-                  onChange={(value) =>
-                    updateStep2Field("offers_installation", value)
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Sua loja faz visita técnica?
-                </label>
-                <SingleSelectorGrid
-                  options={YES_NO_OPTIONS}
-                  value={step2Form.offers_technical_visit}
-                  onChange={(value) =>
-                    updateStep2Field("offers_technical_visit", value)
-                  }
-                />
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                <p className="text-sm font-medium text-gray-900 mb-2">
+                  Resumo do que foi marcado na etapa 1
+                </p>
+                <div className="text-sm text-gray-700 space-y-1">
+                  <p>Produtos químicos: {storeSellsChemicals ? "Sim" : "Não"}</p>
+                  <p>Acessórios: {storeSellsAccessories ? "Sim" : "Não"}</p>
+                  <p>Instalação: {storeHasInstallation ? "Sim" : "Não"}</p>
+                  <p>Visita técnica: {storeHasTechnicalVisit ? "Sim" : "Não"}</p>
+                </div>
               </div>
 
               <div className="flex items-center justify-between gap-4 flex-wrap pt-2">
@@ -1996,66 +2000,72 @@ function OnboardingContent() {
 
           {currentStep === 3 && (
             <form onSubmit={saveStep3} className="space-y-5">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Em quanto tempo, em média, sua loja termina uma instalação?
-                </label>
-                <input
-                  type="text"
-                  value={step3Form.average_installation_time_days}
-                  onChange={(e) =>
-                    updateStep3Field(
-                      "average_installation_time_days",
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: 7 dias"
-                  required
-                />
-              </div>
+              {storeHasInstallation && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Em quanto tempo, em média, sua loja termina uma instalação?
+                    </label>
+                    <input
+                      type="text"
+                      value={step3Form.average_installation_time_days}
+                      onChange={(e) =>
+                        updateStep3Field(
+                          "average_installation_time_days",
+                          e.target.value
+                        )
+                      }
+                      className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                      placeholder="Ex.: 7 dias"
+                      required={storeHasInstallation}
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Em quais dias sua loja pode fazer instalação?
-                </label>
-                <WeekdaySelector
-                  selectedDays={step3Form.installation_available_days}
-                  onToggle={(day) =>
-                    toggleStep3ArrayField("installation_available_days", day)
-                  }
-                />
-                <input
-                  type="text"
-                  value={step3Form.installation_days_rule}
-                  onChange={(e) =>
-                    updateStep3Field("installation_days_rule", e.target.value)
-                  }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black mt-3"
-                  placeholder="Se quiser, escreva uma regra complementar de instalação (opcional)"
-                />
-              </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Em quais dias sua loja pode fazer instalação?
+                    </label>
+                    <WeekdaySelector
+                      selectedDays={step3Form.installation_available_days}
+                      onToggle={(day) =>
+                        toggleStep3ArrayField("installation_available_days", day)
+                      }
+                    />
+                    <input
+                      type="text"
+                      value={step3Form.installation_days_rule}
+                      onChange={(e) =>
+                        updateStep3Field("installation_days_rule", e.target.value)
+                      }
+                      className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black mt-3"
+                      placeholder="Se quiser, escreva uma regra complementar de instalação (opcional)"
+                    />
+                  </div>
+                </>
+              )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Em quais dias sua loja pode fazer visita técnica?
-                </label>
-                <WeekdaySelector
-                  selectedDays={step3Form.technical_visit_available_days}
-                  onToggle={(day) =>
-                    toggleStep3ArrayField("technical_visit_available_days", day)
-                  }
-                />
-                <input
-                  type="text"
-                  value={step3Form.technical_visit_days_rule}
-                  onChange={(e) =>
-                    updateStep3Field("technical_visit_days_rule", e.target.value)
-                  }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black mt-3"
-                  placeholder="Se quiser, escreva uma regra complementar de visita técnica (opcional)"
-                />
-              </div>
+              {storeHasTechnicalVisit && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Em quais dias sua loja pode fazer visita técnica?
+                  </label>
+                  <WeekdaySelector
+                    selectedDays={step3Form.technical_visit_available_days}
+                    onToggle={(day) =>
+                      toggleStep3ArrayField("technical_visit_available_days", day)
+                    }
+                  />
+                  <input
+                    type="text"
+                    value={step3Form.technical_visit_days_rule}
+                    onChange={(e) =>
+                      updateStep3Field("technical_visit_days_rule", e.target.value)
+                    }
+                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black mt-3"
+                    placeholder="Se quiser, escreva uma regra complementar de visita técnica (opcional)"
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -2098,27 +2108,29 @@ function OnboardingContent() {
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Regras importantes da visita técnica
-                </label>
-                <SelectorGrid
-                  options={TECHNICAL_VISIT_RULE_OPTIONS}
-                  selectedValues={step3Form.technical_visit_rules_selected}
-                  onToggle={(value) =>
-                    toggleStep3ArrayField("technical_visit_rules_selected", value)
-                  }
-                />
-                <input
-                  type="text"
-                  value={step3Form.technical_visit_rules_other}
-                  onChange={(e) =>
-                    updateStep3Field("technical_visit_rules_other", e.target.value)
-                  }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black mt-3"
-                  placeholder="Algo mais sobre visita técnica? Escreva aqui (opcional)"
-                />
-              </div>
+              {storeHasTechnicalVisit && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Regras importantes da visita técnica
+                  </label>
+                  <SelectorGrid
+                    options={TECHNICAL_VISIT_RULE_OPTIONS}
+                    selectedValues={step3Form.technical_visit_rules_selected}
+                    onToggle={(value) =>
+                      toggleStep3ArrayField("technical_visit_rules_selected", value)
+                    }
+                  />
+                  <input
+                    type="text"
+                    value={step3Form.technical_visit_rules_other}
+                    onChange={(e) =>
+                      updateStep3Field("technical_visit_rules_other", e.target.value)
+                    }
+                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black mt-3"
+                    placeholder="Algo mais sobre visita técnica? Escreva aqui (opcional)"
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -2485,10 +2497,7 @@ function OnboardingContent() {
                   type="text"
                   value={step5Form.activation_preferences_other}
                   onChange={(e) =>
-                    updateStep5Field(
-                      "activation_preferences_other",
-                      e.target.value
-                    )
+                    updateStep5Field("activation_preferences_other", e.target.value)
                   }
                   className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black mt-3"
                   placeholder="Se quiser adicionar uma orientação final, escreva aqui (opcional)"
@@ -2542,15 +2551,5 @@ function OnboardingContent() {
         </div>
       </div>
     </div>
-  );
-}
-
-export default function OnboardingPage() {
-  return (
-    <OrgGuard>
-      <StoreProvider>
-        <OnboardingContent />
-      </StoreProvider>
-    </OrgGuard>
   );
 }
