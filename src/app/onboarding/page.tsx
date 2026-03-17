@@ -25,13 +25,27 @@ type Step2FormData = {
 
 type Step3FormData = {
   average_installation_time_days: string;
-  installation_available_days: string;
-  technical_visit_available_days: string;
+  installation_available_days: string[];
+  installation_days_rule: string;
+  technical_visit_available_days: string[];
+  technical_visit_days_rule: string;
   average_human_response_time: string;
-  operational_notes: string;
+  installation_process: string;
+  technical_visit_rules: string;
+  important_limitations: string;
 };
 
 type AnswersMap = Record<string, any>;
+
+const WEEK_DAYS = [
+  { value: "segunda", label: "Segunda" },
+  { value: "terca", label: "Terça" },
+  { value: "quarta", label: "Quarta" },
+  { value: "quinta", label: "Quinta" },
+  { value: "sexta", label: "Sexta" },
+  { value: "sabado", label: "Sábado" },
+  { value: "domingo", label: "Domingo" },
+];
 
 function formatPhone(value: string) {
   const digits = value.replace(/\D/g, "").slice(0, 11);
@@ -68,6 +82,56 @@ function StepBadge({
   );
 }
 
+function WeekdaySelector({
+  selectedDays,
+  onToggle,
+  helperText,
+}: {
+  selectedDays: string[];
+  onToggle: (day: string) => void;
+  helperText?: string;
+}) {
+  return (
+    <div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {WEEK_DAYS.map((day) => {
+          const selected = selectedDays.includes(day.value);
+
+          return (
+            <button
+              key={day.value}
+              type="button"
+              onClick={() => onToggle(day.value)}
+              className={`rounded-xl border px-4 py-3 text-sm text-left transition ${
+                selected
+                  ? "border-black bg-black text-white"
+                  : "border-gray-300 bg-white text-gray-800"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span
+                  className={`inline-flex h-4 w-4 rounded-full border ${
+                    selected ? "border-white bg-white" : "border-gray-400"
+                  }`}
+                >
+                  {selected ? (
+                    <span className="m-auto h-2 w-2 rounded-full bg-black" />
+                  ) : null}
+                </span>
+                <span>{day.label}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {helperText && (
+        <p className="text-xs text-gray-500 mt-2">{helperText}</p>
+      )}
+    </div>
+  );
+}
+
 function OnboardingContent() {
   const { loading, error, activeStore, organizationId } = useStoreContext();
 
@@ -76,6 +140,7 @@ function OnboardingContent() {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
   const [step1DraftRecovered, setStep1DraftRecovered] = useState(false);
   const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
   const [step3DraftRecovered, setStep3DraftRecovered] = useState(false);
@@ -102,10 +167,14 @@ function OnboardingContent() {
 
   const [step3Form, setStep3Form] = useState<Step3FormData>({
     average_installation_time_days: "",
-    installation_available_days: "",
-    technical_visit_available_days: "",
+    installation_available_days: [],
+    installation_days_rule: "",
+    technical_visit_available_days: [],
+    technical_visit_days_rule: "",
     average_human_response_time: "",
-    operational_notes: "",
+    installation_process: "",
+    technical_visit_rules: "",
+    important_limitations: "",
   });
 
   const step1DraftStorageKey = useMemo(() => {
@@ -210,16 +279,20 @@ function OnboardingContent() {
           installation_available_days: Array.isArray(
             answers.installation_available_days
           )
-            ? answers.installation_available_days.join(", ")
-            : answers.installation_available_days ?? "",
+            ? answers.installation_available_days
+            : [],
+          installation_days_rule: answers.installation_days_rule ?? "",
           technical_visit_available_days: Array.isArray(
             answers.technical_visit_available_days
           )
-            ? answers.technical_visit_available_days.join(", ")
-            : answers.technical_visit_available_days ?? "",
+            ? answers.technical_visit_available_days
+            : [],
+          technical_visit_days_rule: answers.technical_visit_days_rule ?? "",
           average_human_response_time:
             answers.average_human_response_time ?? "",
-          operational_notes: answers.operational_notes ?? "",
+          installation_process: answers.installation_process ?? "",
+          technical_visit_rules: answers.technical_visit_rules ?? "",
+          important_limitations: answers.important_limitations ?? "",
         };
 
         let nextStep1Form = serverStep1Form;
@@ -292,15 +365,27 @@ function OnboardingContent() {
                   installation_available_days:
                     parsedDraft3.installation_available_days ??
                     serverStep3Form.installation_available_days,
+                  installation_days_rule:
+                    parsedDraft3.installation_days_rule ??
+                    serverStep3Form.installation_days_rule,
                   technical_visit_available_days:
                     parsedDraft3.technical_visit_available_days ??
                     serverStep3Form.technical_visit_available_days,
+                  technical_visit_days_rule:
+                    parsedDraft3.technical_visit_days_rule ??
+                    serverStep3Form.technical_visit_days_rule,
                   average_human_response_time:
                     parsedDraft3.average_human_response_time ??
                     serverStep3Form.average_human_response_time,
-                  operational_notes:
-                    parsedDraft3.operational_notes ??
-                    serverStep3Form.operational_notes,
+                  installation_process:
+                    parsedDraft3.installation_process ??
+                    serverStep3Form.installation_process,
+                  technical_visit_rules:
+                    parsedDraft3.technical_visit_rules ??
+                    serverStep3Form.technical_visit_rules,
+                  important_limitations:
+                    parsedDraft3.important_limitations ??
+                    serverStep3Form.important_limitations,
                 };
                 setStep3DraftRecovered(true);
               } catch (err) {
@@ -382,6 +467,24 @@ function OnboardingContent() {
   ) {
     setSuccessMessage(null);
     setStep3Form((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function toggleStep3Day(
+    field: "installation_available_days" | "technical_visit_available_days",
+    day: string
+  ) {
+    setSuccessMessage(null);
+    setStep3Form((prev) => {
+      const current = prev[field];
+      const exists = current.includes(day);
+
+      return {
+        ...prev,
+        [field]: exists
+          ? current.filter((item) => item !== day)
+          : [...current, day],
+      };
+    });
   }
 
   async function saveStep1(e: React.FormEvent) {
@@ -511,25 +614,20 @@ function OnboardingContent() {
           "average_installation_time_days",
           step3Form.average_installation_time_days.trim(),
         ],
-        [
-          "installation_available_days",
-          step3Form.installation_available_days
-            .split(",")
-            .map((i) => i.trim())
-            .filter(Boolean),
-        ],
+        ["installation_available_days", step3Form.installation_available_days],
+        ["installation_days_rule", step3Form.installation_days_rule.trim()],
         [
           "technical_visit_available_days",
-          step3Form.technical_visit_available_days
-            .split(",")
-            .map((i) => i.trim())
-            .filter(Boolean),
+          step3Form.technical_visit_available_days,
         ],
+        ["technical_visit_days_rule", step3Form.technical_visit_days_rule.trim()],
         [
           "average_human_response_time",
           step3Form.average_human_response_time.trim(),
         ],
-        ["operational_notes", step3Form.operational_notes.trim()],
+        ["installation_process", step3Form.installation_process.trim()],
+        ["technical_visit_rules", step3Form.technical_visit_rules.trim()],
+        ["important_limitations", step3Form.important_limitations.trim()],
       ];
 
       for (const [questionKey, answer] of payloads) {
@@ -596,25 +694,30 @@ function OnboardingContent() {
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
           <div className="mb-8">
-            <p className="text-sm font-medium text-gray-500 mb-2">Onboarding inicial</p>
+            <p className="text-sm font-medium text-gray-500 mb-2">
+              Onboarding inicial
+            </p>
             <h1 className="text-3xl font-bold text-gray-900 mb-3">
               {currentStep === 1 && "Etapa 1 — Identidade da loja"}
               {currentStep === 2 && "Etapa 2 — O que a loja vende"}
               {currentStep === 3 && "Etapa 3 — Operação da loja"}
             </h1>
+
             <p className="text-gray-600 leading-7">
               {currentStep === 1 &&
                 "Vamos configurar os dados principais da loja para a IA entender quem você é, onde atende e como deve se apresentar aos clientes."}
               {currentStep === 2 &&
                 "Agora vamos dizer para a IA o que sua loja vende e quais serviços ela realmente oferece."}
               {currentStep === 3 &&
-                "Agora vamos configurar como sua loja opera no dia a dia, para a IA não prometer prazos e ações fora da realidade."}
+                "Agora vamos configurar como sua loja funciona no dia a dia, para a IA responder do jeito certo."}
             </p>
           </div>
 
           <div className="rounded-xl border border-gray-200 bg-gray-50 p-5 mb-6">
             <p className="text-sm text-gray-500 mb-1">Loja ativa</p>
-            <p className="text-lg font-semibold text-gray-900">{activeStore.name}</p>
+            <p className="text-lg font-semibold text-gray-900">
+              {activeStore.name}
+            </p>
           </div>
 
           {currentStep === 1 && step1DraftRecovered && (
@@ -655,7 +758,7 @@ function OnboardingContent() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Descrição curta da loja
+                  O que sua loja faz?
                 </label>
                 <textarea
                   value={step1Form.store_description}
@@ -663,7 +766,7 @@ function OnboardingContent() {
                     updateStep1Field("store_description", e.target.value)
                   }
                   className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black min-h-[120px]"
-                  placeholder="Ex.: Loja especializada em piscinas, acessórios, produtos químicos e instalação."
+                  placeholder="Ex.: Vendemos piscinas, produtos e também fazemos instalação."
                   required
                 />
               </div>
@@ -709,9 +812,12 @@ function OnboardingContent() {
                     updateStep1Field("service_regions", e.target.value)
                   }
                   className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                  placeholder="Ex.: Osasco, Barueri, Carapicuíba, São Paulo"
+                  placeholder="Ex.: Osasco, Barueri, Carapicuíba"
                   required
                 />
+                <p className="text-xs text-gray-500 mt-2">
+                  Separe por vírgula.
+                </p>
               </div>
 
               <div>
@@ -741,6 +847,7 @@ function OnboardingContent() {
 
               <div className="flex items-center justify-between gap-4 flex-wrap pt-4">
                 <p className="text-sm text-gray-500">Etapa 1 de 5</p>
+
                 <button
                   type="submit"
                   disabled={saving}
@@ -756,7 +863,7 @@ function OnboardingContent() {
             <form onSubmit={saveStep2} className="space-y-5">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Tipos de piscina que você vende
+                  Quais tipos de piscina você trabalha?
                 </label>
                 <input
                   type="text"
@@ -768,12 +875,15 @@ function OnboardingContent() {
                   placeholder="Ex.: fibra, alvenaria, vinil"
                   required
                 />
+                <p className="text-xs text-gray-500 mt-2">
+                  Separe por vírgula.
+                </p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Vende produtos químicos?
+                    Você vende produtos químicos?
                   </label>
                   <select
                     value={step2Form.sells_chemicals}
@@ -791,7 +901,7 @@ function OnboardingContent() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Vende acessórios?
+                    Você vende acessórios?
                   </label>
                   <select
                     value={step2Form.sells_accessories}
@@ -811,7 +921,7 @@ function OnboardingContent() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Oferece instalação?
+                    Você faz instalação?
                   </label>
                   <select
                     value={step2Form.offers_installation}
@@ -829,7 +939,7 @@ function OnboardingContent() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Oferece visita técnica?
+                    Você faz visita técnica?
                   </label>
                   <select
                     value={step2Form.offers_technical_visit}
@@ -848,7 +958,7 @@ function OnboardingContent() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Marcas trabalhadas
+                  Quais marcas você trabalha?
                 </label>
                 <input
                   type="text"
@@ -860,6 +970,9 @@ function OnboardingContent() {
                   placeholder="Ex.: iGUi, Sodramar, Brustec"
                   required
                 />
+                <p className="text-xs text-gray-500 mt-2">
+                  Separe por vírgula.
+                </p>
               </div>
 
               {successMessage && (
@@ -895,10 +1008,10 @@ function OnboardingContent() {
           )}
 
           {currentStep === 3 && (
-            <form onSubmit={saveStep3} className="space-y-5">
+            <form onSubmit={saveStep3} className="space-y-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Prazo médio de instalação
+                  Em quanto tempo, em média, sua loja termina uma instalação?
                 </label>
                 <input
                   type="text"
@@ -916,48 +1029,67 @@ function OnboardingContent() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Dias disponíveis para instalação
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Em quais dias sua loja pode fazer instalação?
                 </label>
-                <input
-                  type="text"
-                  value={step3Form.installation_available_days}
-                  onChange={(e) =>
-                    updateStep3Field(
-                      "installation_available_days",
-                      e.target.value
-                    )
+                <WeekdaySelector
+                  selectedDays={step3Form.installation_available_days}
+                  onToggle={(day) =>
+                    toggleStep3Day("installation_available_days", day)
                   }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                  placeholder="Ex.: segunda, terça, quarta, quinta, sexta"
-                  required
+                  helperText="Marque os dias. Se preferir, também pode escrever uma regra logo abaixo."
                 />
-                <p className="text-xs text-gray-500 mt-2">Separe por vírgula.</p>
+
+                <div className="mt-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Regra livre dos dias de instalação
+                  </label>
+                  <input
+                    type="text"
+                    value={step3Form.installation_days_rule}
+                    onChange={(e) =>
+                      updateStep3Field("installation_days_rule", e.target.value)
+                    }
+                    className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                    placeholder="Ex.: de segunda a sábado"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Em quais dias sua loja pode fazer visita técnica?
+                </label>
+                <WeekdaySelector
+                  selectedDays={step3Form.technical_visit_available_days}
+                  onToggle={(day) =>
+                    toggleStep3Day("technical_visit_available_days", day)
+                  }
+                  helperText="Marque os dias. Se preferir, também pode escrever uma regra logo abaixo."
+                />
+
+                <div className="mt-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Regra livre dos dias de visita técnica
+                  </label>
+                  <input
+                    type="text"
+                    value={step3Form.technical_visit_days_rule}
+                    onChange={(e) =>
+                      updateStep3Field(
+                        "technical_visit_days_rule",
+                        e.target.value
+                      )
+                    }
+                    className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                    placeholder="Ex.: de terça a sexta"
+                  />
+                </div>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Dias disponíveis para visita técnica
-                </label>
-                <input
-                  type="text"
-                  value={step3Form.technical_visit_available_days}
-                  onChange={(e) =>
-                    updateStep3Field(
-                      "technical_visit_available_days",
-                      e.target.value
-                    )
-                  }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                  placeholder="Ex.: segunda, quarta, sábado"
-                  required
-                />
-                <p className="text-xs text-gray-500 mt-2">Separe por vírgula.</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Tempo médio de resposta humana
+                  Em quanto tempo, em média, uma pessoa da sua loja responde o cliente?
                 </label>
                 <input
                   type="text"
@@ -972,19 +1104,52 @@ function OnboardingContent() {
                   placeholder="Ex.: 15 minutos"
                   required
                 />
+                <p className="text-xs text-gray-500 mt-2">
+                  Isso ajuda a IA a informar um prazo real quando precisar avisar o cliente que alguém da loja vai responder.
+                </p>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Observações operacionais importantes
+                  Como funciona o processo de instalação?
                 </label>
                 <textarea
-                  value={step3Form.operational_notes}
+                  value={step3Form.installation_process}
                   onChange={(e) =>
-                    updateStep3Field("operational_notes", e.target.value)
+                    updateStep3Field("installation_process", e.target.value)
                   }
                   className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black min-h-[120px]"
-                  placeholder="Ex.: Não instalamos aos domingos. Visita técnica depende de confirmação prévia."
+                  placeholder="Ex.: Primeiro fazemos visita técnica, depois orçamento, aprovação do cliente, preparação do local e instalação."
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Existe alguma regra importante para visita técnica?
+                </label>
+                <textarea
+                  value={step3Form.technical_visit_rules}
+                  onChange={(e) =>
+                    updateStep3Field("technical_visit_rules", e.target.value)
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black min-h-[100px]"
+                  placeholder="Ex.: A visita técnica precisa ser agendada antes. Em algumas regiões cobramos deslocamento."
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Existe alguma limitação importante que a IA precisa saber?
+                </label>
+                <textarea
+                  value={step3Form.important_limitations}
+                  onChange={(e) =>
+                    updateStep3Field("important_limitations", e.target.value)
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black min-h-[100px]"
+                  placeholder="Ex.: Não instalamos aos domingos. Não atendemos áreas fora da região definida."
                   required
                 />
               </div>
