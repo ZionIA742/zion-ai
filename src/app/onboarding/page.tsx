@@ -507,6 +507,7 @@ function OnboardingContent() {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [hasCompletedOnboardingOnce, setHasCompletedOnboardingOnce] = useState(false);
 
   const [step1DraftRecovered, setStep1DraftRecovered] = useState(false);
   const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
@@ -1009,6 +1010,31 @@ function OnboardingContent() {
 
     loadAnswers();
   }, [organizationId, activeStore?.id, activeStore?.name]);
+  useEffect(() => {
+  const loadOnboardingStatus = async () => {
+    if (!organizationId || !activeStore?.id) return;
+
+    try {
+      const { data, error } = await supabase
+        .from("store_onboarding")
+        .select("status")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStore.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("[OnboardingPage] loadOnboardingStatus error:", error);
+        return;
+      }
+
+      setHasCompletedOnboardingOnce(data?.status === "completed");
+    } catch (err) {
+      console.error("[OnboardingPage] loadOnboardingStatus unexpected error:", err);
+    }
+  };
+
+  loadOnboardingStatus();
+}, [organizationId, activeStore?.id]);
 
   useEffect(() => {
     if (!hasHydratedRef.current || !step1DraftStorageKey) return;
@@ -1478,6 +1504,7 @@ function OnboardingContent() {
     }
 
     setStep5DraftRecovered(false);
+    setHasCompletedOnboardingOnce(true);
     router.push("/configuracoes");
   } catch (err) {
     console.error("[OnboardingPage] saveStep5 error:", err);
@@ -1520,25 +1547,48 @@ function OnboardingContent() {
         </div>
 
         <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="mb-6">
-            <p className="mb-1 text-sm font-medium text-gray-500">Onboarding inicial</p>
+          <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+  <div>
+    <p className="mb-1 text-sm font-medium text-gray-500">Onboarding inicial</p>
 
-            <h1 className="mb-2 text-2xl font-bold text-gray-900">
-              {currentStep === 1 && "Etapa 1 — Loja"}
-              {currentStep === 2 && "Etapa 2 — Piscinas"}
-              {currentStep === 3 && "Etapa 3 — Operação da loja"}
-              {currentStep === 4 && "Etapa 4 — Comercial"}
-              {currentStep === 5 && "Etapa 5 — Ativação"}
-            </h1>
+    <h1 className="mb-2 text-2xl font-bold text-gray-900">
+      {currentStep === 1 && "Etapa 1 — Loja"}
+      {currentStep === 2 && "Etapa 2 — Piscinas"}
+      {currentStep === 3 && "Etapa 3 — Operação da loja"}
+      {currentStep === 4 && "Etapa 4 — Comercial"}
+      {currentStep === 5 && "Etapa 5 — Ativação"}
+    </h1>
 
-            <p className="text-sm leading-6 text-gray-600">
-              {currentStep === 1 && "Vamos preencher os dados principais da loja de forma simples e rápida."}
-              {currentStep === 2 && "Agora vamos configurar os tipos de piscina e a marca principal da loja."}
-              {currentStep === 3 && "Agora vamos configurar como a loja funciona no dia a dia."}
-              {currentStep === 4 && "Agora vamos configurar as regras comerciais que a IA deve respeitar."}
-              {currentStep === 5 && "Agora vamos definir o responsável e as orientações finais para ativar a IA."}
-            </p>
-          </div>
+    <p className="text-sm leading-6 text-gray-600">
+      {currentStep === 1 && "Vamos preencher os dados principais da loja de forma simples e rápida."}
+      {currentStep === 2 && "Agora vamos configurar os tipos de piscina e a marca principal da loja."}
+      {currentStep === 3 && "Agora vamos configurar como a loja funciona no dia a dia."}
+      {currentStep === 4 && "Agora vamos configurar as regras comerciais que a IA deve respeitar."}
+      {currentStep === 5 && "Agora vamos definir o responsável e as orientações finais para ativar a IA."}
+    </p>
+  </div>
+
+  <div className="shrink-0">
+    <button
+      type="button"
+      onClick={() => router.push("/dashboard")}
+      disabled={!hasCompletedOnboardingOnce}
+      className={`rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+        hasCompletedOnboardingOnce
+          ? "border border-black bg-black text-white hover:opacity-90"
+          : "cursor-not-allowed border border-gray-200 bg-gray-100 text-gray-400"
+      }`}
+    >
+      Salvar onboarding
+    </button>
+
+    {!hasCompletedOnboardingOnce && (
+      <p className="mt-2 max-w-[220px] text-xs text-gray-500">
+        Libera após concluir o onboarding pela primeira vez.
+      </p>
+    )}
+  </div>
+</div>
 
           <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
             <p className="mb-1 text-xs text-gray-500">Loja ativa</p>
