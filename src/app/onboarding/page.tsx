@@ -23,6 +23,14 @@ type Step2FormData = {
   brands_worked: string;
 };
 
+type Step3FormData = {
+  average_installation_time_days: string;
+  installation_available_days: string;
+  technical_visit_available_days: string;
+  average_human_response_time: string;
+  operational_notes: string;
+};
+
 type AnswersMap = Record<string, any>;
 
 function formatPhone(value: string) {
@@ -70,6 +78,7 @@ function OnboardingContent() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [step1DraftRecovered, setStep1DraftRecovered] = useState(false);
   const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
+  const [step3DraftRecovered, setStep3DraftRecovered] = useState(false);
 
   const hasHydratedRef = useRef(false);
 
@@ -91,6 +100,14 @@ function OnboardingContent() {
     brands_worked: "",
   });
 
+  const [step3Form, setStep3Form] = useState<Step3FormData>({
+    average_installation_time_days: "",
+    installation_available_days: "",
+    technical_visit_available_days: "",
+    average_human_response_time: "",
+    operational_notes: "",
+  });
+
   const step1DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step1_draft:${organizationId}:${activeStore.id}`;
@@ -99,6 +116,11 @@ function OnboardingContent() {
   const step2DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step2_draft:${organizationId}:${activeStore.id}`;
+  }, [organizationId, activeStore?.id]);
+
+  const step3DraftStorageKey = useMemo(() => {
+    if (!organizationId || !activeStore?.id) return null;
+    return `zion_onboarding_step3_draft:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
 
   const currentStepStorageKey = useMemo(() => {
@@ -119,6 +141,7 @@ function OnboardingContent() {
         setSuccessMessage(null);
         setStep1DraftRecovered(false);
         setStep2DraftRecovered(false);
+        setStep3DraftRecovered(false);
         hasHydratedRef.current = false;
 
         const { data, error } = await supabase.rpc(
@@ -181,14 +204,32 @@ function OnboardingContent() {
             : answers.brands_worked ?? "",
         };
 
+        const serverStep3Form: Step3FormData = {
+          average_installation_time_days:
+            answers.average_installation_time_days ?? "",
+          installation_available_days: Array.isArray(
+            answers.installation_available_days
+          )
+            ? answers.installation_available_days.join(", ")
+            : answers.installation_available_days ?? "",
+          technical_visit_available_days: Array.isArray(
+            answers.technical_visit_available_days
+          )
+            ? answers.technical_visit_available_days.join(", ")
+            : answers.technical_visit_available_days ?? "",
+          average_human_response_time:
+            answers.average_human_response_time ?? "",
+          operational_notes: answers.operational_notes ?? "",
+        };
+
         let nextStep1Form = serverStep1Form;
         let nextStep2Form = serverStep2Form;
+        let nextStep3Form = serverStep3Form;
         let nextStep = 1;
 
         if (typeof window !== "undefined") {
           if (step1DraftStorageKey) {
             const rawDraft1 = window.localStorage.getItem(step1DraftStorageKey);
-
             if (rawDraft1) {
               try {
                 const parsedDraft1 = JSON.parse(rawDraft1) as Partial<Step1FormData>;
@@ -214,7 +255,6 @@ function OnboardingContent() {
 
           if (step2DraftStorageKey) {
             const rawDraft2 = window.localStorage.getItem(step2DraftStorageKey);
-
             if (rawDraft2) {
               try {
                 const parsedDraft2 = JSON.parse(rawDraft2) as Partial<Step2FormData>;
@@ -240,14 +280,45 @@ function OnboardingContent() {
             }
           }
 
+          if (step3DraftStorageKey) {
+            const rawDraft3 = window.localStorage.getItem(step3DraftStorageKey);
+            if (rawDraft3) {
+              try {
+                const parsedDraft3 = JSON.parse(rawDraft3) as Partial<Step3FormData>;
+                nextStep3Form = {
+                  average_installation_time_days:
+                    parsedDraft3.average_installation_time_days ??
+                    serverStep3Form.average_installation_time_days,
+                  installation_available_days:
+                    parsedDraft3.installation_available_days ??
+                    serverStep3Form.installation_available_days,
+                  technical_visit_available_days:
+                    parsedDraft3.technical_visit_available_days ??
+                    serverStep3Form.technical_visit_available_days,
+                  average_human_response_time:
+                    parsedDraft3.average_human_response_time ??
+                    serverStep3Form.average_human_response_time,
+                  operational_notes:
+                    parsedDraft3.operational_notes ??
+                    serverStep3Form.operational_notes,
+                };
+                setStep3DraftRecovered(true);
+              } catch (err) {
+                console.error("[OnboardingPage] erro ao ler draft step3:", err);
+              }
+            }
+          }
+
           if (currentStepStorageKey) {
             const rawStep = window.localStorage.getItem(currentStepStorageKey);
             if (rawStep === "2") nextStep = 2;
+            if (rawStep === "3") nextStep = 3;
           }
         }
 
         setStep1Form(nextStep1Form);
         setStep2Form(nextStep2Form);
+        setStep3Form(nextStep3Form);
         setCurrentStep(nextStep);
         hasHydratedRef.current = true;
       } catch (err) {
@@ -265,46 +336,28 @@ function OnboardingContent() {
     activeStore?.name,
     step1DraftStorageKey,
     step2DraftStorageKey,
+    step3DraftStorageKey,
     currentStepStorageKey,
   ]);
 
   useEffect(() => {
-    if (!hasHydratedRef.current) return;
-    if (!step1DraftStorageKey) return;
-
-    try {
-      window.localStorage.setItem(
-        step1DraftStorageKey,
-        JSON.stringify(step1Form)
-      );
-    } catch (err) {
-      console.error("[OnboardingPage] erro ao salvar draft step1:", err);
-    }
+    if (!hasHydratedRef.current || !step1DraftStorageKey) return;
+    window.localStorage.setItem(step1DraftStorageKey, JSON.stringify(step1Form));
   }, [step1Form, step1DraftStorageKey]);
 
   useEffect(() => {
-    if (!hasHydratedRef.current) return;
-    if (!step2DraftStorageKey) return;
-
-    try {
-      window.localStorage.setItem(
-        step2DraftStorageKey,
-        JSON.stringify(step2Form)
-      );
-    } catch (err) {
-      console.error("[OnboardingPage] erro ao salvar draft step2:", err);
-    }
+    if (!hasHydratedRef.current || !step2DraftStorageKey) return;
+    window.localStorage.setItem(step2DraftStorageKey, JSON.stringify(step2Form));
   }, [step2Form, step2DraftStorageKey]);
 
   useEffect(() => {
-    if (!hasHydratedRef.current) return;
-    if (!currentStepStorageKey) return;
+    if (!hasHydratedRef.current || !step3DraftStorageKey) return;
+    window.localStorage.setItem(step3DraftStorageKey, JSON.stringify(step3Form));
+  }, [step3Form, step3DraftStorageKey]);
 
-    try {
-      window.localStorage.setItem(currentStepStorageKey, String(currentStep));
-    } catch (err) {
-      console.error("[OnboardingPage] erro ao salvar etapa atual:", err);
-    }
+  useEffect(() => {
+    if (!hasHydratedRef.current || !currentStepStorageKey) return;
+    window.localStorage.setItem(currentStepStorageKey, String(currentStep));
   }, [currentStep, currentStepStorageKey]);
 
   function updateStep1Field<K extends keyof Step1FormData>(
@@ -312,10 +365,7 @@ function OnboardingContent() {
     value: Step1FormData[K]
   ) {
     setSuccessMessage(null);
-    setStep1Form((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
+    setStep1Form((prev) => ({ ...prev, [field]: value }));
   }
 
   function updateStep2Field<K extends keyof Step2FormData>(
@@ -323,70 +373,46 @@ function OnboardingContent() {
     value: Step2FormData[K]
   ) {
     setSuccessMessage(null);
-    setStep2Form((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
+    setStep2Form((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function updateStep3Field<K extends keyof Step3FormData>(
+    field: K,
+    value: Step3FormData[K]
+  ) {
+    setSuccessMessage(null);
+    setStep3Form((prev) => ({ ...prev, [field]: value }));
   }
 
   async function saveStep1(e: React.FormEvent) {
     e.preventDefault();
-
-    if (!organizationId || !activeStore?.id) {
-      setLoadError("Loja ativa não encontrada.");
-      return;
-    }
+    if (!organizationId || !activeStore?.id) return;
 
     setSaving(true);
     setLoadError(null);
     setSuccessMessage(null);
 
     try {
-      const payloads: Array<{ questionKey: string; answer: any }> = [
-        {
-          questionKey: "store_display_name",
-          answer: step1Form.store_display_name.trim(),
-        },
-        {
-          questionKey: "store_description",
-          answer: step1Form.store_description.trim(),
-        },
-        {
-          questionKey: "city",
-          answer: step1Form.city.trim(),
-        },
-        {
-          questionKey: "state",
-          answer: step1Form.state.trim(),
-        },
-        {
-          questionKey: "service_regions",
-          answer: step1Form.service_regions
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean),
-        },
-        {
-          questionKey: "commercial_whatsapp",
-          answer: step1Form.commercial_whatsapp.trim(),
-        },
+      const payloads = [
+        ["store_display_name", step1Form.store_display_name.trim()],
+        ["store_description", step1Form.store_description.trim()],
+        ["city", step1Form.city.trim()],
+        ["state", step1Form.state.trim()],
+        [
+          "service_regions",
+          step1Form.service_regions.split(",").map((i) => i.trim()).filter(Boolean),
+        ],
+        ["commercial_whatsapp", step1Form.commercial_whatsapp.trim()],
       ];
 
-      for (const item of payloads) {
+      for (const [questionKey, answer] of payloads) {
         const { error } = await supabase.rpc("onboarding_upsert_answer_scoped", {
           p_organization_id: organizationId,
           p_store_id: activeStore.id,
-          p_question_key: item.questionKey,
-          p_answer: item.answer,
+          p_question_key: questionKey,
+          p_answer: answer,
         });
-
-        if (error) {
-          console.error("[OnboardingPage] saveStep1 error:", {
-            questionKey: item.questionKey,
-            error,
-          });
-          throw new Error(`Falha ao salvar campo: ${item.questionKey}`);
-        }
+        if (error) throw new Error(`Falha ao salvar campo: ${questionKey}`);
       }
 
       const { error: statusError } = await supabase.rpc(
@@ -397,17 +423,13 @@ function OnboardingContent() {
           p_status: "in_progress",
         }
       );
-
-      if (statusError) {
-        console.error("[OnboardingPage] saveStep1 status error:", statusError);
-        throw new Error("Falha ao atualizar status do onboarding.");
-      }
+      if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
 
       setStep1DraftRecovered(false);
       setSuccessMessage("Etapa 1 salva com sucesso.");
       setCurrentStep(2);
     } catch (err: any) {
-      console.error("[OnboardingPage] saveStep1 unexpected error:", err);
+      console.error(err);
       setLoadError(err?.message ?? "Erro ao salvar etapa 1.");
     } finally {
       setSaving(false);
@@ -416,11 +438,7 @@ function OnboardingContent() {
 
   async function saveStep2(e: React.FormEvent) {
     e.preventDefault();
-
-    if (!organizationId || !activeStore?.id) {
-      setLoadError("Loja ativa não encontrada.");
-      return;
-    }
+    if (!organizationId || !activeStore?.id) return;
 
     setSaving(true);
     setLoadError(null);
@@ -430,54 +448,32 @@ function OnboardingContent() {
       const normalizeYesNo = (value: string) =>
         value.trim().toLowerCase() === "sim";
 
-      const payloads: Array<{ questionKey: string; answer: any }> = [
-        {
-          questionKey: "pool_types",
-          answer: step2Form.pool_types
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean),
-        },
-        {
-          questionKey: "sells_chemicals",
-          answer: normalizeYesNo(step2Form.sells_chemicals),
-        },
-        {
-          questionKey: "sells_accessories",
-          answer: normalizeYesNo(step2Form.sells_accessories),
-        },
-        {
-          questionKey: "offers_installation",
-          answer: normalizeYesNo(step2Form.offers_installation),
-        },
-        {
-          questionKey: "offers_technical_visit",
-          answer: normalizeYesNo(step2Form.offers_technical_visit),
-        },
-        {
-          questionKey: "brands_worked",
-          answer: step2Form.brands_worked
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean),
-        },
+      const payloads = [
+        [
+          "pool_types",
+          step2Form.pool_types.split(",").map((i) => i.trim()).filter(Boolean),
+        ],
+        ["sells_chemicals", normalizeYesNo(step2Form.sells_chemicals)],
+        ["sells_accessories", normalizeYesNo(step2Form.sells_accessories)],
+        ["offers_installation", normalizeYesNo(step2Form.offers_installation)],
+        [
+          "offers_technical_visit",
+          normalizeYesNo(step2Form.offers_technical_visit),
+        ],
+        [
+          "brands_worked",
+          step2Form.brands_worked.split(",").map((i) => i.trim()).filter(Boolean),
+        ],
       ];
 
-      for (const item of payloads) {
+      for (const [questionKey, answer] of payloads) {
         const { error } = await supabase.rpc("onboarding_upsert_answer_scoped", {
           p_organization_id: organizationId,
           p_store_id: activeStore.id,
-          p_question_key: item.questionKey,
-          p_answer: item.answer,
+          p_question_key: questionKey,
+          p_answer: answer,
         });
-
-        if (error) {
-          console.error("[OnboardingPage] saveStep2 error:", {
-            questionKey: item.questionKey,
-            error,
-          });
-          throw new Error(`Falha ao salvar campo: ${item.questionKey}`);
-        }
+        if (error) throw new Error(`Falha ao salvar campo: ${questionKey}`);
       }
 
       const { error: statusError } = await supabase.rpc(
@@ -488,17 +484,79 @@ function OnboardingContent() {
           p_status: "in_progress",
         }
       );
-
-      if (statusError) {
-        console.error("[OnboardingPage] saveStep2 status error:", statusError);
-        throw new Error("Falha ao atualizar status do onboarding.");
-      }
+      if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
 
       setStep2DraftRecovered(false);
       setSuccessMessage("Etapa 2 salva com sucesso.");
+      setCurrentStep(3);
     } catch (err: any) {
-      console.error("[OnboardingPage] saveStep2 unexpected error:", err);
+      console.error(err);
       setLoadError(err?.message ?? "Erro ao salvar etapa 2.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveStep3(e: React.FormEvent) {
+    e.preventDefault();
+    if (!organizationId || !activeStore?.id) return;
+
+    setSaving(true);
+    setLoadError(null);
+    setSuccessMessage(null);
+
+    try {
+      const payloads = [
+        [
+          "average_installation_time_days",
+          step3Form.average_installation_time_days.trim(),
+        ],
+        [
+          "installation_available_days",
+          step3Form.installation_available_days
+            .split(",")
+            .map((i) => i.trim())
+            .filter(Boolean),
+        ],
+        [
+          "technical_visit_available_days",
+          step3Form.technical_visit_available_days
+            .split(",")
+            .map((i) => i.trim())
+            .filter(Boolean),
+        ],
+        [
+          "average_human_response_time",
+          step3Form.average_human_response_time.trim(),
+        ],
+        ["operational_notes", step3Form.operational_notes.trim()],
+      ];
+
+      for (const [questionKey, answer] of payloads) {
+        const { error } = await supabase.rpc("onboarding_upsert_answer_scoped", {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+          p_question_key: questionKey,
+          p_answer: answer,
+        });
+        if (error) throw new Error(`Falha ao salvar campo: ${questionKey}`);
+      }
+
+      const { error: statusError } = await supabase.rpc(
+        "onboarding_upsert_store_onboarding_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+          p_status: "in_progress",
+        }
+      );
+      if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
+
+      setStep3DraftRecovered(false);
+      setSuccessMessage("Etapa 3 salva com sucesso.");
+    } catch (err: any) {
+      console.error(err);
+      setLoadError(err?.message ?? "Erro ao salvar etapa 3.");
     } finally {
       setSaving(false);
     }
@@ -523,20 +581,7 @@ function OnboardingContent() {
     );
   }
 
-  if (!activeStore || !organizationId) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100 px-6">
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8 max-w-lg w-full text-center">
-          <h1 className="text-2xl font-bold text-gray-900 mb-3">
-            Loja não encontrada
-          </h1>
-          <p className="text-gray-600">
-            Não foi possível identificar a loja ativa para iniciar o onboarding.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  if (!activeStore || !organizationId) return null;
 
   return (
     <div className="min-h-screen bg-gray-100 px-6 py-10">
@@ -551,43 +596,46 @@ function OnboardingContent() {
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
           <div className="mb-8">
-            <p className="text-sm font-medium text-gray-500 mb-2">
-              Onboarding inicial
-            </p>
+            <p className="text-sm font-medium text-gray-500 mb-2">Onboarding inicial</p>
             <h1 className="text-3xl font-bold text-gray-900 mb-3">
-              {currentStep === 1
-                ? "Etapa 1 — Identidade da loja"
-                : "Etapa 2 — O que a loja vende"}
+              {currentStep === 1 && "Etapa 1 — Identidade da loja"}
+              {currentStep === 2 && "Etapa 2 — O que a loja vende"}
+              {currentStep === 3 && "Etapa 3 — Operação da loja"}
             </h1>
             <p className="text-gray-600 leading-7">
-              {currentStep === 1
-                ? "Vamos configurar os dados principais da loja para a IA entender quem você é, onde atende e como deve se apresentar aos clientes."
-                : "Agora vamos dizer para a IA o que sua loja vende e quais serviços ela realmente oferece."}
+              {currentStep === 1 &&
+                "Vamos configurar os dados principais da loja para a IA entender quem você é, onde atende e como deve se apresentar aos clientes."}
+              {currentStep === 2 &&
+                "Agora vamos dizer para a IA o que sua loja vende e quais serviços ela realmente oferece."}
+              {currentStep === 3 &&
+                "Agora vamos configurar como sua loja opera no dia a dia, para a IA não prometer prazos e ações fora da realidade."}
             </p>
           </div>
 
           <div className="rounded-xl border border-gray-200 bg-gray-50 p-5 mb-6">
             <p className="text-sm text-gray-500 mb-1">Loja ativa</p>
-            <p className="text-lg font-semibold text-gray-900">
-              {activeStore.name}
-            </p>
+            <p className="text-lg font-semibold text-gray-900">{activeStore.name}</p>
           </div>
 
           {currentStep === 1 && step1DraftRecovered && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-6">
-              Recuperamos um rascunho local da etapa 1 que ainda não tinha sido
-              salvo.
+              Recuperamos um rascunho local da etapa 1 que ainda não tinha sido salvo.
             </div>
           )}
 
           {currentStep === 2 && step2DraftRecovered && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-6">
-              Recuperamos um rascunho local da etapa 2 que ainda não tinha sido
-              salvo.
+              Recuperamos um rascunho local da etapa 2 que ainda não tinha sido salvo.
             </div>
           )}
 
-          {currentStep === 1 ? (
+          {currentStep === 3 && step3DraftRecovered && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-6">
+              Recuperamos um rascunho local da etapa 3 que ainda não tinha sido salvo.
+            </div>
+          )}
+
+          {currentStep === 1 && (
             <form onSubmit={saveStep1} className="space-y-5">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -664,7 +712,6 @@ function OnboardingContent() {
                   placeholder="Ex.: Osasco, Barueri, Carapicuíba, São Paulo"
                   required
                 />
-                <p className="text-xs text-gray-500 mt-2">Separe por vírgula.</p>
               </div>
 
               <div>
@@ -694,7 +741,6 @@ function OnboardingContent() {
 
               <div className="flex items-center justify-between gap-4 flex-wrap pt-4">
                 <p className="text-sm text-gray-500">Etapa 1 de 5</p>
-
                 <button
                   type="submit"
                   disabled={saving}
@@ -704,7 +750,9 @@ function OnboardingContent() {
                 </button>
               </div>
             </form>
-          ) : (
+          )}
+
+          {currentStep === 2 && (
             <form onSubmit={saveStep2} className="space-y-5">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -720,7 +768,6 @@ function OnboardingContent() {
                   placeholder="Ex.: fibra, alvenaria, vinil"
                   required
                 />
-                <p className="text-xs text-gray-500 mt-2">Separe por vírgula.</p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -813,7 +860,6 @@ function OnboardingContent() {
                   placeholder="Ex.: iGUi, Sodramar, Brustec"
                   required
                 />
-                <p className="text-xs text-gray-500 mt-2">Separe por vírgula.</p>
               </div>
 
               {successMessage && (
@@ -836,13 +882,139 @@ function OnboardingContent() {
 
                 <div className="flex items-center gap-4">
                   <p className="text-sm text-gray-500">Etapa 2 de 5</p>
-
                   <button
                     type="submit"
                     disabled={saving}
                     className="px-5 py-3 rounded-xl bg-black text-white font-medium disabled:opacity-60"
                   >
-                    {saving ? "Salvando..." : "Salvar etapa 2"}
+                    {saving ? "Salvando..." : "Salvar e ir para etapa 3"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+
+          {currentStep === 3 && (
+            <form onSubmit={saveStep3} className="space-y-5">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Prazo médio de instalação
+                </label>
+                <input
+                  type="text"
+                  value={step3Form.average_installation_time_days}
+                  onChange={(e) =>
+                    updateStep3Field(
+                      "average_installation_time_days",
+                      e.target.value
+                    )
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                  placeholder="Ex.: 7 dias"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Dias disponíveis para instalação
+                </label>
+                <input
+                  type="text"
+                  value={step3Form.installation_available_days}
+                  onChange={(e) =>
+                    updateStep3Field(
+                      "installation_available_days",
+                      e.target.value
+                    )
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                  placeholder="Ex.: segunda, terça, quarta, quinta, sexta"
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-2">Separe por vírgula.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Dias disponíveis para visita técnica
+                </label>
+                <input
+                  type="text"
+                  value={step3Form.technical_visit_available_days}
+                  onChange={(e) =>
+                    updateStep3Field(
+                      "technical_visit_available_days",
+                      e.target.value
+                    )
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                  placeholder="Ex.: segunda, quarta, sábado"
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-2">Separe por vírgula.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Tempo médio de resposta humana
+                </label>
+                <input
+                  type="text"
+                  value={step3Form.average_human_response_time}
+                  onChange={(e) =>
+                    updateStep3Field(
+                      "average_human_response_time",
+                      e.target.value
+                    )
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                  placeholder="Ex.: 15 minutos"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Observações operacionais importantes
+                </label>
+                <textarea
+                  value={step3Form.operational_notes}
+                  onChange={(e) =>
+                    updateStep3Field("operational_notes", e.target.value)
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black min-h-[120px]"
+                  placeholder="Ex.: Não instalamos aos domingos. Visita técnica depende de confirmação prévia."
+                  required
+                />
+              </div>
+
+              {successMessage && (
+                <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                  {successMessage}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between gap-4 flex-wrap pt-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSuccessMessage(null);
+                    setCurrentStep(2);
+                  }}
+                  className="px-5 py-3 rounded-xl border border-gray-300 bg-white text-gray-800 font-medium"
+                >
+                  Voltar para etapa 2
+                </button>
+
+                <div className="flex items-center gap-4">
+                  <p className="text-sm text-gray-500">Etapa 3 de 5</p>
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="px-5 py-3 rounded-xl bg-black text-white font-medium disabled:opacity-60"
+                  >
+                    {saving ? "Salvando..." : "Salvar etapa 3"}
                   </button>
                 </div>
               </div>
