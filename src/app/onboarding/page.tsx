@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import OrgGuard from "../../components/OrgGuard";
 import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
@@ -497,6 +498,7 @@ function ProcessColumn({
 
 function OnboardingContent() {
   const { loading, error, activeStore, organizationId } = useStoreContext();
+  const router = useRouter();
 
   const [currentStep, setCurrentStep] = useState(1);
   const [hydratedFromCache, setHydratedFromCache] = useState(false);
@@ -1416,33 +1418,74 @@ function OnboardingContent() {
   }
 
   async function saveStep5(e: React.FormEvent) {
-    e.preventDefault();
+  e.preventDefault();
 
-    const finalActivationNotesText = joinSelectedLabels(
-      step5Form.activation_preferences,
-      ACTIVATION_PREFERENCE_OPTIONS,
-      step5Form.activation_preferences_other
-    );
+  const finalActivationNotesText = joinSelectedLabels(
+    step5Form.activation_preferences,
+    ACTIVATION_PREFERENCE_OPTIONS,
+    step5Form.activation_preferences_other
+  );
 
-    await upsertAnswers(
+  if (!organizationId || !activeStore?.id) return;
+
+  setSaving(true);
+  setFormError(null);
+  setSuccessMessage(null);
+
+  try {
+    const payloads: Array<[string, unknown]> = [
+      ["responsible_name", step5Form.responsible_name.trim()],
+      ["responsible_whatsapp", step5Form.responsible_whatsapp.trim()],
       [
-        ["responsible_name", step5Form.responsible_name.trim()],
-        ["responsible_whatsapp", step5Form.responsible_whatsapp.trim()],
-        ["ai_should_notify_responsible", step5Form.ai_should_notify_responsible.trim().toLowerCase() === "sim"],
-        ["final_activation_notes", finalActivationNotesText],
-        ["confirm_information_is_correct", step5Form.confirm_information_is_correct],
-        ["responsible_notification_cases", step5Form.responsible_notification_cases],
-        ["responsible_notification_cases_other", step5Form.responsible_notification_cases_other.trim()],
-        ["activation_preferences", step5Form.activation_preferences],
-        ["activation_preferences_other", step5Form.activation_preferences_other.trim()],
+        "ai_should_notify_responsible",
+        step5Form.ai_should_notify_responsible.trim().toLowerCase() === "sim",
       ],
-      "Onboarding concluído com sucesso.",
-      undefined,
-      "completed"
+      ["final_activation_notes", finalActivationNotesText],
+      ["confirm_information_is_correct", step5Form.confirm_information_is_correct],
+      ["responsible_notification_cases", step5Form.responsible_notification_cases],
+      [
+        "responsible_notification_cases_other",
+        step5Form.responsible_notification_cases_other.trim(),
+      ],
+      ["activation_preferences", step5Form.activation_preferences],
+      ["activation_preferences_other", step5Form.activation_preferences_other.trim()],
+    ];
+
+    for (const [questionKey, answer] of payloads) {
+      const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
+        p_organization_id: organizationId,
+        p_store_id: activeStore.id,
+        p_question_key: questionKey,
+        p_answer: answer,
+      });
+
+      if (rpcError) {
+        throw new Error(`Falha ao salvar campo: ${questionKey}`);
+      }
+    }
+
+    const { error: statusError } = await supabase.rpc(
+      "onboarding_upsert_store_onboarding_scoped",
+      {
+        p_organization_id: organizationId,
+        p_store_id: activeStore.id,
+        p_status: "completed",
+      }
     );
+
+    if (statusError) {
+      throw new Error("Falha ao atualizar status do onboarding.");
+    }
 
     setStep5DraftRecovered(false);
+    router.push("/configuracoes");
+  } catch (err) {
+    console.error("[OnboardingPage] saveStep5 error:", err);
+    setFormError(err instanceof Error ? err.message : "Erro ao concluir onboarding.");
+  } finally {
+    setSaving(false);
   }
+}
 
   if (loading || (!hydratedFromCache && !remoteLoaded)) {
     return (

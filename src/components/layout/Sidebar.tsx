@@ -20,6 +20,10 @@ const items = [
     label: "Configurações",
     href: "/configuracoes",
   },
+  {
+    label: "Onboarding",
+    href: "/onboarding",
+  },
 ];
 
 export default function Sidebar() {
