@@ -39,9 +39,20 @@ type Step4FormData = {
   average_ticket: string;
   can_offer_discount: string;
   max_discount_percent: string;
-  accepted_payment_methods: string;
+  accepted_payment_methods: string[];
   ai_can_send_price_directly: string;
-  situations_that_require_human: string;
+  price_direct_rule: string;
+  human_help_discount_cases: string;
+  human_help_custom_project_cases: string;
+  human_help_payment_cases: string;
+};
+
+type Step5FormData = {
+  responsible_name: string;
+  responsible_whatsapp: string;
+  ai_should_notify_responsible: string;
+  final_activation_notes: string;
+  confirm_information_is_correct: boolean;
 };
 
 type AnswersMap = Record<string, any>;
@@ -56,6 +67,17 @@ const WEEK_DAYS = [
   { value: "domingo", label: "Domingo" },
 ];
 
+const PAYMENT_METHODS = [
+  { value: "pix", label: "Pix" },
+  { value: "cartao_credito", label: "Cartão de crédito" },
+  { value: "cartao_debito", label: "Cartão de débito" },
+  { value: "boleto", label: "Boleto" },
+  { value: "dinheiro", label: "Dinheiro" },
+  { value: "transferencia", label: "Transferência" },
+  { value: "parcelado", label: "Parcelado" },
+  { value: "financiamento", label: "Financiamento" },
+];
+
 function formatPhone(value: string) {
   const digits = value.replace(/\D/g, "").slice(0, 11);
 
@@ -64,6 +86,19 @@ function formatPhone(value: string) {
   if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
 
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function formatBrazilCurrencyInput(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return "";
+
+  const number = Number(digits);
+  return number.toLocaleString("pt-BR");
+}
+
+function formatPercentInput(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 3);
+  return digits;
 }
 
 function StepBadge({
@@ -98,47 +133,83 @@ function StepBadge({
 function WeekdaySelector({
   selectedDays,
   onToggle,
-  helperText,
 }: {
   selectedDays: string[];
   onToggle: (day: string) => void;
-  helperText?: string;
 }) {
   return (
-    <div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        {WEEK_DAYS.map((day) => {
-          const selected = selectedDays.includes(day.value);
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      {WEEK_DAYS.map((day) => {
+        const selected = selectedDays.includes(day.value);
 
-          return (
-            <button
-              key={day.value}
-              type="button"
-              onClick={() => onToggle(day.value)}
-              className={`rounded-lg border px-3 py-2 text-sm text-left transition ${
-                selected
-                  ? "border-black bg-black text-white"
-                  : "border-gray-300 bg-white text-gray-800"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className={`inline-flex h-4 w-4 rounded-full border ${
-                    selected ? "border-white bg-white" : "border-gray-400"
-                  }`}
-                >
-                  {selected ? (
-                    <span className="m-auto h-2 w-2 rounded-full bg-black" />
-                  ) : null}
-                </span>
-                <span>{day.label}</span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+        return (
+          <button
+            key={day.value}
+            type="button"
+            onClick={() => onToggle(day.value)}
+            className={`rounded-lg border px-3 py-2 text-sm text-left transition ${
+              selected
+                ? "border-black bg-black text-white"
+                : "border-gray-300 bg-white text-gray-800"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-flex h-4 w-4 rounded-full border ${
+                  selected ? "border-white bg-white" : "border-gray-400"
+                }`}
+              >
+                {selected ? (
+                  <span className="m-auto h-2 w-2 rounded-full bg-black" />
+                ) : null}
+              </span>
+              <span>{day.label}</span>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
-      {helperText && <p className="text-xs text-gray-500 mt-2">{helperText}</p>}
+function PaymentMethodSelector({
+  selectedItems,
+  onToggle,
+}: {
+  selectedItems: string[];
+  onToggle: (value: string) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+      {PAYMENT_METHODS.map((item) => {
+        const selected = selectedItems.includes(item.value);
+
+        return (
+          <button
+            key={item.value}
+            type="button"
+            onClick={() => onToggle(item.value)}
+            className={`rounded-lg border px-3 py-2 text-sm text-left transition ${
+              selected
+                ? "border-black bg-black text-white"
+                : "border-gray-300 bg-white text-gray-800"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-flex h-4 w-4 rounded-full border ${
+                  selected ? "border-white bg-white" : "border-gray-400"
+                }`}
+              >
+                {selected ? (
+                  <span className="m-auto h-2 w-2 rounded-full bg-black" />
+                ) : null}
+              </span>
+              <span>{item.label}</span>
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -157,6 +228,7 @@ function OnboardingContent() {
   const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
   const [step3DraftRecovered, setStep3DraftRecovered] = useState(false);
   const [step4DraftRecovered, setStep4DraftRecovered] = useState(false);
+  const [step5DraftRecovered, setStep5DraftRecovered] = useState(false);
 
   const hasHydratedRef = useRef(false);
 
@@ -194,9 +266,20 @@ function OnboardingContent() {
     average_ticket: "",
     can_offer_discount: "",
     max_discount_percent: "",
-    accepted_payment_methods: "",
+    accepted_payment_methods: [],
     ai_can_send_price_directly: "",
-    situations_that_require_human: "",
+    price_direct_rule: "",
+    human_help_discount_cases: "",
+    human_help_custom_project_cases: "",
+    human_help_payment_cases: "",
+  });
+
+  const [step5Form, setStep5Form] = useState<Step5FormData>({
+    responsible_name: "",
+    responsible_whatsapp: "",
+    ai_should_notify_responsible: "",
+    final_activation_notes: "",
+    confirm_information_is_correct: false,
   });
 
   const step1DraftStorageKey = useMemo(() => {
@@ -219,6 +302,11 @@ function OnboardingContent() {
     return `zion_onboarding_step4_draft:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
 
+  const step5DraftStorageKey = useMemo(() => {
+    if (!organizationId || !activeStore?.id) return null;
+    return `zion_onboarding_step5_draft:${organizationId}:${activeStore.id}`;
+  }, [organizationId, activeStore?.id]);
+
   const currentStepStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_current_step:${organizationId}:${activeStore.id}`;
@@ -234,62 +322,57 @@ function OnboardingContent() {
       setStep2DraftRecovered(false);
       setStep3DraftRecovered(false);
       setStep4DraftRecovered(false);
+      setStep5DraftRecovered(false);
 
       let nextStep = 1;
 
       if (typeof window !== "undefined") {
         if (step1DraftStorageKey) {
-          const rawDraft1 = window.localStorage.getItem(step1DraftStorageKey);
-          if (rawDraft1) {
+          const raw = window.localStorage.getItem(step1DraftStorageKey);
+          if (raw) {
             try {
-              const parsedDraft1 = JSON.parse(rawDraft1) as Partial<Step1FormData>;
-              setStep1Form((prev) => ({
-                ...prev,
-                ...parsedDraft1,
-              }));
+              setStep1Form((prev) => ({ ...prev, ...JSON.parse(raw) }));
               setStep1DraftRecovered(true);
             } catch {}
           }
         }
 
         if (step2DraftStorageKey) {
-          const rawDraft2 = window.localStorage.getItem(step2DraftStorageKey);
-          if (rawDraft2) {
+          const raw = window.localStorage.getItem(step2DraftStorageKey);
+          if (raw) {
             try {
-              const parsedDraft2 = JSON.parse(rawDraft2) as Partial<Step2FormData>;
-              setStep2Form((prev) => ({
-                ...prev,
-                ...parsedDraft2,
-              }));
+              setStep2Form((prev) => ({ ...prev, ...JSON.parse(raw) }));
               setStep2DraftRecovered(true);
             } catch {}
           }
         }
 
         if (step3DraftStorageKey) {
-          const rawDraft3 = window.localStorage.getItem(step3DraftStorageKey);
-          if (rawDraft3) {
+          const raw = window.localStorage.getItem(step3DraftStorageKey);
+          if (raw) {
             try {
-              const parsedDraft3 = JSON.parse(rawDraft3) as Partial<Step3FormData>;
-              setStep3Form((prev) => ({
-                ...prev,
-                ...parsedDraft3,
-              }));
+              setStep3Form((prev) => ({ ...prev, ...JSON.parse(raw) }));
               setStep3DraftRecovered(true);
             } catch {}
           }
         }
 
         if (step4DraftStorageKey) {
-          const rawDraft4 = window.localStorage.getItem(step4DraftStorageKey);
-          if (rawDraft4) {
+          const raw = window.localStorage.getItem(step4DraftStorageKey);
+          if (raw) {
             try {
-              const parsedDraft4 = JSON.parse(rawDraft4) as Partial<Step4FormData>;
-              setStep4Form((prev) => ({
-                ...prev,
-                ...parsedDraft4,
-              }));
+              setStep4Form((prev) => ({ ...prev, ...JSON.parse(raw) }));
               setStep4DraftRecovered(true);
+            } catch {}
+          }
+        }
+
+        if (step5DraftStorageKey) {
+          const raw = window.localStorage.getItem(step5DraftStorageKey);
+          if (raw) {
+            try {
+              setStep5Form((prev) => ({ ...prev, ...JSON.parse(raw) }));
+              setStep5DraftRecovered(true);
             } catch {}
           }
         }
@@ -299,6 +382,7 @@ function OnboardingContent() {
           if (rawStep === "2") nextStep = 2;
           if (rawStep === "3") nextStep = 3;
           if (rawStep === "4") nextStep = 4;
+          if (rawStep === "5") nextStep = 5;
         }
       }
 
@@ -315,6 +399,7 @@ function OnboardingContent() {
     step2DraftStorageKey,
     step3DraftStorageKey,
     step4DraftStorageKey,
+    step5DraftStorageKey,
     currentStepStorageKey,
   ]);
 
@@ -442,10 +527,11 @@ function OnboardingContent() {
           max_discount_percent:
             prev.max_discount_percent || answers.max_discount_percent || "",
           accepted_payment_methods:
-            prev.accepted_payment_methods ||
-            (Array.isArray(answers.accepted_payment_methods)
-              ? answers.accepted_payment_methods.join(", ")
-              : answers.accepted_payment_methods || ""),
+            prev.accepted_payment_methods.length > 0
+              ? prev.accepted_payment_methods
+              : Array.isArray(answers.accepted_payment_methods)
+              ? answers.accepted_payment_methods
+              : [],
           ai_can_send_price_directly:
             prev.ai_can_send_price_directly ||
             (typeof answers.ai_can_send_price_directly === "boolean"
@@ -453,10 +539,33 @@ function OnboardingContent() {
                 ? "sim"
                 : "não"
               : answers.ai_can_send_price_directly || ""),
-          situations_that_require_human:
-            prev.situations_that_require_human ||
-            answers.situations_that_require_human ||
-            "",
+          price_direct_rule:
+            prev.price_direct_rule || answers.price_direct_rule || "",
+          human_help_discount_cases:
+            prev.human_help_discount_cases || answers.human_help_discount_cases || "",
+          human_help_custom_project_cases:
+            prev.human_help_custom_project_cases || answers.human_help_custom_project_cases || "",
+          human_help_payment_cases:
+            prev.human_help_payment_cases || answers.human_help_payment_cases || "",
+        }));
+
+        setStep5Form((prev) => ({
+          responsible_name:
+            prev.responsible_name || answers.responsible_name || "",
+          responsible_whatsapp:
+            prev.responsible_whatsapp || answers.responsible_whatsapp || "",
+          ai_should_notify_responsible:
+            prev.ai_should_notify_responsible ||
+            (typeof answers.ai_should_notify_responsible === "boolean"
+              ? answers.ai_should_notify_responsible
+                ? "sim"
+                : "não"
+              : answers.ai_should_notify_responsible || ""),
+          final_activation_notes:
+            prev.final_activation_notes || answers.final_activation_notes || "",
+          confirm_information_is_correct:
+            prev.confirm_information_is_correct ||
+            Boolean(answers.confirm_information_is_correct),
         }));
 
         setRemoteLoaded(true);
@@ -488,6 +597,11 @@ function OnboardingContent() {
     if (!hasHydratedRef.current || !step4DraftStorageKey) return;
     window.localStorage.setItem(step4DraftStorageKey, JSON.stringify(step4Form));
   }, [step4Form, step4DraftStorageKey]);
+
+  useEffect(() => {
+    if (!hasHydratedRef.current || !step5DraftStorageKey) return;
+    window.localStorage.setItem(step5DraftStorageKey, JSON.stringify(step5Form));
+  }, [step5Form, step5DraftStorageKey]);
 
   useEffect(() => {
     if (!hasHydratedRef.current || !currentStepStorageKey) return;
@@ -526,6 +640,14 @@ function OnboardingContent() {
     setStep4Form((prev) => ({ ...prev, [field]: value }));
   }
 
+  function updateStep5Field<K extends keyof Step5FormData>(
+    field: K,
+    value: Step5FormData[K]
+  ) {
+    setSuccessMessage(null);
+    setStep5Form((prev) => ({ ...prev, [field]: value }));
+  }
+
   function toggleStep3Day(
     field: "installation_available_days" | "technical_visit_available_days",
     day: string
@@ -544,10 +666,25 @@ function OnboardingContent() {
     });
   }
 
+  function togglePaymentMethod(value: string) {
+    setSuccessMessage(null);
+    setStep4Form((prev) => {
+      const exists = prev.accepted_payment_methods.includes(value);
+
+      return {
+        ...prev,
+        accepted_payment_methods: exists
+          ? prev.accepted_payment_methods.filter((item) => item !== value)
+          : [...prev.accepted_payment_methods, value],
+      };
+    });
+  }
+
   async function upsertAnswers(
     payloads: Array<[string, any]>,
     nextSuccessMessage: string,
-    nextStep?: number
+    nextStep?: number,
+    finalStatus?: "in_progress" | "completed"
   ) {
     if (!organizationId || !activeStore?.id) return;
 
@@ -574,7 +711,7 @@ function OnboardingContent() {
         {
           p_organization_id: organizationId,
           p_store_id: activeStore.id,
-          p_status: "in_progress",
+          p_status: finalStatus ?? "in_progress",
         }
       );
 
@@ -690,26 +827,52 @@ function OnboardingContent() {
         ["average_ticket", step4Form.average_ticket.trim()],
         ["can_offer_discount", normalizeYesNo(step4Form.can_offer_discount)],
         ["max_discount_percent", step4Form.max_discount_percent.trim()],
-        [
-          "accepted_payment_methods",
-          step4Form.accepted_payment_methods
-            .split(",")
-            .map((i) => i.trim())
-            .filter(Boolean),
-        ],
+        ["accepted_payment_methods", step4Form.accepted_payment_methods],
         [
           "ai_can_send_price_directly",
           normalizeYesNo(step4Form.ai_can_send_price_directly),
         ],
+        ["price_direct_rule", step4Form.price_direct_rule.trim()],
+        ["human_help_discount_cases", step4Form.human_help_discount_cases.trim()],
         [
-          "situations_that_require_human",
-          step4Form.situations_that_require_human.trim(),
+          "human_help_custom_project_cases",
+          step4Form.human_help_custom_project_cases.trim(),
         ],
+        ["human_help_payment_cases", step4Form.human_help_payment_cases.trim()],
       ],
-      "Etapa 4 salva com sucesso."
+      "Etapa 4 salva com sucesso.",
+      5
     );
 
     setStep4DraftRecovered(false);
+  }
+
+  async function saveStep5(e: React.FormEvent) {
+    e.preventDefault();
+
+    const normalizeYesNo = (value: string) =>
+      value.trim().toLowerCase() === "sim";
+
+    await upsertAnswers(
+      [
+        ["responsible_name", step5Form.responsible_name.trim()],
+        ["responsible_whatsapp", step5Form.responsible_whatsapp.trim()],
+        [
+          "ai_should_notify_responsible",
+          normalizeYesNo(step5Form.ai_should_notify_responsible),
+        ],
+        ["final_activation_notes", step5Form.final_activation_notes.trim()],
+        [
+          "confirm_information_is_correct",
+          step5Form.confirm_information_is_correct,
+        ],
+      ],
+      "Onboarding concluído com sucesso.",
+      undefined,
+      "completed"
+    );
+
+    setStep5DraftRecovered(false);
   }
 
   if (loading || (!hydratedFromCache && !remoteLoaded)) {
@@ -808,7 +971,7 @@ function OnboardingContent() {
               {currentStep === 4 &&
                 "Agora vamos configurar as regras comerciais da loja."}
               {currentStep === 5 &&
-                "A etapa 5 será implementada no próximo passo."}
+                "Agora vamos finalizar a ativação da IA para a sua loja."}
             </p>
           </div>
 
@@ -840,6 +1003,12 @@ function OnboardingContent() {
           {currentStep === 4 && step4DraftRecovered && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-4">
               Recuperamos um rascunho local da etapa 4 que ainda não tinha sido salvo.
+            </div>
+          )}
+
+          {currentStep === 5 && step5DraftRecovered && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-4">
+              Recuperamos um rascunho local da etapa 5 que ainda não tinha sido salvo.
             </div>
           )}
 
@@ -1140,9 +1309,6 @@ function OnboardingContent() {
                   className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
                   placeholder="Ex.: de segunda a sábado"
                 />
-                <p className="text-xs text-gray-500 mt-2">
-                  Você pode escrever de forma simples. Depois, se quiser, marque os dias logo abaixo.
-                </p>
               </div>
 
               <div>
@@ -1170,9 +1336,6 @@ function OnboardingContent() {
                   className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
                   placeholder="Ex.: de terça a sexta"
                 />
-                <p className="text-xs text-gray-500 mt-2">
-                  Você pode escrever de forma simples. Depois, se quiser, marque os dias logo abaixo.
-                </p>
               </div>
 
               <div>
@@ -1292,16 +1455,24 @@ function OnboardingContent() {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Qual é o ticket médio da sua loja?
                 </label>
-                <input
-                  type="text"
-                  value={step4Form.average_ticket}
-                  onChange={(e) =>
-                    updateStep4Field("average_ticket", e.target.value)
-                  }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: R$ 12.000"
-                  required
-                />
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-sm">
+                    R$
+                  </span>
+                  <input
+                    type="text"
+                    value={step4Form.average_ticket}
+                    onChange={(e) =>
+                      updateStep4Field(
+                        "average_ticket",
+                        formatBrazilCurrencyInput(e.target.value)
+                      )
+                    }
+                    className="w-full rounded-xl border border-gray-300 pl-12 pr-4 py-2.5 outline-none focus:border-black"
+                    placeholder="1.000"
+                    required
+                  />
+                </div>
               </div>
 
               <div>
@@ -1327,16 +1498,24 @@ function OnboardingContent() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Qual é o desconto máximo que pode ser oferecido?
                   </label>
-                  <input
-                    type="text"
-                    value={step4Form.max_discount_percent}
-                    onChange={(e) =>
-                      updateStep4Field("max_discount_percent", e.target.value)
-                    }
-                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                    placeholder="Ex.: 10%"
-                    required
-                  />
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={step4Form.max_discount_percent}
+                      onChange={(e) =>
+                        updateStep4Field(
+                          "max_discount_percent",
+                          formatPercentInput(e.target.value)
+                        )
+                      }
+                      className="w-full rounded-xl border border-gray-300 pl-4 pr-10 py-2.5 outline-none focus:border-black"
+                      placeholder="10"
+                      required
+                    />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 text-sm">
+                      %
+                    </span>
+                  </div>
                 </div>
               )}
 
@@ -1344,19 +1523,10 @@ function OnboardingContent() {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Quais formas de pagamento sua loja aceita?
                 </label>
-                <input
-                  type="text"
-                  value={step4Form.accepted_payment_methods}
-                  onChange={(e) =>
-                    updateStep4Field("accepted_payment_methods", e.target.value)
-                  }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: pix, cartão, boleto, parcelado"
-                  required
+                <PaymentMethodSelector
+                  selectedItems={step4Form.accepted_payment_methods}
+                  onToggle={togglePaymentMethod}
                 />
-                <p className="text-xs text-gray-500 mt-2">
-                  Separe por vírgula.
-                </p>
               </div>
 
               <div>
@@ -1375,22 +1545,70 @@ function OnboardingContent() {
                   <option value="sim">Sim</option>
                   <option value="não">Não</option>
                 </select>
+                <p className="text-xs text-gray-500 mt-2">
+                  Aqui queremos saber se a IA pode falar valores diretamente ou se antes precisa chamar alguém da loja.
+                </p>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Em quais situações a IA deve chamar uma pessoa da loja?
+                  Quando a IA pode passar preço?
                 </label>
                 <textarea
-                  value={step4Form.situations_that_require_human}
+                  value={step4Form.price_direct_rule}
+                  onChange={(e) =>
+                    updateStep4Field("price_direct_rule", e.target.value)
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black min-h-[90px]"
+                  placeholder="Ex.: Só depois de entender o tipo de piscina, medidas e se o cliente quer instalação."
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Em quais casos a IA deve chamar uma pessoa por causa de desconto?
+                </label>
+                <textarea
+                  value={step4Form.human_help_discount_cases}
+                  onChange={(e) =>
+                    updateStep4Field("human_help_discount_cases", e.target.value)
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black min-h-[80px]"
+                  placeholder="Ex.: Quando o cliente pedir desconto maior que o permitido."
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Em quais casos a IA deve chamar uma pessoa por causa de projeto especial?
+                </label>
+                <textarea
+                  value={step4Form.human_help_custom_project_cases}
                   onChange={(e) =>
                     updateStep4Field(
-                      "situations_that_require_human",
+                      "human_help_custom_project_cases",
                       e.target.value
                     )
                   }
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black min-h-[100px]"
-                  placeholder="Ex.: pedidos de desconto acima do limite, negociações especiais, dúvidas técnicas mais complexas."
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black min-h-[80px]"
+                  placeholder="Ex.: Projeto fora do padrão, instalação diferente, dúvida técnica mais complexa."
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Em quais casos a IA deve chamar uma pessoa por causa de pagamento?
+                </label>
+                <textarea
+                  value={step4Form.human_help_payment_cases}
+                  onChange={(e) =>
+                    updateStep4Field("human_help_payment_cases", e.target.value)
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black min-h-[80px]"
+                  placeholder="Ex.: Parcelamento diferente, financiamento, condição fora do normal."
                   required
                 />
               </div>
@@ -1420,7 +1638,7 @@ function OnboardingContent() {
                     disabled={saving}
                     className="px-5 py-2.5 rounded-xl bg-black text-white font-medium disabled:opacity-60"
                   >
-                    {saving ? "Salvando..." : "Salvar etapa 4"}
+                    {saving ? "Salvando..." : "Salvar e ir para etapa 5"}
                   </button>
                 </div>
               </div>
@@ -1428,15 +1646,102 @@ function OnboardingContent() {
           )}
 
           {currentStep === 5 && (
-            <div className="space-y-4">
-              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-                <h2 className="text-lg font-semibold text-gray-900 mb-2">
-                  Etapa 5 em breve
-                </h2>
-                <p className="text-sm text-gray-600">
-                  A etapa de ativação será implementada no próximo passo.
-                </p>
+            <form onSubmit={saveStep5} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Qual é o nome da pessoa responsável pela loja?
+                </label>
+                <input
+                  type="text"
+                  value={step5Form.responsible_name}
+                  onChange={(e) =>
+                    updateStep5Field("responsible_name", e.target.value)
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                  placeholder="Ex.: Carlos Silva"
+                  required
+                />
               </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Qual é o WhatsApp dessa pessoa?
+                </label>
+                <input
+                  type="text"
+                  value={step5Form.responsible_whatsapp}
+                  onChange={(e) =>
+                    updateStep5Field(
+                      "responsible_whatsapp",
+                      formatPhone(e.target.value)
+                    )
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                  placeholder="Ex.: (11) 99999-9999"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  A IA deve avisar essa pessoa quando surgir algo importante?
+                </label>
+                <select
+                  value={step5Form.ai_should_notify_responsible}
+                  onChange={(e) =>
+                    updateStep5Field(
+                      "ai_should_notify_responsible",
+                      e.target.value
+                    )
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black bg-white"
+                  required
+                >
+                  <option value="">Selecione</option>
+                  <option value="sim">Sim</option>
+                  <option value="não">Não</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Existe alguma orientação final importante para ativar a IA?
+                </label>
+                <textarea
+                  value={step5Form.final_activation_notes}
+                  onChange={(e) =>
+                    updateStep5Field("final_activation_notes", e.target.value)
+                  }
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black min-h-[90px]"
+                  placeholder="Ex.: A IA deve ser educada, direta e nunca prometer serviço fora da área atendida."
+                  required
+                />
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={step5Form.confirm_information_is_correct}
+                    onChange={(e) =>
+                      updateStep5Field(
+                        "confirm_information_is_correct",
+                        e.target.checked
+                      )
+                    }
+                    className="mt-1"
+                  />
+                  <span className="text-sm text-gray-700">
+                    Confirmo que as informações preenchidas até aqui estão corretas.
+                  </span>
+                </label>
+              </div>
+
+              {successMessage && (
+                <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                  {successMessage}
+                </div>
+              )}
 
               <div className="flex items-center justify-between gap-4 flex-wrap pt-2">
                 <button
@@ -1450,9 +1755,18 @@ function OnboardingContent() {
                   Voltar para etapa 4
                 </button>
 
-                <p className="text-sm text-gray-500">Etapa 5 de 5</p>
+                <div className="flex items-center gap-4">
+                  <p className="text-sm text-gray-500">Etapa 5 de 5</p>
+                  <button
+                    type="submit"
+                    disabled={saving || !step5Form.confirm_information_is_correct}
+                    className="px-5 py-2.5 rounded-xl bg-black text-white font-medium disabled:opacity-60"
+                  >
+                    {saving ? "Finalizando..." : "Concluir onboarding"}
+                  </button>
+                </div>
               </div>
-            </div>
+            </form>
           )}
         </div>
       </div>
