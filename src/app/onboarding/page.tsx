@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import OrgGuard from "../../components/OrgGuard";
 import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
@@ -23,6 +23,7 @@ function OnboardingContent() {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [draftRecovered, setDraftRecovered] = useState(false);
 
   const [form, setForm] = useState<FormData>({
     store_display_name: "",
@@ -32,6 +33,11 @@ function OnboardingContent() {
     service_regions: "",
     commercial_whatsapp: "",
   });
+
+  const draftStorageKey = useMemo(() => {
+    if (!organizationId || !activeStore?.id) return null;
+    return `zion_onboarding_step1_draft:${organizationId}:${activeStore.id}`;
+  }, [organizationId, activeStore?.id]);
 
   useEffect(() => {
     const loadAnswers = async () => {
@@ -43,6 +49,7 @@ function OnboardingContent() {
       try {
         setInitialLoading(true);
         setLoadError(null);
+        setDraftRecovered(false);
 
         const { data, error } = await supabase.rpc(
           "onboarding_get_answers_scoped",
@@ -60,7 +67,7 @@ function OnboardingContent() {
 
         const answers = (data ?? {}) as AnswersMap;
 
-        setForm({
+        const serverForm: FormData = {
           store_display_name: answers.store_display_name ?? activeStore.name ?? "",
           store_description: answers.store_description ?? "",
           city: answers.city ?? "",
@@ -69,7 +76,42 @@ function OnboardingContent() {
             ? answers.service_regions.join(", ")
             : answers.service_regions ?? "",
           commercial_whatsapp: answers.commercial_whatsapp ?? "",
-        });
+        };
+
+        let nextForm = serverForm;
+
+        if (typeof window !== "undefined" && draftStorageKey) {
+          const rawDraft = window.localStorage.getItem(draftStorageKey);
+
+          if (rawDraft) {
+            try {
+              const parsedDraft = JSON.parse(rawDraft) as Partial<FormData>;
+
+              nextForm = {
+                store_display_name:
+                  parsedDraft.store_display_name ?? serverForm.store_display_name,
+                store_description:
+                  parsedDraft.store_description ?? serverForm.store_description,
+                city: parsedDraft.city ?? serverForm.city,
+                state: parsedDraft.state ?? serverForm.state,
+                service_regions:
+                  parsedDraft.service_regions ?? serverForm.service_regions,
+                commercial_whatsapp:
+                  parsedDraft.commercial_whatsapp ??
+                  serverForm.commercial_whatsapp,
+              };
+
+              setDraftRecovered(true);
+            } catch (draftErr) {
+              console.error(
+                "[OnboardingPage] erro ao ler rascunho local:",
+                draftErr
+              );
+            }
+          }
+        }
+
+        setForm(nextForm);
       } catch (err) {
         console.error("[OnboardingPage] loadAnswers unexpected error:", err);
         setLoadError("Erro inesperado ao carregar onboarding.");
@@ -79,9 +121,28 @@ function OnboardingContent() {
     };
 
     loadAnswers();
-  }, [organizationId, activeStore?.id, activeStore?.name]);
+  }, [organizationId, activeStore?.id, activeStore?.name, draftStorageKey]);
+
+  useEffect(() => {
+    if (initialLoading) return;
+    if (!draftStorageKey) return;
+    if (!organizationId || !activeStore?.id) return;
+
+    try {
+      window.localStorage.setItem(draftStorageKey, JSON.stringify(form));
+    } catch (err) {
+      console.error("[OnboardingPage] erro ao salvar rascunho local:", err);
+    }
+  }, [
+    form,
+    initialLoading,
+    draftStorageKey,
+    organizationId,
+    activeStore?.id,
+  ]);
 
   function updateField<K extends keyof FormData>(field: K, value: FormData[K]) {
+    setSuccessMessage(null);
     setForm((prev) => ({
       ...prev,
       [field]: value,
@@ -162,7 +223,12 @@ function OnboardingContent() {
         throw new Error("Falha ao atualizar status do onboarding.");
       }
 
+      if (draftStorageKey && typeof window !== "undefined") {
+        window.localStorage.setItem(draftStorageKey, JSON.stringify(form));
+      }
+
       setSuccessMessage("Etapa 1 salva com sucesso.");
+      setDraftRecovered(false);
     } catch (err: any) {
       console.error("[OnboardingPage] handleSave unexpected error:", err);
       setLoadError(err?.message ?? "Erro ao salvar onboarding.");
@@ -222,12 +288,19 @@ function OnboardingContent() {
             </p>
           </div>
 
-          <div className="rounded-xl border border-gray-200 bg-gray-50 p-5 mb-8">
+          <div className="rounded-xl border border-gray-200 bg-gray-50 p-5 mb-6">
             <p className="text-sm text-gray-500 mb-1">Loja ativa</p>
             <p className="text-lg font-semibold text-gray-900">
               {activeStore.name}
             </p>
           </div>
+
+          {draftRecovered && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-6">
+              Recuperamos um rascunho local desta etapa que ainda não tinha sido
+              salvo.
+            </div>
+          )}
 
           <form onSubmit={handleSave} className="space-y-5">
             <div>
@@ -303,9 +376,7 @@ function OnboardingContent() {
                 placeholder="Ex.: Osasco, Barueri, Carapicuíba, São Paulo"
                 required
               />
-              <p className="text-xs text-gray-500 mt-2">
-                Separe por vírgula.
-              </p>
+              <p className="text-xs text-gray-500 mt-2">Separe por vírgula.</p>
             </div>
 
             <div>
@@ -331,9 +402,7 @@ function OnboardingContent() {
             )}
 
             <div className="flex items-center justify-between gap-4 flex-wrap pt-4">
-              <p className="text-sm text-gray-500">
-                Etapa 1 de 5
-              </p>
+              <p className="text-sm text-gray-500">Etapa 1 de 5</p>
 
               <button
                 type="submit"
