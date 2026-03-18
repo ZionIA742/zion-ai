@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type PoolRow = {
@@ -89,9 +90,6 @@ type TabKey =
   | "responsaveis"
   | "descontos";
 
-const ORGANIZATION_ID = "b02252ce-0e73-4371-9e23-f1009e7b1698";
-const STORE_ID = "6ac8f4b1-e50f-42c0-9cae-78951d6daf7b";
-
 const POOL_STORAGE_BUCKET = "pool-photos";
 const CATALOG_STORAGE_BUCKET = "store-catalog-photos";
 
@@ -100,7 +98,6 @@ const MAX_CATALOG_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 const TAB_STORAGE_KEY = "zion_configuracoes_active_tab";
-const CATALOG_DRAFT_STORAGE_KEY = "zion_configuracoes_catalogo_draft";
 
 const ROLE_OPTIONS = [
   { value: "owner", label: "Proprietário" },
@@ -207,13 +204,17 @@ function normalizeCatalogCategory(category: string | null | undefined) {
   return "outros";
 }
 
-function catalogCategoryLabel(category: string | null | undefined) {
-  if (category === "acessorios") return "Acessórios";
-  if (category === "quimicos") return "Produtos químicos";
-  return "Outros itens";
-}
-
 export default function ConfiguracoesPage() {
+  const {
+    loading: storeLoading,
+    organizationId,
+    activeStoreId,
+  } = useStoreContext();
+
+  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
+  const ORGANIZATION_ID = organizationId ?? "";
+  const STORE_ID = activeStoreId ?? "";
+
   const [activeTab, setActiveTab] = useState<TabKey>("visao_geral");
 
   const [loadingInitial, setLoadingInitial] = useState(true);
@@ -269,22 +270,6 @@ export default function ConfiguracoesPage() {
   const totalPools = pools.length;
   const totalResponsibles = responsibles.length;
   const totalCatalogItems = catalogItems.length;
-
-  const photosCountByPoolId = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const photo of poolPhotos) {
-      map[photo.pool_id] = (map[photo.pool_id] || 0) + 1;
-    }
-    return map;
-  }, [poolPhotos]);
-
-  const photosCountByCatalogItemId = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const photo of catalogItemPhotos) {
-      map[photo.catalog_item_id] = (map[photo.catalog_item_id] || 0) + 1;
-    }
-    return map;
-  }, [catalogItemPhotos]);
 
   const catalogItemsByCategory = useMemo(() => {
     return {
@@ -392,6 +377,12 @@ export default function ConfiguracoesPage() {
 
   async function fetchPageData(mode: "initial" | "reload" = "initial") {
     setErrorText(null);
+
+    if (!hasValidStoreContext) {
+      if (mode === "initial") setLoadingInitial(false);
+      if (mode === "reload") setReloading(false);
+      return;
+    }
 
     if (mode === "initial") setLoadingInitial(true);
     if (mode === "reload") setReloading(true);
@@ -570,6 +561,11 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setSuccessText(null);
 
+    if (!hasValidStoreContext) {
+      setErrorText("A loja ativa ainda não foi carregada. Tente novamente em instantes.");
+      return;
+    }
+
     if (!poolName.trim()) {
       setErrorText("O nome da piscina é obrigatório.");
       return;
@@ -661,6 +657,11 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setSuccessText(null);
 
+    if (!hasValidStoreContext) {
+      setErrorText("A loja ativa ainda não foi carregada. Tente novamente em instantes.");
+      return;
+    }
+
     if (!catalogCategory.trim()) {
       setErrorText("A categoria do item é obrigatória.");
       return;
@@ -737,6 +738,11 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setSuccessText(null);
 
+    if (!hasValidStoreContext) {
+      setErrorText("A loja ativa ainda não foi carregada. Tente novamente em instantes.");
+      return;
+    }
+
     if (!responsibleName.trim()) {
       setErrorText("O nome do responsável é obrigatório.");
       return;
@@ -777,6 +783,11 @@ export default function ConfiguracoesPage() {
     event.preventDefault();
     setErrorText(null);
     setSuccessText(null);
+
+    if (!hasValidStoreContext) {
+      setErrorText("A loja ativa ainda não foi carregada. Tente novamente em instantes.");
+      return;
+    }
 
     const defaultPercent = toNullableNumber(defaultDiscountPercentInput);
     const maxPercent = toNullableNumber(maxDiscountPercentInput);
@@ -835,18 +846,43 @@ export default function ConfiguracoesPage() {
   }
 
   useEffect(() => {
-    const savedTab = typeof window !== "undefined" ? localStorage.getItem(TAB_STORAGE_KEY) : null;
+    const savedTab =
+      typeof window !== "undefined" ? localStorage.getItem(TAB_STORAGE_KEY) : null;
+
     if (isValidTab(savedTab)) {
       setActiveTab(savedTab);
     }
-    void fetchPageData("initial");
   }, []);
+
+  useEffect(() => {
+    if (storeLoading) return;
+
+    if (!hasValidStoreContext) {
+      setLoadingInitial(false);
+      setErrorText("Nenhuma loja ativa foi encontrada para carregar as configurações.");
+      return;
+    }
+
+    void fetchPageData("initial");
+  }, [storeLoading, hasValidStoreContext]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
       localStorage.setItem(TAB_STORAGE_KEY, activeTab);
     }
   }, [activeTab]);
+
+  if (storeLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100">
+        <div className="mx-auto max-w-6xl px-6 py-6">
+          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+            Carregando loja ativa...
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -862,880 +898,898 @@ export default function ConfiguracoesPage() {
           <button
             type="button"
             onClick={() => void fetchPageData("reload")}
-            disabled={reloading}
+            disabled={reloading || !hasValidStoreContext}
             className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {reloading ? "Recarregando..." : "Recarregar"}
           </button>
         </div>
 
-        <div className="mb-6 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setActiveTab("visao_geral")}
-            className={cx(
-              "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-              activeTab === "visao_geral"
-                ? "bg-black text-white"
-                : "bg-white text-gray-900 hover:bg-gray-50"
-            )}
-          >
-            Visão Geral
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("piscinas")}
-            className={cx(
-              "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-              activeTab === "piscinas"
-                ? "bg-black text-white"
-                : "bg-white text-gray-900 hover:bg-gray-50"
-            )}
-          >
-            Piscinas
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("catalogo")}
-            className={cx(
-              "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-              activeTab === "catalogo"
-                ? "bg-black text-white"
-                : "bg-white text-gray-900 hover:bg-gray-50"
-            )}
-          >
-            Catálogo Geral
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("responsaveis")}
-            className={cx(
-              "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-              activeTab === "responsaveis"
-                ? "bg-black text-white"
-                : "bg-white text-gray-900 hover:bg-gray-50"
-            )}
-          >
-            Responsáveis
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("descontos")}
-            className={cx(
-              "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-              activeTab === "descontos"
-                ? "bg-black text-white"
-                : "bg-white text-gray-900 hover:bg-gray-50"
-            )}
-          >
-            Descontos
-          </button>
-        </div>
-
-        {errorText ? (
-          <div className="mb-5 rounded-2xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
-            <div className="font-semibold">Erro</div>
-            <div className="mt-1 break-words">{errorText}</div>
-          </div>
-        ) : null}
-
-        {successText ? (
-          <div className="mb-5 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
-            <div className="font-semibold">Sucesso</div>
-            <div className="mt-1 break-words">{successText}</div>
-          </div>
-        ) : null}
-
-        {loadingInitial ? (
+        {!hasValidStoreContext ? (
           <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-            Carregando configurações...
+            <div className="text-lg font-semibold text-gray-900">
+              Nenhuma loja ativa encontrada
+            </div>
+            <p className="mt-2 text-sm text-gray-600">
+              Não foi possível identificar a loja ativa para carregar as configurações.
+            </p>
           </div>
         ) : (
-          <div className="space-y-6">
-            {activeTab === "visao_geral" && (
-              <>
-                <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                  <div className="border-b border-black/5 px-6 py-4">
-                    <h2 className="text-lg font-semibold text-gray-900">
-                      Resumo do catálogo geral
-                    </h2>
-                    <p className="mt-1 text-sm text-gray-600">
-                      Itens da loja organizados por categoria.
-                    </p>
-                  </div>
+          <>
+            {errorText ? (
+              <div className="mb-5 rounded-2xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
+                <div className="font-semibold">Erro</div>
+                <div className="mt-1 break-words">{errorText}</div>
+              </div>
+            ) : null}
 
-                  <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm text-gray-500">Piscinas</div>
-                          <div className="mt-2 text-3xl font-bold text-gray-900">
-                            {totalPools}
+            {successText ? (
+              <div className="mb-5 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+                <div className="font-semibold">Sucesso</div>
+                <div className="mt-1 break-words">{successText}</div>
+              </div>
+            ) : null}
+
+            {loadingInitial ? (
+              <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+                Carregando configurações...
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="mb-6 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("visao_geral")}
+                    className={cx(
+                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
+                      activeTab === "visao_geral"
+                        ? "bg-black text-white"
+                        : "bg-white text-gray-900 hover:bg-gray-50"
+                    )}
+                  >
+                    Visão Geral
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("piscinas")}
+                    className={cx(
+                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
+                      activeTab === "piscinas"
+                        ? "bg-black text-white"
+                        : "bg-white text-gray-900 hover:bg-gray-50"
+                    )}
+                  >
+                    Piscinas
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("catalogo")}
+                    className={cx(
+                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
+                      activeTab === "catalogo"
+                        ? "bg-black text-white"
+                        : "bg-white text-gray-900 hover:bg-gray-50"
+                    )}
+                  >
+                    Catálogo Geral
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("responsaveis")}
+                    className={cx(
+                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
+                      activeTab === "responsaveis"
+                        ? "bg-black text-white"
+                        : "bg-white text-gray-900 hover:bg-gray-50"
+                    )}
+                  >
+                    Responsáveis
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("descontos")}
+                    className={cx(
+                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
+                      activeTab === "descontos"
+                        ? "bg-black text-white"
+                        : "bg-white text-gray-900 hover:bg-gray-50"
+                    )}
+                  >
+                    Descontos
+                  </button>
+                </div>
+
+                {activeTab === "visao_geral" && (
+                  <>
+                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                      <div className="border-b border-black/5 px-6 py-4">
+                        <h2 className="text-lg font-semibold text-gray-900">
+                          Resumo do catálogo geral
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Itens da loja organizados por categoria.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm text-gray-500">Piscinas</div>
+                              <div className="mt-2 text-3xl font-bold text-gray-900">
+                                {totalPools}
+                              </div>
+                            </div>
+
+                            <Link
+                              href="/configuracoes/piscinas"
+                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                            >
+                              Ver todas
+                            </Link>
                           </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm text-gray-500">Acessórios</div>
+                              <div className="mt-2 text-3xl font-bold text-gray-900">
+                                {catalogItemsByCategory.acessorios.length}
+                              </div>
+                            </div>
+
+                            <Link
+                              href="/configuracoes/catalogo/acessorios"
+                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                            >
+                              Ver todos
+                            </Link>
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm text-gray-500">Produtos químicos</div>
+                              <div className="mt-2 text-3xl font-bold text-gray-900">
+                                {catalogItemsByCategory.quimicos.length}
+                              </div>
+                            </div>
+
+                            <Link
+                              href="/configuracoes/catalogo/quimicos"
+                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                            >
+                              Ver todos
+                            </Link>
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm text-gray-500">Outros itens</div>
+                              <div className="mt-2 text-3xl font-bold text-gray-900">
+                                {catalogItemsByCategory.outros.length}
+                              </div>
+                            </div>
+
+                            <Link
+                              href="/configuracoes/catalogo/outros"
+                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                            >
+                              Ver todos
+                            </Link>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                      <div className="border-b border-black/5 px-6 py-4">
+                        <h2 className="text-lg font-semibold text-gray-900">
+                          Política atual de desconto
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Regras que a IA deve respeitar nas negociações.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-4 p-6 md:grid-cols-3">
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="text-sm text-gray-500">Desconto padrão da IA</div>
+                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                            {discountSettings?.default_discount_percent ?? 0}%
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="text-sm text-gray-500">
+                            Desconto máximo com autorização
+                          </div>
+                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                            {discountSettings?.max_discount_percent ?? 0}%
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="text-sm text-gray-500">
+                            Consultar acima do máximo
+                          </div>
+                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                            {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                )}
+
+                {activeTab === "piscinas" && (
+                  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                    <div className="border-b border-black/5 px-6 py-4">
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Cadastro de Piscinas
+                      </h2>
+                      <p className="mt-1 text-sm text-gray-600">
+                        Cadastre modelos com todos os campos obrigatórios e faça upload das
+                        fotos.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-6 p-6 lg:grid-cols-2">
+                      <form onSubmit={handleCreatePool} className="space-y-4">
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Nome
+                          </label>
+                          <input
+                            value={poolName}
+                            onChange={(e) => setPoolName(e.target.value)}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Ex.: Piscina Premium 7x3"
+                          />
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-3">
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Largura (m)
+                            </label>
+                            <input
+                              value={poolWidth}
+                              onChange={(e) => setPoolWidth(formatNumberInput(e.target.value))}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              placeholder="3"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Comprimento (m)
+                            </label>
+                            <input
+                              value={poolLength}
+                              onChange={(e) => setPoolLength(formatNumberInput(e.target.value))}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              placeholder="6"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Profundidade (m)
+                            </label>
+                            <input
+                              value={poolDepth}
+                              onChange={(e) => setPoolDepth(formatNumberInput(e.target.value))}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              placeholder="1,5"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Formato
+                            </label>
+                            <select
+                              value={poolShape}
+                              onChange={(e) => setPoolShape(e.target.value)}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            >
+                              <option value="retangular">Retangular</option>
+                              <option value="quadrada">Quadrada</option>
+                              <option value="redonda">Redonda</option>
+                              <option value="oval">Oval</option>
+                              <option value="outro">Outro</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Material
+                            </label>
+                            <select
+                              value={poolMaterial}
+                              onChange={(e) => setPoolMaterial(e.target.value)}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            >
+                              <option value="fibra">Fibra</option>
+                              <option value="vinil">Vinil</option>
+                              <option value="alvenaria">Alvenaria</option>
+                              <option value="outro">Outro</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-3">
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Capacidade máxima (L)
+                            </label>
+                            <input
+                              value={poolCapacity}
+                              onChange={(e) => setPoolCapacity(formatNumberInput(e.target.value))}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              placeholder="27000"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Peso (kg)
+                            </label>
+                            <input
+                              value={poolWeight}
+                              onChange={(e) => setPoolWeight(formatNumberInput(e.target.value))}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              placeholder="150"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Preço
+                            </label>
+                            <input
+                              value={poolPrice}
+                              onChange={(e) => setPoolPrice(formatPriceInput(e.target.value))}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              placeholder="12.000 ou 10.500,10"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="mb-2 block text-sm font-medium text-gray-700">
+                            Fotos da piscina
+                          </label>
+
+                          <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
+                            Fazer upload das fotos
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/jpg,image/webp"
+                              multiple
+                              onChange={handlePoolFilesChange}
+                              className="hidden"
+                            />
+                          </label>
+
+                          <div className="mt-2 text-xs text-gray-500">
+                            Máximo de {MAX_POOL_PHOTOS} fotos por piscina e até 50 MB por
+                            arquivo.
+                          </div>
+
+                          {selectedPoolFiles.length > 0 ? (
+                            <div className="mt-3 space-y-2 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                              {selectedPoolFiles.map((file, index) => (
+                                <div
+                                  key={`${file.name}-${index}`}
+                                  className="flex items-center justify-between gap-3 text-sm text-gray-700"
+                                >
+                                  <span className="truncate">{file.name}</span>
+                                  <span className="shrink-0 text-xs text-gray-500">
+                                    {formatFileSize(file.size)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Descrição
+                          </label>
+                          <textarea
+                            value={poolDescription}
+                            onChange={(e) => setPoolDescription(e.target.value)}
+                            className="min-h-[120px] w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Descreva o modelo da piscina..."
+                          />
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={savingPool || !hasValidStoreContext}
+                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {savingPool ? "Salvando..." : "Cadastrar piscina"}
+                        </button>
+                      </form>
+
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-sm font-semibold text-gray-900">
+                          Resumo rápido
+                        </div>
+                        <div className="mt-3 space-y-3 text-sm text-gray-700">
+                          <div>Total de piscinas cadastradas: {totalPools}</div>
+                          <div>Total de fotos cadastradas: {poolPhotos.length}</div>
                         </div>
 
                         <Link
                           href="/configuracoes/piscinas"
-                          className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                          className="mt-5 inline-flex rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
                         >
-                          Ver todas
+                          Ver todas as piscinas cadastradas
                         </Link>
                       </div>
                     </div>
+                  </section>
+                )}
 
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="flex items-start justify-between gap-3">
+                {activeTab === "catalogo" && (
+                  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                    <div className="border-b border-black/5 px-6 py-4">
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Catálogo Geral da Loja
+                      </h2>
+                      <p className="mt-1 text-sm text-gray-600">
+                        Cadastre acessórios, produtos químicos e outros itens usando a base
+                        genérica do catálogo.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-6 p-6 lg:grid-cols-2">
+                      <form onSubmit={handleCreateCatalogItem} className="space-y-4">
                         <div>
-                          <div className="text-sm text-gray-500">Acessórios</div>
-                          <div className="mt-2 text-3xl font-bold text-gray-900">
-                            {catalogItemsByCategory.acessorios.length}
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Categoria
+                          </label>
+                          <select
+                            value={catalogCategory}
+                            onChange={(e) => setCatalogCategory(e.target.value)}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                          >
+                            {CATALOG_CATEGORY_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Nome do item
+                            </label>
+                            <input
+                              value={catalogName}
+                              onChange={(e) => setCatalogName(e.target.value)}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              placeholder="Ex.: Cloro granulado 10 kg"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Código do produto (opcional)
+                            </label>
+                            <input
+                              value={catalogCode}
+                              onChange={(e) => setCatalogCode(e.target.value)}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              placeholder="Ex.: CLORO-10KG"
+                            />
                           </div>
                         </div>
 
-                        <Link
-                          href="/configuracoes/catalogo/acessorios"
-                          className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                        >
-                          Ver todos
-                        </Link>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="text-sm text-gray-500">Produtos químicos</div>
-                          <div className="mt-2 text-3xl font-bold text-gray-900">
-                            {catalogItemsByCategory.quimicos.length}
-                          </div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Preço
+                          </label>
+                          <input
+                            value={catalogPrice}
+                            onChange={(e) => setCatalogPrice(formatPriceInput(e.target.value))}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Ex.: 129,90"
+                          />
                         </div>
 
-                        <Link
-                          href="/configuracoes/catalogo/quimicos"
-                          className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                        >
-                          Ver todos
-                        </Link>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="text-sm text-gray-500">Outros itens</div>
-                          <div className="mt-2 text-3xl font-bold text-gray-900">
-                            {catalogItemsByCategory.outros.length}
+                          <label className="mb-2 block text-sm font-medium text-gray-700">
+                            Fotos do item
+                          </label>
+
+                          <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
+                            Fazer upload das fotos
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/jpg,image/webp"
+                              multiple
+                              onChange={handleCatalogFilesChange}
+                              className="hidden"
+                            />
+                          </label>
+
+                          <div className="mt-2 text-xs text-gray-500">
+                            Máximo de {MAX_CATALOG_PHOTOS} fotos por item e até 50 MB por
+                            arquivo.
                           </div>
+
+                          {selectedCatalogFiles.length > 0 ? (
+                            <div className="mt-3 space-y-2 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                              {selectedCatalogFiles.map((file, index) => (
+                                <div
+                                  key={`${file.name}-${index}`}
+                                  className="flex items-center justify-between gap-3 text-sm text-gray-700"
+                                >
+                                  <span className="truncate">{file.name}</span>
+                                  <span className="shrink-0 text-xs text-gray-500">
+                                    {formatFileSize(file.size)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
 
-                        <Link
-                          href="/configuracoes/catalogo/outros"
-                          className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Descrição
+                          </label>
+                          <textarea
+                            value={catalogDescription}
+                            onChange={(e) => setCatalogDescription(e.target.value)}
+                            className="min-h-[120px] w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Descreva o item do catálogo..."
+                          />
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <label className="flex items-center gap-3 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={catalogIsActive}
+                              onChange={(e) => setCatalogIsActive(e.target.checked)}
+                            />
+                            Item ativo para uso pela loja e pela IA
+                          </label>
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={savingCatalogItem || !hasValidStoreContext}
+                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Ver todos
-                        </Link>
+                          {savingCatalogItem ? "Salvando..." : "Cadastrar item no catálogo"}
+                        </button>
+                      </form>
+
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-sm font-semibold text-gray-900">
+                          Resumo rápido do catálogo
+                        </div>
+
+                        <div className="mt-3 space-y-3 text-sm text-gray-700">
+                          <div>Total de itens cadastrados: {totalCatalogItems}</div>
+                          <div>
+                            Acessórios cadastrados: {catalogItemsByCategory.acessorios.length}
+                          </div>
+                          <div>
+                            Produtos químicos cadastrados: {catalogItemsByCategory.quimicos.length}
+                          </div>
+                          <div>Outros itens cadastrados: {catalogItemsByCategory.outros.length}</div>
+                          <div>Total de fotos cadastradas: {catalogItemPhotos.length}</div>
+                        </div>
+
+                        <div className="mt-5 flex flex-wrap gap-3">
+                          <Link
+                            href="/configuracoes/catalogo/acessorios"
+                            className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                          >
+                            Ver acessórios
+                          </Link>
+
+                          <Link
+                            href="/configuracoes/catalogo/quimicos"
+                            className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                          >
+                            Ver produtos químicos
+                          </Link>
+
+                          <Link
+                            href="/configuracoes/catalogo/outros"
+                            className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                          >
+                            Ver outros itens
+                          </Link>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </section>
+                  </section>
+                )}
 
-                <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                  <div className="border-b border-black/5 px-6 py-4">
-                    <h2 className="text-lg font-semibold text-gray-900">
-                      Política atual de desconto
-                    </h2>
-                    <p className="mt-1 text-sm text-gray-600">
-                      Regras que a IA deve respeitar nas negociações.
-                    </p>
-                  </div>
-
-                  <div className="grid gap-4 p-6 md:grid-cols-3">
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="text-sm text-gray-500">Desconto padrão da IA</div>
-                      <div className="mt-2 text-2xl font-bold text-gray-900">
-                        {discountSettings?.default_discount_percent ?? 0}%
-                      </div>
+                {activeTab === "responsaveis" && (
+                  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                    <div className="border-b border-black/5 px-6 py-4">
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Responsáveis WhatsApp
+                      </h2>
+                      <p className="mt-1 text-sm text-gray-600">
+                        Cadastre os responsáveis que podem assumir conversas.
+                      </p>
                     </div>
 
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="text-sm text-gray-500">
-                        Desconto máximo com autorização
-                      </div>
-                      <div className="mt-2 text-2xl font-bold text-gray-900">
-                        {discountSettings?.max_discount_percent ?? 0}%
-                      </div>
-                    </div>
+                    <div className="grid gap-6 p-6 lg:grid-cols-2">
+                      <form onSubmit={handleCreateResponsible} className="space-y-4">
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Nome
+                          </label>
+                          <input
+                            value={responsibleName}
+                            onChange={(e) => setResponsibleName(e.target.value)}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Ex.: Carlos Comercial"
+                          />
+                        </div>
 
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="text-sm text-gray-500">
-                        Consultar acima do máximo
-                      </div>
-                      <div className="mt-2 text-2xl font-bold text-gray-900">
-                        {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              </>
-            )}
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            WhatsApp
+                          </label>
+                          <input
+                            value={responsibleWhatsapp}
+                            onChange={(e) => setResponsibleWhatsapp(e.target.value)}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Ex.: 5511999999999"
+                          />
+                        </div>
 
-            {activeTab === "piscinas" && (
-              <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                <div className="border-b border-black/5 px-6 py-4">
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    Cadastro de Piscinas
-                  </h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    Cadastre modelos com todos os campos obrigatórios e faça upload das fotos.
-                  </p>
-                </div>
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Papel
+                          </label>
+                          <select
+                            value={responsibleRole}
+                            onChange={(e) => setResponsibleRole(e.target.value)}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                          >
+                            {ROLE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
 
-                <div className="grid gap-6 p-6 lg:grid-cols-2">
-                  <form onSubmit={handleCreatePool} className="space-y-4">
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Nome
-                      </label>
-                      <input
-                        value={poolName}
-                        onChange={(e) => setPoolName(e.target.value)}
-                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        placeholder="Ex.: Piscina Premium 7x3"
-                      />
-                    </div>
+                        <div className="space-y-3 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <label className="flex items-center gap-3 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={receiveDiscountAlerts}
+                              onChange={(e) => setReceiveDiscountAlerts(e.target.checked)}
+                            />
+                            Receber alertas de desconto
+                          </label>
 
-                    <div className="grid gap-4 md:grid-cols-3">
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Largura (m)
-                        </label>
-                        <input
-                          value={poolWidth}
-                          onChange={(e) => setPoolWidth(formatNumberInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                          placeholder="3"
-                        />
-                      </div>
+                          <label className="flex items-center gap-3 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={receiveSubscriptionAlerts}
+                              onChange={(e) => setReceiveSubscriptionAlerts(e.target.checked)}
+                            />
+                            Receber alertas de assinatura
+                          </label>
 
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Comprimento (m)
-                        </label>
-                        <input
-                          value={poolLength}
-                          onChange={(e) => setPoolLength(formatNumberInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                          placeholder="6"
-                        />
-                      </div>
+                          <label className="flex items-center gap-3 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={receiveSlaAlerts}
+                              onChange={(e) => setReceiveSlaAlerts(e.target.checked)}
+                            />
+                            Receber alertas de SLA
+                          </label>
+                        </div>
 
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Profundidade (m)
-                        </label>
-                        <input
-                          value={poolDepth}
-                          onChange={(e) => setPoolDepth(formatNumberInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                          placeholder="1,5"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Formato
-                        </label>
-                        <select
-                          value={poolShape}
-                          onChange={(e) => setPoolShape(e.target.value)}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                        <button
+                          type="submit"
+                          disabled={savingResponsible || !hasValidStoreContext}
+                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          <option value="retangular">Retangular</option>
-                          <option value="quadrada">Quadrada</option>
-                          <option value="redonda">Redonda</option>
-                          <option value="oval">Oval</option>
-                          <option value="outro">Outro</option>
-                        </select>
-                      </div>
+                          {savingResponsible ? "Salvando..." : "Cadastrar responsável"}
+                        </button>
+                      </form>
 
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Material
-                        </label>
-                        <select
-                          value={poolMaterial}
-                          onChange={(e) => setPoolMaterial(e.target.value)}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        >
-                          <option value="fibra">Fibra</option>
-                          <option value="vinil">Vinil</option>
-                          <option value="alvenaria">Alvenaria</option>
-                          <option value="outro">Outro</option>
-                        </select>
-                      </div>
-                    </div>
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-sm font-semibold text-gray-900">
+                          Resumo rápido
+                        </div>
 
-                    <div className="grid gap-4 md:grid-cols-3">
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Capacidade máxima (L)
-                        </label>
-                        <input
-                          value={poolCapacity}
-                          onChange={(e) => setPoolCapacity(formatNumberInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                          placeholder="27000"
-                        />
-                      </div>
+                        <div className="mt-3 text-sm text-gray-700">
+                          Total de responsáveis cadastrados: {totalResponsibles}
+                        </div>
 
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Peso (kg)
-                        </label>
-                        <input
-                          value={poolWeight}
-                          onChange={(e) => setPoolWeight(formatNumberInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                          placeholder="150"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Preço
-                        </label>
-                        <input
-                          value={poolPrice}
-                          onChange={(e) => setPoolPrice(formatPriceInput(e.target.value))}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                          placeholder="12.000 ou 10.500,10"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-medium text-gray-700">
-                        Fotos da piscina
-                      </label>
-
-                      <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
-                        Fazer upload das fotos
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg,image/jpg,image/webp"
-                          multiple
-                          onChange={handlePoolFilesChange}
-                          className="hidden"
-                        />
-                      </label>
-
-                      <div className="mt-2 text-xs text-gray-500">
-                        Máximo de {MAX_POOL_PHOTOS} fotos por piscina e até 50 MB por arquivo.
-                      </div>
-
-                      {selectedPoolFiles.length > 0 ? (
-                        <div className="mt-3 space-y-2 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          {selectedPoolFiles.map((file, index) => (
+                        <div className="mt-4 space-y-3">
+                          {responsibles.slice(0, 5).map((responsible) => (
                             <div
-                              key={`${file.name}-${index}`}
-                              className="flex items-center justify-between gap-3 text-sm text-gray-700"
+                              key={responsible.id}
+                              className="rounded-xl bg-white p-3 ring-1 ring-black/5"
                             >
-                              <span className="truncate">{file.name}</span>
-                              <span className="shrink-0 text-xs text-gray-500">
-                                {formatFileSize(file.size)}
-                              </span>
+                              <div className="font-semibold text-gray-900">
+                                {responsible.name ?? "Responsável sem nome"}
+                              </div>
+                              <div className="mt-1 text-sm text-gray-600">
+                                {responsible.whatsapp_number ?? "Sem WhatsApp"}
+                              </div>
+                              <div className="mt-1 text-xs text-gray-500">
+                                {roleLabel(responsible.role)}
+                              </div>
                             </div>
                           ))}
-                        </div>
-                      ) : null}
-                    </div>
 
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Descrição
-                      </label>
-                      <textarea
-                        value={poolDescription}
-                        onChange={(e) => setPoolDescription(e.target.value)}
-                        className="min-h-[120px] w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        placeholder="Descreva o modelo da piscina..."
-                      />
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={savingPool}
-                      className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {savingPool ? "Salvando..." : "Cadastrar piscina"}
-                    </button>
-                  </form>
-
-                  <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                    <div className="text-sm font-semibold text-gray-900">
-                      Resumo rápido
-                    </div>
-                    <div className="mt-3 space-y-3 text-sm text-gray-700">
-                      <div>Total de piscinas cadastradas: {totalPools}</div>
-                      <div>Total de fotos cadastradas: {poolPhotos.length}</div>
-                    </div>
-
-                    <Link
-                      href="/configuracoes/piscinas"
-                      className="mt-5 inline-flex rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                    >
-                      Ver todas as piscinas cadastradas
-                    </Link>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {activeTab === "catalogo" && (
-              <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                <div className="border-b border-black/5 px-6 py-4">
-                  <h2 className="text-lg font-semibold text-gray-900">Catálogo Geral da Loja</h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    Cadastre acessórios, produtos químicos e outros itens usando a base
-                    genérica do catálogo.
-                  </p>
-                </div>
-
-                <div className="grid gap-6 p-6 lg:grid-cols-2">
-                  <form onSubmit={handleCreateCatalogItem} className="space-y-4">
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Categoria
-                      </label>
-                      <select
-                        value={catalogCategory}
-                        onChange={(e) => setCatalogCategory(e.target.value)}
-                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                      >
-                        {CATALOG_CATEGORY_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Nome do item
-                        </label>
-                        <input
-                          value={catalogName}
-                          onChange={(e) => setCatalogName(e.target.value)}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                          placeholder="Ex.: Cloro granulado 10 kg"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700">
-                          Código do produto (opcional)
-                        </label>
-                        <input
-                          value={catalogCode}
-                          onChange={(e) => setCatalogCode(e.target.value)}
-                          className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                          placeholder="Ex.: CLORO-10KG"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Preço
-                      </label>
-                      <input
-                        value={catalogPrice}
-                        onChange={(e) => setCatalogPrice(formatPriceInput(e.target.value))}
-                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        placeholder="Ex.: 129,90"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-medium text-gray-700">
-                        Fotos do item
-                      </label>
-
-                      <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
-                        Fazer upload das fotos
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg,image/jpg,image/webp"
-                          multiple
-                          onChange={handleCatalogFilesChange}
-                          className="hidden"
-                        />
-                      </label>
-
-                      <div className="mt-2 text-xs text-gray-500">
-                        Máximo de {MAX_CATALOG_PHOTOS} fotos por item e até 50 MB por arquivo.
-                      </div>
-
-                      {selectedCatalogFiles.length > 0 ? (
-                        <div className="mt-3 space-y-2 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          {selectedCatalogFiles.map((file, index) => (
-                            <div
-                              key={`${file.name}-${index}`}
-                              className="flex items-center justify-between gap-3 text-sm text-gray-700"
-                            >
-                              <span className="truncate">{file.name}</span>
-                              <span className="shrink-0 text-xs text-gray-500">
-                                {formatFileSize(file.size)}
-                              </span>
+                          {responsibles.length === 0 ? (
+                            <div className="rounded-xl bg-white p-3 text-sm text-gray-600 ring-1 ring-black/5">
+                              Nenhum responsável cadastrado.
                             </div>
-                          ))}
+                          ) : null}
                         </div>
-                      ) : null}
-                    </div>
-
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Descrição
-                      </label>
-                      <textarea
-                        value={catalogDescription}
-                        onChange={(e) => setCatalogDescription(e.target.value)}
-                        className="min-h-[120px] w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        placeholder="Descreva o item do catálogo..."
-                      />
-                    </div>
-
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <label className="flex items-center gap-3 text-sm text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={catalogIsActive}
-                          onChange={(e) => setCatalogIsActive(e.target.checked)}
-                        />
-                        Item ativo para uso pela loja e pela IA
-                      </label>
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={savingCatalogItem}
-                      className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {savingCatalogItem ? "Salvando..." : "Cadastrar item no catálogo"}
-                    </button>
-                  </form>
-
-                  <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                    <div className="text-sm font-semibold text-gray-900">
-                      Resumo rápido do catálogo
-                    </div>
-
-                    <div className="mt-3 space-y-3 text-sm text-gray-700">
-                      <div>Total de itens cadastrados: {totalCatalogItems}</div>
-                      <div>
-                        Acessórios cadastrados: {catalogItemsByCategory.acessorios.length}
                       </div>
-                      <div>
-                        Produtos químicos cadastrados: {catalogItemsByCategory.quimicos.length}
-                      </div>
-                      <div>Outros itens cadastrados: {catalogItemsByCategory.outros.length}</div>
-                      <div>Total de fotos cadastradas: {catalogItemPhotos.length}</div>
+                    </div>
+                  </section>
+                )}
+
+                {activeTab === "descontos" && (
+                  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                    <div className="border-b border-black/5 px-6 py-4">
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Política de Descontos
+                      </h2>
+                      <p className="mt-1 text-sm text-gray-600">
+                        A IA deve sempre tentar vender pelo maior valor possível. Ela só pode
+                        negociar dentro dos limites abaixo e nunca deve oferecer desconto
+                        desnecessário.
+                      </p>
                     </div>
 
-                    <div className="mt-5 flex flex-wrap gap-3">
-                      <Link
-                        href="/configuracoes/catalogo/acessorios"
-                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                      >
-                        Ver acessórios
-                      </Link>
+                    <div className="grid gap-6 p-6 lg:grid-cols-2">
+                      <form onSubmit={handleSaveDiscountSettings} className="space-y-4">
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Desconto padrão da IA (%)
+                          </label>
+                          <input
+                            value={defaultDiscountPercentInput}
+                            onChange={(e) =>
+                              setDefaultDiscountPercentInput(formatPercentInput(e.target.value))
+                            }
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Ex.: 10"
+                          />
+                          <div className="mt-2 text-xs text-gray-500">
+                            Até este percentual a IA pode negociar sozinha, mas apenas quando
+                            realmente precisar para fechar a venda.
+                          </div>
+                        </div>
 
-                      <Link
-                        href="/configuracoes/catalogo/quimicos"
-                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                      >
-                        Ver produtos químicos
-                      </Link>
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Desconto máximo com autorização (%)
+                          </label>
+                          <input
+                            value={maxDiscountPercentInput}
+                            onChange={(e) =>
+                              setMaxDiscountPercentInput(formatPercentInput(e.target.value))
+                            }
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Ex.: 20"
+                          />
+                          <div className="mt-2 text-xs text-gray-500">
+                            Acima do padrão da IA e até este máximo, a IA precisa pedir
+                            autorização antes de conceder.
+                          </div>
+                        </div>
 
-                      <Link
-                        href="/configuracoes/catalogo/outros"
-                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                      >
-                        Ver outros itens
-                      </Link>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <label className="flex items-start gap-3 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={allowAskAboveMaxDiscount}
+                              onChange={(e) => setAllowAskAboveMaxDiscount(e.target.checked)}
+                              className="mt-1"
+                            />
+                            <span>
+                              Permitir que a IA consulte acima do desconto máximo
+                              <span className="mt-1 block text-xs text-gray-500">
+                                Se desmarcado, a IA não pergunta nada acima do máximo e já
+                                entende que aquele desconto está fora da política da loja.
+                              </span>
+                            </span>
+                          </label>
+                        </div>
 
-            {activeTab === "responsaveis" && (
-              <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                <div className="border-b border-black/5 px-6 py-4">
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    Responsáveis WhatsApp
-                  </h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    Cadastre os responsáveis que podem assumir conversas.
-                  </p>
-                </div>
-
-                <div className="grid gap-6 p-6 lg:grid-cols-2">
-                  <form onSubmit={handleCreateResponsible} className="space-y-4">
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Nome
-                      </label>
-                      <input
-                        value={responsibleName}
-                        onChange={(e) => setResponsibleName(e.target.value)}
-                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        placeholder="Ex.: Carlos Comercial"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        WhatsApp
-                      </label>
-                      <input
-                        value={responsibleWhatsapp}
-                        onChange={(e) => setResponsibleWhatsapp(e.target.value)}
-                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        placeholder="Ex.: 5511999999999"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Papel
-                      </label>
-                      <select
-                        value={responsibleRole}
-                        onChange={(e) => setResponsibleRole(e.target.value)}
-                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                      >
-                        {ROLE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="space-y-3 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <label className="flex items-center gap-3 text-sm text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={receiveDiscountAlerts}
-                          onChange={(e) => setReceiveDiscountAlerts(e.target.checked)}
-                        />
-                        Receber alertas de desconto
-                      </label>
-
-                      <label className="flex items-center gap-3 text-sm text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={receiveSubscriptionAlerts}
-                          onChange={(e) => setReceiveSubscriptionAlerts(e.target.checked)}
-                        />
-                        Receber alertas de assinatura
-                      </label>
-
-                      <label className="flex items-center gap-3 text-sm text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={receiveSlaAlerts}
-                          onChange={(e) => setReceiveSlaAlerts(e.target.checked)}
-                        />
-                        Receber alertas de SLA
-                      </label>
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={savingResponsible}
-                      className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {savingResponsible ? "Salvando..." : "Cadastrar responsável"}
-                    </button>
-                  </form>
-
-                  <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                    <div className="text-sm font-semibold text-gray-900">
-                      Resumo rápido
-                    </div>
-
-                    <div className="mt-3 text-sm text-gray-700">
-                      Total de responsáveis cadastrados: {totalResponsibles}
-                    </div>
-
-                    <div className="mt-4 space-y-3">
-                      {responsibles.slice(0, 5).map((responsible) => (
-                        <div
-                          key={responsible.id}
-                          className="rounded-xl bg-white p-3 ring-1 ring-black/5"
+                        <button
+                          type="submit"
+                          disabled={savingDiscountSettings || !hasValidStoreContext}
+                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          <div className="font-semibold text-gray-900">
-                            {responsible.name ?? "Responsável sem nome"}
-                          </div>
-                          <div className="mt-1 text-sm text-gray-600">
-                            {responsible.whatsapp_number ?? "Sem WhatsApp"}
-                          </div>
-                          <div className="mt-1 text-xs text-gray-500">
-                            {roleLabel(responsible.role)}
-                          </div>
-                        </div>
-                      ))}
+                          {savingDiscountSettings
+                            ? "Salvando..."
+                            : "Salvar política de descontos"}
+                        </button>
+                      </form>
 
-                      {responsibles.length === 0 ? (
-                        <div className="rounded-xl bg-white p-3 text-sm text-gray-600 ring-1 ring-black/5">
-                          Nenhum responsável cadastrado.
+                      <div className="space-y-4">
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="text-sm font-semibold text-gray-900">
+                            Regra estratégica da IA
+                          </div>
+                          <div className="mt-2 text-sm text-gray-600">
+                            A IA nunca deve oferecer desconto à toa. Ela sempre precisa tentar
+                            preservar a margem da loja e conceder apenas o menor desconto
+                            necessário para fechar a venda.
+                          </div>
                         </div>
-                      ) : null}
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="text-sm font-semibold text-gray-900">
+                            Resumo da política atual
+                          </div>
+                          <div className="mt-3 space-y-2 text-sm text-gray-700">
+                            <div>
+                              <span className="font-medium">Desconto padrão da IA:</span>{" "}
+                              {discountSettings?.default_discount_percent ?? 0}%
+                            </div>
+                            <div>
+                              <span className="font-medium">
+                                Desconto máximo com autorização:
+                              </span>{" "}
+                              {discountSettings?.max_discount_percent ?? 0}%
+                            </div>
+                            <div>
+                              <span className="font-medium">
+                                Consultar acima do máximo:
+                              </span>{" "}
+                              {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
+                          <div className="font-semibold">Importante</div>
+                          <div className="mt-2">
+                            Mesmo que a IA tenha autorização para negociar até um certo
+                            percentual, ela não deve começar oferecendo esse valor. Ela deve
+                            sempre tentar vender pelo maior preço possível.
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              </section>
+                  </section>
+                )}
+              </div>
             )}
-
-            {activeTab === "descontos" && (
-              <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                <div className="border-b border-black/5 px-6 py-4">
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    Política de Descontos
-                  </h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    A IA deve sempre tentar vender pelo maior valor possível. Ela só pode
-                    negociar dentro dos limites abaixo e nunca deve oferecer desconto
-                    desnecessário.
-                  </p>
-                </div>
-
-                <div className="grid gap-6 p-6 lg:grid-cols-2">
-                  <form onSubmit={handleSaveDiscountSettings} className="space-y-4">
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Desconto padrão da IA (%)
-                      </label>
-                      <input
-                        value={defaultDiscountPercentInput}
-                        onChange={(e) =>
-                          setDefaultDiscountPercentInput(formatPercentInput(e.target.value))
-                        }
-                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        placeholder="Ex.: 10"
-                      />
-                      <div className="mt-2 text-xs text-gray-500">
-                        Até este percentual a IA pode negociar sozinha, mas apenas quando
-                        realmente precisar para fechar a venda.
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="mb-1 block text-sm font-medium text-gray-700">
-                        Desconto máximo com autorização (%)
-                      </label>
-                      <input
-                        value={maxDiscountPercentInput}
-                        onChange={(e) =>
-                          setMaxDiscountPercentInput(formatPercentInput(e.target.value))
-                        }
-                        className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                        placeholder="Ex.: 20"
-                      />
-                      <div className="mt-2 text-xs text-gray-500">
-                        Acima do padrão da IA e até este máximo, a IA precisa pedir
-                        autorização antes de conceder.
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <label className="flex items-start gap-3 text-sm text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={allowAskAboveMaxDiscount}
-                          onChange={(e) => setAllowAskAboveMaxDiscount(e.target.checked)}
-                          className="mt-1"
-                        />
-                        <span>
-                          Permitir que a IA consulte acima do desconto máximo
-                          <span className="mt-1 block text-xs text-gray-500">
-                            Se desmarcado, a IA não pergunta nada acima do máximo e já
-                            entende que aquele desconto está fora da política da loja.
-                          </span>
-                        </span>
-                      </label>
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={savingDiscountSettings}
-                      className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {savingDiscountSettings
-                        ? "Salvando..."
-                        : "Salvar política de descontos"}
-                    </button>
-                  </form>
-
-                  <div className="space-y-4">
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="text-sm font-semibold text-gray-900">
-                        Regra estratégica da IA
-                      </div>
-                      <div className="mt-2 text-sm text-gray-600">
-                        A IA nunca deve oferecer desconto à toa. Ela sempre precisa tentar
-                        preservar a margem da loja e conceder apenas o menor desconto
-                        necessário para fechar a venda.
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                      <div className="text-sm font-semibold text-gray-900">
-                        Resumo da política atual
-                      </div>
-                      <div className="mt-3 space-y-2 text-sm text-gray-700">
-                        <div>
-                          <span className="font-medium">Desconto padrão da IA:</span>{" "}
-                          {discountSettings?.default_discount_percent ?? 0}%
-                        </div>
-                        <div>
-                          <span className="font-medium">
-                            Desconto máximo com autorização:
-                          </span>{" "}
-                          {discountSettings?.max_discount_percent ?? 0}%
-                        </div>
-                        <div>
-                          <span className="font-medium">
-                            Consultar acima do máximo:
-                          </span>{" "}
-                          {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
-                      <div className="font-semibold">Importante</div>
-                      <div className="mt-2">
-                        Mesmo que a IA tenha autorização para negociar até um certo
-                        percentual, ela não deve começar oferecendo esse valor. Ela deve
-                        sempre tentar vender pelo maior preço possível.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
-          </div>
+          </>
         )}
       </div>
     </div>
