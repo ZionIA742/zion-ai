@@ -83,8 +83,21 @@ type CatalogItemPhotoRow = {
   created_at?: string | null;
 };
 
+type AnswersMap = Record<string, unknown>;
+
+type Option = {
+  value: string;
+  label: string;
+};
+
+type StrategyBlockItem = {
+  label: string;
+  value: string;
+};
+
 type TabKey =
   | "visao_geral"
+  | "estrategia"
   | "piscinas"
   | "catalogo"
   | "responsaveis"
@@ -112,6 +125,150 @@ const CATALOG_CATEGORY_OPTIONS = [
   { value: "outros", label: "Outros itens" },
 ];
 
+const STORE_SERVICE_OPTIONS: Option[] = [
+  { value: "venda_piscinas", label: "Venda de piscinas" },
+  { value: "instalacao_piscinas", label: "Instalação de piscinas" },
+  { value: "venda_produtos_quimicos", label: "Venda de produtos químicos" },
+  { value: "venda_acessorios", label: "Venda de acessórios para piscina" },
+  { value: "visita_tecnica", label: "Visita técnica" },
+  { value: "manutencao", label: "Limpeza / manutenção" },
+];
+
+const SERVICE_REGION_PRIMARY_OPTIONS: Option[] = [
+  { value: "somente_cidade_loja", label: "Somente a cidade da loja" },
+  { value: "cidade_e_vizinhas", label: "Cidade da loja + cidades vizinhas" },
+  { value: "grande_regiao", label: "Atende várias cidades da região" },
+  { value: "todo_estado", label: "Todo o estado" },
+  { value: "sob_consulta", label: "Fora da região, só sob consulta" },
+];
+
+const POOL_TYPE_OPTIONS: Option[] = [
+  { value: "fibra", label: "Fibra" },
+  { value: "vinil", label: "Vinil" },
+  { value: "alvenaria", label: "Alvenaria" },
+  { value: "pastilha", label: "Revestida / pastilha" },
+  { value: "spa", label: "SPA / hidromassagem" },
+  { value: "prainha", label: "Prainha / complemento" },
+];
+
+const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
+  { value: "precisa_agendar", label: "Precisa agendar antes" },
+  { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
+  { value: "analise_do_local", label: "Pode depender de avaliação do local" },
+  { value: "pode_ter_taxa", label: "Pode ter taxa de deslocamento" },
+  { value: "somente_regiao_atendida", label: "Só atende a região cadastrada" },
+  { value: "horario_comercial", label: "Somente em horário comercial" },
+];
+
+const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
+  { value: "nao_atende_domingo", label: "Não atende domingo" },
+  { value: "nao_atende_fora_regiao", label: "Não atende fora da região definida" },
+  { value: "nao_faz_obra_entorno", label: "Não faz a obra estética completa do entorno" },
+  { value: "nao_passa_preco_sem_contexto", label: "Não passa preço sem entender o caso" },
+  { value: "depende_avaliacao_tecnica", label: "Alguns casos dependem de avaliação técnica" },
+  { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
+];
+
+const SALES_FLOW_START_OPTIONS: Option[] = [
+  { value: "primeiro_atendimento", label: "Primeiro atendimento" },
+  { value: "cliente_explica_o_que_quer", label: "Cliente explica o que quer" },
+  { value: "cliente_manda_foto_do_local", label: "Cliente manda foto do local" },
+  { value: "cliente_pergunta_preco", label: "Cliente pergunta preço" },
+  { value: "cliente_pede_visita_tecnica", label: "Cliente pede visita técnica" },
+  { value: "cliente_pede_orcamento", label: "Cliente pede orçamento" },
+];
+
+const SALES_FLOW_MIDDLE_OPTIONS: Option[] = [
+  { value: "entender_melhor_a_necessidade", label: "Entender melhor a necessidade" },
+  { value: "mostrar_opcoes_de_piscina", label: "Mostrar opções de piscina" },
+  { value: "passar_faixa_de_valor", label: "Passar faixa de valor" },
+  { value: "montar_orcamento", label: "Montar orçamento" },
+  { value: "tirar_duvidas_tecnicas", label: "Tirar dúvidas técnicas" },
+  { value: "negociar_condicao", label: "Negociar condição" },
+  { value: "agendar_visita_tecnica", label: "Agendar visita técnica" },
+];
+
+const SALES_FLOW_FINAL_OPTIONS: Option[] = [
+  { value: "aprovacao_do_orcamento", label: "Aprovação do orçamento" },
+  { value: "pagamento_sinal", label: "Pagamento / sinal" },
+  { value: "confirmacao_do_pagamento", label: "Confirmação do pagamento" },
+  { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
+  { value: "instalacao", label: "Instalação" },
+  { value: "entrega_final", label: "Entrega final" },
+  { value: "pos_venda", label: "Pós-venda" },
+];
+
+const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
+  { value: "pix", label: "Pix" },
+  { value: "cartao_credito", label: "Cartão de crédito" },
+  { value: "cartao_debito", label: "Cartão de débito" },
+  { value: "boleto", label: "Boleto" },
+  { value: "dinheiro", label: "Dinheiro" },
+  { value: "transferencia", label: "Transferência" },
+];
+
+const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
+  { value: "parcelado", label: "Aceita parcelamento" },
+  { value: "financiamento", label: "Trabalha com financiamento" },
+];
+
+const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
+  { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
+  { value: "so_apos_identificar_interesse_real", label: "Só depois de perceber interesse real" },
+  { value: "so_apos_entender_tipo", label: "Só depois de entender o tipo de piscina ou produto" },
+  { value: "so_apos_entender_medidas", label: "Só depois de entender medidas ou porte do projeto" },
+  { value: "so_apos_entender_instalacao", label: "Só depois de entender se precisa instalação" },
+];
+
+const PRICE_TALK_MODE_OPTIONS: Option[] = [
+  { value: "quando_cliente_perguntar", label: "Pode falar preço quando o cliente perguntar" },
+  { value: "apenas_faixa_inicial", label: "Pode falar só uma faixa inicial, não valor fechado" },
+  { value: "nao_falar_sozinha", label: "Não deve falar preço sozinha" },
+];
+
+const HUMAN_HELP_DISCOUNT_OPTIONS: Option[] = [
+  { value: "pediu_desconto_maior", label: "Pediu desconto maior que o permitido" },
+  { value: "quer_condicao_especial", label: "Quer condição especial" },
+  { value: "fechamento_imediato", label: "Cliente quer fechar agora" },
+  { value: "cliente_importante", label: "Cliente com alto potencial de fechar" },
+];
+
+const HUMAN_HELP_CUSTOM_PROJECT_OPTIONS: Option[] = [
+  { value: "projeto_fora_padrao", label: "Projeto fora do padrão" },
+  { value: "terreno_dificil", label: "Local ou terreno com dificuldade" },
+  { value: "duvida_tecnica_complexa", label: "Dúvida técnica complexa" },
+  { value: "pedido_muito_personalizado", label: "Pedido muito personalizado" },
+  { value: "obra_complementar", label: "Pedido com obra extra além da piscina" },
+];
+
+const HUMAN_HELP_PAYMENT_OPTIONS: Option[] = [
+  { value: "parcelamento_diferente", label: "Parcelamento diferente do padrão" },
+  { value: "financiamento_especifico", label: "Pedido de financiamento específico" },
+  { value: "prazo_especial", label: "Prazo especial de pagamento" },
+  { value: "comprovante_pagamento", label: "Validação manual de pagamento" },
+];
+
+const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
+  { value: "pedido_desconto", label: "Pedido de desconto" },
+  { value: "cliente_quase_fechando", label: "Cliente com alta chance de fechar" },
+  { value: "duvida_tecnica", label: "Dúvida técnica importante" },
+  { value: "pedido_visita", label: "Pedido de visita técnica" },
+  { value: "pedido_instalacao", label: "Pedido de instalação" },
+  { value: "problema_pagamento", label: "Problema de pagamento" },
+];
+
+const ACTIVATION_STYLE_OPTIONS: Option[] = [
+  { value: "ia_direta", label: "A IA deve ser mais direta" },
+  { value: "ia_humanizada", label: "A IA deve soar bem humana" },
+  { value: "priorizar_qualificacao", label: "Priorizar qualificação antes de preço" },
+  { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento quando fizer sentido" },
+];
+
+const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
+  { value: "nao_prometer_fora_escopo", label: "Nunca prometer algo fora do que a loja realmente faz" },
+  { value: "encaminhar_humano_casos_criticos", label: "Chamar uma pessoa da loja em casos críticos" },
+];
+
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
@@ -121,6 +278,17 @@ function toNullableNumber(value: string) {
   if (!cleaned) return null;
   const parsed = Number(cleaned);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+function parseArrayAnswer(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function formatPriceInput(value: string) {
@@ -191,6 +359,7 @@ function roleLabel(role: string | null) {
 function isValidTab(tab: string | null): tab is TabKey {
   return (
     tab === "visao_geral" ||
+    tab === "estrategia" ||
     tab === "piscinas" ||
     tab === "catalogo" ||
     tab === "responsaveis" ||
@@ -204,11 +373,105 @@ function normalizeCatalogCategory(category: string | null | undefined) {
   return "outros";
 }
 
+function getOptionLabel(value: string, options: Option[]) {
+  return options.find((item) => item.value === value)?.label ?? value;
+}
+
+function joinOptionLabels(
+  values: string[],
+  options: Option[],
+  otherText?: string | null,
+  emptyFallback = "Não informado"
+) {
+  const labels = values
+    .map((value) => getOptionLabel(value, options))
+    .filter(Boolean);
+
+  if (otherText?.trim()) labels.push(otherText.trim());
+
+  if (labels.length === 0) return emptyFallback;
+  return labels.join(", ");
+}
+
+function booleanToYesNo(value: unknown) {
+  if (typeof value === "boolean") return value ? "Sim" : "Não";
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "sim") return "Sim";
+    if (normalized === "não" || normalized === "nao") return "Não";
+  }
+  return "Não informado";
+}
+
+function textValue(value: unknown, fallback = "Não informado") {
+  if (value == null) return fallback;
+  const asText = String(value).trim();
+  return asText ? asText : fallback;
+}
+
+function arrayOrTextValue(value: unknown, fallback = "Não informado") {
+  if (Array.isArray(value)) {
+    const items = value.map(String).filter(Boolean);
+    return items.length ? items.join(", ") : fallback;
+  }
+
+  return textValue(value, fallback);
+}
+
+function SummaryCard({
+  title,
+  value,
+  hint,
+}: {
+  title: string;
+  value: string | number;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+      <div className="text-sm text-gray-500">{title}</div>
+      <div className="mt-2 text-2xl font-bold text-gray-900">{value}</div>
+      {hint ? <div className="mt-2 text-xs text-gray-500">{hint}</div> : null}
+    </div>
+  );
+}
+
+function StrategySection({
+  title,
+  description,
+  items,
+}: {
+  title: string;
+  description: string;
+  items: StrategyBlockItem[];
+}) {
+  return (
+    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+      <div className="border-b border-black/5 px-6 py-4">
+        <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+        <p className="mt-1 text-sm text-gray-600">{description}</p>
+      </div>
+
+      <div className="grid gap-4 p-6 md:grid-cols-2">
+        {items.map((item) => (
+          <div key={item.label} className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+            <div className="text-sm text-gray-500">{item.label}</div>
+            <div className="mt-2 whitespace-pre-wrap text-sm font-medium leading-6 text-gray-900">
+              {item.value}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function ConfiguracoesPage() {
   const {
     loading: storeLoading,
     organizationId,
     activeStoreId,
+    activeStore,
   } = useStoreContext();
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
@@ -227,9 +490,8 @@ export default function ConfiguracoesPage() {
   const [catalogItemPhotos, setCatalogItemPhotos] = useState<CatalogItemPhotoRow[]>([]);
   const [responsibles, setResponsibles] = useState<ResponsibleRow[]>([]);
   const [poolPhotos, setPoolPhotos] = useState<PoolPhotoRow[]>([]);
-  const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(
-    null
-  );
+  const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
+  const [strategyAnswers, setStrategyAnswers] = useState<AnswersMap>({});
 
   const [savingPool, setSavingPool] = useState(false);
   const [savingCatalogItem, setSavingCatalogItem] = useState(false);
@@ -284,6 +546,323 @@ export default function ConfiguracoesPage() {
       ),
     };
   }, [catalogItems]);
+
+  const strategySections = useMemo(() => {
+    const serviceRegionModes = parseArrayAnswer(strategyAnswers.service_region_modes);
+    const storeServices = parseArrayAnswer(strategyAnswers.store_services);
+    const poolTypesSelected = parseArrayAnswer(strategyAnswers.pool_types_selected);
+    const technicalVisitRulesSelected = parseArrayAnswer(
+      strategyAnswers.technical_visit_rules_selected
+    );
+    const importantLimitationsSelected = parseArrayAnswer(
+      strategyAnswers.important_limitations_selected
+    );
+    const salesFlowStartSteps = parseArrayAnswer(strategyAnswers.sales_flow_start_steps);
+    const salesFlowMiddleSteps = parseArrayAnswer(strategyAnswers.sales_flow_middle_steps);
+    const salesFlowFinalSteps = parseArrayAnswer(strategyAnswers.sales_flow_final_steps);
+    const acceptedPaymentMethods = parseArrayAnswer(strategyAnswers.accepted_payment_methods);
+    const priceMustUnderstandBefore = parseArrayAnswer(
+      strategyAnswers.price_must_understand_before ?? strategyAnswers.price_direct_conditions
+    );
+    const humanHelpDiscountCases = parseArrayAnswer(
+      strategyAnswers.human_help_discount_cases_selected
+    );
+    const humanHelpCustomProjectCases = parseArrayAnswer(
+      strategyAnswers.human_help_custom_project_cases_selected
+    );
+    const humanHelpPaymentCases = parseArrayAnswer(
+      strategyAnswers.human_help_payment_cases_selected
+    );
+    const responsibleNotificationCases = parseArrayAnswer(
+      strategyAnswers.responsible_notification_cases
+    );
+    const activationPreferences = parseArrayAnswer(strategyAnswers.activation_preferences);
+
+    const lojaEAtuacao: StrategyBlockItem[] = [
+      {
+        label: "Nome da loja",
+        value:
+          textValue(strategyAnswers.store_display_name, "") ||
+          activeStore?.name ||
+          "Não informado",
+      },
+      {
+        label: "Descrição da loja",
+        value: textValue(strategyAnswers.store_description),
+      },
+      {
+        label: "Cidade",
+        value: textValue(strategyAnswers.city),
+      },
+      {
+        label: "Estado",
+        value: textValue(strategyAnswers.state),
+      },
+      {
+        label: "WhatsApp comercial",
+        value: textValue(strategyAnswers.commercial_whatsapp),
+      },
+      {
+        label: "Alcance regional principal",
+        value: joinOptionLabels(
+          parseArrayAnswer(strategyAnswers.service_region_primary_mode),
+          SERVICE_REGION_PRIMARY_OPTIONS,
+          null,
+          textValue(
+            strategyAnswers.service_region_primary_mode
+              ? getOptionLabel(
+                  String(strategyAnswers.service_region_primary_mode),
+                  SERVICE_REGION_PRIMARY_OPTIONS
+                )
+              : "",
+            "Não informado"
+          )
+        ),
+      },
+      {
+        label: "Modos de atendimento regional",
+        value: serviceRegionModes.length
+          ? joinOptionLabels(serviceRegionModes, SERVICE_REGION_PRIMARY_OPTIONS)
+          : "Não informado",
+      },
+      {
+        label: "Atendimento fora da região",
+        value:
+          typeof strategyAnswers.service_region_outside_consultation === "boolean"
+            ? strategyAnswers.service_region_outside_consultation
+              ? "Sim, sob consulta"
+              : "Não"
+            : "Não informado",
+      },
+      {
+        label: "Observações sobre a região",
+        value: textValue(strategyAnswers.service_region_notes),
+      },
+      {
+        label: "Serviços da loja",
+        value: joinOptionLabels(
+          storeServices,
+          STORE_SERVICE_OPTIONS,
+          textValue(strategyAnswers.store_services_other, "")
+        ),
+      },
+    ];
+
+    const ofertaPrincipal: StrategyBlockItem[] = [
+      {
+        label: "Tipos de piscina",
+        value: joinOptionLabels(
+          poolTypesSelected,
+          POOL_TYPE_OPTIONS,
+          textValue(strategyAnswers.pool_types_other, "")
+        ),
+      },
+      {
+        label: "Marca principal da loja",
+        value: textValue(strategyAnswers.main_store_brand),
+      },
+      {
+        label: "Vende produtos químicos?",
+        value: booleanToYesNo(strategyAnswers.sells_chemicals),
+      },
+      {
+        label: "Vende acessórios?",
+        value: booleanToYesNo(strategyAnswers.sells_accessories),
+      },
+      {
+        label: "Oferece instalação?",
+        value: booleanToYesNo(strategyAnswers.offers_installation),
+      },
+      {
+        label: "Oferece visita técnica?",
+        value: booleanToYesNo(strategyAnswers.offers_technical_visit),
+      },
+    ];
+
+    const operacaoDaLoja: StrategyBlockItem[] = [
+      {
+        label: "Tempo médio de instalação",
+        value: textValue(strategyAnswers.average_installation_time_days),
+      },
+      {
+        label: "Dias disponíveis para instalação",
+        value: arrayOrTextValue(strategyAnswers.installation_available_days),
+      },
+      {
+        label: "Regra complementar de instalação",
+        value: textValue(strategyAnswers.installation_days_rule),
+      },
+      {
+        label: "Dias disponíveis para visita técnica",
+        value: arrayOrTextValue(strategyAnswers.technical_visit_available_days),
+      },
+      {
+        label: "Regra complementar de visita técnica",
+        value: textValue(strategyAnswers.technical_visit_days_rule),
+      },
+      {
+        label: "Tempo médio de resposta humana",
+        value: textValue(strategyAnswers.average_human_response_time),
+      },
+      {
+        label: "Regras de visita técnica",
+        value: joinOptionLabels(
+          technicalVisitRulesSelected,
+          TECHNICAL_VISIT_RULE_OPTIONS,
+          textValue(strategyAnswers.technical_visit_rules_other, "")
+        ),
+      },
+      {
+        label: "Limitações importantes",
+        value: joinOptionLabels(
+          importantLimitationsSelected,
+          IMPORTANT_LIMITATION_OPTIONS,
+          textValue(strategyAnswers.important_limitations_other, "")
+        ),
+      },
+      {
+        label: "Fluxo comercial — início",
+        value: joinOptionLabels(salesFlowStartSteps, SALES_FLOW_START_OPTIONS, ""),
+      },
+      {
+        label: "Fluxo comercial — negociação",
+        value: joinOptionLabels(salesFlowMiddleSteps, SALES_FLOW_MIDDLE_OPTIONS, ""),
+      },
+      {
+        label: "Fluxo comercial — final",
+        value: joinOptionLabels(salesFlowFinalSteps, SALES_FLOW_FINAL_OPTIONS, ""),
+      },
+      {
+        label: "Observações do fluxo",
+        value: textValue(strategyAnswers.sales_flow_notes),
+      },
+    ];
+
+    const comercialEIA: StrategyBlockItem[] = [
+      {
+        label: "Ticket médio",
+        value: textValue(strategyAnswers.average_ticket),
+      },
+      {
+        label: "A loja pode dar desconto?",
+        value: booleanToYesNo(strategyAnswers.can_offer_discount),
+      },
+      {
+        label: "Desconto máximo informado no onboarding",
+        value: textValue(strategyAnswers.max_discount_percent),
+      },
+      {
+        label: "Formas de pagamento e condições",
+        value: joinOptionLabels(
+          acceptedPaymentMethods,
+          [...PAYMENT_METHOD_MAIN_OPTIONS, ...PAYMENT_METHOD_CONDITION_OPTIONS],
+          ""
+        ),
+      },
+      {
+        label: "A IA pode falar preço?",
+        value: booleanToYesNo(strategyAnswers.ai_can_send_price_directly),
+      },
+      {
+        label: "O que a IA deve entender antes de falar preço",
+        value: joinOptionLabels(
+          priceMustUnderstandBefore,
+          PRICE_DIRECT_BEFORE_OPTIONS,
+          textValue(strategyAnswers.price_direct_rule_other, "")
+        ),
+      },
+      {
+        label: "Modo de conversa sobre preço",
+        value: strategyAnswers.price_talk_mode
+          ? getOptionLabel(String(strategyAnswers.price_talk_mode), PRICE_TALK_MODE_OPTIONS)
+          : "Não informado",
+      },
+      {
+        label: "Preço precisa de ajuda humana?",
+        value: textValue(strategyAnswers.price_needs_human_help),
+      },
+      {
+        label: "Casos para ajuda humana por desconto",
+        value: joinOptionLabels(
+          humanHelpDiscountCases,
+          HUMAN_HELP_DISCOUNT_OPTIONS,
+          textValue(strategyAnswers.human_help_discount_cases_other, "")
+        ),
+      },
+      {
+        label: "Casos para ajuda humana por projeto especial",
+        value: joinOptionLabels(
+          humanHelpCustomProjectCases,
+          HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
+          textValue(strategyAnswers.human_help_custom_project_cases_other, "")
+        ),
+      },
+      {
+        label: "Casos para ajuda humana por pagamento",
+        value: joinOptionLabels(
+          humanHelpPaymentCases,
+          HUMAN_HELP_PAYMENT_OPTIONS,
+          textValue(strategyAnswers.human_help_payment_cases_other, "")
+        ),
+      },
+      {
+        label: "Regra consolidada de preço",
+        value: textValue(strategyAnswers.price_direct_rule),
+      },
+    ];
+
+    const responsavelEAtivacao: StrategyBlockItem[] = [
+      {
+        label: "Responsável principal",
+        value: textValue(strategyAnswers.responsible_name),
+      },
+      {
+        label: "WhatsApp do responsável",
+        value: textValue(strategyAnswers.responsible_whatsapp),
+      },
+      {
+        label: "A IA deve notificar o responsável?",
+        value: booleanToYesNo(strategyAnswers.ai_should_notify_responsible),
+      },
+      {
+        label: "Casos de notificação",
+        value: joinOptionLabels(
+          responsibleNotificationCases,
+          RESPONSIBLE_NOTIFICATION_CASE_OPTIONS,
+          textValue(strategyAnswers.responsible_notification_cases_other, "")
+        ),
+      },
+      {
+        label: "Preferências de ativação e estilo",
+        value: joinOptionLabels(
+          activationPreferences,
+          [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS],
+          textValue(strategyAnswers.activation_preferences_other, "")
+        ),
+      },
+      {
+        label: "Notas finais de ativação",
+        value: textValue(strategyAnswers.final_activation_notes),
+      },
+      {
+        label: "Informações finais confirmadas?",
+        value:
+          typeof strategyAnswers.confirm_information_is_correct === "boolean"
+            ? strategyAnswers.confirm_information_is_correct
+              ? "Sim"
+              : "Não"
+            : "Não informado",
+      },
+    ];
+
+    return {
+      lojaEAtuacao,
+      ofertaPrincipal,
+      operacaoDaLoja,
+      comercialEIA,
+      responsavelEAtivacao,
+    };
+  }, [strategyAnswers, activeStore?.name]);
 
   async function fetchPools() {
     const { data, error } = await supabase
@@ -375,6 +954,16 @@ export default function ConfiguracoesPage() {
     }
   }
 
+  async function fetchStrategyAnswers() {
+    const { data, error } = await supabase.rpc("onboarding_get_answers_scoped", {
+      p_organization_id: ORGANIZATION_ID,
+      p_store_id: STORE_ID,
+    });
+
+    if (error) throw error;
+    setStrategyAnswers((data ?? {}) as AnswersMap);
+  }
+
   async function fetchPageData(mode: "initial" | "reload" = "initial") {
     setErrorText(null);
 
@@ -395,6 +984,7 @@ export default function ConfiguracoesPage() {
         fetchResponsibles(),
         fetchPoolPhotos(),
         fetchDiscountSettings(),
+        fetchStrategyAnswers(),
       ]);
     } catch (error: any) {
       console.error("Erro ao carregar configurações:", error);
@@ -405,6 +995,7 @@ export default function ConfiguracoesPage() {
       setResponsibles([]);
       setPoolPhotos([]);
       setDiscountSettings(null);
+      setStrategyAnswers({});
     } finally {
       if (mode === "initial") setLoadingInitial(false);
       if (mode === "reload") setReloading(false);
@@ -893,6 +1484,9 @@ export default function ConfiguracoesPage() {
             <p className="mt-2 text-gray-600">
               Área mínima de configuração da loja para a simulação.
             </p>
+            {activeStore?.name ? (
+              <p className="mt-2 text-xs text-gray-500">Loja ativa: {activeStore.name}</p>
+            ) : null}
           </div>
 
           <button
@@ -948,6 +1542,19 @@ export default function ConfiguracoesPage() {
                     )}
                   >
                     Visão Geral
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("estrategia")}
+                    className={cx(
+                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
+                      activeTab === "estrategia"
+                        ? "bg-black text-white"
+                        : "bg-white text-gray-900 hover:bg-gray-50"
+                    )}
+                  >
+                    Estratégia
                   </button>
 
                   <button
@@ -1016,77 +1623,19 @@ export default function ConfiguracoesPage() {
                       </div>
 
                       <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm text-gray-500">Piscinas</div>
-                              <div className="mt-2 text-3xl font-bold text-gray-900">
-                                {totalPools}
-                              </div>
-                            </div>
-
-                            <Link
-                              href="/configuracoes/piscinas"
-                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                            >
-                              Ver todas
-                            </Link>
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm text-gray-500">Acessórios</div>
-                              <div className="mt-2 text-3xl font-bold text-gray-900">
-                                {catalogItemsByCategory.acessorios.length}
-                              </div>
-                            </div>
-
-                            <Link
-                              href="/configuracoes/catalogo/acessorios"
-                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                            >
-                              Ver todos
-                            </Link>
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm text-gray-500">Produtos químicos</div>
-                              <div className="mt-2 text-3xl font-bold text-gray-900">
-                                {catalogItemsByCategory.quimicos.length}
-                              </div>
-                            </div>
-
-                            <Link
-                              href="/configuracoes/catalogo/quimicos"
-                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                            >
-                              Ver todos
-                            </Link>
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm text-gray-500">Outros itens</div>
-                              <div className="mt-2 text-3xl font-bold text-gray-900">
-                                {catalogItemsByCategory.outros.length}
-                              </div>
-                            </div>
-
-                            <Link
-                              href="/configuracoes/catalogo/outros"
-                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                            >
-                              Ver todos
-                            </Link>
-                          </div>
-                        </div>
+                        <SummaryCard title="Piscinas" value={totalPools} />
+                        <SummaryCard
+                          title="Acessórios"
+                          value={catalogItemsByCategory.acessorios.length}
+                        />
+                        <SummaryCard
+                          title="Produtos químicos"
+                          value={catalogItemsByCategory.quimicos.length}
+                        />
+                        <SummaryCard
+                          title="Outros itens"
+                          value={catalogItemsByCategory.outros.length}
+                        />
                       </div>
                     </section>
 
@@ -1101,32 +1650,89 @@ export default function ConfiguracoesPage() {
                       </div>
 
                       <div className="grid gap-4 p-6 md:grid-cols-3">
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-sm text-gray-500">Desconto padrão da IA</div>
-                          <div className="mt-2 text-2xl font-bold text-gray-900">
-                            {discountSettings?.default_discount_percent ?? 0}%
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-sm text-gray-500">
-                            Desconto máximo com autorização
-                          </div>
-                          <div className="mt-2 text-2xl font-bold text-gray-900">
-                            {discountSettings?.max_discount_percent ?? 0}%
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-sm text-gray-500">
-                            Consultar acima do máximo
-                          </div>
-                          <div className="mt-2 text-2xl font-bold text-gray-900">
-                            {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
-                          </div>
-                        </div>
+                        <SummaryCard
+                          title="Desconto padrão da IA"
+                          value={`${discountSettings?.default_discount_percent ?? 0}%`}
+                        />
+                        <SummaryCard
+                          title="Desconto máximo com autorização"
+                          value={`${discountSettings?.max_discount_percent ?? 0}%`}
+                        />
+                        <SummaryCard
+                          title="Consultar acima do máximo"
+                          value={discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
+                        />
                       </div>
                     </section>
+                  </>
+                )}
+
+                {activeTab === "estrategia" && (
+                  <>
+                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                      <div className="border-b border-black/5 px-6 py-4">
+                        <h2 className="text-lg font-semibold text-gray-900">
+                          Configurações estratégicas da loja
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Este bloco reúne as informações que vieram do onboarding e ajudam a
+                          IA a seguir a forma real de trabalho da loja.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
+                        <SummaryCard
+                          title="Serviços marcados"
+                          value={parseArrayAnswer(strategyAnswers.store_services).length}
+                        />
+                        <SummaryCard
+                          title="Tipos de piscina"
+                          value={parseArrayAnswer(strategyAnswers.pool_types_selected).length}
+                        />
+                        <SummaryCard
+                          title="Fluxos mapeados"
+                          value={
+                            parseArrayAnswer(strategyAnswers.sales_flow_start_steps).length +
+                            parseArrayAnswer(strategyAnswers.sales_flow_middle_steps).length +
+                            parseArrayAnswer(strategyAnswers.sales_flow_final_steps).length
+                          }
+                        />
+                        <SummaryCard
+                          title="Casos de notificação"
+                          value={parseArrayAnswer(strategyAnswers.responsible_notification_cases).length}
+                        />
+                      </div>
+                    </section>
+
+                    <StrategySection
+                      title="Loja e atuação"
+                      description="Identidade da loja, região atendida e serviços principais."
+                      items={strategySections.lojaEAtuacao}
+                    />
+
+                    <StrategySection
+                      title="Oferta principal"
+                      description="O que a loja vende e quais linhas principais trabalha."
+                      items={strategySections.ofertaPrincipal}
+                    />
+
+                    <StrategySection
+                      title="Operação da loja"
+                      description="Como a loja funciona no dia a dia e quais regras a IA deve respeitar."
+                      items={strategySections.operacaoDaLoja}
+                    />
+
+                    <StrategySection
+                      title="Comercial e IA"
+                      description="Regras comerciais que orientam preço, desconto e ajuda humana."
+                      items={strategySections.comercialEIA}
+                    />
+
+                    <StrategySection
+                      title="Responsável e ativação"
+                      description="Quem a IA pode acionar e como ela deve se comportar."
+                      items={strategySections.responsavelEAtivacao}
+                    />
                   </>
                 )}
 
@@ -1284,8 +1890,7 @@ export default function ConfiguracoesPage() {
                           </label>
 
                           <div className="mt-2 text-xs text-gray-500">
-                            Máximo de {MAX_POOL_PHOTOS} fotos por piscina e até 50 MB por
-                            arquivo.
+                            Máximo de {MAX_POOL_PHOTOS} fotos por piscina e até 50 MB por arquivo.
                           </div>
 
                           {selectedPoolFiles.length > 0 ? (
@@ -1327,9 +1932,7 @@ export default function ConfiguracoesPage() {
                       </form>
 
                       <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-sm font-semibold text-gray-900">
-                          Resumo rápido
-                        </div>
+                        <div className="text-sm font-semibold text-gray-900">Resumo rápido</div>
                         <div className="mt-3 space-y-3 text-sm text-gray-700">
                           <div>Total de piscinas cadastradas: {totalPools}</div>
                           <div>Total de fotos cadastradas: {poolPhotos.length}</div>
@@ -1432,8 +2035,7 @@ export default function ConfiguracoesPage() {
                           </label>
 
                           <div className="mt-2 text-xs text-gray-500">
-                            Máximo de {MAX_CATALOG_PHOTOS} fotos por item e até 50 MB por
-                            arquivo.
+                            Máximo de {MAX_CATALOG_PHOTOS} fotos por item e até 50 MB por arquivo.
                           </div>
 
                           {selectedCatalogFiles.length > 0 ? (
@@ -1622,9 +2224,7 @@ export default function ConfiguracoesPage() {
                       </form>
 
                       <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-sm font-semibold text-gray-900">
-                          Resumo rápido
-                        </div>
+                        <div className="text-sm font-semibold text-gray-900">Resumo rápido</div>
 
                         <div className="mt-3 text-sm text-gray-700">
                           Total de responsáveis cadastrados: {totalResponsibles}
