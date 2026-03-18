@@ -50,6 +50,8 @@ type EditCatalogForm = {
 const ORGANIZATION_ID = "b02252ce-0e73-4371-9e23-f1009e7b1698";
 const STORE_ID = "6ac8f4b1-e50f-42c0-9cae-78951d6daf7b";
 const STORAGE_BUCKET = "store-catalog-photos";
+const MAX_CATALOG_PHOTOS = 10;
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 function normalizeCategory(category: string | null | undefined) {
   if (category === "acessorios") return "acessorios";
@@ -105,6 +107,13 @@ function toNullableInteger(value: string) {
   const parsed = Number(cleaned);
   if (Number.isNaN(parsed)) return null;
   return Math.trunc(parsed);
+}
+
+function formatFileSize(bytes: number | null) {
+  if (bytes == null) return "-";
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+  return `${bytes} B`;
 }
 
 function getPublicImageUrl(storagePath: string) {
@@ -175,6 +184,12 @@ export default function CatalogoCategoriaPage() {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editItemForm, setEditItemForm] = useState<EditCatalogForm | null>(null);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
+
+  const [selectedCatalogFilesByItemId, setSelectedCatalogFilesByItemId] = useState<
+    Record<string, File[]>
+  >({});
+  const [uploadingCatalogPhotosId, setUploadingCatalogPhotosId] = useState<string | null>(null);
+  const [deletingCatalogPhotoId, setDeletingCatalogPhotoId] = useState<string | null>(null);
 
   useEffect(() => {
     void fetchData();
@@ -252,6 +267,11 @@ export default function CatalogoCategoriaPage() {
   function cancelEditing() {
     setEditingItemId(null);
     setEditItemForm(null);
+    setSelectedCatalogFilesByItemId((prev) => {
+      const next = { ...prev };
+      if (editingItemId) delete next[editingItemId];
+      return next;
+    });
   }
 
   async function handleSaveItem(itemId: string) {
@@ -285,7 +305,9 @@ export default function CatalogoCategoriaPage() {
 
     if (editItemForm.track_stock) {
       if (stockQuantityValue == null) {
-        setErrorText("A quantidade em estoque é obrigatória quando o controle de estoque está ativado.");
+        setErrorText(
+          "A quantidade em estoque é obrigatória quando o controle de estoque está ativado."
+        );
         return;
       }
 
@@ -321,6 +343,129 @@ export default function CatalogoCategoriaPage() {
     setSuccessText("Item atualizado com sucesso.");
     setSavingItemId(null);
     cancelEditing();
+    await fetchData();
+  }
+
+  function handleCatalogFilesChange(itemId: string, event: React.ChangeEvent<HTMLInputElement>) {
+    const fileList = Array.from(event.target.files || []);
+    const existingCount = (photosByItemId[itemId] || []).length;
+    const totalAfterSelection = existingCount + fileList.length;
+
+    if (totalAfterSelection > MAX_CATALOG_PHOTOS) {
+      setErrorText(`Esse item pode ter no máximo ${MAX_CATALOG_PHOTOS} fotos no total.`);
+      event.target.value = "";
+      return;
+    }
+
+    const oversized = fileList.find((file) => file.size > MAX_FILE_SIZE_BYTES);
+    if (oversized) {
+      setErrorText(`A imagem "${oversized.name}" ultrapassa o limite de 50 MB.`);
+      event.target.value = "";
+      return;
+    }
+
+    const invalidType = fileList.find((file) => !file.type.startsWith("image/"));
+    if (invalidType) {
+      setErrorText(`O arquivo "${invalidType.name}" não é uma imagem válida.`);
+      event.target.value = "";
+      return;
+    }
+
+    setErrorText(null);
+    setSelectedCatalogFilesByItemId((prev) => ({
+      ...prev,
+      [itemId]: fileList,
+    }));
+  }
+
+  async function uploadCatalogFiles(itemId: string, files: File[]) {
+    const existingPhotos = photosByItemId[itemId] || [];
+    let nextSortOrder = existingPhotos.length;
+
+    for (const file of files) {
+      const extension = file.name.split(".").pop() || "jpg";
+      const safeFileName = `${crypto.randomUUID()}.${extension}`;
+      const storagePath = `${itemId}/${safeFileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(storagePath, file, {
+          cacheControl: "3600",
+          upsert: false,
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { error: metadataError } = await supabase
+        .from("store_catalog_item_photos")
+        .insert({
+          catalog_item_id: itemId,
+          storage_path: storagePath,
+          file_name: file.name,
+          file_size_bytes: file.size,
+          sort_order: nextSortOrder,
+        });
+
+      if (metadataError) throw metadataError;
+      nextSortOrder += 1;
+    }
+  }
+
+  async function handleUploadNewCatalogPhotos(itemId: string) {
+    const files = selectedCatalogFilesByItemId[itemId] || [];
+
+    if (files.length === 0) {
+      setErrorText("Selecione uma ou mais fotos para adicionar.");
+      return;
+    }
+
+    setErrorText(null);
+    setSuccessText(null);
+    setUploadingCatalogPhotosId(itemId);
+
+    try {
+      await uploadCatalogFiles(itemId, files);
+      setSelectedCatalogFilesByItemId((prev) => ({
+        ...prev,
+        [itemId]: [],
+      }));
+      setSuccessText("Fotos adicionadas com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao adicionar fotos do item.");
+    } finally {
+      setUploadingCatalogPhotosId(null);
+    }
+  }
+
+  async function handleDeleteCatalogPhoto(photo: CatalogItemPhotoRow) {
+    setErrorText(null);
+    setSuccessText(null);
+    setDeletingCatalogPhotoId(photo.id);
+
+    const { error: storageError } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .remove([photo.storage_path]);
+
+    if (storageError) {
+      setErrorText(storageError.message ?? "Erro ao excluir arquivo da foto.");
+      setDeletingCatalogPhotoId(null);
+      return;
+    }
+
+    const { error: dbError } = await supabase
+      .from("store_catalog_item_photos")
+      .delete()
+      .eq("id", photo.id);
+
+    if (dbError) {
+      setErrorText(dbError.message ?? "Erro ao excluir registro da foto.");
+      setDeletingCatalogPhotoId(null);
+      return;
+    }
+
+    setSuccessText("Foto excluída com sucesso.");
+    setDeletingCatalogPhotoId(null);
     await fetchData();
   }
 
@@ -372,6 +517,8 @@ export default function CatalogoCategoriaPage() {
               const availability = getCatalogAvailability(item);
               const isEditing = editingItemId === item.id && editItemForm;
               const isSaving = savingItemId === item.id;
+              const isUploadingPhotos = uploadingCatalogPhotosId === item.id;
+              const selectedNewFiles = selectedCatalogFilesByItemId[item.id] || [];
 
               return (
                 <section
@@ -606,7 +753,93 @@ export default function CatalogoCategoriaPage() {
                         </div>
                       </div>
 
-                      {itemPhotos.length === 0 ? (
+                      {isEditing ? (
+                        <div className="space-y-4">
+                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                            <div className="mb-3 text-sm font-semibold text-gray-900">
+                              Adicionar novas fotos
+                            </div>
+
+                            <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
+                              Selecionar fotos
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/jpg,image/webp"
+                                multiple
+                                onChange={(e) => handleCatalogFilesChange(item.id, e)}
+                                className="hidden"
+                              />
+                            </label>
+
+                            {selectedNewFiles.length > 0 ? (
+                              <div className="mt-3 space-y-2 rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                                {selectedNewFiles.map((file, index) => (
+                                  <div
+                                    key={`${file.name}-${index}`}
+                                    className="flex items-center justify-between gap-3 text-sm text-gray-700"
+                                  >
+                                    <span className="truncate">{file.name}</span>
+                                    <span className="shrink-0 text-xs text-gray-500">
+                                      {formatFileSize(file.size)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="mt-3 text-sm text-gray-600">
+                                Nenhuma nova foto selecionada.
+                              </div>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => void handleUploadNewCatalogPhotos(item.id)}
+                              disabled={isUploadingPhotos || selectedNewFiles.length === 0}
+                              className="mt-4 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isUploadingPhotos ? "Adicionando fotos..." : "Adicionar fotos"}
+                            </button>
+                          </div>
+
+                          {itemPhotos.length === 0 ? (
+                            <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
+                              Nenhuma foto cadastrada para este item.
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+                              {itemPhotos.map((photo) => {
+                                const isDeletingPhoto = deletingCatalogPhotoId === photo.id;
+
+                                return (
+                                  <div
+                                    key={photo.id}
+                                    className="overflow-hidden rounded-xl bg-gray-50 ring-1 ring-black/5"
+                                  >
+                                    <img
+                                      src={getPublicImageUrl(photo.storage_path)}
+                                      alt={photo.file_name || item.name}
+                                      className="block h-28 w-full object-cover"
+                                    />
+                                    <div className="space-y-2 p-3">
+                                      <div className="truncate text-xs text-gray-600">
+                                        {photo.file_name || "Foto"}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleDeleteCatalogPhoto(photo)}
+                                        disabled={isDeletingPhoto}
+                                        className="w-full rounded-lg bg-white px-3 py-2 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {isDeletingPhoto ? "Excluindo..." : "Excluir foto"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : itemPhotos.length === 0 ? (
                         <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
                           Nenhuma foto cadastrada para este item.
                         </div>

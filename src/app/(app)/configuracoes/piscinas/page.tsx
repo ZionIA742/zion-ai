@@ -42,6 +42,8 @@ type EditPoolForm = {
 };
 
 const STORAGE_BUCKET = "pool-photos";
+const MAX_POOL_PHOTOS = 10;
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 function moneyBRL(value: number | null) {
   if (value == null) return "Sem preço";
@@ -90,6 +92,13 @@ function toNullableInteger(value: string) {
   const parsed = Number(cleaned);
   if (Number.isNaN(parsed)) return null;
   return Math.trunc(parsed);
+}
+
+function formatFileSize(bytes: number | null) {
+  if (bytes == null) return "-";
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+  return `${bytes} B`;
 }
 
 function getPoolAvailability(pool: Pick<PoolRow, "is_active" | "track_stock" | "stock_quantity">) {
@@ -142,6 +151,12 @@ export default function PiscinasPage() {
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
   const [editPoolForm, setEditPoolForm] = useState<EditPoolForm | null>(null);
   const [savingPoolId, setSavingPoolId] = useState<string | null>(null);
+
+  const [selectedPoolFilesByPoolId, setSelectedPoolFilesByPoolId] = useState<Record<string, File[]>>(
+    {}
+  );
+  const [uploadingPoolPhotosId, setUploadingPoolPhotosId] = useState<string | null>(null);
+  const [deletingPoolPhotoId, setDeletingPoolPhotoId] = useState<string | null>(null);
 
   useEffect(() => {
     void fetchData();
@@ -210,6 +225,11 @@ export default function PiscinasPage() {
   function cancelEditing() {
     setEditingPoolId(null);
     setEditPoolForm(null);
+    setSelectedPoolFilesByPoolId((prev) => {
+      const next = { ...prev };
+      if (editingPoolId) delete next[editingPoolId];
+      return next;
+    });
   }
 
   async function handleSavePool(poolId: string) {
@@ -233,7 +253,9 @@ export default function PiscinasPage() {
 
     if (editPoolForm.track_stock) {
       if (stockQuantityValue == null) {
-        setErrorText("A quantidade em estoque é obrigatória quando o controle de estoque está ativado.");
+        setErrorText(
+          "A quantidade em estoque é obrigatória quando o controle de estoque está ativado."
+        );
         return;
       }
 
@@ -266,6 +288,129 @@ export default function PiscinasPage() {
     setSuccessText("Piscina atualizada com sucesso.");
     setSavingPoolId(null);
     cancelEditing();
+    await fetchData();
+  }
+
+  function handlePoolFilesChange(poolId: string, event: React.ChangeEvent<HTMLInputElement>) {
+    const fileList = Array.from(event.target.files || []);
+    const existingCount = (photosByPoolId[poolId] || []).length;
+    const totalAfterSelection = existingCount + fileList.length;
+
+    if (totalAfterSelection > MAX_POOL_PHOTOS) {
+      setErrorText(
+        `Essa piscina pode ter no máximo ${MAX_POOL_PHOTOS} fotos no total.`
+      );
+      event.target.value = "";
+      return;
+    }
+
+    const oversized = fileList.find((file) => file.size > MAX_FILE_SIZE_BYTES);
+    if (oversized) {
+      setErrorText(`A imagem "${oversized.name}" ultrapassa o limite de 50 MB.`);
+      event.target.value = "";
+      return;
+    }
+
+    const invalidType = fileList.find((file) => !file.type.startsWith("image/"));
+    if (invalidType) {
+      setErrorText(`O arquivo "${invalidType.name}" não é uma imagem válida.`);
+      event.target.value = "";
+      return;
+    }
+
+    setErrorText(null);
+    setSelectedPoolFilesByPoolId((prev) => ({
+      ...prev,
+      [poolId]: fileList,
+    }));
+  }
+
+  async function uploadPoolFiles(poolId: string, files: File[]) {
+    const existingPhotos = photosByPoolId[poolId] || [];
+    let nextSortOrder = existingPhotos.length;
+
+    for (const file of files) {
+      const extension = file.name.split(".").pop() || "jpg";
+      const safeFileName = `${crypto.randomUUID()}.${extension}`;
+      const storagePath = `${poolId}/${safeFileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(storagePath, file, {
+          cacheControl: "3600",
+          upsert: false,
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { error: metadataError } = await supabase.from("pool_photos").insert({
+        pool_id: poolId,
+        storage_path: storagePath,
+        file_name: file.name,
+        file_size_bytes: file.size,
+        sort_order: nextSortOrder,
+      });
+
+      if (metadataError) throw metadataError;
+      nextSortOrder += 1;
+    }
+  }
+
+  async function handleUploadNewPoolPhotos(poolId: string) {
+    const files = selectedPoolFilesByPoolId[poolId] || [];
+
+    if (files.length === 0) {
+      setErrorText("Selecione uma ou mais fotos para adicionar.");
+      return;
+    }
+
+    setErrorText(null);
+    setSuccessText(null);
+    setUploadingPoolPhotosId(poolId);
+
+    try {
+      await uploadPoolFiles(poolId, files);
+      setSelectedPoolFilesByPoolId((prev) => ({
+        ...prev,
+        [poolId]: [],
+      }));
+      setSuccessText("Fotos adicionadas com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao adicionar fotos da piscina.");
+    } finally {
+      setUploadingPoolPhotosId(null);
+    }
+  }
+
+  async function handleDeletePoolPhoto(photo: PoolPhotoRow) {
+    setErrorText(null);
+    setSuccessText(null);
+    setDeletingPoolPhotoId(photo.id);
+
+    const { error: storageError } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .remove([photo.storage_path]);
+
+    if (storageError) {
+      setErrorText(storageError.message ?? "Erro ao excluir arquivo da foto.");
+      setDeletingPoolPhotoId(null);
+      return;
+    }
+
+    const { error: dbError } = await supabase
+      .from("pool_photos")
+      .delete()
+      .eq("id", photo.id);
+
+    if (dbError) {
+      setErrorText(dbError.message ?? "Erro ao excluir registro da foto.");
+      setDeletingPoolPhotoId(null);
+      return;
+    }
+
+    setSuccessText("Foto excluída com sucesso.");
+    setDeletingPoolPhotoId(null);
     await fetchData();
   }
 
@@ -317,6 +462,8 @@ export default function PiscinasPage() {
               const availability = getPoolAvailability(pool);
               const isEditing = editingPoolId === pool.id && editPoolForm;
               const isSaving = savingPoolId === pool.id;
+              const isUploadingPhotos = uploadingPoolPhotosId === pool.id;
+              const selectedNewFiles = selectedPoolFilesByPoolId[pool.id] || [];
 
               return (
                 <section
@@ -576,7 +723,93 @@ export default function PiscinasPage() {
                         </div>
                       </div>
 
-                      {poolPhotos.length === 0 ? (
+                      {isEditing ? (
+                        <div className="space-y-4">
+                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                            <div className="mb-3 text-sm font-semibold text-gray-900">
+                              Adicionar novas fotos
+                            </div>
+
+                            <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
+                              Selecionar fotos
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/jpg,image/webp"
+                                multiple
+                                onChange={(e) => handlePoolFilesChange(pool.id, e)}
+                                className="hidden"
+                              />
+                            </label>
+
+                            {selectedNewFiles.length > 0 ? (
+                              <div className="mt-3 space-y-2 rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                                {selectedNewFiles.map((file, index) => (
+                                  <div
+                                    key={`${file.name}-${index}`}
+                                    className="flex items-center justify-between gap-3 text-sm text-gray-700"
+                                  >
+                                    <span className="truncate">{file.name}</span>
+                                    <span className="shrink-0 text-xs text-gray-500">
+                                      {formatFileSize(file.size)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="mt-3 text-sm text-gray-600">
+                                Nenhuma nova foto selecionada.
+                              </div>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => void handleUploadNewPoolPhotos(pool.id)}
+                              disabled={isUploadingPhotos || selectedNewFiles.length === 0}
+                              className="mt-4 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isUploadingPhotos ? "Adicionando fotos..." : "Adicionar fotos"}
+                            </button>
+                          </div>
+
+                          {poolPhotos.length === 0 ? (
+                            <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
+                              Nenhuma foto cadastrada para esta piscina.
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+                              {poolPhotos.map((photo) => {
+                                const isDeletingPhoto = deletingPoolPhotoId === photo.id;
+
+                                return (
+                                  <div
+                                    key={photo.id}
+                                    className="overflow-hidden rounded-xl bg-gray-50 ring-1 ring-black/5"
+                                  >
+                                    <img
+                                      src={getPublicImageUrl(photo.storage_path)}
+                                      alt={photo.file_name || pool.name || "Foto da piscina"}
+                                      className="block h-28 w-full object-cover"
+                                    />
+                                    <div className="space-y-2 p-3">
+                                      <div className="truncate text-xs text-gray-600">
+                                        {photo.file_name || "Foto"}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleDeletePoolPhoto(photo)}
+                                        disabled={isDeletingPhoto}
+                                        className="w-full rounded-lg bg-white px-3 py-2 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {isDeletingPhoto ? "Excluindo..." : "Excluir foto"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : poolPhotos.length === 0 ? (
                         <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
                           Nenhuma foto cadastrada para esta piscina.
                         </div>
