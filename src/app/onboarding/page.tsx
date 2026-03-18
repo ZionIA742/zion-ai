@@ -501,9 +501,9 @@ function OnboardingContent() {
   const router = useRouter();
 
   const onboardingCompletedStorageKey = useMemo(() => {
-  if (!organizationId || !activeStore?.id) return null;
-  return `zion_onboarding_completed:${organizationId}:${activeStore.id}`;
-}, [organizationId, activeStore?.id]);
+    if (!organizationId || !activeStore?.id) return null;
+    return `zion_onboarding_completed:${organizationId}:${activeStore.id}`;
+  }, [organizationId, activeStore?.id]);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [hydratedFromCache, setHydratedFromCache] = useState(false);
@@ -762,7 +762,11 @@ function OnboardingContent() {
       let nextStep = 1;
 
       if (typeof window !== "undefined") {
-        const loadDraft = <T,>(key: string | null, setter: React.Dispatch<React.SetStateAction<T>>, mark: () => void) => {
+        const loadDraft = <T,>(
+          key: string | null,
+          setter: React.Dispatch<React.SetStateAction<T>>,
+          mark: () => void
+        ) => {
           if (!key) return;
           const raw = window.localStorage.getItem(key);
           if (!raw) return;
@@ -782,6 +786,13 @@ function OnboardingContent() {
           const rawStep = window.localStorage.getItem(currentStepStorageKey);
           if (["1", "2", "3", "4", "5"].includes(String(rawStep))) nextStep = Number(rawStep);
         }
+
+        if (onboardingCompletedStorageKey) {
+          const rawCompleted = window.localStorage.getItem(onboardingCompletedStorageKey);
+          setHasCompletedOnboardingOnce(rawCompleted === "true");
+        } else {
+          setHasCompletedOnboardingOnce(false);
+        }
       }
 
       setCurrentStep(nextStep);
@@ -800,6 +811,7 @@ function OnboardingContent() {
     step4DraftStorageKey,
     step5DraftStorageKey,
     currentStepStorageKey,
+    onboardingCompletedStorageKey,
   ]);
 
   useEffect(() => {
@@ -827,7 +839,9 @@ function OnboardingContent() {
         const remoteImportantLimitationsSelected = parseArrayAnswer(answers.important_limitations_selected);
         const remotePriceDirectConditions = parseArrayAnswer(answers.price_direct_conditions);
         const remoteHumanHelpDiscountSelected = parseArrayAnswer(answers.human_help_discount_cases_selected);
-        const remoteHumanHelpCustomProjectSelected = parseArrayAnswer(answers.human_help_custom_project_cases_selected);
+        const remoteHumanHelpCustomProjectSelected = parseArrayAnswer(
+          answers.human_help_custom_project_cases_selected
+        );
         const remoteHumanHelpPaymentSelected = parseArrayAnswer(answers.human_help_payment_cases_selected);
         const remoteResponsibleNotificationCases = parseArrayAnswer(answers.responsible_notification_cases);
         const remoteActivationPreferences = parseArrayAnswer(answers.activation_preferences);
@@ -859,25 +873,45 @@ function OnboardingContent() {
             (Array.isArray(answers.pool_types) ? answers.pool_types.join(", ") : String(answers.pool_types ?? "")),
           sells_chemicals:
             prev.sells_chemicals ||
-            (typeof answers.sells_chemicals === "boolean" ? (answers.sells_chemicals ? "sim" : "não") : String(answers.sells_chemicals ?? "")),
+            (typeof answers.sells_chemicals === "boolean"
+              ? answers.sells_chemicals
+                ? "sim"
+                : "não"
+              : String(answers.sells_chemicals ?? "")),
           sells_accessories:
             prev.sells_accessories ||
-            (typeof answers.sells_accessories === "boolean" ? (answers.sells_accessories ? "sim" : "não") : String(answers.sells_accessories ?? "")),
+            (typeof answers.sells_accessories === "boolean"
+              ? answers.sells_accessories
+                ? "sim"
+                : "não"
+              : String(answers.sells_accessories ?? "")),
           offers_installation:
             prev.offers_installation ||
-            (typeof answers.offers_installation === "boolean" ? (answers.offers_installation ? "sim" : "não") : String(answers.offers_installation ?? "")),
+            (typeof answers.offers_installation === "boolean"
+              ? answers.offers_installation
+                ? "sim"
+                : "não"
+              : String(answers.offers_installation ?? "")),
           offers_technical_visit:
             prev.offers_technical_visit ||
-            (typeof answers.offers_technical_visit === "boolean" ? (answers.offers_technical_visit ? "sim" : "não") : String(answers.offers_technical_visit ?? "")),
+            (typeof answers.offers_technical_visit === "boolean"
+              ? answers.offers_technical_visit
+                ? "sim"
+                : "não"
+              : String(answers.offers_technical_visit ?? "")),
           brands_worked:
             prev.brands_worked ||
-            (Array.isArray(answers.brands_worked) ? answers.brands_worked.join(", ") : String(answers.brands_worked ?? "")),
+            (Array.isArray(answers.brands_worked)
+              ? answers.brands_worked.join(", ")
+              : String(answers.brands_worked ?? "")),
           pool_types_selected: prev.pool_types_selected.length ? prev.pool_types_selected : remotePoolTypesSelected,
           pool_types_other: prev.pool_types_other || String(answers.pool_types_other ?? ""),
           main_store_brand:
             prev.main_store_brand ||
             String(answers.main_store_brand ?? "") ||
-            (Array.isArray(answers.brands_worked) ? String(answers.brands_worked[0] ?? "") : String(answers.brands_worked ?? "")),
+            (Array.isArray(answers.brands_worked)
+              ? String(answers.brands_worked[0] ?? "")
+              : String(answers.brands_worked ?? "")),
         }));
 
         setStep3Form((prev) => ({
@@ -905,8 +939,7 @@ function OnboardingContent() {
           important_limitations: prev.important_limitations || String(answers.important_limitations ?? ""),
           installation_process_steps:
             prev.installation_process_steps.length ? prev.installation_process_steps : legacyInstallationSteps,
-          installation_process_other:
-            prev.installation_process_other || String(answers.installation_process_other ?? ""),
+          installation_process_other: prev.installation_process_other || String(answers.installation_process_other ?? ""),
           technical_visit_rules_selected:
             prev.technical_visit_rules_selected.length
               ? prev.technical_visit_rules_selected
@@ -938,7 +971,11 @@ function OnboardingContent() {
           average_ticket: prev.average_ticket || String(answers.average_ticket ?? ""),
           can_offer_discount:
             prev.can_offer_discount ||
-            (typeof answers.can_offer_discount === "boolean" ? (answers.can_offer_discount ? "sim" : "não") : String(answers.can_offer_discount ?? "")),
+            (typeof answers.can_offer_discount === "boolean"
+              ? answers.can_offer_discount
+                ? "sim"
+                : "não"
+              : String(answers.can_offer_discount ?? "")),
           max_discount_percent: prev.max_discount_percent || String(answers.max_discount_percent ?? ""),
           accepted_payment_methods:
             prev.accepted_payment_methods.length
@@ -949,7 +986,9 @@ function OnboardingContent() {
           ai_can_send_price_directly:
             prev.ai_can_send_price_directly ||
             (typeof answers.ai_can_send_price_directly === "boolean"
-              ? (answers.ai_can_send_price_directly ? "sim" : "não")
+              ? answers.ai_can_send_price_directly
+                ? "sim"
+                : "não"
               : String(answers.ai_can_send_price_directly ?? "")),
           price_direct_rule: prev.price_direct_rule || String(answers.price_direct_rule ?? ""),
           human_help_discount_cases:
@@ -960,8 +999,7 @@ function OnboardingContent() {
             prev.human_help_payment_cases || String(answers.human_help_payment_cases ?? ""),
           price_direct_conditions:
             prev.price_direct_conditions.length ? prev.price_direct_conditions : remotePriceDirectConditions,
-          price_direct_rule_other:
-            prev.price_direct_rule_other || String(answers.price_direct_rule_other ?? ""),
+          price_direct_rule_other: prev.price_direct_rule_other || String(answers.price_direct_rule_other ?? ""),
           human_help_discount_cases_selected:
             prev.human_help_discount_cases_selected.length
               ? prev.human_help_discount_cases_selected
@@ -973,7 +1011,8 @@ function OnboardingContent() {
               ? prev.human_help_custom_project_cases_selected
               : remoteHumanHelpCustomProjectSelected,
           human_help_custom_project_cases_other:
-            prev.human_help_custom_project_cases_other || String(answers.human_help_custom_project_cases_other ?? ""),
+            prev.human_help_custom_project_cases_other ||
+            String(answers.human_help_custom_project_cases_other ?? ""),
           human_help_payment_cases_selected:
             prev.human_help_payment_cases_selected.length
               ? prev.human_help_payment_cases_selected
@@ -988,10 +1027,11 @@ function OnboardingContent() {
           ai_should_notify_responsible:
             prev.ai_should_notify_responsible ||
             (typeof answers.ai_should_notify_responsible === "boolean"
-              ? (answers.ai_should_notify_responsible ? "sim" : "não")
+              ? answers.ai_should_notify_responsible
+                ? "sim"
+                : "não"
               : String(answers.ai_should_notify_responsible ?? "")),
-          final_activation_notes:
-            prev.final_activation_notes || String(answers.final_activation_notes ?? ""),
+          final_activation_notes: prev.final_activation_notes || String(answers.final_activation_notes ?? ""),
           confirm_information_is_correct:
             prev.confirm_information_is_correct || Boolean(answers.confirm_information_is_correct),
           responsible_notification_cases:
@@ -999,7 +1039,8 @@ function OnboardingContent() {
               ? prev.responsible_notification_cases
               : remoteResponsibleNotificationCases,
           responsible_notification_cases_other:
-            prev.responsible_notification_cases_other || String(answers.responsible_notification_cases_other ?? ""),
+            prev.responsible_notification_cases_other ||
+            String(answers.responsible_notification_cases_other ?? ""),
           activation_preferences:
             prev.activation_preferences.length ? prev.activation_preferences : remoteActivationPreferences,
           activation_preferences_other:
@@ -1015,31 +1056,48 @@ function OnboardingContent() {
 
     loadAnswers();
   }, [organizationId, activeStore?.id, activeStore?.name]);
+
   useEffect(() => {
-  const loadOnboardingStatus = async () => {
-    if (!organizationId || !activeStore?.id) return;
+    const loadOnboardingStatus = async () => {
+      if (!organizationId || !activeStore?.id) return;
 
-    try {
-      const { data, error } = await supabase
-        .from("store_onboarding")
-        .select("status")
-        .eq("organization_id", organizationId)
-        .eq("store_id", activeStore.id)
-        .maybeSingle();
+      try {
+        let cachedCompleted = false;
 
-      if (error) {
-        console.error("[OnboardingPage] loadOnboardingStatus error:", error);
-        return;
+        if (onboardingCompletedStorageKey && typeof window !== "undefined") {
+          cachedCompleted = window.localStorage.getItem(onboardingCompletedStorageKey) === "true";
+          if (cachedCompleted) {
+            setHasCompletedOnboardingOnce(true);
+          }
+        }
+
+        const { data, error } = await supabase
+          .from("store_onboarding")
+          .select("status")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStore.id)
+          .maybeSingle();
+
+        if (error) {
+          console.error("[OnboardingPage] loadOnboardingStatus error:", error);
+          return;
+        }
+
+        const completed = data?.status === "completed";
+        const nextValue = cachedCompleted || completed;
+
+        setHasCompletedOnboardingOnce(nextValue);
+
+        if (nextValue && onboardingCompletedStorageKey && typeof window !== "undefined") {
+          window.localStorage.setItem(onboardingCompletedStorageKey, "true");
+        }
+      } catch (err) {
+        console.error("[OnboardingPage] loadOnboardingStatus unexpected error:", err);
       }
+    };
 
-      setHasCompletedOnboardingOnce(data?.status === "completed");
-    } catch (err) {
-      console.error("[OnboardingPage] loadOnboardingStatus unexpected error:", err);
-    }
-  };
-
-  loadOnboardingStatus();
-}, [organizationId, activeStore?.id]);
+    loadOnboardingStatus();
+  }, [organizationId, activeStore?.id, onboardingCompletedStorageKey]);
 
   useEffect(() => {
     if (!hasHydratedRef.current || !step1DraftStorageKey) return;
@@ -1427,7 +1485,10 @@ function OnboardingContent() {
         ["can_offer_discount", step4Form.can_offer_discount.trim().toLowerCase() === "sim"],
         ["max_discount_percent", step4Form.max_discount_percent.trim()],
         ["accepted_payment_methods", step4Form.accepted_payment_methods],
-        ["ai_can_send_price_directly", step4Form.ai_can_send_price_directly.trim().toLowerCase() === "sim"],
+        [
+          "ai_can_send_price_directly",
+          step4Form.ai_can_send_price_directly.trim().toLowerCase() === "sim",
+        ],
         ["price_direct_rule", priceDirectRuleText],
         ["human_help_discount_cases", humanHelpDiscountText],
         ["human_help_custom_project_cases", humanHelpCustomProjectText],
@@ -1436,7 +1497,10 @@ function OnboardingContent() {
         ["price_direct_rule_other", step4Form.price_direct_rule_other.trim()],
         ["human_help_discount_cases_selected", step4Form.human_help_discount_cases_selected],
         ["human_help_discount_cases_other", step4Form.human_help_discount_cases_other.trim()],
-        ["human_help_custom_project_cases_selected", step4Form.human_help_custom_project_cases_selected],
+        [
+          "human_help_custom_project_cases_selected",
+          step4Form.human_help_custom_project_cases_selected,
+        ],
         ["human_help_custom_project_cases_other", step4Form.human_help_custom_project_cases_other.trim()],
         ["human_help_payment_cases_selected", step4Form.human_help_payment_cases_selected],
         ["human_help_payment_cases_other", step4Form.human_help_payment_cases_other.trim()],
@@ -1449,77 +1513,76 @@ function OnboardingContent() {
   }
 
   async function saveStep5(e: React.FormEvent) {
-  e.preventDefault();
+    e.preventDefault();
 
-  const finalActivationNotesText = joinSelectedLabels(
-    step5Form.activation_preferences,
-    ACTIVATION_PREFERENCE_OPTIONS,
-    step5Form.activation_preferences_other
-  );
+    const finalActivationNotesText = joinSelectedLabels(
+      step5Form.activation_preferences,
+      ACTIVATION_PREFERENCE_OPTIONS,
+      step5Form.activation_preferences_other
+    );
 
-  if (!organizationId || !activeStore?.id) return;
+    if (!organizationId || !activeStore?.id) return;
 
-  setSaving(true);
-  setFormError(null);
-  setSuccessMessage(null);
+    setSaving(true);
+    setFormError(null);
+    setSuccessMessage(null);
 
-  try {
-    const payloads: Array<[string, unknown]> = [
-      ["responsible_name", step5Form.responsible_name.trim()],
-      ["responsible_whatsapp", step5Form.responsible_whatsapp.trim()],
-      [
-        "ai_should_notify_responsible",
-        step5Form.ai_should_notify_responsible.trim().toLowerCase() === "sim",
-      ],
-      ["final_activation_notes", finalActivationNotesText],
-      ["confirm_information_is_correct", step5Form.confirm_information_is_correct],
-      ["responsible_notification_cases", step5Form.responsible_notification_cases],
-      [
-        "responsible_notification_cases_other",
-        step5Form.responsible_notification_cases_other.trim(),
-      ],
-      ["activation_preferences", step5Form.activation_preferences],
-      ["activation_preferences_other", step5Form.activation_preferences_other.trim()],
-    ];
+    try {
+      const payloads: Array<[string, unknown]> = [
+        ["responsible_name", step5Form.responsible_name.trim()],
+        ["responsible_whatsapp", step5Form.responsible_whatsapp.trim()],
+        [
+          "ai_should_notify_responsible",
+          step5Form.ai_should_notify_responsible.trim().toLowerCase() === "sim",
+        ],
+        ["final_activation_notes", finalActivationNotesText],
+        ["confirm_information_is_correct", step5Form.confirm_information_is_correct],
+        ["responsible_notification_cases", step5Form.responsible_notification_cases],
+        ["responsible_notification_cases_other", step5Form.responsible_notification_cases_other.trim()],
+        ["activation_preferences", step5Form.activation_preferences],
+        ["activation_preferences_other", step5Form.activation_preferences_other.trim()],
+      ];
 
-    for (const [questionKey, answer] of payloads) {
-      const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
-        p_organization_id: organizationId,
-        p_store_id: activeStore.id,
-        p_question_key: questionKey,
-        p_answer: answer,
-      });
+      for (const [questionKey, answer] of payloads) {
+        const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+          p_question_key: questionKey,
+          p_answer: answer,
+        });
 
-      if (rpcError) {
-        throw new Error(`Falha ao salvar campo: ${questionKey}`);
+        if (rpcError) {
+          throw new Error(`Falha ao salvar campo: ${questionKey}`);
+        }
       }
-    }
 
-    const { error: statusError } = await supabase.rpc(
-      "onboarding_upsert_store_onboarding_scoped",
-      {
+      const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
         p_organization_id: organizationId,
         p_store_id: activeStore.id,
         p_status: "completed",
+      });
+
+      if (statusError) {
+        throw new Error("Falha ao atualizar status do onboarding.");
       }
-    );
 
-    if (statusError) {
-      throw new Error("Falha ao atualizar status do onboarding.");
+      setStep5DraftRecovered(false);
+      setHasCompletedOnboardingOnce(true);
+
+      if (onboardingCompletedStorageKey && typeof window !== "undefined") {
+        window.localStorage.setItem(onboardingCompletedStorageKey, "true");
+      }
+
+      router.push("/configuracoes");
+    } catch (err) {
+      console.error("[OnboardingPage] saveStep5 error:", err);
+      setFormError(err instanceof Error ? err.message : "Erro ao concluir onboarding.");
+    } finally {
+      setSaving(false);
     }
-
-    setStep5DraftRecovered(false);
-    setHasCompletedOnboardingOnce(true);
-    router.push("/configuracoes");
-  } catch (err) {
-    console.error("[OnboardingPage] saveStep5 error:", err);
-    setFormError(err instanceof Error ? err.message : "Erro ao concluir onboarding.");
-  } finally {
-    setSaving(false);
   }
-}
 
-  if (loading || (!hydratedFromCache && !remoteLoaded)) {
+  if (loading || !hydratedFromCache || !remoteLoaded) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-100">
         <p className="text-gray-600">Carregando onboarding...</p>
@@ -1553,47 +1616,51 @@ function OnboardingContent() {
 
         <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
           <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-  <div>
-    <p className="mb-1 text-sm font-medium text-gray-500">Onboarding inicial</p>
+            <div>
+              <p className="mb-1 text-sm font-medium text-gray-500">Onboarding inicial</p>
 
-    <h1 className="mb-2 text-2xl font-bold text-gray-900">
-      {currentStep === 1 && "Etapa 1 — Loja"}
-      {currentStep === 2 && "Etapa 2 — Piscinas"}
-      {currentStep === 3 && "Etapa 3 — Operação da loja"}
-      {currentStep === 4 && "Etapa 4 — Comercial"}
-      {currentStep === 5 && "Etapa 5 — Ativação"}
-    </h1>
+              <h1 className="mb-2 text-2xl font-bold text-gray-900">
+                {currentStep === 1 && "Etapa 1 — Loja"}
+                {currentStep === 2 && "Etapa 2 — Piscinas"}
+                {currentStep === 3 && "Etapa 3 — Operação da loja"}
+                {currentStep === 4 && "Etapa 4 — Comercial"}
+                {currentStep === 5 && "Etapa 5 — Ativação"}
+              </h1>
 
-    <p className="text-sm leading-6 text-gray-600">
-      {currentStep === 1 && "Vamos preencher os dados principais da loja de forma simples e rápida."}
-      {currentStep === 2 && "Agora vamos configurar os tipos de piscina e a marca principal da loja."}
-      {currentStep === 3 && "Agora vamos configurar como a loja funciona no dia a dia."}
-      {currentStep === 4 && "Agora vamos configurar as regras comerciais que a IA deve respeitar."}
-      {currentStep === 5 && "Agora vamos definir o responsável e as orientações finais para ativar a IA."}
-    </p>
-  </div>
+              <p className="text-sm leading-6 text-gray-600">
+                {currentStep === 1 &&
+                  "Vamos preencher os dados principais da loja de forma simples e rápida."}
+                {currentStep === 2 &&
+                  "Agora vamos configurar os tipos de piscina e a marca principal da loja."}
+                {currentStep === 3 && "Agora vamos configurar como a loja funciona no dia a dia."}
+                {currentStep === 4 &&
+                  "Agora vamos configurar as regras comerciais que a IA deve respeitar."}
+                {currentStep === 5 &&
+                  "Agora vamos definir o responsável e as orientações finais para ativar a IA."}
+              </p>
+            </div>
 
-  <div className="shrink-0">
-    <button
-      type="button"
-      onClick={() => router.push("/dashboard")}
-      disabled={!hasCompletedOnboardingOnce}
-      className={`rounded-xl px-4 py-2.5 text-sm font-medium transition ${
-        hasCompletedOnboardingOnce
-          ? "border border-black bg-black text-white hover:opacity-90"
-          : "cursor-not-allowed border border-gray-200 bg-gray-100 text-gray-400"
-      }`}
-    >
-      Salvar onboarding
-    </button>
+            <div className="shrink-0">
+              <button
+                type="button"
+                onClick={() => router.push("/dashboard")}
+                disabled={!hasCompletedOnboardingOnce}
+                className={`rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+                  hasCompletedOnboardingOnce
+                    ? "border border-black bg-black text-white hover:opacity-90"
+                    : "cursor-not-allowed border border-gray-200 bg-gray-100 text-gray-400"
+                }`}
+              >
+                Salvar onboarding
+              </button>
 
-    {!hasCompletedOnboardingOnce && (
-      <p className="mt-2 max-w-[220px] text-xs text-gray-500">
-        Libera após concluir o onboarding pela primeira vez.
-      </p>
-    )}
-  </div>
-</div>
+              {!hasCompletedOnboardingOnce && (
+                <p className="mt-2 max-w-[220px] text-xs text-gray-500">
+                  Libera após concluir o onboarding pela primeira vez.
+                </p>
+              )}
+            </div>
+          </div>
 
           <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
             <p className="mb-1 text-xs text-gray-500">Loja ativa</p>
@@ -1770,7 +1837,8 @@ function OnboardingContent() {
                   required
                 />
                 <p className="mt-2 text-xs text-gray-500">
-                  Aqui é a marca ou franquia principal da loja. Marcas de produtos e acessórios ficam para o catálogo detalhado depois.
+                  Aqui é a marca ou franquia principal da loja. Marcas de produtos e acessórios ficam
+                  para o catálogo detalhado depois.
                 </p>
               </div>
 
@@ -1903,7 +1971,10 @@ function OnboardingContent() {
                     confirmed={step3Form.sales_flow_middle_confirmed}
                     confirmLabel="Negociação pronta"
                     onConfirmToggle={() =>
-                      updateStep3Field("sales_flow_middle_confirmed", !step3Form.sales_flow_middle_confirmed)
+                      updateStep3Field(
+                        "sales_flow_middle_confirmed",
+                        !step3Form.sales_flow_middle_confirmed
+                      )
                     }
                   />
 
@@ -2059,7 +2130,8 @@ function OnboardingContent() {
                   onChange={(value) => updateStep4Field("ai_can_send_price_directly", value)}
                 />
                 <p className="mt-2 text-xs text-gray-500">
-                  A ideia aqui não é preço seco. A IA deve qualificar de forma curta antes de falar valores na maioria dos casos.
+                  A ideia aqui não é preço seco. A IA deve qualificar de forma curta antes de falar
+                  valores na maioria dos casos.
                 </p>
               </div>
 
