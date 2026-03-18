@@ -1722,7 +1722,7 @@ export default function ConfiguracoesPage() {
                         : "bg-white text-gray-900 hover:bg-gray-50"
                     )}
                   >
-                    Catálogo Geral
+                    Produtos/Acessórios
                   </button>
 
                   <button
@@ -1792,10 +1792,7 @@ export default function ConfiguracoesPage() {
 
                       <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
                         <SummaryCard title="Itens do catálogo" value={totalCatalogItems} />
-                        <SummaryCard
-                          title="Itens ativos"
-                          value={activeCatalogItemsCount}
-                        />
+                        <SummaryCard title="Itens ativos" value={activeCatalogItemsCount} />
                         <SummaryCard
                           title="Acessórios"
                           value={catalogItemsByCategory.acessorios.length}
@@ -1804,6 +1801,47 @@ export default function ConfiguracoesPage() {
                           title="Produtos químicos"
                           value={catalogItemsByCategory.quimicos.length}
                         />
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                      <div className="border-b border-black/5 px-6 py-4">
+                        <h2 className="text-lg font-semibold text-gray-900">
+                          Acessos rápidos
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Vá direto para visualizar os itens cadastrados.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap gap-3 p-6">
+                        <Link
+                          href="/configuracoes/piscinas"
+                          className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        >
+                          Ver piscinas cadastradas
+                        </Link>
+
+                        <Link
+                          href="/configuracoes/catalogo/acessorios"
+                          className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        >
+                          Ver acessórios
+                        </Link>
+
+                        <Link
+                          href="/configuracoes/catalogo/quimicos"
+                          className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        >
+                          Ver produtos químicos
+                        </Link>
+
+                        <Link
+                          href="/configuracoes/catalogo/outros"
+                          className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        >
+                          Ver outros itens
+                        </Link>
                       </div>
                     </section>
 
@@ -2175,7 +2213,7 @@ export default function ConfiguracoesPage() {
                   <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
                     <div className="border-b border-black/5 px-6 py-4">
                       <h2 className="text-lg font-semibold text-gray-900">
-                        Catálogo Geral da Loja
+                        Produtos/Acessórios da Loja
                       </h2>
                       <p className="mt-1 text-sm text-gray-600">
                         Cadastre acessórios, produtos químicos e outros itens usando a base
