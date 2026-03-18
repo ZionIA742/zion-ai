@@ -18,6 +18,9 @@ type PoolRow = {
   weight_kg: number | null;
   price: number | null;
   description: string | null;
+  is_active: boolean;
+  track_stock: boolean;
+  stock_quantity: number | null;
   created_at?: string | null;
 };
 
@@ -69,6 +72,8 @@ type CatalogItemRow = {
   price_cents: number | null;
   currency: string;
   is_active: boolean;
+  track_stock: boolean;
+  stock_quantity: number | null;
   metadata: CatalogItemMetadata | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -164,9 +169,18 @@ const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
 const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
   { value: "nao_atende_domingo", label: "Não atende domingo" },
   { value: "nao_atende_fora_regiao", label: "Não atende fora da região definida" },
-  { value: "nao_faz_obra_entorno", label: "Não faz a obra estética completa do entorno" },
-  { value: "nao_passa_preco_sem_contexto", label: "Não passa preço sem entender o caso" },
-  { value: "depende_avaliacao_tecnica", label: "Alguns casos dependem de avaliação técnica" },
+  {
+    value: "nao_faz_obra_entorno",
+    label: "Não faz a obra estética completa do entorno",
+  },
+  {
+    value: "nao_passa_preco_sem_contexto",
+    label: "Não passa preço sem entender o caso",
+  },
+  {
+    value: "depende_avaliacao_tecnica",
+    label: "Alguns casos dependem de avaliação técnica",
+  },
   { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
 ];
 
@@ -214,16 +228,37 @@ const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
 ];
 
 const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
-  { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
-  { value: "so_apos_identificar_interesse_real", label: "Só depois de perceber interesse real" },
-  { value: "so_apos_entender_tipo", label: "Só depois de entender o tipo de piscina ou produto" },
-  { value: "so_apos_entender_medidas", label: "Só depois de entender medidas ou porte do projeto" },
-  { value: "so_apos_entender_instalacao", label: "Só depois de entender se precisa instalação" },
+  {
+    value: "so_apos_entender_objetivo",
+    label: "Só depois de entender o que o cliente quer",
+  },
+  {
+    value: "so_apos_identificar_interesse_real",
+    label: "Só depois de perceber interesse real",
+  },
+  {
+    value: "so_apos_entender_tipo",
+    label: "Só depois de entender o tipo de piscina ou produto",
+  },
+  {
+    value: "so_apos_entender_medidas",
+    label: "Só depois de entender medidas ou porte do projeto",
+  },
+  {
+    value: "so_apos_entender_instalacao",
+    label: "Só depois de entender se precisa instalação",
+  },
 ];
 
 const PRICE_TALK_MODE_OPTIONS: Option[] = [
-  { value: "quando_cliente_perguntar", label: "Pode falar preço quando o cliente perguntar" },
-  { value: "apenas_faixa_inicial", label: "Pode falar só uma faixa inicial, não valor fechado" },
+  {
+    value: "quando_cliente_perguntar",
+    label: "Pode falar preço quando o cliente perguntar",
+  },
+  {
+    value: "apenas_faixa_inicial",
+    label: "Pode falar só uma faixa inicial, não valor fechado",
+  },
   { value: "nao_falar_sozinha", label: "Não deve falar preço sozinha" },
 ];
 
@@ -261,13 +296,25 @@ const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
 const ACTIVATION_STYLE_OPTIONS: Option[] = [
   { value: "ia_direta", label: "A IA deve ser mais direta" },
   { value: "ia_humanizada", label: "A IA deve soar bem humana" },
-  { value: "priorizar_qualificacao", label: "Priorizar qualificação antes de preço" },
-  { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento quando fizer sentido" },
+  {
+    value: "priorizar_qualificacao",
+    label: "Priorizar qualificação antes de preço",
+  },
+  {
+    value: "priorizar_agendamento",
+    label: "Priorizar visita ou agendamento quando fizer sentido",
+  },
 ];
 
 const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
-  { value: "nao_prometer_fora_escopo", label: "Nunca prometer algo fora do que a loja realmente faz" },
-  { value: "encaminhar_humano_casos_criticos", label: "Chamar uma pessoa da loja em casos críticos" },
+  {
+    value: "nao_prometer_fora_escopo",
+    label: "Nunca prometer algo fora do que a loja realmente faz",
+  },
+  {
+    value: "encaminhar_humano_casos_criticos",
+    label: "Chamar uma pessoa da loja em casos críticos",
+  },
 ];
 
 function cx(...parts: Array<string | false | null | undefined>) {
@@ -279,6 +326,14 @@ function toNullableNumber(value: string) {
   if (!cleaned) return null;
   const parsed = Number(cleaned);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+function toNullableInteger(value: string) {
+  const cleaned = value.replace(/[^\d-]/g, "").trim();
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  if (Number.isNaN(parsed)) return null;
+  return Math.trunc(parsed);
 }
 
 function parseArrayAnswer(value: unknown): string[] {
@@ -327,6 +382,10 @@ function formatPercentInput(value: string) {
 
 function formatNumberInput(value: string) {
   return value.replace(/[^\d.,]/g, "").replace(",", ".");
+}
+
+function formatIntegerInput(value: string) {
+  return value.replace(/[^\d]/g, "");
 }
 
 function moneyBRL(value: number | null) {
@@ -384,9 +443,7 @@ function joinOptionLabels(
   otherText?: string | null,
   emptyFallback = "Não informado"
 ) {
-  const labels = values
-    .map((value) => getOptionLabel(value, options))
-    .filter(Boolean);
+  const labels = values.map((value) => getOptionLabel(value, options)).filter(Boolean);
 
   if (otherText?.trim()) labels.push(otherText.trim());
 
@@ -523,6 +580,9 @@ export default function ConfiguracoesPage() {
   const [poolWeight, setPoolWeight] = useState("");
   const [poolPrice, setPoolPrice] = useState("");
   const [poolDescription, setPoolDescription] = useState("");
+  const [poolIsActive, setPoolIsActive] = useState(true);
+  const [poolTrackStock, setPoolTrackStock] = useState(true);
+  const [poolStockQuantity, setPoolStockQuantity] = useState("");
   const [selectedPoolFiles, setSelectedPoolFiles] = useState<File[]>([]);
 
   const [catalogCategory, setCatalogCategory] = useState("acessorios");
@@ -531,6 +591,8 @@ export default function ConfiguracoesPage() {
   const [catalogPrice, setCatalogPrice] = useState("");
   const [catalogDescription, setCatalogDescription] = useState("");
   const [catalogIsActive, setCatalogIsActive] = useState(true);
+  const [catalogTrackStock, setCatalogTrackStock] = useState(true);
+  const [catalogStockQuantity, setCatalogStockQuantity] = useState("");
   const [selectedCatalogFiles, setSelectedCatalogFiles] = useState<File[]>([]);
 
   const [responsibleName, setResponsibleName] = useState("");
@@ -561,6 +623,36 @@ export default function ConfiguracoesPage() {
       ),
     };
   }, [catalogItems]);
+
+  const activePoolsCount = useMemo(
+    () => pools.filter((pool) => pool.is_active).length,
+    [pools]
+  );
+
+  const poolsAvailableCount = useMemo(
+    () =>
+      pools.filter((pool) => {
+        if (!pool.is_active) return false;
+        if (!pool.track_stock) return true;
+        return (pool.stock_quantity ?? 0) > 0;
+      }).length,
+    [pools]
+  );
+
+  const activeCatalogItemsCount = useMemo(
+    () => catalogItems.filter((item) => item.is_active).length,
+    [catalogItems]
+  );
+
+  const catalogItemsAvailableCount = useMemo(
+    () =>
+      catalogItems.filter((item) => {
+        if (!item.is_active) return false;
+        if (!item.track_stock) return true;
+        return (item.stock_quantity ?? 0) > 0;
+      }).length,
+    [catalogItems]
+  );
 
   const strategySections = useMemo(() => {
     const serviceRegionModes = parseArrayAnswer(strategyAnswers.service_region_modes);
@@ -886,7 +978,7 @@ export default function ConfiguracoesPage() {
     const { data, error } = await supabase
       .from("pools")
       .select(
-        "id,name,width_m,length_m,depth_m,shape,material,max_capacity_l,weight_kg,price,description,created_at"
+        "id,name,width_m,length_m,depth_m,shape,material,max_capacity_l,weight_kg,price,description,is_active,track_stock,stock_quantity,created_at"
       )
       .order("created_at", { ascending: false });
 
@@ -898,7 +990,7 @@ export default function ConfiguracoesPage() {
     const { data, error } = await supabase
       .from("store_catalog_items")
       .select(
-        "id,organization_id,store_id,sku,name,description,price_cents,currency,is_active,metadata,created_at,updated_at"
+        "id,organization_id,store_id,sku,name,description,price_cents,currency,is_active,track_stock,stock_quantity,metadata,created_at,updated_at"
       )
       .eq("organization_id", ORGANIZATION_ID)
       .eq("store_id", STORE_ID)
@@ -958,12 +1050,8 @@ export default function ConfiguracoesPage() {
     setDiscountSettings(row);
 
     if (row) {
-      setDefaultDiscountPercentInput(
-        String(row.default_discount_percent ?? 0).replace(".", ",")
-      );
-      setMaxDiscountPercentInput(
-        String(row.max_discount_percent ?? 0).replace(".", ",")
-      );
+      setDefaultDiscountPercentInput(String(row.default_discount_percent ?? 0).replace(".", ","));
+      setMaxDiscountPercentInput(String(row.max_discount_percent ?? 0).replace(".", ","));
       setAllowAskAboveMaxDiscount(Boolean(row.allow_ask_above_max_discount));
     } else {
       setDefaultDiscountPercentInput("0");
@@ -1031,6 +1119,9 @@ export default function ConfiguracoesPage() {
     setPoolWeight("");
     setPoolPrice("");
     setPoolDescription("");
+    setPoolIsActive(true);
+    setPoolTrackStock(true);
+    setPoolStockQuantity("");
     setSelectedPoolFiles([]);
   }
 
@@ -1041,6 +1132,8 @@ export default function ConfiguracoesPage() {
     setCatalogPrice("");
     setCatalogDescription("");
     setCatalogIsActive(true);
+    setCatalogTrackStock(true);
+    setCatalogStockQuantity("");
     setSelectedCatalogFiles([]);
   }
 
@@ -1151,15 +1244,13 @@ export default function ConfiguracoesPage() {
 
       if (uploadError) throw uploadError;
 
-      const { error: metadataError } = await supabase
-        .from("store_catalog_item_photos")
-        .insert({
-          catalog_item_id: catalogItemId,
-          storage_path: storagePath,
-          file_name: file.name,
-          file_size_bytes: file.size,
-          sort_order: index,
-        });
+      const { error: metadataError } = await supabase.from("store_catalog_item_photos").insert({
+        catalog_item_id: catalogItemId,
+        storage_path: storagePath,
+        file_name: file.name,
+        file_size_bytes: file.size,
+        sort_order: index,
+      });
 
       if (metadataError) throw metadataError;
     }
@@ -1184,6 +1275,7 @@ export default function ConfiguracoesPage() {
     const lengthValue = toNullableNumber(poolLength);
     const depthValue = toNullableNumber(poolDepth);
     const capacityValue = toNullableNumber(poolCapacity);
+    const stockQuantityValue = toNullableInteger(poolStockQuantity);
 
     if (widthValue == null) {
       setErrorText("A largura da piscina é obrigatória.");
@@ -1215,6 +1307,20 @@ export default function ConfiguracoesPage() {
       return;
     }
 
+    if (poolTrackStock) {
+      if (stockQuantityValue == null) {
+        setErrorText(
+          "A quantidade em estoque da piscina é obrigatória quando o controle de estoque está ativado."
+        );
+        return;
+      }
+
+      if (stockQuantityValue < 0) {
+        setErrorText("A quantidade em estoque da piscina não pode ser negativa.");
+        return;
+      }
+    }
+
     setSavingPool(true);
 
     const { data: createdPool, error } = await supabase
@@ -1230,6 +1336,9 @@ export default function ConfiguracoesPage() {
         weight_kg: toNullableNumber(poolWeight),
         price: toNullableNumber(poolPrice),
         description: poolDescription.trim() || null,
+        is_active: poolIsActive,
+        track_stock: poolTrackStock,
+        stock_quantity: poolTrackStock ? stockQuantityValue : null,
       })
       .select("id")
       .single();
@@ -1246,8 +1355,7 @@ export default function ConfiguracoesPage() {
       }
     } catch (uploadError: any) {
       setErrorText(
-        uploadError?.message ??
-          "A piscina foi cadastrada, mas houve erro ao enviar as fotos."
+        uploadError?.message ?? "A piscina foi cadastrada, mas houve erro ao enviar as fotos."
       );
       setSavingPool(false);
       await fetchPageData("reload");
@@ -1282,6 +1390,7 @@ export default function ConfiguracoesPage() {
     }
 
     const priceValue = toNullableNumber(catalogPrice);
+    const stockQuantityValue = toNullableInteger(catalogStockQuantity);
 
     if (priceValue == null) {
       setErrorText("O preço do item é obrigatório.");
@@ -1291,6 +1400,20 @@ export default function ConfiguracoesPage() {
     if (priceValue < 0) {
       setErrorText("O preço do item não pode ser negativo.");
       return;
+    }
+
+    if (catalogTrackStock) {
+      if (stockQuantityValue == null) {
+        setErrorText(
+          "A quantidade em estoque do item é obrigatória quando o controle de estoque está ativado."
+        );
+        return;
+      }
+
+      if (stockQuantityValue < 0) {
+        setErrorText("A quantidade em estoque do item não pode ser negativa.");
+        return;
+      }
     }
 
     setSavingCatalogItem(true);
@@ -1308,6 +1431,8 @@ export default function ConfiguracoesPage() {
         price_cents: priceCents,
         currency: "BRL",
         is_active: catalogIsActive,
+        track_stock: catalogTrackStock,
+        stock_quantity: catalogTrackStock ? stockQuantityValue : null,
         metadata: {
           categoria: catalogCategory,
         },
@@ -1327,8 +1452,7 @@ export default function ConfiguracoesPage() {
       }
     } catch (uploadError: any) {
       setErrorText(
-        uploadError?.message ??
-          "O item foi cadastrado, mas houve erro ao enviar as fotos."
+        uploadError?.message ?? "O item foi cadastrado, mas houve erro ao enviar as fotos."
       );
       setSavingCatalogItem(false);
       await fetchPageData("reload");
@@ -1642,6 +1766,36 @@ export default function ConfiguracoesPage() {
 
                       <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
                         <SummaryCard title="Piscinas" value={totalPools} />
+                        <SummaryCard title="Piscinas ativas" value={activePoolsCount} />
+                        <SummaryCard
+                          title="Piscinas disponíveis"
+                          value={poolsAvailableCount}
+                          hint="Ativas e aptas para oferta"
+                        />
+                        <SummaryCard
+                          title="Itens disponíveis no catálogo"
+                          value={catalogItemsAvailableCount}
+                          hint="Ativos e aptos para oferta"
+                        />
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+                      <div className="border-b border-black/5 px-6 py-4">
+                        <h2 className="text-lg font-semibold text-gray-900">
+                          Resumo por categoria
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-600">
+                          Visão rápida do catálogo cadastrado.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
+                        <SummaryCard title="Itens do catálogo" value={totalCatalogItems} />
+                        <SummaryCard
+                          title="Itens ativos"
+                          value={activeCatalogItemsCount}
+                        />
                         <SummaryCard
                           title="Acessórios"
                           value={catalogItemsByCategory.acessorios.length}
@@ -1649,10 +1803,6 @@ export default function ConfiguracoesPage() {
                         <SummaryCard
                           title="Produtos químicos"
                           value={catalogItemsByCategory.quimicos.length}
-                        />
-                        <SummaryCard
-                          title="Outros itens"
-                          value={catalogItemsByCategory.outros.length}
                         />
                       </div>
                     </section>
@@ -1693,8 +1843,8 @@ export default function ConfiguracoesPage() {
                           Configurações estratégicas da loja
                         </h2>
                         <p className="mt-1 text-sm text-gray-600">
-                          Este bloco reúne as informações que vieram do onboarding e ajudam a
-                          IA a seguir a forma real de trabalho da loja.
+                          Este bloco reúne as informações que vieram do onboarding e ajudam a IA
+                          a seguir a forma real de trabalho da loja.
                         </p>
                       </div>
 
@@ -1717,7 +1867,9 @@ export default function ConfiguracoesPage() {
                         />
                         <SummaryCard
                           title="Casos de notificação"
-                          value={parseArrayAnswer(strategyAnswers.responsible_notification_cases).length}
+                          value={
+                            parseArrayAnswer(strategyAnswers.responsible_notification_cases).length
+                          }
                         />
                       </div>
                     </section>
@@ -1766,8 +1918,8 @@ export default function ConfiguracoesPage() {
                         Cadastro de Piscinas
                       </h2>
                       <p className="mt-1 text-sm text-gray-600">
-                        Cadastre modelos com todos os campos obrigatórios e faça upload das
-                        fotos.
+                        Cadastre modelos com todos os campos obrigatórios, controle comercial e
+                        faça upload das fotos.
                       </p>
                     </div>
 
@@ -1896,6 +2048,51 @@ export default function ConfiguracoesPage() {
                           </div>
                         </div>
 
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                            <label className="flex items-center gap-3 text-sm text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={poolIsActive}
+                                onChange={(e) => setPoolIsActive(e.target.checked)}
+                              />
+                              Piscina ativa para oferta pela loja e pela IA
+                            </label>
+                          </div>
+
+                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                            <label className="flex items-center gap-3 text-sm text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={poolTrackStock}
+                                onChange={(e) => setPoolTrackStock(e.target.checked)}
+                              />
+                              Controlar estoque desta piscina
+                            </label>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Quantidade em estoque
+                          </label>
+                          <input
+                            value={poolStockQuantity}
+                            onChange={(e) => setPoolStockQuantity(formatIntegerInput(e.target.value))}
+                            disabled={!poolTrackStock}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
+                            placeholder={
+                              poolTrackStock
+                                ? "Ex.: 3"
+                                : "Desativado porque o controle de estoque está desligado"
+                            }
+                          />
+                          <div className="mt-2 text-xs text-gray-500">
+                            Quando o controle de estoque estiver desligado, a piscina poderá ser
+                            ofertada sem depender de quantidade.
+                          </div>
+                        </div>
+
                         <div>
                           <label className="mb-2 block text-sm font-medium text-gray-700">
                             Fotos da piscina
@@ -1958,6 +2155,8 @@ export default function ConfiguracoesPage() {
                         <div className="text-sm font-semibold text-gray-900">Resumo rápido</div>
                         <div className="mt-3 space-y-3 text-sm text-gray-700">
                           <div>Total de piscinas cadastradas: {totalPools}</div>
+                          <div>Piscinas ativas: {activePoolsCount}</div>
+                          <div>Piscinas disponíveis para oferta: {poolsAvailableCount}</div>
                           <div>Total de fotos cadastradas: {poolPhotos.length}</div>
                         </div>
 
@@ -2041,6 +2240,53 @@ export default function ConfiguracoesPage() {
                           />
                         </div>
 
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                            <label className="flex items-center gap-3 text-sm text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={catalogIsActive}
+                                onChange={(e) => setCatalogIsActive(e.target.checked)}
+                              />
+                              Item ativo para uso pela loja e pela IA
+                            </label>
+                          </div>
+
+                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                            <label className="flex items-center gap-3 text-sm text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={catalogTrackStock}
+                                onChange={(e) => setCatalogTrackStock(e.target.checked)}
+                              />
+                              Controlar estoque deste item
+                            </label>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Quantidade em estoque
+                          </label>
+                          <input
+                            value={catalogStockQuantity}
+                            onChange={(e) =>
+                              setCatalogStockQuantity(formatIntegerInput(e.target.value))
+                            }
+                            disabled={!catalogTrackStock}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
+                            placeholder={
+                              catalogTrackStock
+                                ? "Ex.: 12"
+                                : "Desativado porque o controle de estoque está desligado"
+                            }
+                          />
+                          <div className="mt-2 text-xs text-gray-500">
+                            Quando o controle estiver desligado, a IA poderá considerar o item
+                            disponível sem depender de quantidade.
+                          </div>
+                        </div>
+
                         <div>
                           <label className="mb-2 block text-sm font-medium text-gray-700">
                             Fotos do item
@@ -2090,17 +2336,6 @@ export default function ConfiguracoesPage() {
                           />
                         </div>
 
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <label className="flex items-center gap-3 text-sm text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={catalogIsActive}
-                              onChange={(e) => setCatalogIsActive(e.target.checked)}
-                            />
-                            Item ativo para uso pela loja e pela IA
-                          </label>
-                        </div>
-
                         <button
                           type="submit"
                           disabled={savingCatalogItem || !hasValidStoreContext}
@@ -2117,6 +2352,8 @@ export default function ConfiguracoesPage() {
 
                         <div className="mt-3 space-y-3 text-sm text-gray-700">
                           <div>Total de itens cadastrados: {totalCatalogItems}</div>
+                          <div>Itens ativos: {activeCatalogItemsCount}</div>
+                          <div>Itens disponíveis para oferta: {catalogItemsAvailableCount}</div>
                           <div>
                             Acessórios cadastrados: {catalogItemsByCategory.acessorios.length}
                           </div>
@@ -2390,9 +2627,7 @@ export default function ConfiguracoesPage() {
                               {discountSettings?.max_discount_percent ?? 0}%
                             </div>
                             <div>
-                              <span className="font-medium">
-                                Consultar acima do máximo:
-                              </span>{" "}
+                              <span className="font-medium">Consultar acima do máximo:</span>{" "}
                               {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
                             </div>
                           </div>
