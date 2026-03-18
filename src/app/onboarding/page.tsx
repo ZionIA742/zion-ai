@@ -9,7 +9,7 @@ import {
   type FormEvent,
   type SetStateAction,
 } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import OrgGuard from "../../components/OrgGuard";
 import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
@@ -283,6 +283,16 @@ const HUMAN_RESPONSE_TIME_UNITS: TimeUnitOption[] = [
   { value: "horas", label: "horas" },
   { value: "dias úteis", label: "dias úteis" },
 ];
+
+function isValidStep(step: number): step is 1 | 2 | 3 | 4 | 5 {
+  return Number.isInteger(step) && step >= 1 && step <= 5;
+}
+
+function parseStepParam(raw: string | null): number | null {
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return isValidStep(parsed) ? parsed : null;
+}
 
 function formatPhone(value: string) {
   const digits = value.replace(/\D/g, "").slice(0, 11);
@@ -713,6 +723,11 @@ function ProcessColumn({
 function OnboardingContent() {
   const { loading, error, activeStore, organizationId } = useStoreContext();
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const requestedStep = useMemo(() => {
+    return parseStepParam(searchParams.get("step"));
+  }, [searchParams]);
 
   const onboardingCompletedStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
@@ -737,6 +752,7 @@ function OnboardingContent() {
   const hasHydratedRef = useRef(false);
   const didRestorePageScrollRef = useRef(false);
   const ignoreNextStepScrollRef = useRef(true);
+  const lastAppliedQueryStepRef = useRef<number | null>(null);
 
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
@@ -977,6 +993,7 @@ function OnboardingContent() {
       setStep5DraftRecovered(false);
       didRestorePageScrollRef.current = false;
       ignoreNextStepScrollRef.current = true;
+      lastAppliedQueryStepRef.current = requestedStep;
 
       let nextStep = 1;
 
@@ -1003,7 +1020,12 @@ function OnboardingContent() {
 
         if (currentStepStorageKey) {
           const rawStep = window.localStorage.getItem(currentStepStorageKey);
-          if (["1", "2", "3", "4", "5"].includes(String(rawStep))) nextStep = Number(rawStep);
+          const cachedStep = parseStepParam(rawStep);
+          if (cachedStep) nextStep = cachedStep;
+        }
+
+        if (requestedStep) {
+          nextStep = requestedStep;
         }
 
         if (onboardingCompletedStorageKey) {
@@ -1031,7 +1053,23 @@ function OnboardingContent() {
     step5DraftStorageKey,
     currentStepStorageKey,
     onboardingCompletedStorageKey,
+    requestedStep,
   ]);
+
+  useEffect(() => {
+    if (!hydratedFromCache) return;
+    if (!requestedStep) return;
+    if (lastAppliedQueryStepRef.current === requestedStep) return;
+    if (currentStep === requestedStep) {
+      lastAppliedQueryStepRef.current = requestedStep;
+      return;
+    }
+
+    clearMessages();
+    ignoreNextStepScrollRef.current = false;
+    setCurrentStep(requestedStep);
+    lastAppliedQueryStepRef.current = requestedStep;
+  }, [requestedStep, hydratedFromCache, currentStep]);
 
   useEffect(() => {
     const loadAnswers = async () => {
@@ -2007,7 +2045,7 @@ function OnboardingContent() {
                     : "cursor-not-allowed border border-gray-200 bg-gray-100 text-gray-400"
                 }`}
               >
-                Salvar onboarding
+                Ir para o dashboard
               </button>
 
               {!hasCompletedOnboardingOnce && (

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
@@ -440,16 +441,28 @@ function StrategySection({
   title,
   description,
   items,
+  onEdit,
 }: {
   title: string;
   description: string;
   items: StrategyBlockItem[];
+  onEdit: () => void;
 }) {
   return (
     <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-      <div className="border-b border-black/5 px-6 py-4">
-        <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-        <p className="mt-1 text-sm text-gray-600">{description}</p>
+      <div className="flex flex-col gap-3 border-b border-black/5 px-6 py-4 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+          <p className="mt-1 text-sm text-gray-600">{description}</p>
+        </div>
+
+        <button
+          type="button"
+          onClick={onEdit}
+          className="inline-flex shrink-0 rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:border-gray-400 hover:bg-gray-50"
+        >
+          Editar
+        </button>
       </div>
 
       <div className="grid gap-4 p-6 md:grid-cols-2">
@@ -467,6 +480,8 @@ function StrategySection({
 }
 
 export default function ConfiguracoesPage() {
+  const router = useRouter();
+
   const {
     loading: storeLoading,
     organizationId,
@@ -604,20 +619,12 @@ export default function ConfiguracoesPage() {
       },
       {
         label: "Alcance regional principal",
-        value: joinOptionLabels(
-          parseArrayAnswer(strategyAnswers.service_region_primary_mode),
-          SERVICE_REGION_PRIMARY_OPTIONS,
-          null,
-          textValue(
-            strategyAnswers.service_region_primary_mode
-              ? getOptionLabel(
-                  String(strategyAnswers.service_region_primary_mode),
-                  SERVICE_REGION_PRIMARY_OPTIONS
-                )
-              : "",
-            "Não informado"
-          )
-        ),
+        value: strategyAnswers.service_region_primary_mode
+          ? getOptionLabel(
+              String(strategyAnswers.service_region_primary_mode),
+              SERVICE_REGION_PRIMARY_OPTIONS
+            )
+          : "Não informado",
       },
       {
         label: "Modos de atendimento regional",
@@ -863,6 +870,17 @@ export default function ConfiguracoesPage() {
       responsavelEAtivacao,
     };
   }, [strategyAnswers, activeStore?.name]);
+
+  function goToOnboardingStep(step: number) {
+    if (!hasValidStoreContext) return;
+
+    if (typeof window !== "undefined") {
+      const onboardingStepKey = `zion_onboarding_current_step:${ORGANIZATION_ID}:${STORE_ID}`;
+      window.localStorage.setItem(onboardingStepKey, String(step));
+    }
+
+    router.push("/onboarding");
+  }
 
   async function fetchPools() {
     const { data, error } = await supabase
@@ -1708,30 +1726,35 @@ export default function ConfiguracoesPage() {
                       title="Loja e atuação"
                       description="Identidade da loja, região atendida e serviços principais."
                       items={strategySections.lojaEAtuacao}
+                      onEdit={() => goToOnboardingStep(1)}
                     />
 
                     <StrategySection
                       title="Oferta principal"
                       description="O que a loja vende e quais linhas principais trabalha."
                       items={strategySections.ofertaPrincipal}
+                      onEdit={() => goToOnboardingStep(2)}
                     />
 
                     <StrategySection
                       title="Operação da loja"
                       description="Como a loja funciona no dia a dia e quais regras a IA deve respeitar."
                       items={strategySections.operacaoDaLoja}
+                      onEdit={() => goToOnboardingStep(3)}
                     />
 
                     <StrategySection
                       title="Comercial e IA"
                       description="Regras comerciais que orientam preço, desconto e ajuda humana."
                       items={strategySections.comercialEIA}
+                      onEdit={() => goToOnboardingStep(4)}
                     />
 
                     <StrategySection
                       title="Responsável e ativação"
                       description="Quem a IA pode acionar e como ela deve se comportar."
                       items={strategySections.responsavelEAtivacao}
+                      onEdit={() => goToOnboardingStep(5)}
                     />
                   </>
                 )}
