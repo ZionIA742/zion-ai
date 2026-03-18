@@ -37,6 +37,16 @@ type CatalogItemPhotoRow = {
   created_at?: string | null;
 };
 
+type EditCatalogForm = {
+  name: string;
+  sku: string;
+  description: string;
+  price: string;
+  is_active: boolean;
+  track_stock: boolean;
+  stock_quantity: string;
+};
+
 const ORGANIZATION_ID = "b02252ce-0e73-4371-9e23-f1009e7b1698";
 const STORE_ID = "6ac8f4b1-e50f-42c0-9cae-78951d6daf7b";
 const STORAGE_BUCKET = "store-catalog-photos";
@@ -59,6 +69,42 @@ function moneyFromCentsBRL(value: number | null) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function formatPriceInput(value: string) {
+  const cleaned = value.replace(/[^\d,]/g, "");
+  if (!cleaned) return "";
+
+  const parts = cleaned.split(",");
+  const integerPartRaw = parts[0].replace(/^0+(?=\d)/, "");
+  const integerPart = integerPartRaw || (parts[0] ? "0" : "");
+  const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+
+  if (parts.length === 1) {
+    return formattedInteger;
+  }
+
+  const decimalPart = parts.slice(1).join("").slice(0, 2);
+  return `${formattedInteger},${decimalPart}`;
+}
+
+function toNullableNumber(value: string) {
+  const cleaned = value.replace(/\./g, "").replace(",", ".").trim();
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function formatIntegerInput(value: string) {
+  return value.replace(/[^\d]/g, "");
+}
+
+function toNullableInteger(value: string) {
+  const cleaned = value.replace(/[^\d-]/g, "").trim();
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  if (Number.isNaN(parsed)) return null;
+  return Math.trunc(parsed);
 }
 
 function getPublicImageUrl(storagePath: string) {
@@ -96,6 +142,22 @@ function getCatalogAvailability(
   };
 }
 
+function buildEditForm(item: CatalogItemRow): EditCatalogForm {
+  return {
+    name: item.name ?? "",
+    sku: item.sku ?? "",
+    description: item.description ?? "",
+    price:
+      item.price_cents == null
+        ? ""
+        : formatPriceInput(String(item.price_cents / 100).replace(".", ",")),
+    is_active: Boolean(item.is_active),
+    track_stock: Boolean(item.track_stock),
+    stock_quantity:
+      item.track_stock && item.stock_quantity != null ? String(item.stock_quantity) : "",
+  };
+}
+
 export default function CatalogoCategoriaPage() {
   const params = useParams();
   const categoriaParam = Array.isArray(params?.categoria)
@@ -106,8 +168,13 @@ export default function CatalogoCategoriaPage() {
 
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [successText, setSuccessText] = useState<string | null>(null);
   const [items, setItems] = useState<CatalogItemRow[]>([]);
   const [photos, setPhotos] = useState<CatalogItemPhotoRow[]>([]);
+
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editItemForm, setEditItemForm] = useState<EditCatalogForm | null>(null);
+  const [savingItemId, setSavingItemId] = useState<string | null>(null);
 
   useEffect(() => {
     void fetchData();
@@ -175,16 +242,96 @@ export default function CatalogoCategoriaPage() {
     return grouped;
   }, [photos]);
 
+  function startEditing(item: CatalogItemRow) {
+    setErrorText(null);
+    setSuccessText(null);
+    setEditingItemId(item.id);
+    setEditItemForm(buildEditForm(item));
+  }
+
+  function cancelEditing() {
+    setEditingItemId(null);
+    setEditItemForm(null);
+  }
+
+  async function handleSaveItem(itemId: string) {
+    if (!editItemForm) return;
+
+    setErrorText(null);
+    setSuccessText(null);
+
+    if (!editItemForm.name.trim()) {
+      setErrorText("O nome do item é obrigatório.");
+      return;
+    }
+
+    const priceValue = toNullableNumber(editItemForm.price);
+    const stockQuantityValue = toNullableInteger(editItemForm.stock_quantity);
+
+    if (!editItemForm.price.trim()) {
+      setErrorText("O preço do item é obrigatório.");
+      return;
+    }
+
+    if (priceValue == null) {
+      setErrorText("O preço do item está inválido.");
+      return;
+    }
+
+    if (priceValue < 0) {
+      setErrorText("O preço do item não pode ser negativo.");
+      return;
+    }
+
+    if (editItemForm.track_stock) {
+      if (stockQuantityValue == null) {
+        setErrorText("A quantidade em estoque é obrigatória quando o controle de estoque está ativado.");
+        return;
+      }
+
+      if (stockQuantityValue < 0) {
+        setErrorText("A quantidade em estoque não pode ser negativa.");
+        return;
+      }
+    }
+
+    setSavingItemId(itemId);
+
+    const { error } = await supabase
+      .from("store_catalog_items")
+      .update({
+        sku: editItemForm.sku.trim() || null,
+        name: editItemForm.name.trim(),
+        description: editItemForm.description.trim() || null,
+        price_cents: Math.round(priceValue * 100),
+        is_active: editItemForm.is_active,
+        track_stock: editItemForm.track_stock,
+        stock_quantity: editItemForm.track_stock ? stockQuantityValue : null,
+      })
+      .eq("id", itemId)
+      .eq("organization_id", ORGANIZATION_ID)
+      .eq("store_id", STORE_ID);
+
+    if (error) {
+      setErrorText(error.message ?? "Erro ao salvar item.");
+      setSavingItemId(null);
+      return;
+    }
+
+    setSuccessText("Item atualizado com sucesso.");
+    setSavingItemId(null);
+    cancelEditing();
+    await fetchData();
+  }
+
   return (
     <div className="min-h-screen bg-gray-100">
       <div className="mx-auto max-w-7xl px-6 py-6">
         <div className="mb-6 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">
-              {categoryLabel(categoria)}
-            </h1>
+            <h1 className="text-2xl font-bold text-gray-900">{categoryLabel(categoria)}</h1>
             <p className="mt-2 text-gray-600">
-              Visualize todos os itens cadastrados desta categoria.
+              Visualize e edite todos os itens cadastrados desta categoria.
             </p>
           </div>
 
@@ -203,6 +350,13 @@ export default function CatalogoCategoriaPage() {
           </div>
         ) : null}
 
+        {successText ? (
+          <div className="mb-5 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+            <div className="font-semibold">Sucesso</div>
+            <div className="mt-1 break-words">{successText}</div>
+          </div>
+        ) : null}
+
         {loading ? (
           <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
             Carregando itens...
@@ -216,6 +370,8 @@ export default function CatalogoCategoriaPage() {
             {items.map((item) => {
               const itemPhotos = photosByItemId[item.id] || [];
               const availability = getCatalogAvailability(item);
+              const isEditing = editingItemId === item.id && editItemForm;
+              const isSaving = savingItemId === item.id;
 
               return (
                 <section
@@ -225,58 +381,208 @@ export default function CatalogoCategoriaPage() {
                   <div className="border-b border-black/5 px-6 py-4">
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div>
-                        <h2 className="text-xl font-semibold text-gray-900">
-                          {item.name}
-                        </h2>
+                        <h2 className="text-xl font-semibold text-gray-900">{item.name}</h2>
                         <p className="mt-1 text-sm text-gray-600">
-                          {item.sku
-                            ? `Código do produto: ${item.sku}`
-                            : "Sem código do produto"}
+                          {item.sku ? `Código do produto: ${item.sku}` : "Sem código do produto"}
                         </p>
                       </div>
 
-                      <div className="flex flex-wrap gap-2">
-                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                          {moneyFromCentsBRL(item.price_cents)}
-                        </span>
-                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                          {item.is_active ? "Ativo" : "Inativo"}
-                        </span>
-                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                          {item.track_stock ? "Controla estoque" : "Sem controle de estoque"}
-                        </span>
-                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                          {availability.label}
-                        </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {!isEditing ? (
+                          <>
+                            <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                              {moneyFromCentsBRL(item.price_cents)}
+                            </span>
+                            <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                              {item.is_active ? "Ativo" : "Inativo"}
+                            </span>
+                            <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                              {item.track_stock ? "Controla estoque" : "Sem controle de estoque"}
+                            </span>
+                            <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                              {availability.label}
+                            </span>
+
+                            <button
+                              type="button"
+                              onClick={() => startEditing(item)}
+                              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                            >
+                              Editar
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleSaveItem(item.id)}
+                              disabled={isSaving}
+                              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isSaving ? "Salvando..." : "Salvar"}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={cancelEditing}
+                              disabled={isSaving}
+                              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Cancelar
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
 
                   <div className="grid gap-6 p-6 lg:grid-cols-[320px,1fr]">
                     <div className="space-y-4">
-                      <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                        <div className="text-sm font-semibold text-gray-900">Descrição</div>
-                        <div className="mt-2 text-sm text-gray-600">
-                          {item.description?.trim() || "Sem descrição."}
-                        </div>
-                      </div>
+                      {isEditing ? (
+                        <div className="space-y-4 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Nome do item
+                            </label>
+                            <input
+                              value={editItemForm.name}
+                              onChange={(e) =>
+                                setEditItemForm((prev) =>
+                                  prev ? { ...prev, name: e.target.value } : prev
+                                )
+                              }
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            />
+                          </div>
 
-                      <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                        <div className="text-sm font-semibold text-gray-900">
-                          Disponibilidade comercial
-                        </div>
-                        <div className="mt-2 space-y-1 text-sm text-gray-600">
-                          <div>Status: {item.is_active ? "Ativo" : "Inativo"}</div>
                           <div>
-                            Controle de estoque: {item.track_stock ? "Sim" : "Não"}
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Código do produto
+                            </label>
+                            <input
+                              value={editItemForm.sku}
+                              onChange={(e) =>
+                                setEditItemForm((prev) =>
+                                  prev ? { ...prev, sku: e.target.value } : prev
+                                )
+                              }
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            />
                           </div>
+
                           <div>
-                            Quantidade em estoque:{" "}
-                            {item.track_stock ? item.stock_quantity ?? 0 : "Não controlado"}
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Preço
+                            </label>
+                            <input
+                              value={editItemForm.price}
+                              onChange={(e) =>
+                                setEditItemForm((prev) =>
+                                  prev
+                                    ? { ...prev, price: formatPriceInput(e.target.value) }
+                                    : prev
+                                )
+                              }
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            />
                           </div>
-                          <div>Situação: {availability.detail}</div>
+
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Descrição
+                            </label>
+                            <textarea
+                              value={editItemForm.description}
+                              onChange={(e) =>
+                                setEditItemForm((prev) =>
+                                  prev ? { ...prev, description: e.target.value } : prev
+                                )
+                              }
+                              className="min-h-[120px] w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            />
+                          </div>
+
+                          <div className="space-y-3 rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                            <label className="flex items-center gap-3 text-sm text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={editItemForm.is_active}
+                                onChange={(e) =>
+                                  setEditItemForm((prev) =>
+                                    prev ? { ...prev, is_active: e.target.checked } : prev
+                                  )
+                                }
+                              />
+                              Item ativo para oferta
+                            </label>
+
+                            <label className="flex items-center gap-3 text-sm text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={editItemForm.track_stock}
+                                onChange={(e) =>
+                                  setEditItemForm((prev) =>
+                                    prev ? { ...prev, track_stock: e.target.checked } : prev
+                                  )
+                                }
+                              />
+                              Controlar estoque deste item
+                            </label>
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                              Quantidade em estoque
+                            </label>
+                            <input
+                              value={editItemForm.stock_quantity}
+                              onChange={(e) =>
+                                setEditItemForm((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        stock_quantity: formatIntegerInput(e.target.value),
+                                      }
+                                    : prev
+                                )
+                              }
+                              disabled={!editItemForm.track_stock}
+                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
+                              placeholder={
+                                editItemForm.track_stock
+                                  ? "Ex.: 12"
+                                  : "Desativado porque o controle de estoque está desligado"
+                              }
+                            />
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <>
+                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                            <div className="text-sm font-semibold text-gray-900">Descrição</div>
+                            <div className="mt-2 text-sm text-gray-600">
+                              {item.description?.trim() || "Sem descrição."}
+                            </div>
+                          </div>
+
+                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                            <div className="text-sm font-semibold text-gray-900">
+                              Disponibilidade comercial
+                            </div>
+                            <div className="mt-2 space-y-1 text-sm text-gray-600">
+                              <div>Status: {item.is_active ? "Ativo" : "Inativo"}</div>
+                              <div>
+                                Controle de estoque: {item.track_stock ? "Sim" : "Não"}
+                              </div>
+                              <div>
+                                Quantidade em estoque:{" "}
+                                {item.track_stock ? item.stock_quantity ?? 0 : "Não controlado"}
+                              </div>
+                              <div>Situação: {availability.detail}</div>
+                            </div>
+                          </div>
+                        </>
+                      )}
 
                       <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
                         <div className="text-sm font-semibold text-gray-900">
