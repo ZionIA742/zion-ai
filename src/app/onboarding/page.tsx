@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type FormEvent,
+  type SetStateAction,
+} from "react";
 import { useRouter } from "next/navigation";
 import OrgGuard from "../../components/OrgGuard";
 import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
@@ -89,7 +97,17 @@ type Step5FormData = {
 };
 
 type AnswersMap = Record<string, unknown>;
-type Option = { value: string; label: string };
+
+type Option = {
+  value: string;
+  label: string;
+  hint?: string;
+};
+
+type TimeUnitOption = {
+  value: string;
+  label: string;
+};
 
 const WEEK_DAYS: Option[] = [
   { value: "segunda", label: "Segunda" },
@@ -101,39 +119,42 @@ const WEEK_DAYS: Option[] = [
   { value: "domingo", label: "Domingo" },
 ];
 
-const PAYMENT_METHODS: Option[] = [
+const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
   { value: "pix", label: "Pix" },
   { value: "cartao_credito", label: "Cartão de crédito" },
   { value: "cartao_debito", label: "Cartão de débito" },
   { value: "boleto", label: "Boleto" },
   { value: "dinheiro", label: "Dinheiro" },
   { value: "transferencia", label: "Transferência" },
-  { value: "parcelado", label: "Parcelado" },
-  { value: "financiamento", label: "Financiamento" },
+];
+
+const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
+  { value: "parcelado", label: "Aceita parcelamento" },
+  { value: "financiamento", label: "Trabalha com financiamento" },
 ];
 
 const STORE_SERVICE_OPTIONS: Option[] = [
   { value: "venda_piscinas", label: "Venda de piscinas" },
   { value: "instalacao_piscinas", label: "Instalação de piscinas" },
   { value: "venda_produtos_quimicos", label: "Venda de produtos químicos" },
-  { value: "venda_acessorios", label: "Venda de acessórios" },
+  { value: "venda_acessorios", label: "Venda de acessórios para piscina" },
   { value: "visita_tecnica", label: "Visita técnica" },
-  { value: "manutencao", label: "Manutenção" },
+  { value: "manutencao", label: "Limpeza / manutenção" },
 ];
 
 const SERVICE_REGION_OPTIONS: Option[] = [
   { value: "somente_cidade_loja", label: "Somente a cidade da loja" },
   { value: "cidade_e_vizinhas", label: "Cidade da loja + cidades vizinhas" },
-  { value: "grande_regiao", label: "Grande região ao redor" },
+  { value: "grande_regiao", label: "Atende várias cidades da região" },
   { value: "todo_estado", label: "Todo o estado" },
-  { value: "sob_consulta", label: "Atende fora da região só sob consulta" },
+  { value: "sob_consulta", label: "Fora da região, só sob consulta" },
 ];
 
 const POOL_TYPE_OPTIONS: Option[] = [
   { value: "fibra", label: "Fibra" },
   { value: "vinil", label: "Vinil" },
   { value: "alvenaria", label: "Alvenaria" },
-  { value: "pastilha", label: "Pastilha" },
+  { value: "pastilha", label: "Revestida / pastilha" },
   { value: "spa", label: "SPA / hidromassagem" },
   { value: "prainha", label: "Prainha / complemento" },
 ];
@@ -175,9 +196,9 @@ const SALES_FLOW_FINAL_OPTIONS: Option[] = [
 const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
   { value: "precisa_agendar", label: "Precisa agendar antes" },
   { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
-  { value: "analise_do_local", label: "Depende de análise do local" },
+  { value: "analise_do_local", label: "Pode depender de avaliação do local" },
   { value: "pode_ter_taxa", label: "Pode ter taxa de deslocamento" },
-  { value: "somente_regiao_atendida", label: "Só atende região cadastrada" },
+  { value: "somente_regiao_atendida", label: "Só atende a região cadastrada" },
   { value: "horario_comercial", label: "Somente em horário comercial" },
 ];
 
@@ -190,30 +211,36 @@ const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
   { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
 ];
 
-const PRICE_DIRECT_CONDITION_OPTIONS: Option[] = [
+const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
   { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
   { value: "so_apos_identificar_interesse_real", label: "Só depois de perceber interesse real" },
-  { value: "so_apos_entender_tipo", label: "Só depois de entender o tipo de piscina/produto" },
+  { value: "so_apos_entender_tipo", label: "Só depois de entender o tipo de piscina ou produto" },
   { value: "so_apos_entender_medidas", label: "Só depois de entender medidas ou porte do projeto" },
   { value: "so_apos_entender_instalacao", label: "Só depois de entender se precisa instalação" },
+];
+
+const PRICE_DIRECT_FORMAT_OPTIONS: Option[] = [
   { value: "quando_cliente_perguntar", label: "Pode falar preço quando o cliente perguntar" },
-  { value: "apenas_faixa_inicial", label: "Pode falar só faixa inicial, não valor fechado" },
-  { value: "nunca_sem_chamar_humano", label: "Nunca sem chamar uma pessoa da loja" },
+  { value: "apenas_faixa_inicial", label: "Pode falar só uma faixa inicial, não valor fechado" },
+];
+
+const PRICE_DIRECT_APPROVAL_OPTIONS: Option[] = [
+  { value: "nunca_sem_chamar_humano", label: "Só pode falar preço com ajuda de uma pessoa da loja" },
 ];
 
 const HUMAN_HELP_DISCOUNT_OPTIONS: Option[] = [
   { value: "pediu_desconto_maior", label: "Pediu desconto maior que o permitido" },
   { value: "quer_condicao_especial", label: "Quer condição especial" },
-  { value: "fechamento_imediato", label: "Sinal de fechamento imediato" },
-  { value: "cliente_importante", label: "Cliente muito valioso" },
+  { value: "fechamento_imediato", label: "Cliente quer fechar agora" },
+  { value: "cliente_importante", label: "Cliente com alto potencial de fechar" },
 ];
 
 const HUMAN_HELP_CUSTOM_PROJECT_OPTIONS: Option[] = [
   { value: "projeto_fora_padrao", label: "Projeto fora do padrão" },
-  { value: "terreno_dificil", label: "Local/terreno com dificuldade" },
+  { value: "terreno_dificil", label: "Local ou terreno com dificuldade" },
   { value: "duvida_tecnica_complexa", label: "Dúvida técnica complexa" },
   { value: "pedido_muito_personalizado", label: "Pedido muito personalizado" },
-  { value: "obra_complementar", label: "Pedido envolvendo obra complementar" },
+  { value: "obra_complementar", label: "Pedido com obra extra além da piscina" },
 ];
 
 const HUMAN_HELP_PAYMENT_OPTIONS: Option[] = [
@@ -225,20 +252,35 @@ const HUMAN_HELP_PAYMENT_OPTIONS: Option[] = [
 
 const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
   { value: "pedido_desconto", label: "Pedido de desconto" },
-  { value: "cliente_quase_fechando", label: "Cliente perto de fechar" },
+  { value: "cliente_quase_fechando", label: "Cliente com alta chance de fechar" },
   { value: "duvida_tecnica", label: "Dúvida técnica importante" },
   { value: "pedido_visita", label: "Pedido de visita técnica" },
   { value: "pedido_instalacao", label: "Pedido de instalação" },
   { value: "problema_pagamento", label: "Problema de pagamento" },
 ];
 
-const ACTIVATION_PREFERENCE_OPTIONS: Option[] = [
+const ACTIVATION_STYLE_OPTIONS: Option[] = [
   { value: "ia_direta", label: "A IA deve ser mais direta" },
   { value: "ia_humanizada", label: "A IA deve soar bem humana" },
-  { value: "nao_prometer_fora_escopo", label: "Nunca prometer serviço fora do escopo" },
   { value: "priorizar_qualificacao", label: "Priorizar qualificação antes de preço" },
-  { value: "priorizar_agendamento", label: "Priorizar visita/agendamento quando fizer sentido" },
-  { value: "encaminhar_humano_casos_criticos", label: "Chamar humano em casos críticos" },
+  { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento quando fizer sentido" },
+];
+
+const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
+  { value: "nao_prometer_fora_escopo", label: "Nunca prometer algo fora do que a loja realmente faz" },
+  { value: "encaminhar_humano_casos_criticos", label: "Chamar uma pessoa da loja em casos críticos" },
+];
+
+const INSTALLATION_TIME_UNITS: TimeUnitOption[] = [
+  { value: "dias", label: "dias" },
+  { value: "semanas", label: "semanas" },
+  { value: "meses", label: "meses" },
+];
+
+const HUMAN_RESPONSE_TIME_UNITS: TimeUnitOption[] = [
+  { value: "minutos", label: "minutos" },
+  { value: "horas", label: "horas" },
+  { value: "dias úteis", label: "dias úteis" },
 ];
 
 function formatPhone(value: string) {
@@ -292,6 +334,51 @@ function toggleArrayValue<T extends string>(current: T[], value: T): T[] {
   return current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
 }
 
+function normalizeText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim();
+}
+
+function parseDurationValue(value: string, units: TimeUnitOption[]) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return {
+      amount: "",
+      unit: units[0]?.value ?? "",
+    };
+  }
+
+  const match = trimmed.match(/^(\d+)\s*(.*)$/);
+  const amount = match?.[1] ?? "";
+  const unitPart = match?.[2]?.trim() ?? "";
+
+  const foundUnit =
+    units.find((item) => normalizeText(item.value) === normalizeText(unitPart))?.value ??
+    units.find((item) => normalizeText(item.label) === normalizeText(unitPart))?.value ??
+    units[0]?.value ??
+    "";
+
+  return { amount, unit: foundUnit };
+}
+
+function SectionTitle({
+  title,
+  hint,
+}: {
+  title: string;
+  hint?: string;
+}) {
+  return (
+    <div className="mb-2">
+      <label className="block text-sm font-medium text-gray-800">{title}</label>
+      {hint ? <p className="mt-1 text-xs leading-5 text-gray-500">{hint}</p> : null}
+    </div>
+  );
+}
+
 function StepBadge({
   step,
   currentStep,
@@ -325,34 +412,46 @@ function ToggleCard({
   label,
   selected,
   onClick,
-  circle = true,
+  multiple = true,
+  hint,
 }: {
   label: string;
   selected: boolean;
   onClick: () => void;
-  circle?: boolean;
+  multiple?: boolean;
+  hint?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-        selected ? "border-black bg-black text-white" : "border-gray-300 bg-white text-gray-800"
+      className={`w-full rounded-xl border px-3 py-3 text-left transition ${
+        selected
+          ? "border-black bg-black text-white shadow-sm"
+          : "border-gray-300 bg-white text-gray-800 hover:border-gray-400"
       }`}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-start gap-3">
         <span
-          className={`inline-flex h-4 w-4 shrink-0 border ${
-            circle ? "rounded-full" : "rounded-sm"
-          } ${selected ? "border-white bg-white" : "border-gray-400"}`}
+          className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center border text-[11px] font-bold ${
+            multiple ? "rounded-md" : "rounded-full"
+          } ${
+            selected
+              ? "border-white bg-white text-black"
+              : "border-gray-400 bg-white text-transparent"
+          }`}
         >
-          {selected ? (
-            <span
-              className={`m-auto ${circle ? "h-2 w-2 rounded-full" : "h-2.5 w-2.5 rounded-sm"} bg-black`}
-            />
+          {selected ? "✓" : "✓"}
+        </span>
+
+        <span className="block">
+          <span className="block text-sm font-medium">{label}</span>
+          {hint ? (
+            <span className={`mt-1 block text-xs ${selected ? "text-gray-200" : "text-gray-500"}`}>
+              {hint}
+            </span>
           ) : null}
         </span>
-        <span>{label}</span>
       </div>
     </button>
   );
@@ -363,22 +462,29 @@ function SelectorGrid({
   selectedValues,
   onToggle,
   columns = "grid-cols-1 md:grid-cols-2",
+  helperText = "Você pode marcar mais de uma opção.",
 }: {
   options: Option[];
   selectedValues: string[];
   onToggle: (value: string) => void;
   columns?: string;
+  helperText?: string;
 }) {
   return (
-    <div className={`grid ${columns} gap-2`}>
-      {options.map((item) => (
-        <ToggleCard
-          key={item.value}
-          label={item.label}
-          selected={selectedValues.includes(item.value)}
-          onClick={() => onToggle(item.value)}
-        />
-      ))}
+    <div>
+      <p className="mb-2 text-xs text-gray-500">{helperText}</p>
+      <div className={`grid ${columns} gap-2`}>
+        {options.map((item) => (
+          <ToggleCard
+            key={item.value}
+            label={item.label}
+            hint={item.hint}
+            selected={selectedValues.includes(item.value)}
+            onClick={() => onToggle(item.value)}
+            multiple
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -387,7 +493,7 @@ function SingleSelectorGrid({
   options,
   value,
   onChange,
-  columns = "grid-cols-2",
+  columns = "grid-cols-1 md:grid-cols-2",
 }: {
   options: Option[];
   value: string;
@@ -400,8 +506,10 @@ function SingleSelectorGrid({
         <ToggleCard
           key={item.value}
           label={item.label}
+          hint={item.hint}
           selected={value === item.value}
           onClick={() => onChange(item.value)}
+          multiple={false}
         />
       ))}
     </div>
@@ -416,42 +524,136 @@ function WeekdaySelector({
   onToggle: (day: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-      {WEEK_DAYS.map((day) => (
-        <ToggleCard
-          key={day.value}
-          label={day.label}
-          selected={selectedDays.includes(day.value)}
-          onClick={() => onToggle(day.value)}
-        />
-      ))}
+    <div>
+      <p className="mb-2 text-xs text-gray-500">Marque todos os dias em que isso normalmente pode acontecer.</p>
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        {WEEK_DAYS.map((day) => (
+          <ToggleCard
+            key={day.value}
+            label={day.label}
+            selected={selectedDays.includes(day.value)}
+            onClick={() => onToggle(day.value)}
+            multiple
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
-function PaymentMethodSelector({
-  selectedItems,
-  onToggle,
+function SummaryChip({
+  label,
+  active,
 }: {
-  selectedItems: string[];
-  onToggle: (value: string) => void;
+  label: string;
+  active: boolean;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-      {PAYMENT_METHODS.map((item) => (
-        <ToggleCard
-          key={item.value}
-          label={item.label}
-          selected={selectedItems.includes(item.value)}
-          onClick={() => onToggle(item.value)}
+    <span
+      className={`inline-flex rounded-full border px-3 py-1 text-xs font-medium ${
+        active ? "border-black bg-black text-white" : "border-gray-300 bg-white text-gray-600"
+      }`}
+    >
+      {label}: {active ? "Sim" : "Não"}
+    </span>
+  );
+}
+
+function DraftNotice({ step }: { step: number }) {
+  return (
+    <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+      Recuperamos um rascunho local da etapa {step} que ainda não tinha sido salvo.
+    </div>
+  );
+}
+
+function InfoBlock({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+      <p className="text-sm font-medium text-blue-900">{title}</p>
+      <p className="mt-1 text-xs leading-5 text-blue-800">{description}</p>
+    </div>
+  );
+}
+
+function TimeDurationField({
+  label,
+  hint,
+  value,
+  onChange,
+  units,
+  placeholder = "Ex.: 7",
+  required,
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  onChange: (value: string) => void;
+  units: TimeUnitOption[];
+  placeholder?: string;
+  required?: boolean;
+}) {
+  const parsed = useMemo(() => parseDurationValue(value, units), [value, units]);
+  const [amount, setAmount] = useState(parsed.amount);
+  const [unit, setUnit] = useState(parsed.unit);
+
+  useEffect(() => {
+    setAmount(parsed.amount);
+    setUnit(parsed.unit);
+  }, [parsed.amount, parsed.unit]);
+
+  function update(nextAmount: string, nextUnit: string) {
+    const cleanAmount = nextAmount.replace(/\D/g, "").slice(0, 3);
+    setAmount(cleanAmount);
+    setUnit(nextUnit);
+
+    if (!cleanAmount) {
+      onChange("");
+      return;
+    }
+
+    onChange(`${cleanAmount} ${nextUnit}`.trim());
+  }
+
+  return (
+    <div>
+      <SectionTitle title={label} hint={hint} />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
+        <input
+          type="text"
+          inputMode="numeric"
+          value={amount}
+          onChange={(e) => update(e.target.value, unit)}
+          className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+          placeholder={placeholder}
+          required={required}
         />
-      ))}
+
+        <select
+          value={unit}
+          onChange={(e) => update(amount, e.target.value)}
+          className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 outline-none focus:border-black"
+        >
+          {units.map((item) => (
+            <option key={item.value} value={item.value}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
 
 function ProcessColumn({
   title,
+  subtitle,
   options,
   selectedValues,
   onToggle,
@@ -460,6 +662,7 @@ function ProcessColumn({
   onConfirmToggle,
 }: {
   title: string;
+  subtitle: string;
   options: Option[];
   selectedValues: string[];
   onToggle: (value: string) => void;
@@ -469,16 +672,18 @@ function ProcessColumn({
 }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-      <h3 className="mb-3 text-base font-semibold text-gray-900">{title}</h3>
+      <h3 className="text-base font-semibold text-gray-900">{title}</h3>
+      <p className="mb-3 mt-1 text-xs leading-5 text-gray-500">{subtitle}</p>
 
       <div className="space-y-2">
         {options.map((item) => (
           <ToggleCard
             key={item.value}
             label={item.label}
+            hint={item.hint}
             selected={selectedValues.includes(item.value)}
             onClick={() => onToggle(item.value)}
-            circle={false}
+            multiple
           />
         ))}
       </div>
@@ -490,7 +695,7 @@ function ProcessColumn({
           confirmed ? "border-black bg-black text-white" : "border-gray-300 bg-white text-gray-800"
         }`}
       >
-        {confirmLabel}
+        {confirmed ? `${confirmLabel} ✓` : confirmLabel}
       </button>
     </div>
   );
@@ -764,7 +969,7 @@ function OnboardingContent() {
       if (typeof window !== "undefined") {
         const loadDraft = <T,>(
           key: string | null,
-          setter: React.Dispatch<React.SetStateAction<T>>,
+          setter: Dispatch<SetStateAction<T>>,
           mark: () => void
         ) => {
           if (!key) return;
@@ -1071,15 +1276,15 @@ function OnboardingContent() {
           }
         }
 
-        const { data, error } = await supabase
+        const { data, error: statusLoadError } = await supabase
           .from("store_onboarding")
           .select("status")
           .eq("organization_id", organizationId)
           .eq("store_id", activeStore.id)
           .maybeSingle();
 
-        if (error) {
-          console.error("[OnboardingPage] loadOnboardingStatus error:", error);
+        if (statusLoadError) {
+          console.error("[OnboardingPage] loadOnboardingStatus error:", statusLoadError);
           return;
         }
 
@@ -1224,7 +1429,7 @@ function OnboardingContent() {
     }
   }
 
-  async function saveStep1(e: React.FormEvent) {
+  async function saveStep1(e: FormEvent) {
     e.preventDefault();
 
     if (step1Form.store_services.length === 0 && !step1Form.store_services_other.trim()) {
@@ -1269,7 +1474,7 @@ function OnboardingContent() {
     setStep1DraftRecovered(false);
   }
 
-  async function saveStep2(e: React.FormEvent) {
+  async function saveStep2(e: FormEvent) {
     e.preventDefault();
 
     if (step2Form.pool_types_selected.length === 0 && !step2Form.pool_types_other.trim()) {
@@ -1307,8 +1512,13 @@ function OnboardingContent() {
     setStep2DraftRecovered(false);
   }
 
-  async function saveStep3(e: React.FormEvent) {
+  async function saveStep3(e: FormEvent) {
     e.preventDefault();
+
+    if (storeHasInstallation && !step3Form.average_installation_time_days.trim()) {
+      setFormError("Informe o tempo médio de instalação.");
+      return;
+    }
 
     if (
       storeHasInstallation &&
@@ -1328,6 +1538,11 @@ function OnboardingContent() {
       return;
     }
 
+    if (!step3Form.average_human_response_time.trim()) {
+      setFormError("Informe o tempo médio de resposta da loja.");
+      return;
+    }
+
     const hasSalesFlow =
       step3Form.sales_flow_start_steps.length > 0 ||
       step3Form.sales_flow_middle_steps.length > 0 ||
@@ -1335,7 +1550,7 @@ function OnboardingContent() {
       step3Form.sales_flow_notes.trim();
 
     if (!hasSalesFlow) {
-      setFormError("Informe como funciona o processo da loja.");
+      setFormError("Informe como normalmente funciona o processo da loja.");
       return;
     }
 
@@ -1411,11 +1626,31 @@ function OnboardingContent() {
     setStep3DraftRecovered(false);
   }
 
-  async function saveStep4(e: React.FormEvent) {
+  async function saveStep4(e: FormEvent) {
     e.preventDefault();
 
+    if (!step4Form.average_ticket.trim()) {
+      setFormError("Informe o ticket médio da loja.");
+      return;
+    }
+
+    if (!step4Form.can_offer_discount) {
+      setFormError("Informe se a loja pode ou não dar desconto.");
+      return;
+    }
+
+    if (step4Form.can_offer_discount === "sim" && !step4Form.max_discount_percent.trim()) {
+      setFormError("Informe o desconto máximo permitido.");
+      return;
+    }
+
     if (step4Form.accepted_payment_methods.length === 0) {
-      setFormError("Selecione pelo menos uma forma de pagamento.");
+      setFormError("Selecione pelo menos uma forma de pagamento ou condição comercial.");
+      return;
+    }
+
+    if (!step4Form.ai_can_send_price_directly) {
+      setFormError("Informe se a IA pode ou não falar preço sem chamar alguém da loja.");
       return;
     }
 
@@ -1424,7 +1659,7 @@ function OnboardingContent() {
       step4Form.price_direct_conditions.length === 0 &&
       !step4Form.price_direct_rule_other.trim()
     ) {
-      setFormError("Informe em quais condições a IA pode passar preço.");
+      setFormError("Informe em quais condições a IA pode falar preço.");
       return;
     }
 
@@ -1454,10 +1689,10 @@ function OnboardingContent() {
 
     const priceDirectRuleText =
       step4Form.ai_can_send_price_directly === "não"
-        ? "A IA não pode passar preço direto sem chamar alguém da loja."
+        ? "A IA não pode falar preço sem chamar uma pessoa da loja."
         : joinSelectedLabels(
             step4Form.price_direct_conditions,
-            PRICE_DIRECT_CONDITION_OPTIONS,
+            [...PRICE_DIRECT_BEFORE_OPTIONS, ...PRICE_DIRECT_FORMAT_OPTIONS, ...PRICE_DIRECT_APPROVAL_OPTIONS],
             step4Form.price_direct_rule_other
           );
 
@@ -1512,12 +1747,49 @@ function OnboardingContent() {
     setStep4DraftRecovered(false);
   }
 
-  async function saveStep5(e: React.FormEvent) {
+  async function saveStep5(e: FormEvent) {
     e.preventDefault();
+
+    if (!step5Form.responsible_name.trim()) {
+      setFormError("Preencha o nome da pessoa principal que a IA deve acionar.");
+      return;
+    }
+
+    if (!step5Form.responsible_whatsapp.trim()) {
+      setFormError("Preencha o WhatsApp dessa pessoa.");
+      return;
+    }
+
+    if (!step5Form.ai_should_notify_responsible) {
+      setFormError("Informe se a IA deve ou não avisar essa pessoa quando surgir algo importante.");
+      return;
+    }
+
+    if (
+      step5Form.ai_should_notify_responsible === "sim" &&
+      step5Form.responsible_notification_cases.length === 0 &&
+      !step5Form.responsible_notification_cases_other.trim()
+    ) {
+      setFormError("Informe em quais casos essa pessoa deve ser avisada.");
+      return;
+    }
+
+    if (
+      step5Form.activation_preferences.length === 0 &&
+      !step5Form.activation_preferences_other.trim()
+    ) {
+      setFormError("Marque pelo menos uma orientação final para ativar a IA.");
+      return;
+    }
+
+    if (!step5Form.confirm_information_is_correct) {
+      setFormError("Confirme que as informações estão corretas para concluir o onboarding.");
+      return;
+    }
 
     const finalActivationNotesText = joinSelectedLabels(
       step5Form.activation_preferences,
-      ACTIVATION_PREFERENCE_OPTIONS,
+      [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS],
       step5Form.activation_preferences_other
     );
 
@@ -1605,7 +1877,7 @@ function OnboardingContent() {
 
   return (
     <div className="min-h-screen bg-gray-100 px-4 py-6">
-      <div className="mx-auto max-w-4xl">
+      <div className="mx-auto max-w-5xl">
         <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
           <StepBadge step={1} currentStep={currentStep} title="Loja" onClick={() => changeStep(1)} />
           <StepBadge step={2} currentStep={currentStep} title="Piscinas" onClick={() => changeStep(2)} />
@@ -1629,14 +1901,15 @@ function OnboardingContent() {
 
               <p className="text-sm leading-6 text-gray-600">
                 {currentStep === 1 &&
-                  "Vamos preencher os dados principais da loja de forma simples e rápida."}
+                  "Vamos preencher os dados principais da loja de um jeito rápido, claro e sem complicação."}
                 {currentStep === 2 &&
-                  "Agora vamos configurar os tipos de piscina e a marca principal da loja."}
-                {currentStep === 3 && "Agora vamos configurar como a loja funciona no dia a dia."}
+                  "Agora vamos definir os tipos de piscina e a marca principal da loja, sem repetir o que já foi marcado antes."}
+                {currentStep === 3 &&
+                  "Agora vamos organizar como a loja funciona no dia a dia para a IA responder do jeito certo."}
                 {currentStep === 4 &&
-                  "Agora vamos configurar as regras comerciais que a IA deve respeitar."}
+                  "Agora vamos configurar as regras comerciais que a IA deve respeitar sempre."}
                 {currentStep === 5 &&
-                  "Agora vamos definir o responsável e as orientações finais para ativar a IA."}
+                  "Agora vamos definir quem a IA pode acionar e quais orientações finais ela deve seguir."}
               </p>
             </div>
 
@@ -1656,7 +1929,7 @@ function OnboardingContent() {
 
               {!hasCompletedOnboardingOnce && (
                 <p className="mt-2 max-w-[220px] text-xs text-gray-500">
-                  Libera após concluir o onboarding pela primeira vez.
+                  Essa saída só fica liberada depois que o onboarding for concluído pela primeira vez.
                 </p>
               )}
             </div>
@@ -1667,31 +1940,11 @@ function OnboardingContent() {
             <p className="text-base font-semibold text-gray-900">{activeStore.name}</p>
           </div>
 
-          {currentStep === 1 && step1DraftRecovered && (
-            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              Recuperamos um rascunho local da etapa 1 que ainda não tinha sido salvo.
-            </div>
-          )}
-          {currentStep === 2 && step2DraftRecovered && (
-            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              Recuperamos um rascunho local da etapa 2 que ainda não tinha sido salvo.
-            </div>
-          )}
-          {currentStep === 3 && step3DraftRecovered && (
-            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              Recuperamos um rascunho local da etapa 3 que ainda não tinha sido salvo.
-            </div>
-          )}
-          {currentStep === 4 && step4DraftRecovered && (
-            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              Recuperamos um rascunho local da etapa 4 que ainda não tinha sido salvo.
-            </div>
-          )}
-          {currentStep === 5 && step5DraftRecovered && (
-            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              Recuperamos um rascunho local da etapa 5 que ainda não tinha sido salvo.
-            </div>
-          )}
+          {currentStep === 1 && step1DraftRecovered && <DraftNotice step={1} />}
+          {currentStep === 2 && step2DraftRecovered && <DraftNotice step={2} />}
+          {currentStep === 3 && step3DraftRecovered && <DraftNotice step={3} />}
+          {currentStep === 4 && step4DraftRecovered && <DraftNotice step={4} />}
+          {currentStep === 5 && step5DraftRecovered && <DraftNotice step={5} />}
 
           {formError && (
             <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -1706,9 +1959,12 @@ function OnboardingContent() {
           )}
 
           {currentStep === 1 && (
-            <form onSubmit={saveStep1} className="space-y-5">
+            <form onSubmit={saveStep1} className="space-y-6">
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">Nome comercial da loja</label>
+                <SectionTitle
+                  title="Como seus clientes conhecem sua loja?"
+                  hint="Use o nome que normalmente aparece para o cliente."
+                />
                 <input
                   type="text"
                   value={step1Form.store_display_name}
@@ -1720,7 +1976,10 @@ function OnboardingContent() {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">Quais serviços sua loja faz?</label>
+                <SectionTitle
+                  title="O que essa loja faz?"
+                  hint="Marque tudo o que essa unidade realmente oferece."
+                />
                 <SelectorGrid
                   options={STORE_SERVICE_OPTIONS}
                   selectedValues={step1Form.store_services}
@@ -1731,15 +1990,16 @@ function OnboardingContent() {
                   value={step1Form.store_services_other}
                   onChange={(e) => updateStep1Field("store_services_other", e.target.value)}
                   className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Algo a mais que sua loja faz? Escreva aqui (opcional)"
+                  placeholder="Se tiver algo a mais, escreva aqui (opcional)"
                 />
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">
-                    Cidade da loja que está assinando o sistema
-                  </label>
+                  <SectionTitle
+                    title="Em que cidade fica esta loja?"
+                    hint="Estamos falando da loja que está assinando o sistema."
+                  />
                   <input
                     type="text"
                     value={step1Form.city}
@@ -1751,7 +2011,7 @@ function OnboardingContent() {
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">Estado da loja</label>
+                  <SectionTitle title="Estado da loja" />
                   <input
                     type="text"
                     value={step1Form.state}
@@ -1764,7 +2024,10 @@ function OnboardingContent() {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">Quais regiões essa loja atende?</label>
+                <SectionTitle
+                  title="Quais regiões essa loja atende?"
+                  hint="Marque o que melhor descreve o alcance normal da loja."
+                />
                 <SelectorGrid
                   options={SERVICE_REGION_OPTIONS}
                   selectedValues={step1Form.service_region_modes}
@@ -1780,7 +2043,7 @@ function OnboardingContent() {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">WhatsApp comercial da loja</label>
+                <SectionTitle title="WhatsApp comercial da loja" />
                 <input
                   type="text"
                   value={step1Form.commercial_whatsapp}
@@ -1805,11 +2068,12 @@ function OnboardingContent() {
           )}
 
           {currentStep === 2 && (
-            <form onSubmit={saveStep2} className="space-y-5">
+            <form onSubmit={saveStep2} className="space-y-6">
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Quais tipos de piscina sua loja trabalha?
-                </label>
+                <SectionTitle
+                  title="Quais tipos de piscina essa loja trabalha?"
+                  hint="Marque as principais linhas que essa loja vende."
+                />
                 <SelectorGrid
                   options={POOL_TYPE_OPTIONS}
                   selectedValues={step2Form.pool_types_selected}
@@ -1820,14 +2084,15 @@ function OnboardingContent() {
                   value={step2Form.pool_types_other}
                   onChange={(e) => updateStep2Field("pool_types_other", e.target.value)}
                   className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se trabalha com algo além das opções acima, escreva aqui (opcional)"
+                  placeholder="Se trabalhar com algo além das opções acima, escreva aqui (opcional)"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Marca ou franquia principal da loja
-                </label>
+                <SectionTitle
+                  title="Marca ou franquia principal da loja"
+                  hint="Aqui é a marca principal da loja. Marcas de produtos e acessórios ficam para o catálogo detalhado depois."
+                />
                 <input
                   type="text"
                   value={step2Form.main_store_brand}
@@ -1836,19 +2101,15 @@ function OnboardingContent() {
                   placeholder="Ex.: iGUi"
                   required
                 />
-                <p className="mt-2 text-xs text-gray-500">
-                  Aqui é a marca ou franquia principal da loja. Marcas de produtos e acessórios ficam
-                  para o catálogo detalhado depois.
-                </p>
               </div>
 
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-                <p className="mb-2 text-sm font-medium text-gray-900">Resumo do que foi marcado na etapa 1</p>
-                <div className="space-y-1 text-sm text-gray-700">
-                  <p>Produtos químicos: {storeSellsChemicals ? "Sim" : "Não"}</p>
-                  <p>Acessórios: {storeSellsAccessories ? "Sim" : "Não"}</p>
-                  <p>Instalação: {storeHasInstallation ? "Sim" : "Não"}</p>
-                  <p>Visita técnica: {storeHasTechnicalVisit ? "Sim" : "Não"}</p>
+                <p className="mb-3 text-sm font-semibold text-gray-900">Resumo do que foi marcado na etapa 1</p>
+                <div className="flex flex-wrap gap-2">
+                  <SummaryChip label="Produtos químicos" active={storeSellsChemicals} />
+                  <SummaryChip label="Acessórios" active={storeSellsAccessories} />
+                  <SummaryChip label="Instalação" active={storeHasInstallation} />
+                  <SummaryChip label="Visita técnica" active={storeHasTechnicalVisit} />
                 </div>
               </div>
 
@@ -1876,27 +2137,24 @@ function OnboardingContent() {
           )}
 
           {currentStep === 3 && (
-            <form onSubmit={saveStep3} className="space-y-5">
+            <form onSubmit={saveStep3} className="space-y-6">
               {storeHasInstallation && (
                 <>
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-700">
-                      Em quanto tempo, em média, sua loja termina uma instalação?
-                    </label>
-                    <input
-                      type="text"
-                      value={step3Form.average_installation_time_days}
-                      onChange={(e) => updateStep3Field("average_installation_time_days", e.target.value)}
-                      className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                      placeholder="Ex.: 7 dias"
-                      required={storeHasInstallation}
-                    />
-                  </div>
+                  <TimeDurationField
+                    label="Em quanto tempo, em média, a loja termina uma instalação?"
+                    hint="Preencha o número e escolha a unidade para não ficar ambíguo."
+                    value={step3Form.average_installation_time_days}
+                    onChange={(value) => updateStep3Field("average_installation_time_days", value)}
+                    units={INSTALLATION_TIME_UNITS}
+                    placeholder="Ex.: 7"
+                    required={storeHasInstallation}
+                  />
 
                   <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-700">
-                      Em quais dias sua loja pode fazer instalação?
-                    </label>
+                    <SectionTitle
+                      title="Em quais dias a loja pode fazer instalação?"
+                      hint="Marque os dias normais. Se existir alguma regra especial, escreva no campo abaixo."
+                    />
                     <WeekdaySelector
                       selectedDays={step3Form.installation_available_days}
                       onToggle={(day) => toggleStep3ArrayField("installation_available_days", day)}
@@ -1906,7 +2164,7 @@ function OnboardingContent() {
                       value={step3Form.installation_days_rule}
                       onChange={(e) => updateStep3Field("installation_days_rule", e.target.value)}
                       className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                      placeholder="Se quiser, escreva uma regra complementar de instalação (opcional)"
+                      placeholder="Ex.: não instala em feriados / agenda com 2 dias de antecedência (opcional)"
                     />
                   </div>
                 </>
@@ -1914,9 +2172,10 @@ function OnboardingContent() {
 
               {storeHasTechnicalVisit && (
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">
-                    Em quais dias sua loja pode fazer visita técnica?
-                  </label>
+                  <SectionTitle
+                    title="Em quais dias a loja pode fazer visita técnica?"
+                    hint="Marque os dias normais. Se existir alguma regra especial, escreva no campo abaixo."
+                  />
                   <WeekdaySelector
                     selectedDays={step3Form.technical_visit_available_days}
                     onToggle={(day) => toggleStep3ArrayField("technical_visit_available_days", day)}
@@ -1926,33 +2185,36 @@ function OnboardingContent() {
                     value={step3Form.technical_visit_days_rule}
                     onChange={(e) => updateStep3Field("technical_visit_days_rule", e.target.value)}
                     className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                    placeholder="Se quiser, escreva uma regra complementar de visita técnica (opcional)"
+                    placeholder="Ex.: visita só com horário marcado / não faz visita aos domingos (opcional)"
                   />
                 </div>
               )}
 
+              <TimeDurationField
+                label="Em quanto tempo, em média, alguém da loja responde o cliente?"
+                hint="Preencha o número e escolha a unidade."
+                value={step3Form.average_human_response_time}
+                onChange={(value) => updateStep3Field("average_human_response_time", value)}
+                units={HUMAN_RESPONSE_TIME_UNITS}
+                placeholder="Ex.: 15"
+                required
+              />
+
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Em quanto tempo, em média, alguém da sua loja responde o cliente?
-                </label>
-                <input
-                  type="text"
-                  value={step3Form.average_human_response_time}
-                  onChange={(e) => updateStep3Field("average_human_response_time", e.target.value)}
-                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Ex.: 15 minutos"
-                  required
+                <SectionTitle
+                  title="Como normalmente funciona o processo da loja?"
+                  hint="Marque o que costuma acontecer em cada parte. Isso ajuda a IA a seguir o fluxo real da loja."
                 />
-              </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Como normalmente funciona o processo da loja?
-                </label>
+                <InfoBlock
+                  title="Como usar esta parte"
+                  description="Marque o que normalmente acontece em cada coluna. No fim de cada coluna, clique em “pronto” para indicar que aquele bloco representa bem o processo da loja."
+                />
 
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <ProcessColumn
                     title="Início"
+                    subtitle="Primeiro contato e começo da conversa."
                     options={SALES_FLOW_START_OPTIONS}
                     selectedValues={step3Form.sales_flow_start_steps}
                     onToggle={(value) => toggleStep3ArrayField("sales_flow_start_steps", value)}
@@ -1965,6 +2227,7 @@ function OnboardingContent() {
 
                   <ProcessColumn
                     title="Negociação"
+                    subtitle="Parte em que a loja entende, orienta e avança na venda."
                     options={SALES_FLOW_MIDDLE_OPTIONS}
                     selectedValues={step3Form.sales_flow_middle_steps}
                     onToggle={(value) => toggleStep3ArrayField("sales_flow_middle_steps", value)}
@@ -1980,6 +2243,7 @@ function OnboardingContent() {
 
                   <ProcessColumn
                     title="Final"
+                    subtitle="Parte em que a venda anda para fechamento e entrega."
                     options={SALES_FLOW_FINAL_OPTIONS}
                     selectedValues={step3Form.sales_flow_final_steps}
                     onToggle={(value) => toggleStep3ArrayField("sales_flow_final_steps", value)}
@@ -2002,9 +2266,10 @@ function OnboardingContent() {
 
               {storeHasTechnicalVisit && (
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">
-                    Regras importantes da visita técnica
-                  </label>
+                  <SectionTitle
+                    title="Regras importantes da visita técnica"
+                    hint="Marque tudo o que a IA precisa respeitar quando falar de visita técnica."
+                  />
                   <SelectorGrid
                     options={TECHNICAL_VISIT_RULE_OPTIONS}
                     selectedValues={step3Form.technical_visit_rules_selected}
@@ -2015,15 +2280,16 @@ function OnboardingContent() {
                     value={step3Form.technical_visit_rules_other}
                     onChange={(e) => updateStep3Field("technical_visit_rules_other", e.target.value)}
                     className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                    placeholder="Algo mais sobre visita técnica? Escreva aqui (opcional)"
+                    placeholder="Se existir mais alguma regra de visita técnica, escreva aqui (opcional)"
                   />
                 </div>
               )}
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Limitações importantes que a IA precisa saber
-                </label>
+                <SectionTitle
+                  title="Regras que a IA deve respeitar sempre"
+                  hint="Essas são limitações ou cuidados que a IA nunca deve ignorar."
+                />
                 <SelectorGrid
                   options={IMPORTANT_LIMITATION_OPTIONS}
                   selectedValues={step3Form.important_limitations_selected}
@@ -2034,7 +2300,7 @@ function OnboardingContent() {
                   value={step3Form.important_limitations_other}
                   onChange={(e) => updateStep3Field("important_limitations_other", e.target.value)}
                   className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se existir alguma limitação extra, escreva aqui (opcional)"
+                  placeholder="Se existir alguma regra extra importante, escreva aqui (opcional)"
                 />
               </div>
 
@@ -2062,11 +2328,12 @@ function OnboardingContent() {
           )}
 
           {currentStep === 4 && (
-            <form onSubmit={saveStep4} className="space-y-5">
+            <form onSubmit={saveStep4} className="space-y-6">
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Qual é o ticket médio da sua loja?
-                </label>
+                <SectionTitle
+                  title="Qual é o ticket médio da loja?"
+                  hint="Esse é o valor médio das vendas mais comuns da loja."
+                />
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">R$</span>
                   <input
@@ -2074,16 +2341,14 @@ function OnboardingContent() {
                     value={step4Form.average_ticket}
                     onChange={(e) => updateStep4Field("average_ticket", formatBrazilCurrencyInput(e.target.value))}
                     className="w-full rounded-xl border border-gray-300 py-2.5 pl-12 pr-4 outline-none focus:border-black"
-                    placeholder="1.000"
+                    placeholder="12.000"
                     required
                   />
                 </div>
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Sua loja pode dar desconto?
-                </label>
+                <SectionTitle title="A loja pode dar desconto?" />
                 <SingleSelectorGrid
                   options={YES_NO_OPTIONS}
                   value={step4Form.can_offer_discount}
@@ -2093,9 +2358,10 @@ function OnboardingContent() {
 
               {step4Form.can_offer_discount === "sim" && (
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">
-                    Qual é o desconto máximo que pode ser oferecido?
-                  </label>
+                  <SectionTitle
+                    title="Qual é o desconto máximo sem precisar chamar alguém da loja?"
+                    hint="Preencha apenas o número."
+                  />
                   <div className="relative">
                     <input
                       type="text"
@@ -2110,53 +2376,97 @@ function OnboardingContent() {
                 </div>
               )}
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Quais formas de pagamento sua loja aceita?
-                </label>
-                <PaymentMethodSelector
-                  selectedItems={step4Form.accepted_payment_methods}
-                  onToggle={(value) => toggleStep4ArrayField("accepted_payment_methods", value)}
+              <div className="space-y-4">
+                <SectionTitle
+                  title="Como o cliente pode pagar?"
+                  hint="Marque as formas de pagamento e também as condições comerciais que a loja aceita."
                 />
+
+                <div>
+                  <p className="mb-2 text-sm font-medium text-gray-700">Formas de pagamento</p>
+                  <SelectorGrid
+                    options={PAYMENT_METHOD_MAIN_OPTIONS}
+                    selectedValues={step4Form.accepted_payment_methods}
+                    onToggle={(value) => toggleStep4ArrayField("accepted_payment_methods", value)}
+                  />
+                </div>
+
+                <div>
+                  <p className="mb-2 text-sm font-medium text-gray-700">Condições comerciais</p>
+                  <SelectorGrid
+                    options={PAYMENT_METHOD_CONDITION_OPTIONS}
+                    selectedValues={step4Form.accepted_payment_methods}
+                    onToggle={(value) => toggleStep4ArrayField("accepted_payment_methods", value)}
+                  />
+                </div>
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  A IA pode passar preço direto para o cliente?
-                </label>
+                <SectionTitle
+                  title="A IA pode falar preço sem chamar alguém da loja?"
+                  hint="A ideia aqui não é preço seco. Na maioria dos casos, a IA deve qualificar rápido antes de falar valor."
+                />
                 <SingleSelectorGrid
                   options={YES_NO_OPTIONS}
                   value={step4Form.ai_can_send_price_directly}
                   onChange={(value) => updateStep4Field("ai_can_send_price_directly", value)}
                 />
-                <p className="mt-2 text-xs text-gray-500">
-                  A ideia aqui não é preço seco. A IA deve qualificar de forma curta antes de falar
-                  valores na maioria dos casos.
-                </p>
               </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Em quais condições a IA pode passar preço?
-                </label>
-                <SelectorGrid
-                  options={PRICE_DIRECT_CONDITION_OPTIONS}
-                  selectedValues={step4Form.price_direct_conditions}
-                  onToggle={(value) => toggleStep4ArrayField("price_direct_conditions", value)}
+              {step4Form.ai_can_send_price_directly === "sim" && (
+                <div className="space-y-4">
+                  <SectionTitle
+                    title="Antes de falar preço, o que a IA precisa entender?"
+                    hint="Marque tudo o que normalmente precisa ser entendido antes."
+                  />
+                  <SelectorGrid
+                    options={PRICE_DIRECT_BEFORE_OPTIONS}
+                    selectedValues={step4Form.price_direct_conditions}
+                    onToggle={(value) => toggleStep4ArrayField("price_direct_conditions", value)}
+                  />
+
+                  <div>
+                    <p className="mb-2 text-sm font-medium text-gray-700">Como a IA pode falar preço?</p>
+                    <SelectorGrid
+                      options={PRICE_DIRECT_FORMAT_OPTIONS}
+                      selectedValues={step4Form.price_direct_conditions}
+                      onToggle={(value) => toggleStep4ArrayField("price_direct_conditions", value)}
+                    />
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-sm font-medium text-gray-700">
+                      A IA precisa de ajuda humana para isso?
+                    </p>
+                    <SelectorGrid
+                      options={PRICE_DIRECT_APPROVAL_OPTIONS}
+                      selectedValues={step4Form.price_direct_conditions}
+                      onToggle={(value) => toggleStep4ArrayField("price_direct_conditions", value)}
+                    />
+                  </div>
+
+                  <input
+                    type="text"
+                    value={step4Form.price_direct_rule_other}
+                    onChange={(e) => updateStep4Field("price_direct_rule_other", e.target.value)}
+                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                    placeholder="Se quiser complementar a regra de preço, escreva aqui (opcional)"
+                  />
+                </div>
+              )}
+
+              {step4Form.ai_can_send_price_directly === "não" && (
+                <InfoBlock
+                  title="Preço com apoio humano"
+                  description="Nesse caso, a IA não deve falar preço sozinha. Ela pode qualificar, entender o caso e chamar alguém da loja para seguir."
                 />
-                <input
-                  type="text"
-                  value={step4Form.price_direct_rule_other}
-                  onChange={(e) => updateStep4Field("price_direct_rule_other", e.target.value)}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
-                  placeholder="Se quiser, complemente a regra de preço aqui (opcional)"
-                />
-              </div>
+              )}
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Quando a IA deve chamar uma pessoa por causa de desconto?
-                </label>
+                <SectionTitle
+                  title="Quando a IA deve chamar uma pessoa por causa de desconto?"
+                  hint="Marque os casos em que vale sair da IA e envolver alguém da loja."
+                />
                 <SelectorGrid
                   options={HUMAN_HELP_DISCOUNT_OPTIONS}
                   selectedValues={step4Form.human_help_discount_cases_selected}
@@ -2172,9 +2482,10 @@ function OnboardingContent() {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Quando a IA deve chamar uma pessoa por causa de projeto especial?
-                </label>
+                <SectionTitle
+                  title="Quando a IA deve chamar uma pessoa por causa de projeto especial?"
+                  hint="Marque os casos fora do padrão ou mais sensíveis."
+                />
                 <SelectorGrid
                   options={HUMAN_HELP_CUSTOM_PROJECT_OPTIONS}
                   selectedValues={step4Form.human_help_custom_project_cases_selected}
@@ -2190,9 +2501,10 @@ function OnboardingContent() {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Quando a IA deve chamar uma pessoa por causa de pagamento?
-                </label>
+                <SectionTitle
+                  title="Quando a IA deve chamar uma pessoa por causa de pagamento?"
+                  hint="Marque os casos em que o padrão normal da loja não é suficiente."
+                />
                 <SelectorGrid
                   options={HUMAN_HELP_PAYMENT_OPTIONS}
                   selectedValues={step4Form.human_help_payment_cases_selected}
@@ -2231,11 +2543,12 @@ function OnboardingContent() {
           )}
 
           {currentStep === 5 && (
-            <form onSubmit={saveStep5} className="space-y-5">
+            <form onSubmit={saveStep5} className="space-y-6">
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Qual é o nome da pessoa responsável pela loja?
-                </label>
+                <SectionTitle
+                  title="Quem é a principal pessoa da loja que a IA pode acionar?"
+                  hint="Pode ser dono, gerente ou alguém responsável por aprovar decisões importantes."
+                />
                 <input
                   type="text"
                   value={step5Form.responsible_name}
@@ -2247,9 +2560,7 @@ function OnboardingContent() {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Qual é o WhatsApp dessa pessoa?
-                </label>
+                <SectionTitle title="Qual é o WhatsApp dessa pessoa?" />
                 <input
                   type="text"
                   value={step5Form.responsible_whatsapp}
@@ -2261,9 +2572,7 @@ function OnboardingContent() {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  A IA deve avisar essa pessoa quando surgir algo importante?
-                </label>
+                <SectionTitle title="A IA deve avisar essa pessoa quando surgir algo importante?" />
                 <SingleSelectorGrid
                   options={YES_NO_OPTIONS}
                   value={step5Form.ai_should_notify_responsible}
@@ -2273,9 +2582,10 @@ function OnboardingContent() {
 
               {step5Form.ai_should_notify_responsible === "sim" && (
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">
-                    Em quais casos essa pessoa deve ser avisada?
-                  </label>
+                  <SectionTitle
+                    title="Em quais casos essa pessoa deve ser avisada?"
+                    hint="Marque os casos mais importantes."
+                  />
                   <SelectorGrid
                     options={RESPONSIBLE_NOTIFICATION_CASE_OPTIONS}
                     selectedValues={step5Form.responsible_notification_cases}
@@ -2291,20 +2601,35 @@ function OnboardingContent() {
                 </div>
               )}
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  Orientações finais para ativar a IA
-                </label>
-                <SelectorGrid
-                  options={ACTIVATION_PREFERENCE_OPTIONS}
-                  selectedValues={step5Form.activation_preferences}
-                  onToggle={(value) => toggleStep5ArrayField("activation_preferences", value)}
+              <div className="space-y-4">
+                <SectionTitle
+                  title="Como a IA deve se comportar?"
+                  hint="Essas opções ajudam a definir o estilo e as regras principais da IA."
                 />
+
+                <div>
+                  <p className="mb-2 text-sm font-medium text-gray-700">Estilo da conversa</p>
+                  <SelectorGrid
+                    options={ACTIVATION_STYLE_OPTIONS}
+                    selectedValues={step5Form.activation_preferences}
+                    onToggle={(value) => toggleStep5ArrayField("activation_preferences", value)}
+                  />
+                </div>
+
+                <div>
+                  <p className="mb-2 text-sm font-medium text-gray-700">Regras obrigatórias</p>
+                  <SelectorGrid
+                    options={ACTIVATION_GUARDRAIL_OPTIONS}
+                    selectedValues={step5Form.activation_preferences}
+                    onToggle={(value) => toggleStep5ArrayField("activation_preferences", value)}
+                  />
+                </div>
+
                 <input
                   type="text"
                   value={step5Form.activation_preferences_other}
                   onChange={(e) => updateStep5Field("activation_preferences_other", e.target.value)}
-                  className="mt-3 w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                  className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
                   placeholder="Se quiser adicionar uma orientação final, escreva aqui (opcional)"
                 />
               </div>
@@ -2315,10 +2640,10 @@ function OnboardingContent() {
                     type="checkbox"
                     checked={step5Form.confirm_information_is_correct}
                     onChange={(e) => updateStep5Field("confirm_information_is_correct", e.target.checked)}
-                    className="mt-1"
+                    className="mt-1 h-4 w-4"
                   />
                   <span className="text-sm text-gray-700">
-                    Confirmo que as informações preenchidas até aqui estão corretas.
+                    Revisei e confirmo que as informações preenchidas até aqui estão corretas.
                   </span>
                 </label>
               </div>
