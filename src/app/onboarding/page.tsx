@@ -25,6 +25,8 @@ type Step1FormData = {
   store_services_other: string;
   service_region_modes: string[];
   service_region_notes: string;
+  service_region_primary_mode: string;
+  service_region_outside_consultation: boolean;
 };
 
 type Step2FormData = {
@@ -82,6 +84,9 @@ type Step4FormData = {
   human_help_custom_project_cases_other: string;
   human_help_payment_cases_selected: string[];
   human_help_payment_cases_other: string;
+  price_needs_human_help: string;
+  price_talk_mode: string;
+  price_must_understand_before: string[];
 };
 
 type Step5FormData = {
@@ -142,12 +147,11 @@ const STORE_SERVICE_OPTIONS: Option[] = [
   { value: "manutencao", label: "Limpeza / manutenção" },
 ];
 
-const SERVICE_REGION_OPTIONS: Option[] = [
+const SERVICE_REGION_PRIMARY_OPTIONS: Option[] = [
   { value: "somente_cidade_loja", label: "Somente a cidade da loja" },
   { value: "cidade_e_vizinhas", label: "Cidade da loja + cidades vizinhas" },
   { value: "grande_regiao", label: "Atende várias cidades da região" },
   { value: "todo_estado", label: "Todo o estado" },
-  { value: "sob_consulta", label: "Fora da região, só sob consulta" },
 ];
 
 const POOL_TYPE_OPTIONS: Option[] = [
@@ -219,13 +223,10 @@ const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
   { value: "so_apos_entender_instalacao", label: "Só depois de entender se precisa instalação" },
 ];
 
-const PRICE_DIRECT_FORMAT_OPTIONS: Option[] = [
+const PRICE_TALK_MODE_OPTIONS: Option[] = [
   { value: "quando_cliente_perguntar", label: "Pode falar preço quando o cliente perguntar" },
   { value: "apenas_faixa_inicial", label: "Pode falar só uma faixa inicial, não valor fechado" },
-];
-
-const PRICE_DIRECT_APPROVAL_OPTIONS: Option[] = [
-  { value: "nunca_sem_chamar_humano", label: "Só pode falar preço com ajuda de uma pessoa da loja" },
+  { value: "nao_falar_sozinha", label: "Não deve falar preço sozinha" },
 ];
 
 const HUMAN_HELP_DISCOUNT_OPTIONS: Option[] = [
@@ -441,7 +442,7 @@ function ToggleCard({
               : "border-gray-400 bg-white text-transparent"
           }`}
         >
-          {selected ? "✓" : "✓"}
+          ✓
         </span>
 
         <span className="block">
@@ -561,8 +562,8 @@ function SummaryChip({
 
 function DraftNotice({ step }: { step: number }) {
   return (
-    <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-      Recuperamos um rascunho local da etapa {step} que ainda não tinha sido salvo.
+    <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      Rascunho local da etapa {step} recuperado.
     </div>
   );
 }
@@ -570,12 +571,20 @@ function DraftNotice({ step }: { step: number }) {
 function InfoBlock({
   title,
   description,
+  subtle = false,
 }: {
   title: string;
   description: string;
+  subtle?: boolean;
 }) {
   return (
-    <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+    <div
+      className={`rounded-xl border px-4 py-3 ${
+        subtle
+          ? "border-blue-100 bg-blue-50/60"
+          : "border-blue-100 bg-blue-50"
+      }`}
+    >
       <p className="text-sm font-medium text-blue-900">{title}</p>
       <p className="mt-1 text-xs leading-5 text-blue-800">{description}</p>
     </div>
@@ -740,6 +749,8 @@ function OnboardingContent() {
     store_services_other: "",
     service_region_modes: [],
     service_region_notes: "",
+    service_region_primary_mode: "",
+    service_region_outside_consultation: false,
   });
 
   const [step2Form, setStep2Form] = useState<Step2FormData>({
@@ -797,6 +808,9 @@ function OnboardingContent() {
     human_help_custom_project_cases_other: "",
     human_help_payment_cases_selected: [],
     human_help_payment_cases_other: "",
+    price_needs_human_help: "",
+    price_talk_mode: "",
+    price_must_understand_before: [],
   });
 
   const [step5Form, setStep5Form] = useState<Step5FormData>({
@@ -930,10 +944,10 @@ function OnboardingContent() {
   function toggleStep4ArrayField(
     field:
       | "accepted_payment_methods"
-      | "price_direct_conditions"
       | "human_help_discount_cases_selected"
       | "human_help_custom_project_cases_selected"
-      | "human_help_payment_cases_selected",
+      | "human_help_payment_cases_selected"
+      | "price_must_understand_before",
     value: string
   ) {
     clearMessages();
@@ -1038,11 +1052,9 @@ function OnboardingContent() {
         const answers = (data ?? {}) as AnswersMap;
 
         const remoteStoreServices = parseArrayAnswer(answers.store_services);
-        const remoteRegionModes = parseArrayAnswer(answers.service_region_modes);
         const remotePoolTypesSelected = parseArrayAnswer(answers.pool_types_selected);
         const remoteTechnicalVisitRulesSelected = parseArrayAnswer(answers.technical_visit_rules_selected);
         const remoteImportantLimitationsSelected = parseArrayAnswer(answers.important_limitations_selected);
-        const remotePriceDirectConditions = parseArrayAnswer(answers.price_direct_conditions);
         const remoteHumanHelpDiscountSelected = parseArrayAnswer(answers.human_help_discount_cases_selected);
         const remoteHumanHelpCustomProjectSelected = parseArrayAnswer(
           answers.human_help_custom_project_cases_selected
@@ -1054,6 +1066,17 @@ function OnboardingContent() {
         const remoteSalesFlowMiddleSteps = parseArrayAnswer(answers.sales_flow_middle_steps);
         const remoteSalesFlowFinalSteps = parseArrayAnswer(answers.sales_flow_final_steps);
         const legacyInstallationSteps = parseArrayAnswer(answers.installation_process_steps);
+
+        const remoteServiceRegionModes = parseArrayAnswer(answers.service_region_modes);
+        const fallbackPrimaryRegion =
+          String(answers.service_region_primary_mode ?? "") ||
+          remoteServiceRegionModes.find((value) => value !== "sob_consulta") ||
+          "";
+
+        const fallbackOutsideConsultation =
+          typeof answers.service_region_outside_consultation === "boolean"
+            ? answers.service_region_outside_consultation
+            : remoteServiceRegionModes.includes("sob_consulta");
 
         setStep1Form((prev) => ({
           store_display_name: prev.store_display_name || String(answers.store_display_name ?? activeStore.name ?? ""),
@@ -1068,8 +1091,11 @@ function OnboardingContent() {
           commercial_whatsapp: prev.commercial_whatsapp || String(answers.commercial_whatsapp ?? ""),
           store_services: prev.store_services.length ? prev.store_services : remoteStoreServices,
           store_services_other: prev.store_services_other || String(answers.store_services_other ?? ""),
-          service_region_modes: prev.service_region_modes.length ? prev.service_region_modes : remoteRegionModes,
+          service_region_modes: prev.service_region_modes.length ? prev.service_region_modes : remoteServiceRegionModes,
           service_region_notes: prev.service_region_notes || String(answers.service_region_notes ?? ""),
+          service_region_primary_mode: prev.service_region_primary_mode || fallbackPrimaryRegion,
+          service_region_outside_consultation:
+            prev.service_region_outside_consultation || fallbackOutsideConsultation,
         }));
 
         setStep2Form((prev) => ({
@@ -1172,6 +1198,10 @@ function OnboardingContent() {
             prev.sales_flow_final_confirmed || Boolean(answers.sales_flow_final_confirmed),
         }));
 
+        const remotePriceMustUnderstandBefore = parseArrayAnswer(
+          answers.price_must_understand_before ?? answers.price_direct_conditions
+        );
+
         setStep4Form((prev) => ({
           average_ticket: prev.average_ticket || String(answers.average_ticket ?? ""),
           can_offer_discount:
@@ -1202,8 +1232,7 @@ function OnboardingContent() {
             prev.human_help_custom_project_cases || String(answers.human_help_custom_project_cases ?? ""),
           human_help_payment_cases:
             prev.human_help_payment_cases || String(answers.human_help_payment_cases ?? ""),
-          price_direct_conditions:
-            prev.price_direct_conditions.length ? prev.price_direct_conditions : remotePriceDirectConditions,
+          price_direct_conditions: prev.price_direct_conditions.length ? prev.price_direct_conditions : [],
           price_direct_rule_other: prev.price_direct_rule_other || String(answers.price_direct_rule_other ?? ""),
           human_help_discount_cases_selected:
             prev.human_help_discount_cases_selected.length
@@ -1224,6 +1253,24 @@ function OnboardingContent() {
               : remoteHumanHelpPaymentSelected,
           human_help_payment_cases_other:
             prev.human_help_payment_cases_other || String(answers.human_help_payment_cases_other ?? ""),
+          price_needs_human_help:
+            prev.price_needs_human_help ||
+            String(answers.price_needs_human_help ?? "") ||
+            (parseArrayAnswer(answers.price_direct_conditions).includes("nunca_sem_chamar_humano") ? "sim" : "não"),
+          price_talk_mode:
+            prev.price_talk_mode ||
+            String(answers.price_talk_mode ?? "") ||
+            (parseArrayAnswer(answers.price_direct_conditions).includes("apenas_faixa_inicial")
+              ? "apenas_faixa_inicial"
+              : parseArrayAnswer(answers.price_direct_conditions).includes("quando_cliente_perguntar")
+              ? "quando_cliente_perguntar"
+              : ""),
+          price_must_understand_before:
+            prev.price_must_understand_before.length
+              ? prev.price_must_understand_before
+              : remotePriceMustUnderstandBefore.filter((item) =>
+                  PRICE_DIRECT_BEFORE_OPTIONS.some((option) => option.value === item)
+                ),
         }));
 
         setStep5Form((prev) => ({
@@ -1437,8 +1484,8 @@ function OnboardingContent() {
       return;
     }
 
-    if (step1Form.service_region_modes.length === 0) {
-      setFormError("Selecione pelo menos uma opção de região atendida.");
+    if (!step1Form.service_region_primary_mode) {
+      setFormError("Escolha o alcance principal da região atendida.");
       return;
     }
 
@@ -1448,9 +1495,19 @@ function OnboardingContent() {
       step1Form.store_services_other
     );
 
+    const regionModeValues = [
+      step1Form.service_region_primary_mode,
+      ...(step1Form.service_region_outside_consultation ? ["sob_consulta"] : []),
+    ];
+
+    const regionModeOptionsForText: Option[] = [
+      ...SERVICE_REGION_PRIMARY_OPTIONS,
+      { value: "sob_consulta", label: "Fora da região, só sob consulta" },
+    ];
+
     const serviceRegionsArray = buildArrayFromSelectedLabels(
-      step1Form.service_region_modes,
-      SERVICE_REGION_OPTIONS,
+      regionModeValues,
+      regionModeOptionsForText,
       step1Form.service_region_notes
     );
 
@@ -1464,8 +1521,10 @@ function OnboardingContent() {
         ["commercial_whatsapp", step1Form.commercial_whatsapp.trim()],
         ["store_services", step1Form.store_services],
         ["store_services_other", step1Form.store_services_other.trim()],
-        ["service_region_modes", step1Form.service_region_modes],
+        ["service_region_modes", regionModeValues],
         ["service_region_notes", step1Form.service_region_notes.trim()],
+        ["service_region_primary_mode", step1Form.service_region_primary_mode],
+        ["service_region_outside_consultation", step1Form.service_region_outside_consultation],
       ],
       "Etapa 1 salva com sucesso.",
       2
@@ -1654,13 +1713,21 @@ function OnboardingContent() {
       return;
     }
 
-    if (
-      step4Form.ai_can_send_price_directly === "sim" &&
-      step4Form.price_direct_conditions.length === 0 &&
-      !step4Form.price_direct_rule_other.trim()
-    ) {
-      setFormError("Informe em quais condições a IA pode falar preço.");
-      return;
+    if (step4Form.ai_can_send_price_directly === "sim") {
+      if (step4Form.price_must_understand_before.length === 0 && !step4Form.price_direct_rule_other.trim()) {
+        setFormError("Informe o que a IA precisa entender antes de falar preço.");
+        return;
+      }
+
+      if (!step4Form.price_talk_mode) {
+        setFormError("Escolha como a IA pode falar preço.");
+        return;
+      }
+
+      if (!step4Form.price_needs_human_help) {
+        setFormError("Informe se a IA precisa ou não de ajuda humana para falar preço.");
+        return;
+      }
     }
 
     if (
@@ -1687,14 +1754,27 @@ function OnboardingContent() {
       return;
     }
 
+    const priceDirectConditionsLegacy = [
+      ...step4Form.price_must_understand_before,
+      ...(step4Form.price_talk_mode ? [step4Form.price_talk_mode] : []),
+      ...(step4Form.price_needs_human_help === "sim" ? ["nunca_sem_chamar_humano"] : []),
+    ];
+
     const priceDirectRuleText =
       step4Form.ai_can_send_price_directly === "não"
         ? "A IA não pode falar preço sem chamar uma pessoa da loja."
-        : joinSelectedLabels(
-            step4Form.price_direct_conditions,
-            [...PRICE_DIRECT_BEFORE_OPTIONS, ...PRICE_DIRECT_FORMAT_OPTIONS, ...PRICE_DIRECT_APPROVAL_OPTIONS],
-            step4Form.price_direct_rule_other
-          );
+        : [
+            joinSelectedLabels(step4Form.price_must_understand_before, PRICE_DIRECT_BEFORE_OPTIONS),
+            step4Form.price_talk_mode
+              ? PRICE_TALK_MODE_OPTIONS.find((option) => option.value === step4Form.price_talk_mode)?.label ?? ""
+              : "",
+            step4Form.price_needs_human_help === "sim"
+              ? "Precisa de ajuda humana para falar preço."
+              : "Não precisa de ajuda humana para falar preço na regra normal.",
+            step4Form.price_direct_rule_other.trim(),
+          ]
+            .filter(Boolean)
+            .join(" | ");
 
     const humanHelpDiscountText = joinSelectedLabels(
       step4Form.human_help_discount_cases_selected,
@@ -1728,7 +1808,7 @@ function OnboardingContent() {
         ["human_help_discount_cases", humanHelpDiscountText],
         ["human_help_custom_project_cases", humanHelpCustomProjectText],
         ["human_help_payment_cases", humanHelpPaymentText],
-        ["price_direct_conditions", step4Form.price_direct_conditions],
+        ["price_direct_conditions", priceDirectConditionsLegacy],
         ["price_direct_rule_other", step4Form.price_direct_rule_other.trim()],
         ["human_help_discount_cases_selected", step4Form.human_help_discount_cases_selected],
         ["human_help_discount_cases_other", step4Form.human_help_discount_cases_other.trim()],
@@ -1739,6 +1819,9 @@ function OnboardingContent() {
         ["human_help_custom_project_cases_other", step4Form.human_help_custom_project_cases_other.trim()],
         ["human_help_payment_cases_selected", step4Form.human_help_payment_cases_selected],
         ["human_help_payment_cases_other", step4Form.human_help_payment_cases_other.trim()],
+        ["price_needs_human_help", step4Form.price_needs_human_help],
+        ["price_talk_mode", step4Form.price_talk_mode],
+        ["price_must_understand_before", step4Form.price_must_understand_before],
       ],
       "Etapa 4 salva com sucesso.",
       5
@@ -1920,7 +2003,7 @@ function OnboardingContent() {
                 disabled={!hasCompletedOnboardingOnce}
                 className={`rounded-xl px-4 py-2.5 text-sm font-medium transition ${
                   hasCompletedOnboardingOnce
-                    ? "border border-black bg-black text-white hover:opacity-90"
+                    ? "border border-gray-300 bg-white text-gray-800 hover:border-gray-400"
                     : "cursor-not-allowed border border-gray-200 bg-gray-100 text-gray-400"
                 }`}
               >
@@ -2025,14 +2108,31 @@ function OnboardingContent() {
 
               <div>
                 <SectionTitle
-                  title="Quais regiões essa loja atende?"
-                  hint="Marque o que melhor descreve o alcance normal da loja."
+                  title="Qual é o alcance principal da região atendida?"
+                  hint="Escolha a opção que melhor representa o alcance normal da loja."
                 />
-                <SelectorGrid
-                  options={SERVICE_REGION_OPTIONS}
-                  selectedValues={step1Form.service_region_modes}
-                  onToggle={(value) => toggleStep1ArrayField("service_region_modes", value)}
+                <SingleSelectorGrid
+                  options={SERVICE_REGION_PRIMARY_OPTIONS}
+                  value={step1Form.service_region_primary_mode}
+                  onChange={(value) => updateStep1Field("service_region_primary_mode", value)}
                 />
+
+                <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
+                  <label className="flex cursor-pointer items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={step1Form.service_region_outside_consultation}
+                      onChange={(e) =>
+                        updateStep1Field("service_region_outside_consultation", e.target.checked)
+                      }
+                      className="mt-1 h-4 w-4"
+                    />
+                    <span className="text-sm text-gray-700">
+                      Fora da região principal, essa loja pode atender só sob consulta.
+                    </span>
+                  </label>
+                </div>
+
                 <input
                   type="text"
                   value={step1Form.service_region_notes}
@@ -2206,12 +2306,13 @@ function OnboardingContent() {
                   hint="Marque o que costuma acontecer em cada parte. Isso ajuda a IA a seguir o fluxo real da loja."
                 />
 
-                <InfoBlock
-                  title="Como usar esta parte"
-                  description="Marque o que normalmente acontece em cada coluna. No fim de cada coluna, clique em “pronto” para indicar que aquele bloco representa bem o processo da loja."
-                />
+                <div className="mb-4 rounded-xl border border-blue-100 bg-blue-50/50 px-4 py-3">
+                  <p className="text-xs leading-5 text-blue-900">
+                    Marque o que costuma acontecer em cada coluna. Depois clique em “pronto” quando aquele bloco representar bem o processo da loja.
+                  </p>
+                </div>
 
-                <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <ProcessColumn
                     title="Início"
                     subtitle="Primeiro contato e começo da conversa."
@@ -2414,34 +2515,40 @@ function OnboardingContent() {
               </div>
 
               {step4Form.ai_can_send_price_directly === "sim" && (
-                <div className="space-y-4">
-                  <SectionTitle
-                    title="Antes de falar preço, o que a IA precisa entender?"
-                    hint="Marque tudo o que normalmente precisa ser entendido antes."
-                  />
-                  <SelectorGrid
-                    options={PRICE_DIRECT_BEFORE_OPTIONS}
-                    selectedValues={step4Form.price_direct_conditions}
-                    onToggle={(value) => toggleStep4ArrayField("price_direct_conditions", value)}
-                  />
-
+                <div className="space-y-6">
                   <div>
-                    <p className="mb-2 text-sm font-medium text-gray-700">Como a IA pode falar preço?</p>
+                    <SectionTitle
+                      title="Antes de falar preço, o que a IA precisa entender?"
+                      hint="Marque tudo o que normalmente precisa ser entendido antes."
+                    />
                     <SelectorGrid
-                      options={PRICE_DIRECT_FORMAT_OPTIONS}
-                      selectedValues={step4Form.price_direct_conditions}
-                      onToggle={(value) => toggleStep4ArrayField("price_direct_conditions", value)}
+                      options={PRICE_DIRECT_BEFORE_OPTIONS}
+                      selectedValues={step4Form.price_must_understand_before}
+                      onToggle={(value) => toggleStep4ArrayField("price_must_understand_before", value)}
                     />
                   </div>
 
                   <div>
-                    <p className="mb-2 text-sm font-medium text-gray-700">
-                      A IA precisa de ajuda humana para isso?
-                    </p>
-                    <SelectorGrid
-                      options={PRICE_DIRECT_APPROVAL_OPTIONS}
-                      selectedValues={step4Form.price_direct_conditions}
-                      onToggle={(value) => toggleStep4ArrayField("price_direct_conditions", value)}
+                    <SectionTitle
+                      title="Como a IA pode falar preço?"
+                      hint="Escolha a forma principal."
+                    />
+                    <SingleSelectorGrid
+                      options={PRICE_TALK_MODE_OPTIONS}
+                      value={step4Form.price_talk_mode}
+                      onChange={(value) => updateStep4Field("price_talk_mode", value)}
+                    />
+                  </div>
+
+                  <div>
+                    <SectionTitle
+                      title="A IA precisa de ajuda humana para isso?"
+                      hint="Defina se a loja quer ajuda humana no momento de falar preço."
+                    />
+                    <SingleSelectorGrid
+                      options={YES_NO_OPTIONS}
+                      value={step4Form.price_needs_human_help}
+                      onChange={(value) => updateStep4Field("price_needs_human_help", value)}
                     />
                   </div>
 
@@ -2459,6 +2566,7 @@ function OnboardingContent() {
                 <InfoBlock
                   title="Preço com apoio humano"
                   description="Nesse caso, a IA não deve falar preço sozinha. Ela pode qualificar, entender o caso e chamar alguém da loja para seguir."
+                  subtle
                 />
               )}
 
