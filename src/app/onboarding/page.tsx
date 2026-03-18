@@ -2045,7 +2045,7 @@ function OnboardingContent() {
                     : "cursor-not-allowed border border-gray-200 bg-gray-100 text-gray-400"
                 }`}
               >
-                Ir para o dashboard
+                Salvar e voltar
               </button>
 
               {!hasCompletedOnboardingOnce && (
