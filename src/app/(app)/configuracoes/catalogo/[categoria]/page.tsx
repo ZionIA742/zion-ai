@@ -20,6 +20,8 @@ type CatalogItemRow = {
   price_cents: number | null;
   currency: string;
   is_active: boolean;
+  track_stock: boolean;
+  stock_quantity: number | null;
   metadata: CatalogItemMetadata | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -64,6 +66,36 @@ function getPublicImageUrl(storagePath: string) {
   return data.publicUrl;
 }
 
+function getCatalogAvailability(
+  item: Pick<CatalogItemRow, "is_active" | "track_stock" | "stock_quantity">
+) {
+  if (!item.is_active) {
+    return {
+      label: "Indisponível para oferta",
+      detail: "Item inativo",
+    };
+  }
+
+  if (!item.track_stock) {
+    return {
+      label: "Disponível para oferta",
+      detail: "Sem controle de estoque",
+    };
+  }
+
+  if ((item.stock_quantity ?? 0) > 0) {
+    return {
+      label: "Disponível para oferta",
+      detail: `Estoque: ${item.stock_quantity ?? 0}`,
+    };
+  }
+
+  return {
+    label: "Indisponível para oferta",
+    detail: "Sem estoque",
+  };
+}
+
 export default function CatalogoCategoriaPage() {
   const params = useParams();
   const categoriaParam = Array.isArray(params?.categoria)
@@ -89,7 +121,7 @@ export default function CatalogoCategoriaPage() {
       supabase
         .from("store_catalog_items")
         .select(
-          "id,organization_id,store_id,sku,name,description,price_cents,currency,is_active,metadata,created_at,updated_at"
+          "id,organization_id,store_id,sku,name,description,price_cents,currency,is_active,track_stock,stock_quantity,metadata,created_at,updated_at"
         )
         .eq("organization_id", ORGANIZATION_ID)
         .eq("store_id", STORE_ID)
@@ -183,6 +215,7 @@ export default function CatalogoCategoriaPage() {
           <div className="space-y-6">
             {items.map((item) => {
               const itemPhotos = photosByItemId[item.id] || [];
+              const availability = getCatalogAvailability(item);
 
               return (
                 <section
@@ -209,6 +242,12 @@ export default function CatalogoCategoriaPage() {
                         <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
                           {item.is_active ? "Ativo" : "Inativo"}
                         </span>
+                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                          {item.track_stock ? "Controla estoque" : "Sem controle de estoque"}
+                        </span>
+                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                          {availability.label}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -219,6 +258,23 @@ export default function CatalogoCategoriaPage() {
                         <div className="text-sm font-semibold text-gray-900">Descrição</div>
                         <div className="mt-2 text-sm text-gray-600">
                           {item.description?.trim() || "Sem descrição."}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                        <div className="text-sm font-semibold text-gray-900">
+                          Disponibilidade comercial
+                        </div>
+                        <div className="mt-2 space-y-1 text-sm text-gray-600">
+                          <div>Status: {item.is_active ? "Ativo" : "Inativo"}</div>
+                          <div>
+                            Controle de estoque: {item.track_stock ? "Sim" : "Não"}
+                          </div>
+                          <div>
+                            Quantidade em estoque:{" "}
+                            {item.track_stock ? item.stock_quantity ?? 0 : "Não controlado"}
+                          </div>
+                          <div>Situação: {availability.detail}</div>
                         </div>
                       </div>
 

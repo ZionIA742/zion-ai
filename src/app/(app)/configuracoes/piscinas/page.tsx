@@ -16,6 +16,9 @@ type PoolRow = {
   weight_kg: number | null;
   price: number | null;
   description: string | null;
+  is_active: boolean;
+  track_stock: boolean;
+  stock_quantity: number | null;
   created_at?: string | null;
 };
 
@@ -44,6 +47,34 @@ function getPublicImageUrl(storagePath: string) {
   return data.publicUrl;
 }
 
+function getPoolAvailability(pool: Pick<PoolRow, "is_active" | "track_stock" | "stock_quantity">) {
+  if (!pool.is_active) {
+    return {
+      label: "Indisponível para oferta",
+      detail: "Piscina inativa",
+    };
+  }
+
+  if (!pool.track_stock) {
+    return {
+      label: "Disponível para oferta",
+      detail: "Sem controle de estoque",
+    };
+  }
+
+  if ((pool.stock_quantity ?? 0) > 0) {
+    return {
+      label: "Disponível para oferta",
+      detail: `Estoque: ${pool.stock_quantity ?? 0}`,
+    };
+  }
+
+  return {
+    label: "Indisponível para oferta",
+    detail: "Sem estoque",
+  };
+}
+
 export default function PiscinasPage() {
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -62,7 +93,7 @@ export default function PiscinasPage() {
       supabase
         .from("pools")
         .select(
-          "id,name,width_m,length_m,depth_m,shape,material,max_capacity_l,weight_kg,price,description,created_at"
+          "id,name,width_m,length_m,depth_m,shape,material,max_capacity_l,weight_kg,price,description,is_active,track_stock,stock_quantity,created_at"
         )
         .order("created_at", { ascending: false }),
       supabase
@@ -147,6 +178,7 @@ export default function PiscinasPage() {
           <div className="space-y-6">
             {pools.map((pool) => {
               const poolPhotos = photosByPoolId[pool.id] || [];
+              const availability = getPoolAvailability(pool);
 
               return (
                 <section
@@ -164,8 +196,19 @@ export default function PiscinasPage() {
                         </p>
                       </div>
 
-                      <div className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                        {moneyBRL(pool.price)}
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                          {moneyBRL(pool.price)}
+                        </span>
+                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                          {pool.is_active ? "Ativa" : "Inativa"}
+                        </span>
+                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                          {pool.track_stock ? "Controla estoque" : "Sem controle de estoque"}
+                        </span>
+                        <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
+                          {availability.label}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -207,6 +250,23 @@ export default function PiscinasPage() {
                           <div className="mt-2 text-lg font-semibold text-gray-900">
                             {poolPhotos.length}
                           </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                        <div className="text-sm font-semibold text-gray-900">
+                          Disponibilidade comercial
+                        </div>
+                        <div className="mt-2 space-y-1 text-sm text-gray-600">
+                          <div>Status: {pool.is_active ? "Ativa" : "Inativa"}</div>
+                          <div>
+                            Controle de estoque: {pool.track_stock ? "Sim" : "Não"}
+                          </div>
+                          <div>
+                            Quantidade em estoque:{" "}
+                            {pool.track_stock ? pool.stock_quantity ?? 0 : "Não controlado"}
+                          </div>
+                          <div>Situação: {availability.detail}</div>
                         </div>
                       </div>
 
