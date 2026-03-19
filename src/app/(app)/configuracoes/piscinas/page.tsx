@@ -141,6 +141,10 @@ function buildEditForm(pool: PoolRow): EditPoolForm {
   };
 }
 
+function getPoolDraftKey(poolId: string) {
+  return `zion:pool-edit-draft:${poolId}`;
+}
+
 export default function PiscinasPage() {
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -215,21 +219,70 @@ export default function PiscinasPage() {
     return grouped;
   }, [photos]);
 
+  useEffect(() => {
+    if (!editingPoolId || !editPoolForm || typeof window === "undefined") return;
+
+    window.localStorage.setItem(
+      getPoolDraftKey(editingPoolId),
+      JSON.stringify(editPoolForm)
+    );
+  }, [editingPoolId, editPoolForm]);
+
   function startEditing(pool: PoolRow) {
     setErrorText(null);
     setSuccessText(null);
     setEditingPoolId(pool.id);
-    setEditPoolForm(buildEditForm(pool));
+
+    const fallbackForm = buildEditForm(pool);
+
+    if (typeof window === "undefined") {
+      setEditPoolForm(fallbackForm);
+      return;
+    }
+
+    const savedDraft = window.localStorage.getItem(getPoolDraftKey(pool.id));
+
+    if (!savedDraft) {
+      setEditPoolForm(fallbackForm);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(savedDraft) as EditPoolForm;
+      setEditPoolForm({
+        name: parsed?.name ?? fallbackForm.name,
+        description: parsed?.description ?? fallbackForm.description,
+        price: parsed?.price ?? fallbackForm.price,
+        is_active:
+          typeof parsed?.is_active === "boolean"
+            ? parsed.is_active
+            : fallbackForm.is_active,
+        track_stock:
+          typeof parsed?.track_stock === "boolean"
+            ? parsed.track_stock
+            : fallbackForm.track_stock,
+        stock_quantity: parsed?.stock_quantity ?? fallbackForm.stock_quantity,
+      });
+    } catch {
+      setEditPoolForm(fallbackForm);
+    }
   }
 
   function cancelEditing() {
+    const currentEditingPoolId = editingPoolId;
+
     setEditingPoolId(null);
     setEditPoolForm(null);
+
     setSelectedPoolFilesByPoolId((prev) => {
       const next = { ...prev };
-      if (editingPoolId) delete next[editingPoolId];
+      if (currentEditingPoolId) delete next[currentEditingPoolId];
       return next;
     });
+
+    if (currentEditingPoolId && typeof window !== "undefined") {
+      window.localStorage.removeItem(getPoolDraftKey(currentEditingPoolId));
+    }
   }
 
   async function handleSavePool(poolId: string) {
@@ -285,9 +338,40 @@ export default function PiscinasPage() {
       return;
     }
 
-    setSuccessText("Piscina atualizada com sucesso.");
+    const pendingFiles = selectedPoolFilesByPoolId[poolId] || [];
+
+    if (pendingFiles.length > 0) {
+      try {
+        await uploadPoolFiles(poolId, pendingFiles);
+      } catch (uploadError: any) {
+        setErrorText(
+          uploadError?.message ??
+            "Os dados da piscina foram salvos, mas houve erro ao enviar as novas fotos."
+        );
+        setSavingPoolId(null);
+        await fetchData();
+        return;
+      }
+    }
+
+    setSelectedPoolFilesByPoolId((prev) => {
+      const next = { ...prev };
+      delete next[poolId];
+      return next;
+    });
+
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(getPoolDraftKey(poolId));
+    }
+
+    setSuccessText(
+      pendingFiles.length > 0
+        ? "Piscina e fotos atualizadas com sucesso."
+        : "Piscina atualizada com sucesso."
+    );
     setSavingPoolId(null);
-    cancelEditing();
+    setEditingPoolId(null);
+    setEditPoolForm(null);
     await fetchData();
   }
 

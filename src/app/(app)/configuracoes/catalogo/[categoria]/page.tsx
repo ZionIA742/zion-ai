@@ -167,6 +167,15 @@ function buildEditForm(item: CatalogItemRow): EditCatalogForm {
   };
 }
 
+function getCatalogDraftKey(params: {
+  organizationId: string;
+  storeId: string;
+  category: string;
+  itemId: string;
+}) {
+  return `zion:catalog-edit-draft:${params.organizationId}:${params.storeId}:${params.category}:${params.itemId}`;
+}
+
 export default function CatalogoCategoriaPage() {
   const params = useParams();
   const categoriaParam = Array.isArray(params?.categoria)
@@ -257,21 +266,89 @@ export default function CatalogoCategoriaPage() {
     return grouped;
   }, [photos]);
 
+  useEffect(() => {
+    if (!editingItemId || !editItemForm || typeof window === "undefined") return;
+
+    const key = getCatalogDraftKey({
+      organizationId: ORGANIZATION_ID,
+      storeId: STORE_ID,
+      category: categoria,
+      itemId: editingItemId,
+    });
+
+    window.localStorage.setItem(key, JSON.stringify(editItemForm));
+  }, [editingItemId, editItemForm, categoria]);
+
   function startEditing(item: CatalogItemRow) {
     setErrorText(null);
     setSuccessText(null);
     setEditingItemId(item.id);
-    setEditItemForm(buildEditForm(item));
+
+    const fallbackForm = buildEditForm(item);
+
+    if (typeof window === "undefined") {
+      setEditItemForm(fallbackForm);
+      return;
+    }
+
+    const key = getCatalogDraftKey({
+      organizationId: ORGANIZATION_ID,
+      storeId: STORE_ID,
+      category: categoria,
+      itemId: item.id,
+    });
+
+    const savedDraft = window.localStorage.getItem(key);
+
+    if (!savedDraft) {
+      setEditItemForm(fallbackForm);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(savedDraft) as EditCatalogForm;
+      setEditItemForm({
+        name: parsed?.name ?? fallbackForm.name,
+        sku: parsed?.sku ?? fallbackForm.sku,
+        description: parsed?.description ?? fallbackForm.description,
+        price: parsed?.price ?? fallbackForm.price,
+        is_active:
+          typeof parsed?.is_active === "boolean"
+            ? parsed.is_active
+            : fallbackForm.is_active,
+        track_stock:
+          typeof parsed?.track_stock === "boolean"
+            ? parsed.track_stock
+            : fallbackForm.track_stock,
+        stock_quantity: parsed?.stock_quantity ?? fallbackForm.stock_quantity,
+      });
+    } catch {
+      setEditItemForm(fallbackForm);
+    }
   }
 
   function cancelEditing() {
+    const currentEditingItemId = editingItemId;
+
     setEditingItemId(null);
     setEditItemForm(null);
+
     setSelectedCatalogFilesByItemId((prev) => {
       const next = { ...prev };
-      if (editingItemId) delete next[editingItemId];
+      if (currentEditingItemId) delete next[currentEditingItemId];
       return next;
     });
+
+    if (currentEditingItemId && typeof window !== "undefined") {
+      const key = getCatalogDraftKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+        category: categoria,
+        itemId: currentEditingItemId,
+      });
+
+      window.localStorage.removeItem(key);
+    }
   }
 
   async function handleSaveItem(itemId: string) {
@@ -340,9 +417,47 @@ export default function CatalogoCategoriaPage() {
       return;
     }
 
-    setSuccessText("Item atualizado com sucesso.");
+    const pendingFiles = selectedCatalogFilesByItemId[itemId] || [];
+
+    if (pendingFiles.length > 0) {
+      try {
+        await uploadCatalogFiles(itemId, pendingFiles);
+      } catch (uploadError: any) {
+        setErrorText(
+          uploadError?.message ??
+            "Os dados do item foram salvos, mas houve erro ao enviar as novas fotos."
+        );
+        setSavingItemId(null);
+        await fetchData();
+        return;
+      }
+    }
+
+    setSelectedCatalogFilesByItemId((prev) => {
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+
+    if (typeof window !== "undefined") {
+      const key = getCatalogDraftKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+        category: categoria,
+        itemId,
+      });
+
+      window.localStorage.removeItem(key);
+    }
+
+    setSuccessText(
+      pendingFiles.length > 0
+        ? "Item e fotos atualizados com sucesso."
+        : "Item atualizado com sucesso."
+    );
     setSavingItemId(null);
-    cancelEditing();
+    setEditingItemId(null);
+    setEditItemForm(null);
     await fetchData();
   }
 
