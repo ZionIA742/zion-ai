@@ -2,10 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type PoolRow = {
   id: string;
+  organization_id: string;
+  store_id: string;
   name: string | null;
   width_m: number | null;
   length_m: number | null;
@@ -25,6 +28,8 @@ type PoolRow = {
 type PoolPhotoRow = {
   id: string;
   pool_id: string;
+  organization_id: string;
+  store_id: string;
   storage_path: string;
   file_name: string | null;
   file_size_bytes: number | null;
@@ -44,7 +49,7 @@ type EditPoolForm = {
 const STORAGE_BUCKET = "pool-photos";
 const MAX_POOL_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
-const ACTIVE_EDITING_POOL_KEY = "zion:piscinas:active-editing-pool-id";
+const ACTIVE_EDITING_POOL_KEY_PREFIX = "zion:piscinas:active-editing-pool-id";
 
 function moneyBRL(value: number | null) {
   if (value == null) return "Sem preço";
@@ -142,11 +147,21 @@ function buildEditForm(pool: PoolRow): EditPoolForm {
   };
 }
 
-function getPoolDraftKey(poolId: string) {
-  return `zion:pool-edit-draft:${poolId}`;
+function getPoolDraftKey(params: { organizationId: string; storeId: string; poolId: string }) {
+  return `zion:pool-edit-draft:${params.organizationId}:${params.storeId}:${params.poolId}`;
+}
+
+function getActiveEditingPoolKey(params: { organizationId: string; storeId: string }) {
+  return `${ACTIVE_EDITING_POOL_KEY_PREFIX}:${params.organizationId}:${params.storeId}`;
 }
 
 export default function PiscinasPage() {
+  const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
+
+  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
+  const ORGANIZATION_ID = organizationId ?? "";
+  const STORE_ID = activeStoreId ?? "";
+
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [successText, setSuccessText] = useState<string | null>(null);
@@ -164,10 +179,20 @@ export default function PiscinasPage() {
   const [deletingPoolPhotoId, setDeletingPoolPhotoId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (storeLoading) return;
+
+    if (!hasValidStoreContext) {
+      setLoading(false);
+      setErrorText("Nenhuma loja ativa foi encontrada para carregar as piscinas.");
+      return;
+    }
+
     void fetchData();
-  }, []);
+  }, [storeLoading, hasValidStoreContext, ORGANIZATION_ID, STORE_ID]);
 
   async function fetchData() {
+    if (!hasValidStoreContext) return;
+
     setLoading(true);
     setErrorText(null);
 
@@ -175,12 +200,18 @@ export default function PiscinasPage() {
       supabase
         .from("pools")
         .select(
-          "id,name,width_m,length_m,depth_m,shape,material,max_capacity_l,weight_kg,price,description,is_active,track_stock,stock_quantity,created_at"
+          "id,organization_id,store_id,name,width_m,length_m,depth_m,shape,material,max_capacity_l,weight_kg,price,description,is_active,track_stock,stock_quantity,created_at"
         )
+        .eq("organization_id", ORGANIZATION_ID)
+        .eq("store_id", STORE_ID)
         .order("created_at", { ascending: false }),
       supabase
         .from("pool_photos")
-        .select("id,pool_id,storage_path,file_name,file_size_bytes,sort_order,created_at")
+        .select(
+          "id,pool_id,organization_id,store_id,storage_path,file_name,file_size_bytes,sort_order,created_at"
+        )
+        .eq("organization_id", ORGANIZATION_ID)
+        .eq("store_id", STORE_ID)
         .order("sort_order", { ascending: true }),
     ]);
 
@@ -221,31 +252,74 @@ export default function PiscinasPage() {
   }, [photos]);
 
   useEffect(() => {
-    if (!editingPoolId || !editPoolForm || typeof window === "undefined") return;
+    if (!editingPoolId || !editPoolForm || typeof window === "undefined" || !hasValidStoreContext) {
+      return;
+    }
 
     window.localStorage.setItem(
-      getPoolDraftKey(editingPoolId),
+      getPoolDraftKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+        poolId: editingPoolId,
+      }),
       JSON.stringify(editPoolForm)
     );
-    window.localStorage.setItem(ACTIVE_EDITING_POOL_KEY, editingPoolId);
-  }, [editingPoolId, editPoolForm]);
+
+    window.localStorage.setItem(
+      getActiveEditingPoolKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+      }),
+      editingPoolId
+    );
+  }, [editingPoolId, editPoolForm, hasValidStoreContext, ORGANIZATION_ID, STORE_ID]);
 
   useEffect(() => {
-    if (loading || pools.length === 0 || typeof window === "undefined") return;
-    if (editingPoolId) return;
+    if (
+      loading ||
+      pools.length === 0 ||
+      typeof window === "undefined" ||
+      !hasValidStoreContext ||
+      editingPoolId
+    ) {
+      return;
+    }
 
-    const savedEditingPoolId = window.localStorage.getItem(ACTIVE_EDITING_POOL_KEY);
+    const savedEditingPoolId = window.localStorage.getItem(
+      getActiveEditingPoolKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+      })
+    );
+
     if (!savedEditingPoolId) return;
 
     const pool = pools.find((item) => item.id === savedEditingPoolId);
     if (!pool) {
-      window.localStorage.removeItem(ACTIVE_EDITING_POOL_KEY);
-      window.localStorage.removeItem(getPoolDraftKey(savedEditingPoolId));
+      window.localStorage.removeItem(
+        getActiveEditingPoolKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+        })
+      );
+      window.localStorage.removeItem(
+        getPoolDraftKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          poolId: savedEditingPoolId,
+        })
+      );
       return;
     }
 
     const fallbackForm = buildEditForm(pool);
-    const savedDraft = window.localStorage.getItem(getPoolDraftKey(pool.id));
+    const savedDraft = window.localStorage.getItem(
+      getPoolDraftKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+        poolId: pool.id,
+      })
+    );
 
     setEditingPoolId(pool.id);
 
@@ -273,25 +347,37 @@ export default function PiscinasPage() {
     } catch {
       setEditPoolForm(fallbackForm);
     }
-  }, [loading, pools, editingPoolId]);
+  }, [loading, pools, editingPoolId, hasValidStoreContext, ORGANIZATION_ID, STORE_ID]);
 
   function startEditing(pool: PoolRow) {
     setErrorText(null);
     setSuccessText(null);
     setEditingPoolId(pool.id);
 
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(ACTIVE_EDITING_POOL_KEY, pool.id);
+    if (typeof window !== "undefined" && hasValidStoreContext) {
+      window.localStorage.setItem(
+        getActiveEditingPoolKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+        }),
+        pool.id
+      );
     }
 
     const fallbackForm = buildEditForm(pool);
 
-    if (typeof window === "undefined") {
+    if (typeof window === "undefined" || !hasValidStoreContext) {
       setEditPoolForm(fallbackForm);
       return;
     }
 
-    const savedDraft = window.localStorage.getItem(getPoolDraftKey(pool.id));
+    const savedDraft = window.localStorage.getItem(
+      getPoolDraftKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+        poolId: pool.id,
+      })
+    );
 
     if (!savedDraft) {
       setEditPoolForm(fallbackForm);
@@ -331,14 +417,25 @@ export default function PiscinasPage() {
       return next;
     });
 
-    if (currentEditingPoolId && typeof window !== "undefined") {
-      window.localStorage.removeItem(getPoolDraftKey(currentEditingPoolId));
-      window.localStorage.removeItem(ACTIVE_EDITING_POOL_KEY);
+    if (currentEditingPoolId && typeof window !== "undefined" && hasValidStoreContext) {
+      window.localStorage.removeItem(
+        getPoolDraftKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          poolId: currentEditingPoolId,
+        })
+      );
+      window.localStorage.removeItem(
+        getActiveEditingPoolKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+        })
+      );
     }
   }
 
   async function handleSavePool(poolId: string) {
-    if (!editPoolForm) return;
+    if (!editPoolForm || !hasValidStoreContext) return;
 
     setErrorText(null);
     setSuccessText(null);
@@ -382,7 +479,9 @@ export default function PiscinasPage() {
         track_stock: editPoolForm.track_stock,
         stock_quantity: editPoolForm.track_stock ? stockQuantityValue : null,
       })
-      .eq("id", poolId);
+      .eq("id", poolId)
+      .eq("organization_id", ORGANIZATION_ID)
+      .eq("store_id", STORE_ID);
 
     if (error) {
       setErrorText(error.message ?? "Erro ao salvar piscina.");
@@ -413,8 +512,19 @@ export default function PiscinasPage() {
     });
 
     if (typeof window !== "undefined") {
-      window.localStorage.removeItem(getPoolDraftKey(poolId));
-      window.localStorage.removeItem(ACTIVE_EDITING_POOL_KEY);
+      window.localStorage.removeItem(
+        getPoolDraftKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          poolId,
+        })
+      );
+      window.localStorage.removeItem(
+        getActiveEditingPoolKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+        })
+      );
     }
 
     setSuccessText(
@@ -434,9 +544,7 @@ export default function PiscinasPage() {
     const totalAfterSelection = existingCount + fileList.length;
 
     if (totalAfterSelection > MAX_POOL_PHOTOS) {
-      setErrorText(
-        `Essa piscina pode ter no máximo ${MAX_POOL_PHOTOS} fotos no total.`
-      );
+      setErrorText(`Essa piscina pode ter no máximo ${MAX_POOL_PHOTOS} fotos no total.`);
       event.target.value = "";
       return;
     }
@@ -463,6 +571,8 @@ export default function PiscinasPage() {
   }
 
   async function uploadPoolFiles(poolId: string, files: File[]) {
+    if (!hasValidStoreContext) throw new Error("Loja ativa não encontrada.");
+
     const existingPhotos = photosByPoolId[poolId] || [];
     let nextSortOrder = existingPhotos.length;
 
@@ -482,6 +592,8 @@ export default function PiscinasPage() {
 
       const { error: metadataError } = await supabase.from("pool_photos").insert({
         pool_id: poolId,
+        organization_id: ORGANIZATION_ID,
+        store_id: STORE_ID,
         storage_path: storagePath,
         file_name: file.name,
         file_size_bytes: file.size,
@@ -521,9 +633,20 @@ export default function PiscinasPage() {
   }
 
   async function handleDeletePoolPhoto(photo: PoolPhotoRow) {
+    if (!hasValidStoreContext) return;
+
     setErrorText(null);
     setSuccessText(null);
     setDeletingPoolPhotoId(photo.id);
+
+    const belongsToActiveStore =
+      photo.organization_id === ORGANIZATION_ID && photo.store_id === STORE_ID;
+
+    if (!belongsToActiveStore) {
+      setErrorText("Esta foto não pertence à loja ativa.");
+      setDeletingPoolPhotoId(null);
+      return;
+    }
 
     const { error: storageError } = await supabase.storage
       .from(STORAGE_BUCKET)
@@ -538,7 +661,9 @@ export default function PiscinasPage() {
     const { error: dbError } = await supabase
       .from("pool_photos")
       .delete()
-      .eq("id", photo.id);
+      .eq("id", photo.id)
+      .eq("organization_id", ORGANIZATION_ID)
+      .eq("store_id", STORE_ID);
 
     if (dbError) {
       setErrorText(dbError.message ?? "Erro ao excluir registro da foto.");
@@ -549,6 +674,30 @@ export default function PiscinasPage() {
     setSuccessText("Foto excluída com sucesso.");
     setDeletingPoolPhotoId(null);
     await fetchData();
+  }
+
+  if (storeLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100">
+        <div className="mx-auto max-w-7xl px-6 py-6">
+          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+            Carregando loja ativa...
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!hasValidStoreContext) {
+    return (
+      <div className="min-h-screen bg-gray-100">
+        <div className="mx-auto max-w-7xl px-6 py-6">
+          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+            Nenhuma loja ativa encontrada para carregar as piscinas.
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -855,9 +1004,7 @@ export default function PiscinasPage() {
                         <div className="text-sm font-semibold text-gray-900">
                           Fotos da piscina
                         </div>
-                        <div className="text-xs text-gray-500">
-                          Até 10 fotos por piscina
-                        </div>
+                        <div className="text-xs text-gray-500">Até 10 fotos por piscina</div>
                       </div>
 
                       {isEditing ? (

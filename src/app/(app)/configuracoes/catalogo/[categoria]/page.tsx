@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type CatalogItemMetadata = {
@@ -47,12 +48,10 @@ type EditCatalogForm = {
   stock_quantity: string;
 };
 
-const ORGANIZATION_ID = "b02252ce-0e73-4371-9e23-f1009e7b1698";
-const STORE_ID = "6ac8f4b1-e50f-42c0-9cae-78951d6daf7b";
 const STORAGE_BUCKET = "store-catalog-photos";
 const MAX_CATALOG_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
-const ACTIVE_EDITING_CATALOG_ITEM_KEY = "zion:catalogo:active-editing-item-id";
+const ACTIVE_EDITING_CATALOG_ITEM_KEY_PREFIX = "zion:catalogo:active-editing-item-id";
 
 function normalizeCategory(category: string | null | undefined) {
   if (category === "acessorios") return "acessorios";
@@ -177,13 +176,27 @@ function getCatalogDraftKey(params: {
   return `zion:catalog-edit-draft:${params.organizationId}:${params.storeId}:${params.category}:${params.itemId}`;
 }
 
+function getActiveEditingCatalogItemKey(params: {
+  organizationId: string;
+  storeId: string;
+  category: string;
+}) {
+  return `${ACTIVE_EDITING_CATALOG_ITEM_KEY_PREFIX}:${params.organizationId}:${params.storeId}:${params.category}`;
+}
+
 export default function CatalogoCategoriaPage() {
+  const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
+
   const params = useParams();
   const categoriaParam = Array.isArray(params?.categoria)
     ? params.categoria[0]
     : (params?.categoria as string | undefined);
 
   const categoria = normalizeCategory(categoriaParam);
+
+  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
+  const ORGANIZATION_ID = organizationId ?? "";
+  const STORE_ID = activeStoreId ?? "";
 
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -202,10 +215,20 @@ export default function CatalogoCategoriaPage() {
   const [deletingCatalogPhotoId, setDeletingCatalogPhotoId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (storeLoading) return;
+
+    if (!hasValidStoreContext) {
+      setLoading(false);
+      setErrorText("Nenhuma loja ativa foi encontrada para carregar o catálogo.");
+      return;
+    }
+
     void fetchData();
-  }, [categoria]);
+  }, [storeLoading, hasValidStoreContext, ORGANIZATION_ID, STORE_ID, categoria]);
 
   async function fetchData() {
+    if (!hasValidStoreContext) return;
+
     setLoading(true);
     setErrorText(null);
 
@@ -243,8 +266,13 @@ export default function CatalogoCategoriaPage() {
       (item) => normalizeCategory(item.metadata?.categoria) === categoria
     );
 
+    const validItemIds = new Set(filteredItems.map((item) => item.id));
+    const filteredPhotos = ((photosResult.data || []) as CatalogItemPhotoRow[]).filter((photo) =>
+      validItemIds.has(photo.catalog_item_id)
+    );
+
     setItems(filteredItems);
-    setPhotos((photosResult.data || []) as CatalogItemPhotoRow[]);
+    setPhotos(filteredPhotos);
     setLoading(false);
   }
 
@@ -268,7 +296,9 @@ export default function CatalogoCategoriaPage() {
   }, [photos]);
 
   useEffect(() => {
-    if (!editingItemId || !editItemForm || typeof window === "undefined") return;
+    if (!editingItemId || !editItemForm || typeof window === "undefined" || !hasValidStoreContext) {
+      return;
+    }
 
     const key = getCatalogDraftKey({
       organizationId: ORGANIZATION_ID,
@@ -278,26 +308,54 @@ export default function CatalogoCategoriaPage() {
     });
 
     window.localStorage.setItem(key, JSON.stringify(editItemForm));
-    window.localStorage.setItem(ACTIVE_EDITING_CATALOG_ITEM_KEY, editingItemId);
-  }, [editingItemId, editItemForm, categoria]);
+    window.localStorage.setItem(
+      getActiveEditingCatalogItemKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+        category: categoria,
+      }),
+      editingItemId
+    );
+  }, [editingItemId, editItemForm, categoria, hasValidStoreContext, ORGANIZATION_ID, STORE_ID]);
 
   useEffect(() => {
-    if (loading || items.length === 0 || typeof window === "undefined") return;
-    if (editingItemId) return;
+    if (
+      loading ||
+      items.length === 0 ||
+      typeof window === "undefined" ||
+      !hasValidStoreContext ||
+      editingItemId
+    ) {
+      return;
+    }
 
-    const savedEditingItemId = window.localStorage.getItem(ACTIVE_EDITING_CATALOG_ITEM_KEY);
+    const savedEditingItemId = window.localStorage.getItem(
+      getActiveEditingCatalogItemKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+        category: categoria,
+      })
+    );
+
     if (!savedEditingItemId) return;
 
     const item = items.find((current) => current.id === savedEditingItemId);
     if (!item) {
-      window.localStorage.removeItem(ACTIVE_EDITING_CATALOG_ITEM_KEY);
-      const orphanKey = getCatalogDraftKey({
-        organizationId: ORGANIZATION_ID,
-        storeId: STORE_ID,
-        category: categoria,
-        itemId: savedEditingItemId,
-      });
-      window.localStorage.removeItem(orphanKey);
+      window.localStorage.removeItem(
+        getActiveEditingCatalogItemKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          category: categoria,
+        })
+      );
+      window.localStorage.removeItem(
+        getCatalogDraftKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          category: categoria,
+          itemId: savedEditingItemId,
+        })
+      );
       return;
     }
 
@@ -337,20 +395,27 @@ export default function CatalogoCategoriaPage() {
     } catch {
       setEditItemForm(fallbackForm);
     }
-  }, [loading, items, editingItemId, categoria]);
+  }, [loading, items, editingItemId, categoria, hasValidStoreContext, ORGANIZATION_ID, STORE_ID]);
 
   function startEditing(item: CatalogItemRow) {
     setErrorText(null);
     setSuccessText(null);
     setEditingItemId(item.id);
 
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(ACTIVE_EDITING_CATALOG_ITEM_KEY, item.id);
+    if (typeof window !== "undefined" && hasValidStoreContext) {
+      window.localStorage.setItem(
+        getActiveEditingCatalogItemKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          category: categoria,
+        }),
+        item.id
+      );
     }
 
     const fallbackForm = buildEditForm(item);
 
-    if (typeof window === "undefined") {
+    if (typeof window === "undefined" || !hasValidStoreContext) {
       setEditItemForm(fallbackForm);
       return;
     }
@@ -403,7 +468,7 @@ export default function CatalogoCategoriaPage() {
       return next;
     });
 
-    if (currentEditingItemId && typeof window !== "undefined") {
+    if (currentEditingItemId && typeof window !== "undefined" && hasValidStoreContext) {
       const key = getCatalogDraftKey({
         organizationId: ORGANIZATION_ID,
         storeId: STORE_ID,
@@ -412,12 +477,18 @@ export default function CatalogoCategoriaPage() {
       });
 
       window.localStorage.removeItem(key);
-      window.localStorage.removeItem(ACTIVE_EDITING_CATALOG_ITEM_KEY);
+      window.localStorage.removeItem(
+        getActiveEditingCatalogItemKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          category: categoria,
+        })
+      );
     }
   }
 
   async function handleSaveItem(itemId: string) {
-    if (!editItemForm) return;
+    if (!editItemForm || !hasValidStoreContext) return;
 
     setErrorText(null);
     setSuccessText(null);
@@ -513,7 +584,13 @@ export default function CatalogoCategoriaPage() {
       });
 
       window.localStorage.removeItem(key);
-      window.localStorage.removeItem(ACTIVE_EDITING_CATALOG_ITEM_KEY);
+      window.localStorage.removeItem(
+        getActiveEditingCatalogItemKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          category: categoria,
+        })
+      );
     }
 
     setSuccessText(
@@ -620,9 +697,19 @@ export default function CatalogoCategoriaPage() {
   }
 
   async function handleDeleteCatalogPhoto(photo: CatalogItemPhotoRow) {
+    if (!hasValidStoreContext) return;
+
     setErrorText(null);
     setSuccessText(null);
     setDeletingCatalogPhotoId(photo.id);
+
+    const belongsToVisibleItem = items.some((item) => item.id === photo.catalog_item_id);
+
+    if (!belongsToVisibleItem) {
+      setErrorText("Esta foto não pertence à loja ativa.");
+      setDeletingCatalogPhotoId(null);
+      return;
+    }
 
     const { error: storageError } = await supabase.storage
       .from(STORAGE_BUCKET)
@@ -637,7 +724,8 @@ export default function CatalogoCategoriaPage() {
     const { error: dbError } = await supabase
       .from("store_catalog_item_photos")
       .delete()
-      .eq("id", photo.id);
+      .eq("id", photo.id)
+      .eq("catalog_item_id", photo.catalog_item_id);
 
     if (dbError) {
       setErrorText(dbError.message ?? "Erro ao excluir registro da foto.");
@@ -648,6 +736,30 @@ export default function CatalogoCategoriaPage() {
     setSuccessText("Foto excluída com sucesso.");
     setDeletingCatalogPhotoId(null);
     await fetchData();
+  }
+
+  if (storeLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100">
+        <div className="mx-auto max-w-7xl px-6 py-6">
+          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+            Carregando loja ativa...
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!hasValidStoreContext) {
+    return (
+      <div className="min-h-screen bg-gray-100">
+        <div className="mx-auto max-w-7xl px-6 py-6">
+          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+            Nenhuma loja ativa encontrada para carregar o catálogo.
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -929,9 +1041,7 @@ export default function CatalogoCategoriaPage() {
                         <div className="text-sm font-semibold text-gray-900">
                           Fotos do item
                         </div>
-                        <div className="text-xs text-gray-500">
-                          Até 10 fotos por item
-                        </div>
+                        <div className="text-xs text-gray-500">Até 10 fotos por item</div>
                       </div>
 
                       {isEditing ? (
