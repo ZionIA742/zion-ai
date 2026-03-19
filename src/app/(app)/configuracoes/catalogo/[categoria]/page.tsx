@@ -52,6 +52,7 @@ const STORE_ID = "6ac8f4b1-e50f-42c0-9cae-78951d6daf7b";
 const STORAGE_BUCKET = "store-catalog-photos";
 const MAX_CATALOG_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+const ACTIVE_EDITING_CATALOG_ITEM_KEY = "zion:catalogo:active-editing-item-id";
 
 function normalizeCategory(category: string | null | undefined) {
   if (category === "acessorios") return "acessorios";
@@ -277,12 +278,75 @@ export default function CatalogoCategoriaPage() {
     });
 
     window.localStorage.setItem(key, JSON.stringify(editItemForm));
+    window.localStorage.setItem(ACTIVE_EDITING_CATALOG_ITEM_KEY, editingItemId);
   }, [editingItemId, editItemForm, categoria]);
+
+  useEffect(() => {
+    if (loading || items.length === 0 || typeof window === "undefined") return;
+    if (editingItemId) return;
+
+    const savedEditingItemId = window.localStorage.getItem(ACTIVE_EDITING_CATALOG_ITEM_KEY);
+    if (!savedEditingItemId) return;
+
+    const item = items.find((current) => current.id === savedEditingItemId);
+    if (!item) {
+      window.localStorage.removeItem(ACTIVE_EDITING_CATALOG_ITEM_KEY);
+      const orphanKey = getCatalogDraftKey({
+        organizationId: ORGANIZATION_ID,
+        storeId: STORE_ID,
+        category: categoria,
+        itemId: savedEditingItemId,
+      });
+      window.localStorage.removeItem(orphanKey);
+      return;
+    }
+
+    const fallbackForm = buildEditForm(item);
+    const key = getCatalogDraftKey({
+      organizationId: ORGANIZATION_ID,
+      storeId: STORE_ID,
+      category: categoria,
+      itemId: item.id,
+    });
+    const savedDraft = window.localStorage.getItem(key);
+
+    setEditingItemId(item.id);
+
+    if (!savedDraft) {
+      setEditItemForm(fallbackForm);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(savedDraft) as EditCatalogForm;
+      setEditItemForm({
+        name: parsed?.name ?? fallbackForm.name,
+        sku: parsed?.sku ?? fallbackForm.sku,
+        description: parsed?.description ?? fallbackForm.description,
+        price: parsed?.price ?? fallbackForm.price,
+        is_active:
+          typeof parsed?.is_active === "boolean"
+            ? parsed.is_active
+            : fallbackForm.is_active,
+        track_stock:
+          typeof parsed?.track_stock === "boolean"
+            ? parsed.track_stock
+            : fallbackForm.track_stock,
+        stock_quantity: parsed?.stock_quantity ?? fallbackForm.stock_quantity,
+      });
+    } catch {
+      setEditItemForm(fallbackForm);
+    }
+  }, [loading, items, editingItemId, categoria]);
 
   function startEditing(item: CatalogItemRow) {
     setErrorText(null);
     setSuccessText(null);
     setEditingItemId(item.id);
+
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(ACTIVE_EDITING_CATALOG_ITEM_KEY, item.id);
+    }
 
     const fallbackForm = buildEditForm(item);
 
@@ -348,6 +412,7 @@ export default function CatalogoCategoriaPage() {
       });
 
       window.localStorage.removeItem(key);
+      window.localStorage.removeItem(ACTIVE_EDITING_CATALOG_ITEM_KEY);
     }
   }
 
@@ -448,6 +513,7 @@ export default function CatalogoCategoriaPage() {
       });
 
       window.localStorage.removeItem(key);
+      window.localStorage.removeItem(ACTIVE_EDITING_CATALOG_ITEM_KEY);
     }
 
     setSuccessText(

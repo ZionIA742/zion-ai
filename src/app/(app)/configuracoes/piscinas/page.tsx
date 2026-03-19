@@ -44,6 +44,7 @@ type EditPoolForm = {
 const STORAGE_BUCKET = "pool-photos";
 const MAX_POOL_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+const ACTIVE_EDITING_POOL_KEY = "zion:piscinas:active-editing-pool-id";
 
 function moneyBRL(value: number | null) {
   if (value == null) return "Sem preço";
@@ -226,12 +227,62 @@ export default function PiscinasPage() {
       getPoolDraftKey(editingPoolId),
       JSON.stringify(editPoolForm)
     );
+    window.localStorage.setItem(ACTIVE_EDITING_POOL_KEY, editingPoolId);
   }, [editingPoolId, editPoolForm]);
+
+  useEffect(() => {
+    if (loading || pools.length === 0 || typeof window === "undefined") return;
+    if (editingPoolId) return;
+
+    const savedEditingPoolId = window.localStorage.getItem(ACTIVE_EDITING_POOL_KEY);
+    if (!savedEditingPoolId) return;
+
+    const pool = pools.find((item) => item.id === savedEditingPoolId);
+    if (!pool) {
+      window.localStorage.removeItem(ACTIVE_EDITING_POOL_KEY);
+      window.localStorage.removeItem(getPoolDraftKey(savedEditingPoolId));
+      return;
+    }
+
+    const fallbackForm = buildEditForm(pool);
+    const savedDraft = window.localStorage.getItem(getPoolDraftKey(pool.id));
+
+    setEditingPoolId(pool.id);
+
+    if (!savedDraft) {
+      setEditPoolForm(fallbackForm);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(savedDraft) as EditPoolForm;
+      setEditPoolForm({
+        name: parsed?.name ?? fallbackForm.name,
+        description: parsed?.description ?? fallbackForm.description,
+        price: parsed?.price ?? fallbackForm.price,
+        is_active:
+          typeof parsed?.is_active === "boolean"
+            ? parsed.is_active
+            : fallbackForm.is_active,
+        track_stock:
+          typeof parsed?.track_stock === "boolean"
+            ? parsed.track_stock
+            : fallbackForm.track_stock,
+        stock_quantity: parsed?.stock_quantity ?? fallbackForm.stock_quantity,
+      });
+    } catch {
+      setEditPoolForm(fallbackForm);
+    }
+  }, [loading, pools, editingPoolId]);
 
   function startEditing(pool: PoolRow) {
     setErrorText(null);
     setSuccessText(null);
     setEditingPoolId(pool.id);
+
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(ACTIVE_EDITING_POOL_KEY, pool.id);
+    }
 
     const fallbackForm = buildEditForm(pool);
 
@@ -282,6 +333,7 @@ export default function PiscinasPage() {
 
     if (currentEditingPoolId && typeof window !== "undefined") {
       window.localStorage.removeItem(getPoolDraftKey(currentEditingPoolId));
+      window.localStorage.removeItem(ACTIVE_EDITING_POOL_KEY);
     }
   }
 
@@ -362,6 +414,7 @@ export default function PiscinasPage() {
 
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(getPoolDraftKey(poolId));
+      window.localStorage.removeItem(ACTIVE_EDITING_POOL_KEY);
     }
 
     setSuccessText(
