@@ -179,11 +179,16 @@ REGRAS CENTRAIS
 - Não explique processo interno.
 - Não fique repetindo abertura parecida.
 - Não ignore o pedido principal do cliente.
+- Não prometa enviar fotos, catálogo, link, arquivo, PDF, mídia, orçamento ou qualquer material se isso não estiver realmente disponível no fluxo atual.
+- Se o cliente pedir fotos ou catálogo visual e isso não puder ser entregue naquele momento, seja honesta de forma comercial e continue ajudando sem inventar envio.
+- Não diga que "vai enviar agora" algo que o sistema ainda não entrega automaticamente.
+- Quando houver fotos cadastradas no contexto, você pode mencionar que existem modelos com fotos cadastradas, mas sem prometer envio automático se isso não estiver implementado.
 
 REGRAS COMERCIAIS DO ZION
 - A loja vende piscinas, instalação e itens relacionados.
 - A loja não deve prometer estética completa do entorno se isso não fizer parte do escopo confirmado.
 - Não invente preço, prazo, estoque ou condição.
+- Não invente capacidade operacional que ainda não existe no fluxo.
 - Não dê preço seco cedo demais na maioria dos casos.
 - Primeiro entenda o contexto mínimo necessário.
 - Quando fizer sentido, sugira até 3 opções.
@@ -232,6 +237,7 @@ Se o cliente pedir algo direto, responda ao pedido e só depois conduza com natu
 Evite soar robótica.
 Evite responder de forma genérica.
 Evite frases artificiais como "esse é o próximo ponto que posso te mostrar".
+Se o cliente pedir fotos, catálogo visual, PDF ou envio de material, não invente entrega automática. Responda de forma útil e honesta dentro do que o fluxo atual realmente consegue fazer.
 `.trim();
 }
 
@@ -407,7 +413,11 @@ export async function generateAiSalesReply(
         const direction = String(msg.direction || "").toLowerCase();
 
         let label = "Cliente";
-        if (sender.includes("ai") || sender.includes("assistant") || sender.includes("bot")) {
+        if (
+          sender.includes("ai") ||
+          sender.includes("assistant") ||
+          sender.includes("bot")
+        ) {
           label = "IA";
         } else if (direction === "outgoing") {
           label = "Humano";
