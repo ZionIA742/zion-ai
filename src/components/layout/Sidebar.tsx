@@ -23,6 +23,7 @@ const items = [
   { label: "Dashboard", href: "/dashboard" },
   { label: "CRM", href: "/crm" },
   { label: "Inbox", href: "/inbox" },
+  { label: "Agenda", href: "/schedule" },
   { label: "Configurações", href: "/configuracoes" },
   { label: "Onboarding", href: "/onboarding" },
 ];
