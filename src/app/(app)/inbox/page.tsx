@@ -14,6 +14,8 @@ type InboxRow = {
   conversation_created_at: string | null;
   last_message_at: string | null;
   last_message_preview: string | null;
+  last_message_direction: string | null;
+  last_message_sender: string | null;
 };
 
 type LeadRow = {
@@ -31,6 +33,13 @@ function formatDateTime(value: string | null) {
 function shortId(id: string) {
   if (!id) return "-";
   return id.slice(0, 8);
+}
+
+function isWaitingHumanAttention(row: InboxRow) {
+  return (
+    row.is_human_active === true &&
+    String(row.last_message_direction || "").toLowerCase() === "incoming"
+  );
 }
 
 export default function InboxPage() {
@@ -139,6 +148,10 @@ export default function InboxPage() {
     };
   }, [canLoadInbox, loadInbox]);
 
+  const waitingHumanAttentionCount = useMemo(() => {
+    return rows.filter(isWaitingHumanAttention).length;
+  }, [rows]);
+
   return (
     <div className="min-h-screen bg-gray-100">
       <div className="mx-auto max-w-7xl px-6 py-6">
@@ -177,6 +190,17 @@ export default function InboxPage() {
           </div>
         </div>
 
+        {waitingHumanAttentionCount > 0 && !loading && !storeLoading ? (
+          <div className="mb-4 rounded-2xl bg-amber-50 p-4 text-amber-900 ring-1 ring-amber-200">
+            <div className="text-sm font-semibold">
+              Você tem {waitingHumanAttentionCount} conversa(s) com humano ativo aguardando resposta.
+            </div>
+            <div className="mt-1 text-sm">
+              Essas conversas estão destacadas abaixo.
+            </div>
+          </div>
+        ) : null}
+
         {errorText && (
           <div className="mb-4 rounded-xl bg-red-50 p-4 text-red-800 ring-1 ring-red-200">
             {errorText}
@@ -192,6 +216,7 @@ export default function InboxPage() {
                 <th className="px-4 py-3 font-semibold">Modo</th>
                 <th className="px-4 py-3 font-semibold">Última mensagem</th>
                 <th className="px-4 py-3 font-semibold">Preview</th>
+                <th className="px-4 py-3 font-semibold">Alerta</th>
                 <th className="px-4 py-3 font-semibold text-right">Ação</th>
               </tr>
             </thead>
@@ -199,7 +224,7 @@ export default function InboxPage() {
             <tbody>
               {(loading || storeLoading) && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
+                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
                     Carregando inbox...
                   </td>
                 </tr>
@@ -207,7 +232,7 @@ export default function InboxPage() {
 
               {!loading && !storeLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
+                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
                     Nenhuma conversa encontrada para a loja atual.
                   </td>
                 </tr>
@@ -215,51 +240,76 @@ export default function InboxPage() {
 
               {!loading &&
                 !storeLoading &&
-                rows.map((row) => (
-                  <tr
-                    key={row.conversation_id}
-                    className="border-b border-black/5 hover:bg-gray-50"
-                  >
-                    <td className="px-4 py-3">
-                      <div className="font-semibold text-gray-900">
-                        {leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}
-                      </div>
+                rows.map((row) => {
+                  const needsAttention = isWaitingHumanAttention(row);
 
-                      <div className="text-xs text-gray-500">
-                        {shortId(row.conversation_id)}
-                      </div>
-                    </td>
+                  return (
+                    <tr
+                      key={row.conversation_id}
+                      className={`border-b border-black/5 ${
+                        needsAttention
+                          ? "bg-amber-50 hover:bg-amber-100"
+                          : "hover:bg-gray-50"
+                      }`}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-semibold text-gray-900">
+                          {leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}
+                        </div>
 
-                    <td className="px-4 py-3">{row.status || "-"}</td>
+                        <div className="text-xs text-gray-500">
+                          {shortId(row.conversation_id)}
+                        </div>
+                      </td>
 
-                    <td className="px-4 py-3">
-                      {row.is_human_active ? (
-                        <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-200">
-                          Humano
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
-                          IA
-                        </span>
-                      )}
-                    </td>
+                      <td className="px-4 py-3">{row.status || "-"}</td>
 
-                    <td className="px-4 py-3">{formatDateTime(row.last_message_at)}</td>
+                      <td className="px-4 py-3">
+                        {row.is_human_active ? (
+                          <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-200">
+                            Humano
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                            IA
+                          </span>
+                        )}
+                      </td>
 
-                    <td className="max-w-md truncate px-4 py-3 text-gray-600">
-                      {row.last_message_preview || "-"}
-                    </td>
+                      <td className="px-4 py-3">{formatDateTime(row.last_message_at)}</td>
 
-                    <td className="px-4 py-3 text-right">
-                      <Link
-                        href={`/crm/lead/${row.lead_id}`}
-                        className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-                      >
-                        Abrir
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
+                      <td className="max-w-md truncate px-4 py-3 text-gray-600">
+                        {row.last_message_preview || "-"}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        {needsAttention ? (
+                          <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-300">
+                            Nova mensagem
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">-</span>
+                        )}
+
+                        <div className="mt-1 text-[11px] text-gray-500">
+                          {row.last_message_direction || "-"}
+                          {row.last_message_sender
+                            ? ` • ${row.last_message_sender}`
+                            : ""}
+                        </div>
+                      </td>
+
+                      <td className="px-4 py-3 text-right">
+                        <Link
+                          href={`/crm/lead/${row.lead_id}`}
+                          className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+                        >
+                          Abrir
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>
