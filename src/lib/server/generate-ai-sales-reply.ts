@@ -133,10 +133,59 @@ function formatPoolLine(pool: PoolRow): string {
   }
 
   if (pool.photo_url) {
-    parts.push(`há imagem principal cadastrada no sistema`);
+    parts.push(`há contexto visual interno associado a esse modelo`);
   }
 
   return `- ${parts.join(" | ")}`;
+}
+
+function looksLikeCatalogRequest(text: string): boolean {
+  return (
+    text.includes("catálogo") ||
+    text.includes("catalogo") ||
+    text.includes("foto") ||
+    text.includes("fotos") ||
+    text.includes("imagem") ||
+    text.includes("imagens") ||
+    text.includes("modelo") ||
+    text.includes("modelos")
+  );
+}
+
+function looksLikeInstallationQuestion(text: string): boolean {
+  return (
+    text.includes("instalação") ||
+    text.includes("instalacao") ||
+    text.includes("instalar") ||
+    text.includes("instala") ||
+    text.includes("inclui instalação") ||
+    text.includes("inclui instalacao")
+  );
+}
+
+function looksLikePriceQuestion(text: string): boolean {
+  return (
+    text.includes("preço") ||
+    text.includes("preco") ||
+    text.includes("valor") ||
+    text.includes("quanto custa") ||
+    text.includes("custa") ||
+    text.includes("incluído") ||
+    text.includes("incluido")
+  );
+}
+
+function countQuestionIntents(lastCustomerMessage: string): number {
+  const text = lastCustomerMessage.toLowerCase();
+
+  const intents = [
+    looksLikeCatalogRequest(text),
+    looksLikeInstallationQuestion(text),
+    looksLikePriceQuestion(text),
+    text.includes("?"),
+  ];
+
+  return intents.filter(Boolean).length;
 }
 
 function buildSystemPrompt(args: {
@@ -149,6 +198,10 @@ function buildSystemPrompt(args: {
   availablePoolsText: string;
   lastCustomerMessage: string;
   behaviorInstructionBlock: string;
+  shouldLoadPools: boolean;
+  lastAiMessage: string | null;
+  lastAiListedPools: boolean;
+  questionIntentCount: number;
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
@@ -176,7 +229,7 @@ REGRAS CENTRAIS
 - Não diga que é IA.
 - Não diga que está seguindo framework.
 - Não use markdown pesado.
-- Não use listas longas no texto final.
+- Não use listas longas no texto final, exceto quando realmente ajudar muito.
 - Não explique processo interno.
 - Não use frases artificiais, burocráticas ou "certinhas demais".
 - Não use frases como "no momento não consigo", "neste momento o fluxo", "posso te mostrar na evolução", "quer que eu faça isso?".
@@ -256,17 +309,33 @@ ${args.recentHistory || "Sem histórico recente relevante."}
 OPÇÕES DE PISCINAS DISPONÍVEIS NO CONTEXTO
 ${args.availablePoolsText || "Nenhuma opção de piscina carregada no contexto."}
 
+SINAIS DO CONTEXTO ATUAL
+- ultima_mensagem_do_cliente_tem_multiplas_intencoes: ${args.questionIntentCount >= 2 ? "sim" : "não"}
+- pedido_de_catalogo_ou_fotos: ${looksLikeCatalogRequest(args.lastCustomerMessage.toLowerCase()) ? "sim" : "não"}
+- pergunta_sobre_instalacao: ${looksLikeInstallationQuestion(args.lastCustomerMessage.toLowerCase()) ? "sim" : "não"}
+- pergunta_sobre_preco: ${looksLikePriceQuestion(args.lastCustomerMessage.toLowerCase()) ? "sim" : "não"}
+- opcoes_de_piscina_carregadas_no_contexto: ${args.shouldLoadPools ? "sim" : "não"}
+- ultima_resposta_da_ia_listou_modelos: ${args.lastAiListedPools ? "sim" : "não"}
+
+ÚLTIMA RESPOSTA DA IA
+${args.lastAiMessage || "Sem resposta anterior da IA no histórico recente."}
+
 MENSAGEM MAIS RECENTE DO CLIENTE
 ${args.lastCustomerMessage}
 
 INSTRUÇÃO FINAL
 Responda como uma vendedora consultiva real.
 Se o cliente pedir algo direto, responda ao pedido e só depois conduza com naturalidade.
+Se a mensagem do cliente tiver 2 ou mais perguntas, responda essas perguntas primeiro em blocos curtos e claros.
 Evite soar robótica.
 Evite responder de forma genérica.
 Evite resposta com cara de aviso de sistema.
 Se o cliente pedir fotos, catálogo visual, PDF ou envio de material, não invente entrega automática e não enfatize a limitação técnica.
 Nesses casos, conduza o cliente com algo prático: tamanho, faixa de valor, material, uso principal, instalação ou perfil da piscina.
+Se a resposta anterior da IA já listou modelos, não repita a lista agora a menos que o cliente tenha pedido explicitamente outra comparação.
+Se o cliente perguntar sobre instalação e preço junto, responda ambos antes de conduzir.
+Se houver valor no contexto, trate como valor de referência.
+Se não houver confirmação sobre inclusão da instalação, diga isso de forma comercial e natural, sem parecer evasiva.
 Prefira terminar com uma condução concreta, como filtrar opções por tamanho, faixa de valor, material ou perfil de uso.
 `.trim();
 }
@@ -406,7 +475,7 @@ export async function generateAiSalesReply(
       .select("id, sender, content, direction, message_type, created_at")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
-      .limit(10);
+      .limit(12);
 
     if (recentMessagesError) {
       return {
@@ -439,6 +508,9 @@ export async function generateAiSalesReply(
     const behaviorInstructionBlock =
       buildBehaviorInstructionBlock(lastCustomerMessage);
 
+    const lastCustomerMessageNormalized = lastCustomerMessage.toLowerCase();
+    const questionIntentCount = countQuestionIntents(lastCustomerMessage);
+
     const recentHistory = orderedMessages
       .filter((msg) => String(msg.content || "").trim().length > 0)
       .map((msg) => {
@@ -460,22 +532,46 @@ export async function generateAiSalesReply(
       })
       .join("\n");
 
-    const lastCustomerMessageNormalized = lastCustomerMessage.toLowerCase();
+    const lastAiMessage =
+      [...orderedMessages]
+        .reverse()
+        .find((msg) => {
+          const sender = String(msg.sender || "").toLowerCase();
+          const direction = String(msg.direction || "").toLowerCase();
+
+          return (
+            String(msg.content || "").trim().length > 0 &&
+            (sender.includes("ai") ||
+              sender.includes("assistant") ||
+              sender.includes("bot") ||
+              direction === "outgoing")
+          );
+        })
+        ?.content?.trim() || null;
+
+    const lastAiListedPools =
+      !!lastAiMessage &&
+      (lastAiMessage.includes("material") ||
+        lastAiMessage.includes("formato") ||
+        lastAiMessage.includes("valor de referência") ||
+        lastAiMessage.includes("valor de referência:") ||
+        lastAiMessage.includes("tamanho aprox.") ||
+        lastAiMessage.includes("tamanho aproximado"));
 
     const customerSeemsToBeAskingPools =
       lastCustomerMessageNormalized.includes("piscina") ||
       lastCustomerMessageNormalized.includes("fibra") ||
       lastCustomerMessageNormalized.includes("vinil") ||
       lastCustomerMessageNormalized.includes("alvenaria") ||
-      lastCustomerMessageNormalized.includes("catálogo") ||
-      lastCustomerMessageNormalized.includes("catalogo") ||
-      lastCustomerMessageNormalized.includes("modelo") ||
-      lastCustomerMessageNormalized.includes("modelos");
+      looksLikeCatalogRequest(lastCustomerMessageNormalized);
+
+    const shouldLoadPools =
+      customerSeemsToBeAskingPools && !(lastAiListedPools && questionIntentCount >= 2);
 
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
     let poolCountUsed = 0;
 
-    if (customerSeemsToBeAskingPools) {
+    if (shouldLoadPools) {
       const { data: pools, error: poolsError } = await supabase
         .from("pools")
         .select(
@@ -519,6 +615,10 @@ export async function generateAiSalesReply(
       availablePoolsText,
       lastCustomerMessage,
       behaviorInstructionBlock,
+      shouldLoadPools,
+      lastAiMessage,
+      lastAiListedPools,
+      questionIntentCount,
     });
 
     const input = [
