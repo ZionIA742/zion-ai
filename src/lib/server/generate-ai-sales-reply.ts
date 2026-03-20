@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
+import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
 
 type ConversationRow = {
   id: string;
@@ -147,6 +148,7 @@ function buildSystemPrompt(args: {
   recentHistory: string;
   availablePoolsText: string;
   lastCustomerMessage: string;
+  behaviorInstructionBlock: string;
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
@@ -238,6 +240,9 @@ EXEMPLOS DE TOM RUIM
 - "Vou te mostrar as fotos agora."
 
 Se a resposta começar a soar como um desses exemplos ruins, reescreva antes de responder.
+
+BLOCO COMPORTAMENTAL OFICIAL DO ZION
+${args.behaviorInstructionBlock}
 
 DADOS IMPORTANTES DA LOJA
 ${onboardingSummary || "- sem dados adicionais do onboarding disponíveis"}
@@ -431,6 +436,9 @@ export async function generateAiSalesReply(
       };
     }
 
+    const behaviorInstructionBlock =
+      buildBehaviorInstructionBlock(lastCustomerMessage);
+
     const recentHistory = orderedMessages
       .filter((msg) => String(msg.content || "").trim().length > 0)
       .map((msg) => {
@@ -510,6 +518,7 @@ export async function generateAiSalesReply(
       recentHistory,
       availablePoolsText,
       lastCustomerMessage,
+      behaviorInstructionBlock,
     });
 
     const input = [
