@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
@@ -18,314 +19,102 @@ type InboxRow = {
   last_message_sender: string | null;
 };
 
-type LeadRow = {
-  id: string;
-  name: string | null;
-};
-
-function formatDateTime(value: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("pt-BR");
-}
-
-function shortId(id: string) {
-  if (!id) return "-";
-  return id.slice(0, 8);
-}
+const items = [
+  { label: "Dashboard", href: "/dashboard" },
+  { label: "CRM", href: "/crm" },
+  { label: "Inbox", href: "/inbox" },
+  { label: "Configurações", href: "/configuracoes" },
+  { label: "Onboarding", href: "/onboarding" },
+];
 
 function isPendingReply(row: InboxRow) {
   return String(row.last_message_direction || "").toLowerCase() === "incoming";
 }
 
-function formatDirection(value: string | null) {
-  const normalized = String(value || "").toLowerCase();
+export default function Sidebar() {
+  const pathname = usePathname();
+  const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
 
-  if (normalized === "incoming") return "Cliente";
-  if (normalized === "outgoing") return "Saída";
-  return "-";
-}
+  const [pendingReplyCount, setPendingReplyCount] = useState(0);
 
-export default function InboxPage() {
-  const {
-    loading: storeLoading,
-    error: storeError,
-    organizationId,
-    activeStoreId,
-    activeStore,
-  } = useStoreContext();
-
-  const [rows, setRows] = useState<InboxRow[]>([]);
-  const [leadNames, setLeadNames] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [errorText, setErrorText] = useState<string | null>(null);
-
-  const canLoadInbox = useMemo(() => {
+  const canLoadInboxCounter = useMemo(() => {
     return !storeLoading && !!organizationId;
   }, [storeLoading, organizationId]);
 
-  const loadInbox = useCallback(
-    async (options?: { silent?: boolean }) => {
-      const silent = options?.silent ?? false;
+  const loadInboxCounter = useCallback(async () => {
+    if (!canLoadInboxCounter || !organizationId) return;
 
-      if (!canLoadInbox || !organizationId) {
-        return;
-      }
+    const { data, error } = await supabase.rpc("panel_list_inbox", {
+      p_organization_id: organizationId,
+      p_store_id: activeStoreId ?? null,
+      p_limit: 100,
+      p_offset: 0,
+    });
 
-      if (silent) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
-      }
+    if (error) {
+      console.error("[Sidebar] panel_list_inbox error:", error);
+      return;
+    }
 
-      setErrorText(null);
-
-      const { data, error } = await supabase.rpc("panel_list_inbox", {
-        p_organization_id: organizationId,
-        p_store_id: activeStoreId ?? null,
-        p_limit: 100,
-        p_offset: 0,
-      });
-
-      if (error) {
-        console.error("[InboxPage] panel_list_inbox error:", error);
-        setErrorText(error.message);
-
-        if (silent) {
-          setRefreshing(false);
-        } else {
-          setLoading(false);
-        }
-        return;
-      }
-
-      const inboxRows = (data || []) as InboxRow[];
-      setRows(inboxRows);
-
-      const leadIds = [...new Set(inboxRows.map((row) => row.lead_id).filter(Boolean))];
-
-      if (leadIds.length > 0) {
-        const { data: leads, error: leadsError } = await supabase
-          .from("leads")
-          .select("id, name")
-          .in("id", leadIds);
-
-        if (leadsError) {
-          console.error("[InboxPage] erro ao carregar nomes dos leads:", leadsError);
-        }
-
-        const map: Record<string, string> = {};
-
-        (leads || []).forEach((lead: LeadRow) => {
-          map[lead.id] = lead.name || "Lead sem nome";
-        });
-
-        setLeadNames(map);
-      } else {
-        setLeadNames({});
-      }
-
-      if (silent) {
-        setRefreshing(false);
-      } else {
-        setLoading(false);
-      }
-    },
-    [canLoadInbox, organizationId, activeStoreId]
-  );
+    const rows = (data || []) as InboxRow[];
+    const count = rows.filter(isPendingReply).length;
+    setPendingReplyCount(count);
+  }, [canLoadInboxCounter, organizationId, activeStoreId]);
 
   useEffect(() => {
-    if (!canLoadInbox) return;
-    void loadInbox();
-  }, [canLoadInbox, loadInbox]);
+    if (!canLoadInboxCounter) return;
+    void loadInboxCounter();
+  }, [canLoadInboxCounter, loadInboxCounter]);
 
   useEffect(() => {
-    if (!canLoadInbox) return;
+    if (!canLoadInboxCounter) return;
 
     const interval = window.setInterval(() => {
-      void loadInbox({ silent: true });
+      void loadInboxCounter();
     }, 10000);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [canLoadInbox, loadInbox]);
-
-  const pendingReplyCount = useMemo(() => {
-    return rows.filter(isPendingReply).length;
-  }, [rows]);
+  }, [canLoadInboxCounter, loadInboxCounter]);
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-7xl px-6 py-6">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
+    <aside className="flex h-screen w-64 flex-col border-r border-gray-200 bg-white">
+      <div className="border-b border-gray-200 px-6 py-5">
+        <h1 className="text-xl font-bold text-gray-900">ZION</h1>
+        <p className="text-sm text-gray-500">Painel operacional</p>
+      </div>
 
-              {pendingReplyCount > 0 && !loading && !storeLoading ? (
-                <span className="inline-flex min-w-[28px] items-center justify-center rounded-full bg-amber-500 px-2.5 py-1 text-xs font-bold text-white">
+      <nav className="flex-1 space-y-2 p-4">
+        {items.map((item) => {
+          const isActive =
+            pathname === item.href || pathname.startsWith(`${item.href}/`);
+
+          const isInboxItem = item.href === "/inbox";
+          const showInboxBadge = isInboxItem && pendingReplyCount > 0;
+
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={[
+                "flex items-center justify-between rounded-lg px-4 py-3 text-sm font-medium transition",
+                isActive
+                  ? "bg-transparent text-black underline underline-offset-4 decoration-2"
+                  : "bg-transparent text-black hover:underline hover:underline-offset-4 hover:decoration-2",
+              ].join(" ")}
+            >
+              <span>{item.label}</span>
+
+              {showInboxBadge ? (
+                <span className="inline-flex min-w-[24px] items-center justify-center rounded-full bg-amber-500 px-2 py-0.5 text-xs font-bold text-white">
                   {pendingReplyCount}
                 </span>
               ) : null}
-            </div>
-
-            <p className="text-sm text-gray-600">
-              Conversas reais vindas da função oficial do backend.
-            </p>
-
-            <div className="mt-2 text-xs text-gray-500">
-              {storeLoading
-                ? "Carregando contexto da loja..."
-                : storeError
-                ? `Erro no contexto da loja: ${storeError}`
-                : `Loja ativa: ${activeStore?.name ?? "Todas"} • Organização: ${
-                    organizationId ?? "-"
-                  }`}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {refreshing ? (
-              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 ring-1 ring-black/10">
-                Atualizando...
-              </div>
-            ) : null}
-
-            <button
-              onClick={() => void loadInbox()}
-              disabled={loading || storeLoading || !organizationId}
-              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Recarregar
-            </button>
-          </div>
-        </div>
-
-        {pendingReplyCount > 0 && !loading && !storeLoading ? (
-          <div className="mb-4 rounded-2xl bg-amber-50 p-4 text-amber-900 ring-1 ring-amber-200">
-            <div className="text-sm font-semibold">
-              Você tem {pendingReplyCount} conversa(s) com mensagem pendente de resposta.
-            </div>
-            <div className="mt-1 text-sm">
-              Essas conversas estão destacadas abaixo.
-            </div>
-          </div>
-        ) : null}
-
-        {errorText && (
-          <div className="mb-4 rounded-xl bg-red-50 p-4 text-red-800 ring-1 ring-red-200">
-            {errorText}
-          </div>
-        )}
-
-        <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-          <table className="w-full text-sm">
-            <thead className="border-b border-black/5 bg-gray-50">
-              <tr className="text-left text-gray-600">
-                <th className="px-4 py-3 font-semibold">Lead</th>
-                <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Modo</th>
-                <th className="px-4 py-3 font-semibold">Última mensagem</th>
-                <th className="px-4 py-3 font-semibold">Preview</th>
-                <th className="px-4 py-3 font-semibold">Alerta</th>
-                <th className="px-4 py-3 font-semibold text-right">Ação</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {(loading || storeLoading) && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
-                    Carregando inbox...
-                  </td>
-                </tr>
-              )}
-
-              {!loading && !storeLoading && rows.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
-                    Nenhuma conversa encontrada para a loja atual.
-                  </td>
-                </tr>
-              )}
-
-              {!loading &&
-                !storeLoading &&
-                rows.map((row) => {
-                  const isPending = isPendingReply(row);
-
-                  return (
-                    <tr
-                      key={row.conversation_id}
-                      className={`border-b border-black/5 ${
-                        isPending ? "bg-amber-50 hover:bg-amber-100" : "hover:bg-gray-50"
-                      }`}
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-semibold text-gray-900">
-                          {leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}
-                        </div>
-
-                        <div className="text-xs text-gray-500">
-                          {shortId(row.conversation_id)}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3">{row.status || "-"}</td>
-
-                      <td className="px-4 py-3">
-                        {row.is_human_active ? (
-                          <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-200">
-                            Humano
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
-                            IA
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="px-4 py-3">{formatDateTime(row.last_message_at)}</td>
-
-                      <td className="max-w-md truncate px-4 py-3 text-gray-600">
-                        {row.last_message_preview || "-"}
-                      </td>
-
-                      <td className="px-4 py-3">
-                        {isPending ? (
-                          <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-300">
-                            Pendente
-                          </span>
-                        ) : (
-                          <span className="text-xs text-gray-400">-</span>
-                        )}
-
-                        <div className="mt-1 text-[11px] text-gray-500">
-                          {formatDirection(row.last_message_direction)}
-                          {row.last_message_sender
-                            ? ` • ${row.last_message_sender}`
-                            : ""}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3 text-right">
-                        <Link
-                          href={`/crm/lead/${row.lead_id}`}
-                          className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-                        >
-                          Abrir
-                        </Link>
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+            </Link>
+          );
+        })}
+      </nav>
+    </aside>
   );
 }
