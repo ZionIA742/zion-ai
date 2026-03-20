@@ -1,7 +1,6 @@
 // src/app/api/simulate-customer/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { generateAiReply } from "@/lib/server/generate-ai-reply";
 
 export const runtime = "nodejs";
 
@@ -47,6 +46,26 @@ export async function POST(req: Request) {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    const { data: conversation, error: conversationError } = await supabase
+      .from("conversations")
+      .select("id, organization_id")
+      .eq("id", conversationId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+
+    if (conversationError || !conversation) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "CONVERSATION_NOT_FOUND_OR_FORBIDDEN",
+          message:
+            conversationError?.message ||
+            "Conversa não encontrada para a organização informada.",
+        },
+        { status: 404 }
+      );
+    }
+
     const { error: insertError } = await supabase.rpc("insert_message", {
       p_conversation_id: conversationId,
       p_sender: "user",
@@ -71,16 +90,17 @@ export async function POST(req: Request) {
       );
     }
 
-    const aiResult = await generateAiReply({
-      organizationId,
-      conversationId,
-      customerMessage: text,
-    });
-
     return NextResponse.json({
       ok: true,
       customerMessageSaved: true,
-      ai: aiResult,
+      conversationId,
+      organizationId,
+      aiFlow: {
+        mode: "advanced_sales_engine",
+        directReplyBypassed: true,
+        message:
+          "Mensagem salva com sucesso. O motor comercial avançado deve processar a resposta pela fila/worker.",
+      },
     });
   } catch (err: any) {
     return NextResponse.json(
