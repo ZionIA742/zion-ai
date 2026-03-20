@@ -35,11 +35,8 @@ function shortId(id: string) {
   return id.slice(0, 8);
 }
 
-function isWaitingHumanAttention(row: InboxRow) {
-  return (
-    row.is_human_active === true &&
-    String(row.last_message_direction || "").toLowerCase() === "incoming"
-  );
+function isPendingReply(row: InboxRow) {
+  return String(row.last_message_direction || "").toLowerCase() === "incoming";
 }
 
 function formatDirection(value: string | null) {
@@ -156,8 +153,8 @@ export default function InboxPage() {
     };
   }, [canLoadInbox, loadInbox]);
 
-  const waitingHumanAttentionCount = useMemo(() => {
-    return rows.filter(isWaitingHumanAttention).length;
+  const pendingReplyCount = useMemo(() => {
+    return rows.filter(isPendingReply).length;
   }, [rows]);
 
   return (
@@ -168,9 +165,9 @@ export default function InboxPage() {
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
 
-              {waitingHumanAttentionCount > 0 && !loading && !storeLoading ? (
+              {pendingReplyCount > 0 && !loading && !storeLoading ? (
                 <span className="inline-flex min-w-[28px] items-center justify-center rounded-full bg-amber-500 px-2.5 py-1 text-xs font-bold text-white">
-                  {waitingHumanAttentionCount}
+                  {pendingReplyCount}
                 </span>
               ) : null}
             </div>
@@ -207,10 +204,10 @@ export default function InboxPage() {
           </div>
         </div>
 
-        {waitingHumanAttentionCount > 0 && !loading && !storeLoading ? (
+        {pendingReplyCount > 0 && !loading && !storeLoading ? (
           <div className="mb-4 rounded-2xl bg-amber-50 p-4 text-amber-900 ring-1 ring-amber-200">
             <div className="text-sm font-semibold">
-              Você tem {waitingHumanAttentionCount} conversa(s) com humano ativo aguardando resposta.
+              Você tem {pendingReplyCount} conversa(s) com mensagem pendente de resposta.
             </div>
             <div className="mt-1 text-sm">
               Essas conversas estão destacadas abaixo.
@@ -258,15 +255,13 @@ export default function InboxPage() {
               {!loading &&
                 !storeLoading &&
                 rows.map((row) => {
-                  const needsAttention = isWaitingHumanAttention(row);
+                  const isPending = isPendingReply(row);
 
                   return (
                     <tr
                       key={row.conversation_id}
                       className={`border-b border-black/5 ${
-                        needsAttention
-                          ? "bg-amber-50 hover:bg-amber-100"
-                          : "hover:bg-gray-50"
+                        isPending ? "bg-amber-50 hover:bg-amber-100" : "hover:bg-gray-50"
                       }`}
                     >
                       <td className="px-4 py-3">
@@ -300,9 +295,9 @@ export default function InboxPage() {
                       </td>
 
                       <td className="px-4 py-3">
-                        {needsAttention ? (
+                        {isPending ? (
                           <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-300">
-                            Nova mensagem
+                            Pendente
                           </span>
                         ) : (
                           <span className="text-xs text-gray-400">-</span>
