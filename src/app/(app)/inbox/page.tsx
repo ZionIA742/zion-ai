@@ -42,6 +42,14 @@ function isWaitingHumanAttention(row: InboxRow) {
   );
 }
 
+function formatDirection(value: string | null) {
+  const normalized = String(value || "").toLowerCase();
+
+  if (normalized === "incoming") return "Cliente";
+  if (normalized === "outgoing") return "Saída";
+  return "-";
+}
+
 export default function InboxPage() {
   const {
     loading: storeLoading,
@@ -157,7 +165,16 @@ export default function InboxPage() {
       <div className="mx-auto max-w-7xl px-6 py-6">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
+
+              {waitingHumanAttentionCount > 0 && !loading && !storeLoading ? (
+                <span className="inline-flex min-w-[28px] items-center justify-center rounded-full bg-amber-500 px-2.5 py-1 text-xs font-bold text-white">
+                  {waitingHumanAttentionCount}
+                </span>
+              ) : null}
+            </div>
+
             <p className="text-sm text-gray-600">
               Conversas reais vindas da função oficial do backend.
             </p>
@@ -292,7 +309,7 @@ export default function InboxPage() {
                         )}
 
                         <div className="mt-1 text-[11px] text-gray-500">
-                          {row.last_message_direction || "-"}
+                          {formatDirection(row.last_message_direction)}
                           {row.last_message_sender
                             ? ` • ${row.last_message_sender}`
                             : ""}
