@@ -50,6 +50,14 @@ type AppointmentEditForm = {
   notes: string;
 };
 
+type BlockCreateForm = {
+  title: string;
+  blockType: string;
+  startAt: string;
+  endAt: string;
+  notes: string;
+};
+
 function formatDateTime(value: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -178,16 +186,6 @@ function startOfCalendarGrid(date: Date) {
   return result;
 }
 
-function endOfCalendarGrid(date: Date) {
-  const lastDay = endOfMonth(date);
-  const jsDay = lastDay.getDay();
-  const mondayBasedOffset = jsDay === 0 ? 0 : 7 - jsDay;
-  const result = new Date(lastDay);
-  result.setDate(lastDay.getDate() + mondayBasedOffset);
-  result.setHours(23, 59, 59, 999);
-  return result;
-}
-
 function buildCalendarDays(date: Date) {
   const start = startOfCalendarGrid(date);
   const days: Date[] = [];
@@ -258,6 +256,41 @@ function isSameMonth(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 }
 
+function createDefaultBlockForm(selectedDateKey: string): BlockCreateForm {
+  const base = selectedDateKey
+    ? new Date(`${selectedDateKey}T09:00:00`)
+    : new Date();
+
+  if (Number.isNaN(base.getTime())) {
+    const fallback = new Date();
+    fallback.setHours(9, 0, 0, 0);
+
+    const fallbackEnd = new Date(fallback);
+    fallbackEnd.setHours(10, 0, 0, 0);
+
+    return {
+      title: "",
+      blockType: "manual_block",
+      startAt: toDateTimeLocalValue(fallback.toISOString()),
+      endAt: toDateTimeLocalValue(fallbackEnd.toISOString()),
+      notes: "",
+    };
+  }
+
+  base.setHours(9, 0, 0, 0);
+
+  const end = new Date(base);
+  end.setHours(10, 0, 0, 0);
+
+  return {
+    title: "",
+    blockType: "manual_block",
+    startAt: toDateTimeLocalValue(base.toISOString()),
+    endAt: toDateTimeLocalValue(end.toISOString()),
+    notes: "",
+  };
+}
+
 export default function SchedulePage() {
   const {
     loading: storeLoading,
@@ -282,6 +315,13 @@ export default function SchedulePage() {
   const [editForm, setEditForm] = useState<AppointmentEditForm | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [saveErrorText, setSaveErrorText] = useState<string | null>(null);
+
+  const [createBlockOpen, setCreateBlockOpen] = useState(false);
+  const [blockForm, setBlockForm] = useState<BlockCreateForm>(() =>
+    createDefaultBlockForm(toDateKey(new Date()))
+  );
+  const [savingBlock, setSavingBlock] = useState(false);
+  const [blockErrorText, setBlockErrorText] = useState<string | null>(null);
 
   const lastKnownRealMonthRef = useRef<Date>(startOfMonth(new Date()));
 
@@ -385,7 +425,6 @@ export default function SchedulePage() {
     const interval = window.setInterval(() => {
       const nowMonth = startOfMonth(new Date());
       const lastKnownMonth = lastKnownRealMonthRef.current;
-
       const realMonthChanged = !isSameMonth(nowMonth, lastKnownMonth);
 
       if (realMonthChanged) {
@@ -513,6 +552,19 @@ export default function SchedulePage() {
     setEditForm(createAppointmentFormFromItem(selectedItem));
     setEditMode(false);
     setSaveErrorText(null);
+  }
+
+  function openCreateBlockPanel() {
+    setCreateBlockOpen(true);
+    setBlockErrorText(null);
+    setBlockForm(createDefaultBlockForm(selectedDateKey));
+  }
+
+  function closeCreateBlockPanel() {
+    setCreateBlockOpen(false);
+    setBlockErrorText(null);
+    setSavingBlock(false);
+    setBlockForm(createDefaultBlockForm(selectedDateKey));
   }
 
   async function saveAppointmentEdit() {
@@ -668,6 +720,58 @@ export default function SchedulePage() {
     }
   }
 
+  async function saveNewBlock() {
+    if (!organizationId || !activeStoreId) {
+      setBlockErrorText("Contexto da loja não encontrado.");
+      return;
+    }
+
+    setSavingBlock(true);
+    setBlockErrorText(null);
+
+    try {
+      const startDate = new Date(blockForm.startAt);
+      const endDate = new Date(blockForm.endAt);
+
+      if (!blockForm.title.trim()) {
+        setBlockErrorText("Preencha o título do bloqueio.");
+        setSavingBlock(false);
+        return;
+      }
+
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        setBlockErrorText("Preencha um período válido.");
+        setSavingBlock(false);
+        return;
+      }
+
+      const { error } = await supabase.rpc("create_store_schedule_block", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_title: blockForm.title.trim(),
+        p_block_type: blockForm.blockType,
+        p_start_at: startDate.toISOString(),
+        p_end_at: endDate.toISOString(),
+        p_notes: blockForm.notes.trim() || null,
+        p_source: "panel",
+        p_created_by_user_id: null,
+      });
+
+      if (error) {
+        setBlockErrorText(error.message);
+        setSavingBlock(false);
+        return;
+      }
+
+      closeCreateBlockPanel();
+      await loadSchedule({ silent: true });
+      setSavingBlock(false);
+    } catch (error: any) {
+      setBlockErrorText(error?.message || "Erro inesperado ao criar bloqueio.");
+      setSavingBlock(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-100">
       <div className="mx-auto max-w-[1600px] px-6 py-6">
@@ -692,6 +796,14 @@ export default function SchedulePage() {
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={openCreateBlockPanel}
+              disabled={storeLoading || !organizationId || !activeStoreId}
+              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Novo bloqueio
+            </button>
+
             {refreshing ? (
               <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 ring-1 ring-black/10">
                 Atualizando...
@@ -737,7 +849,7 @@ export default function SchedulePage() {
           <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-black/5">
             <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <h2 className="text-xl font-bold text-gray-900 capitalize">
+                <h2 className="text-xl font-bold capitalize text-gray-900">
                   {formatMonthYear(viewMonth)}
                 </h2>
                 <p className="mt-1 text-sm text-gray-500">
@@ -855,7 +967,7 @@ export default function SchedulePage() {
           <div className="space-y-6">
             <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-black/5">
               <h2 className="text-lg font-bold text-gray-900">Itens do dia</h2>
-              <p className="mt-1 text-sm text-gray-500 capitalize">
+              <p className="mt-1 text-sm capitalize text-gray-500">
                 {selectedDateLabel}
               </p>
 
@@ -999,9 +1111,9 @@ export default function SchedulePage() {
 
                 {selectedItem.itemKind === "block" ? (
                   <div className="mb-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-200">
-                    O botão de edição do bloqueio ainda não está conectado ao banco.
-                    A leitura e exibição já estão prontas, mas para salvar edição de
-                    bloqueios ainda precisamos criar a função segura específica.
+                    A edição de bloqueio ainda não está conectada ao banco. A leitura e
+                    criação já estão prontas, mas para salvar edição de bloqueios ainda
+                    precisamos criar a função segura específica.
                   </div>
                 ) : null}
 
@@ -1016,15 +1128,10 @@ export default function SchedulePage() {
                           value={editForm.title}
                           onChange={(e) =>
                             setEditForm((prev) =>
-                              prev
-                                ? {
-                                    ...prev,
-                                    title: e.target.value,
-                                  }
-                                : prev
+                              prev ? { ...prev, title: e.target.value } : prev
                             )
                           }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none ring-0 focus:border-black"
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
                         />
                       </div>
 
@@ -1037,10 +1144,7 @@ export default function SchedulePage() {
                           onChange={(e) =>
                             setEditForm((prev) =>
                               prev
-                                ? {
-                                    ...prev,
-                                    appointmentType: e.target.value,
-                                  }
+                                ? { ...prev, appointmentType: e.target.value }
                                 : prev
                             )
                           }
@@ -1062,12 +1166,7 @@ export default function SchedulePage() {
                           value={editForm.status}
                           onChange={(e) =>
                             setEditForm((prev) =>
-                              prev
-                                ? {
-                                    ...prev,
-                                    status: e.target.value,
-                                  }
-                                : prev
+                              prev ? { ...prev, status: e.target.value } : prev
                             )
                           }
                           className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
@@ -1088,10 +1187,7 @@ export default function SchedulePage() {
                           onChange={(e) =>
                             setEditForm((prev) =>
                               prev
-                                ? {
-                                    ...prev,
-                                    customerName: e.target.value,
-                                  }
+                                ? { ...prev, customerName: e.target.value }
                                 : prev
                             )
                           }
@@ -1109,10 +1205,7 @@ export default function SchedulePage() {
                           onChange={(e) =>
                             setEditForm((prev) =>
                               prev
-                                ? {
-                                    ...prev,
-                                    scheduledStart: e.target.value,
-                                  }
+                                ? { ...prev, scheduledStart: e.target.value }
                                 : prev
                             )
                           }
@@ -1129,12 +1222,7 @@ export default function SchedulePage() {
                           value={editForm.scheduledEnd}
                           onChange={(e) =>
                             setEditForm((prev) =>
-                              prev
-                                ? {
-                                    ...prev,
-                                    scheduledEnd: e.target.value,
-                                  }
-                                : prev
+                              prev ? { ...prev, scheduledEnd: e.target.value } : prev
                             )
                           }
                           className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
@@ -1150,10 +1238,7 @@ export default function SchedulePage() {
                           onChange={(e) =>
                             setEditForm((prev) =>
                               prev
-                                ? {
-                                    ...prev,
-                                    customerPhone: e.target.value,
-                                  }
+                                ? { ...prev, customerPhone: e.target.value }
                                 : prev
                             )
                           }
@@ -1170,10 +1255,7 @@ export default function SchedulePage() {
                           onChange={(e) =>
                             setEditForm((prev) =>
                               prev
-                                ? {
-                                    ...prev,
-                                    addressText: e.target.value,
-                                  }
+                                ? { ...prev, addressText: e.target.value }
                                 : prev
                             )
                           }
@@ -1190,12 +1272,7 @@ export default function SchedulePage() {
                         value={editForm.notes}
                         onChange={(e) =>
                           setEditForm((prev) =>
-                            prev
-                              ? {
-                                  ...prev,
-                                  notes: e.target.value,
-                                }
-                              : prev
+                            prev ? { ...prev, notes: e.target.value } : prev
                           )
                         }
                         rows={5}
@@ -1281,6 +1358,150 @@ export default function SchedulePage() {
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {createBlockOpen ? (
+          <div className="fixed inset-0 z-50 flex justify-end bg-black/30">
+            <div className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+              <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
+                <div>
+                  <div className="text-sm font-semibold text-gray-500">
+                    Novo bloqueio
+                  </div>
+                  <h3 className="mt-1 text-2xl font-bold text-gray-900">
+                    Criar bloqueio manual
+                  </h3>
+                </div>
+
+                <button
+                  onClick={closeCreateBlockPanel}
+                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                >
+                  Fechar
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-6 py-5">
+                {blockErrorText ? (
+                  <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
+                    {blockErrorText}
+                  </div>
+                ) : null}
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      Título
+                    </label>
+                    <input
+                      value={blockForm.title}
+                      onChange={(e) =>
+                        setBlockForm((prev) => ({
+                          ...prev,
+                          title: e.target.value,
+                        }))
+                      }
+                      placeholder="Ex.: Consulta médica, viagem, equipe ocupada..."
+                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      Tipo do bloqueio
+                    </label>
+                    <select
+                      value={blockForm.blockType}
+                      onChange={(e) =>
+                        setBlockForm((prev) => ({
+                          ...prev,
+                          blockType: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                    >
+                      <option value="manual_block">Bloqueio manual</option>
+                      <option value="personal_unavailable">Indisponível</option>
+                      <option value="team_unavailable">Equipe indisponível</option>
+                      <option value="holiday">Feriado</option>
+                      <option value="other">Outro</option>
+                    </select>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Início
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={blockForm.startAt}
+                        onChange={(e) =>
+                          setBlockForm((prev) => ({
+                            ...prev,
+                            startAt: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Fim
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={blockForm.endAt}
+                        onChange={(e) =>
+                          setBlockForm((prev) => ({
+                            ...prev,
+                            endAt: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      Observações
+                    </label>
+                    <textarea
+                      value={blockForm.notes}
+                      onChange={(e) =>
+                        setBlockForm((prev) => ({
+                          ...prev,
+                          notes: e.target.value,
+                        }))
+                      }
+                      rows={5}
+                      className="w-full rounded-2xl border border-black/10 px-3 py-3 text-sm outline-none focus:border-black"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap gap-3 pt-2">
+                    <button
+                      onClick={() => void saveNewBlock()}
+                      disabled={savingBlock}
+                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {savingBlock ? "Salvando..." : "Salvar bloqueio"}
+                    </button>
+
+                    <button
+                      onClick={closeCreateBlockPanel}
+                      disabled={savingBlock}
+                      className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
