@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
 
 type ScheduleItem = {
@@ -37,6 +38,18 @@ type ScheduleApiResponse = {
   items?: ScheduleItem[];
 };
 
+type AppointmentEditForm = {
+  title: string;
+  appointmentType: string;
+  status: string;
+  scheduledStart: string;
+  scheduledEnd: string;
+  customerName: string;
+  customerPhone: string;
+  addressText: string;
+  notes: string;
+};
+
 function formatDateTime(value: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -44,30 +57,23 @@ function formatDateTime(value: string | null) {
   return date.toLocaleString("pt-BR");
 }
 
-function formatShortDateTime(value: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-
-  return date.toLocaleString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
+function formatMonthYear(date: Date) {
+  return date.toLocaleDateString("pt-BR", {
+    month: "long",
     year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
   });
 }
 
-function getCurrentMonthRange() {
-  const now = new Date();
+function formatDayNumber(date: Date) {
+  return date.toLocaleDateString("pt-BR", {
+    day: "2-digit",
+  });
+}
 
-  const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-
-  return {
-    start: start.toISOString(),
-    end: end.toISOString(),
-  };
+function formatWeekdayShort(date: Date) {
+  return date.toLocaleDateString("pt-BR", {
+    weekday: "short",
+  });
 }
 
 function formatItemKind(value: string) {
@@ -91,7 +97,18 @@ function formatItemType(value: string) {
   return value || "-";
 }
 
-function getStatusBadge(status: string) {
+function formatStatus(value: string) {
+  const normalized = String(value || "").toLowerCase();
+
+  if (normalized === "scheduled") return "Agendado";
+  if (normalized === "rescheduled") return "Remarcado";
+  if (normalized === "completed") return "Concluído";
+  if (normalized === "cancelled") return "Cancelado";
+  if (normalized === "blocked") return "Bloqueado";
+  return value || "-";
+}
+
+function getStatusBadgeClass(status: string) {
   const normalized = String(status || "").toLowerCase();
 
   if (normalized === "scheduled") {
@@ -117,6 +134,130 @@ function getStatusBadge(status: string) {
   return "bg-gray-50 text-gray-700 ring-gray-200";
 }
 
+function getItemChipClass(item: ScheduleItem) {
+  if (item.itemKind === "block") {
+    return "bg-gray-100 text-gray-800 ring-gray-300";
+  }
+
+  const normalized = String(item.status || "").toLowerCase();
+
+  if (normalized === "scheduled") {
+    return "bg-blue-50 text-blue-700 ring-blue-200";
+  }
+
+  if (normalized === "rescheduled") {
+    return "bg-amber-50 text-amber-700 ring-amber-200";
+  }
+
+  if (normalized === "completed") {
+    return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  }
+
+  if (normalized === "cancelled") {
+    return "bg-red-50 text-red-700 ring-red-200";
+  }
+
+  return "bg-gray-50 text-gray-700 ring-gray-200";
+}
+
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+}
+
+function endOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+}
+
+function startOfCalendarGrid(date: Date) {
+  const firstDay = startOfMonth(date);
+  const jsDay = firstDay.getDay();
+  const mondayBasedOffset = jsDay === 0 ? 6 : jsDay - 1;
+  const result = new Date(firstDay);
+  result.setDate(firstDay.getDate() - mondayBasedOffset);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function endOfCalendarGrid(date: Date) {
+  const lastDay = endOfMonth(date);
+  const jsDay = lastDay.getDay();
+  const mondayBasedOffset = jsDay === 0 ? 0 : 7 - jsDay;
+  const result = new Date(lastDay);
+  result.setDate(lastDay.getDate() + mondayBasedOffset);
+  result.setHours(23, 59, 59, 999);
+  return result;
+}
+
+function buildCalendarDays(date: Date) {
+  const start = startOfCalendarGrid(date);
+  const days: Date[] = [];
+
+  for (let i = 0; i < 42; i += 1) {
+    const day = new Date(start);
+    day.setDate(start.getDate() + i);
+    days.push(day);
+  }
+
+  return days;
+}
+
+function toDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function itemSpansDate(item: ScheduleItem, date: Date) {
+  const dayStart = new Date(date);
+  dayStart.setHours(0, 0, 0, 0);
+
+  const dayEnd = new Date(date);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const itemStart = new Date(item.startAt);
+  const itemEnd = new Date(item.endAt);
+
+  if (Number.isNaN(itemStart.getTime()) || Number.isNaN(itemEnd.getTime())) {
+    return false;
+  }
+
+  return itemStart <= dayEnd && itemEnd >= dayStart;
+}
+
+function toDateTimeLocalValue(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  const hours = `${date.getHours()}`.padStart(2, "0");
+  const minutes = `${date.getMinutes()}`.padStart(2, "0");
+
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function createAppointmentFormFromItem(item: ScheduleItem): AppointmentEditForm {
+  return {
+    title: item.title || "",
+    appointmentType: item.itemType || "technical_visit",
+    status:
+      item.status && item.status !== "blocked" ? item.status : "scheduled",
+    scheduledStart: toDateTimeLocalValue(item.startAt),
+    scheduledEnd: toDateTimeLocalValue(item.endAt),
+    customerName: item.customerName || "",
+    customerPhone: item.customerPhone || "",
+    addressText: item.addressText || "",
+    notes: item.notes || "",
+  };
+}
+
+function isSameMonth(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+}
+
 export default function SchedulePage() {
   const {
     loading: storeLoading,
@@ -126,15 +267,31 @@ export default function SchedulePage() {
     activeStore,
   } = useStoreContext();
 
-  const monthRange = useMemo(() => getCurrentMonthRange(), []);
+  const [viewMonth, setViewMonth] = useState<Date>(() => startOfMonth(new Date()));
   const [items, setItems] = useState<ScheduleItem[]>([]);
+  const [selectedDateKey, setSelectedDateKey] = useState<string>(() =>
+    toDateKey(new Date())
+  );
+  const [selectedItem, setSelectedItem] = useState<ScheduleItem | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
 
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState<AppointmentEditForm | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [saveErrorText, setSaveErrorText] = useState<string | null>(null);
+
+  const lastKnownRealMonthRef = useRef<Date>(startOfMonth(new Date()));
+
   const canLoadSchedule = useMemo(() => {
     return !storeLoading && !!organizationId && !!activeStoreId;
   }, [storeLoading, organizationId, activeStoreId]);
+
+  const monthStart = useMemo(() => startOfMonth(viewMonth), [viewMonth]);
+  const monthEnd = useMemo(() => endOfMonth(viewMonth), [viewMonth]);
+  const calendarDays = useMemo(() => buildCalendarDays(viewMonth), [viewMonth]);
 
   const loadSchedule = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -156,8 +313,8 @@ export default function SchedulePage() {
         const params = new URLSearchParams({
           organizationId,
           storeId: activeStoreId,
-          start: monthRange.start,
-          end: monthRange.end,
+          start: monthStart.toISOString(),
+          end: monthEnd.toISOString(),
         });
 
         const response = await fetch(`/api/schedule?${params.toString()}`, {
@@ -168,8 +325,8 @@ export default function SchedulePage() {
         const json = (await response.json()) as ScheduleApiResponse;
 
         if (!response.ok || !json.ok) {
-          setErrorText(json.message || "Erro ao carregar agenda.");
           setItems([]);
+          setErrorText(json.message || "Erro ao carregar agenda.");
 
           if (silent) {
             setRefreshing(false);
@@ -179,7 +336,18 @@ export default function SchedulePage() {
           return;
         }
 
-        setItems(json.items || []);
+        const nextItems = json.items || [];
+        setItems(nextItems);
+
+        if (selectedItem) {
+          const refreshedSelectedItem =
+            nextItems.find((item) => item.itemId === selectedItem.itemId) || null;
+          setSelectedItem(refreshedSelectedItem);
+
+          if (refreshedSelectedItem && editMode) {
+            setEditForm(createAppointmentFormFromItem(refreshedSelectedItem));
+          }
+        }
 
         if (silent) {
           setRefreshing(false);
@@ -187,8 +355,8 @@ export default function SchedulePage() {
           setLoading(false);
         }
       } catch (error: any) {
-        setErrorText(error?.message || "Erro inesperado ao carregar agenda.");
         setItems([]);
+        setErrorText(error?.message || "Erro inesperado ao carregar agenda.");
 
         if (silent) {
           setRefreshing(false);
@@ -197,13 +365,77 @@ export default function SchedulePage() {
         }
       }
     },
-    [canLoadSchedule, organizationId, activeStoreId, monthRange.start, monthRange.end]
+    [
+      canLoadSchedule,
+      organizationId,
+      activeStoreId,
+      monthStart,
+      monthEnd,
+      selectedItem,
+      editMode,
+    ]
   );
 
   useEffect(() => {
     if (!canLoadSchedule) return;
     void loadSchedule();
   }, [canLoadSchedule, loadSchedule]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const nowMonth = startOfMonth(new Date());
+      const lastKnownMonth = lastKnownRealMonthRef.current;
+
+      const realMonthChanged = !isSameMonth(nowMonth, lastKnownMonth);
+
+      if (realMonthChanged) {
+        const userWasOnCurrentMonth = isSameMonth(viewMonth, lastKnownMonth);
+
+        lastKnownRealMonthRef.current = nowMonth;
+
+        if (userWasOnCurrentMonth) {
+          setViewMonth(nowMonth);
+          setSelectedDateKey(toDateKey(new Date()));
+        }
+      }
+    }, 60000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [viewMonth]);
+
+  const itemsByDate = useMemo(() => {
+    const map: Record<string, ScheduleItem[]> = {};
+
+    calendarDays.forEach((day) => {
+      map[toDateKey(day)] = [];
+    });
+
+    items.forEach((item) => {
+      calendarDays.forEach((day) => {
+        if (itemSpansDate(item, day)) {
+          const key = toDateKey(day);
+          map[key] = map[key] || [];
+          map[key].push(item);
+        }
+      });
+    });
+
+    Object.keys(map).forEach((key) => {
+      map[key].sort((a, b) => {
+        const aTime = new Date(a.startAt).getTime();
+        const bTime = new Date(b.startAt).getTime();
+        return aTime - bTime;
+      });
+    });
+
+    return map;
+  }, [calendarDays, items]);
+
+  const selectedDateItems = useMemo(() => {
+    return itemsByDate[selectedDateKey] || [];
+  }, [itemsByDate, selectedDateKey]);
 
   const counts = useMemo(() => {
     const appointments = items.filter((item) => item.itemKind === "appointment").length;
@@ -216,15 +448,236 @@ export default function SchedulePage() {
     };
   }, [items]);
 
+  const selectedDateLabel = useMemo(() => {
+    const [year, month, day] = selectedDateKey.split("-");
+    const date = new Date(Number(year), Number(month) - 1, Number(day), 12, 0, 0);
+
+    if (Number.isNaN(date.getTime())) return selectedDateKey;
+
+    return date.toLocaleDateString("pt-BR", {
+      weekday: "long",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  }, [selectedDateKey]);
+
+  function goToPreviousMonth() {
+    setViewMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  }
+
+  function goToNextMonth() {
+    setViewMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+  }
+
+  function goToCurrentMonth() {
+    const now = new Date();
+    setViewMonth(startOfMonth(now));
+    setSelectedDateKey(toDateKey(now));
+  }
+
+  function openItemDetails(item: ScheduleItem) {
+    setSelectedItem(item);
+    setEditMode(false);
+    setSaveErrorText(null);
+
+    if (item.itemKind === "appointment") {
+      setEditForm(createAppointmentFormFromItem(item));
+    } else {
+      setEditForm(null);
+    }
+  }
+
+  function closeItemDetails() {
+    setSelectedItem(null);
+    setEditMode(false);
+    setEditForm(null);
+    setSaveErrorText(null);
+  }
+
+  function startEditingSelectedItem() {
+    if (!selectedItem || selectedItem.itemKind !== "appointment") return;
+    setEditForm(createAppointmentFormFromItem(selectedItem));
+    setEditMode(true);
+    setSaveErrorText(null);
+  }
+
+  function cancelEditingSelectedItem() {
+    if (!selectedItem || selectedItem.itemKind !== "appointment") {
+      setEditMode(false);
+      setEditForm(null);
+      setSaveErrorText(null);
+      return;
+    }
+
+    setEditForm(createAppointmentFormFromItem(selectedItem));
+    setEditMode(false);
+    setSaveErrorText(null);
+  }
+
+  async function saveAppointmentEdit() {
+    if (!selectedItem || selectedItem.itemKind !== "appointment" || !editForm) {
+      return;
+    }
+
+    if (!organizationId || !activeStoreId) {
+      setSaveErrorText("Contexto da loja não encontrado.");
+      return;
+    }
+
+    setSavingEdit(true);
+    setSaveErrorText(null);
+
+    try {
+      const startDate = new Date(editForm.scheduledStart);
+      const endDate = new Date(editForm.scheduledEnd);
+
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        setSaveErrorText("Preencha um período válido.");
+        setSavingEdit(false);
+        return;
+      }
+
+      const { data, error } = await supabase.rpc("update_store_appointment", {
+        p_appointment_id: selectedItem.itemId,
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_title: editForm.title,
+        p_appointment_type: editForm.appointmentType,
+        p_status: editForm.status,
+        p_scheduled_start: startDate.toISOString(),
+        p_scheduled_end: endDate.toISOString(),
+        p_customer_name: editForm.customerName || null,
+        p_customer_phone: editForm.customerPhone || null,
+        p_address_text: editForm.addressText || null,
+        p_notes: editForm.notes || null,
+      });
+
+      if (error) {
+        setSaveErrorText(error.message);
+        setSavingEdit(false);
+        return;
+      }
+
+      const updatedItem = data
+        ? ({
+            itemKind: "appointment",
+            itemId: data.id,
+            organizationId: data.organization_id,
+            storeId: data.store_id,
+            leadId: data.lead_id,
+            conversationId: data.conversation_id,
+            title: data.title,
+            itemType: data.appointment_type,
+            status: data.status,
+            startAt: data.scheduled_start,
+            endAt: data.scheduled_end,
+            customerName: data.customer_name,
+            customerPhone: data.customer_phone,
+            addressText: data.address_text,
+            notes: data.notes,
+            source: data.source,
+            createdByUserId: data.created_by_user_id,
+            createdAt: data.created_at,
+            updatedAt: data.updated_at,
+          } as ScheduleItem)
+        : null;
+
+      if (updatedItem) {
+        setSelectedItem(updatedItem);
+        setEditForm(createAppointmentFormFromItem(updatedItem));
+      }
+
+      setEditMode(false);
+      await loadSchedule({ silent: true });
+      setSavingEdit(false);
+    } catch (error: any) {
+      setSaveErrorText(error?.message || "Erro inesperado ao salvar compromisso.");
+      setSavingEdit(false);
+    }
+  }
+
+  async function cancelAppointment() {
+    if (!selectedItem || selectedItem.itemKind !== "appointment") return;
+
+    if (!organizationId || !activeStoreId) {
+      setSaveErrorText("Contexto da loja não encontrado.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Tem certeza que deseja cancelar este compromisso?"
+    );
+
+    if (!confirmed) return;
+
+    setSavingEdit(true);
+    setSaveErrorText(null);
+
+    try {
+      const { data, error } = await supabase.rpc("cancel_store_appointment", {
+        p_appointment_id: selectedItem.itemId,
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_cancel_reason: "Cancelado manualmente pelo assinante na tela da agenda.",
+      });
+
+      if (error) {
+        setSaveErrorText(error.message);
+        setSavingEdit(false);
+        return;
+      }
+
+      const updatedItem = data
+        ? ({
+            itemKind: "appointment",
+            itemId: data.id,
+            organizationId: data.organization_id,
+            storeId: data.store_id,
+            leadId: data.lead_id,
+            conversationId: data.conversation_id,
+            title: data.title,
+            itemType: data.appointment_type,
+            status: data.status,
+            startAt: data.scheduled_start,
+            endAt: data.scheduled_end,
+            customerName: data.customer_name,
+            customerPhone: data.customer_phone,
+            addressText: data.address_text,
+            notes: data.notes,
+            source: data.source,
+            createdByUserId: data.created_by_user_id,
+            createdAt: data.created_at,
+            updatedAt: data.updated_at,
+          } as ScheduleItem)
+        : null;
+
+      if (updatedItem) {
+        setSelectedItem(updatedItem);
+        setEditForm(createAppointmentFormFromItem(updatedItem));
+      }
+
+      setEditMode(false);
+      await loadSchedule({ silent: true });
+      setSavingEdit(false);
+    } catch (error: any) {
+      setSaveErrorText(
+        error?.message || "Erro inesperado ao cancelar compromisso."
+      );
+      setSavingEdit(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-7xl px-6 py-6">
-        <div className="mb-6 flex items-center justify-between gap-4">
+      <div className="mx-auto max-w-[1600px] px-6 py-6">
+        <div className="mb-6 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Agenda</h1>
+            <h1 className="text-3xl font-bold text-gray-900">Agenda</h1>
 
-            <p className="text-sm text-gray-600">
-              Visualização inicial da agenda da loja no período do mês atual.
+            <p className="mt-1 text-sm text-gray-600">
+              Agenda mensal da loja, com visual simples, leitura rápida e edição dos
+              compromissos já conectada.
             </p>
 
             <div className="mt-2 text-xs text-gray-500">
@@ -235,11 +688,6 @@ export default function SchedulePage() {
                 : `Loja ativa: ${activeStore?.name ?? "Sem loja ativa"} • Organização: ${
                     organizationId ?? "-"
                   }`}
-            </div>
-
-            <div className="mt-1 text-xs text-gray-500">
-              Período carregado: {formatShortDateTime(monthRange.start)} até{" "}
-              {formatShortDateTime(monthRange.end)}
             </div>
           </div>
 
@@ -263,19 +711,19 @@ export default function SchedulePage() {
         <div className="mb-6 grid gap-4 md:grid-cols-3">
           <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
             <div className="text-sm text-gray-500">Total de itens</div>
-            <div className="mt-2 text-2xl font-bold text-gray-900">{counts.total}</div>
+            <div className="mt-2 text-3xl font-bold text-gray-900">{counts.total}</div>
           </div>
 
           <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
             <div className="text-sm text-gray-500">Compromissos</div>
-            <div className="mt-2 text-2xl font-bold text-gray-900">
+            <div className="mt-2 text-3xl font-bold text-gray-900">
               {counts.appointments}
             </div>
           </div>
 
           <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
             <div className="text-sm text-gray-500">Bloqueios</div>
-            <div className="mt-2 text-2xl font-bold text-gray-900">{counts.blocks}</div>
+            <div className="mt-2 text-3xl font-bold text-gray-900">{counts.blocks}</div>
           </div>
         </div>
 
@@ -285,88 +733,558 @@ export default function SchedulePage() {
           </div>
         ) : null}
 
-        <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-          <table className="w-full text-sm">
-            <thead className="border-b border-black/5 bg-gray-50">
-              <tr className="text-left text-gray-600">
-                <th className="px-4 py-3 font-semibold">Título</th>
-                <th className="px-4 py-3 font-semibold">Categoria</th>
-                <th className="px-4 py-3 font-semibold">Tipo</th>
-                <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Início</th>
-                <th className="px-4 py-3 font-semibold">Fim</th>
-                <th className="px-4 py-3 font-semibold">Cliente</th>
-                <th className="px-4 py-3 font-semibold">Observações</th>
-              </tr>
-            </thead>
+        <div className="grid gap-6 xl:grid-cols-[1.6fr_0.8fr]">
+          <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-black/5">
+            <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900 capitalize">
+                  {formatMonthYear(viewMonth)}
+                </h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  O mês atual é carregado automaticamente. Quando o mês virar, a tela
+                  acompanha sozinha se você estiver olhando o mês atual.
+                </p>
+              </div>
 
-            <tbody>
-              {(loading || storeLoading) && (
-                <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-gray-500">
-                    Carregando agenda...
-                  </td>
-                </tr>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={goToPreviousMonth}
+                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                >
+                  Mês anterior
+                </button>
 
-              {!loading && !storeLoading && items.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-gray-500">
-                    Nenhum item encontrado para a loja ativa neste período.
-                  </td>
-                </tr>
-              )}
+                <button
+                  onClick={goToCurrentMonth}
+                  className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+                >
+                  Hoje
+                </button>
 
-              {!loading &&
-                !storeLoading &&
-                items.map((item) => (
-                  <tr key={item.itemId} className="border-b border-black/5 hover:bg-gray-50">
-                    <td className="px-4 py-3">
-                      <div className="font-semibold text-gray-900">{item.title || "-"}</div>
-                      <div className="mt-1 text-xs text-gray-500">{item.itemId}</div>
-                    </td>
+                <button
+                  onClick={goToNextMonth}
+                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                >
+                  Próximo mês
+                </button>
+              </div>
+            </div>
 
-                    <td className="px-4 py-3">{formatItemKind(item.itemKind)}</td>
+            <div className="mb-3 grid grid-cols-7 gap-2">
+              {calendarDays.slice(0, 7).map((date) => (
+                <div
+                  key={`weekday-${toDateKey(date)}`}
+                  className="rounded-xl bg-gray-50 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-gray-500"
+                >
+                  {formatWeekdayShort(date)}
+                </div>
+              ))}
+            </div>
 
-                    <td className="px-4 py-3">{formatItemType(item.itemType)}</td>
+            <div className="grid grid-cols-7 gap-2">
+              {calendarDays.map((date) => {
+                const dayKey = toDateKey(date);
+                const dayItems = itemsByDate[dayKey] || [];
+                const isCurrentMonth = date.getMonth() === viewMonth.getMonth();
+                const isToday = dayKey === toDateKey(new Date());
+                const isSelected = dayKey === selectedDateKey;
 
-                    <td className="px-4 py-3">
+                return (
+                  <button
+                    key={dayKey}
+                    type="button"
+                    onClick={() => setSelectedDateKey(dayKey)}
+                    className={[
+                      "min-h-[140px] rounded-2xl border p-3 text-left transition",
+                      isSelected
+                        ? "border-black bg-black/[0.03] ring-2 ring-black/10"
+                        : "border-black/10 bg-white hover:bg-gray-50",
+                      !isCurrentMonth ? "opacity-45" : "",
+                    ].join(" ")}
+                  >
+                    <div className="mb-3 flex items-center justify-between">
                       <span
-                        className={`rounded-full px-2 py-1 text-xs font-semibold ring-1 ${getStatusBadge(
-                          item.status
-                        )}`}
+                        className={[
+                          "inline-flex h-8 w-8 items-center justify-center rounded-full text-sm font-bold",
+                          isToday
+                            ? "bg-black text-white"
+                            : "bg-transparent text-gray-900",
+                        ].join(" ")}
                       >
-                        {item.status || "-"}
+                        {formatDayNumber(date)}
                       </span>
-                    </td>
 
-                    <td className="px-4 py-3">{formatDateTime(item.startAt)}</td>
+                      <span className="text-xs text-gray-400">
+                        {dayItems.length > 0 ? `${dayItems.length} item(ns)` : ""}
+                      </span>
+                    </div>
 
-                    <td className="px-4 py-3">{formatDateTime(item.endAt)}</td>
-
-                    <td className="px-4 py-3">
-                      {item.customerName ? (
-                        <div>
-                          <div className="font-medium text-gray-900">{item.customerName}</div>
-                          <div className="text-xs text-gray-500">
-                            {item.customerPhone || "-"}
+                    <div className="space-y-2">
+                      {dayItems.slice(0, 3).map((item) => (
+                        <div
+                          key={`${dayKey}-${item.itemId}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openItemDetails(item);
+                          }}
+                          className={`cursor-pointer rounded-xl px-2.5 py-2 text-xs font-semibold ring-1 ${getItemChipClass(
+                            item
+                          )}`}
+                        >
+                          <div className="truncate">
+                            {item.itemKind === "block" ? "Bloqueio" : "Compromisso"}
+                          </div>
+                          <div className="mt-0.5 truncate font-medium">
+                            {item.title || "-"}
                           </div>
                         </div>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </td>
+                      ))}
 
-                    <td className="max-w-md px-4 py-3 text-gray-600">
-                      <div className="whitespace-pre-wrap break-words">
-                        {item.notes || item.addressText || "-"}
+                      {dayItems.length > 3 ? (
+                        <div className="text-xs font-semibold text-gray-500">
+                          +{dayItems.length - 3} item(ns)
+                        </div>
+                      ) : null}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-black/5">
+              <h2 className="text-lg font-bold text-gray-900">Itens do dia</h2>
+              <p className="mt-1 text-sm text-gray-500 capitalize">
+                {selectedDateLabel}
+              </p>
+
+              <div className="mt-4 space-y-3">
+                {loading || storeLoading ? (
+                  <div className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-500">
+                    Carregando itens do dia...
+                  </div>
+                ) : selectedDateItems.length === 0 ? (
+                  <div className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-500">
+                    Nenhum item nesse dia.
+                  </div>
+                ) : (
+                  selectedDateItems.map((item) => (
+                    <button
+                      key={item.itemId}
+                      type="button"
+                      onClick={() => openItemDetails(item)}
+                      className="w-full rounded-2xl border border-black/10 bg-white p-4 text-left transition hover:bg-gray-50"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-bold text-gray-900">
+                            {item.title}
+                          </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            {formatItemKind(item.itemKind)} •{" "}
+                            {formatItemType(item.itemType)}
+                          </div>
+                        </div>
+
+                        <span
+                          className={`rounded-full px-2 py-1 text-[11px] font-semibold ring-1 ${getStatusBadgeClass(
+                            item.status
+                          )}`}
+                        >
+                          {formatStatus(item.status)}
+                        </span>
                       </div>
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
+
+                      <div className="mt-3 text-sm text-gray-600">
+                        {formatDateTime(item.startAt)} até {formatDateTime(item.endAt)}
+                      </div>
+
+                      {item.customerName ? (
+                        <div className="mt-1 text-xs text-gray-500">
+                          Cliente: {item.customerName}
+                        </div>
+                      ) : null}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-black/5">
+              <h2 className="text-lg font-bold text-gray-900">Resumo do mês</h2>
+
+              <div className="mt-4 space-y-3 text-sm">
+                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-4 py-3">
+                  <span className="text-gray-600">Total</span>
+                  <span className="font-bold text-gray-900">{counts.total}</span>
+                </div>
+
+                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-4 py-3">
+                  <span className="text-gray-600">Compromissos</span>
+                  <span className="font-bold text-gray-900">
+                    {counts.appointments}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-4 py-3">
+                  <span className="text-gray-600">Bloqueios</span>
+                  <span className="font-bold text-gray-900">{counts.blocks}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+
+        {selectedItem ? (
+          <div className="fixed inset-0 z-50 flex justify-end bg-black/30">
+            <div className="flex h-full w-full max-w-2xl flex-col bg-white shadow-2xl">
+              <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
+                <div>
+                  <div className="text-sm font-semibold text-gray-500">
+                    {formatItemKind(selectedItem.itemKind)}
+                  </div>
+                  <h3 className="mt-1 text-2xl font-bold text-gray-900">
+                    {selectedItem.title}
+                  </h3>
+                </div>
+
+                <button
+                  onClick={closeItemDetails}
+                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                >
+                  Fechar
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-6 py-5">
+                {saveErrorText ? (
+                  <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
+                    {saveErrorText}
+                  </div>
+                ) : null}
+
+                <div className="mb-5 flex flex-wrap items-center gap-2">
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${getStatusBadgeClass(
+                      selectedItem.status
+                    )}`}
+                  >
+                    {formatStatus(selectedItem.status)}
+                  </span>
+
+                  <span className="rounded-full bg-gray-50 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-gray-200">
+                    {formatItemType(selectedItem.itemType)}
+                  </span>
+                </div>
+
+                {selectedItem.itemKind === "appointment" && !editMode ? (
+                  <div className="mb-5 flex flex-wrap gap-3">
+                    <button
+                      onClick={startEditingSelectedItem}
+                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+                    >
+                      Editar
+                    </button>
+
+                    <button
+                      onClick={() => void cancelAppointment()}
+                      disabled={savingEdit || selectedItem.status === "cancelled"}
+                      className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Cancelar compromisso
+                    </button>
+                  </div>
+                ) : null}
+
+                {selectedItem.itemKind === "block" ? (
+                  <div className="mb-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-200">
+                    O botão de edição do bloqueio ainda não está conectado ao banco.
+                    A leitura e exibição já estão prontas, mas para salvar edição de
+                    bloqueios ainda precisamos criar a função segura específica.
+                  </div>
+                ) : null}
+
+                {selectedItem.itemKind === "appointment" && editMode && editForm ? (
+                  <div className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Título
+                        </label>
+                        <input
+                          value={editForm.title}
+                          onChange={(e) =>
+                            setEditForm((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    title: e.target.value,
+                                  }
+                                : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none ring-0 focus:border-black"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Tipo
+                        </label>
+                        <select
+                          value={editForm.appointmentType}
+                          onChange={(e) =>
+                            setEditForm((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    appointmentType: e.target.value,
+                                  }
+                                : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        >
+                          <option value="technical_visit">Visita técnica</option>
+                          <option value="installation">Instalação</option>
+                          <option value="follow_up">Retorno</option>
+                          <option value="meeting">Reunião</option>
+                          <option value="other">Outro</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Status
+                        </label>
+                        <select
+                          value={editForm.status}
+                          onChange={(e) =>
+                            setEditForm((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    status: e.target.value,
+                                  }
+                                : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        >
+                          <option value="scheduled">Agendado</option>
+                          <option value="rescheduled">Remarcado</option>
+                          <option value="completed">Concluído</option>
+                          <option value="cancelled">Cancelado</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Cliente
+                        </label>
+                        <input
+                          value={editForm.customerName}
+                          onChange={(e) =>
+                            setEditForm((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    customerName: e.target.value,
+                                  }
+                                : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Início
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={editForm.scheduledStart}
+                          onChange={(e) =>
+                            setEditForm((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    scheduledStart: e.target.value,
+                                  }
+                                : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Fim
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={editForm.scheduledEnd}
+                          onChange={(e) =>
+                            setEditForm((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    scheduledEnd: e.target.value,
+                                  }
+                                : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Telefone
+                        </label>
+                        <input
+                          value={editForm.customerPhone}
+                          onChange={(e) =>
+                            setEditForm((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    customerPhone: e.target.value,
+                                  }
+                                : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Endereço
+                        </label>
+                        <input
+                          value={editForm.addressText}
+                          onChange={(e) =>
+                            setEditForm((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    addressText: e.target.value,
+                                  }
+                                : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Observações
+                      </label>
+                      <textarea
+                        value={editForm.notes}
+                        onChange={(e) =>
+                          setEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  notes: e.target.value,
+                                }
+                              : prev
+                          )
+                        }
+                        rows={5}
+                        className="w-full rounded-2xl border border-black/10 px-3 py-3 text-sm outline-none focus:border-black"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap gap-3 pt-2">
+                      <button
+                        onClick={() => void saveAppointmentEdit()}
+                        disabled={savingEdit}
+                        className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {savingEdit ? "Salvando..." : "Salvar alterações"}
+                      </button>
+
+                      <button
+                        onClick={cancelEditingSelectedItem}
+                        disabled={savingEdit}
+                        className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Cancelar edição
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl bg-gray-50 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Início
+                      </div>
+                      <div className="mt-1 text-sm font-medium text-gray-900">
+                        {formatDateTime(selectedItem.startAt)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-gray-50 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Fim
+                      </div>
+                      <div className="mt-1 text-sm font-medium text-gray-900">
+                        {formatDateTime(selectedItem.endAt)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-gray-50 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Cliente
+                      </div>
+                      <div className="mt-1 text-sm font-medium text-gray-900">
+                        {selectedItem.customerName || "-"}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        {selectedItem.customerPhone || "-"}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-gray-50 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Endereço
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap text-sm font-medium text-gray-900">
+                        {selectedItem.addressText || "-"}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-gray-50 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Observações
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap text-sm font-medium text-gray-900">
+                        {selectedItem.notes || "-"}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-gray-50 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Origem
+                      </div>
+                      <div className="mt-1 text-sm font-medium text-gray-900">
+                        {selectedItem.source || "-"}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
