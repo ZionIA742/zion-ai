@@ -50,6 +50,18 @@ type AppointmentEditForm = {
   notes: string;
 };
 
+type AppointmentCreateForm = {
+  title: string;
+  appointmentType: string;
+  status: string;
+  scheduledStart: string;
+  scheduledEnd: string;
+  customerName: string;
+  customerPhone: string;
+  addressText: string;
+  notes: string;
+};
+
 type BlockCreateForm = {
   title: string;
   blockType: string;
@@ -252,8 +264,47 @@ function createAppointmentFormFromItem(item: ScheduleItem): AppointmentEditForm 
   };
 }
 
-function isSameMonth(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+function createDefaultAppointmentCreateForm(selectedDateKey: string): AppointmentCreateForm {
+  const base = selectedDateKey
+    ? new Date(`${selectedDateKey}T09:00:00`)
+    : new Date();
+
+  if (Number.isNaN(base.getTime())) {
+    const fallback = new Date();
+    fallback.setHours(9, 0, 0, 0);
+
+    const fallbackEnd = new Date(fallback);
+    fallbackEnd.setHours(10, 0, 0, 0);
+
+    return {
+      title: "",
+      appointmentType: "technical_visit",
+      status: "scheduled",
+      scheduledStart: toDateTimeLocalValue(fallback.toISOString()),
+      scheduledEnd: toDateTimeLocalValue(fallbackEnd.toISOString()),
+      customerName: "",
+      customerPhone: "",
+      addressText: "",
+      notes: "",
+    };
+  }
+
+  base.setHours(9, 0, 0, 0);
+
+  const end = new Date(base);
+  end.setHours(10, 0, 0, 0);
+
+  return {
+    title: "",
+    appointmentType: "technical_visit",
+    status: "scheduled",
+    scheduledStart: toDateTimeLocalValue(base.toISOString()),
+    scheduledEnd: toDateTimeLocalValue(end.toISOString()),
+    customerName: "",
+    customerPhone: "",
+    addressText: "",
+    notes: "",
+  };
 }
 
 function createDefaultBlockForm(selectedDateKey: string): BlockCreateForm {
@@ -291,6 +342,10 @@ function createDefaultBlockForm(selectedDateKey: string): BlockCreateForm {
   };
 }
 
+function isSameMonth(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+}
+
 export default function SchedulePage() {
   const {
     loading: storeLoading,
@@ -322,6 +377,14 @@ export default function SchedulePage() {
   );
   const [savingBlock, setSavingBlock] = useState(false);
   const [blockErrorText, setBlockErrorText] = useState<string | null>(null);
+
+  const [createAppointmentOpen, setCreateAppointmentOpen] = useState(false);
+  const [appointmentCreateForm, setAppointmentCreateForm] =
+    useState<AppointmentCreateForm>(() =>
+      createDefaultAppointmentCreateForm(toDateKey(new Date()))
+    );
+  const [savingAppointmentCreate, setSavingAppointmentCreate] = useState(false);
+  const [appointmentCreateErrorText, setAppointmentCreateErrorText] = useState<string | null>(null);
 
   const lastKnownRealMonthRef = useRef<Date>(startOfMonth(new Date()));
 
@@ -567,6 +630,19 @@ export default function SchedulePage() {
     setBlockForm(createDefaultBlockForm(selectedDateKey));
   }
 
+  function openCreateAppointmentPanel() {
+    setCreateAppointmentOpen(true);
+    setAppointmentCreateErrorText(null);
+    setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
+  }
+
+  function closeCreateAppointmentPanel() {
+    setCreateAppointmentOpen(false);
+    setAppointmentCreateErrorText(null);
+    setSavingAppointmentCreate(false);
+    setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
+  }
+
   async function saveAppointmentEdit() {
     if (!selectedItem || selectedItem.itemKind !== "appointment" || !editForm) {
       return;
@@ -772,6 +848,66 @@ export default function SchedulePage() {
     }
   }
 
+  async function saveNewAppointment() {
+    if (!organizationId || !activeStoreId) {
+      setAppointmentCreateErrorText("Contexto da loja não encontrado.");
+      return;
+    }
+
+    setSavingAppointmentCreate(true);
+    setAppointmentCreateErrorText(null);
+
+    try {
+      const startDate = new Date(appointmentCreateForm.scheduledStart);
+      const endDate = new Date(appointmentCreateForm.scheduledEnd);
+
+      if (!appointmentCreateForm.title.trim()) {
+        setAppointmentCreateErrorText("Preencha o título do compromisso.");
+        setSavingAppointmentCreate(false);
+        return;
+      }
+
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        setAppointmentCreateErrorText("Preencha um período válido.");
+        setSavingAppointmentCreate(false);
+        return;
+      }
+
+      const { error } = await supabase.rpc("create_store_appointment", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_lead_id: null,
+        p_conversation_id: null,
+        p_title: appointmentCreateForm.title.trim(),
+        p_appointment_type: appointmentCreateForm.appointmentType,
+        p_status: appointmentCreateForm.status,
+        p_scheduled_start: startDate.toISOString(),
+        p_scheduled_end: endDate.toISOString(),
+        p_customer_name: appointmentCreateForm.customerName.trim() || null,
+        p_customer_phone: appointmentCreateForm.customerPhone.trim() || null,
+        p_address_text: appointmentCreateForm.addressText.trim() || null,
+        p_notes: appointmentCreateForm.notes.trim() || null,
+        p_source: "panel",
+        p_created_by_user_id: null,
+      });
+
+      if (error) {
+        setAppointmentCreateErrorText(error.message);
+        setSavingAppointmentCreate(false);
+        return;
+      }
+
+      closeCreateAppointmentPanel();
+      await loadSchedule({ silent: true });
+      setSavingAppointmentCreate(false);
+    } catch (error: any) {
+      setAppointmentCreateErrorText(
+        error?.message || "Erro inesperado ao criar compromisso."
+      );
+      setSavingAppointmentCreate(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-100">
       <div className="mx-auto max-w-[1600px] px-6 py-6">
@@ -780,8 +916,8 @@ export default function SchedulePage() {
             <h1 className="text-3xl font-bold text-gray-900">Agenda</h1>
 
             <p className="mt-1 text-sm text-gray-600">
-              Agenda mensal da loja, com visual simples, leitura rápida e edição dos
-              compromissos já conectada.
+              Agenda mensal da loja, com visual simples, leitura rápida e controle
+              manual dos compromissos e bloqueios.
             </p>
 
             <div className="mt-2 text-xs text-gray-500">
@@ -795,7 +931,15 @@ export default function SchedulePage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={openCreateAppointmentPanel}
+              disabled={storeLoading || !organizationId || !activeStoreId}
+              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Novo compromisso
+            </button>
+
             <button
               onClick={openCreateBlockPanel}
               disabled={storeLoading || !organizationId || !activeStoreId}
@@ -1496,6 +1640,224 @@ export default function SchedulePage() {
                     <button
                       onClick={closeCreateBlockPanel}
                       disabled={savingBlock}
+                      className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {createAppointmentOpen ? (
+          <div className="fixed inset-0 z-50 flex justify-end bg-black/30">
+            <div className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+              <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
+                <div>
+                  <div className="text-sm font-semibold text-gray-500">
+                    Novo compromisso
+                  </div>
+                  <h3 className="mt-1 text-2xl font-bold text-gray-900">
+                    Criar compromisso manual
+                  </h3>
+                </div>
+
+                <button
+                  onClick={closeCreateAppointmentPanel}
+                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                >
+                  Fechar
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-6 py-5">
+                {appointmentCreateErrorText ? (
+                  <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
+                    {appointmentCreateErrorText}
+                  </div>
+                ) : null}
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      Título
+                    </label>
+                    <input
+                      value={appointmentCreateForm.title}
+                      onChange={(e) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          title: e.target.value,
+                        }))
+                      }
+                      placeholder="Ex.: Visita técnica na casa do cliente"
+                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                    />
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Tipo
+                      </label>
+                      <select
+                        value={appointmentCreateForm.appointmentType}
+                        onChange={(e) =>
+                          setAppointmentCreateForm((prev) => ({
+                            ...prev,
+                            appointmentType: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      >
+                        <option value="technical_visit">Visita técnica</option>
+                        <option value="installation">Instalação</option>
+                        <option value="follow_up">Retorno</option>
+                        <option value="meeting">Reunião</option>
+                        <option value="other">Outro</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Status inicial
+                      </label>
+                      <select
+                        value={appointmentCreateForm.status}
+                        onChange={(e) =>
+                          setAppointmentCreateForm((prev) => ({
+                            ...prev,
+                            status: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      >
+                        <option value="scheduled">Agendado</option>
+                        <option value="rescheduled">Remarcado</option>
+                        <option value="completed">Concluído</option>
+                        <option value="cancelled">Cancelado</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Início
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={appointmentCreateForm.scheduledStart}
+                        onChange={(e) =>
+                          setAppointmentCreateForm((prev) => ({
+                            ...prev,
+                            scheduledStart: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Fim
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={appointmentCreateForm.scheduledEnd}
+                        onChange={(e) =>
+                          setAppointmentCreateForm((prev) => ({
+                            ...prev,
+                            scheduledEnd: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      Cliente
+                    </label>
+                    <input
+                      value={appointmentCreateForm.customerName}
+                      onChange={(e) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          customerName: e.target.value,
+                        }))
+                      }
+                      placeholder="Nome do cliente"
+                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      Telefone
+                    </label>
+                    <input
+                      value={appointmentCreateForm.customerPhone}
+                      onChange={(e) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          customerPhone: e.target.value,
+                        }))
+                      }
+                      placeholder="Telefone do cliente"
+                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      Endereço
+                    </label>
+                    <input
+                      value={appointmentCreateForm.addressText}
+                      onChange={(e) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          addressText: e.target.value,
+                        }))
+                      }
+                      placeholder="Endereço do atendimento"
+                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      Observações
+                    </label>
+                    <textarea
+                      value={appointmentCreateForm.notes}
+                      onChange={(e) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          notes: e.target.value,
+                        }))
+                      }
+                      rows={5}
+                      className="w-full rounded-2xl border border-black/10 px-3 py-3 text-sm outline-none focus:border-black"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap gap-3 pt-2">
+                    <button
+                      onClick={() => void saveNewAppointment()}
+                      disabled={savingAppointmentCreate}
+                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {savingAppointmentCreate ? "Salvando..." : "Salvar compromisso"}
+                    </button>
+
+                    <button
+                      onClick={closeCreateAppointmentPanel}
+                      disabled={savingAppointmentCreate}
                       className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Cancelar
