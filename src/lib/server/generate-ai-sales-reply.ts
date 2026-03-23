@@ -70,6 +70,8 @@ export type GenerateAiSalesReplyResult =
         lastCustomerMessage: string;
         storeDisplayName: string | null;
         poolCountUsed: number;
+        resolvedStoreId: string;
+        requestedStoreId: string | null;
       };
     }
   | {
@@ -558,14 +560,14 @@ export async function generateAiSalesReply(
 ): Promise<GenerateAiSalesReplyResult> {
   try {
     const organizationId = String(params.organizationId || "").trim();
-    const storeId = String(params.storeId || "").trim();
+    const requestedStoreId = String(params.storeId || "").trim();
     const conversationId = String(params.conversationId || "").trim();
 
-    if (!organizationId || !storeId || !conversationId) {
+    if (!organizationId || !conversationId) {
       return {
         ok: false,
         error: "MISSING_FIELDS",
-        message: "Envie organizationId, storeId e conversationId.",
+        message: "Envie organizationId e conversationId.",
       };
     }
 
@@ -618,12 +620,19 @@ export async function generateAiSalesReply(
       };
     }
 
+    if (!conversation.lead_id) {
+      return {
+        ok: false,
+        error: "CONVERSATION_WITHOUT_LEAD",
+        message: "A conversa não possui lead vinculada.",
+      };
+    }
+
     const { data: lead, error: leadError } = await supabase
       .from("leads")
       .select("id, organization_id, store_id, name, phone, state")
       .eq("id", conversation.lead_id)
       .eq("organization_id", organizationId)
-      .eq("store_id", storeId)
       .maybeSingle<LeadRow>();
 
     if (leadError || !lead) {
@@ -635,10 +644,20 @@ export async function generateAiSalesReply(
       };
     }
 
+    const resolvedStoreId = String(lead.store_id || "").trim();
+
+    if (!resolvedStoreId) {
+      return {
+        ok: false,
+        error: "LEAD_STORE_ID_MISSING",
+        message: "store_id não encontrado para este lead.",
+      };
+    }
+
     const { data: store, error: storeError } = await supabase
       .from("stores")
       .select("id, organization_id, name")
-      .eq("id", storeId)
+      .eq("id", resolvedStoreId)
       .eq("organization_id", organizationId)
       .maybeSingle<StoreRow>();
 
@@ -655,7 +674,7 @@ export async function generateAiSalesReply(
       .from("store_onboarding_answers")
       .select("question_key, answer")
       .eq("organization_id", organizationId)
-      .eq("store_id", storeId)
+      .eq("store_id", resolvedStoreId)
       .in("question_key", [...ONBOARDING_KEYS]);
 
     if (onboardingError) {
@@ -786,7 +805,7 @@ export async function generateAiSalesReply(
           "id, name, material, shape, width_m, length_m, depth_m, price, description, photo_url, is_active, track_stock, stock_quantity"
         )
         .eq("organization_id", organizationId)
-        .eq("store_id", storeId)
+        .eq("store_id", resolvedStoreId)
         .eq("is_active", true)
         .order("created_at", { ascending: false })
         .limit(3);
@@ -879,6 +898,8 @@ export async function generateAiSalesReply(
         lastCustomerMessage,
         storeDisplayName: onboardingMap.store_display_name || store.name,
         poolCountUsed,
+        resolvedStoreId,
+        requestedStoreId: requestedStoreId || null,
       },
     };
   } catch (error: any) {
