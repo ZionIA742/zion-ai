@@ -1,13 +1,21 @@
-// src/app/api/simulate-customer/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
 
 export const runtime = "nodejs";
 
 type RequestBody = {
   organizationId?: string;
+  storeId?: string;
   conversationId?: string;
   text?: string;
+};
+
+type ConversationRow = {
+  id: string;
+  organization_id: string;
+  lead_id: string | null;
+  is_human_active: boolean | null;
 };
 
 export async function POST(req: Request) {
@@ -15,15 +23,16 @@ export async function POST(req: Request) {
     const body = (await req.json()) as RequestBody;
 
     const organizationId = String(body.organizationId || "").trim();
+    const storeId = String(body.storeId || "").trim();
     const conversationId = String(body.conversationId || "").trim();
     const text = String(body.text || "").trim();
 
-    if (!organizationId || !conversationId || !text) {
+    if (!organizationId || !storeId || !conversationId || !text) {
       return NextResponse.json(
         {
           ok: false,
           error: "MISSING_FIELDS",
-          message: "Envie organizationId, conversationId e text.",
+          message: "Envie organizationId, storeId, conversationId e text.",
         },
         { status: 400 }
       );
@@ -48,21 +57,45 @@ export async function POST(req: Request) {
 
     const { data: conversation, error: conversationError } = await supabase
       .from("conversations")
-      .select("id, organization_id")
+      .select("id, organization_id, lead_id, is_human_active")
       .eq("id", conversationId)
       .eq("organization_id", organizationId)
       .maybeSingle();
 
-    if (conversationError || !conversation) {
+    if (conversationError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "CONVERSATION_LOOKUP_FAILED",
+          message: conversationError.message,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!conversation) {
       return NextResponse.json(
         {
           ok: false,
           error: "CONVERSATION_NOT_FOUND_OR_FORBIDDEN",
           message:
-            conversationError?.message ||
             "Conversa não encontrada para a organização informada.",
         },
         { status: 404 }
+      );
+    }
+
+    const normalizedConversation = conversation as ConversationRow;
+
+    if (normalizedConversation.is_human_active) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "HUMAN_HANDOFF_ACTIVE",
+          message:
+            "A conversa está com humano ativo. A IA não deve responder automaticamente.",
+        },
+        { status: 400 }
       );
     }
 
@@ -90,16 +123,40 @@ export async function POST(req: Request) {
       );
     }
 
+    const aiResult = await generateAndSaveAiSalesReply({
+      organizationId,
+      storeId,
+      conversationId,
+    });
+
+    if (!aiResult.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: aiResult.error,
+          message: aiResult.message,
+          customerMessageSaved: true,
+          aiReplySaved: false,
+        },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json({
       ok: true,
       customerMessageSaved: true,
+      aiReplySaved: true,
       conversationId,
       organizationId,
-      aiFlow: {
-        mode: "advanced_sales_engine",
-        directReplyBypassed: true,
+      storeId,
+      customerText: text,
+      aiText: aiResult.aiText,
+      persisted: aiResult.persisted,
+      context: aiResult.context,
+      flow: {
+        mode: "simulate_customer_with_direct_ai_persist",
         message:
-          "Mensagem salva com sucesso. O motor comercial avançado deve processar a resposta pela fila/worker.",
+          "Mensagem do cliente salva e resposta da IA gerada/salva com sucesso.",
       },
     });
   } catch (err: any) {

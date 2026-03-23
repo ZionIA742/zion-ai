@@ -78,9 +78,68 @@ export type GenerateAiSalesReplyResult =
       message: string;
     };
 
+const ONBOARDING_KEYS = [
+  "accepted_payment_methods",
+  "ai_can_send_price_directly",
+  "ai_should_notify_responsible",
+  "average_human_response_time",
+  "average_installation_time_days",
+  "average_ticket",
+  "brands_worked",
+  "can_offer_discount",
+  "city",
+  "commercial_whatsapp",
+  "human_help_custom_project_cases",
+  "human_help_discount_cases",
+  "human_help_payment_cases",
+  "important_limitations",
+  "installation_available_days",
+  "installation_days_rule",
+  "installation_process",
+  "installation_process_steps",
+  "main_store_brand",
+  "main_store_differentials",
+  "max_discount_percent",
+  "offers_installation",
+  "offers_technical_visit",
+  "pool_types",
+  "pool_types_selected",
+  "price_direct_conditions",
+  "price_direct_rule",
+  "price_must_understand_before",
+  "price_needs_human_help",
+  "price_talk_mode",
+  "responsible_name",
+  "responsible_notification_cases",
+  "responsible_whatsapp",
+  "sales_flow_start_steps",
+  "sales_flow_middle_steps",
+  "sales_flow_final_steps",
+  "sells_accessories",
+  "sells_chemicals",
+  "service_region_modes",
+  "service_region_notes",
+  "service_region_outside_consultation",
+  "service_region_primary_mode",
+  "service_regions",
+  "state",
+  "store_description",
+  "store_display_name",
+  "store_services",
+  "technical_visit_available_days",
+  "technical_visit_days_rule",
+  "technical_visit_rules",
+  "technical_visit_rules_selected",
+] as const;
+
 function asText(value: unknown): string | null {
   if (value == null) return null;
-  if (typeof value === "string") return value.trim() || null;
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  }
+
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
   }
@@ -90,6 +149,7 @@ function asText(value: unknown): string | null {
       const arr = value
         .map((item) => asText(item))
         .filter(Boolean) as string[];
+
       return arr.length ? arr.join(", ") : null;
     }
 
@@ -97,7 +157,8 @@ function asText(value: unknown): string | null {
       const maybeObj = value as Record<string, unknown>;
 
       if (typeof maybeObj.value === "string") {
-        return maybeObj.value.trim() || null;
+        const trimmed = maybeObj.value.trim();
+        return trimmed.length ? trimmed : null;
       }
 
       return JSON.stringify(value);
@@ -133,7 +194,7 @@ function formatPoolLine(pool: PoolRow): string {
   }
 
   if (pool.photo_url) {
-    parts.push(`há contexto visual interno associado a esse modelo`);
+    parts.push("há contexto visual interno associado a esse modelo");
   }
 
   return `- ${parts.join(" | ")}`;
@@ -159,7 +220,9 @@ function looksLikeInstallationQuestion(text: string): boolean {
     text.includes("instalar") ||
     text.includes("instala") ||
     text.includes("inclui instalação") ||
-    text.includes("inclui instalacao")
+    text.includes("inclui instalacao") ||
+    text.includes("visita técnica") ||
+    text.includes("visita tecnica")
   );
 }
 
@@ -171,7 +234,10 @@ function looksLikePriceQuestion(text: string): boolean {
     text.includes("quanto custa") ||
     text.includes("custa") ||
     text.includes("incluído") ||
-    text.includes("incluido")
+    text.includes("incluido") ||
+    text.includes("desconto") ||
+    text.includes("parcel") ||
+    text.includes("pagamento")
   );
 }
 
@@ -186,6 +252,140 @@ function countQuestionIntents(lastCustomerMessage: string): number {
   ];
 
   return intents.filter(Boolean).length;
+}
+
+function hasMeaningfulValue(value: string | null | undefined): value is string {
+  if (!value) return false;
+
+  const normalized = value.trim().toLowerCase();
+
+  if (!normalized) return false;
+  if (normalized === "null") return false;
+  if (normalized === "undefined") return false;
+  if (normalized === "[]") return false;
+  if (normalized === "{}") return false;
+  if (normalized === "false") return false;
+  if (normalized === "não") return false;
+  if (normalized === "nao") return false;
+  if (normalized === "nenhum") return false;
+  if (normalized === "nenhuma") return false;
+  if (normalized === "n/a") return false;
+
+  return true;
+}
+
+function formatSection(
+  title: string,
+  entries: Array<[label: string, value: string | null | undefined]>
+): string {
+  const lines = entries
+    .filter(([, value]) => hasMeaningfulValue(value))
+    .map(([label, value]) => `- ${label}: ${value}`);
+
+  if (!lines.length) {
+    return `${title}\n- sem dados disponíveis`;
+  }
+
+  return `${title}\n${lines.join("\n")}`;
+}
+
+function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>): string {
+  const overview = formatSection("DADOS GERAIS DA LOJA", [
+    ["nome de exibição", onboardingMap.store_display_name],
+    ["descrição da loja", onboardingMap.store_description],
+    ["cidade", onboardingMap.city],
+    ["estado", onboardingMap.state],
+    ["marca principal", onboardingMap.main_store_brand],
+    ["diferenciais principais", onboardingMap.main_store_differentials],
+    ["serviços da loja", onboardingMap.store_services],
+    ["tipos de piscina", onboardingMap.pool_types],
+    ["tipos de piscina selecionados", onboardingMap.pool_types_selected],
+    ["marcas trabalhadas", onboardingMap.brands_worked],
+    ["vende acessórios", onboardingMap.sells_accessories],
+    ["vende químicos", onboardingMap.sells_chemicals],
+  ]);
+
+  const serviceRegion = formatSection("REGIÃO E ATENDIMENTO", [
+    ["regiões atendidas", onboardingMap.service_regions],
+    ["modo principal de região", onboardingMap.service_region_primary_mode],
+    ["modos de atendimento por região", onboardingMap.service_region_modes],
+    ["observações de região", onboardingMap.service_region_notes],
+    [
+      "atendimento fora da região depende de consulta",
+      onboardingMap.service_region_outside_consultation,
+    ],
+  ]);
+
+  const installation = formatSection("INSTALAÇÃO", [
+    ["oferece instalação", onboardingMap.offers_installation],
+    ["dias disponíveis para instalação", onboardingMap.installation_available_days],
+    ["regra dos dias de instalação", onboardingMap.installation_days_rule],
+    ["tempo médio de instalação em dias", onboardingMap.average_installation_time_days],
+    ["processo de instalação", onboardingMap.installation_process],
+    ["etapas do processo de instalação", onboardingMap.installation_process_steps],
+  ]);
+
+  const technicalVisit = formatSection("VISITA TÉCNICA", [
+    ["oferece visita técnica", onboardingMap.offers_technical_visit],
+    ["dias disponíveis para visita técnica", onboardingMap.technical_visit_available_days],
+    ["regra dos dias de visita técnica", onboardingMap.technical_visit_days_rule],
+    ["regras de visita técnica", onboardingMap.technical_visit_rules],
+    ["regras selecionadas de visita técnica", onboardingMap.technical_visit_rules_selected],
+  ]);
+
+  const pricingAndPayment = formatSection("PREÇO, PAGAMENTO E DESCONTO", [
+    ["ticket médio", onboardingMap.average_ticket],
+    ["meios de pagamento aceitos", onboardingMap.accepted_payment_methods],
+    ["a IA pode enviar preço direto", onboardingMap.ai_can_send_price_directly],
+    ["modo de falar de preço", onboardingMap.price_talk_mode],
+    ["regra para preço direto", onboardingMap.price_direct_rule],
+    ["condições para passar preço direto", onboardingMap.price_direct_conditions],
+    ["o que precisa entender antes de falar preço", onboardingMap.price_must_understand_before],
+    ["preço precisa de ajuda humana", onboardingMap.price_needs_human_help],
+    ["pode oferecer desconto", onboardingMap.can_offer_discount],
+    ["desconto máximo", onboardingMap.max_discount_percent],
+  ]);
+
+  const salesFlow = formatSection("FLUXO COMERCIAL", [
+    ["passos iniciais", onboardingMap.sales_flow_start_steps],
+    ["passos do meio", onboardingMap.sales_flow_middle_steps],
+    ["passos finais", onboardingMap.sales_flow_final_steps],
+    ["tempo médio de resposta humana", onboardingMap.average_human_response_time],
+  ]);
+
+  const humanEscalation = formatSection("QUANDO CHAMAR HUMANO OU RESPONSÁVEL", [
+    ["IA deve notificar responsável", onboardingMap.ai_should_notify_responsible],
+    ["casos para notificar responsável", onboardingMap.responsible_notification_cases],
+    ["nome do responsável", onboardingMap.responsible_name],
+    ["whatsapp do responsável", onboardingMap.responsible_whatsapp],
+    ["whatsapp comercial", onboardingMap.commercial_whatsapp],
+    ["casos de projeto customizado com ajuda humana", onboardingMap.human_help_custom_project_cases],
+    ["casos de desconto com ajuda humana", onboardingMap.human_help_discount_cases],
+    ["casos de pagamento com ajuda humana", onboardingMap.human_help_payment_cases],
+  ]);
+
+  const limitations = formatSection("LIMITAÇÕES E CUIDADOS", [
+    ["limitações importantes", onboardingMap.important_limitations],
+  ]);
+
+  return [
+    overview,
+    serviceRegion,
+    installation,
+    technicalVisit,
+    pricingAndPayment,
+    salesFlow,
+    humanEscalation,
+    limitations,
+  ].join("\n\n");
+}
+
+function buildRawOnboardingSummary(onboardingMap: Record<string, string>): string {
+  const entries = Object.entries(onboardingMap)
+    .filter(([, value]) => hasMeaningfulValue(value))
+    .map(([key, value]) => `- ${key}: ${value}`);
+
+  return entries.length ? entries.join("\n") : "- sem dados adicionais do onboarding disponíveis";
 }
 
 function buildSystemPrompt(args: {
@@ -205,10 +405,8 @@ function buildSystemPrompt(args: {
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
-
-  const onboardingSummary = Object.entries(args.onboardingMap)
-    .map(([key, value]) => `- ${key}: ${value}`)
-    .join("\n");
+  const operationalBlock = buildOperationalOnboardingBlock(args.onboardingMap);
+  const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
 
   return `
 Você é a IA comercial real do projeto ZION, atendendo a loja ${storeLabel}.
@@ -244,8 +442,10 @@ REGRAS CENTRAIS
 REGRAS COMERCIAIS DO ZION
 - A loja vende piscinas, instalação e itens relacionados.
 - A loja não deve prometer estética completa do entorno se isso não fizer parte do escopo confirmado.
-- Não invente preço, prazo, estoque ou condição.
-- Não invente capacidade operacional que ainda não existe no fluxo.
+- Não invente preço, prazo, estoque, desconto, condição comercial, forma de pagamento ou capacidade operacional.
+- Use a base operacional do onboarding como fonte principal de verdade da loja.
+- Se houver regra clara no onboarding sobre instalação, visita técnica, desconto, pagamento, região, prazo ou escalonamento, siga essa regra.
+- Se faltar confirmação suficiente no onboarding para cravar algo, deixe claro de forma comercial e natural que isso depende de confirmação humana.
 - Não dê preço seco cedo demais na maioria dos casos.
 - Primeiro entenda o contexto mínimo necessário.
 - Quando fizer sentido, sugira até 3 opções.
@@ -273,6 +473,15 @@ ESTILO DE FALA DO ZION
 - Responda primeiro ao que o cliente pediu e depois conduza.
 - Quando o cliente pedir fotos ou catálogo, conduza a escolha em vez de prometer material.
 
+REGRAS OPERACIONAIS IMPORTANTES
+- Quando o cliente perguntar sobre instalação, use primeiro os dados de offers_installation, installation_available_days, installation_days_rule, average_installation_time_days, installation_process e installation_process_steps, se existirem.
+- Quando o cliente perguntar sobre visita técnica, use primeiro os dados de offers_technical_visit, technical_visit_available_days, technical_visit_days_rule, technical_visit_rules e technical_visit_rules_selected, se existirem.
+- Quando o cliente perguntar sobre preço, pagamento ou desconto, use primeiro ai_can_send_price_directly, price_talk_mode, price_direct_rule, price_direct_conditions, price_must_understand_before, price_needs_human_help, accepted_payment_methods, can_offer_discount e max_discount_percent, se existirem.
+- Quando o cliente perguntar sobre atendimento em outra cidade ou região, use primeiro service_regions, service_region_primary_mode, service_region_modes, service_region_notes e service_region_outside_consultation, se existirem.
+- Quando um caso exigir humano, use ai_should_notify_responsible, responsible_notification_cases, human_help_custom_project_cases, human_help_discount_cases e human_help_payment_cases como base para decidir.
+- Quando houver limitações importantes já registradas, respeite essas limitações e não prometa o que está fora do escopo.
+- Nunca trate um campo vazio, ambíguo ou ausente como confirmação operacional.
+
 EXEMPLOS DE TOM BOM
 - "Perfeito, João. Para eu te direcionar melhor, você está procurando uma piscina menor, média ou maior?"
 - "Consigo te ajudar com isso. Seu foco hoje está mais em custo-benefício ou em uma opção mais completa?"
@@ -297,8 +506,11 @@ Se a resposta começar a soar como um desses exemplos ruins, reescreva antes de 
 BLOCO COMPORTAMENTAL OFICIAL DO ZION
 ${args.behaviorInstructionBlock}
 
-DADOS IMPORTANTES DA LOJA
-${onboardingSummary || "- sem dados adicionais do onboarding disponíveis"}
+BASE OPERACIONAL E COMERCIAL DA LOJA
+${operationalBlock}
+
+RESUMO BRUTO DO ONBOARDING
+${rawOnboardingSummary}
 
 ETAPA ATUAL DO LEAD
 - lead_state: ${args.leadState || "desconhecido"}
@@ -335,8 +547,9 @@ Nesses casos, conduza o cliente com algo prático: tamanho, faixa de valor, mate
 Se a resposta anterior da IA já listou modelos, não repita a lista agora a menos que o cliente tenha pedido explicitamente outra comparação.
 Se o cliente perguntar sobre instalação e preço junto, responda ambos antes de conduzir.
 Se houver valor no contexto, trate como valor de referência.
-Se não houver confirmação sobre inclusão da instalação, diga isso de forma comercial e natural, sem parecer evasiva.
-Prefira terminar com uma condução concreta, como filtrar opções por tamanho, faixa de valor, material ou perfil de uso.
+Se não houver confirmação suficiente sobre inclusão da instalação, prazo, desconto, pagamento, visita técnica ou atendimento fora da região, diga isso de forma comercial e natural, sem parecer evasiva.
+Quando as regras do onboarding indicarem necessidade de humano, conduza a conversa para isso de forma natural, sem parecer bloqueio de sistema.
+Prefira terminar com uma condução concreta, como filtrar opções por tamanho, faixa de valor, material, perfil de uso, região de atendimento ou próximo passo comercial.
 `.trim();
 }
 
@@ -443,16 +656,7 @@ export async function generateAiSalesReply(
       .select("question_key, answer")
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
-      .in("question_key", [
-        "store_display_name",
-        "city",
-        "state",
-        "service_regions",
-        "store_services",
-        "main_store_differentials",
-        "pool_types",
-        "brands_worked",
-      ]);
+      .in("question_key", [...ONBOARDING_KEYS]);
 
     if (onboardingError) {
       return {
@@ -463,6 +667,7 @@ export async function generateAiSalesReply(
     }
 
     const onboardingMap: Record<string, string> = {};
+
     for (const row of (onboardingAnswers || []) as StoreAnswerRow[]) {
       const text = asText(row.answer);
       if (text) {
@@ -495,7 +700,8 @@ export async function generateAiSalesReply(
             String(msg.sender || "").toLowerCase() === "user" &&
             String(msg.direction || "").toLowerCase() === "incoming" &&
             String(msg.content || "").trim().length > 0
-        )?.content?.trim() || "";
+        )
+        ?.content?.trim() || "";
 
     if (!lastCustomerMessage) {
       return {
@@ -518,6 +724,7 @@ export async function generateAiSalesReply(
         const direction = String(msg.direction || "").toLowerCase();
 
         let label = "Cliente";
+
         if (
           sender.includes("ai") ||
           sender.includes("assistant") ||
@@ -566,7 +773,8 @@ export async function generateAiSalesReply(
       looksLikeCatalogRequest(lastCustomerMessageNormalized);
 
     const shouldLoadPools =
-      customerSeemsToBeAskingPools && !(lastAiListedPools && questionIntentCount >= 2);
+      customerSeemsToBeAskingPools &&
+      !(lastAiListedPools && questionIntentCount >= 2);
 
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
     let poolCountUsed = 0;

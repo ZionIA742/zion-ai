@@ -13,17 +13,18 @@ type GenerateAndSaveAiSalesReplyResult =
       aiText: string;
       context?: any;
       persisted: true;
+      messageId: string | null;
     }
   | {
       ok: false;
       error: string;
       message: string;
+      aiText?: string;
     };
 
 type ConversationRow = {
   id: string;
   organization_id: string;
-  store_id: string | null;
   is_human_active: boolean | null;
 };
 
@@ -59,10 +60,10 @@ export async function generateAndSaveAiSalesReply(
 
     const { data: conversation, error: conversationError } = await supabase
       .from("conversations")
-      .select("id, organization_id, store_id, is_human_active")
+      .select("id, organization_id, is_human_active")
       .eq("id", conversationId)
       .eq("organization_id", organizationId)
-      .maybeSingle<ConversationRow>();
+      .maybeSingle();
 
     if (conversationError) {
       return {
@@ -80,15 +81,9 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    if (conversation.store_id && conversation.store_id !== storeId) {
-      return {
-        ok: false,
-        error: "CONVERSATION_STORE_MISMATCH",
-        message: "A conversa não pertence à loja informada.",
-      };
-    }
+    const normalizedConversation = conversation as ConversationRow;
 
-    if (conversation.is_human_active) {
+    if (normalizedConversation.is_human_active) {
       return {
         ok: false,
         error: "HUMAN_HANDOFF_ACTIVE",
@@ -121,22 +116,22 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    const { error: insertError } = await supabase.rpc("panel_send_message", {
-      p_conversation_id: conversationId,
-      p_sender: "agent",
-      p_content: aiText,
-      p_message_type: "text",
-      p_metadata: {
-        source: "ai_sales_engine",
-        route: "generate-and-save-ai-sales-reply",
-      },
-    });
+    const { data: messageId, error: sendError } = await supabase.rpc(
+      "panel_send_message",
+      {
+        p_conversation_id: conversationId,
+        p_text: aiText,
+        p_sender: "ai",
+        p_external_message_id: null,
+      }
+    );
 
-    if (insertError) {
+    if (sendError) {
       return {
         ok: false,
         error: "PANEL_SEND_MESSAGE_FAILED",
-        message: insertError.message,
+        message: sendError.message,
+        aiText,
       };
     }
 
@@ -145,6 +140,7 @@ export async function generateAndSaveAiSalesReply(
       aiText,
       context: generationResult.context,
       persisted: true,
+      messageId: messageId ?? null,
     };
   } catch (error: any) {
     return {

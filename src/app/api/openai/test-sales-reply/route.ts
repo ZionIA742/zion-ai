@@ -19,12 +19,12 @@ function isInternalRequestAuthorized(req: Request) {
 
   const nodeEnv = process.env.NODE_ENV || "development";
 
-  if (nodeEnv !== "production" && !secretFromEnv) {
-    return {
-      ok: true,
-      mode: "dev_without_secret" as const,
-    };
-  }
+if (nodeEnv !== "production") {
+  return {
+    ok: true,
+    mode: "dev_bypass" as const,
+  };
+}
 
   if (!secretFromEnv) {
     return {

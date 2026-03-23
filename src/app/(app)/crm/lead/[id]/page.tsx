@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabaseBrowser";
 type Lead = {
   id: string;
   organization_id: string;
+  store_id: string | null;
   name: string | null;
   phone: string | null;
   state: string;
@@ -38,6 +39,30 @@ type LeadDetailsResponse = {
   messages?: MessageRow[];
   error?: string;
   message?: string;
+};
+
+type SimulateCustomerResponse = {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  customerMessageSaved?: boolean;
+  aiReplySaved?: boolean;
+  conversationId?: string;
+  organizationId?: string;
+  storeId?: string;
+  customerText?: string;
+  aiText?: string;
+  persisted?: boolean;
+  context?: {
+    lastCustomerMessage?: string;
+    leadName?: string;
+    poolCountUsed?: number;
+    storeDisplayName?: string;
+  };
+  flow?: {
+    mode?: string;
+    message?: string;
+  };
 };
 
 function formatSender(message: MessageRow) {
@@ -305,6 +330,11 @@ export default function LeadPage() {
       return;
     }
 
+    if (!lead.store_id) {
+      setErrorText("Não foi possível simular: store_id não encontrado para este lead.");
+      return;
+    }
+
     setSimulatingCustomer(true);
     setErrorText(null);
     setStatusText(null);
@@ -317,33 +347,33 @@ export default function LeadPage() {
         },
         body: JSON.stringify({
           organizationId: lead.organization_id,
+          storeId: lead.store_id,
           conversationId: conversation.id,
           text,
         }),
       });
 
-      const result = await response.json();
+      const result = (await response.json()) as SimulateCustomerResponse;
 
       if (!response.ok || !result?.ok) {
-        const aiMessage =
-          result?.ai?.message ||
+        const errorMessage =
           result?.message ||
           result?.error ||
           "Erro ao simular mensagem do cliente.";
 
-        setErrorText(String(aiMessage));
+        setErrorText(String(errorMessage));
         setSimulatingCustomer(false);
         return;
       }
 
       setSimulatedCustomerMessage("");
 
-      if (result?.ai?.ok === false) {
-        setStatusText(
-          "Mensagem do cliente simulada com sucesso. A IA foi acionada, mas não respondeu nesta tentativa."
-        );
+      if (result.aiReplySaved) {
+        setStatusText("Mensagem do cliente simulada com sucesso e resposta da IA salva no chat.");
+      } else if (result.customerMessageSaved) {
+        setStatusText("Mensagem do cliente simulada com sucesso, mas a IA não salvou resposta nesta tentativa.");
       } else {
-        setStatusText("Mensagem do cliente simulada com sucesso.");
+        setStatusText("Simulação concluída.");
       }
 
       setSimulatingCustomer(false);
