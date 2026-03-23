@@ -58,11 +58,14 @@ type SimulateCustomerResponse = {
     leadName?: string;
     poolCountUsed?: number;
     storeDisplayName?: string;
+    resolvedStoreId?: string;
+    requestedStoreId?: string | null;
   };
   flow?: {
     mode?: string;
     message?: string;
   };
+  debug?: Record<string, unknown>;
 };
 
 function formatSender(message: MessageRow) {
@@ -140,8 +143,10 @@ export default function LeadPage() {
 
   const hasConversation = Boolean(conversation);
   const isHumanActive = conversation?.is_human_active === true;
-  const canTakeOver = hasConversation && !isHumanActive && !working && !simulatingCustomer;
-  const canReleaseToAI = hasConversation && isHumanActive && !working && !simulatingCustomer;
+  const canTakeOver =
+    hasConversation && !isHumanActive && !working && !simulatingCustomer;
+  const canReleaseToAI =
+    hasConversation && isHumanActive && !working && !simulatingCustomer;
   const canSendMessage =
     hasConversation &&
     !working &&
@@ -175,7 +180,9 @@ export default function LeadPage() {
       const result = (await response.json()) as LeadDetailsResponse;
 
       if (!response.ok || !result?.ok) {
-        setErrorText(result?.message || result?.error || "Erro ao carregar dados do lead.");
+        setErrorText(
+          result?.message || result?.error || "Erro ao carregar dados do lead."
+        );
 
         if (silent) {
           setRefreshing(false);
@@ -330,11 +337,6 @@ export default function LeadPage() {
       return;
     }
 
-    if (!lead.store_id) {
-      setErrorText("Não foi possível simular: store_id não encontrado para este lead.");
-      return;
-    }
-
     setSimulatingCustomer(true);
     setErrorText(null);
     setStatusText(null);
@@ -347,7 +349,7 @@ export default function LeadPage() {
         },
         body: JSON.stringify({
           organizationId: lead.organization_id,
-          storeId: lead.store_id,
+          storeId: lead.store_id || undefined,
           conversationId: conversation.id,
           text,
         }),
@@ -361,6 +363,11 @@ export default function LeadPage() {
           result?.error ||
           "Erro ao simular mensagem do cliente.";
 
+        console.error("[LeadPage] erro ao simular cliente:", {
+          httpStatus: response.status,
+          result,
+        });
+
         setErrorText(String(errorMessage));
         setSimulatingCustomer(false);
         return;
@@ -369,9 +376,13 @@ export default function LeadPage() {
       setSimulatedCustomerMessage("");
 
       if (result.aiReplySaved) {
-        setStatusText("Mensagem do cliente simulada com sucesso e resposta da IA salva no chat.");
+        setStatusText(
+          "Mensagem do cliente simulada com sucesso e resposta da IA salva no chat."
+        );
       } else if (result.customerMessageSaved) {
-        setStatusText("Mensagem do cliente simulada com sucesso, mas a IA não salvou resposta nesta tentativa.");
+        setStatusText(
+          "Mensagem do cliente simulada com sucesso, mas a IA não salvou resposta nesta tentativa."
+        );
       } else {
         setStatusText("Simulação concluída.");
       }
@@ -379,6 +390,8 @@ export default function LeadPage() {
       setSimulatingCustomer(false);
       await fetchLeadConversationAndMessages({ silent: true });
     } catch (error: any) {
+      console.error("[LeadPage] erro inesperado ao simular cliente:", error);
+
       setErrorText(
         error?.message || "Erro inesperado ao simular mensagem do cliente."
       );
@@ -540,9 +553,7 @@ export default function LeadPage() {
         <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-xl font-semibold text-gray-900">Mensagens</h2>
-            <div className="text-sm text-gray-500">
-              {messages.length} mensagem(ns)
-            </div>
+            <div className="text-sm text-gray-500">{messages.length} mensagem(ns)</div>
           </div>
 
           {!conversation ? (
