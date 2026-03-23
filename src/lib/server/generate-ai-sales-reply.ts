@@ -172,6 +172,151 @@ function asText(value: unknown): string | null {
   return null;
 }
 
+function normalizeText(value: string | null | undefined): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function hasMeaningfulValue(value: string | null | undefined): value is string {
+  if (!value) return false;
+
+  const normalized = normalizeText(value);
+
+  if (!normalized) return false;
+  if (normalized === "null") return false;
+  if (normalized === "undefined") return false;
+  if (normalized === "[]") return false;
+  if (normalized === "{}") return false;
+  if (normalized === "false") return false;
+  if (normalized === "nao") return false;
+  if (normalized === "nenhum") return false;
+  if (normalized === "nenhuma") return false;
+  if (normalized === "n/a") return false;
+
+  return true;
+}
+
+function looksLikeCatalogRequest(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("catalogo") ||
+    t.includes("foto") ||
+    t.includes("fotos") ||
+    t.includes("imagem") ||
+    t.includes("imagens") ||
+    t.includes("modelo") ||
+    t.includes("modelos")
+  );
+}
+
+function looksLikeInstallationQuestion(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("instalacao") ||
+    t.includes("instalar") ||
+    t.includes("instala") ||
+    t.includes("inclui instalacao")
+  );
+}
+
+function looksLikeTechnicalVisitQuestion(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("visita tecnica") ||
+    t.includes("visita antes") ||
+    t.includes("vem ver o local") ||
+    t.includes("ver o lugar") ||
+    t.includes("avaliar o local") ||
+    t.includes("avaliacao no local") ||
+    t.includes("ir no local") ||
+    t.includes("visita no local")
+  );
+}
+
+function looksLikePriceQuestion(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("preco") ||
+    t.includes("valor") ||
+    t.includes("quanto custa") ||
+    t.includes("custa") ||
+    t.includes("orcamento") ||
+    t.includes("faixa de valor")
+  );
+}
+
+function looksLikePaymentQuestion(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("cartao") ||
+    t.includes("credito") ||
+    t.includes("debito") ||
+    t.includes("pix") ||
+    t.includes("boleto") ||
+    t.includes("parcel") ||
+    t.includes("pagamento") ||
+    t.includes("forma de pagamento") ||
+    t.includes("formas de pagamento") ||
+    t.includes("aceita cartao")
+  );
+}
+
+function looksLikeRegionQuestion(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("atende") ||
+    t.includes("atendem") ||
+    t.includes("minha cidade") ||
+    t.includes("minha regiao") ||
+    t.includes("minha região") ||
+    t.includes("fora da regiao") ||
+    t.includes("fora da região") ||
+    t.includes("deslocamento") ||
+    t.includes("cidade")
+  );
+}
+
+function looksLikePoolChoice(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("piscina") ||
+    t.includes("fibra") ||
+    t.includes("vinil") ||
+    t.includes("alvenaria") ||
+    t.includes("pequena") ||
+    t.includes("media") ||
+    t.includes("grande") ||
+    t.includes("compacta")
+  );
+}
+
+function countQuestionIntents(lastCustomerMessage: string): number {
+  const categories = [
+    looksLikeCatalogRequest(lastCustomerMessage),
+    looksLikeInstallationQuestion(lastCustomerMessage),
+    looksLikeTechnicalVisitQuestion(lastCustomerMessage),
+    looksLikePriceQuestion(lastCustomerMessage),
+    looksLikePaymentQuestion(lastCustomerMessage),
+    looksLikeRegionQuestion(lastCustomerMessage),
+    looksLikePoolChoice(lastCustomerMessage),
+  ];
+
+  const score = categories.filter(Boolean).length;
+  if (score > 0) return score;
+
+  return lastCustomerMessage.includes("?") ? 1 : 0;
+}
+
 function formatPoolLine(pool: PoolRow): string {
   const parts: string[] = [];
 
@@ -200,80 +345,6 @@ function formatPoolLine(pool: PoolRow): string {
   }
 
   return `- ${parts.join(" | ")}`;
-}
-
-function looksLikeCatalogRequest(text: string): boolean {
-  return (
-    text.includes("catálogo") ||
-    text.includes("catalogo") ||
-    text.includes("foto") ||
-    text.includes("fotos") ||
-    text.includes("imagem") ||
-    text.includes("imagens") ||
-    text.includes("modelo") ||
-    text.includes("modelos")
-  );
-}
-
-function looksLikeInstallationQuestion(text: string): boolean {
-  return (
-    text.includes("instalação") ||
-    text.includes("instalacao") ||
-    text.includes("instalar") ||
-    text.includes("instala") ||
-    text.includes("inclui instalação") ||
-    text.includes("inclui instalacao") ||
-    text.includes("visita técnica") ||
-    text.includes("visita tecnica")
-  );
-}
-
-function looksLikePriceQuestion(text: string): boolean {
-  return (
-    text.includes("preço") ||
-    text.includes("preco") ||
-    text.includes("valor") ||
-    text.includes("quanto custa") ||
-    text.includes("custa") ||
-    text.includes("incluído") ||
-    text.includes("incluido") ||
-    text.includes("desconto") ||
-    text.includes("parcel") ||
-    text.includes("pagamento")
-  );
-}
-
-function countQuestionIntents(lastCustomerMessage: string): number {
-  const text = lastCustomerMessage.toLowerCase();
-
-  const intents = [
-    looksLikeCatalogRequest(text),
-    looksLikeInstallationQuestion(text),
-    looksLikePriceQuestion(text),
-    text.includes("?"),
-  ];
-
-  return intents.filter(Boolean).length;
-}
-
-function hasMeaningfulValue(value: string | null | undefined): value is string {
-  if (!value) return false;
-
-  const normalized = value.trim().toLowerCase();
-
-  if (!normalized) return false;
-  if (normalized === "null") return false;
-  if (normalized === "undefined") return false;
-  if (normalized === "[]") return false;
-  if (normalized === "{}") return false;
-  if (normalized === "false") return false;
-  if (normalized === "não") return false;
-  if (normalized === "nao") return false;
-  if (normalized === "nenhum") return false;
-  if (normalized === "nenhuma") return false;
-  if (normalized === "n/a") return false;
-
-  return true;
 }
 
 function formatSection(
@@ -390,6 +461,80 @@ function buildRawOnboardingSummary(onboardingMap: Record<string, string>): strin
   return entries.length ? entries.join("\n") : "- sem dados adicionais do onboarding disponíveis";
 }
 
+function buildResponsePriorityBlock(args: {
+  lastCustomerMessage: string;
+  onboardingMap: Record<string, string>;
+}) {
+  const message = args.lastCustomerMessage;
+
+  const asksPayment = looksLikePaymentQuestion(message);
+  const asksVisit = looksLikeTechnicalVisitQuestion(message);
+  const asksInstallation = looksLikeInstallationQuestion(message);
+  const asksPrice = looksLikePriceQuestion(message);
+  const asksRegion = looksLikeRegionQuestion(message);
+  const asksCatalog = looksLikeCatalogRequest(message);
+  const asksPoolChoice = looksLikePoolChoice(message);
+
+  const instructions: string[] = [];
+
+  if (asksPayment) {
+    instructions.push(
+      `- O cliente perguntou sobre pagamento/cartão. Responda isso de forma objetiva logo no começo. Use "accepted_payment_methods" se existir. Se o dado existir, diga claramente se aceita cartão e só depois conduza.`
+    );
+  }
+
+  if (asksVisit) {
+    instructions.push(
+      `- O cliente perguntou sobre visita técnica / ver o local antes. Responda isso de forma objetiva logo no começo. Use "offers_technical_visit", "technical_visit_rules", "technical_visit_available_days" e "technical_visit_days_rule" se existirem.`
+    );
+  }
+
+  if (asksInstallation) {
+    instructions.push(
+      `- O cliente perguntou sobre instalação. Responda isso antes de fazer qualquer pergunta. Use "offers_installation", "installation_process", "installation_available_days" e "average_installation_time_days" se existirem.`
+    );
+  }
+
+  if (asksPrice) {
+    instructions.push(
+      `- O cliente perguntou sobre preço/valor. Responda isso de forma útil e comercial. Se puder falar faixa, fale. Se ainda não puder cravar, explique rapidamente o que falta e não ignore a pergunta.`
+    );
+  }
+
+  if (asksRegion) {
+    instructions.push(
+      `- O cliente perguntou sobre atendimento por cidade/região. Responda isso antes de conduzir. Use "service_regions", "service_region_notes" e "service_region_outside_consultation" se existirem.`
+    );
+  }
+
+  if (asksCatalog || asksPoolChoice) {
+    instructions.push(
+      `- O cliente está falando de modelo/tamanho/tipo de piscina. Responda isso de forma prática, sem enrolar, e direcione para opções compatíveis.`
+    );
+  }
+
+  if (instructions.length === 0) {
+    instructions.push(
+      `- Responda primeiro o pedido central do cliente com objetividade e só depois conduza a conversa.`
+    );
+  }
+
+  instructions.push(
+    `- Se houver 2 ou mais intenções na mensagem, responda todas na mesma resposta, em blocos curtos.`
+  );
+  instructions.push(
+    `- Ordem obrigatória: responder -> esclarecer o mínimo necessário -> conduzir.`
+  );
+  instructions.push(
+    `- Não faça pergunta antes de responder o que o cliente perguntou.`
+  );
+  instructions.push(
+    `- Evite terminar sem responder algo que o cliente perguntou explicitamente.`
+  );
+
+  return instructions.join("\n");
+}
+
 function buildSystemPrompt(args: {
   storeDisplayName: string | null;
   storeName: string | null;
@@ -409,50 +554,56 @@ function buildSystemPrompt(args: {
   const leadLabel = args.leadName || "cliente";
   const operationalBlock = buildOperationalOnboardingBlock(args.onboardingMap);
   const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
+  const responsePriorityBlock = buildResponsePriorityBlock({
+    lastCustomerMessage: args.lastCustomerMessage,
+    onboardingMap: args.onboardingMap,
+  });
 
   return `
 Você é a IA comercial real do projeto ZION, atendendo a loja ${storeLabel}.
-
 Você está falando com o lead ${leadLabel}.
 
 OBJETIVO
 Seu papel é agir como uma vendedora consultiva, humana, natural e comercial para lojas de piscina.
 Você deve aplicar SPIN Selling e BANT de forma natural, sem parecer interrogatório.
 
+REGRA MAIS IMPORTANTE DESTA RESPOSTA
+- Primeiro responda objetivamente o que o cliente perguntou.
+- Só depois conduza a conversa.
+- Se o cliente fez 2 ou mais perguntas na mesma mensagem, responda as 2 ou mais primeiro.
+- Nunca deixe pergunta objetiva sem resposta.
+
 REGRAS CENTRAIS
 - Fale em português do Brasil.
 - Soe humana, comercial, natural e segura.
 - Respostas curtas ou médias.
-- No máximo 1 ou 2 perguntas por resposta.
+- No máximo 1 pergunta no final da resposta na maioria dos casos.
 - Não pareça robô.
 - Não fale como suporte técnico.
 - Não diga que é IA.
 - Não diga que está seguindo framework.
 - Não use markdown pesado.
-- Não use listas longas no texto final, exceto quando realmente ajudar muito.
 - Não explique processo interno.
-- Não use frases artificiais, burocráticas ou "certinhas demais".
-- Não use frases como "no momento não consigo", "neste momento o fluxo", "posso te mostrar na evolução", "quer que eu faça isso?".
+- Não use frases artificiais, burocráticas ou certinhas demais.
 - Não ignore o pedido principal do cliente.
+- Não prometa preço, prazo, estoque, desconto, visita, instalação, pagamento ou cobertura regional sem base.
 - Não prometa enviar fotos, catálogo, link, arquivo, PDF, mídia ou orçamento se isso não estiver realmente disponível no fluxo atual.
 - Se o cliente pedir algo visual e isso não puder ser entregue automaticamente, não transforme a resposta em desculpa técnica.
-- Não use frases como "temos fotos bem legais", "te mostro", "te envio", "te mando", "vou separar as fotos", "vou te passar o catálogo" se isso não estiver realmente implementado.
 - Não fale de imagem, foto, PDF, catálogo visual ou material como se a entrega já estivesse acontecendo.
-- Quando existir contexto visual cadastrado, trate isso apenas como contexto interno para melhorar sua orientação, e não como promessa de entrega imediata ao cliente.
+- Quando existir contexto visual cadastrado, trate isso apenas como contexto interno para melhorar a orientação, e não como promessa de entrega imediata.
 - Fale como alguém vendendo de verdade no WhatsApp.
+
+COMPORTAMENTO OBRIGATÓRIO NESTA RESPOSTA
+${responsePriorityBlock}
 
 REGRAS COMERCIAIS DO ZION
 - A loja vende piscinas, instalação e itens relacionados.
 - A loja não deve prometer estética completa do entorno se isso não fizer parte do escopo confirmado.
-- Não invente preço, prazo, estoque, desconto, condição comercial, forma de pagamento ou capacidade operacional.
 - Use a base operacional do onboarding como fonte principal de verdade da loja.
 - Se houver regra clara no onboarding sobre instalação, visita técnica, desconto, pagamento, região, prazo ou escalonamento, siga essa regra.
 - Se faltar confirmação suficiente no onboarding para cravar algo, deixe claro de forma comercial e natural que isso depende de confirmação humana.
-- Não dê preço seco cedo demais na maioria dos casos.
-- Primeiro entenda o contexto mínimo necessário.
+- Não dê preço seco cedo demais na maioria dos casos, mas também não ignore quando o cliente perguntar.
 - Quando fizer sentido, sugira até 3 opções.
-- Se o cliente pedir catálogo de piscina, trate isso como um pedido importante e avance de forma útil.
-- Se houver opções de piscinas no contexto, você pode mencionar as opções de forma natural, mas sem parecer que já está entregando mídia ou material visual.
 - Se o cliente insistir ou repetir o pedido, pare de enrolar e responda de forma mais objetiva.
 
 COMO USAR SPIN
@@ -468,9 +619,8 @@ COMO USAR BANT
 - Timing: descubra se é para agora ou pesquisa.
 
 ESTILO DE FALA DO ZION
-- Fale como vendedor experiente de WhatsApp.
-- Menos explicação, mais condução.
-- Menos "texto bonito", mais naturalidade.
+- Menos explicação, mais resposta útil.
+- Menos rodeio, mais objetividade.
 - Menos justificativa técnica, mais ajuda prática.
 - Responda primeiro ao que o cliente pediu e depois conduza.
 - Quando o cliente pedir fotos ou catálogo, conduza a escolha em vez de prometer material.
@@ -485,12 +635,10 @@ REGRAS OPERACIONAIS IMPORTANTES
 - Nunca trate um campo vazio, ambíguo ou ausente como confirmação operacional.
 
 EXEMPLOS DE TOM BOM
-- "Perfeito, João. Para eu te direcionar melhor, você está procurando uma piscina menor, média ou maior?"
-- "Consigo te ajudar com isso. Seu foco hoje está mais em custo-benefício ou em uma opção mais completa?"
-- "Perfeito. Me fala só uma coisa: você já tem o espaço definido ou ainda está começando a ver as opções?"
-- "Posso te orientar pelas opções que mais combinam com o que você procura. Você quer algo mais compacto ou uma piscina mais espaçosa?"
-- "Entendi. Para não te mostrar coisa fora do que faz sentido, me diz: a prioridade hoje é tamanho, valor ou praticidade na instalação?"
-- "Perfeito. Em vez de te jogar um monte de opção, eu prefiro te direcionar melhor. Você quer algo mais econômico, intermediário ou uma opção mais completa?"
+- "Sim, trabalhamos com cartão. E sobre a visita, fazemos sim, só preciso confirmar sua região para te orientar certinho."
+- "Fazemos sim a instalação. O valor pode variar conforme o local e o preparo necessário, então eu te explico isso sem problema."
+- "Sobre cartão, aceitamos sim. Sobre piscina pequena, consigo te direcionar para opções mais compactas e práticas."
+- "Fazemos visita técnica, sim. Para te falar com mais segurança, me passa sua cidade ou bairro."
 
 EXEMPLOS DE TOM RUIM
 - "No momento não consigo enviar fotos diretamente."
@@ -498,8 +646,6 @@ EXEMPLOS DE TOM RUIM
 - "Quer que eu faça isso?"
 - "Neste momento o fluxo é apenas em texto."
 - "Posso te mostrar na evolução do fluxo."
-- "Tenho fotos cadastradas das piscinas que temos."
-- "Temos fotos bem legais."
 - "Vou te mandar as imagens."
 - "Vou te mostrar as fotos agora."
 
@@ -525,9 +671,13 @@ ${args.availablePoolsText || "Nenhuma opção de piscina carregada no contexto."
 
 SINAIS DO CONTEXTO ATUAL
 - ultima_mensagem_do_cliente_tem_multiplas_intencoes: ${args.questionIntentCount >= 2 ? "sim" : "não"}
-- pedido_de_catalogo_ou_fotos: ${looksLikeCatalogRequest(args.lastCustomerMessage.toLowerCase()) ? "sim" : "não"}
-- pergunta_sobre_instalacao: ${looksLikeInstallationQuestion(args.lastCustomerMessage.toLowerCase()) ? "sim" : "não"}
-- pergunta_sobre_preco: ${looksLikePriceQuestion(args.lastCustomerMessage.toLowerCase()) ? "sim" : "não"}
+- pedido_de_catalogo_ou_fotos: ${looksLikeCatalogRequest(args.lastCustomerMessage) ? "sim" : "não"}
+- pergunta_sobre_instalacao: ${looksLikeInstallationQuestion(args.lastCustomerMessage) ? "sim" : "não"}
+- pergunta_sobre_visita_tecnica: ${looksLikeTechnicalVisitQuestion(args.lastCustomerMessage) ? "sim" : "não"}
+- pergunta_sobre_preco: ${looksLikePriceQuestion(args.lastCustomerMessage) ? "sim" : "não"}
+- pergunta_sobre_pagamento: ${looksLikePaymentQuestion(args.lastCustomerMessage) ? "sim" : "não"}
+- pergunta_sobre_regiao: ${looksLikeRegionQuestion(args.lastCustomerMessage) ? "sim" : "não"}
+- pedido_ligado_a_tamanho_tipo_modelo: ${looksLikePoolChoice(args.lastCustomerMessage) ? "sim" : "não"}
 - opcoes_de_piscina_carregadas_no_contexto: ${args.shouldLoadPools ? "sim" : "não"}
 - ultima_resposta_da_ia_listou_modelos: ${args.lastAiListedPools ? "sim" : "não"}
 
@@ -537,21 +687,13 @@ ${args.lastAiMessage || "Sem resposta anterior da IA no histórico recente."}
 MENSAGEM MAIS RECENTE DO CLIENTE
 ${args.lastCustomerMessage}
 
-INSTRUÇÃO FINAL
-Responda como uma vendedora consultiva real.
-Se o cliente pedir algo direto, responda ao pedido e só depois conduza com naturalidade.
-Se a mensagem do cliente tiver 2 ou mais perguntas, responda essas perguntas primeiro em blocos curtos e claros.
-Evite soar robótica.
-Evite responder de forma genérica.
-Evite resposta com cara de aviso de sistema.
-Se o cliente pedir fotos, catálogo visual, PDF ou envio de material, não invente entrega automática e não enfatize a limitação técnica.
-Nesses casos, conduza o cliente com algo prático: tamanho, faixa de valor, material, uso principal, instalação ou perfil da piscina.
-Se a resposta anterior da IA já listou modelos, não repita a lista agora a menos que o cliente tenha pedido explicitamente outra comparação.
-Se o cliente perguntar sobre instalação e preço junto, responda ambos antes de conduzir.
-Se houver valor no contexto, trate como valor de referência.
-Se não houver confirmação suficiente sobre inclusão da instalação, prazo, desconto, pagamento, visita técnica ou atendimento fora da região, diga isso de forma comercial e natural, sem parecer evasiva.
-Quando as regras do onboarding indicarem necessidade de humano, conduza a conversa para isso de forma natural, sem parecer bloqueio de sistema.
-Prefira terminar com uma condução concreta, como filtrar opções por tamanho, faixa de valor, material, perfil de uso, região de atendimento ou próximo passo comercial.
+FORMATO OBRIGATÓRIO DE EXECUÇÃO
+- Linha 1: responda diretamente o principal.
+- Linha 2 em diante: responda os outros pontos que o cliente perguntou, se houver.
+- Só depois disso faça, no máximo, 1 pergunta útil para avançar.
+- Se o cliente perguntou sobre cartão, visita, instalação, preço ou região, essas respostas devem aparecer claramente no texto.
+- Não fuja da pergunta.
+- Não comece pedindo informação sem antes responder o que já dá para responder.
 `.trim();
 }
 
@@ -716,8 +858,8 @@ export async function generateAiSalesReply(
         .reverse()
         .find(
           (msg) =>
-            String(msg.sender || "").toLowerCase() === "user" &&
-            String(msg.direction || "").toLowerCase() === "incoming" &&
+            normalizeText(msg.sender) === "user" &&
+            normalizeText(msg.direction) === "incoming" &&
             String(msg.content || "").trim().length > 0
         )
         ?.content?.trim() || "";
@@ -733,14 +875,13 @@ export async function generateAiSalesReply(
     const behaviorInstructionBlock =
       buildBehaviorInstructionBlock(lastCustomerMessage);
 
-    const lastCustomerMessageNormalized = lastCustomerMessage.toLowerCase();
     const questionIntentCount = countQuestionIntents(lastCustomerMessage);
 
     const recentHistory = orderedMessages
       .filter((msg) => String(msg.content || "").trim().length > 0)
       .map((msg) => {
-        const sender = String(msg.sender || "").toLowerCase();
-        const direction = String(msg.direction || "").toLowerCase();
+        const sender = normalizeText(msg.sender);
+        const direction = normalizeText(msg.direction);
 
         let label = "Cliente";
 
@@ -762,8 +903,8 @@ export async function generateAiSalesReply(
       [...orderedMessages]
         .reverse()
         .find((msg) => {
-          const sender = String(msg.sender || "").toLowerCase();
-          const direction = String(msg.direction || "").toLowerCase();
+          const sender = normalizeText(msg.sender);
+          const direction = normalizeText(msg.direction);
 
           return (
             String(msg.content || "").trim().length > 0 &&
@@ -777,19 +918,13 @@ export async function generateAiSalesReply(
 
     const lastAiListedPools =
       !!lastAiMessage &&
-      (lastAiMessage.includes("material") ||
-        lastAiMessage.includes("formato") ||
-        lastAiMessage.includes("valor de referência") ||
-        lastAiMessage.includes("valor de referência:") ||
-        lastAiMessage.includes("tamanho aprox.") ||
-        lastAiMessage.includes("tamanho aproximado"));
+      (normalizeText(lastAiMessage).includes("material") ||
+        normalizeText(lastAiMessage).includes("formato") ||
+        normalizeText(lastAiMessage).includes("valor de referencia") ||
+        normalizeText(lastAiMessage).includes("tamanho aproximado"));
 
     const customerSeemsToBeAskingPools =
-      lastCustomerMessageNormalized.includes("piscina") ||
-      lastCustomerMessageNormalized.includes("fibra") ||
-      lastCustomerMessageNormalized.includes("vinil") ||
-      lastCustomerMessageNormalized.includes("alvenaria") ||
-      looksLikeCatalogRequest(lastCustomerMessageNormalized);
+      looksLikePoolChoice(lastCustomerMessage) || looksLikeCatalogRequest(lastCustomerMessage);
 
     const shouldLoadPools =
       customerSeemsToBeAskingPools &&
@@ -856,8 +991,8 @@ export async function generateAiSalesReply(
       ...orderedMessages
         .filter((msg) => String(msg.content || "").trim().length > 0)
         .map((msg) => {
-          const sender = String(msg.sender || "").toLowerCase();
-          const direction = String(msg.direction || "").toLowerCase();
+          const sender = normalizeText(msg.sender);
+          const direction = normalizeText(msg.direction);
 
           const role =
             sender.includes("assistant") ||
