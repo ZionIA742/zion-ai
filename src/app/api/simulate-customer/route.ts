@@ -18,21 +18,30 @@ type ConversationRow = {
   is_human_active: boolean | null;
 };
 
+type LeadRow = {
+  id: string;
+  organization_id: string;
+  store_id: string | null;
+  name: string | null;
+  phone: string | null;
+  state: string | null;
+};
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as RequestBody;
 
     const organizationId = String(body.organizationId || "").trim();
-    const storeId = String(body.storeId || "").trim();
+    const requestedStoreId = String(body.storeId || "").trim();
     const conversationId = String(body.conversationId || "").trim();
     const text = String(body.text || "").trim();
 
-    if (!organizationId || !storeId || !conversationId || !text) {
+    if (!organizationId || !conversationId || !text) {
       return NextResponse.json(
         {
           ok: false,
           error: "MISSING_FIELDS",
-          message: "Envie organizationId, storeId, conversationId e text.",
+          message: "Envie organizationId, conversationId e text.",
         },
         { status: 400 }
       );
@@ -78,8 +87,7 @@ export async function POST(req: Request) {
         {
           ok: false,
           error: "CONVERSATION_NOT_FOUND_OR_FORBIDDEN",
-          message:
-            "Conversa não encontrada para a organização informada.",
+          message: "Conversa não encontrada para a organização informada.",
         },
         { status: 404 }
       );
@@ -99,6 +107,83 @@ export async function POST(req: Request) {
       );
     }
 
+    if (!normalizedConversation.lead_id) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "CONVERSATION_WITHOUT_LEAD",
+          message: "A conversa não possui lead vinculada.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const { data: lead, error: leadError } = await supabase
+      .from("leads")
+      .select("id, organization_id, store_id, name, phone, state")
+      .eq("id", normalizedConversation.lead_id)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+
+    if (leadError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LEAD_LOOKUP_FAILED",
+          message: leadError.message,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!lead) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LEAD_NOT_FOUND_OR_FORBIDDEN",
+          message: "Lead não encontrada para a conversa informada.",
+        },
+        { status: 404 }
+      );
+    }
+
+    const normalizedLead = lead as LeadRow;
+    const resolvedStoreId = String(normalizedLead.store_id || "").trim();
+
+    if (!resolvedStoreId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LEAD_STORE_ID_MISSING",
+          message: "store_id não encontrado para este lead",
+          debug: {
+            conversationId,
+            leadId: normalizedLead.id,
+            requestedStoreId: requestedStoreId || null,
+          },
+        },
+        { status: 400 }
+      );
+    }
+
+    if (requestedStoreId && requestedStoreId !== resolvedStoreId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "STORE_ID_MISMATCH",
+          message:
+            "O storeId enviado pela tela não corresponde ao store_id real da lead.",
+          debug: {
+            conversationId,
+            leadId: normalizedLead.id,
+            requestedStoreId,
+            resolvedStoreId,
+          },
+        },
+        { status: 400 }
+      );
+    }
+
     const { error: insertError } = await supabase.rpc("insert_message", {
       p_conversation_id: conversationId,
       p_sender: "user",
@@ -109,6 +194,7 @@ export async function POST(req: Request) {
       p_media_url: null,
       p_metadata: {
         source: "demo_customer",
+        route: "simulate_customer",
       },
     });
 
@@ -125,7 +211,7 @@ export async function POST(req: Request) {
 
     const aiResult = await generateAndSaveAiSalesReply({
       organizationId,
-      storeId,
+      storeId: resolvedStoreId,
       conversationId,
     });
 
@@ -137,6 +223,12 @@ export async function POST(req: Request) {
           message: aiResult.message,
           customerMessageSaved: true,
           aiReplySaved: false,
+          debug: {
+            conversationId,
+            leadId: normalizedLead.id,
+            resolvedStoreId,
+            requestedStoreId: requestedStoreId || null,
+          },
         },
         { status: 400 }
       );
@@ -148,11 +240,16 @@ export async function POST(req: Request) {
       aiReplySaved: true,
       conversationId,
       organizationId,
-      storeId,
+      storeId: resolvedStoreId,
       customerText: text,
       aiText: aiResult.aiText,
       persisted: aiResult.persisted,
       context: aiResult.context,
+      debug: {
+        leadId: normalizedLead.id,
+        requestedStoreId: requestedStoreId || null,
+        resolvedStoreId,
+      },
       flow: {
         mode: "simulate_customer_with_direct_ai_persist",
         message:
