@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateAiSalesReply } from "@/lib/server/generate-ai-sales-reply";
+import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = await generateAiSalesReply({
+    const result = await generateAndSaveAiSalesReply({
       organizationId,
       storeId,
       conversationId,
@@ -89,13 +89,14 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      message: "Resposta comercial gerada com sucesso.",
+      message: "Resposta comercial gerada e salva com sucesso.",
       bridge: {
         route: "internal/ai-sales-reply",
         authMode: auth.mode,
       },
       aiText: result.aiText,
       context: result.context,
+      persisted: result.persisted,
     });
   } catch (error: any) {
     return NextResponse.json(
@@ -103,7 +104,8 @@ export async function POST(req: Request) {
         ok: false,
         error: "INTERNAL_AI_SALES_REPLY_ROUTE_FAILED",
         message:
-          error?.message || "Erro interno ao gerar resposta comercial da IA.",
+          error?.message ||
+          "Erro interno ao gerar e salvar resposta comercial da IA.",
       },
       { status: 500 }
     );
