@@ -70,6 +70,8 @@ type BlockCreateForm = {
   notes: string;
 };
 
+const WEEKDAY_LABELS = ["dom.", "seg.", "ter.", "qua.", "qui.", "sex.", "sáb."];
+
 function formatDateTime(value: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -90,10 +92,51 @@ function formatDayNumber(date: Date) {
   });
 }
 
-function formatWeekdayShort(date: Date) {
-  return date.toLocaleDateString("pt-BR", {
-    weekday: "short",
-  });
+function formatPhone(value: string | null) {
+  if (!value) return "-";
+
+  const digits = String(value).replace(/\D/g, "").slice(0, 11);
+
+  if (!digits) return "-";
+
+  if (digits.length <= 2) {
+    return `(${digits}`;
+  }
+
+  if (digits.length <= 6) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+  }
+
+  if (digits.length <= 10) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  }
+
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`;
+}
+
+function normalizePhoneForSave(value: string | null | undefined) {
+  const digits = String(value || "").replace(/\D/g, "").slice(0, 11);
+  return digits || null;
+}
+
+function applyPhoneMask(value: string) {
+  const digits = String(value || "").replace(/\D/g, "").slice(0, 11);
+
+  if (!digits) return "";
+
+  if (digits.length <= 2) {
+    return `(${digits}`;
+  }
+
+  if (digits.length <= 6) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+  }
+
+  if (digits.length <= 10) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  }
+
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`;
 }
 
 function formatItemKind(value: string) {
@@ -190,10 +233,9 @@ function endOfMonth(date: Date) {
 
 function startOfCalendarGrid(date: Date) {
   const firstDay = startOfMonth(date);
-  const jsDay = firstDay.getDay();
-  const mondayBasedOffset = jsDay === 0 ? 6 : jsDay - 1;
+  const sundayBasedOffset = firstDay.getDay();
   const result = new Date(firstDay);
-  result.setDate(firstDay.getDate() - mondayBasedOffset);
+  result.setDate(firstDay.getDate() - sundayBasedOffset);
   result.setHours(0, 0, 0, 0);
   return result;
 }
@@ -258,13 +300,15 @@ function createAppointmentFormFromItem(item: ScheduleItem): AppointmentEditForm 
     scheduledStart: toDateTimeLocalValue(item.startAt),
     scheduledEnd: toDateTimeLocalValue(item.endAt),
     customerName: item.customerName || "",
-    customerPhone: item.customerPhone || "",
+    customerPhone: formatPhone(item.customerPhone === null ? "" : item.customerPhone),
     addressText: item.addressText || "",
     notes: item.notes || "",
   };
 }
 
-function createDefaultAppointmentCreateForm(selectedDateKey: string): AppointmentCreateForm {
+function createDefaultAppointmentCreateForm(
+  selectedDateKey: string
+): AppointmentCreateForm {
   const base = selectedDateKey
     ? new Date(`${selectedDateKey}T09:00:00`)
     : new Date();
@@ -384,9 +428,21 @@ export default function SchedulePage() {
       createDefaultAppointmentCreateForm(toDateKey(new Date()))
     );
   const [savingAppointmentCreate, setSavingAppointmentCreate] = useState(false);
-  const [appointmentCreateErrorText, setAppointmentCreateErrorText] = useState<string | null>(null);
+  const [appointmentCreateErrorText, setAppointmentCreateErrorText] =
+    useState<string | null>(null);
 
   const lastKnownRealMonthRef = useRef<Date>(startOfMonth(new Date()));
+  const selectedItemRef = useRef<ScheduleItem | null>(null);
+  const editModeRef = useRef(false);
+  const loadRequestIdRef = useRef(0);
+
+  useEffect(() => {
+    selectedItemRef.current = selectedItem;
+  }, [selectedItem]);
+
+  useEffect(() => {
+    editModeRef.current = editMode;
+  }, [editMode]);
 
   const canLoadSchedule = useMemo(() => {
     return !storeLoading && !!organizationId && !!activeStoreId;
@@ -403,6 +459,8 @@ export default function SchedulePage() {
       if (!canLoadSchedule || !organizationId || !activeStoreId) {
         return;
       }
+
+      const currentRequestId = ++loadRequestIdRef.current;
 
       if (silent) {
         setRefreshing(true);
@@ -427,6 +485,10 @@ export default function SchedulePage() {
 
         const json = (await response.json()) as ScheduleApiResponse;
 
+        if (currentRequestId !== loadRequestIdRef.current) {
+          return;
+        }
+
         if (!response.ok || !json.ok) {
           setItems([]);
           setErrorText(json.message || "Erro ao carregar agenda.");
@@ -442,13 +504,22 @@ export default function SchedulePage() {
         const nextItems = json.items || [];
         setItems(nextItems);
 
-        if (selectedItem) {
+        const currentSelectedItem = selectedItemRef.current;
+
+        if (currentSelectedItem) {
           const refreshedSelectedItem =
-            nextItems.find((item) => item.itemId === selectedItem.itemId) || null;
+            nextItems.find((item) => item.itemId === currentSelectedItem.itemId) || null;
+
           setSelectedItem(refreshedSelectedItem);
 
-          if (refreshedSelectedItem && editMode) {
+          if (refreshedSelectedItem && editModeRef.current) {
             setEditForm(createAppointmentFormFromItem(refreshedSelectedItem));
+          }
+
+          if (!refreshedSelectedItem) {
+            setEditMode(false);
+            setEditForm(null);
+            setSaveErrorText(null);
           }
         }
 
@@ -458,6 +529,10 @@ export default function SchedulePage() {
           setLoading(false);
         }
       } catch (error: any) {
+        if (currentRequestId !== loadRequestIdRef.current) {
+          return;
+        }
+
         setItems([]);
         setErrorText(error?.message || "Erro inesperado ao carregar agenda.");
 
@@ -468,15 +543,7 @@ export default function SchedulePage() {
         }
       }
     },
-    [
-      canLoadSchedule,
-      organizationId,
-      activeStoreId,
-      monthStart,
-      monthEnd,
-      selectedItem,
-      editMode,
-    ]
+    [canLoadSchedule, organizationId, activeStoreId, monthStart, monthEnd]
   );
 
   useEffect(() => {
@@ -579,6 +646,9 @@ export default function SchedulePage() {
   }
 
   function openItemDetails(item: ScheduleItem) {
+    selectedItemRef.current = item;
+    editModeRef.current = false;
+
     setSelectedItem(item);
     setEditMode(false);
     setSaveErrorText(null);
@@ -591,6 +661,9 @@ export default function SchedulePage() {
   }
 
   function closeItemDetails() {
+    selectedItemRef.current = null;
+    editModeRef.current = false;
+
     setSelectedItem(null);
     setEditMode(false);
     setEditForm(null);
@@ -601,12 +674,14 @@ export default function SchedulePage() {
     if (!selectedItem || selectedItem.itemKind !== "appointment") return;
     setEditForm(createAppointmentFormFromItem(selectedItem));
     setEditMode(true);
+    editModeRef.current = true;
     setSaveErrorText(null);
   }
 
   function cancelEditingSelectedItem() {
     if (!selectedItem || selectedItem.itemKind !== "appointment") {
       setEditMode(false);
+      editModeRef.current = false;
       setEditForm(null);
       setSaveErrorText(null);
       return;
@@ -614,6 +689,7 @@ export default function SchedulePage() {
 
     setEditForm(createAppointmentFormFromItem(selectedItem));
     setEditMode(false);
+    editModeRef.current = false;
     setSaveErrorText(null);
   }
 
@@ -676,7 +752,7 @@ export default function SchedulePage() {
         p_scheduled_start: startDate.toISOString(),
         p_scheduled_end: endDate.toISOString(),
         p_customer_name: editForm.customerName || null,
-        p_customer_phone: editForm.customerPhone || null,
+        p_customer_phone: normalizePhoneForSave(editForm.customerPhone),
         p_address_text: editForm.addressText || null,
         p_notes: editForm.notes || null,
       });
@@ -712,11 +788,14 @@ export default function SchedulePage() {
         : null;
 
       if (updatedItem) {
+        selectedItemRef.current = updatedItem;
         setSelectedItem(updatedItem);
         setEditForm(createAppointmentFormFromItem(updatedItem));
       }
 
       setEditMode(false);
+      editModeRef.current = false;
+
       await loadSchedule({ silent: true });
       setSavingEdit(false);
     } catch (error: any) {
@@ -781,11 +860,14 @@ export default function SchedulePage() {
         : null;
 
       if (updatedItem) {
+        selectedItemRef.current = updatedItem;
         setSelectedItem(updatedItem);
         setEditForm(createAppointmentFormFromItem(updatedItem));
       }
 
       setEditMode(false);
+      editModeRef.current = false;
+
       await loadSchedule({ silent: true });
       setSavingEdit(false);
     } catch (error: any) {
@@ -884,7 +966,7 @@ export default function SchedulePage() {
         p_scheduled_start: startDate.toISOString(),
         p_scheduled_end: endDate.toISOString(),
         p_customer_name: appointmentCreateForm.customerName.trim() || null,
-        p_customer_phone: appointmentCreateForm.customerPhone.trim() || null,
+        p_customer_phone: normalizePhoneForSave(appointmentCreateForm.customerPhone),
         p_address_text: appointmentCreateForm.addressText.trim() || null,
         p_notes: appointmentCreateForm.notes.trim() || null,
         p_source: "panel",
@@ -1027,12 +1109,12 @@ export default function SchedulePage() {
             </div>
 
             <div className="mb-3 grid grid-cols-7 gap-2">
-              {calendarDays.slice(0, 7).map((date) => (
+              {WEEKDAY_LABELS.map((label) => (
                 <div
-                  key={`weekday-${toDateKey(date)}`}
+                  key={label}
                   className="rounded-xl bg-gray-50 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-gray-500"
                 >
-                  {formatWeekdayShort(date)}
+                  {label}
                 </div>
               ))}
             </div>
@@ -1193,8 +1275,14 @@ export default function SchedulePage() {
         </div>
 
         {selectedItem ? (
-          <div className="fixed inset-0 z-50 flex justify-end bg-black/30">
-            <div className="flex h-full w-full max-w-2xl flex-col bg-white shadow-2xl">
+          <div
+            className="fixed inset-0 z-50 flex justify-end bg-black/30"
+            onClick={closeItemDetails}
+          >
+            <div
+              className="flex h-full w-full max-w-2xl flex-col bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
               <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
                 <div>
                   <div className="text-sm font-semibold text-gray-500">
@@ -1206,6 +1294,7 @@ export default function SchedulePage() {
                 </div>
 
                 <button
+                  type="button"
                   onClick={closeItemDetails}
                   className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
@@ -1382,10 +1471,15 @@ export default function SchedulePage() {
                           onChange={(e) =>
                             setEditForm((prev) =>
                               prev
-                                ? { ...prev, customerPhone: e.target.value }
+                                ? {
+                                    ...prev,
+                                    customerPhone: applyPhoneMask(e.target.value),
+                                  }
                                 : prev
                             )
                           }
+                          placeholder="(11) 99999-9999"
+                          inputMode="numeric"
                           className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
                         />
                       </div>
@@ -1470,7 +1564,7 @@ export default function SchedulePage() {
                         {selectedItem.customerName || "-"}
                       </div>
                       <div className="mt-1 text-xs text-gray-500">
-                        {selectedItem.customerPhone || "-"}
+                        {formatPhone(selectedItem.customerPhone)}
                       </div>
                     </div>
 
@@ -1508,8 +1602,14 @@ export default function SchedulePage() {
         ) : null}
 
         {createBlockOpen ? (
-          <div className="fixed inset-0 z-50 flex justify-end bg-black/30">
-            <div className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+          <div
+            className="fixed inset-0 z-50 flex justify-end bg-black/30"
+            onClick={closeCreateBlockPanel}
+          >
+            <div
+              className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
               <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
                 <div>
                   <div className="text-sm font-semibold text-gray-500">
@@ -1521,6 +1621,7 @@ export default function SchedulePage() {
                 </div>
 
                 <button
+                  type="button"
                   onClick={closeCreateBlockPanel}
                   className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
@@ -1652,8 +1753,14 @@ export default function SchedulePage() {
         ) : null}
 
         {createAppointmentOpen ? (
-          <div className="fixed inset-0 z-50 flex justify-end bg-black/30">
-            <div className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+          <div
+            className="fixed inset-0 z-50 flex justify-end bg-black/30"
+            onClick={closeCreateAppointmentPanel}
+          >
+            <div
+              className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
               <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
                 <div>
                   <div className="text-sm font-semibold text-gray-500">
@@ -1665,6 +1772,7 @@ export default function SchedulePage() {
                 </div>
 
                 <button
+                  type="button"
                   onClick={closeCreateAppointmentPanel}
                   className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
@@ -1804,10 +1912,11 @@ export default function SchedulePage() {
                       onChange={(e) =>
                         setAppointmentCreateForm((prev) => ({
                           ...prev,
-                          customerPhone: e.target.value,
+                          customerPhone: applyPhoneMask(e.target.value),
                         }))
                       }
-                      placeholder="Telefone do cliente"
+                      placeholder="(11) 99999-9999"
+                      inputMode="numeric"
                       className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
                     />
                   </div>
