@@ -8,7 +8,8 @@ export async function middleware(req: NextRequest) {
     path === "/login" ||
     path.startsWith("/_next") ||
     path.startsWith("/favicon") ||
-    path === "/api/internal/ai-sales-reply";
+    path === "/api/internal/ai-sales-reply" ||
+    path === "/api/internal/whatsapp/process-pending";
 
   if (isPublic) {
     return NextResponse.next();
