@@ -667,19 +667,19 @@ function buildResponsePriorityBlock(args: {
 
   if (asksPayment) {
     instructions.push(
-      `- O cliente perguntou sobre pagamento/cartão. Responda isso de forma objetiva logo no começo. Use "accepted_payment_methods" se existir. Se o dado existir, diga claramente se aceita cartão e só depois conduza.`
+      `- O cliente perguntou sobre pagamento/cartão. Responda isso de forma objetiva logo no começo. Se a pergunta for só sobre cartão, priorize responder cartão e não despeje todos os meios de pagamento sem necessidade. Só amplie se o cliente pedir ou se for indispensável.`
     );
   }
 
   if (asksVisit) {
     instructions.push(
-      `- O cliente perguntou sobre visita técnica / ver o local antes. Responda isso de forma objetiva logo no começo. Use "offers_technical_visit", "technical_visit_rules", "technical_visit_available_days" e "technical_visit_days_rule" se existirem.`
+      `- O cliente perguntou sobre visita técnica. Responda isso de forma objetiva logo no começo. Não traga taxa, horário, regra detalhada, região específica ou processo completo sem necessidade, a menos que isso seja indispensável para não induzir erro.`
     );
   }
 
   if (asksInstallation) {
     instructions.push(
-      `- O cliente perguntou sobre instalação. Responda isso antes de fazer qualquer pergunta. Use "offers_installation", "installation_process", "installation_available_days" e "average_installation_time_days" se existirem.`
+      `- O cliente perguntou sobre instalação. Responda isso antes de fazer qualquer pergunta. Não abra o processo completo, etapas e prazo inteiro sem o cliente pedir.`
     );
   }
 
@@ -691,7 +691,7 @@ function buildResponsePriorityBlock(args: {
 
   if (asksRegion) {
     instructions.push(
-      `- O cliente perguntou sobre atendimento por cidade/região. Responda isso antes de conduzir. Use "service_regions", "service_region_notes" e "service_region_outside_consultation" se existirem.`
+      `- O cliente perguntou sobre atendimento por cidade/região. Responda isso antes de conduzir. Seja objetiva. Não detalhe toda a política regional sem necessidade.`
     );
   }
 
@@ -714,12 +714,8 @@ function buildResponsePriorityBlock(args: {
   }
 
   if (responseMode === "objective") {
-    instructions.push(
-      `- Esta mensagem deve ser respondida em MODO OBJETIVO.`
-    );
-    instructions.push(
-      `- Limite a resposta a 2 ou 3 blocos curtos no máximo.`
-    );
+    instructions.push(`- Esta mensagem deve ser respondida em MODO OBJETIVO.`);
+    instructions.push(`- Limite a resposta a 2 ou 3 blocos curtos no máximo.`);
     instructions.push(
       `- Responda exatamente o que foi perguntado e acrescente no máximo 1 complemento útil por assunto.`
     );
@@ -741,9 +737,7 @@ function buildResponsePriorityBlock(args: {
     );
   }
 
-  instructions.push(
-    `- Não faça pergunta antes de responder o que o cliente perguntou.`
-  );
+  instructions.push(`- Não faça pergunta antes de responder o que o cliente perguntou.`);
   instructions.push(
     `- Evite terminar sem responder algo que o cliente perguntou explicitamente.`
   );
@@ -918,7 +912,7 @@ function inferMustAnswerFirst(lastCustomerMessage: string): string[] {
   const items: string[] = [];
 
   if (looksLikePaymentQuestion(lastCustomerMessage)) {
-    items.push("responder claramente sobre meios de pagamento/cartão");
+    items.push("responder claramente sobre cartão/pagamento");
   }
   if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
     items.push("responder claramente sobre visita técnica");
@@ -1049,6 +1043,7 @@ function inferForbiddenInThisReply(
     out.push("não abrir explicação longa além do que o cliente perguntou");
     out.push("não adicionar vários assuntos extras na mesma resposta");
     out.push("não transformar a resposta em apresentação completa da operação");
+    out.push("não listar todos os detalhes operacionais quando bastar uma confirmação objetiva");
   }
 
   return out;
@@ -1064,10 +1059,7 @@ function buildCommercialObjective(args: {
   )
     ? "objective"
     : "consultative";
-  const nextBestQuestion =
-    responseMode === "objective"
-      ? inferNextBestQuestion(facts, args.lastCustomerMessage)
-      : inferNextBestQuestion(facts, args.lastCustomerMessage);
+  const nextBestQuestion = inferNextBestQuestion(facts, args.lastCustomerMessage);
 
   return {
     primaryIntent: inferPrimaryIntent(args.lastCustomerMessage),
@@ -1199,6 +1191,8 @@ REGRAS CENTRAIS
 - Não fale de imagem, foto, PDF, catálogo visual ou material como se a entrega já estivesse acontecendo.
 - Quando existir contexto visual cadastrado, trate isso apenas como contexto interno para melhorar a orientação, e não como promessa de entrega imediata.
 - Fale como alguém vendendo de verdade no WhatsApp.
+- Quando uma informação operacional não estiver claramente sustentada, prefira resposta comercial cautelosa em vez de certeza excessiva.
+- Não seja mais específica do que o necessário quando o cliente fez pergunta simples e objetiva.
 
 COMPORTAMENTO OBRIGATÓRIO NESTA RESPOSTA
 ${responsePriorityBlock}
@@ -1244,6 +1238,9 @@ REGRAS OPERACIONAIS IMPORTANTES
 - Quando um caso exigir humano, use ai_should_notify_responsible, responsible_notification_cases, human_help_custom_project_cases, human_help_discount_cases e human_help_payment_cases como base para decidir.
 - Quando houver limitações importantes já registradas, respeite essas limitações e não prometa o que está fora do escopo.
 - Nunca trate um campo vazio, ambíguo ou ausente como confirmação operacional.
+- Em perguntas simples sobre cartão, visita, instalação, região ou preço, confirme o essencial primeiro. Só detalhe o resto se o cliente pedir ou se for indispensável para não induzir erro.
+- Não liste todos os meios de pagamento quando bastar responder sobre cartão.
+- Não cite taxa, horário, prazo, etapa, deslocamento ou cobertura detalhada sem necessidade real da resposta.
 
 EXEMPLOS DE TOM BOM
 - "Sim, trabalhamos com cartão. E sobre a visita, fazemos sim, só preciso confirmar sua região para te orientar certinho."
@@ -1312,6 +1309,8 @@ FORMATO EXTRA PARA MODO OBJETIVO
 - Quando "modo_resposta_objetiva: sim", responda em 2 ou 3 blocos curtos.
 - Não acrescente detalhes operacionais extras se o cliente não pediu.
 - Não cite prazo, taxa, processo, horário, etapas ou regras adicionais sem necessidade real para essa resposta.
+- Se a pergunta for só sobre cartão, basta responder cartão, sem listar todos os meios de pagamento.
+- Se a pergunta for só sobre visita técnica, basta confirmar se faz e o mínimo necessário para avançar.
 - Responda as perguntas principais e avance com leveza.
 `.trim();
 }
