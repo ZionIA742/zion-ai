@@ -76,6 +76,7 @@ type CommercialObjective = {
   nextBestQuestion: string | null;
   responseGoal: string;
   forbiddenInThisReply: string[];
+  responseMode: "objective" | "consultative";
 };
 
 export type GenerateAiSalesReplyParams = {
@@ -358,6 +359,7 @@ function looksLikeTimingSignal(text: string): boolean {
     t.includes("esse mês") ||
     t.includes("este mês") ||
     t.includes("urgente") ||
+    t.includes("pra ja") ||
     t.includes("pra já") ||
     t.includes("para ja") ||
     t.includes("quanto antes") ||
@@ -409,8 +411,8 @@ function looksLikeNeedSignal(text: string): boolean {
     t.includes("quero") ||
     t.includes("preciso") ||
     t.includes("estou procurando") ||
-    t.includes("tô procurando") ||
-    t.includes("to procurando")
+    t.includes("to procurando") ||
+    t.includes("tô procurando")
   );
 }
 
@@ -430,6 +432,24 @@ function countQuestionIntents(lastCustomerMessage: string): number {
   if (score > 0) return score;
 
   return lastCustomerMessage.includes("?") ? 1 : 0;
+}
+
+function isObjectiveQuestionMode(lastCustomerMessage: string): boolean {
+  const intentCount = countQuestionIntents(lastCustomerMessage);
+  const text = normalizeText(lastCustomerMessage);
+
+  const isShortEnough = text.length <= 220;
+  const asksDirectThing =
+    looksLikePaymentQuestion(text) ||
+    looksLikeTechnicalVisitQuestion(text) ||
+    looksLikeInstallationQuestion(text) ||
+    looksLikePriceQuestion(text) ||
+    looksLikeRegionQuestion(text);
+
+  const asksManyDirectThings = intentCount >= 2;
+  const hasQuestionMark = lastCustomerMessage.includes("?");
+
+  return isShortEnough && hasQuestionMark && (asksDirectThing || asksManyDirectThings);
 }
 
 function formatPoolLine(pool: PoolRow): string {
@@ -629,8 +649,10 @@ function buildRawOnboardingSummary(
 
 function buildResponsePriorityBlock(args: {
   lastCustomerMessage: string;
+  responseMode: "objective" | "consultative";
 }) {
   const message = args.lastCustomerMessage;
+  const responseMode = args.responseMode;
 
   const asksPayment = looksLikePaymentQuestion(message);
   const asksVisit = looksLikeTechnicalVisitQuestion(message);
@@ -691,12 +713,34 @@ function buildResponsePriorityBlock(args: {
     );
   }
 
-  instructions.push(
-    `- Se houver 2 ou mais intenções na mensagem, responda todas na mesma resposta, em blocos curtos.`
-  );
-  instructions.push(
-    `- Ordem obrigatória: responder -> esclarecer o mínimo necessário -> conduzir.`
-  );
+  if (responseMode === "objective") {
+    instructions.push(
+      `- Esta mensagem deve ser respondida em MODO OBJETIVO.`
+    );
+    instructions.push(
+      `- Limite a resposta a 2 ou 3 blocos curtos no máximo.`
+    );
+    instructions.push(
+      `- Responda exatamente o que foi perguntado e acrescente no máximo 1 complemento útil por assunto.`
+    );
+    instructions.push(
+      `- Não transforme a resposta em explicação longa, mini-manual ou apresentação da loja.`
+    );
+    instructions.push(
+      `- Só faça 1 pergunta curta no final se ela for realmente útil para avançar.`
+    );
+    instructions.push(
+      `- Evite trazer assunto extra que o cliente não pediu, a menos que seja indispensável para não induzir erro.`
+    );
+  } else {
+    instructions.push(
+      `- Se houver 2 ou mais intenções na mensagem, responda todas na mesma resposta, em blocos curtos.`
+    );
+    instructions.push(
+      `- Ordem obrigatória: responder -> esclarecer o mínimo necessário -> conduzir.`
+    );
+  }
+
   instructions.push(
     `- Não faça pergunta antes de responder o que o cliente perguntou.`
   );
@@ -779,7 +823,12 @@ function summarizeMissingFacts(
     out.push("medida ou espaço disponível");
   }
 
-  if (!facts.locationKnown && (looksLikeInstallationQuestion(lastCustomerMessage) || looksLikeTechnicalVisitQuestion(lastCustomerMessage) || looksLikeRegionQuestion(lastCustomerMessage))) {
+  if (
+    !facts.locationKnown &&
+    (looksLikeInstallationQuestion(lastCustomerMessage) ||
+      looksLikeTechnicalVisitQuestion(lastCustomerMessage) ||
+      looksLikeRegionQuestion(lastCustomerMessage))
+  ) {
     out.push("cidade/bairro/região do atendimento");
   }
 
@@ -932,8 +981,13 @@ function inferResponseGoal(args: {
   lastCustomerMessage: string;
   facts: ConversationFactState;
   nextBestQuestion: string | null;
+  responseMode: "objective" | "consultative";
 }): string {
-  const { lastCustomerMessage, facts, nextBestQuestion } = args;
+  const { lastCustomerMessage, facts, nextBestQuestion, responseMode } = args;
+
+  if (responseMode === "objective") {
+    return "responder exatamente o que foi perguntado, com clareza, sem excesso de expansão e com no máximo um avanço curto";
+  }
 
   if (looksLikeCatalogRequest(lastCustomerMessage) || looksLikePoolChoice(lastCustomerMessage)) {
     if (nextBestQuestion && !facts.sizeKnown) {
@@ -968,7 +1022,8 @@ function inferResponseGoal(args: {
 
 function inferForbiddenInThisReply(
   lastCustomerMessage: string,
-  nextBestQuestion: string | null
+  nextBestQuestion: string | null,
+  responseMode: "objective" | "consultative"
 ): string[] {
   const out: string[] = [
     "não ignorar a pergunta principal do cliente",
@@ -990,6 +1045,12 @@ function inferForbiddenInThisReply(
     out.push("não inventar pergunta no final só para encerrar com interrogação");
   }
 
+  if (responseMode === "objective") {
+    out.push("não abrir explicação longa além do que o cliente perguntou");
+    out.push("não adicionar vários assuntos extras na mesma resposta");
+    out.push("não transformar a resposta em apresentação completa da operação");
+  }
+
   return out;
 }
 
@@ -998,7 +1059,15 @@ function buildCommercialObjective(args: {
   lastCustomerMessage: string;
 }): CommercialObjective {
   const facts = collectConversationFacts(args.orderedMessages);
-  const nextBestQuestion = inferNextBestQuestion(facts, args.lastCustomerMessage);
+  const responseMode: "objective" | "consultative" = isObjectiveQuestionMode(
+    args.lastCustomerMessage
+  )
+    ? "objective"
+    : "consultative";
+  const nextBestQuestion =
+    responseMode === "objective"
+      ? inferNextBestQuestion(facts, args.lastCustomerMessage)
+      : inferNextBestQuestion(facts, args.lastCustomerMessage);
 
   return {
     primaryIntent: inferPrimaryIntent(args.lastCustomerMessage),
@@ -1011,11 +1080,14 @@ function buildCommercialObjective(args: {
       lastCustomerMessage: args.lastCustomerMessage,
       facts,
       nextBestQuestion,
+      responseMode,
     }),
     forbiddenInThisReply: inferForbiddenInThisReply(
       args.lastCustomerMessage,
-      nextBestQuestion
+      nextBestQuestion,
+      responseMode
     ),
+    responseMode,
   };
 }
 
@@ -1043,6 +1115,7 @@ function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
   return `
 DIAGNÓSTICO COMERCIAL E OBJETIVO DESTA RESPOSTA
 - intenção principal: ${objective.primaryIntent}
+- modo de resposta: ${objective.responseMode}
 
 INTENÇÕES SECUNDÁRIAS
 ${secondaryIntentsText}
@@ -1082,6 +1155,7 @@ function buildSystemPrompt(args: {
   lastAiMessage: string | null;
   lastAiListedPools: boolean;
   questionIntentCount: number;
+  responseMode: "objective" | "consultative";
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
@@ -1089,6 +1163,7 @@ function buildSystemPrompt(args: {
   const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
   const responsePriorityBlock = buildResponsePriorityBlock({
     lastCustomerMessage: args.lastCustomerMessage,
+    responseMode: args.responseMode,
   });
 
   return `
@@ -1159,6 +1234,7 @@ ESTILO DE FALA DO ZION
 - Menos justificativa técnica, mais ajuda prática.
 - Responda primeiro ao que o cliente pediu e depois conduza.
 - Quando o cliente pedir fotos ou catálogo, conduza a escolha em vez de prometer material.
+- Em mensagens objetivas, seja ainda mais enxuta: responda o que foi perguntado, acrescente pouco e avance com leveza.
 
 REGRAS OPERACIONAIS IMPORTANTES
 - Quando o cliente perguntar sobre instalação, use primeiro os dados de offers_installation, installation_available_days, installation_days_rule, average_installation_time_days, installation_process e installation_process_steps, se existirem.
@@ -1216,6 +1292,7 @@ SINAIS DO CONTEXTO ATUAL
 - pedido_de_comparacao: ${looksLikeComparisonQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - opcoes_de_piscina_carregadas_no_contexto: ${args.shouldLoadPools ? "sim" : "não"}
 - ultima_resposta_da_ia_listou_modelos: ${args.lastAiListedPools ? "sim" : "não"}
+- modo_resposta_objetiva: ${args.responseMode === "objective" ? "sim" : "não"}
 
 ÚLTIMA RESPOSTA DA IA
 ${args.lastAiMessage || "Sem resposta anterior da IA no histórico recente."}
@@ -1230,6 +1307,12 @@ FORMATO OBRIGATÓRIO DE EXECUÇÃO
 - Se o cliente perguntou sobre cartão, visita, instalação, preço ou região, essas respostas devem aparecer claramente no texto.
 - Não fuja da pergunta.
 - Não comece pedindo informação sem antes responder o que já dá para responder.
+
+FORMATO EXTRA PARA MODO OBJETIVO
+- Quando "modo_resposta_objetiva: sim", responda em 2 ou 3 blocos curtos.
+- Não acrescente detalhes operacionais extras se o cliente não pediu.
+- Não cite prazo, taxa, processo, horário, etapas ou regras adicionais sem necessidade real para essa resposta.
+- Responda as perguntas principais e avance com leveza.
 `.trim();
 }
 
@@ -1528,6 +1611,7 @@ export async function generateAiSalesReply(
       lastAiMessage,
       lastAiListedPools,
       questionIntentCount,
+      responseMode: commercialObjective.responseMode,
     });
 
     const input = [
