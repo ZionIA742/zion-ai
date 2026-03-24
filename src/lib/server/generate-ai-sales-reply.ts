@@ -185,6 +185,10 @@ const INTENT_RULES: Array<{
       /\bimagens\b/i,
       /\bmodelo\b/i,
       /\bmodelos\b/i,
+      /\bquero ver\b/i,
+      /\bmostrar\b/i,
+      /\bme mostra\b/i,
+      /\bme mostrar\b/i,
     ],
   },
   {
@@ -276,6 +280,13 @@ const INTENT_RULES: Array<{
       /\bcompacta\b/i,
       /\bretangular\b/i,
       /\bredonda\b/i,
+      /\bspa\b/i,
+      /\bprofunda\b/i,
+      /\bras[ao]\b/i,
+      /\btamanho\b/i,
+      /\bmedida\b/i,
+      /\bespaço\b/i,
+      /\bespaco\b/i,
     ],
   },
   {
@@ -288,6 +299,8 @@ const INTENT_RULES: Array<{
       /\bcompar/i,
       /\bmelhor\b/i,
       /\bvale mais a pena\b/i,
+      /\bqual a principal diferenca\b/i,
+      /\bexplicar a diferença\b/i,
     ],
   },
 ];
@@ -306,10 +319,7 @@ function asText(value: unknown): string | null {
 
   try {
     if (Array.isArray(value)) {
-      const arr = value
-        .map((item) => asText(item))
-        .filter(Boolean) as string[];
-
+      const arr = value.map((item) => asText(item)).filter(Boolean) as string[];
       return arr.length ? arr.join(", ") : null;
     }
 
@@ -487,6 +497,46 @@ function isObjectiveQuestionMode(lastCustomerMessage: string): boolean {
   return text.length <= 220 && hasQuestionMark && (asksDirectThing || intents.length >= 2);
 }
 
+function isExplicitCatalogRequest(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    looksLikeCatalogRequest(t) ||
+    t.includes("me mostra") ||
+    t.includes("me mostrar") ||
+    t.includes("quero ver") ||
+    t.includes("mostrar modelos") ||
+    t.includes("mostrar opcoes") ||
+    t.includes("mostrar opções") ||
+    t.includes("mandar as piscinas") ||
+    t.includes("ver as piscinas") ||
+    t.includes("tem foto") ||
+    t.includes("tiver foto") ||
+    t.includes("quero foto") ||
+    t.includes("quero fotos") ||
+    t.includes("catálogo") ||
+    t.includes("catalogo")
+  );
+}
+
+function shouldAskTimingNow(args: {
+  facts: ConversationFactState;
+  intents: DetectedIntent[];
+  lastCustomerMessage: string;
+}): boolean {
+  const { facts, intents, lastCustomerMessage } = args;
+
+  if (facts.timingKnown) return false;
+  if (intents.includes("catalog")) return false;
+  if (intents.includes("comparison")) return false;
+  if (looksLikePaymentQuestion(lastCustomerMessage)) return false;
+  if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) return false;
+  if (looksLikeInstallationQuestion(lastCustomerMessage)) return false;
+  if (looksLikePriceQuestion(lastCustomerMessage)) return false;
+
+  return false;
+}
+
 function formatPoolLine(pool: PoolRow): string {
   const parts: string[] = [];
 
@@ -511,7 +561,7 @@ function formatPoolLine(pool: PoolRow): string {
   }
 
   if (pool.photo_url) {
-    parts.push("há contexto visual interno associado a esse modelo");
+    parts.push("há fotos cadastradas");
   }
 
   return `- ${parts.join(" | ")}`;
@@ -648,7 +698,7 @@ function collectConversationFacts(messages: MessageRow[]): ConversationFactState
 
   const merged = normalizeText(userTexts.join(" | "));
   const sizeRegex =
-    /\b(\d{1,2}(?:[.,]\d{1,2})?)\s?(m|mt|metros?)\b|\b\d{1,2}\s?x\s?\d{1,2}\b/;
+    /\b(\d{1,2}(?:[.,]\d{1,2})?)\s?(m|mt|metros?)\b|\b\d{1,2}\s?x\s?\d{1,2}\b|\b\d{1,3}\s?metros?\s?quadrados?\b/;
 
   return {
     budgetKnown: looksLikeBudgetSignal(merged),
@@ -718,14 +768,6 @@ function summarizeMissingFacts(
     out.push("faixa de investimento");
   }
 
-  if (!facts.timingKnown && looksLikeNeedSignal(lastCustomerMessage)) {
-    out.push("timing da decisão/compra");
-  }
-
-  if (!facts.authorityKnown && looksLikePriceQuestion(lastCustomerMessage)) {
-    out.push("se decide sozinho ou com outra pessoa");
-  }
-
   return out;
 }
 
@@ -785,13 +827,16 @@ function inferMustAnswerFirst(intents: DetectedIntent[]): string[] {
   return items.length ? items : ["responder diretamente o pedido principal antes de conduzir"];
 }
 
-function inferNextBestQuestion(
-  facts: ConversationFactState,
-  intents: DetectedIntent[],
-  lastCustomerMessage: string
-): string | null {
+function inferNextBestQuestion(args: {
+  facts: ConversationFactState;
+  intents: DetectedIntent[];
+  lastCustomerMessage: string;
+  explicitCatalogRequest: boolean;
+}): string | null {
+  const { facts, intents, lastCustomerMessage, explicitCatalogRequest } = args;
+
   if (
-    (intents.includes("catalog") || intents.includes("pool_choice") || intents.includes("comparison")) &&
+    (explicitCatalogRequest || intents.includes("comparison") || looksLikePoolChoice(lastCustomerMessage)) &&
     !facts.sizeKnown
   ) {
     return "qual espaço ou medida aproximada você tem aí para a piscina?";
@@ -808,8 +853,14 @@ function inferNextBestQuestion(
     return "você pensa em uma faixa mais econômica, intermediária ou algo mais premium?";
   }
 
-  if (!facts.timingKnown && looksLikeNeedSignal(lastCustomerMessage)) {
-    return "isso é para agora ou você está pesquisando para mais pra frente?";
+  if (
+    shouldAskTimingNow({
+      facts,
+      intents,
+      lastCustomerMessage,
+    })
+  ) {
+    return "isso seria para agora ou mais pra frente?";
   }
 
   return null;
@@ -820,14 +871,15 @@ function inferResponseGoal(args: {
   facts: ConversationFactState;
   nextBestQuestion: string | null;
   responseMode: ResponseMode;
+  explicitCatalogRequest: boolean;
 }): string {
-  const { intents, facts, nextBestQuestion, responseMode } = args;
+  const { intents, facts, nextBestQuestion, responseMode, explicitCatalogRequest } = args;
 
   if (responseMode === "objective") {
     return "responder exatamente o que foi perguntado, com clareza, sem excesso de expansão e com no máximo um avanço curto";
   }
 
-  if (intents.includes("catalog") || intents.includes("pool_choice")) {
+  if (explicitCatalogRequest || intents.includes("pool_choice")) {
     if (nextBestQuestion && !facts.sizeKnown) {
       return "responder o pedido de modelos com naturalidade e avançar para descobrir medida/espaço";
     }
@@ -861,6 +913,8 @@ function inferForbiddenInThisReply(args: {
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
   responseMode: ResponseMode;
+  explicitCatalogRequest: boolean;
+  lastAiListedPools: boolean;
 }): string[] {
   const out: string[] = [
     "não ignorar a pergunta principal do cliente",
@@ -868,6 +922,7 @@ function inferForbiddenInThisReply(args: {
     "não soar como robô, suporte frio ou formulário",
     "não prometer envio de foto/catálogo/arquivo como se já estivesse acontecendo",
     "não despejar lista repetida de modelos sem critério",
+    "não reiniciar a triagem da conversa com perguntas amplas do tipo opções, preço, instalação ou melhor solução",
   ];
 
   if (args.intents.includes("price")) {
@@ -880,6 +935,10 @@ function inferForbiddenInThisReply(args: {
 
   if (!args.nextBestQuestion) {
     out.push("não inventar pergunta no final só para encerrar com interrogação");
+  }
+
+  if (!args.explicitCatalogRequest && args.lastAiListedPools) {
+    out.push("não listar novos modelos novamente se o cliente não pediu isso explicitamente agora");
   }
 
   if (args.responseMode === "objective") {
@@ -895,13 +954,21 @@ function inferForbiddenInThisReply(args: {
 function buildCommercialObjective(args: {
   orderedMessages: MessageRow[];
   lastCustomerMessage: string;
+  explicitCatalogRequest: boolean;
+  lastAiListedPools: boolean;
 }): CommercialObjective {
   const facts = collectConversationFacts(args.orderedMessages);
   const intents = detectIntents(args.lastCustomerMessage);
   const responseMode: ResponseMode = isObjectiveQuestionMode(args.lastCustomerMessage)
     ? "objective"
     : "consultative";
-  const nextBestQuestion = inferNextBestQuestion(facts, intents, args.lastCustomerMessage);
+
+  const nextBestQuestion = inferNextBestQuestion({
+    facts,
+    intents,
+    lastCustomerMessage: args.lastCustomerMessage,
+    explicitCatalogRequest: args.explicitCatalogRequest,
+  });
 
   return {
     intents,
@@ -915,11 +982,14 @@ function buildCommercialObjective(args: {
       facts,
       nextBestQuestion,
       responseMode,
+      explicitCatalogRequest: args.explicitCatalogRequest,
     }),
     forbiddenInThisReply: inferForbiddenInThisReply({
       intents,
       nextBestQuestion,
       responseMode,
+      explicitCatalogRequest: args.explicitCatalogRequest,
+      lastAiListedPools: args.lastAiListedPools,
     }),
     responseMode,
   };
@@ -977,6 +1047,8 @@ ${forbiddenText}
 function buildResponsePriorityBlock(args: {
   intents: DetectedIntent[];
   responseMode: ResponseMode;
+  explicitCatalogRequest: boolean;
+  lastAiListedPools: boolean;
 }): string {
   const instructions: string[] = [];
 
@@ -1010,21 +1082,25 @@ function buildResponsePriorityBlock(args: {
     );
   }
 
-  if (args.intents.includes("catalog") || args.intents.includes("pool_choice")) {
+  if (args.explicitCatalogRequest) {
     instructions.push(
-      "- Se o cliente falou de modelo/tamanho/tipo de piscina, responda com orientação prática e enxuta."
+      "- Só liste modelos ou opções concretas quando o cliente pedir isso explicitamente na mensagem atual."
+    );
+  } else {
+    instructions.push(
+      "- Não volte a listar modelos, catálogo ou várias opções se o cliente não pediu isso explicitamente agora."
     );
   }
 
-  if (args.intents.includes("comparison")) {
+  if (args.lastAiListedPools && !args.explicitCatalogRequest) {
     instructions.push(
-      "- Se o cliente quer comparação, compare de forma prática: quando cada opção faz mais sentido, em vez de lista solta."
+      "- Como a IA já listou modelos antes, não repita nova lista nesta resposta sem pedido explícito do cliente."
     );
   }
 
-  if (!instructions.length) {
-    instructions.push("- Responda primeiro o pedido central do cliente com objetividade e só depois conduza.");
-  }
+  instructions.push(
+    "- Não reinicie a conversa com perguntas amplas de triagem como opções, preço, instalação ou melhor solução se a conversa já estava andando."
+  );
 
   if (args.responseMode === "objective") {
     instructions.push("- Esta mensagem está em MODO OBJETIVO.");
@@ -1037,6 +1113,7 @@ function buildResponsePriorityBlock(args: {
 
   instructions.push("- Nunca faça pergunta antes de responder o que já dá para responder.");
   instructions.push("- Nunca deixe pergunta explícita sem resposta.");
+  instructions.push("- Evite a pergunta automática sobre timing, a menos que seja realmente essencial.");
 
   return instructions.join("\n");
 }
@@ -1044,6 +1121,7 @@ function buildResponsePriorityBlock(args: {
 function buildExamplesBlock(args: {
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
+  explicitCatalogRequest: boolean;
 }): string {
   const examples: string[] = [];
 
@@ -1052,7 +1130,6 @@ function buildExamplesBlock(args: {
       `EXEMPLO BOM:
 Cliente: "Aceita cartão? E vocês fazem visita técnica?"
 Resposta boa: "Sim, aceitamos cartão. E fazemos visita técnica sim, com agendamento. ${args.nextBestQuestion || "Me fala sua cidade ou bairro que eu te oriento certinho."}"`
-
     );
   }
 
@@ -1072,18 +1149,27 @@ Resposta boa: "Fazemos sim, com agendamento. ${args.nextBestQuestion || "Me fala
     );
   }
 
-  if (args.intents.includes("price")) {
+  if (args.explicitCatalogRequest) {
     examples.push(
       `EXEMPLO BOM:
-Cliente: "Qual o valor?"
-Resposta boa: "Consigo te orientar sim sobre valor, mas ele varia conforme modelo e instalação. ${args.nextBestQuestion || "Se quiser, me fala o que você procura que eu te direciono melhor."}"`
+Cliente: "Quero ver modelos com foto"
+Resposta boa: "Tenho sim algumas opções que combinam com o que você descreveu. Posso te mostrar os modelos mais alinhados com esse espaço."`
     );
   }
 
   examples.push(
     `EXEMPLO RUIM:
-"Sim, aceitamos cartão, crédito, débito, pix, boleto, dinheiro e parcelamento. E sim, fazemos visita técnica, desde que agendada antes, com confirmação do endereço e dentro da região de atendimento..."
-`
+"Entendi. Quero te ajudar de forma objetiva. Me diz só o principal neste momento: você quer entender opções, preço, instalação ou a melhor solução para o seu caso?"`
+  );
+
+  examples.push(
+    `EXEMPLO RUIM:
+"Ah, isso é para agora ou você está pesquisando para mais pra frente?"`
+  );
+
+  examples.push(
+    `EXEMPLO RUIM:
+"Vou te listar várias piscinas de novo..." sem o cliente ter pedido modelos de novo na mensagem atual.`
   );
 
   return examples.join("\n\n");
@@ -1107,6 +1193,7 @@ function buildInstructions(args: {
   responseMode: ResponseMode;
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
+  explicitCatalogRequest: boolean;
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
@@ -1115,10 +1202,13 @@ function buildInstructions(args: {
   const responsePriorityBlock = buildResponsePriorityBlock({
     intents: args.intents,
     responseMode: args.responseMode,
+    explicitCatalogRequest: args.explicitCatalogRequest,
+    lastAiListedPools: args.lastAiListedPools,
   });
   const examplesBlock = buildExamplesBlock({
     intents: args.intents,
     nextBestQuestion: args.nextBestQuestion,
+    explicitCatalogRequest: args.explicitCatalogRequest,
   });
 
   return `
@@ -1134,6 +1224,8 @@ REGRA MÁXIMA
 2. Só depois conduza.
 3. Se o cliente fez 2 ou mais perguntas, responda todas primeiro.
 4. Nunca abra a resposta com pergunta se já dá para responder algo.
+5. Nunca reabra a triagem ampla da conversa quando ela já está andando.
+6. Nunca repita catálogo/modelos sem pedido explícito na mensagem atual.
 
 TOM
 - português do Brasil
@@ -1159,6 +1251,7 @@ REGRAS OPERACIONAIS
 - se faltar base para cravar algo, responda com cautela comercial em vez de inventar certeza
 - se houver regra clara de escalonamento humano, respeite
 - não prometa enviar mídia, PDF, catálogo ou fotos como se a entrega já estivesse acontecendo
+- só cite modelos concretos quando fizer sentido e quando houver pedido explícito atual
 
 PRIORIDADE DESTA RESPOSTA
 ${responsePriorityBlock}
@@ -1189,7 +1282,7 @@ ${args.availablePoolsText || "Nenhuma opção de piscina carregada no contexto."
 
 SINAIS DO CONTEXTO
 - múltiplas intenções na última mensagem: ${args.questionIntentCount >= 2 ? "sim" : "não"}
-- pedido de catálogo ou fotos: ${looksLikeCatalogRequest(args.lastCustomerMessage) ? "sim" : "não"}
+- pedido explícito atual de catálogo/fotos/modelos: ${args.explicitCatalogRequest ? "sim" : "não"}
 - pergunta sobre instalação: ${looksLikeInstallationQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - pergunta sobre visita técnica: ${looksLikeTechnicalVisitQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - pergunta sobre preço: ${looksLikePriceQuestion(args.lastCustomerMessage) ? "sim" : "não"}
@@ -1268,7 +1361,8 @@ function detectLastAiListedPools(lastAiMessage: string | null): boolean {
     text.includes("formato") ||
     text.includes("valor de referencia") ||
     text.includes("valor de referência") ||
-    text.includes("tamanho aproximado")
+    text.includes("tamanho aproximado") ||
+    text.includes("modelo")
   );
 }
 
@@ -1503,15 +1597,11 @@ export async function generateAiSalesReply(
     const recentHistory = formatRecentHistory(orderedMessages);
     const lastAiMessage = detectLastAiMessage(orderedMessages);
     const lastAiListedPools = detectLastAiListedPools(lastAiMessage);
-
-    const customerSeemsToBeAskingPools =
-      looksLikePoolChoice(lastCustomerMessage) ||
-      looksLikeCatalogRequest(lastCustomerMessage) ||
-      looksLikeComparisonQuestion(lastCustomerMessage);
+    const explicitCatalogRequest = isExplicitCatalogRequest(lastCustomerMessage);
 
     const shouldLoadPools =
-      customerSeemsToBeAskingPools &&
-      !(lastAiListedPools && questionIntentCount >= 2);
+      explicitCatalogRequest ||
+      (looksLikeComparisonQuestion(lastCustomerMessage) && !lastAiListedPools);
 
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
     let poolCountUsed = 0;
@@ -1553,6 +1643,8 @@ export async function generateAiSalesReply(
     const commercialObjective = buildCommercialObjective({
       orderedMessages,
       lastCustomerMessage,
+      explicitCatalogRequest,
+      lastAiListedPools,
     });
 
     const commercialObjectiveBlock = buildCommercialObjectiveBlock(commercialObjective);
@@ -1575,6 +1667,7 @@ export async function generateAiSalesReply(
       responseMode: commercialObjective.responseMode,
       intents: commercialObjective.intents,
       nextBestQuestion: commercialObjective.nextBestQuestion,
+      explicitCatalogRequest,
     });
 
     const input = buildModelInput(orderedMessages);
@@ -1583,7 +1676,7 @@ export async function generateAiSalesReply(
       model,
       instructions,
       input,
-      max_output_tokens: commercialObjective.responseMode === "objective" ? 180 : 260,
+      max_output_tokens: commercialObjective.responseMode === "objective" ? 180 : 240,
     });
 
     const aiText = cleanupAiText(
