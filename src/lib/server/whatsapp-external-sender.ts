@@ -20,10 +20,18 @@ type PendingExternalMessageRow = {
   metadata?: Json | null;
 
   lead_phone?: string | null;
+  lead_phone_number?: string | null;
   customer_phone?: string | null;
+  customer_phone_number?: string | null;
   phone?: string | null;
+  phone_number?: string | null;
   whatsapp?: string | null;
+  lead_whatsapp?: string | null;
+  customer_whatsapp?: string | null;
   wa_id?: string | null;
+  mobile?: string | null;
+  mobile_phone?: string | null;
+  lead_mobile?: string | null;
 };
 
 type PendingExternalMessage = {
@@ -106,18 +114,33 @@ function normalizePhone(raw: string): string {
 }
 
 function extractPhone(row: PendingExternalMessageRow): string | null {
-  const raw =
-    row.lead_phone ??
-    row.customer_phone ??
-    row.phone ??
-    row.whatsapp ??
-    row.wa_id ??
-    null;
+  const candidates = [
+    row.lead_phone,
+    row.lead_phone_number,
+    row.customer_phone,
+    row.customer_phone_number,
+    row.phone,
+    row.phone_number,
+    row.whatsapp,
+    row.lead_whatsapp,
+    row.customer_whatsapp,
+    row.wa_id,
+    row.mobile,
+    row.mobile_phone,
+    row.lead_mobile,
+  ];
 
-  if (!raw || typeof raw !== "string") return null;
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "string") continue;
 
-  const normalized = normalizePhone(raw);
-  return normalized || null;
+    const normalized = normalizePhone(candidate);
+
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
 }
 
 function normalizeMetadata(
@@ -151,7 +174,9 @@ function normalizePendingMessage(
   }
 
   if (!phone) {
-    throw new Error(`Mensagem ${messageId} sem telefone do lead`);
+    throw new Error(
+      `Mensagem ${messageId} sem telefone do lead. Campos recebidos: ${Object.keys(row).join(", ")}`,
+    );
   }
 
   const rawType = String(row.message_type || "text").toLowerCase();
