@@ -9,7 +9,9 @@ type Json =
   | Json[];
 
 type PendingExternalMessageRow = {
-  id: string;
+  id?: string | null;
+  message_id?: string | null;
+
   conversation_id?: string | null;
   lead_id?: string | null;
   content?: string | null;
@@ -17,7 +19,6 @@ type PendingExternalMessageRow = {
   media_url?: string | null;
   metadata?: Json | null;
 
-  // possíveis nomes vindos da RPC
   lead_phone?: string | null;
   customer_phone?: string | null;
   phone?: string | null;
@@ -76,8 +77,6 @@ export type ProcessWhatsappPendingMessagesResult = {
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-// Pode ser trocado por env sem reescrever o arquivo
 const WHATSAPP_GRAPH_API_VERSION =
   process.env.WHATSAPP_GRAPH_API_VERSION || "v23.0";
 
@@ -121,20 +120,38 @@ function extractPhone(row: PendingExternalMessageRow): string | null {
   return normalized || null;
 }
 
-function normalizeMetadata(value: Json | null | undefined): Record<string, unknown> {
+function normalizeMetadata(
+  value: Json | null | undefined,
+): Record<string, unknown> {
   if (isRecord(value)) return value;
   return {};
 }
 
-function normalizePendingMessage(row: PendingExternalMessageRow): PendingExternalMessage {
+function extractMessageId(row: PendingExternalMessageRow): string | null {
+  const rawId = row.id ?? row.message_id ?? null;
+
+  if (!rawId || typeof rawId !== "string") {
+    return null;
+  }
+
+  const trimmed = rawId.trim();
+  return trimmed || null;
+}
+
+function normalizePendingMessage(
+  row: PendingExternalMessageRow,
+): PendingExternalMessage {
+  const messageId = extractMessageId(row);
   const phone = extractPhone(row);
 
-  if (!row.id) {
-    throw new Error("Mensagem pendente sem id");
+  if (!messageId) {
+    throw new Error(
+      `Mensagem pendente sem id. Campos recebidos: ${Object.keys(row).join(", ")}`,
+    );
   }
 
   if (!phone) {
-    throw new Error(`Mensagem ${row.id} sem telefone do lead`);
+    throw new Error(`Mensagem ${messageId} sem telefone do lead`);
   }
 
   const rawType = String(row.message_type || "text").toLowerCase();
@@ -146,21 +163,21 @@ function normalizePendingMessage(row: PendingExternalMessageRow): PendingExterna
   const mediaUrl = row.media_url?.trim() || null;
 
   if (messageType === "text" && !content) {
-    throw new Error(`Mensagem ${row.id} do tipo text sem conteúdo`);
+    throw new Error(`Mensagem ${messageId} do tipo text sem conteúdo`);
   }
 
   if (messageType === "image") {
     if (!mediaUrl) {
-      throw new Error(`Mensagem ${row.id} do tipo image sem media_url`);
+      throw new Error(`Mensagem ${messageId} do tipo image sem media_url`);
     }
 
     if (!content) {
-      throw new Error(`Mensagem ${row.id} do tipo image sem legenda/conteúdo`);
+      throw new Error(`Mensagem ${messageId} do tipo image sem legenda/conteúdo`);
     }
   }
 
   return {
-    id: row.id,
+    id: messageId,
     conversationId: row.conversation_id ?? null,
     leadId: row.lead_id ?? null,
     phone,
@@ -240,7 +257,9 @@ async function markMessageExternalSent(
     );
   }
 
-  const result = Array.isArray(data) ? data[0] : (data as MarkSentResult | null);
+  const result = Array.isArray(data)
+    ? data[0]
+    : (data as MarkSentResult | null);
 
   if (result && result.ok === false) {
     throw new Error(
