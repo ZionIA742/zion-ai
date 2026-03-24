@@ -2,6 +2,18 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
 export async function middleware(req: NextRequest) {
+  const path = req.nextUrl.pathname;
+
+  const isPublic =
+    path === "/login" ||
+    path.startsWith("/_next") ||
+    path.startsWith("/favicon") ||
+    path === "/api/internal/ai-sales-reply";
+
+  if (isPublic) {
+    return NextResponse.next();
+  }
+
   const res = NextResponse.next();
 
   const supabase = createServerClient(
@@ -25,17 +37,6 @@ export async function middleware(req: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  const path = req.nextUrl.pathname;
-
-  const isPublic =
-    path === "/login" ||
-    path.startsWith("/_next") ||
-    path.startsWith("/favicon");
-
-  if (isPublic) {
-    return res;
-  }
 
   if (!user) {
     const url = req.nextUrl.clone();
