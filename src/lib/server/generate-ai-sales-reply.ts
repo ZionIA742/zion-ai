@@ -55,6 +55,29 @@ type PoolRow = {
   stock_quantity: number | null;
 };
 
+type ConversationFactState = {
+  budgetKnown: boolean;
+  authorityKnown: boolean;
+  needKnown: boolean;
+  timingKnown: boolean;
+  locationKnown: boolean;
+  sizeKnown: boolean;
+  installationInterestKnown: boolean;
+  paymentInterestKnown: boolean;
+  visitInterestKnown: boolean;
+};
+
+type CommercialObjective = {
+  primaryIntent: string;
+  secondaryIntents: string[];
+  mustAnswerFirst: string[];
+  knownFacts: string[];
+  missingFacts: string[];
+  nextBestQuestion: string | null;
+  responseGoal: string;
+  forbiddenInThisReply: string[];
+};
+
 export type GenerateAiSalesReplyParams = {
   organizationId: string;
   storeId: string;
@@ -248,6 +271,7 @@ function looksLikePriceQuestion(text: string): boolean {
     t.includes("quanto custa") ||
     t.includes("custa") ||
     t.includes("orcamento") ||
+    t.includes("orçamento") ||
     t.includes("faixa de valor")
   );
 }
@@ -257,15 +281,19 @@ function looksLikePaymentQuestion(text: string): boolean {
 
   return (
     t.includes("cartao") ||
+    t.includes("cartão") ||
     t.includes("credito") ||
+    t.includes("crédito") ||
     t.includes("debito") ||
+    t.includes("débito") ||
     t.includes("pix") ||
     t.includes("boleto") ||
     t.includes("parcel") ||
     t.includes("pagamento") ||
     t.includes("forma de pagamento") ||
     t.includes("formas de pagamento") ||
-    t.includes("aceita cartao")
+    t.includes("aceita cartao") ||
+    t.includes("aceita cartão")
   );
 }
 
@@ -281,7 +309,10 @@ function looksLikeRegionQuestion(text: string): boolean {
     t.includes("fora da regiao") ||
     t.includes("fora da região") ||
     t.includes("deslocamento") ||
-    t.includes("cidade")
+    t.includes("cidade") ||
+    t.includes("bairro") ||
+    t.includes("regiao") ||
+    t.includes("região")
   );
 }
 
@@ -295,8 +326,91 @@ function looksLikePoolChoice(text: string): boolean {
     t.includes("alvenaria") ||
     t.includes("pequena") ||
     t.includes("media") ||
+    t.includes("média") ||
     t.includes("grande") ||
-    t.includes("compacta")
+    t.includes("compacta") ||
+    t.includes("retangular") ||
+    t.includes("redonda")
+  );
+}
+
+function looksLikeComparisonQuestion(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("qual a diferenca") ||
+    t.includes("qual a diferença") ||
+    t.includes("diferenca") ||
+    t.includes("diferença") ||
+    t.includes("compar") ||
+    t.includes("melhor") ||
+    t.includes("vale mais a pena")
+  );
+}
+
+function looksLikeTimingSignal(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("agora") ||
+    t.includes("esse mes") ||
+    t.includes("este mes") ||
+    t.includes("esse mês") ||
+    t.includes("este mês") ||
+    t.includes("urgente") ||
+    t.includes("pra já") ||
+    t.includes("para ja") ||
+    t.includes("quanto antes") ||
+    t.includes("semana que vem") ||
+    t.includes("proximo mes") ||
+    t.includes("próximo mês")
+  );
+}
+
+function looksLikeBudgetSignal(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("faixa") ||
+    t.includes("orcamento") ||
+    t.includes("orçamento") ||
+    t.includes("investir") ||
+    t.includes("budget") ||
+    t.includes("mais barato") ||
+    t.includes("mais em conta") ||
+    t.includes("economica") ||
+    t.includes("econômica")
+  );
+}
+
+function looksLikeAuthoritySignal(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("meu marido") ||
+    t.includes("minha esposa") ||
+    t.includes("meu pai") ||
+    t.includes("minha mae") ||
+    t.includes("minha mãe") ||
+    t.includes("vou ver com") ||
+    t.includes("vou falar com") ||
+    t.includes("decidimos") ||
+    t.includes("decidir")
+  );
+}
+
+function looksLikeNeedSignal(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    looksLikePoolChoice(t) ||
+    looksLikeCatalogRequest(t) ||
+    looksLikeInstallationQuestion(t) ||
+    t.includes("quero") ||
+    t.includes("preciso") ||
+    t.includes("estou procurando") ||
+    t.includes("tô procurando") ||
+    t.includes("to procurando")
   );
 }
 
@@ -309,6 +423,7 @@ function countQuestionIntents(lastCustomerMessage: string): number {
     looksLikePaymentQuestion(lastCustomerMessage),
     looksLikeRegionQuestion(lastCustomerMessage),
     looksLikePoolChoice(lastCustomerMessage),
+    looksLikeComparisonQuestion(lastCustomerMessage),
   ];
 
   const score = categories.filter(Boolean).length;
@@ -362,7 +477,9 @@ function formatSection(
   return `${title}\n${lines.join("\n")}`;
 }
 
-function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>): string {
+function buildOperationalOnboardingBlock(
+  onboardingMap: Record<string, string>
+): string {
   const overview = formatSection("DADOS GERAIS DA LOJA", [
     ["nome de exibição", onboardingMap.store_display_name],
     ["descrição da loja", onboardingMap.store_description],
@@ -391,19 +508,37 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
 
   const installation = formatSection("INSTALAÇÃO", [
     ["oferece instalação", onboardingMap.offers_installation],
-    ["dias disponíveis para instalação", onboardingMap.installation_available_days],
+    [
+      "dias disponíveis para instalação",
+      onboardingMap.installation_available_days,
+    ],
     ["regra dos dias de instalação", onboardingMap.installation_days_rule],
-    ["tempo médio de instalação em dias", onboardingMap.average_installation_time_days],
+    [
+      "tempo médio de instalação em dias",
+      onboardingMap.average_installation_time_days,
+    ],
     ["processo de instalação", onboardingMap.installation_process],
-    ["etapas do processo de instalação", onboardingMap.installation_process_steps],
+    [
+      "etapas do processo de instalação",
+      onboardingMap.installation_process_steps,
+    ],
   ]);
 
   const technicalVisit = formatSection("VISITA TÉCNICA", [
     ["oferece visita técnica", onboardingMap.offers_technical_visit],
-    ["dias disponíveis para visita técnica", onboardingMap.technical_visit_available_days],
-    ["regra dos dias de visita técnica", onboardingMap.technical_visit_days_rule],
+    [
+      "dias disponíveis para visita técnica",
+      onboardingMap.technical_visit_available_days,
+    ],
+    [
+      "regra dos dias de visita técnica",
+      onboardingMap.technical_visit_days_rule,
+    ],
     ["regras de visita técnica", onboardingMap.technical_visit_rules],
-    ["regras selecionadas de visita técnica", onboardingMap.technical_visit_rules_selected],
+    [
+      "regras selecionadas de visita técnica",
+      onboardingMap.technical_visit_rules_selected,
+    ],
   ]);
 
   const pricingAndPayment = formatSection("PREÇO, PAGAMENTO E DESCONTO", [
@@ -412,9 +547,18 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
     ["a IA pode enviar preço direto", onboardingMap.ai_can_send_price_directly],
     ["modo de falar de preço", onboardingMap.price_talk_mode],
     ["regra para preço direto", onboardingMap.price_direct_rule],
-    ["condições para passar preço direto", onboardingMap.price_direct_conditions],
-    ["o que precisa entender antes de falar preço", onboardingMap.price_must_understand_before],
-    ["preço precisa de ajuda humana", onboardingMap.price_needs_human_help],
+    [
+      "condições para passar preço direto",
+      onboardingMap.price_direct_conditions,
+    ],
+    [
+      "o que precisa entender antes de falar preço",
+      onboardingMap.price_must_understand_before,
+    ],
+    [
+      "preço precisa de ajuda humana",
+      onboardingMap.price_needs_human_help,
+    ],
     ["pode oferecer desconto", onboardingMap.can_offer_discount],
     ["desconto máximo", onboardingMap.max_discount_percent],
   ]);
@@ -423,19 +567,37 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
     ["passos iniciais", onboardingMap.sales_flow_start_steps],
     ["passos do meio", onboardingMap.sales_flow_middle_steps],
     ["passos finais", onboardingMap.sales_flow_final_steps],
-    ["tempo médio de resposta humana", onboardingMap.average_human_response_time],
+    [
+      "tempo médio de resposta humana",
+      onboardingMap.average_human_response_time,
+    ],
   ]);
 
-  const humanEscalation = formatSection("QUANDO CHAMAR HUMANO OU RESPONSÁVEL", [
-    ["IA deve notificar responsável", onboardingMap.ai_should_notify_responsible],
-    ["casos para notificar responsável", onboardingMap.responsible_notification_cases],
-    ["nome do responsável", onboardingMap.responsible_name],
-    ["whatsapp do responsável", onboardingMap.responsible_whatsapp],
-    ["whatsapp comercial", onboardingMap.commercial_whatsapp],
-    ["casos de projeto customizado com ajuda humana", onboardingMap.human_help_custom_project_cases],
-    ["casos de desconto com ajuda humana", onboardingMap.human_help_discount_cases],
-    ["casos de pagamento com ajuda humana", onboardingMap.human_help_payment_cases],
-  ]);
+  const humanEscalation = formatSection(
+    "QUANDO CHAMAR HUMANO OU RESPONSÁVEL",
+    [
+      ["IA deve notificar responsável", onboardingMap.ai_should_notify_responsible],
+      [
+        "casos para notificar responsável",
+        onboardingMap.responsible_notification_cases,
+      ],
+      ["nome do responsável", onboardingMap.responsible_name],
+      ["whatsapp do responsável", onboardingMap.responsible_whatsapp],
+      ["whatsapp comercial", onboardingMap.commercial_whatsapp],
+      [
+        "casos de projeto customizado com ajuda humana",
+        onboardingMap.human_help_custom_project_cases,
+      ],
+      [
+        "casos de desconto com ajuda humana",
+        onboardingMap.human_help_discount_cases,
+      ],
+      [
+        "casos de pagamento com ajuda humana",
+        onboardingMap.human_help_payment_cases,
+      ],
+    ]
+  );
 
   const limitations = formatSection("LIMITAÇÕES E CUIDADOS", [
     ["limitações importantes", onboardingMap.important_limitations],
@@ -453,17 +615,20 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
   ].join("\n\n");
 }
 
-function buildRawOnboardingSummary(onboardingMap: Record<string, string>): string {
+function buildRawOnboardingSummary(
+  onboardingMap: Record<string, string>
+): string {
   const entries = Object.entries(onboardingMap)
     .filter(([, value]) => hasMeaningfulValue(value))
     .map(([key, value]) => `- ${key}: ${value}`);
 
-  return entries.length ? entries.join("\n") : "- sem dados adicionais do onboarding disponíveis";
+  return entries.length
+    ? entries.join("\n")
+    : "- sem dados adicionais do onboarding disponíveis";
 }
 
 function buildResponsePriorityBlock(args: {
   lastCustomerMessage: string;
-  onboardingMap: Record<string, string>;
 }) {
   const message = args.lastCustomerMessage;
 
@@ -474,6 +639,7 @@ function buildResponsePriorityBlock(args: {
   const asksRegion = looksLikeRegionQuestion(message);
   const asksCatalog = looksLikeCatalogRequest(message);
   const asksPoolChoice = looksLikePoolChoice(message);
+  const asksComparison = looksLikeComparisonQuestion(message);
 
   const instructions: string[] = [];
 
@@ -513,6 +679,12 @@ function buildResponsePriorityBlock(args: {
     );
   }
 
+  if (asksComparison) {
+    instructions.push(
+      `- O cliente quer comparação/diferença. Não responda com lista solta. Compare de forma prática: perfil de uso, espaço, percepção de custo e quando cada opção faz mais sentido.`
+    );
+  }
+
   if (instructions.length === 0) {
     instructions.push(
       `- Responda primeiro o pedido central do cliente com objetividade e só depois conduza a conversa.`
@@ -535,6 +707,366 @@ function buildResponsePriorityBlock(args: {
   return instructions.join("\n");
 }
 
+function collectConversationFacts(messages: MessageRow[]): ConversationFactState {
+  const userTexts = messages
+    .filter(
+      (msg) =>
+        normalizeText(msg.sender) === "user" &&
+        normalizeText(msg.direction) === "incoming" &&
+        String(msg.content || "").trim().length > 0
+    )
+    .map((msg) => String(msg.content || "").trim());
+
+  const merged = normalizeText(userTexts.join(" | "));
+
+  const sizeRegex =
+    /\b(\d{1,2}(?:[.,]\d{1,2})?)\s?(m|mt|metros?)\b|\b\d{1,2}\s?x\s?\d{1,2}\b/;
+
+  return {
+    budgetKnown: looksLikeBudgetSignal(merged),
+    authorityKnown: looksLikeAuthoritySignal(merged),
+    needKnown: looksLikeNeedSignal(merged),
+    timingKnown: looksLikeTimingSignal(merged),
+    locationKnown:
+      merged.includes("bairro") ||
+      merged.includes("cidade") ||
+      merged.includes("suzano") ||
+      merged.includes("mogi") ||
+      merged.includes("sp") ||
+      merged.includes("sao paulo") ||
+      merged.includes("são paulo"),
+    sizeKnown: sizeRegex.test(merged),
+    installationInterestKnown: looksLikeInstallationQuestion(merged),
+    paymentInterestKnown: looksLikePaymentQuestion(merged),
+    visitInterestKnown: looksLikeTechnicalVisitQuestion(merged),
+  };
+}
+
+function summarizeKnownFacts(
+  facts: ConversationFactState,
+  lastCustomerMessage: string
+): string[] {
+  const out: string[] = [];
+
+  if (facts.needKnown) out.push("já existe necessidade/interesse comercial identificado");
+  if (facts.budgetKnown) out.push("já existe sinal de orçamento/faixa de investimento");
+  if (facts.authorityKnown) out.push("já existe sinal de decisão compartilhada ou autoridade");
+  if (facts.timingKnown) out.push("já existe sinal de timing");
+  if (facts.locationKnown) out.push("já existe sinal de cidade/região");
+  if (facts.sizeKnown) out.push("já existe sinal de medida/tamanho");
+  if (facts.installationInterestKnown) out.push("já existe interesse em instalação");
+  if (facts.paymentInterestKnown) out.push("já existe interesse em pagamento");
+  if (facts.visitInterestKnown) out.push("já existe interesse em visita técnica");
+
+  if (looksLikeCatalogRequest(lastCustomerMessage)) {
+    out.push("o cliente demonstra interesse em ver modelos/fotos/catálogo");
+  }
+
+  if (looksLikeComparisonQuestion(lastCustomerMessage)) {
+    out.push("o cliente quer comparação entre opções");
+  }
+
+  return out.length ? out : ["quase nenhum fato comercial estruturado foi confirmado ainda"];
+}
+
+function summarizeMissingFacts(
+  facts: ConversationFactState,
+  lastCustomerMessage: string
+): string[] {
+  const out: string[] = [];
+
+  if (!facts.sizeKnown && looksLikePoolChoice(lastCustomerMessage)) {
+    out.push("medida ou espaço disponível");
+  }
+
+  if (!facts.locationKnown && (looksLikeInstallationQuestion(lastCustomerMessage) || looksLikeTechnicalVisitQuestion(lastCustomerMessage) || looksLikeRegionQuestion(lastCustomerMessage))) {
+    out.push("cidade/bairro/região do atendimento");
+  }
+
+  if (!facts.budgetKnown && (looksLikePriceQuestion(lastCustomerMessage) || looksLikePoolChoice(lastCustomerMessage))) {
+    out.push("faixa de investimento");
+  }
+
+  if (!facts.timingKnown && looksLikeNeedSignal(lastCustomerMessage)) {
+    out.push("timing da decisão/compra");
+  }
+
+  if (!facts.authorityKnown && looksLikePriceQuestion(lastCustomerMessage)) {
+    out.push("se decide sozinho ou com outra pessoa");
+  }
+
+  return out;
+}
+
+function inferPrimaryIntent(lastCustomerMessage: string): string {
+  if (looksLikeComparisonQuestion(lastCustomerMessage)) {
+    return "comparar opções e orientar escolha";
+  }
+
+  if (looksLikeCatalogRequest(lastCustomerMessage)) {
+    return "pedir modelos/fotos/catálogo";
+  }
+
+  if (looksLikePriceQuestion(lastCustomerMessage)) {
+    return "entender preço/valor";
+  }
+
+  if (looksLikeInstallationQuestion(lastCustomerMessage)) {
+    return "entender instalação";
+  }
+
+  if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
+    return "entender visita técnica";
+  }
+
+  if (looksLikePaymentQuestion(lastCustomerMessage)) {
+    return "entender pagamento";
+  }
+
+  if (looksLikeRegionQuestion(lastCustomerMessage)) {
+    return "entender atendimento por região";
+  }
+
+  if (looksLikePoolChoice(lastCustomerMessage)) {
+    return "escolher modelo/tamanho/tipo de piscina";
+  }
+
+  return "avançar a conversa comercial com resposta útil e natural";
+}
+
+function inferSecondaryIntents(lastCustomerMessage: string): string[] {
+  const intents: string[] = [];
+
+  if (looksLikeCatalogRequest(lastCustomerMessage)) {
+    intents.push("catálogo/modelos");
+  }
+  if (looksLikePriceQuestion(lastCustomerMessage)) {
+    intents.push("preço");
+  }
+  if (looksLikeInstallationQuestion(lastCustomerMessage)) {
+    intents.push("instalação");
+  }
+  if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
+    intents.push("visita técnica");
+  }
+  if (looksLikePaymentQuestion(lastCustomerMessage)) {
+    intents.push("pagamento");
+  }
+  if (looksLikeRegionQuestion(lastCustomerMessage)) {
+    intents.push("região");
+  }
+  if (looksLikePoolChoice(lastCustomerMessage)) {
+    intents.push("tipo/tamanho/modelo");
+  }
+  if (looksLikeComparisonQuestion(lastCustomerMessage)) {
+    intents.push("comparação");
+  }
+
+  return Array.from(new Set(intents));
+}
+
+function inferMustAnswerFirst(lastCustomerMessage: string): string[] {
+  const items: string[] = [];
+
+  if (looksLikePaymentQuestion(lastCustomerMessage)) {
+    items.push("responder claramente sobre meios de pagamento/cartão");
+  }
+  if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
+    items.push("responder claramente sobre visita técnica");
+  }
+  if (looksLikeInstallationQuestion(lastCustomerMessage)) {
+    items.push("responder claramente sobre instalação");
+  }
+  if (looksLikePriceQuestion(lastCustomerMessage)) {
+    items.push("responder claramente sobre preço/faixa de valor");
+  }
+  if (looksLikeRegionQuestion(lastCustomerMessage)) {
+    items.push("responder claramente sobre cidade/região atendida");
+  }
+  if (looksLikeCatalogRequest(lastCustomerMessage) || looksLikePoolChoice(lastCustomerMessage)) {
+    items.push("responder com orientação prática sobre modelos/opções");
+  }
+  if (looksLikeComparisonQuestion(lastCustomerMessage)) {
+    items.push("responder com comparação prática entre as opções");
+  }
+
+  return items.length
+    ? items
+    : ["responder diretamente o pedido principal antes de conduzir"];
+}
+
+function inferNextBestQuestion(
+  facts: ConversationFactState,
+  lastCustomerMessage: string
+): string | null {
+  if (
+    (looksLikeCatalogRequest(lastCustomerMessage) ||
+      looksLikePoolChoice(lastCustomerMessage) ||
+      looksLikeComparisonQuestion(lastCustomerMessage)) &&
+    !facts.sizeKnown
+  ) {
+    return "qual espaço ou medida aproximada você tem aí para a piscina?";
+  }
+
+  if (
+    (looksLikeInstallationQuestion(lastCustomerMessage) ||
+      looksLikeTechnicalVisitQuestion(lastCustomerMessage) ||
+      looksLikeRegionQuestion(lastCustomerMessage)) &&
+    !facts.locationKnown
+  ) {
+    return "qual sua cidade ou bairro?";
+  }
+
+  if (looksLikePriceQuestion(lastCustomerMessage) && !facts.budgetKnown) {
+    return "você pensa em uma faixa mais econômica, intermediária ou algo mais premium?";
+  }
+
+  if (!facts.timingKnown && looksLikeNeedSignal(lastCustomerMessage)) {
+    return "isso é para agora ou você está pesquisando para mais pra frente?";
+  }
+
+  return null;
+}
+
+function inferResponseGoal(args: {
+  lastCustomerMessage: string;
+  facts: ConversationFactState;
+  nextBestQuestion: string | null;
+}): string {
+  const { lastCustomerMessage, facts, nextBestQuestion } = args;
+
+  if (looksLikeCatalogRequest(lastCustomerMessage) || looksLikePoolChoice(lastCustomerMessage)) {
+    if (nextBestQuestion && !facts.sizeKnown) {
+      return "responder o pedido de modelos com naturalidade e avançar para descobrir medida/espaço";
+    }
+
+    return "responder o pedido de modelos e estreitar a escolha para uma recomendação mais assertiva";
+  }
+
+  if (looksLikeComparisonQuestion(lastCustomerMessage)) {
+    return "comparar com clareza e puxar o próximo dado que faltaria para indicar a melhor opção";
+  }
+
+  if (looksLikePriceQuestion(lastCustomerMessage)) {
+    return "responder preço sem fugir e, ao mesmo tempo, conduzir para o dado mínimo que permite orientar melhor";
+  }
+
+  if (looksLikeInstallationQuestion(lastCustomerMessage)) {
+    return "responder instalação com segurança e puxar apenas a informação mínima necessária para avançar";
+  }
+
+  if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
+    return "responder visita técnica de forma objetiva e conduzir para região/disponibilidade";
+  }
+
+  if (looksLikePaymentQuestion(lastCustomerMessage)) {
+    return "responder pagamento de forma direta e manter a conversa andando comercialmente";
+  }
+
+  return "resolver a dúvida do cliente e gerar um microavanço comercial sem parecer interrogatório";
+}
+
+function inferForbiddenInThisReply(
+  lastCustomerMessage: string,
+  nextBestQuestion: string | null
+): string[] {
+  const out: string[] = [
+    "não ignorar a pergunta principal do cliente",
+    "não fazer mais de uma pergunta se uma só já resolve",
+    "não soar como robô, suporte frio ou formulário",
+    "não prometer envio de foto/catálogo/arquivo como se já estivesse acontecendo",
+    "não despejar lista repetida de modelos sem critério",
+  ];
+
+  if (looksLikePriceQuestion(lastCustomerMessage)) {
+    out.push("não fugir da pergunta de preço");
+  }
+
+  if (looksLikeComparisonQuestion(lastCustomerMessage)) {
+    out.push("não responder comparação com texto genérico sem contraste real");
+  }
+
+  if (!nextBestQuestion) {
+    out.push("não inventar pergunta no final só para encerrar com interrogação");
+  }
+
+  return out;
+}
+
+function buildCommercialObjective(args: {
+  orderedMessages: MessageRow[];
+  lastCustomerMessage: string;
+}): CommercialObjective {
+  const facts = collectConversationFacts(args.orderedMessages);
+  const nextBestQuestion = inferNextBestQuestion(facts, args.lastCustomerMessage);
+
+  return {
+    primaryIntent: inferPrimaryIntent(args.lastCustomerMessage),
+    secondaryIntents: inferSecondaryIntents(args.lastCustomerMessage),
+    mustAnswerFirst: inferMustAnswerFirst(args.lastCustomerMessage),
+    knownFacts: summarizeKnownFacts(facts, args.lastCustomerMessage),
+    missingFacts: summarizeMissingFacts(facts, args.lastCustomerMessage),
+    nextBestQuestion,
+    responseGoal: inferResponseGoal({
+      lastCustomerMessage: args.lastCustomerMessage,
+      facts,
+      nextBestQuestion,
+    }),
+    forbiddenInThisReply: inferForbiddenInThisReply(
+      args.lastCustomerMessage,
+      nextBestQuestion
+    ),
+  };
+}
+
+function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
+  const secondaryIntentsText = objective.secondaryIntents.length
+    ? objective.secondaryIntents.map((item) => `- ${item}`).join("\n")
+    : "- nenhuma secundária relevante detectada";
+
+  const mustAnswerFirstText = objective.mustAnswerFirst.length
+    ? objective.mustAnswerFirst.map((item) => `- ${item}`).join("\n")
+    : "- responder diretamente o pedido principal do cliente";
+
+  const knownFactsText = objective.knownFacts.length
+    ? objective.knownFacts.map((item) => `- ${item}`).join("\n")
+    : "- ainda há poucos fatos consolidados";
+
+  const missingFactsText = objective.missingFacts.length
+    ? objective.missingFacts.map((item) => `- ${item}`).join("\n")
+    : "- nenhum dado crítico faltando para esta resposta";
+
+  const forbiddenText = objective.forbiddenInThisReply.length
+    ? objective.forbiddenInThisReply.map((item) => `- ${item}`).join("\n")
+    : "- sem bloqueios adicionais";
+
+  return `
+DIAGNÓSTICO COMERCIAL E OBJETIVO DESTA RESPOSTA
+- intenção principal: ${objective.primaryIntent}
+
+INTENÇÕES SECUNDÁRIAS
+${secondaryIntentsText}
+
+O QUE PRECISA SER RESPONDIDO PRIMEIRO NESTA MENSAGEM
+${mustAnswerFirstText}
+
+O QUE JÁ SABEMOS DA CONVERSA
+${knownFactsText}
+
+O QUE AINDA FALTA DESCOBRIR, SE FIZER SENTIDO NESTA RESPOSTA
+${missingFactsText}
+
+OBJETIVO ÚNICO DESTA RESPOSTA
+- ${objective.responseGoal}
+
+MELHOR PERGUNTA ÚNICA PARA AVANÇAR, SE REALMENTE PRECISAR PERGUNTAR
+- ${objective.nextBestQuestion || "não é obrigatório perguntar nesta resposta"}
+
+BLOQUEIOS EXPLÍCITOS PARA ESTA RESPOSTA
+${forbiddenText}
+`.trim();
+}
+
 function buildSystemPrompt(args: {
   storeDisplayName: string | null;
   storeName: string | null;
@@ -545,6 +1077,7 @@ function buildSystemPrompt(args: {
   availablePoolsText: string;
   lastCustomerMessage: string;
   behaviorInstructionBlock: string;
+  commercialObjectiveBlock: string;
   shouldLoadPools: boolean;
   lastAiMessage: string | null;
   lastAiListedPools: boolean;
@@ -556,7 +1089,6 @@ function buildSystemPrompt(args: {
   const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
   const responsePriorityBlock = buildResponsePriorityBlock({
     lastCustomerMessage: args.lastCustomerMessage,
-    onboardingMap: args.onboardingMap,
   });
 
   return `
@@ -595,6 +1127,9 @@ REGRAS CENTRAIS
 
 COMPORTAMENTO OBRIGATÓRIO NESTA RESPOSTA
 ${responsePriorityBlock}
+
+CAMADA ESTRUTURADA DE OBJETIVO COMERCIAL
+${args.commercialObjectiveBlock}
 
 REGRAS COMERCIAIS DO ZION
 - A loja vende piscinas, instalação e itens relacionados.
@@ -678,6 +1213,7 @@ SINAIS DO CONTEXTO ATUAL
 - pergunta_sobre_pagamento: ${looksLikePaymentQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - pergunta_sobre_regiao: ${looksLikeRegionQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - pedido_ligado_a_tamanho_tipo_modelo: ${looksLikePoolChoice(args.lastCustomerMessage) ? "sim" : "não"}
+- pedido_de_comparacao: ${looksLikeComparisonQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - opcoes_de_piscina_carregadas_no_contexto: ${args.shouldLoadPools ? "sim" : "não"}
 - ultima_resposta_da_ia_listou_modelos: ${args.lastAiListedPools ? "sim" : "não"}
 
@@ -924,7 +1460,9 @@ export async function generateAiSalesReply(
         normalizeText(lastAiMessage).includes("tamanho aproximado"));
 
     const customerSeemsToBeAskingPools =
-      looksLikePoolChoice(lastCustomerMessage) || looksLikeCatalogRequest(lastCustomerMessage);
+      looksLikePoolChoice(lastCustomerMessage) ||
+      looksLikeCatalogRequest(lastCustomerMessage) ||
+      looksLikeComparisonQuestion(lastCustomerMessage);
 
     const shouldLoadPools =
       customerSeemsToBeAskingPools &&
@@ -967,6 +1505,14 @@ export async function generateAiSalesReply(
       }
     }
 
+    const commercialObjective = buildCommercialObjective({
+      orderedMessages,
+      lastCustomerMessage,
+    });
+
+    const commercialObjectiveBlock =
+      buildCommercialObjectiveBlock(commercialObjective);
+
     const systemPrompt = buildSystemPrompt({
       storeDisplayName: onboardingMap.store_display_name || null,
       storeName: store.name,
@@ -977,6 +1523,7 @@ export async function generateAiSalesReply(
       availablePoolsText,
       lastCustomerMessage,
       behaviorInstructionBlock,
+      commercialObjectiveBlock,
       shouldLoadPools,
       lastAiMessage,
       lastAiListedPools,
@@ -1000,8 +1547,8 @@ export async function generateAiSalesReply(
             sender.includes("bot")
               ? "assistant"
               : direction === "outgoing"
-              ? "assistant"
-              : "user";
+                ? "assistant"
+                : "user";
 
           return {
             role: role as "user" | "assistant",
