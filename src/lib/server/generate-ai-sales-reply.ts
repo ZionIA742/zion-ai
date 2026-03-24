@@ -55,6 +55,38 @@ type PoolRow = {
   stock_quantity: number | null;
 };
 
+type CatalogItemRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  sku: string | null;
+  name: string | null;
+  description: string | null;
+  price_cents: number | null;
+  currency: string | null;
+  is_active: boolean | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
+  updated_at: string | null;
+  track_stock: boolean | null;
+  stock_quantity: number | null;
+};
+
+type CatalogItemPhotoRow = {
+  id: string;
+  catalog_item_id: string;
+  storage_path: string | null;
+  file_name: string | null;
+  file_size_bytes: number | null;
+  sort_order: number | null;
+  created_at: string | null;
+};
+
+type PoolPhotoRow = {
+  id: string;
+  pool_id: string;
+};
+
 type DetectedIntent =
   | "catalog"
   | "installation"
@@ -89,6 +121,29 @@ type CommercialObjective = {
   responseGoal: string;
   forbiddenInThisReply: string[];
   responseMode: ResponseMode;
+};
+
+type CatalogIntentAnalysis = {
+  asksAboutCatalogProduct: boolean;
+  asksAboutPool: boolean;
+  asksForPhoto: boolean;
+  asksForPrice: boolean;
+  asksForAvailability: boolean;
+  asksForBrand: boolean;
+  requestedBrand: string | null;
+  requestedProductTerm: string | null;
+};
+
+type MatchedCatalogItem = {
+  item: CatalogItemRow;
+  photos: CatalogItemPhotoRow[];
+  score: number;
+};
+
+type MatchedPool = {
+  pool: PoolRow;
+  hasPhoto: boolean;
+  score: number;
 };
 
 export type GenerateAiSalesReplyParams = {
@@ -303,6 +358,39 @@ const INTENT_RULES: Array<{
       /\bexplicar a diferença\b/i,
     ],
   },
+];
+
+const PRODUCT_KEYWORDS = [
+  "cloro",
+  "barrilha",
+  "algicida",
+  "clarificante",
+  "limpa borda",
+  "limpa bordas",
+  "elevador de ph",
+  "redutor de ph",
+  "sulfato de aluminio",
+  "sulfato de alumínio",
+  "aspirador",
+  "escova",
+  "peneira",
+  "clorador",
+  "kit teste",
+  "kit de teste",
+  "led",
+  "luminaria",
+  "luminária",
+  "mangueira",
+  "dispositivo",
+  "hidromassagem",
+  "retorno",
+  "pastilha",
+  "pastilhas",
+  "produto",
+  "acessorio",
+  "acessório",
+  "quimico",
+  "químico",
 ];
 
 function asText(value: unknown): string | null {
@@ -537,7 +625,205 @@ function shouldAskTimingNow(args: {
   return false;
 }
 
-function formatPoolLine(pool: PoolRow): string {
+function formatCurrencyFromCents(priceCents: number | null | undefined, currency?: string | null): string | null {
+  if (priceCents == null) return null;
+
+  const value = priceCents / 100;
+  const code = (currency || "BRL").toUpperCase();
+
+  try {
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency: code,
+    }).format(value);
+  } catch {
+    return `R$ ${value.toFixed(2).replace(".", ",")}`;
+  }
+}
+
+function getMetadataText(metadata: Record<string, unknown> | null | undefined): string {
+  if (!metadata || typeof metadata !== "object") return "";
+  try {
+    return JSON.stringify(metadata);
+  } catch {
+    return "";
+  }
+}
+
+function extractMetadataCategory(metadata: Record<string, unknown> | null | undefined): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const raw = metadata["categoria"];
+  return asText(raw);
+}
+
+function extractRequestedBrand(text: string): string | null {
+  const normalized = normalizeText(text);
+
+  const regexes = [
+    /\bmarca\s+([a-z0-9][a-z0-9\s\-]{1,30})/i,
+    /\bda marca\s+([a-z0-9][a-z0-9\s\-]{1,30})/i,
+    /\bdo fabricante\s+([a-z0-9][a-z0-9\s\-]{1,30})/i,
+  ];
+
+  for (const regex of regexes) {
+    const match = normalized.match(regex);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+function extractRequestedProductTerm(text: string): string | null {
+  const normalized = normalizeText(text);
+
+  for (const keyword of PRODUCT_KEYWORDS) {
+    if (normalized.includes(normalizeText(keyword))) {
+      return keyword;
+    }
+  }
+
+  return null;
+}
+
+function analyzeCatalogIntent(text: string): CatalogIntentAnalysis {
+  const normalized = normalizeText(text);
+  const requestedBrand = extractRequestedBrand(text);
+  const requestedProductTerm = extractRequestedProductTerm(text);
+
+  const asksForPhoto =
+    normalized.includes("foto") ||
+    normalized.includes("fotos") ||
+    normalized.includes("imagem") ||
+    normalized.includes("imagens") ||
+    normalized.includes("ver") ||
+    normalized.includes("mostrar");
+
+  const asksForAvailability =
+    normalized.includes("tem") ||
+    normalized.includes("tem ai") ||
+    normalized.includes("tem aí") ||
+    normalized.includes("disponivel") ||
+    normalized.includes("disponível") ||
+    normalized.includes("estoque") ||
+    normalized.includes("em estoque") ||
+    normalized.includes("trabalham com") ||
+    normalized.includes("vocês têm") ||
+    normalized.includes("voces tem");
+
+  const asksAboutCatalogProduct =
+    !!requestedProductTerm ||
+    PRODUCT_KEYWORDS.some((keyword) => normalized.includes(normalizeText(keyword))) ||
+    normalized.includes("marca");
+
+  return {
+    asksAboutCatalogProduct,
+    asksAboutPool: looksLikePoolChoice(text),
+    asksForPhoto,
+    asksForPrice: looksLikePriceQuestion(text),
+    asksForAvailability,
+    asksForBrand: !!requestedBrand || normalized.includes("marca"),
+    requestedBrand,
+    requestedProductTerm,
+  };
+}
+
+function buildCatalogSearchText(item: CatalogItemRow): string {
+  return normalizeText(
+    [
+      item.sku,
+      item.name,
+      item.description,
+      extractMetadataCategory(item.metadata),
+      getMetadataText(item.metadata),
+    ]
+      .filter(Boolean)
+      .join(" | ")
+  );
+}
+
+function scoreCatalogItem(item: CatalogItemRow, analysis: CatalogIntentAnalysis): number {
+  const haystack = buildCatalogSearchText(item);
+  let score = 0;
+
+  if (analysis.requestedProductTerm && haystack.includes(normalizeText(analysis.requestedProductTerm))) {
+    score += 8;
+  }
+
+  if (analysis.requestedBrand && haystack.includes(normalizeText(analysis.requestedBrand))) {
+    score += 7;
+  }
+
+  if (analysis.asksForBrand && analysis.requestedBrand) {
+    const brandToken = normalizeText(analysis.requestedBrand).split(/\s+/).filter(Boolean);
+    for (const token of brandToken) {
+      if (token.length >= 2 && haystack.includes(token)) {
+        score += 2;
+      }
+    }
+  }
+
+  if (analysis.requestedProductTerm === "cloro" && haystack.includes("cloro")) score += 3;
+  if (analysis.requestedProductTerm === "barrilha" && haystack.includes("barrilha")) score += 3;
+
+  if (item.is_active === true) score += 1;
+  if (item.track_stock === true && (item.stock_quantity || 0) > 0) score += 1;
+
+  return score;
+}
+
+function scorePool(pool: PoolRow, text: string): number {
+  const haystack = normalizeText(
+    [pool.name, pool.material, pool.shape, pool.description].filter(Boolean).join(" | ")
+  );
+  const normalized = normalizeText(text);
+  let score = 0;
+
+  for (const token of normalized.split(/\s+/)) {
+    if (token.length >= 3 && haystack.includes(token)) {
+      score += 1;
+    }
+  }
+
+  if (normalized.includes("fibra") && haystack.includes("fibra")) score += 4;
+  if (normalized.includes("vinil") && haystack.includes("vinil")) score += 4;
+  if (normalized.includes("alvenaria") && haystack.includes("alvenaria")) score += 4;
+  if (normalized.includes("retangular") && haystack.includes("retangular")) score += 3;
+  if (normalized.includes("redonda") && haystack.includes("redonda")) score += 3;
+
+  return score;
+}
+
+function buildCatalogItemContextLine(match: MatchedCatalogItem): string {
+  const { item, photos } = match;
+  const price = formatCurrencyFromCents(item.price_cents, item.currency);
+  const category = extractMetadataCategory(item.metadata);
+  const photoCount = photos.length;
+  const photoLabel = photoCount > 0 ? `${photoCount} foto(s) cadastrada(s)` : "sem foto cadastrada";
+
+  let stockLabel = "estoque não controlado por esta base";
+  if (item.track_stock === true) {
+    const qty = item.stock_quantity ?? 0;
+    stockLabel = qty > 0 ? `estoque confirmado: ${qty}` : "sem estoque confirmado";
+  }
+
+  return [
+    `- item: ${item.name || "sem nome"}`,
+    item.sku ? `sku: ${item.sku}` : null,
+    category ? `categoria: ${category}` : null,
+    price ? `preço: ${price}` : null,
+    `ativo: ${item.is_active === true ? "sim" : "não"}`,
+    `controle de estoque: ${item.track_stock === true ? "sim" : "não"}`,
+    stockLabel,
+    photoLabel,
+    item.description ? `descrição: ${item.description}` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
   const parts: string[] = [];
 
   if (pool.name) parts.push(pool.name);
@@ -560,9 +846,7 @@ function formatPoolLine(pool: PoolRow): string {
     parts.push(`descrição: ${pool.description}`);
   }
 
-  if (pool.photo_url) {
-    parts.push("há fotos cadastradas");
-  }
+  parts.push(hasPhoto || !!pool.photo_url ? "há foto cadastrada" : "sem foto cadastrada");
 
   return `- ${parts.join(" | ")}`;
 }
@@ -654,8 +938,7 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
     ["whatsapp comercial", onboardingMap.commercial_whatsapp],
     [
       "casos de projeto customizado com ajuda humana",
-      onboardingMap.human_help_custom_project_cases,
-    ],
+      onboardingMap.human_help_custom_project_cases],
     ["casos de desconto com ajuda humana", onboardingMap.human_help_discount_cases],
     ["casos de pagamento com ajuda humana", onboardingMap.human_help_payment_cases],
   ]);
@@ -764,7 +1047,10 @@ function summarizeMissingFacts(
     out.push("cidade/bairro/região do atendimento");
   }
 
-  if (!facts.budgetKnown && (looksLikePriceQuestion(lastCustomerMessage) || looksLikePoolChoice(lastCustomerMessage))) {
+  if (
+    !facts.budgetKnown &&
+    (looksLikePriceQuestion(lastCustomerMessage) || looksLikePoolChoice(lastCustomerMessage))
+  ) {
     out.push("faixa de investimento");
   }
 
@@ -923,6 +1209,9 @@ function inferForbiddenInThisReply(args: {
     "não prometer envio de foto/catálogo/arquivo como se já estivesse acontecendo",
     "não despejar lista repetida de modelos sem critério",
     "não reiniciar a triagem da conversa com perguntas amplas do tipo opções, preço, instalação ou melhor solução",
+    "não inventar estoque, foto, marca, serviço ou disponibilidade",
+    "não dizer que tem foto se não houver foto cadastrada",
+    "não dizer que tem em estoque se a base não confirmar isso",
   ];
 
   if (args.intents.includes("price")) {
@@ -1049,7 +1338,9 @@ function buildResponsePriorityBlock(args: {
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
-}): string {
+  hasCatalogEvidence: boolean;
+  hasPoolEvidence: boolean;
+}) {
   const instructions: string[] = [];
 
   if (args.intents.includes("payment")) {
@@ -1102,6 +1393,38 @@ function buildResponsePriorityBlock(args: {
     "- Não reinicie a conversa com perguntas amplas de triagem como opções, preço, instalação ou melhor solução se a conversa já estava andando."
   );
 
+  instructions.push(
+    "- Seja totalmente sincera: se a base não confirmar estoque, foto, marca, serviço ou disponibilidade, não invente."
+  );
+
+  instructions.push(
+    "- Se o catálogo mostrar item ativo com estoque controlado e quantidade > 0, você pode dizer que tem."
+  );
+
+  instructions.push(
+    "- Se o catálogo mostrar item ativo com estoque controlado e quantidade 0 ou nula, diga que está em falta ou sem estoque confirmado."
+  );
+
+  instructions.push(
+    "- Se o item estiver ativo, mas sem controle de estoque, não diga que tem em estoque; diga que o item aparece ativo no catálogo, mas o estoque não está confirmado por esta base."
+  );
+
+  instructions.push(
+    "- Se o cliente pedir foto e não houver foto cadastrada, diga claramente que não há foto cadastrada no momento."
+  );
+
+  if (!args.hasCatalogEvidence) {
+    instructions.push(
+      "- Para produto de catálogo sem item compatível encontrado, não diga que tem. Diga que você não conseguiu localizar esse item específico no catálogo atual."
+    );
+  }
+
+  if (!args.hasPoolEvidence) {
+    instructions.push(
+      "- Para piscina específica sem modelo/foto compatível encontrado, não invente. Diga que não conseguiu localizar esse modelo específico ou que não há foto cadastrada dele."
+    );
+  }
+
   if (args.responseMode === "objective") {
     instructions.push("- Esta mensagem está em MODO OBJETIVO.");
     instructions.push("- Resposta curta: até 3 blocos curtos.");
@@ -1122,7 +1445,7 @@ function buildExamplesBlock(args: {
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
   explicitCatalogRequest: boolean;
-}): string {
+}) {
   const examples: string[] = [];
 
   if (args.intents.includes("payment") && args.intents.includes("technical_visit")) {
@@ -1133,29 +1456,33 @@ Resposta boa: "Sim, aceitamos cartão. E fazemos visita técnica sim, com agenda
     );
   }
 
-  if (args.intents.includes("payment") && !args.intents.includes("technical_visit")) {
-    examples.push(
-      `EXEMPLO BOM:
-Cliente: "Aceita cartão?"
-Resposta boa: "Sim, aceitamos cartão."`
-    );
-  }
+  examples.push(
+    `EXEMPLO BOM:
+Cliente: "Vocês têm cloro da marca X?"
+Resposta boa: "Dessa marca específica eu não consegui confirmar aqui no catálogo agora. Mas temos outras opções de cloro e posso te mostrar a mais próxima do que você procura."`
+  );
 
-  if (args.intents.includes("technical_visit") && !args.intents.includes("payment")) {
-    examples.push(
-      `EXEMPLO BOM:
-Cliente: "Vocês fazem visita técnica?"
-Resposta boa: "Fazemos sim, com agendamento. ${args.nextBestQuestion || "Me fala sua cidade ou bairro que eu te oriento certinho."}"`
-    );
-  }
+  examples.push(
+    `EXEMPLO BOM:
+Cliente: "Tem foto dessa piscina?"
+Resposta boa: "Dessa piscina eu não tenho foto cadastrada aqui no momento. Se quiser, posso te mostrar outras opções que têm foto."`
+  );
 
-  if (args.explicitCatalogRequest) {
-    examples.push(
-      `EXEMPLO BOM:
+  examples.push(
+    `EXEMPLO BOM:
 Cliente: "Quero ver modelos com foto"
-Resposta boa: "Tenho sim algumas opções que combinam com o que você descreveu. Posso te mostrar os modelos mais alinhados com esse espaço."`
-    );
-  }
+Resposta boa: "Tenho sim algumas opções com foto cadastrada aqui. Posso te mostrar as que mais combinam com o que você procura."`
+  );
+
+  examples.push(
+    `EXEMPLO RUIM:
+"Sim, tem em estoque." sem a base confirmar estoque.`
+  );
+
+  examples.push(
+    `EXEMPLO RUIM:
+"Tenho foto sim." sem existir foto cadastrada.`
+  );
 
   examples.push(
     `EXEMPLO RUIM:
@@ -1167,12 +1494,45 @@ Resposta boa: "Tenho sim algumas opções que combinam com o que você descreveu
 "Ah, isso é para agora ou você está pesquisando para mais pra frente?"`
   );
 
-  examples.push(
-    `EXEMPLO RUIM:
-"Vou te listar várias piscinas de novo..." sem o cliente ter pedido modelos de novo na mensagem atual.`
-  );
-
   return examples.join("\n\n");
+}
+
+function buildCatalogEvidenceBlock(args: {
+  analysis: CatalogIntentAnalysis;
+  matchedCatalogItems: MatchedCatalogItem[];
+  matchedPools: MatchedPool[];
+}): string {
+  const requestedBrand = args.analysis.requestedBrand || "nenhuma marca claramente identificada";
+  const requestedProduct = args.analysis.requestedProductTerm || "nenhum produto claramente identificado";
+
+  const catalogLines =
+    args.matchedCatalogItems.length > 0
+      ? args.matchedCatalogItems.map(buildCatalogItemContextLine).join("\n")
+      : "- nenhum item de catálogo compatível localizado";
+
+  const poolLines =
+    args.matchedPools.length > 0
+      ? args.matchedPools
+          .map((match) => formatPoolLine(match.pool, match.hasPhoto))
+          .join("\n")
+      : "- nenhum modelo de piscina compatível localizado";
+
+  return `
+EVIDÊNCIAS DE CATÁLOGO E MÍDIA
+- cliente perguntou por produto de catálogo: ${args.analysis.asksAboutCatalogProduct ? "sim" : "não"}
+- cliente perguntou por piscina/modelo: ${args.analysis.asksAboutPool ? "sim" : "não"}
+- cliente pediu foto/imagem: ${args.analysis.asksForPhoto ? "sim" : "não"}
+- cliente perguntou por disponibilidade/estoque: ${args.analysis.asksForAvailability ? "sim" : "não"}
+- cliente perguntou por marca: ${args.analysis.asksForBrand ? "sim" : "não"}
+- marca identificada no texto: ${requestedBrand}
+- produto identificado no texto: ${requestedProduct}
+
+ITENS DE CATÁLOGO MAIS COMPATÍVEIS
+${catalogLines}
+
+MODELOS DE PISCINA MAIS COMPATÍVEIS
+${poolLines}
+`.trim();
 }
 
 function buildInstructions(args: {
@@ -1194,22 +1554,14 @@ function buildInstructions(args: {
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
   explicitCatalogRequest: boolean;
+  catalogEvidenceBlock: string;
+  responsePriorityBlock: string;
+  examplesBlock: string;
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
   const operationalBlock = buildOperationalOnboardingBlock(args.onboardingMap);
   const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
-  const responsePriorityBlock = buildResponsePriorityBlock({
-    intents: args.intents,
-    responseMode: args.responseMode,
-    explicitCatalogRequest: args.explicitCatalogRequest,
-    lastAiListedPools: args.lastAiListedPools,
-  });
-  const examplesBlock = buildExamplesBlock({
-    intents: args.intents,
-    nextBestQuestion: args.nextBestQuestion,
-    explicitCatalogRequest: args.explicitCatalogRequest,
-  });
 
   return `
 Você é a IA comercial real do projeto ZION atendendo a loja ${storeLabel}.
@@ -1226,6 +1578,8 @@ REGRA MÁXIMA
 4. Nunca abra a resposta com pergunta se já dá para responder algo.
 5. Nunca reabra a triagem ampla da conversa quando ela já está andando.
 6. Nunca repita catálogo/modelos sem pedido explícito na mensagem atual.
+7. Nunca invente estoque, foto, marca, serviço, disponibilidade ou informação ausente.
+8. Quando não houver confirmação no banco, seja sincera e diga isso.
 
 TOM
 - português do Brasil
@@ -1247,23 +1601,37 @@ ESTILO DE WHATSAPP
 
 REGRAS OPERACIONAIS
 - use o onboarding como fonte principal de verdade
+- use as evidências de catálogo, estoque e foto fornecidas abaixo como fonte de verdade para produto e mídia
 - não prometa preço, prazo, instalação, visita, desconto, pagamento ou cobertura regional sem base
 - se faltar base para cravar algo, responda com cautela comercial em vez de inventar certeza
 - se houver regra clara de escalonamento humano, respeite
 - não prometa enviar mídia, PDF, catálogo ou fotos como se a entrega já estivesse acontecendo
 - só cite modelos concretos quando fizer sentido e quando houver pedido explícito atual
 
+REGRAS ESPECÍFICAS DE SINCERIDADE
+- Se o cliente pedir um produto específico e ele não aparecer entre os itens compatíveis, diga que você não conseguiu localizar esse item específico no catálogo atual.
+- Se o cliente pedir uma marca específica e a marca não estiver claramente confirmada nos itens compatíveis, não diga que tem essa marca.
+- Se houver item compatível ativo com estoque controlado e quantidade maior que zero, você pode dizer que há estoque confirmado.
+- Se houver item compatível ativo com estoque controlado e quantidade zero ou nula, diga que está em falta ou sem estoque confirmado.
+- Se houver item compatível ativo sem controle de estoque, diga que ele aparece ativo no catálogo, mas que o estoque não está confirmado por esta base.
+- Se o cliente pedir foto e não houver foto cadastrada para o item/modelo compatível, diga isso com clareza.
+- Se não houver foto cadastrada, você pode oferecer outras opções que tenham foto, mas somente se essas opções realmente aparecerem nas evidências abaixo.
+- Nunca diga que vai enviar foto agora como se o sistema já estivesse enviando automaticamente; apenas diga se há ou não foto cadastrada.
+
 PRIORIDADE DESTA RESPOSTA
-${responsePriorityBlock}
+${args.responsePriorityBlock}
 
 DIAGNÓSTICO
 ${args.commercialObjectiveBlock}
+
+EVIDÊNCIAS DO CATÁLOGO
+${args.catalogEvidenceBlock}
 
 COMPORTAMENTO OFICIAL DO ZION
 ${args.behaviorInstructionBlock}
 
 EXEMPLOS DE TOM
-${examplesBlock}
+${args.examplesBlock}
 
 BASE OPERACIONAL DA LOJA
 ${operationalBlock}
@@ -1473,7 +1841,7 @@ export async function generateAiSalesReply(
         message:
           conversationError?.message ||
           "Conversa não encontrada para a organização informada.",
-      };
+        };
     }
 
     if (conversation.is_human_active === true) {
@@ -1598,16 +1966,20 @@ export async function generateAiSalesReply(
     const lastAiMessage = detectLastAiMessage(orderedMessages);
     const lastAiListedPools = detectLastAiListedPools(lastAiMessage);
     const explicitCatalogRequest = isExplicitCatalogRequest(lastCustomerMessage);
+    const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
 
     const shouldLoadPools =
       explicitCatalogRequest ||
-      (looksLikeComparisonQuestion(lastCustomerMessage) && !lastAiListedPools);
+      (looksLikeComparisonQuestion(lastCustomerMessage) && !lastAiListedPools) ||
+      catalogIntent.asksAboutPool;
 
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
     let poolCountUsed = 0;
+    let matchedPools: MatchedPool[] = [];
 
-    if (shouldLoadPools) {
-      const { data: pools, error: poolsError } = await supabase
+    let pools: PoolRow[] = [];
+    if (shouldLoadPools || catalogIntent.asksForPhoto || catalogIntent.asksAboutPool) {
+      const { data: poolsData, error: poolsError } = await supabase
         .from("pools")
         .select(
           "id, name, material, shape, width_m, length_m, depth_m, price, description, photo_url, is_active, track_stock, stock_quantity"
@@ -1616,7 +1988,7 @@ export async function generateAiSalesReply(
         .eq("store_id", resolvedStoreId)
         .eq("is_active", true)
         .order("created_at", { ascending: false })
-        .limit(3);
+        .limit(20);
 
       if (poolsError) {
         return {
@@ -1626,7 +1998,43 @@ export async function generateAiSalesReply(
         };
       }
 
-      const usablePools = ((pools || []) as PoolRow[]).filter((pool) => {
+      pools = (poolsData || []) as PoolRow[];
+    }
+
+    let poolPhotoMap = new Map<string, number>();
+    if (pools.length > 0) {
+      const poolIds = pools.map((pool) => pool.id);
+
+      const { data: poolPhotosData, error: poolPhotosError } = await supabase
+        .from("pool_photos")
+        .select("id, pool_id")
+        .in("pool_id", poolIds);
+
+      if (poolPhotosError) {
+        return {
+          ok: false,
+          error: "LOAD_POOL_PHOTOS_FAILED",
+          message: poolPhotosError.message,
+        };
+      }
+
+      for (const row of (poolPhotosData || []) as PoolPhotoRow[]) {
+        poolPhotoMap.set(row.pool_id, (poolPhotoMap.get(row.pool_id) || 0) + 1);
+      }
+    }
+
+    if (pools.length > 0) {
+      matchedPools = pools
+        .map((pool) => ({
+          pool,
+          hasPhoto: (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url,
+          score: scorePool(pool, lastCustomerMessage),
+        }))
+        .filter((match) => match.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3);
+
+      const usablePools = pools.filter((pool) => {
         if (pool.track_stock === true) {
           return (pool.stock_quantity || 0) > 0;
         }
@@ -1635,10 +2043,87 @@ export async function generateAiSalesReply(
 
       poolCountUsed = usablePools.length;
 
-      if (usablePools.length > 0) {
-        availablePoolsText = usablePools.map(formatPoolLine).join("\n");
+      if (matchedPools.length > 0) {
+        availablePoolsText = matchedPools
+          .map((match) => formatPoolLine(match.pool, match.hasPhoto))
+          .join("\n");
+      } else if (usablePools.length > 0 && shouldLoadPools) {
+        availablePoolsText = usablePools
+          .slice(0, 3)
+          .map((pool) => formatPoolLine(pool, (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url))
+          .join("\n");
       }
     }
+
+    let catalogItems: CatalogItemRow[] = [];
+    if (
+      catalogIntent.asksAboutCatalogProduct ||
+      catalogIntent.asksForBrand ||
+      catalogIntent.asksForPhoto ||
+      catalogIntent.asksForAvailability ||
+      catalogIntent.asksForPrice
+    ) {
+      const { data: catalogItemsData, error: catalogItemsError } = await supabase
+        .from("store_catalog_items")
+        .select(
+          "id, organization_id, store_id, sku, name, description, price_cents, currency, is_active, metadata, created_at, updated_at, track_stock, stock_quantity"
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", resolvedStoreId)
+        .eq("is_active", true)
+        .order("updated_at", { ascending: false })
+        .limit(60);
+
+      if (catalogItemsError) {
+        return {
+          ok: false,
+          error: "LOAD_CATALOG_ITEMS_FAILED",
+          message: catalogItemsError.message,
+        };
+      }
+
+      catalogItems = (catalogItemsData || []) as CatalogItemRow[];
+    }
+
+    let catalogItemPhotos: CatalogItemPhotoRow[] = [];
+    if (catalogItems.length > 0) {
+      const catalogItemIds = catalogItems.map((item) => item.id);
+
+      const { data: catalogPhotosData, error: catalogPhotosError } = await supabase
+        .from("store_catalog_item_photos")
+        .select(
+          "id, catalog_item_id, storage_path, file_name, file_size_bytes, sort_order, created_at"
+        )
+        .in("catalog_item_id", catalogItemIds)
+        .order("sort_order", { ascending: true });
+
+      if (catalogPhotosError) {
+        return {
+          ok: false,
+          error: "LOAD_CATALOG_ITEM_PHOTOS_FAILED",
+          message: catalogPhotosError.message,
+        };
+      }
+
+      catalogItemPhotos = (catalogPhotosData || []) as CatalogItemPhotoRow[];
+    }
+
+    const photoMap = new Map<string, CatalogItemPhotoRow[]>();
+    for (const photo of catalogItemPhotos) {
+      const existing = photoMap.get(photo.catalog_item_id) || [];
+      existing.push(photo);
+      photoMap.set(photo.catalog_item_id, existing);
+    }
+
+    const matchedCatalogItems: MatchedCatalogItem[] = catalogItems
+      .map((item) => ({
+        item,
+        photos: photoMap.get(item.id) || [],
+        score: scoreCatalogItem(item, catalogIntent),
+      }))
+      .filter((match) => match.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
 
     const commercialObjective = buildCommercialObjective({
       orderedMessages,
@@ -1648,6 +2133,27 @@ export async function generateAiSalesReply(
     });
 
     const commercialObjectiveBlock = buildCommercialObjectiveBlock(commercialObjective);
+
+    const catalogEvidenceBlock = buildCatalogEvidenceBlock({
+      analysis: catalogIntent,
+      matchedCatalogItems,
+      matchedPools,
+    });
+
+    const responsePriorityBlock = buildResponsePriorityBlock({
+      intents: commercialObjective.intents,
+      responseMode: commercialObjective.responseMode,
+      explicitCatalogRequest,
+      lastAiListedPools,
+      hasCatalogEvidence: matchedCatalogItems.length > 0,
+      hasPoolEvidence: matchedPools.length > 0,
+    });
+
+    const examplesBlock = buildExamplesBlock({
+      intents: commercialObjective.intents,
+      nextBestQuestion: commercialObjective.nextBestQuestion,
+      explicitCatalogRequest,
+    });
 
     const instructions = buildInstructions({
       storeDisplayName: onboardingMap.store_display_name || null,
@@ -1668,6 +2174,9 @@ export async function generateAiSalesReply(
       intents: commercialObjective.intents,
       nextBestQuestion: commercialObjective.nextBestQuestion,
       explicitCatalogRequest,
+      catalogEvidenceBlock,
+      responsePriorityBlock,
+      examplesBlock,
     });
 
     const input = buildModelInput(orderedMessages);
