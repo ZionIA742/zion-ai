@@ -7,6 +7,15 @@ type RequestBody = {
   limit?: number;
 };
 
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    route: "whatsapp-process-pending",
+    method: "GET",
+    message: "rota publicada e funcionando",
+  });
+}
+
 export async function POST(request: Request) {
   try {
     const internalSecret = process.env.AI_INTERNAL_ROUTE_SECRET;
