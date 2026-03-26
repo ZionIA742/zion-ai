@@ -419,18 +419,6 @@ function formatWhatsappPretty(value: string | null | undefined) {
   return digits;
 }
 
-function moneyBRL(value: number | null) {
-  if (value == null) return "Sem preço";
-  return `R$ ${Number(value).toLocaleString("pt-BR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
-function moneyFromCentsBRL(value: number | null) {
-  if (value == null) return "Sem preço";
-  return moneyBRL(value / 100);
-}
 
 function formatFileSize(bytes: number) {
   if (bytes >= 1024 * 1024) {
@@ -641,9 +629,9 @@ export default function ConfiguracoesPage() {
 
   const [pools, setPools] = useState<PoolRow[]>([]);
   const [catalogItems, setCatalogItems] = useState<CatalogItemRow[]>([]);
-  const [catalogItemPhotos, setCatalogItemPhotos] = useState<CatalogItemPhotoRow[]>([]);
+  const [, setCatalogItemPhotos] = useState<CatalogItemPhotoRow[]>([]);
   const [responsibles, setResponsibles] = useState<ResponsibleRow[]>([]);
-  const [poolPhotos, setPoolPhotos] = useState<PoolPhotoRow[]>([]);
+  const [, setPoolPhotos] = useState<PoolPhotoRow[]>([]);
   const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
   const [strategyAnswers, setStrategyAnswers] = useState<AnswersMap>({});
 
@@ -1117,29 +1105,6 @@ export default function ConfiguracoesPage() {
     return Math.max(0, Math.min(100, Math.round((doneChecks / totalChecks) * 100)));
   }, [pendingItems]);
 
-  const poolsPhotoMap = useMemo(() => {
-    const map = new Map<string, PoolPhotoRow[]>();
-
-    for (const photo of poolPhotos) {
-      const current = map.get(photo.pool_id) ?? [];
-      current.push(photo);
-      map.set(photo.pool_id, current);
-    }
-
-    return map;
-  }, [poolPhotos]);
-
-  const catalogPhotosMap = useMemo(() => {
-    const map = new Map<string, CatalogItemPhotoRow[]>();
-
-    for (const photo of catalogItemPhotos) {
-      const current = map.get(photo.catalog_item_id) ?? [];
-      current.push(photo);
-      map.set(photo.catalog_item_id, current);
-    }
-
-    return map;
-  }, [catalogItemPhotos]);
 
   function goToOnboardingStep(step: number) {
     if (!hasValidStoreContext) return;
@@ -1892,52 +1857,74 @@ export default function ConfiguracoesPage() {
 
                   <SectionCard
                     title="Hub rápido da configuração"
-                    description="Acesse as áreas mais importantes da loja sem se perder."
+                    description="Use esta página para cadastrar e configurar. Para ver e editar o que já existe, abra as telas específicas que o projeto já possui."
                   >
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("piscinas")}
-                        className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
-                      >
-                        <div className="font-semibold text-gray-900">Piscinas</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Cadastre modelos, estoque, preço e fotos.
-                        </div>
-                      </button>
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-lg font-semibold text-gray-900">Piscinas</div>
+                        <p className="mt-2 text-sm leading-6 text-gray-600">
+                          Nesta aba de Configurações você cadastra novas piscinas. Para visualizar e
+                          editar as piscinas já cadastradas, use a página existente do projeto.
+                        </p>
 
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("catalogo")}
-                        className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
-                      >
-                        <div className="font-semibold text-gray-900">Produtos/Acessórios</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Organize químicos, acessórios e outros itens.
-                        </div>
-                      </button>
+                        <div className="mt-4 flex flex-wrap gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("piscinas")}
+                            className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
+                          >
+                            Ir para cadastro de piscinas
+                          </button>
 
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("comercial_ia")}
-                        className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
-                      >
-                        <div className="font-semibold text-gray-900">Comercial e IA</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Regras de preço, negociação e ajuda humana.
+                          <Link
+                            href="/configuracoes/piscinas"
+                            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
+                          >
+                            Ver / editar piscinas cadastradas
+                          </Link>
                         </div>
-                      </button>
+                      </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("responsavel_ativacao")}
-                        className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
-                      >
-                        <div className="font-semibold text-gray-900">Responsável e ativação</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Ponte entre a IA e a operação humana da loja.
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-lg font-semibold text-gray-900">
+                          Produtos/Acessórios
                         </div>
-                      </button>
+                        <p className="mt-2 text-sm leading-6 text-gray-600">
+                          Nesta aba de Configurações você cadastra novos itens. Para visualizar e
+                          editar o que já foi cadastrado, use as páginas de catálogo por categoria.
+                        </p>
+
+                        <div className="mt-4 flex flex-wrap gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("catalogo")}
+                            className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
+                          >
+                            Ir para cadastro de itens
+                          </button>
+
+                          <Link
+                            href="/configuracoes/catalogo/acessorios"
+                            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
+                          >
+                            Acessórios
+                          </Link>
+
+                          <Link
+                            href="/configuracoes/catalogo/quimicos"
+                            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
+                          >
+                            Produtos químicos
+                          </Link>
+
+                          <Link
+                            href="/configuracoes/catalogo/outros"
+                            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
+                          >
+                            Outros itens
+                          </Link>
+                        </div>
+                      </div>
                     </div>
                   </SectionCard>
 
@@ -1991,36 +1978,54 @@ export default function ConfiguracoesPage() {
                   </SectionCard>
 
                   <SectionCard
-                    title="Atalhos externos"
-                    description="Ações úteis para continuar o trabalho da loja."
+                    title="Páginas existentes aproveitadas neste pilar"
+                    description="Sem criar aba nova: a visualização e edição do que já existe continua nas telas já prontas do projeto."
                   >
-                    <div className="flex flex-wrap gap-3">
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                       <Link
-                        href="/onboarding"
-                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        href="/configuracoes/piscinas"
+                        className="rounded-2xl bg-white p-4 text-left ring-1 ring-black/10 transition hover:bg-gray-50"
                       >
-                        Abrir onboarding
+                        <div className="font-semibold text-gray-900">/configuracoes/piscinas</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Página existente para visualizar e editar piscinas cadastradas.
+                        </div>
                       </Link>
 
                       <Link
-                        href="/crm"
-                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        href="/configuracoes/catalogo/acessorios"
+                        className="rounded-2xl bg-white p-4 text-left ring-1 ring-black/10 transition hover:bg-gray-50"
                       >
-                        Abrir CRM
+                        <div className="font-semibold text-gray-900">
+                          /configuracoes/catalogo/acessorios
+                        </div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Página existente para visualizar e editar acessórios cadastrados.
+                        </div>
                       </Link>
 
                       <Link
-                        href="/inbox"
-                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        href="/configuracoes/catalogo/quimicos"
+                        className="rounded-2xl bg-white p-4 text-left ring-1 ring-black/10 transition hover:bg-gray-50"
                       >
-                        Abrir Inbox
+                        <div className="font-semibold text-gray-900">
+                          /configuracoes/catalogo/quimicos
+                        </div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Página existente para visualizar e editar produtos químicos cadastrados.
+                        </div>
                       </Link>
 
                       <Link
-                        href="/schedule"
-                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        href="/configuracoes/catalogo/outros"
+                        className="rounded-2xl bg-white p-4 text-left ring-1 ring-black/10 transition hover:bg-gray-50"
                       >
-                        Abrir Agenda
+                        <div className="font-semibold text-gray-900">
+                          /configuracoes/catalogo/outros
+                        </div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Página existente para visualizar e editar outros itens cadastrados.
+                        </div>
                       </Link>
                     </div>
                   </SectionCard>
@@ -2286,109 +2291,51 @@ export default function ConfiguracoesPage() {
                   </SectionCard>
 
                   <SectionCard
-                    title="Piscinas cadastradas"
-                    description="Lista viva dos modelos disponíveis na loja."
+                    title="Área de visualização e edição já existente"
+                    description="A aba Configurações > Piscinas fica responsável pelo cadastro e pela configuração. A visualização e edição do que já existe acontece na página já pronta do projeto."
                   >
-                    {pools.length === 0 ? (
-                      <EmptyState
-                        title="Nenhuma piscina cadastrada"
-                        description="Cadastre pelo menos um modelo para a loja começar a ter oferta viva nesta área."
-                      />
-                    ) : (
-                      <div className="grid gap-4 lg:grid-cols-2">
-                        {pools.map((pool) => {
-                          const photos = poolsPhotoMap.get(pool.id) ?? [];
-
-                          return (
-                            <div
-                              key={pool.id}
-                              className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <div className="text-lg font-semibold text-gray-900">
-                                    {pool.name || "Piscina sem nome"}
-                                  </div>
-                                  <div className="mt-1 text-sm text-gray-600">
-                                    {pool.material || "Material não informado"} •{" "}
-                                    {pool.shape || "Formato não informado"}
-                                  </div>
-                                </div>
-
-                                <div
-                                  className={cx(
-                                    "rounded-full px-3 py-1 text-xs font-semibold",
-                                    pool.is_active
-                                      ? "bg-emerald-100 text-emerald-800"
-                                      : "bg-gray-200 text-gray-700"
-                                  )}
-                                >
-                                  {pool.is_active ? "Ativa" : "Inativa"}
-                                </div>
-                              </div>
-
-                              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Medidas</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
-                                    {pool.length_m ?? "-"}m x {pool.width_m ?? "-"}m x{" "}
-                                    {pool.depth_m ?? "-"}m
-                                  </div>
-                                </div>
-
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Capacidade</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
-                                    {pool.max_capacity_l?.toLocaleString("pt-BR") ?? "-"} L
-                                  </div>
-                                </div>
-
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Preço</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
-                                    {moneyBRL(pool.price)}
-                                  </div>
-                                </div>
-
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Estoque</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
-                                    {pool.track_stock
-                                      ? pool.stock_quantity ?? 0
-                                      : "Sem controle"}
-                                  </div>
-                                </div>
-                              </div>
-
-                              {pool.description ? (
-                                <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
-                                  {pool.description}
-                                </div>
-                              ) : null}
-
-                              <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
-                                <div className="font-medium text-gray-900">
-                                  Fotos cadastradas: {photos.length}
-                                </div>
-                                {photos.length > 0 ? (
-                                  <div className="mt-2 space-y-1">
-                                    {photos.map((photo) => (
-                                      <div key={photo.id}>
-                                        {photo.file_name} — {formatFileSize(photo.file_size_bytes)}
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <div className="mt-1 text-gray-500">
-                                    Nenhuma foto cadastrada para este modelo.
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-lg font-semibold text-gray-900">
+                          Separação correta desta etapa
+                        </div>
+                        <div className="mt-3 space-y-3 text-sm leading-6 text-gray-600">
+                          <p>
+                            <strong className="text-gray-900">Configurações &gt; Piscinas</strong> =
+                            área de cadastro e configuração.
+                          </p>
+                          <p>
+                            <strong className="text-gray-900">
+                              /configuracoes/piscinas
+                            </strong>{" "}
+                            = área para ver e editar o que já foi cadastrado.
+                          </p>
+                          <p>
+                            Isso aproveita a página já existente do projeto e mantém a persistência
+                            de edição em rascunho que ela já possui.
+                          </p>
+                        </div>
                       </div>
-                    )}
+
+                      <div className="rounded-2xl bg-white p-5 ring-1 ring-black/5">
+                        <div className="text-sm text-gray-500">Piscinas cadastradas hoje</div>
+                        <div className="mt-2 text-3xl font-black tracking-tight text-gray-900">
+                          {totalPools}
+                        </div>
+                        <div className="mt-2 text-sm text-gray-600">
+                          {totalPools > 0
+                            ? `${activePoolsCount} ativas e ${poolsAvailableCount} disponíveis para oferta.`
+                            : "Nenhuma piscina cadastrada ainda."}
+                        </div>
+
+                        <Link
+                          href="/configuracoes/piscinas"
+                          className="mt-5 inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
+                        >
+                          Abrir página de piscinas cadastradas
+                        </Link>
+                      </div>
+                    </div>
                   </SectionCard>
                 </div>
               )}
@@ -2545,123 +2492,63 @@ export default function ConfiguracoesPage() {
                   </SectionCard>
 
                   <SectionCard
-                    title="Resumo por categoria"
-                    description="Visão prática do catálogo vivo da loja."
+                    title="Categorias já existentes para ver e editar"
+                    description="A aba Configurações > Produtos/Acessórios fica responsável pelo cadastro. A visualização e edição do que já existe continua nas páginas já prontas do catálogo por categoria."
                   >
                     <div className="grid gap-4 md:grid-cols-3">
-                      <SummaryCard
-                        title="Acessórios"
-                        value={catalogItemsByCategory.acessorios.length}
-                      />
-                      <SummaryCard
-                        title="Produtos químicos"
-                        value={catalogItemsByCategory.quimicos.length}
-                      />
-                      <SummaryCard
-                        title="Outros itens"
-                        value={catalogItemsByCategory.outros.length}
-                      />
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-sm text-gray-500">Acessórios cadastrados</div>
+                        <div className="mt-2 text-3xl font-black tracking-tight text-gray-900">
+                          {catalogItemsByCategory.acessorios.length}
+                        </div>
+                        <div className="mt-3">
+                          <Link
+                            href="/configuracoes/catalogo/acessorios"
+                            className="inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
+                          >
+                            Abrir acessórios
+                          </Link>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-sm text-gray-500">Produtos químicos cadastrados</div>
+                        <div className="mt-2 text-3xl font-black tracking-tight text-gray-900">
+                          {catalogItemsByCategory.quimicos.length}
+                        </div>
+                        <div className="mt-3">
+                          <Link
+                            href="/configuracoes/catalogo/quimicos"
+                            className="inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
+                          >
+                            Abrir produtos químicos
+                          </Link>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
+                        <div className="text-sm text-gray-500">Outros itens cadastrados</div>
+                        <div className="mt-2 text-3xl font-black tracking-tight text-gray-900">
+                          {catalogItemsByCategory.outros.length}
+                        </div>
+                        <div className="mt-3">
+                          <Link
+                            href="/configuracoes/catalogo/outros"
+                            className="inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
+                          >
+                            Abrir outros itens
+                          </Link>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-6 rounded-2xl bg-cyan-50 p-4 text-sm text-cyan-900 ring-1 ring-cyan-600/20">
+                      <strong>Separação correta:</strong> Configurações &gt; Produtos/Acessórios =
+                      área de cadastro e configuração. As páginas{" "}
+                      <strong>/configuracoes/catalogo/[categoria]</strong> continuam sendo a área
+                      de visualização e edição do que já foi cadastrado.
                     </div>
                   </SectionCard>
-
-                  {(["acessorios", "quimicos", "outros"] as const).map((category) => {
-                    const items = catalogItemsByCategory[category];
-                    const categoryLabel = getOptionLabel(category, CATALOG_CATEGORY_OPTIONS);
-
-                    return (
-                      <SectionCard
-                        key={category}
-                        title={categoryLabel}
-                        description={`Itens da categoria ${categoryLabel.toLowerCase()}.`}
-                      >
-                        {items.length === 0 ? (
-                          <EmptyState
-                            title={`Nenhum item em ${categoryLabel}`}
-                            description="Cadastre itens reais desta categoria para a IA ter base viva de oferta."
-                          />
-                        ) : (
-                          <div className="grid gap-4 lg:grid-cols-2">
-                            {items.map((item) => {
-                              const photos = catalogPhotosMap.get(item.id) ?? [];
-
-                              return (
-                                <div
-                                  key={item.id}
-                                  className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
-                                >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                      <div className="text-lg font-semibold text-gray-900">
-                                        {item.name}
-                                      </div>
-                                      <div className="mt-1 text-sm text-gray-600">
-                                        SKU: {item.sku || "Não informado"}
-                                      </div>
-                                    </div>
-
-                                    <div
-                                      className={cx(
-                                        "rounded-full px-3 py-1 text-xs font-semibold",
-                                        item.is_active
-                                          ? "bg-emerald-100 text-emerald-800"
-                                          : "bg-gray-200 text-gray-700"
-                                      )}
-                                    >
-                                      {item.is_active ? "Ativo" : "Inativo"}
-                                    </div>
-                                  </div>
-
-                                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                    <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                      <div className="text-xs text-gray-500">Preço</div>
-                                      <div className="mt-1 text-sm font-medium text-gray-900">
-                                        {moneyFromCentsBRL(item.price_cents)}
-                                      </div>
-                                    </div>
-
-                                    <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                      <div className="text-xs text-gray-500">Estoque</div>
-                                      <div className="mt-1 text-sm font-medium text-gray-900">
-                                        {item.track_stock
-                                          ? item.stock_quantity ?? 0
-                                          : "Sem controle"}
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  {item.description ? (
-                                    <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
-                                      {item.description}
-                                    </div>
-                                  ) : null}
-
-                                  <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
-                                    <div className="font-medium text-gray-900">
-                                      Fotos cadastradas: {photos.length}
-                                    </div>
-                                    {photos.length > 0 ? (
-                                      <div className="mt-2 space-y-1">
-                                        {photos.map((photo) => (
-                                          <div key={photo.id}>
-                                            {photo.file_name} —{" "}
-                                            {formatFileSize(photo.file_size_bytes)}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    ) : (
-                                      <div className="mt-1 text-gray-500">
-                                        Nenhuma foto cadastrada para este item.
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </SectionCard>
-                    );
-                  })}
                 </div>
               )}
 
