@@ -17,6 +17,15 @@ export type NormalizedImportItem = {
   metadata: Record<string, string>;
 };
 
+type SimpleCatalogRow = {
+  productName: string;
+  qtdCaixa?: string;
+  valorCx?: string;
+  valorUni?: string;
+  valorVd?: string;
+  rawText: string;
+};
+
 function cleanText(text: string) {
   return text.replace(/\r/g, "").replace(/\t/g, " ").trim();
 }
@@ -33,7 +42,7 @@ function normalizeLoose(value: string) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}\s.,/%-]/gu, " ")
+    .replace(/[^\p{L}\p{N}\s.,/%|-]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -73,151 +82,149 @@ function looksLikeCatalogHeader(text: string) {
   return score >= 3;
 }
 
-function tokenizeCatalogText(text: string) {
-  return cleanText(text)
-    .replace(/\n+/g, " ")
-    .split(/\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
+function buildCatalogItem(
+  extracted: ExtractedFileContent,
+  row: SimpleCatalogRow,
+  importMode: string,
+  confidence: number
+): NormalizedImportItem {
+  return {
+    type: "catalog_item",
+    sourceFileName: extracted.fileName,
+    title: `Catálogo: ${row.productName}`,
+    rawText: row.rawText,
+    confidence,
+    metadata: {
+      extension: extracted.extension,
+      mimeType: extracted.mimeType,
+      importMode,
+      productName: row.productName,
+      qtdCaixa: row.qtdCaixa ?? "",
+      valorCx: row.valorCx ?? "",
+      valorUni: row.valorUni ?? "",
+      valorVd: row.valorVd ?? "",
+    },
+  };
 }
 
-function buildCatalogRowsFromTokens(tokens: string[]) {
-  const rows: Array<{
-    productName: string;
-    qtdCaixa?: string;
-    valorCx?: string;
-    valorUni?: string;
-    valorVd?: string;
-    rawText: string;
-  }> = [];
+function extractCatalogItemsFromPipeTable(
+  extracted: ExtractedFileContent
+): NormalizedImportItem[] {
+  const lines = cleanText(extracted.text)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 
-  const ignoredHeaders = new Set([
-    "tabela",
-    "de",
-    "precos",
-    "preço",
-    "precos:",
-    "preço:",
-    "produtos",
-    "produto",
-    "qtd",
-    "caixa",
-    "valor",
-    "cx",
-    "uni",
-    "vd",
-  ]);
+  const relevantLines = lines.filter((line) => line.includes("|"));
 
-  let i = 0;
+  if (!relevantLines.length) return [];
 
-  while (i < tokens.length) {
-    const current = normalizeLoose(tokens[i]);
+  const headerIndex = relevantLines.findIndex((line) => looksLikeCatalogHeader(line));
+  if (headerIndex === -1) return [];
 
-    if (!current || ignoredHeaders.has(current)) {
-      i += 1;
-      continue;
-    }
+  const dataLines = relevantLines.slice(headerIndex + 1);
+  const items: NormalizedImportItem[] = [];
 
-    const nameParts: string[] = [];
+  for (const line of dataLines) {
+    const cells = line
+      .split("|")
+      .map((cell) => cell.trim())
+      .filter(Boolean);
 
-    while (i < tokens.length) {
-      const token = tokens[i];
+    if (cells.length < 2) continue;
 
-      if (isIntegerLike(token)) {
-        break;
-      }
+    const [productName, qtdCaixa, valorCx, valorUni, valorVd] = cells;
 
-      const normalized = normalizeLoose(token);
-      if (!normalized || ignoredHeaders.has(normalized)) {
-        i += 1;
-        continue;
-      }
+    if (!productName) continue;
 
-      nameParts.push(token);
-      i += 1;
-    }
+    const moneyCount = [valorCx, valorUni, valorVd].filter((v) => v && isMoneyLike(v)).length;
+    const hasStructure = Boolean(isIntegerLike(qtdCaixa || "") || moneyCount >= 2);
 
-    if (!nameParts.length) {
-      i += 1;
-      continue;
-    }
+    if (!hasStructure) continue;
 
-    const productName = nameParts.join(" ").trim();
-
-    const qtdCaixa = i < tokens.length && isIntegerLike(tokens[i]) ? tokens[i++] : undefined;
-    const valorCx = i < tokens.length && isMoneyLike(tokens[i]) ? tokens[i++] : undefined;
-    const valorUni = i < tokens.length && isMoneyLike(tokens[i]) ? tokens[i++] : undefined;
-    const valorVd = i < tokens.length && isMoneyLike(tokens[i]) ? tokens[i++] : undefined;
-
-    const hasUsefulStructure = Boolean(productName && (qtdCaixa || valorCx || valorUni || valorVd));
-
-    if (!hasUsefulStructure) {
-      continue;
-    }
-
-    const rawParts = [
-      `Produto: ${productName}`,
-      qtdCaixa ? `Qtd caixa: ${qtdCaixa}` : null,
-      valorCx ? `Valor cx: ${valorCx}` : null,
-      valorUni ? `Valor uni: ${valorUni}` : null,
-      valorVd ? `Valor vd: ${valorVd}` : null,
-    ].filter(Boolean) as string[];
-
-    rows.push({
+    const row: SimpleCatalogRow = {
       productName,
       qtdCaixa,
       valorCx,
       valorUni,
       valorVd,
-      rawText: rawParts.join("\n"),
-    });
+      rawText: [
+        `Produto: ${productName}`,
+        qtdCaixa ? `Qtd caixa: ${qtdCaixa}` : null,
+        valorCx ? `Valor cx: ${valorCx}` : null,
+        valorUni ? `Valor uni: ${valorUni}` : null,
+        valorVd ? `Valor vd: ${valorVd}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    };
+
+    items.push(buildCatalogItem(extracted, row, "simple_catalog_pipe_table", 0.93));
   }
 
-  return rows;
+  return items;
 }
 
-function extractCatalogItemsFromSimpleTable(
+function stripCatalogHeader(text: string) {
+  return cleanText(text).replace(
+    /tabela\s+de\s+pre[cç]os\s+produtos?\s+qtd\s+caixa\s+valor\s+cx\s+valor\s+uni\s+valor\s+vd/iu,
+    ""
+  ).trim();
+}
+
+function extractCatalogItemsFromFlatSequence(
   extracted: ExtractedFileContent
 ): NormalizedImportItem[] {
   if (!looksLikeCatalogHeader(extracted.text)) {
     return [];
   }
 
-  const tokens = tokenizeCatalogText(extracted.text);
-  const rows = buildCatalogRowsFromTokens(tokens);
+  const flattened = stripCatalogHeader(
+    cleanText(extracted.text).replace(/\n+/g, " ")
+  );
 
-  return rows.map((row) => {
-    const filledFields = [
-      row.productName ? 1 : 0,
-      row.qtdCaixa ? 1 : 0,
-      row.valorCx ? 1 : 0,
-      row.valorUni ? 1 : 0,
-      row.valorVd ? 1 : 0,
-    ].reduce((acc, value) => acc + value, 0);
+  if (!flattened) return [];
 
-    let confidence = 0.78;
+  const pattern =
+    /([A-Za-zÀ-ÿ0-9/\-–—+().,%\s]+?)\s+(\d+)\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s+(\d{1,3}(?:\.\d{3})*,\d{2})(?=\s+[A-Za-zÀ-ÿ]|$)/g;
 
-    if (filledFields >= 4) confidence = 0.9;
-    else if (filledFields === 3) confidence = 0.84;
+  const items: NormalizedImportItem[] = [];
+  const matches = Array.from(flattened.matchAll(pattern));
 
-    return {
-      type: "catalog_item" as const,
-      sourceFileName: extracted.fileName,
-      title: `Catálogo: ${row.productName}`,
-      rawText: row.rawText,
-      confidence,
-      metadata: {
-        extension: extracted.extension,
-        mimeType: extracted.mimeType,
-        importMode: "simple_catalog_table",
-        productName: row.productName,
-        qtdCaixa: row.qtdCaixa ?? "",
-        valorCx: row.valorCx ?? "",
-        valorUni: row.valorUni ?? "",
-        valorVd: row.valorVd ?? "",
-      },
+  for (const match of matches) {
+    const rawName = (match[1] || "").trim();
+    const qtdCaixa = (match[2] || "").trim();
+    const valorCx = (match[3] || "").trim();
+    const valorUni = (match[4] || "").trim();
+    const valorVd = (match[5] || "").trim();
+
+    const productName = rawName
+      .replace(/\s+/g, " ")
+      .replace(/^[|,:;\-]+/, "")
+      .replace(/[|,:;\-]+$/, "")
+      .trim();
+
+    if (!productName) continue;
+
+    const row: SimpleCatalogRow = {
+      productName,
+      qtdCaixa,
+      valorCx,
+      valorUni,
+      valorVd,
+      rawText: [
+        `Produto: ${productName}`,
+        `Qtd caixa: ${qtdCaixa}`,
+        `Valor cx: ${valorCx}`,
+        `Valor uni: ${valorUni}`,
+        `Valor vd: ${valorVd}`,
+      ].join("\n"),
     };
-  });
+
+    items.push(buildCatalogItem(extracted, row, "simple_catalog_flat_sequence", 0.91));
+  }
+
+  return items;
 }
 
 function detectType(block: string): NormalizedImportItemType {
@@ -335,10 +342,14 @@ function buildFallbackBlocks(extracted: ExtractedFileContent): NormalizedImportI
 export function normalizeExtractedFile(
   extracted: ExtractedFileContent
 ): NormalizedImportItem[] {
-  const simpleCatalogItems = extractCatalogItemsFromSimpleTable(extracted);
+  const pipeTableItems = extractCatalogItemsFromPipeTable(extracted);
+  if (pipeTableItems.length > 0) {
+    return pipeTableItems;
+  }
 
-  if (simpleCatalogItems.length > 0) {
-    return simpleCatalogItems;
+  const flatSequenceItems = extractCatalogItemsFromFlatSequence(extracted);
+  if (flatSequenceItems.length > 0) {
+    return flatSequenceItems;
   }
 
   return buildFallbackBlocks(extracted);
