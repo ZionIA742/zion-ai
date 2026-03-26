@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useCallback,
   type Dispatch,
   type FormEvent,
   type SetStateAction,
@@ -608,6 +609,9 @@ function OnboardingContent() {
   const [step4DraftRecovered, setStep4DraftRecovered] = useState(false);
   const [step5DraftRecovered, setStep5DraftRecovered] = useState(false);
 
+  const scrollRestoreTimeoutRef = useRef<number | null>(null);
+  const lastRestoredScrollRef = useRef<number | null>(null);
+
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
     store_description: "",
@@ -755,6 +759,41 @@ function OnboardingContent() {
   }, [organizationId, activeStore?.id]);
 
   const ignoreNextStepScrollRef = useRef(false);
+
+  const savePageScroll = useCallback(() => {
+    if (!pageScrollStorageKey || typeof window === "undefined") return;
+    window.localStorage.setItem(pageScrollStorageKey, String(window.scrollY || 0));
+  }, [pageScrollStorageKey]);
+
+  const restorePageScroll = useCallback((delay = 0) => {
+    if (!pageScrollStorageKey || typeof window === "undefined") return;
+
+    const runRestore = () => {
+      const raw = window.localStorage.getItem(pageScrollStorageKey);
+      if (!raw) return;
+
+      const scroll = Number(raw);
+      if (!Number.isFinite(scroll)) return;
+
+      lastRestoredScrollRef.current = scroll;
+      window.scrollTo({ top: scroll, behavior: "auto" });
+    };
+
+    if (scrollRestoreTimeoutRef.current !== null) {
+      window.clearTimeout(scrollRestoreTimeoutRef.current);
+      scrollRestoreTimeoutRef.current = null;
+    }
+
+    if (delay <= 0) {
+      window.requestAnimationFrame(runRestore);
+      return;
+    }
+
+    scrollRestoreTimeoutRef.current = window.setTimeout(() => {
+      runRestore();
+      scrollRestoreTimeoutRef.current = null;
+    }, delay);
+  }, [pageScrollStorageKey]);
 
   const storeHasInstallation = useMemo(
     () => step1Form.store_services.includes("instalacao_piscinas"),
@@ -1078,46 +1117,52 @@ function OnboardingContent() {
   useEffect(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
 
-    const restore = () => {
-      const raw = window.localStorage.getItem(pageScrollStorageKey);
-      if (!raw) return;
-      const scroll = Number(raw);
-      if (!Number.isFinite(scroll)) return;
-      window.requestAnimationFrame(() => {
-        window.scrollTo({ top: scroll, behavior: "auto" });
-      });
+    if ("scrollRestoration" in window.history) {
+      window.history.scrollRestoration = "manual";
+    }
+
+    restorePageScroll();
+    restorePageScroll(120);
+
+    return () => {
+      if (scrollRestoreTimeoutRef.current !== null) {
+        window.clearTimeout(scrollRestoreTimeoutRef.current);
+        scrollRestoreTimeoutRef.current = null;
+      }
     };
-
-    restore();
-    const timeout = window.setTimeout(restore, 120);
-
-    return () => window.clearTimeout(timeout);
-  }, [pageScrollStorageKey, currentStep]);
+  }, [pageScrollStorageKey, currentStep, restorePageScroll]);
 
   useEffect(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
 
-    const saveScroll = () => {
-      window.localStorage.setItem(pageScrollStorageKey, String(window.scrollY || 0));
-    };
-
+    const onScroll = () => savePageScroll();
+    const onPageHide = () => savePageScroll();
+    const onPageShow = () => restorePageScroll(30);
+    const onFocus = () => restorePageScroll(30);
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
-        saveScroll();
+        savePageScroll();
+        return;
       }
+
+      restorePageScroll(30);
     };
 
-    window.addEventListener("scroll", saveScroll, { passive: true });
-    window.addEventListener("pagehide", saveScroll);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      saveScroll();
-      window.removeEventListener("scroll", saveScroll);
-      window.removeEventListener("pagehide", saveScroll);
+      savePageScroll();
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [pageScrollStorageKey]);
+  }, [pageScrollStorageKey, restorePageScroll, savePageScroll]);
 
   useEffect(() => {
     if (!step1DraftStorageKey || typeof window === "undefined") return;
@@ -2139,11 +2184,11 @@ function OnboardingContent() {
               ) : null}
             </div>
 
-            <div className="flex flex-wrap gap-3">
+            <div className="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
               <button
                 type="button"
                 onClick={() => router.push("/configuracoes")}
-                className="rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                className="inline-flex items-center justify-center rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
               >
                 Ir para Configurações
               </button>
@@ -2151,7 +2196,7 @@ function OnboardingContent() {
               <button
                 type="button"
                 onClick={() => router.push("/dashboard")}
-                className="rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
+                className="inline-flex items-center justify-center rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
               >
                 Voltar ao painel
               </button>
@@ -2453,13 +2498,13 @@ function OnboardingContent() {
                 />
               </div>
 
-              <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-5">
+              <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4">
                 <SectionTitle
                   title="Importar catálogo, piscinas e materiais da loja"
                   hint="Envie fotos, Excel básico, Word básico ou PDF básico para a IA começar a entender os produtos, piscinas, acessórios e materiais mais comuns da loja. Nesta fase ela ainda mostra uma prévia da leitura antes da parte de salvamento real."
                 />
 
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <input
                     type="file"
                     multiple
@@ -2480,10 +2525,10 @@ function OnboardingContent() {
                       setIntelligentImportSuccess(null);
                       setIntelligentImportResult(null);
                     }}
-                    className="block w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-700 outline-none file:mr-4 file:rounded-lg file:border-0 file:bg-black file:px-4 file:py-2 file:text-sm file:font-medium file:text-white"
+                    className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />
 
-                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-sm text-blue-900">
                     A prioridade aqui é entender muito bem documentos simples de lojas de piscina, como catálogos em foto, Excel básico, Word básico e PDF básico. Depois desta mudança, o próximo ajuste vai ser melhorar a leitura dessas tabelas simples para reconhecer melhor produto, quantidade e preço.
                   </div>
 
@@ -2496,18 +2541,21 @@ function OnboardingContent() {
                   ) : null}
 
                   {visibleIntelligentImportFiles.length > 0 ? (
-                    <div className="rounded-xl border border-gray-200 bg-white p-4">
+                    <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
                         Arquivos selecionados ou restaurados ({visibleIntelligentImportFiles.length})
                       </p>
-                      <div className="mt-3 space-y-2">
-                        {visibleIntelligentImportFiles.map((file) => (
+                      <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
+                        {visibleIntelligentImportFiles.map((file, index) => (
                           <div
                             key={`${file.name}-${file.size}-${file.lastModified}`}
-                            className="flex flex-col gap-1 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 md:flex-row md:items-center md:justify-between"
+                            className={cx(
+                              "grid gap-1 px-3 py-2 text-sm text-gray-700 md:grid-cols-[minmax(0,1fr)_auto] md:items-center md:gap-3",
+                              index > 0 ? "border-t border-gray-200" : ""
+                            )}
                           >
-                            <span className="break-all font-medium text-gray-900">{file.name}</span>
-                            <span className="text-xs text-gray-500">
+                            <span className="truncate font-medium text-gray-900">{file.name}</span>
+                            <span className="text-xs text-gray-500 md:text-right">
                               {file.type || "tipo não informado"} • {formatFileSize(file.size)}
                             </span>
                           </div>
@@ -2557,32 +2605,32 @@ function OnboardingContent() {
 
                   {intelligentImportResult?.ok ? (
                     <div className="space-y-4">
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
-                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+                        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
                           <p className="text-xs text-gray-500">Arquivos enviados</p>
                           <p className="mt-1 text-lg font-semibold text-gray-900">
                             {intelligentImportResult.summary.totalFiles}
                           </p>
                         </div>
-                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
                           <p className="text-xs text-gray-500">Arquivos lidos</p>
                           <p className="mt-1 text-lg font-semibold text-gray-900">
                             {intelligentImportResult.summary.extractedFiles}
                           </p>
                         </div>
-                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
                           <p className="text-xs text-gray-500">Blocos normalizados</p>
                           <p className="mt-1 text-lg font-semibold text-gray-900">
                             {intelligentImportResult.summary.normalizedItems}
                           </p>
                         </div>
-                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
                           <p className="text-xs text-gray-500">Itens deduplicados</p>
                           <p className="mt-1 text-lg font-semibold text-gray-900">
                             {intelligentImportResult.summary.dedupedItems}
                           </p>
                         </div>
-                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
                           <p className="text-xs text-gray-500">Duplicados detectados</p>
                           <p className="mt-1 text-lg font-semibold text-gray-900">
                             {intelligentImportResult.summary.duplicateItems}
@@ -2590,26 +2638,26 @@ function OnboardingContent() {
                         </div>
                       </div>
 
-                      <div className="rounded-xl border border-gray-200 bg-white p-4">
+                      <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
                         {intelligentImportResult.extractedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum texto foi extraído nesta tentativa.
                           </p>
                         ) : (
-                          <div className="mt-3 space-y-3">
-                            {intelligentImportResult.extractedPreview.map((item) => (
+                          <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
+                            {intelligentImportResult.extractedPreview.map((item, index) => (
                               <div
                                 key={`${item.fileName}-${item.extension}`}
-                                className="rounded-xl border border-gray-200 bg-gray-50 p-4"
+                                className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}
                               >
-                                <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                                  <p className="text-sm font-semibold text-gray-900">{item.fileName}</p>
-                                  <p className="text-xs text-gray-500">
+                                <div className="grid gap-1 md:grid-cols-[minmax(0,1fr)_auto] md:items-center md:gap-3">
+                                  <p className="truncate text-sm font-semibold text-gray-900">{item.fileName}</p>
+                                  <p className="text-xs text-gray-500 md:text-right">
                                     {item.extension.toUpperCase()} • {item.mimeType}
                                   </p>
                                 </div>
-                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700">
+                                <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-sm leading-5 text-gray-700">
                                   {item.textPreview || "Sem texto extraído nesta fase."}
                                 </p>
                               </div>
@@ -2618,28 +2666,28 @@ function OnboardingContent() {
                         )}
                       </div>
 
-                      <div className="rounded-xl border border-gray-200 bg-white p-4">
+                      <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
                         {intelligentImportResult.normalizedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum bloco foi classificado nesta tentativa.
                           </p>
                         ) : (
-                          <div className="mt-3 space-y-3">
+                          <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
                             {intelligentImportResult.normalizedPreview.slice(0, 12).map((item, index) => (
-                              <div key={`${item.sourceFileName}-${item.title}-${index}`} className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                                  <div>
-                                    <p className="text-sm font-semibold text-gray-900">{item.title}</p>
+                              <div key={`${item.sourceFileName}-${item.title}-${index}`} className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}>
+                                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-3">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-semibold text-gray-900">{item.title}</p>
                                     <p className="text-xs text-gray-500">
                                       Tipo: {item.type} • Arquivo: {item.sourceFileName}
                                     </p>
                                   </div>
-                                  <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-700 ring-1 ring-gray-200">
-                                    Confiança: {Math.round(item.confidence * 100)}%
+                                  <span className="inline-flex rounded-full bg-gray-50 px-2.5 py-1 text-xs font-medium text-gray-700 ring-1 ring-gray-200">
+                                    {Math.round(item.confidence * 100)}%
                                   </span>
                                 </div>
-                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700">
+                                <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-sm leading-5 text-gray-700">
                                   {item.rawText}
                                 </p>
                               </div>
@@ -2648,27 +2696,26 @@ function OnboardingContent() {
                         )}
                       </div>
 
-                      <div className="rounded-xl border border-gray-200 bg-white p-4">
+                      <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
                         {intelligentImportResult.dedupedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum item foi analisado na deduplicação.
                           </p>
                         ) : (
-                          <div className="mt-3 space-y-3">
+                          <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
                             {intelligentImportResult.dedupedPreview.slice(0, 12).map((item, index) => (
                               <div
                                 key={`${item.dedupKey}-${index}`}
                                 className={cx(
-                                  "rounded-xl border p-4",
-                                  item.isDuplicate
-                                    ? "border-amber-300 bg-amber-50"
-                                    : "border-gray-200 bg-gray-50"
+                                  "px-3 py-2.5",
+                                  index > 0 ? "border-t border-gray-200" : "",
+                                  item.isDuplicate ? "bg-amber-50" : "bg-white"
                                 )}
                               >
-                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-3">
                                   <div>
-                                    <p className="text-sm font-semibold text-gray-900">{item.title}</p>
+                                    <p className="truncate text-sm font-semibold text-gray-900">{item.title}</p>
                                     <p className="text-xs text-gray-500">
                                       Tipo: {item.type} • Arquivo: {item.sourceFileName}
                                     </p>
