@@ -101,7 +101,9 @@ type LocalConfigDraft = {
   assistantIaNumber: string;
   assistantIaName: string;
   sellerIaName: string;
-  sellerIaStyle: string;
+  sellerIaStyleMode: string;
+  activationPriorityMode: string;
+  activationGuardrailMode: string;
   activationNotesExtra: string;
   discountIntegrationNotes: string;
 };
@@ -141,7 +143,9 @@ const DEFAULT_LOCAL_CONFIG_DRAFT: LocalConfigDraft = {
   assistantIaNumber: "",
   assistantIaName: "",
   sellerIaName: "",
-  sellerIaStyle: "",
+  sellerIaStyleMode: "ia_humanizada",
+  activationPriorityMode: "priorizar_qualificacao",
+  activationGuardrailMode: "encaminhar_humano_casos_criticos",
   activationNotesExtra: "",
   discountIntegrationNotes: "",
 };
@@ -322,26 +326,26 @@ const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
 ];
 
 const ACTIVATION_STYLE_OPTIONS: Option[] = [
-  { value: "ia_direta", label: "A IA deve ser mais direta" },
-  { value: "ia_humanizada", label: "A IA deve soar bem humana" },
+  { value: "ia_direta", label: "Mais direta" },
+  { value: "ia_humanizada", label: "Mais humana" },
   {
     value: "priorizar_qualificacao",
     label: "Priorizar qualificação antes de preço",
   },
   {
     value: "priorizar_agendamento",
-    label: "Priorizar visita ou agendamento quando fizer sentido",
+    label: "Priorizar visita ou agendamento",
   },
 ];
 
 const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
   {
     value: "nao_prometer_fora_escopo",
-    label: "Nunca prometer algo fora do que a loja realmente faz",
+    label: "Nunca prometer fora do escopo",
   },
   {
     value: "encaminhar_humano_casos_criticos",
-    label: "Chamar uma pessoa da loja em casos críticos",
+    label: "Chamar humano em casos críticos",
   },
 ];
 
@@ -546,10 +550,10 @@ function SummaryCard({
   hint?: string;
 }) {
   return (
-    <div className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
-      <div className="text-xs text-gray-500">{title}</div>
-      <div className="mt-1 text-xl font-bold text-gray-900">{value}</div>
-      {hint ? <div className="mt-1 text-[11px] text-gray-500">{hint}</div> : null}
+    <div className="rounded-lg bg-gray-50 p-2.5 ring-1 ring-black/5">
+      <div className="text-[11px] text-gray-500">{title}</div>
+      <div className="mt-1 text-lg font-bold text-gray-900">{value}</div>
+      {hint ? <div className="mt-1 text-[10px] text-gray-500">{hint}</div> : null}
     </div>
   );
 }
@@ -566,15 +570,15 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-xl bg-white shadow-sm ring-1 ring-black/5">
-      <div className="flex flex-col gap-2 border-b border-black/5 px-4 py-3 md:flex-row md:items-start md:justify-between">
+    <section className="rounded-lg bg-white shadow-sm ring-1 ring-black/5">
+      <div className="flex flex-col gap-2 border-b border-black/5 px-3 py-2.5 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
-          {description ? <p className="mt-1 text-sm text-gray-600">{description}</p> : null}
+          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+          {description ? <p className="mt-1 text-xs text-gray-600">{description}</p> : null}
         </div>
         {right}
       </div>
-      <div className="p-4">{children}</div>
+      <div className="p-3">{children}</div>
     </section>
   );
 }
@@ -591,29 +595,29 @@ function StrategySection({
   onEdit?: () => void;
 }) {
   return (
-    <section className="rounded-xl bg-white shadow-sm ring-1 ring-black/5">
-      <div className="flex flex-col gap-2 border-b border-black/5 px-4 py-3 md:flex-row md:items-start md:justify-between">
+    <section className="rounded-lg bg-white shadow-sm ring-1 ring-black/5">
+      <div className="flex flex-col gap-2 border-b border-black/5 px-3 py-2.5 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
-          <p className="mt-1 text-sm text-gray-600">{description}</p>
+          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+          <p className="mt-1 text-xs text-gray-600">{description}</p>
         </div>
 
         {onEdit ? (
           <button
             type="button"
             onClick={onEdit}
-            className="inline-flex shrink-0 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:border-gray-400 hover:bg-gray-50"
+            className="inline-flex shrink-0 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 transition hover:border-gray-400 hover:bg-gray-50"
           >
             Editar no onboarding
           </button>
         ) : null}
       </div>
 
-      <div className="grid gap-3 p-4 md:grid-cols-2">
+      <div className="grid gap-2.5 p-3 md:grid-cols-2">
         {items.map((item) => (
-          <div key={item.label} className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
-            <div className="text-xs text-gray-500">{item.label}</div>
-            <div className="mt-1 whitespace-pre-wrap text-sm font-medium leading-5 text-gray-900">
+          <div key={item.label} className="rounded-lg bg-gray-50 p-2.5 ring-1 ring-black/5">
+            <div className="text-[11px] text-gray-500">{item.label}</div>
+            <div className="mt-1 whitespace-pre-wrap text-xs font-medium leading-5 text-gray-900">
               {item.value}
             </div>
           </div>
@@ -631,10 +635,70 @@ function EmptyState({
   description: string;
 }) {
   return (
-    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4 text-sm text-gray-600">
+    <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3 text-xs text-gray-600">
       <div className="font-semibold text-gray-900">{title}</div>
       <p className="mt-2">{description}</p>
     </div>
+  );
+}
+
+function OptionCardGroup({
+  title,
+  description,
+  value,
+  options,
+  onChange,
+}: {
+  title: string;
+  description?: string;
+  value: string;
+  options: Option[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg bg-gray-50 p-2.5 ring-1 ring-black/5">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-700">
+        {title}
+      </div>
+      {description ? <div className="mt-1 text-[11px] text-gray-500">{description}</div> : null}
+      <div className="mt-2.5 grid gap-2">
+        {options.map((option) => {
+          const active = value === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onChange(option.value)}
+              className={cx(
+                "rounded-lg border px-3 py-2 text-left text-xs font-medium transition",
+                active
+                  ? "border-black bg-black text-white"
+                  : "border-gray-300 bg-white text-gray-700 hover:border-gray-500 hover:bg-gray-100"
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SmallNavButton({
+  href,
+  children,
+}: {
+  href: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
+    >
+      {children}
+    </Link>
   );
 }
 
@@ -717,6 +781,28 @@ export default function ConfiguracoesPage() {
   const totalResponsibles = responsibles.length;
   const totalCatalogItems = catalogItems.length;
 
+  const sellerIaStyleLabel =
+    getOptionLabel(
+      localConfigDraft.sellerIaStyleMode,
+      ACTIVATION_STYLE_OPTIONS.filter(
+        (item) => item.value === "ia_direta" || item.value === "ia_humanizada"
+      )
+    ) || "Não definido";
+
+  const activationPriorityLabel =
+    getOptionLabel(
+      localConfigDraft.activationPriorityMode,
+      ACTIVATION_STYLE_OPTIONS.filter(
+        (item) =>
+          item.value === "priorizar_qualificacao" ||
+          item.value === "priorizar_agendamento"
+      )
+    ) || "Não definido";
+
+  const activationGuardrailLabel =
+    getOptionLabel(localConfigDraft.activationGuardrailMode, ACTIVATION_GUARDRAIL_OPTIONS) ||
+    "Não definido";
+
   const tabs: Array<{ key: TabKey; label: string }> = [
     { key: "visao_geral", label: "Visão Geral" },
     { key: "estrategia", label: "Estratégia" },
@@ -727,7 +813,6 @@ export default function ConfiguracoesPage() {
     { key: "responsavel_ativacao", label: "Responsável e ativação" },
     { key: "descontos", label: "Descontos" },
   ];
-
 
   useEffect(() => {
     if (typeof window === "undefined" || !STORE_ID) return;
@@ -1133,7 +1218,7 @@ export default function ConfiguracoesPage() {
     }
 
     if (totalCatalogItems === 0) {
-      items.push("Cadastrar pelo menos um item em Produtos/Acessórios.");
+      items.push("Cadastrar pelo menos um produto ou acessório.");
     }
 
     if (totalResponsibles === 0) {
@@ -1148,6 +1233,18 @@ export default function ConfiguracoesPage() {
       items.push("Confirmar o responsável principal na ativação.");
     }
 
+    if (!(localConfigDraft.assistantIaNumber.trim() || assistantIaNumber.trim())) {
+      items.push("Definir o número/canal da IA assistente operacional.");
+    }
+
+    if (!localConfigDraft.sellerIaName.trim()) {
+      items.push("Definir o nome ou a persona da IA vendedora.");
+    }
+
+    if (!localConfigDraft.discountIntegrationNotes.trim()) {
+      items.push("Revisar a integração entre Comercial e IA e Descontos.");
+    }
+
     return items;
   }, [
     strategyAnswers,
@@ -1155,10 +1252,12 @@ export default function ConfiguracoesPage() {
     totalCatalogItems,
     totalResponsibles,
     discountSettings,
+    localConfigDraft,
+    assistantIaNumber,
   ]);
 
   const readinessPercent = useMemo(() => {
-    const totalChecks = 6;
+    const totalChecks = 9;
     const doneChecks = totalChecks - pendingItems.length;
     return Math.max(0, Math.min(100, Math.round((doneChecks / totalChecks) * 100)));
   }, [pendingItems]);
@@ -1630,6 +1729,8 @@ export default function ConfiguracoesPage() {
 
     setSavingCatalogItem(true);
 
+    const parsedCatalogPrice = toNullableNumber(catalogPrice);
+
     const { data: createdItem, error } = await supabase
       .from("store_catalog_items")
       .insert({
@@ -1638,7 +1739,8 @@ export default function ConfiguracoesPage() {
         sku: catalogCode.trim() || null,
         name: catalogName.trim(),
         description: catalogDescription.trim() || null,
-        price_cents: toNullableNumber(catalogPrice) == null ? null : Math.round((toNullableNumber(catalogPrice) ?? 0) * 100),
+        price_cents:
+          parsedCatalogPrice == null ? null : Math.round(parsedCatalogPrice * 100),
         currency: "BRL",
         is_active: catalogIsActive,
         track_stock: catalogTrackStock,
@@ -1835,7 +1937,10 @@ export default function ConfiguracoesPage() {
     if (typeof window === "undefined" || !hasValidStoreContext) return;
 
     const saveScroll = () => {
-      window.localStorage.setItem(scrollStorageKey, String(window.scrollY || window.pageYOffset || 0));
+      window.localStorage.setItem(
+        scrollStorageKey,
+        String(window.scrollY || window.pageYOffset || 0)
+      );
     };
 
     const onVisibilityChange = () => {
@@ -1860,7 +1965,7 @@ export default function ConfiguracoesPage() {
     return (
       <div className="min-h-screen bg-gray-100">
         <div className="mx-auto max-w-6xl px-4 py-4">
-          <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+          <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-black/5">
             Carregando loja ativa...
           </div>
         </div>
@@ -1868,23 +1973,15 @@ export default function ConfiguracoesPage() {
     );
   }
 
+  const currentCatalogCategoryHref = `/configuracoes/catalogo/${catalogCategory}`;
+
   return (
     <div className="min-h-screen bg-gray-100">
       <div className="mx-auto max-w-6xl px-4 py-4">
-        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-700">
-              Configurações da loja
-            </p>
-            <h1 className="mt-2 text-3xl font-black tracking-tight text-gray-900">
-              Pilar 2 — Configurações e onboarding unificados
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm text-gray-600">
-              Organize a operação da sua loja, preserve o onboarding como espelho inicial e
-              deixe Configurações como fonte viva oficial consultada pela IA.
-            </p>
             {activeStore?.name ? (
-              <p className="mt-1 text-[11px] text-gray-500">Loja ativa: {activeStore.name}</p>
+              <p className="text-xs text-gray-500">Loja ativa: {activeStore.name}</p>
             ) : null}
           </div>
 
@@ -1893,14 +1990,14 @@ export default function ConfiguracoesPage() {
               type="button"
               onClick={() => void fetchPageData("reload")}
               disabled={reloading || !hasValidStoreContext}
-              className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {reloading ? "Recarregando..." : "Recarregar"}
             </button>
 
             <Link
               href="/dashboard"
-              className="inline-flex items-center justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
+              className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800"
             >
               Voltar ao dashboard
             </Link>
@@ -1908,31 +2005,31 @@ export default function ConfiguracoesPage() {
         </div>
 
         {!hasValidStoreContext ? (
-          <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-            <div className="text-base font-semibold text-gray-900">
+          <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-black/5">
+            <div className="text-sm font-semibold text-gray-900">
               Nenhuma loja ativa encontrada
             </div>
-            <p className="mt-2 text-sm text-gray-600">
+            <p className="mt-2 text-xs text-gray-600">
               Não foi possível identificar a loja ativa para carregar as configurações.
             </p>
           </div>
         ) : (
           <>
             {errorText ? (
-              <div className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+              <div className="mb-3 rounded-lg bg-red-50 p-3 text-xs text-red-800 ring-1 ring-red-600/20">
                 <div className="font-semibold">Erro</div>
                 <div className="mt-1 break-words">{errorText}</div>
               </div>
             ) : null}
 
             {successText ? (
-              <div className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+              <div className="mb-3 rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800 ring-1 ring-emerald-600/20">
                 <div className="font-semibold">Sucesso</div>
                 <div className="mt-1 break-words">{successText}</div>
               </div>
             ) : null}
 
-            <section className="rounded-xl bg-white p-3 shadow-sm ring-1 ring-black/5">
+            <section className="rounded-lg bg-white p-2.5 shadow-sm ring-1 ring-black/5">
               <div className="flex flex-wrap gap-2">
                 {tabs.map((tab) => (
                   <button
@@ -1940,7 +2037,7 @@ export default function ConfiguracoesPage() {
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
                     className={cx(
-                      "rounded-lg px-3 py-1.5 text-xs font-semibold ring-1 ring-black/10",
+                      "rounded-lg px-3 py-1.5 text-[11px] font-semibold ring-1 ring-black/10",
                       activeTab === tab.key
                         ? "bg-black text-white"
                         : "bg-white text-gray-900 hover:bg-gray-50"
@@ -1959,7 +2056,7 @@ export default function ConfiguracoesPage() {
                     title="Status geral da configuração"
                     description="Resumo vivo da base mínima para a loja operar e a IA consultar as informações corretas."
                   >
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                       <SummaryCard
                         title="Prontidão atual"
                         value={`${readinessPercent}%`}
@@ -1970,7 +2067,7 @@ export default function ConfiguracoesPage() {
                       <SummaryCard title="Responsáveis" value={totalResponsibles} />
                     </div>
 
-                    <div className="mt-6 h-3 overflow-hidden rounded-full bg-gray-200">
+                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-gray-200">
                       <div
                         className="h-full rounded-full bg-gray-900 transition-all"
                         style={{ width: `${readinessPercent}%` }}
@@ -1980,50 +2077,52 @@ export default function ConfiguracoesPage() {
 
                   <SectionCard
                     title="Acessos rápidos"
-                    description="Cadastre em Configurações e veja o que já existe nas páginas próprias da loja."
+                    description="Cadastre aqui e abra as páginas reais de visualização e edição."
                   >
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("piscinas")}
-                        className="rounded-xl bg-gray-50 p-3 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
-                      >
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
                         <div className="font-semibold text-gray-900">Piscinas</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Área de cadastro e configuração.
+                        <div className="mt-1 text-xs text-gray-600">
+                          Cadastro nesta tela. Visualização e edição na página própria.
                         </div>
-                      </button>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("piscinas")}
+                            className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                          >
+                            Ir para cadastro de piscinas
+                          </button>
+                          <SmallNavButton href="/configuracoes/piscinas">
+                            Ver piscinas cadastradas
+                          </SmallNavButton>
+                        </div>
+                      </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("catalogo")}
-                        className="rounded-xl bg-gray-50 p-3 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
-                      >
-                        <div className="font-semibold text-gray-900">Produtos/Acessórios</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Área de cadastro e configuração.
+                      <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
+                        <div className="font-semibold text-gray-900">Produtos e acessórios</div>
+                        <div className="mt-1 text-xs text-gray-600">
+                          Cadastro nesta tela. Visualização e edição nas categorias já existentes.
                         </div>
-                      </button>
-
-                      <Link
-                        href="/configuracoes/catalogo"
-                        className="rounded-xl bg-gray-50 p-3 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
-                      >
-                        <div className="font-semibold text-gray-900">Catálogo da loja</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Ver tudo que já está cadastrado por categoria.
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("catalogo")}
+                            className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                          >
+                            Ir para cadastro de produtos
+                          </button>
+                          <SmallNavButton href="/configuracoes/catalogo/acessorios">
+                            Ver acessórios cadastrados
+                          </SmallNavButton>
+                          <SmallNavButton href="/configuracoes/catalogo/quimicos">
+                            Ver químicos cadastrados
+                          </SmallNavButton>
+                          <SmallNavButton href="/configuracoes/catalogo/outros">
+                            Ver outros cadastrados
+                          </SmallNavButton>
                         </div>
-                      </Link>
-
-                      <Link
-                        href="/configuracoes/piscinas"
-                        className="rounded-xl bg-gray-50 p-3 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
-                      >
-                        <div className="font-semibold text-gray-900">Piscinas cadastradas</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Ver e editar as piscinas já cadastradas.
-                        </div>
-                      </Link>
+                      </div>
                     </div>
                   </SectionCard>
 
@@ -2032,15 +2131,15 @@ export default function ConfiguracoesPage() {
                     description="Esses pontos ajudam a evitar loja com configuração crítica incompleta."
                   >
                     {pendingItems.length === 0 ? (
-                      <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+                      <div className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800 ring-1 ring-emerald-600/20">
                         Tudo certo nessa base mínima. A estrutura principal da configuração está preenchida.
                       </div>
                     ) : (
-                      <div className="space-y-3">
+                      <div className="space-y-2.5">
                         {pendingItems.map((item, index) => (
                           <div
                             key={`${item}-${index}`}
-                            className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20"
+                            className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-600/20"
                           >
                             {item}
                           </div>
@@ -2053,7 +2152,7 @@ export default function ConfiguracoesPage() {
                     title="Resumo operacional e comercial"
                     description="Visão curta do que já está vivo na loja."
                   >
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                       <SummaryCard
                         title="Piscinas ativas"
                         value={activePoolsCount}
@@ -2075,17 +2174,16 @@ export default function ConfiguracoesPage() {
                       />
                     </div>
                   </SectionCard>
-
                 </>
               )}
 
               {activeTab === "estrategia" && (
-                <div className="space-y-6">
+                <div className="space-y-4">
                   <SectionCard
-                    title="Estratégia = espelho estruturado do onboarding"
-                    description="Essa aba mostra a base levantada na entrada da loja. Ela não é a principal camada de edição fina da operação viva."
+                    title="Estratégia"
+                    description="Espelho estruturado do onboarding."
                   >
-                    <div className="grid gap-4 md:grid-cols-4">
+                    <div className="grid gap-3 md:grid-cols-4">
                       <SummaryCard
                         title="Loja e atuação"
                         value={countFilledItems(strategySections.lojaEAtuacao)}
@@ -2129,154 +2227,155 @@ export default function ConfiguracoesPage() {
                 <div className="space-y-4">
                   <SectionCard
                     title="Acesso rápido"
-                    description="Cadastre aqui e visualize o que já existe na página própria."
+                    description="Cadastre aqui e veja as piscinas cadastradas apenas na página própria."
                   >
                     <div className="flex flex-wrap gap-2">
-                      <Link href="/configuracoes/piscinas" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100">
+                      <SmallNavButton href="/configuracoes/piscinas">
                         Ver piscinas cadastradas
-                      </Link>
-                      <Link href="/configuracoes/catalogo" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100">
-                        Abrir catálogo da loja
-                      </Link>
+                      </SmallNavButton>
+                      <SmallNavButton href={currentCatalogCategoryHref}>
+                        Ver produtos e acessórios cadastrados
+                      </SmallNavButton>
                     </div>
                   </SectionCard>
+
                   <SectionCard
                     title="Cadastrar piscina"
                     description="Cadastre modelos reais que a loja pode ofertar."
                   >
-                    <form onSubmit={handleCreatePool} className="grid gap-6 lg:grid-cols-2">
-                      <div className="space-y-4">
+                    <form onSubmit={handleCreatePool} className="grid gap-4 lg:grid-cols-2">
+                      <div className="space-y-3">
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Nome da piscina
                           </label>
                           <input
                             value={poolName}
                             onChange={(e) => setPoolName(e.target.value)}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="Ex.: Piscina Fibra 7x3"
                           />
                         </div>
 
-                        <div className="grid gap-4 md:grid-cols-3">
+                        <div className="grid gap-3 md:grid-cols-3">
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                            <label className="mb-1 block text-xs font-medium text-gray-700">
                               Largura (m)
                             </label>
                             <input
                               value={poolWidth}
                               onChange={(e) => setPoolWidth(formatNumberInput(e.target.value))}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                               placeholder="3"
                             />
                           </div>
 
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                            <label className="mb-1 block text-xs font-medium text-gray-700">
                               Comprimento (m)
                             </label>
                             <input
                               value={poolLength}
                               onChange={(e) => setPoolLength(formatNumberInput(e.target.value))}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                               placeholder="7"
                             />
                           </div>
 
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                            <label className="mb-1 block text-xs font-medium text-gray-700">
                               Profundidade (m)
                             </label>
                             <input
                               value={poolDepth}
                               onChange={(e) => setPoolDepth(formatNumberInput(e.target.value))}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                               placeholder="1.40"
                             />
                           </div>
                         </div>
 
-                        <div className="grid gap-4 md:grid-cols-2">
+                        <div className="grid gap-3 md:grid-cols-2">
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                            <label className="mb-1 block text-xs font-medium text-gray-700">
                               Formato
                             </label>
                             <input
                               value={poolShape}
                               onChange={(e) => setPoolShape(e.target.value)}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                               placeholder="Retangular"
                             />
                           </div>
 
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                            <label className="mb-1 block text-xs font-medium text-gray-700">
                               Material
                             </label>
                             <input
                               value={poolMaterial}
                               onChange={(e) => setPoolMaterial(e.target.value)}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                               placeholder="Fibra"
                             />
                           </div>
                         </div>
 
-                        <div className="grid gap-4 md:grid-cols-3">
+                        <div className="grid gap-3 md:grid-cols-3">
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                            <label className="mb-1 block text-xs font-medium text-gray-700">
                               Capacidade (L)
                             </label>
                             <input
                               value={poolCapacity}
                               onChange={(e) => setPoolCapacity(formatNumberInput(e.target.value))}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                               placeholder="18000"
                             />
                           </div>
 
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                            <label className="mb-1 block text-xs font-medium text-gray-700">
                               Peso (kg)
                             </label>
                             <input
                               value={poolWeight}
                               onChange={(e) => setPoolWeight(formatNumberInput(e.target.value))}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                               placeholder="450"
                             />
                           </div>
 
                           <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
+                            <label className="mb-1 block text-xs font-medium text-gray-700">
                               Preço
                             </label>
                             <input
                               value={poolPrice}
                               onChange={(e) => setPoolPrice(formatPriceInput(e.target.value))}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                               placeholder="25.000,00"
                             />
                           </div>
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Descrição
                           </label>
                           <textarea
                             value={poolDescription}
                             onChange={(e) => setPoolDescription(e.target.value)}
                             rows={4}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="Detalhes do modelo, diferenciais e observações."
                           />
                         </div>
                       </div>
 
-                      <div className="space-y-4">
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                      <div className="space-y-3">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
                             <input
                               type="checkbox"
                               checked={poolIsActive}
@@ -2285,7 +2384,7 @@ export default function ConfiguracoesPage() {
                             Piscina ativa para oferta
                           </label>
 
-                          <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                          <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
                             <input
                               type="checkbox"
                               checked={poolTrackStock}
@@ -2296,7 +2395,7 @@ export default function ConfiguracoesPage() {
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Quantidade em estoque
                           </label>
                           <input
@@ -2305,13 +2404,13 @@ export default function ConfiguracoesPage() {
                               setPoolStockQuantity(formatIntegerInput(e.target.value))
                             }
                             disabled={!poolTrackStock}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:bg-gray-100"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black disabled:bg-gray-100"
                             placeholder="0"
                           />
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Fotos da piscina
                           </label>
                           <input
@@ -2319,18 +2418,18 @@ export default function ConfiguracoesPage() {
                             multiple
                             accept="image/*"
                             onChange={handlePoolFilesChange}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none file:mr-4 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
                           />
-                          <p className="mt-1 text-[11px] text-gray-500">
+                          <p className="mt-1 text-[10px] text-gray-500">
                             Até {MAX_POOL_PHOTOS} imagens, máximo de 50 MB por arquivo.
                           </p>
 
                           {selectedPoolFiles.length > 0 ? (
-                            <div className="mt-3 space-y-2">
+                            <div className="mt-2 space-y-2">
                               {selectedPoolFiles.map((file) => (
                                 <div
                                   key={`${file.name}-${file.size}`}
-                                  className="rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-700 ring-1 ring-black/5"
+                                  className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-700 ring-1 ring-black/5"
                                 >
                                   {file.name} — {formatFileSize(file.size)}
                                 </div>
@@ -2342,118 +2441,12 @@ export default function ConfiguracoesPage() {
                         <button
                           type="submit"
                           disabled={savingPool || !hasValidStoreContext}
-                          className="w-full rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="w-full rounded-lg bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {savingPool ? "Salvando piscina..." : "Cadastrar piscina"}
                         </button>
                       </div>
                     </form>
-                  </SectionCard>
-
-                  <SectionCard
-                    title="Piscinas cadastradas"
-                    description="Lista viva dos modelos disponíveis na loja."
-                  >
-                    {pools.length === 0 ? (
-                      <EmptyState
-                        title="Nenhuma piscina cadastrada"
-                        description="Cadastre pelo menos um modelo para a loja começar a ter oferta viva nesta área."
-                      />
-                    ) : (
-                      <div className="grid gap-4 lg:grid-cols-2">
-                        {pools.map((pool) => {
-                          const photos = poolsPhotoMap.get(pool.id) ?? [];
-
-                          return (
-                            <div
-                              key={pool.id}
-                              className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <div className="text-base font-semibold text-gray-900">
-                                    {pool.name || "Piscina sem nome"}
-                                  </div>
-                                  <div className="mt-1 text-sm text-gray-600">
-                                    {pool.material || "Material não informado"} •{" "}
-                                    {pool.shape || "Formato não informado"}
-                                  </div>
-                                </div>
-
-                                <div
-                                  className={cx(
-                                    "rounded-full px-3 py-1 text-xs font-semibold",
-                                    pool.is_active
-                                      ? "bg-emerald-100 text-emerald-800"
-                                      : "bg-gray-200 text-gray-700"
-                                  )}
-                                >
-                                  {pool.is_active ? "Ativa" : "Inativa"}
-                                </div>
-                              </div>
-
-                              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Medidas</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
-                                    {pool.length_m ?? "-"}m x {pool.width_m ?? "-"}m x{" "}
-                                    {pool.depth_m ?? "-"}m
-                                  </div>
-                                </div>
-
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Capacidade</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
-                                    {pool.max_capacity_l?.toLocaleString("pt-BR") ?? "-"} L
-                                  </div>
-                                </div>
-
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Preço</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
-                                    {moneyBRL(pool.price)}
-                                  </div>
-                                </div>
-
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Estoque</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
-                                    {pool.track_stock
-                                      ? pool.stock_quantity ?? 0
-                                      : "Sem controle"}
-                                  </div>
-                                </div>
-                              </div>
-
-                              {pool.description ? (
-                                <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
-                                  {pool.description}
-                                </div>
-                              ) : null}
-
-                              <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
-                                <div className="font-medium text-gray-900">
-                                  Fotos cadastradas: {photos.length}
-                                </div>
-                                {photos.length > 0 ? (
-                                  <div className="mt-2 space-y-1">
-                                    {photos.map((photo) => (
-                                      <div key={photo.id}>
-                                        {photo.file_name} — {formatFileSize(photo.file_size_bytes)}
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <div className="mt-1 text-gray-500">
-                                    Nenhuma foto cadastrada para este modelo.
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
                   </SectionCard>
                 </div>
               )}
@@ -2462,31 +2455,32 @@ export default function ConfiguracoesPage() {
                 <div className="space-y-4">
                   <SectionCard
                     title="Acesso rápido"
-                    description="Cadastre aqui e visualize o que já existe na página própria do catálogo."
+                    description="Cadastre aqui e veja os itens cadastrados apenas na página própria da categoria."
                   >
                     <div className="flex flex-wrap gap-2">
-                      <Link href="/configuracoes/catalogo" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100">
-                        Ver catálogo da loja
-                      </Link>
-                      <Link href="/configuracoes/piscinas" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100">
+                      <SmallNavButton href={currentCatalogCategoryHref}>
+                        Ver produtos e acessórios cadastrados
+                      </SmallNavButton>
+                      <SmallNavButton href="/configuracoes/piscinas">
                         Abrir piscinas cadastradas
-                      </Link>
+                      </SmallNavButton>
                     </div>
                   </SectionCard>
+
                   <SectionCard
                     title="Cadastrar item em Produtos/Acessórios"
                     description="Base viva de produtos químicos, acessórios e outros itens."
                   >
-                    <form onSubmit={handleCreateCatalogItem} className="grid gap-6 lg:grid-cols-2">
-                      <div className="space-y-4">
+                    <form onSubmit={handleCreateCatalogItem} className="grid gap-4 lg:grid-cols-2">
+                      <div className="space-y-3">
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Categoria
                           </label>
                           <select
                             value={catalogCategory}
                             onChange={(e) => setCatalogCategory(e.target.value)}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                           >
                             {CATALOG_CATEGORY_OPTIONS.map((option) => (
                               <option key={option.value} value={option.value}>
@@ -2497,58 +2491,58 @@ export default function ConfiguracoesPage() {
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Código / SKU
                           </label>
                           <input
                             value={catalogCode}
                             onChange={(e) => setCatalogCode(e.target.value)}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="Ex.: CL-001"
                           />
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Nome do item
                           </label>
                           <input
                             value={catalogName}
                             onChange={(e) => setCatalogName(e.target.value)}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="Ex.: Cloro granulado 10kg"
                           />
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Preço
                           </label>
                           <input
                             value={catalogPrice}
                             onChange={(e) => setCatalogPrice(formatPriceInput(e.target.value))}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="149,90"
                           />
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Descrição
                           </label>
                           <textarea
                             value={catalogDescription}
                             onChange={(e) => setCatalogDescription(e.target.value)}
                             rows={4}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="Detalhes do item, uso e observações."
                           />
                         </div>
                       </div>
 
-                      <div className="space-y-4">
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                      <div className="space-y-3">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
                             <input
                               type="checkbox"
                               checked={catalogIsActive}
@@ -2557,7 +2551,7 @@ export default function ConfiguracoesPage() {
                             Item ativo para venda
                           </label>
 
-                          <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                          <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
                             <input
                               type="checkbox"
                               checked={catalogTrackStock}
@@ -2568,7 +2562,7 @@ export default function ConfiguracoesPage() {
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Quantidade em estoque
                           </label>
                           <input
@@ -2577,13 +2571,13 @@ export default function ConfiguracoesPage() {
                               setCatalogStockQuantity(formatIntegerInput(e.target.value))
                             }
                             disabled={!catalogTrackStock}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:bg-gray-100"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black disabled:bg-gray-100"
                             placeholder="0"
                           />
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Fotos do item
                           </label>
                           <input
@@ -2591,18 +2585,18 @@ export default function ConfiguracoesPage() {
                             multiple
                             accept="image/*"
                             onChange={handleCatalogFilesChange}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none file:mr-4 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
                           />
-                          <p className="mt-1 text-[11px] text-gray-500">
+                          <p className="mt-1 text-[10px] text-gray-500">
                             Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.
                           </p>
 
                           {selectedCatalogFiles.length > 0 ? (
-                            <div className="mt-3 space-y-2">
+                            <div className="mt-2 space-y-2">
                               {selectedCatalogFiles.map((file) => (
                                 <div
                                   key={`${file.name}-${file.size}`}
-                                  className="rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-700 ring-1 ring-black/5"
+                                  className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-700 ring-1 ring-black/5"
                                 >
                                   {file.name} — {formatFileSize(file.size)}
                                 </div>
@@ -2614,7 +2608,7 @@ export default function ConfiguracoesPage() {
                         <button
                           type="submit"
                           disabled={savingCatalogItem || !hasValidStoreContext}
-                          className="w-full rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="w-full rounded-lg bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {savingCatalogItem ? "Salvando item..." : "Cadastrar item"}
                         </button>
@@ -2624,9 +2618,9 @@ export default function ConfiguracoesPage() {
 
                   <SectionCard
                     title="Resumo por categoria"
-                    description="Visão prática do catálogo vivo da loja."
+                    description="Visão curta do catálogo da loja."
                   >
-                    <div className="grid gap-4 md:grid-cols-3">
+                    <div className="grid gap-3 md:grid-cols-3">
                       <SummaryCard
                         title="Acessórios"
                         value={catalogItemsByCategory.acessorios.length}
@@ -2641,115 +2635,16 @@ export default function ConfiguracoesPage() {
                       />
                     </div>
                   </SectionCard>
-
-                  {(["acessorios", "quimicos", "outros"] as const).map((category) => {
-                    const items = catalogItemsByCategory[category];
-                    const categoryLabel = getOptionLabel(category, CATALOG_CATEGORY_OPTIONS);
-
-                    return (
-                      <SectionCard
-                        key={category}
-                        title={categoryLabel}
-                        description={`Itens da categoria ${categoryLabel.toLowerCase()}.`}
-                      >
-                        {items.length === 0 ? (
-                          <EmptyState
-                            title={`Nenhum item em ${categoryLabel}`}
-                            description="Cadastre itens reais desta categoria para a IA ter base viva de oferta."
-                          />
-                        ) : (
-                          <div className="grid gap-4 lg:grid-cols-2">
-                            {items.map((item) => {
-                              const photos = catalogPhotosMap.get(item.id) ?? [];
-
-                              return (
-                                <div
-                                  key={item.id}
-                                  className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
-                                >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                      <div className="text-base font-semibold text-gray-900">
-                                        {item.name}
-                                      </div>
-                                      <div className="mt-1 text-sm text-gray-600">
-                                        SKU: {item.sku || "Não informado"}
-                                      </div>
-                                    </div>
-
-                                    <div
-                                      className={cx(
-                                        "rounded-full px-3 py-1 text-xs font-semibold",
-                                        item.is_active
-                                          ? "bg-emerald-100 text-emerald-800"
-                                          : "bg-gray-200 text-gray-700"
-                                      )}
-                                    >
-                                      {item.is_active ? "Ativo" : "Inativo"}
-                                    </div>
-                                  </div>
-
-                                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                    <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                      <div className="text-xs text-gray-500">Preço</div>
-                                      <div className="mt-1 text-sm font-medium text-gray-900">
-                                        {moneyFromCentsBRL(item.price_cents)}
-                                      </div>
-                                    </div>
-
-                                    <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                      <div className="text-xs text-gray-500">Estoque</div>
-                                      <div className="mt-1 text-sm font-medium text-gray-900">
-                                        {item.track_stock
-                                          ? item.stock_quantity ?? 0
-                                          : "Sem controle"}
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  {item.description ? (
-                                    <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
-                                      {item.description}
-                                    </div>
-                                  ) : null}
-
-                                  <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
-                                    <div className="font-medium text-gray-900">
-                                      Fotos cadastradas: {photos.length}
-                                    </div>
-                                    {photos.length > 0 ? (
-                                      <div className="mt-2 space-y-1">
-                                        {photos.map((photo) => (
-                                          <div key={photo.id}>
-                                            {photo.file_name} —{" "}
-                                            {formatFileSize(photo.file_size_bytes)}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    ) : (
-                                      <div className="mt-1 text-gray-500">
-                                        Nenhuma foto cadastrada para este item.
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </SectionCard>
-                    );
-                  })}
                 </div>
               )}
 
               {activeTab === "operacao" && (
-                <div className="space-y-6">
+                <div className="space-y-4">
                   <SectionCard
-                    title="Operação = módulo vivo operacional da loja"
-                    description="Aqui fica a leitura operacional que a IA precisa consultar para instalação, visita técnica, prazos e limitações."
+                    title="Operação"
+                    description="Leitura operacional que a IA precisa consultar para instalação, visita técnica, prazos e limitações."
                   >
-                    <div className="grid gap-4 md:grid-cols-4">
+                    <div className="grid gap-3 md:grid-cols-4">
                       <SummaryCard
                         title="Campos operacionais preenchidos"
                         value={countFilledItems(strategySections.operacaoDaLoja)}
@@ -2775,36 +2670,16 @@ export default function ConfiguracoesPage() {
                     items={strategySections.operacaoDaLoja}
                     onEdit={() => goToOnboardingStep(3)}
                   />
-
-                  <SectionCard
-                    title="Acesso rápido"
-                    description="Continue daqui para as páginas de visualização sem misturar com o cadastro."
-                  >
-                    <div className="flex flex-wrap gap-2">
-                      <Link
-                        href="/configuracoes/catalogo"
-                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                      >
-                        Abrir catálogo da loja
-                      </Link>
-                      <Link
-                        href="/configuracoes/piscinas"
-                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                      >
-                        Abrir piscinas cadastradas
-                      </Link>
-                    </div>
-                  </SectionCard>
                 </div>
               )}
 
               {activeTab === "comercial_ia" && (
-                <div className="space-y-6">
+                <div className="space-y-4">
                   <SectionCard
-                    title="Comercial e IA = política viva de venda"
+                    title="Comercial e IA"
                     description="Regras comerciais reais que a IA vendedora deve respeitar."
                   >
-                    <div className="grid gap-4 md:grid-cols-4">
+                    <div className="grid gap-3 md:grid-cols-4">
                       <SummaryCard
                         title="Campos comerciais preenchidos"
                         value={countFilledItems(strategySections.comercialEIA)}
@@ -2832,7 +2707,7 @@ export default function ConfiguracoesPage() {
                   />
 
                   <SectionCard
-                    title="Configuração complementar"
+                    title="Integração com descontos"
                     description="Use este espaço para registrar como a política comercial conversa com a aba de descontos."
                   >
                     <div className="space-y-3">
@@ -2855,12 +2730,9 @@ export default function ConfiguracoesPage() {
                       </div>
 
                       <div className="flex flex-wrap gap-2">
-                        <Link
-                          href="/configuracoes/catalogo"
-                          className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                        >
-                          Abrir catálogo da loja
-                        </Link>
+                        <SmallNavButton href={currentCatalogCategoryHref}>
+                          Ver produtos e acessórios cadastrados
+                        </SmallNavButton>
                         <button
                           type="button"
                           onClick={() => setActiveTab("descontos")}
@@ -2878,7 +2750,7 @@ export default function ConfiguracoesPage() {
                 <div className="space-y-4">
                   <SectionCard
                     title="Responsável e ativação"
-                    description="Cadastre primeiro e mantenha as informações importantes logo abaixo."
+                    description="Cadastro em cima e informações logo abaixo."
                   >
                     <div className="grid gap-3 md:grid-cols-4">
                       <SummaryCard
@@ -2901,28 +2773,8 @@ export default function ConfiguracoesPage() {
                   </SectionCard>
 
                   <SectionCard
-                    title="Cadastro e acessos rápidos"
-                    description="Use esta área para cadastrar e abrir as páginas de visualização já existentes."
-                  >
-                    <div className="flex flex-wrap gap-2">
-                      <Link
-                        href="/configuracoes/catalogo"
-                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                      >
-                        Abrir catálogo da loja
-                      </Link>
-                      <Link
-                        href="/configuracoes/piscinas"
-                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                      >
-                        Abrir piscinas cadastradas
-                      </Link>
-                    </div>
-                  </SectionCard>
-
-                  <SectionCard
                     title="Responsáveis humanos da loja"
-                    description="Cadastro em cima e informações logo abaixo, do jeito que você pediu."
+                    description="Cadastre primeiro e acompanhe os responsáveis logo abaixo."
                   >
                     <div className="grid gap-4 lg:grid-cols-2">
                       <form onSubmit={handleCreateResponsible} className="space-y-3">
@@ -2969,8 +2821,8 @@ export default function ConfiguracoesPage() {
                           </select>
                         </div>
 
-                        <div className="space-y-2 rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
-                          <label className="flex items-center gap-3 text-sm text-gray-700">
+                        <div className="space-y-2 rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
+                          <label className="flex items-center gap-3 text-xs text-gray-700">
                             <input
                               type="checkbox"
                               checked={receiveDiscountAlerts}
@@ -2979,7 +2831,7 @@ export default function ConfiguracoesPage() {
                             Receber alertas de desconto
                           </label>
 
-                          <label className="flex items-center gap-3 text-sm text-gray-700">
+                          <label className="flex items-center gap-3 text-xs text-gray-700">
                             <input
                               type="checkbox"
                               checked={receiveSubscriptionAlerts}
@@ -2988,7 +2840,7 @@ export default function ConfiguracoesPage() {
                             Receber alertas de assinatura
                           </label>
 
-                          <label className="flex items-center gap-3 text-sm text-gray-700">
+                          <label className="flex items-center gap-3 text-xs text-gray-700">
                             <input
                               type="checkbox"
                               checked={receiveSlaAlerts}
@@ -3017,26 +2869,26 @@ export default function ConfiguracoesPage() {
                           responsibles.map((responsible) => (
                             <div
                               key={responsible.id}
-                              className="rounded-xl bg-gray-50 p-4 ring-1 ring-black/5"
+                              className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5"
                             >
                               <div className="text-sm font-semibold text-gray-900">
                                 {responsible.name || "Responsável sem nome"}
                               </div>
-                              <div className="mt-1 text-xs text-gray-600">
+                              <div className="mt-1 text-[11px] text-gray-600">
                                 {roleLabel(responsible.role)}
                               </div>
 
                               <div className="mt-3 grid gap-2 md:grid-cols-2">
                                 <div className="rounded-lg bg-white p-3 ring-1 ring-black/5">
                                   <div className="text-[11px] text-gray-500">WhatsApp</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                  <div className="mt-1 text-xs font-medium text-gray-900">
                                     {formatWhatsappPretty(responsible.whatsapp_number)}
                                   </div>
                                 </div>
 
                                 <div className="rounded-lg bg-white p-3 ring-1 ring-black/5">
                                   <div className="text-[11px] text-gray-500">Criado em</div>
-                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                  <div className="mt-1 text-xs font-medium text-gray-900">
                                     {responsible.created_at
                                       ? new Date(responsible.created_at).toLocaleString("pt-BR")
                                       : "Não informado"}
@@ -3052,12 +2904,27 @@ export default function ConfiguracoesPage() {
 
                   <SectionCard
                     title="Configurações da IA assistente e ativação"
-                    description="Esses campos ficam na Configuração para não depender apenas do onboarding."
+                    description="Caixas de opção sempre que possível. Escrita livre só onde realmente precisa."
                   >
-                    <div className="grid gap-3 lg:grid-cols-2">
+                    <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900 ring-1 ring-blue-600/20">
+                      <div className="font-semibold">Número da IA assistente operacional</div>
+                      <div className="mt-1">
+                        Esse é o número ou canal usado pelo responsável da loja para falar com a IA assistente operacional. Não é o WhatsApp comercial que atende clientes.
+                      </div>
+                      {(assistantIaNumber || localConfigDraft.assistantIaNumber) ? (
+                        <div className="mt-2 font-medium">
+                          Valor atual:{" "}
+                          {formatWhatsappPretty(
+                            localConfigDraft.assistantIaNumber || assistantIaNumber
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-3 grid gap-3 lg:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-xs font-medium text-gray-700">
-                          Número da IA assistente
+                          Número da IA assistente operacional
                         </label>
                         <input
                           value={localConfigDraft.assistantIaNumber}
@@ -3089,7 +2956,7 @@ export default function ConfiguracoesPage() {
                         />
                       </div>
 
-                      <div>
+                      <div className="lg:col-span-2">
                         <label className="mb-1 block text-xs font-medium text-gray-700">
                           Nome / persona da IA vendedora
                         </label>
@@ -3105,23 +2972,66 @@ export default function ConfiguracoesPage() {
                           placeholder="Ex.: Consultora virtual da loja"
                         />
                       </div>
+                    </div>
 
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-gray-700">
-                          Estilo da IA vendedora
-                        </label>
-                        <input
-                          value={localConfigDraft.sellerIaStyle}
-                          onChange={(e) =>
-                            setLocalConfigDraft((current) => ({
-                              ...current,
-                              sellerIaStyle: e.target.value,
-                            }))
-                          }
-                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                          placeholder="Ex.: consultiva, objetiva e humana"
-                        />
-                      </div>
+                    <div className="mt-3 grid gap-3 lg:grid-cols-3">
+                      <OptionCardGroup
+                        title="Estilo principal da IA vendedora"
+                        description="Escolha o jeito principal que a IA deve se comportar."
+                        value={localConfigDraft.sellerIaStyleMode}
+                        options={ACTIVATION_STYLE_OPTIONS.filter(
+                          (item) =>
+                            item.value === "ia_direta" || item.value === "ia_humanizada"
+                        )}
+                        onChange={(value) =>
+                          setLocalConfigDraft((current) => ({
+                            ...current,
+                            sellerIaStyleMode: value,
+                          }))
+                        }
+                      />
+
+                      <OptionCardGroup
+                        title="Prioridade de ativação"
+                        description="Defina o foco comercial principal da IA."
+                        value={localConfigDraft.activationPriorityMode}
+                        options={ACTIVATION_STYLE_OPTIONS.filter(
+                          (item) =>
+                            item.value === "priorizar_qualificacao" ||
+                            item.value === "priorizar_agendamento"
+                        )}
+                        onChange={(value) =>
+                          setLocalConfigDraft((current) => ({
+                            ...current,
+                            activationPriorityMode: value,
+                          }))
+                        }
+                      />
+
+                      <OptionCardGroup
+                        title="Regra de segurança"
+                        description="Escolha a trava mais importante da ativação."
+                        value={localConfigDraft.activationGuardrailMode}
+                        options={ACTIVATION_GUARDRAIL_OPTIONS}
+                        onChange={(value) =>
+                          setLocalConfigDraft((current) => ({
+                            ...current,
+                            activationGuardrailMode: value,
+                          }))
+                        }
+                      />
+                    </div>
+
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      <SummaryCard title="Estilo selecionado" value={sellerIaStyleLabel} />
+                      <SummaryCard
+                        title="Prioridade selecionada"
+                        value={activationPriorityLabel}
+                      />
+                      <SummaryCard
+                        title="Regra de segurança"
+                        value={activationGuardrailLabel}
+                      />
                     </div>
 
                     <div className="mt-3">
@@ -3141,6 +3051,15 @@ export default function ConfiguracoesPage() {
                         placeholder="Use este espaço para detalhes importantes da ativação."
                       />
                     </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <SmallNavButton href={currentCatalogCategoryHref}>
+                        Ver produtos e acessórios cadastrados
+                      </SmallNavButton>
+                      <SmallNavButton href="/configuracoes/piscinas">
+                        Abrir piscinas cadastradas
+                      </SmallNavButton>
+                    </div>
                   </SectionCard>
 
                   <StrategySection
@@ -3153,15 +3072,15 @@ export default function ConfiguracoesPage() {
               )}
 
               {activeTab === "descontos" && (
-                <div className="space-y-6">
+                <div className="space-y-4">
                   <SectionCard
                     title="Política de desconto"
                     description="Módulo aprofundado da política de desconto da loja."
                   >
-                    <form onSubmit={handleSaveDiscountSettings} className="grid gap-6 lg:grid-cols-2">
-                      <div className="space-y-4">
+                    <form onSubmit={handleSaveDiscountSettings} className="grid gap-4 lg:grid-cols-2">
+                      <div className="space-y-3">
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Desconto padrão da IA (%)
                           </label>
                           <input
@@ -3171,13 +3090,13 @@ export default function ConfiguracoesPage() {
                                 formatPercentInput(e.target.value)
                               )
                             }
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="0"
                           />
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Desconto máximo com autorização (%)
                           </label>
                           <input
@@ -3185,12 +3104,12 @@ export default function ConfiguracoesPage() {
                             onChange={(e) =>
                               setMaxDiscountPercentInput(formatPercentInput(e.target.value))
                             }
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="10"
                           />
                         </div>
 
-                        <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                        <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
                           <input
                             type="checkbox"
                             checked={allowAskAboveMaxDiscount}
@@ -3202,37 +3121,39 @@ export default function ConfiguracoesPage() {
                         <button
                           type="submit"
                           disabled={savingDiscountSettings || !hasValidStoreContext}
-                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-lg bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {savingDiscountSettings ? "Salvando..." : "Salvar política de desconto"}
+                          {savingDiscountSettings
+                            ? "Salvando..."
+                            : "Salvar política de desconto"}
                         </button>
                       </div>
 
-                      <div className="space-y-4">
-                        <div className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
-                          <div className="text-xs text-gray-500">Desconto padrão atual</div>
-                          <div className="mt-1 text-xl font-bold text-gray-900">
+                      <div className="space-y-3">
+                        <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
+                          <div className="text-[11px] text-gray-500">Desconto padrão atual</div>
+                          <div className="mt-1 text-lg font-bold text-gray-900">
                             {discountSettings?.default_discount_percent ?? 0}%
                           </div>
                         </div>
 
-                        <div className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
-                          <div className="text-xs text-gray-500">
+                        <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
+                          <div className="text-[11px] text-gray-500">
                             Desconto máximo com autorização
                           </div>
-                          <div className="mt-1 text-xl font-bold text-gray-900">
+                          <div className="mt-1 text-lg font-bold text-gray-900">
                             {discountSettings?.max_discount_percent ?? 0}%
                           </div>
                         </div>
 
-                        <div className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
-                          <div className="text-xs text-gray-500">Consultar acima do máximo</div>
-                          <div className="mt-1 text-xl font-bold text-gray-900">
+                        <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
+                          <div className="text-[11px] text-gray-500">Consultar acima do máximo</div>
+                          <div className="mt-1 text-lg font-bold text-gray-900">
                             {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
                           </div>
                         </div>
 
-                        <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
+                        <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-600/20">
                           Esta aba aprofunda a política de desconto. A direção comercial geral
                           continua na aba <strong>Comercial e IA</strong>.
                         </div>
