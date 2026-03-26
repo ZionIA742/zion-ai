@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+} from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
@@ -106,7 +112,9 @@ type TabKey =
   | "estrategia"
   | "piscinas"
   | "catalogo"
-  | "responsaveis"
+  | "operacao"
+  | "comercial_ia"
+  | "responsavel_ativacao"
   | "descontos";
 
 const POOL_STORAGE_BUCKET = "pool-photos";
@@ -118,14 +126,14 @@ const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 const TAB_STORAGE_KEY = "zion_configuracoes_active_tab";
 
-const ROLE_OPTIONS = [
+const ROLE_OPTIONS: Option[] = [
   { value: "owner", label: "Proprietário" },
   { value: "manager", label: "Gerente" },
   { value: "sales", label: "Vendas" },
   { value: "support", label: "Suporte" },
 ];
 
-const CATALOG_CATEGORY_OPTIONS = [
+const CATALOG_CATEGORY_OPTIONS: Option[] = [
   { value: "acessorios", label: "Acessórios" },
   { value: "quimicos", label: "Produtos químicos" },
   { value: "outros", label: "Outros itens" },
@@ -356,9 +364,7 @@ function formatPriceInput(value: string) {
   const integerPart = integerPartRaw || (parts[0] ? "0" : "");
   const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 
-  if (parts.length === 1) {
-    return formattedInteger;
-  }
+  if (parts.length === 1) return formattedInteger;
 
   const decimalPart = parts.slice(1).join("").slice(0, 2);
   return `${formattedInteger},${decimalPart}`;
@@ -372,9 +378,7 @@ function formatPercentInput(value: string) {
   const integerPartRaw = parts[0].replace(/^0+(?=\d)/, "");
   const integerPart = integerPartRaw || (parts[0] ? "0" : "");
 
-  if (parts.length === 1) {
-    return integerPart;
-  }
+  if (parts.length === 1) return integerPart;
 
   const decimalPart = parts.slice(1).join("").slice(0, 2);
   return `${integerPart},${decimalPart}`;
@@ -386,6 +390,33 @@ function formatNumberInput(value: string) {
 
 function formatIntegerInput(value: string) {
   return value.replace(/[^\d]/g, "");
+}
+
+function formatWhatsappInput(value: string) {
+  return value.replace(/[^\d]/g, "");
+}
+
+function formatWhatsappPretty(value: string | null | undefined) {
+  const digits = (value ?? "").replace(/\D/g, "");
+
+  if (!digits) return "Não informado";
+
+  if (digits.length === 13) {
+    return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(
+      4,
+      9
+    )}-${digits.slice(9)}`;
+  }
+
+  if (digits.length === 11) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+  }
+
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  }
+
+  return digits;
 }
 
 function moneyBRL(value: number | null) {
@@ -422,7 +453,9 @@ function isValidTab(tab: string | null): tab is TabKey {
     tab === "estrategia" ||
     tab === "piscinas" ||
     tab === "catalogo" ||
-    tab === "responsaveis" ||
+    tab === "operacao" ||
+    tab === "comercial_ia" ||
+    tab === "responsavel_ativacao" ||
     tab === "descontos"
   );
 }
@@ -476,6 +509,13 @@ function arrayOrTextValue(value: unknown, fallback = "Não informado") {
   return textValue(value, fallback);
 }
 
+function countFilledItems(items: StrategyBlockItem[]) {
+  return items.filter((item) => {
+    const normalized = item.value.trim().toLowerCase();
+    return normalized && normalized !== "não informado";
+  }).length;
+}
+
 function SummaryCard({
   title,
   value,
@@ -494,6 +534,31 @@ function SummaryCard({
   );
 }
 
+function SectionCard({
+  title,
+  description,
+  right,
+  children,
+}: {
+  title: string;
+  description?: string;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+      <div className="flex flex-col gap-3 border-b border-black/5 px-6 py-4 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+          {description ? <p className="mt-1 text-sm text-gray-600">{description}</p> : null}
+        </div>
+        {right}
+      </div>
+      <div className="p-6">{children}</div>
+    </section>
+  );
+}
+
 function StrategySection({
   title,
   description,
@@ -503,7 +568,7 @@ function StrategySection({
   title: string;
   description: string;
   items: StrategyBlockItem[];
-  onEdit: () => void;
+  onEdit?: () => void;
 }) {
   return (
     <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
@@ -513,13 +578,15 @@ function StrategySection({
           <p className="mt-1 text-sm text-gray-600">{description}</p>
         </div>
 
-        <button
-          type="button"
-          onClick={onEdit}
-          className="inline-flex shrink-0 rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:border-gray-400 hover:bg-gray-50"
-        >
-          Editar
-        </button>
+        {onEdit ? (
+          <button
+            type="button"
+            onClick={onEdit}
+            className="inline-flex shrink-0 rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:border-gray-400 hover:bg-gray-50"
+          >
+            Editar no onboarding
+          </button>
+        ) : null}
       </div>
 
       <div className="grid gap-4 p-6 md:grid-cols-2">
@@ -533,6 +600,21 @@ function StrategySection({
         ))}
       </div>
     </section>
+  );
+}
+
+function EmptyState({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-6 text-sm text-gray-600">
+      <div className="font-semibold text-gray-900">{title}</div>
+      <p className="mt-2">{description}</p>
+    </div>
   );
 }
 
@@ -609,6 +691,17 @@ export default function ConfiguracoesPage() {
   const totalPools = pools.length;
   const totalResponsibles = responsibles.length;
   const totalCatalogItems = catalogItems.length;
+
+  const tabs: Array<{ key: TabKey; label: string }> = [
+    { key: "visao_geral", label: "Visão Geral" },
+    { key: "estrategia", label: "Estratégia" },
+    { key: "piscinas", label: "Piscinas" },
+    { key: "catalogo", label: "Produtos/Acessórios" },
+    { key: "operacao", label: "Operação" },
+    { key: "comercial_ia", label: "Comercial e IA" },
+    { key: "responsavel_ativacao", label: "Responsável e ativação" },
+    { key: "descontos", label: "Descontos" },
+  ];
 
   const catalogItemsByCategory = useMemo(() => {
     return {
@@ -963,6 +1056,91 @@ export default function ConfiguracoesPage() {
     };
   }, [strategyAnswers, activeStore?.name]);
 
+  const assistantIaNumber = useMemo(() => {
+    const possibleKeys = [
+      "assistant_whatsapp",
+      "assistant_ia_whatsapp",
+      "responsible_ai_whatsapp",
+      "ia_assistant_whatsapp",
+      "ai_assistant_number",
+      "responsavel_ia_numero",
+      "numero_ia_assistente",
+    ];
+
+    for (const key of possibleKeys) {
+      const value = strategyAnswers[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+
+    return "";
+  }, [strategyAnswers]);
+
+  const pendingItems = useMemo(() => {
+    const items: string[] = [];
+
+    if (!strategyAnswers.commercial_whatsapp) {
+      items.push("Cadastrar o WhatsApp comercial da loja.");
+    }
+
+    if (totalPools === 0) {
+      items.push("Cadastrar pelo menos uma piscina.");
+    }
+
+    if (totalCatalogItems === 0) {
+      items.push("Cadastrar pelo menos um item em Produtos/Acessórios.");
+    }
+
+    if (totalResponsibles === 0) {
+      items.push("Cadastrar pelo menos um responsável humano.");
+    }
+
+    if (!discountSettings) {
+      items.push("Salvar a política de desconto.");
+    }
+
+    if (!strategyAnswers.responsible_name) {
+      items.push("Confirmar o responsável principal na ativação.");
+    }
+
+    return items;
+  }, [
+    strategyAnswers,
+    totalPools,
+    totalCatalogItems,
+    totalResponsibles,
+    discountSettings,
+  ]);
+
+  const readinessPercent = useMemo(() => {
+    const totalChecks = 6;
+    const doneChecks = totalChecks - pendingItems.length;
+    return Math.max(0, Math.min(100, Math.round((doneChecks / totalChecks) * 100)));
+  }, [pendingItems]);
+
+  const poolsPhotoMap = useMemo(() => {
+    const map = new Map<string, PoolPhotoRow[]>();
+
+    for (const photo of poolPhotos) {
+      const current = map.get(photo.pool_id) ?? [];
+      current.push(photo);
+      map.set(photo.pool_id, current);
+    }
+
+    return map;
+  }, [poolPhotos]);
+
+  const catalogPhotosMap = useMemo(() => {
+    const map = new Map<string, CatalogItemPhotoRow[]>();
+
+    for (const photo of catalogItemPhotos) {
+      const current = map.get(photo.catalog_item_id) ?? [];
+      current.push(photo);
+      map.set(photo.catalog_item_id, current);
+    }
+
+    return map;
+  }, [catalogItemPhotos]);
+
   function goToOnboardingStep(step: number) {
     if (!hasValidStoreContext) return;
 
@@ -1146,7 +1324,7 @@ export default function ConfiguracoesPage() {
     setReceiveSlaAlerts(true);
   }
 
-  function handlePoolFilesChange(event: React.ChangeEvent<HTMLInputElement>) {
+  function handlePoolFilesChange(event: ChangeEvent<HTMLInputElement>) {
     const fileList = Array.from(event.target.files || []);
 
     if (fileList.length > MAX_POOL_PHOTOS) {
@@ -1169,15 +1347,17 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    setErrorText(null);
     setSelectedPoolFiles(fileList);
+    setErrorText(null);
   }
 
-  function handleCatalogFilesChange(event: React.ChangeEvent<HTMLInputElement>) {
+  function handleCatalogFilesChange(event: ChangeEvent<HTMLInputElement>) {
     const fileList = Array.from(event.target.files || []);
 
     if (fileList.length > MAX_CATALOG_PHOTOS) {
-      setErrorText(`Você pode selecionar no máximo ${MAX_CATALOG_PHOTOS} fotos por item.`);
+      setErrorText(
+        `Você pode selecionar no máximo ${MAX_CATALOG_PHOTOS} fotos por produto/acessório.`
+      );
       event.target.value = "";
       return;
     }
@@ -1196,29 +1376,29 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    setErrorText(null);
     setSelectedCatalogFiles(fileList);
+    setErrorText(null);
   }
 
   async function uploadPoolFiles(poolId: string, files: File[]) {
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
-      const extension = file.name.split(".").pop() || "jpg";
-      const safeFileName = `${crypto.randomUUID()}.${extension}`;
-      const storagePath = `${poolId}/${safeFileName}`;
+      const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
+      const safeExtension = extension ? extension.toLowerCase() : "jpg";
+      const filePath = `${ORGANIZATION_ID}/${STORE_ID}/${poolId}/${Date.now()}-${index}.${safeExtension}`;
 
       const { error: uploadError } = await supabase.storage
         .from(POOL_STORAGE_BUCKET)
-        .upload(storagePath, file, {
-          cacheControl: "3600",
+        .upload(filePath, file, {
           upsert: false,
+          contentType: file.type || undefined,
         });
 
       if (uploadError) throw uploadError;
 
       const { error: metadataError } = await supabase.from("pool_photos").insert({
         pool_id: poolId,
-        storage_path: storagePath,
+        storage_path: filePath,
         file_name: file.name,
         file_size_bytes: file.size,
         sort_order: index,
@@ -1231,32 +1411,34 @@ export default function ConfiguracoesPage() {
   async function uploadCatalogFiles(catalogItemId: string, files: File[]) {
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
-      const extension = file.name.split(".").pop() || "jpg";
-      const safeFileName = `${crypto.randomUUID()}.${extension}`;
-      const storagePath = `${catalogItemId}/${safeFileName}`;
+      const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
+      const safeExtension = extension ? extension.toLowerCase() : "jpg";
+      const filePath = `${ORGANIZATION_ID}/${STORE_ID}/${catalogItemId}/${Date.now()}-${index}.${safeExtension}`;
 
       const { error: uploadError } = await supabase.storage
         .from(CATALOG_STORAGE_BUCKET)
-        .upload(storagePath, file, {
-          cacheControl: "3600",
+        .upload(filePath, file, {
           upsert: false,
+          contentType: file.type || undefined,
         });
 
       if (uploadError) throw uploadError;
 
-      const { error: metadataError } = await supabase.from("store_catalog_item_photos").insert({
-        catalog_item_id: catalogItemId,
-        storage_path: storagePath,
-        file_name: file.name,
-        file_size_bytes: file.size,
-        sort_order: index,
-      });
+      const { error: metadataError } = await supabase
+        .from("store_catalog_item_photos")
+        .insert({
+          catalog_item_id: catalogItemId,
+          storage_path: filePath,
+          file_name: file.name,
+          file_size_bytes: file.size,
+          sort_order: index,
+        });
 
       if (metadataError) throw metadataError;
     }
   }
 
-  async function handleCreatePool(event: React.FormEvent<HTMLFormElement>) {
+  async function handleCreatePool(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setErrorText(null);
     setSuccessText(null);
@@ -1369,7 +1551,7 @@ export default function ConfiguracoesPage() {
     setActiveTab("piscinas");
   }
 
-  async function handleCreateCatalogItem(event: React.FormEvent<HTMLFormElement>) {
+  async function handleCreateCatalogItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setErrorText(null);
     setSuccessText(null);
@@ -1379,28 +1561,12 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    if (!catalogCategory.trim()) {
-      setErrorText("A categoria do item é obrigatória.");
-      return;
-    }
-
     if (!catalogName.trim()) {
       setErrorText("O nome do item é obrigatório.");
       return;
     }
 
-    const priceValue = toNullableNumber(catalogPrice);
     const stockQuantityValue = toNullableInteger(catalogStockQuantity);
-
-    if (priceValue == null) {
-      setErrorText("O preço do item é obrigatório.");
-      return;
-    }
-
-    if (priceValue < 0) {
-      setErrorText("O preço do item não pode ser negativo.");
-      return;
-    }
 
     if (catalogTrackStock) {
       if (stockQuantityValue == null) {
@@ -1418,8 +1584,6 @@ export default function ConfiguracoesPage() {
 
     setSavingCatalogItem(true);
 
-    const priceCents = Math.round(priceValue * 100);
-
     const { data: createdItem, error } = await supabase
       .from("store_catalog_items")
       .insert({
@@ -1428,7 +1592,7 @@ export default function ConfiguracoesPage() {
         sku: catalogCode.trim() || null,
         name: catalogName.trim(),
         description: catalogDescription.trim() || null,
-        price_cents: priceCents,
+        price_cents: toNullableNumber(catalogPrice) == null ? null : Math.round((toNullableNumber(catalogPrice) ?? 0) * 100),
         currency: "BRL",
         is_active: catalogIsActive,
         track_stock: catalogTrackStock,
@@ -1460,13 +1624,13 @@ export default function ConfiguracoesPage() {
     }
 
     resetCatalogForm();
-    setSuccessText("Item do catálogo cadastrado com sucesso.");
+    setSuccessText("Item cadastrado com sucesso.");
     setSavingCatalogItem(false);
     await fetchPageData("reload");
     setActiveTab("catalogo");
   }
 
-  async function handleCreateResponsible(event: React.FormEvent<HTMLFormElement>) {
+  async function handleCreateResponsible(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setErrorText(null);
     setSuccessText(null);
@@ -1493,7 +1657,7 @@ export default function ConfiguracoesPage() {
       store_id: STORE_ID,
       name: responsibleName.trim(),
       whatsapp_number: responsibleWhatsapp.trim(),
-      role: responsibleRole.trim() || "owner",
+      role: responsibleRole,
       receive_discount_alerts: receiveDiscountAlerts,
       receive_subscription_alerts: receiveSubscriptionAlerts,
       receive_sla_alerts: receiveSlaAlerts,
@@ -1509,10 +1673,10 @@ export default function ConfiguracoesPage() {
     setSuccessText("Responsável cadastrado com sucesso.");
     setSavingResponsible(false);
     await fetchResponsibles();
-    setActiveTab("responsaveis");
+    setActiveTab("responsavel_ativacao");
   }
 
-  async function handleSaveDiscountSettings(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSaveDiscountSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setErrorText(null);
     setSuccessText(null);
@@ -1522,33 +1686,31 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    const defaultPercent = toNullableNumber(defaultDiscountPercentInput);
-    const maxPercent = toNullableNumber(maxDiscountPercentInput);
+    const defaultDiscountPercent = toNullableNumber(defaultDiscountPercentInput);
+    const maxDiscountPercent = toNullableNumber(maxDiscountPercentInput);
 
-    if (defaultPercent == null) {
-      setErrorText("O desconto padrão da IA é obrigatório.");
+    if (defaultDiscountPercent == null) {
+      setErrorText("O desconto padrão é obrigatório.");
       return;
     }
 
-    if (maxPercent == null) {
-      setErrorText("O desconto máximo com autorização é obrigatório.");
+    if (maxDiscountPercent == null) {
+      setErrorText("O desconto máximo é obrigatório.");
       return;
     }
 
-    if (defaultPercent < 0 || maxPercent < 0) {
-      setErrorText("Os percentuais não podem ser negativos.");
+    if (defaultDiscountPercent < 0) {
+      setErrorText("O desconto padrão não pode ser negativo.");
       return;
     }
 
-    if (defaultPercent > 100 || maxPercent > 100) {
-      setErrorText("Os percentuais não podem ser maiores que 100%.");
+    if (maxDiscountPercent < 0) {
+      setErrorText("O desconto máximo não pode ser negativo.");
       return;
     }
 
-    if (defaultPercent > maxPercent) {
-      setErrorText(
-        "O desconto padrão da IA não pode ser maior que o desconto máximo com autorização."
-      );
+    if (defaultDiscountPercent > maxDiscountPercent) {
+      setErrorText("O desconto padrão não pode ser maior que o desconto máximo.");
       return;
     }
 
@@ -1556,14 +1718,15 @@ export default function ConfiguracoesPage() {
 
     const { error } = await supabase.from("store_discount_settings").upsert(
       {
-        store_id: STORE_ID,
         organization_id: ORGANIZATION_ID,
-        default_discount_percent: defaultPercent,
-        max_discount_percent: maxPercent,
+        store_id: STORE_ID,
+        default_discount_percent: defaultDiscountPercent,
+        max_discount_percent: maxDiscountPercent,
         allow_ask_above_max_discount: allowAskAboveMaxDiscount,
-        updated_at: new Date().toISOString(),
       },
-      { onConflict: "store_id" }
+      {
+        onConflict: "store_id",
+      }
     );
 
     if (error) {
@@ -1605,10 +1768,10 @@ export default function ConfiguracoesPage() {
     }
   }, [activeTab]);
 
-  if (storeLoading) {
+  if (storeLoading || loadingInitial) {
     return (
       <div className="min-h-screen bg-gray-100">
-        <div className="mx-auto max-w-6xl px-6 py-6">
+        <div className="mx-auto max-w-7xl px-6 py-6">
           <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
             Carregando loja ativa...
           </div>
@@ -1619,26 +1782,41 @@ export default function ConfiguracoesPage() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-6xl px-6 py-6">
-        <div className="mb-6 flex items-start justify-between gap-4">
+      <div className="mx-auto max-w-7xl px-6 py-6">
+        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Configurações</h1>
-            <p className="mt-2 text-gray-600">
-              Área mínima de configuração da loja para a simulação.
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-700">
+              Configurações da loja
+            </p>
+            <h1 className="mt-2 text-3xl font-black tracking-tight text-gray-900">
+              Pilar 2 — Configurações e onboarding unificados
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm text-gray-600">
+              Organize a operação da sua loja, preserve o onboarding como espelho inicial e
+              deixe Configurações como fonte viva oficial consultada pela IA.
             </p>
             {activeStore?.name ? (
               <p className="mt-2 text-xs text-gray-500">Loja ativa: {activeStore.name}</p>
             ) : null}
           </div>
 
-          <button
-            type="button"
-            onClick={() => void fetchPageData("reload")}
-            disabled={reloading || !hasValidStoreContext}
-            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {reloading ? "Recarregando..." : "Recarregar"}
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => void fetchPageData("reload")}
+              disabled={reloading || !hasValidStoreContext}
+              className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {reloading ? "Recarregando..." : "Recarregar"}
+            </button>
+
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center justify-center rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
+            >
+              Voltar ao dashboard
+            </Link>
+          </div>
         </div>
 
         {!hasValidStoreContext ? (
@@ -1666,312 +1844,252 @@ export default function ConfiguracoesPage() {
               </div>
             ) : null}
 
-            {loadingInitial ? (
-              <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-                Carregando configurações...
+            <section className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+              <div className="flex flex-wrap gap-3">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={cx(
+                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
+                      activeTab === tab.key
+                        ? "bg-black text-white"
+                        : "bg-white text-gray-900 hover:bg-gray-50"
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
-            ) : (
-              <div className="space-y-6">
-                <div className="mb-6 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("visao_geral")}
-                    className={cx(
-                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-                      activeTab === "visao_geral"
-                        ? "bg-black text-white"
-                        : "bg-white text-gray-900 hover:bg-gray-50"
-                    )}
+            </section>
+
+            <div className="mt-6 space-y-6">
+              {activeTab === "visao_geral" && (
+                <>
+                  <SectionCard
+                    title="Status geral da configuração"
+                    description="Resumo vivo da base mínima para a loja operar e a IA consultar as informações corretas."
                   >
-                    Visão Geral
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("estrategia")}
-                    className={cx(
-                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-                      activeTab === "estrategia"
-                        ? "bg-black text-white"
-                        : "bg-white text-gray-900 hover:bg-gray-50"
-                    )}
-                  >
-                    Estratégia
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("piscinas")}
-                    className={cx(
-                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-                      activeTab === "piscinas"
-                        ? "bg-black text-white"
-                        : "bg-white text-gray-900 hover:bg-gray-50"
-                    )}
-                  >
-                    Piscinas
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("catalogo")}
-                    className={cx(
-                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-                      activeTab === "catalogo"
-                        ? "bg-black text-white"
-                        : "bg-white text-gray-900 hover:bg-gray-50"
-                    )}
-                  >
-                    Produtos/Acessórios
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("responsaveis")}
-                    className={cx(
-                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-                      activeTab === "responsaveis"
-                        ? "bg-black text-white"
-                        : "bg-white text-gray-900 hover:bg-gray-50"
-                    )}
-                  >
-                    Responsáveis
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("descontos")}
-                    className={cx(
-                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
-                      activeTab === "descontos"
-                        ? "bg-black text-white"
-                        : "bg-white text-gray-900 hover:bg-gray-50"
-                    )}
-                  >
-                    Descontos
-                  </button>
-                </div>
-
-                {activeTab === "visao_geral" && (
-                  <>
-                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                      <div className="border-b border-black/5 px-6 py-4">
-                        <h2 className="text-lg font-semibold text-gray-900">
-                          Resumo do catálogo geral
-                        </h2>
-                        <p className="mt-1 text-sm text-gray-600">
-                          Itens da loja organizados por categoria.
-                        </p>
-                      </div>
-
-                      <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
-                        <SummaryCard title="Piscinas" value={totalPools} />
-                        <SummaryCard title="Piscinas ativas" value={activePoolsCount} />
-                        <SummaryCard
-                          title="Piscinas disponíveis"
-                          value={poolsAvailableCount}
-                          hint="Ativas e aptas para oferta"
-                        />
-                        <SummaryCard
-                          title="Itens disponíveis no catálogo"
-                          value={catalogItemsAvailableCount}
-                          hint="Ativos e aptos para oferta"
-                        />
-                      </div>
-                    </section>
-
-                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                      <div className="border-b border-black/5 px-6 py-4">
-                        <h2 className="text-lg font-semibold text-gray-900">
-                          Resumo por categoria
-                        </h2>
-                        <p className="mt-1 text-sm text-gray-600">
-                          Visão rápida do catálogo cadastrado.
-                        </p>
-                      </div>
-
-                      <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
-                        <SummaryCard title="Itens do catálogo" value={totalCatalogItems} />
-                        <SummaryCard title="Itens ativos" value={activeCatalogItemsCount} />
-                        <SummaryCard
-                          title="Acessórios"
-                          value={catalogItemsByCategory.acessorios.length}
-                        />
-                        <SummaryCard
-                          title="Produtos químicos"
-                          value={catalogItemsByCategory.quimicos.length}
-                        />
-                      </div>
-                    </section>
-
-                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                      <div className="border-b border-black/5 px-6 py-4">
-                        <h2 className="text-lg font-semibold text-gray-900">
-                          Acessos rápidos
-                        </h2>
-                        <p className="mt-1 text-sm text-gray-600">
-                          Vá direto para visualizar os itens cadastrados.
-                        </p>
-                      </div>
-
-                      <div className="flex flex-wrap gap-3 p-6">
-                        <Link
-                          href="/configuracoes/piscinas"
-                          className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                        >
-                          Ver piscinas cadastradas
-                        </Link>
-
-                        <Link
-                          href="/configuracoes/catalogo/acessorios"
-                          className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                        >
-                          Ver acessórios
-                        </Link>
-
-                        <Link
-                          href="/configuracoes/catalogo/quimicos"
-                          className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                        >
-                          Ver produtos químicos
-                        </Link>
-
-                        <Link
-                          href="/configuracoes/catalogo/outros"
-                          className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                        >
-                          Ver outros itens
-                        </Link>
-                      </div>
-                    </section>
-
-                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                      <div className="border-b border-black/5 px-6 py-4">
-                        <h2 className="text-lg font-semibold text-gray-900">
-                          Política atual de desconto
-                        </h2>
-                        <p className="mt-1 text-sm text-gray-600">
-                          Regras que a IA deve respeitar nas negociações.
-                        </p>
-                      </div>
-
-                      <div className="grid gap-4 p-6 md:grid-cols-3">
-                        <SummaryCard
-                          title="Desconto padrão da IA"
-                          value={`${discountSettings?.default_discount_percent ?? 0}%`}
-                        />
-                        <SummaryCard
-                          title="Desconto máximo com autorização"
-                          value={`${discountSettings?.max_discount_percent ?? 0}%`}
-                        />
-                        <SummaryCard
-                          title="Consultar acima do máximo"
-                          value={discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
-                        />
-                      </div>
-                    </section>
-                  </>
-                )}
-
-                {activeTab === "estrategia" && (
-                  <>
-                    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                      <div className="border-b border-black/5 px-6 py-4">
-                        <h2 className="text-lg font-semibold text-gray-900">
-                          Configurações estratégicas da loja
-                        </h2>
-                        <p className="mt-1 text-sm text-gray-600">
-                          Este bloco reúne as informações que vieram do onboarding e ajudam a IA
-                          a seguir a forma real de trabalho da loja.
-                        </p>
-                      </div>
-
-                      <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-4">
-                        <SummaryCard
-                          title="Serviços marcados"
-                          value={parseArrayAnswer(strategyAnswers.store_services).length}
-                        />
-                        <SummaryCard
-                          title="Tipos de piscina"
-                          value={parseArrayAnswer(strategyAnswers.pool_types_selected).length}
-                        />
-                        <SummaryCard
-                          title="Fluxos mapeados"
-                          value={
-                            parseArrayAnswer(strategyAnswers.sales_flow_start_steps).length +
-                            parseArrayAnswer(strategyAnswers.sales_flow_middle_steps).length +
-                            parseArrayAnswer(strategyAnswers.sales_flow_final_steps).length
-                          }
-                        />
-                        <SummaryCard
-                          title="Casos de notificação"
-                          value={
-                            parseArrayAnswer(strategyAnswers.responsible_notification_cases).length
-                          }
-                        />
-                      </div>
-                    </section>
-
-                    <StrategySection
-                      title="Loja e atuação"
-                      description="Identidade da loja, região atendida e serviços principais."
-                      items={strategySections.lojaEAtuacao}
-                      onEdit={() => goToOnboardingStep(1)}
-                    />
-
-                    <StrategySection
-                      title="Oferta principal"
-                      description="O que a loja vende e quais linhas principais trabalha."
-                      items={strategySections.ofertaPrincipal}
-                      onEdit={() => goToOnboardingStep(2)}
-                    />
-
-                    <StrategySection
-                      title="Operação da loja"
-                      description="Como a loja funciona no dia a dia e quais regras a IA deve respeitar."
-                      items={strategySections.operacaoDaLoja}
-                      onEdit={() => goToOnboardingStep(3)}
-                    />
-
-                    <StrategySection
-                      title="Comercial e IA"
-                      description="Regras comerciais que orientam preço, desconto e ajuda humana."
-                      items={strategySections.comercialEIA}
-                      onEdit={() => goToOnboardingStep(4)}
-                    />
-
-                    <StrategySection
-                      title="Responsável e ativação"
-                      description="Quem a IA pode acionar e como ela deve se comportar."
-                      items={strategySections.responsavelEAtivacao}
-                      onEdit={() => goToOnboardingStep(5)}
-                    />
-                  </>
-                )}
-
-                {activeTab === "piscinas" && (
-                  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                    <div className="border-b border-black/5 px-6 py-4">
-                      <h2 className="text-lg font-semibold text-gray-900">
-                        Cadastro de Piscinas
-                      </h2>
-                      <p className="mt-1 text-sm text-gray-600">
-                        Cadastre modelos com todos os campos obrigatórios, controle comercial e
-                        faça upload das fotos.
-                      </p>
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <SummaryCard
+                        title="Prontidão atual"
+                        value={`${readinessPercent}%`}
+                        hint="Leitura prática da base mínima obrigatória"
+                      />
+                      <SummaryCard title="Piscinas" value={totalPools} />
+                      <SummaryCard title="Itens no catálogo" value={totalCatalogItems} />
+                      <SummaryCard title="Responsáveis" value={totalResponsibles} />
                     </div>
 
-                    <div className="grid gap-6 p-6 lg:grid-cols-2">
-                      <form onSubmit={handleCreatePool} className="space-y-4">
+                    <div className="mt-6 h-3 overflow-hidden rounded-full bg-gray-200">
+                      <div
+                        className="h-full rounded-full bg-gray-900 transition-all"
+                        style={{ width: `${readinessPercent}%` }}
+                      />
+                    </div>
+                  </SectionCard>
+
+                  <SectionCard
+                    title="Hub rápido da configuração"
+                    description="Acesse as áreas mais importantes da loja sem se perder."
+                  >
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("piscinas")}
+                        className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+                      >
+                        <div className="font-semibold text-gray-900">Piscinas</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Cadastre modelos, estoque, preço e fotos.
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("catalogo")}
+                        className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+                      >
+                        <div className="font-semibold text-gray-900">Produtos/Acessórios</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Organize químicos, acessórios e outros itens.
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("comercial_ia")}
+                        className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+                      >
+                        <div className="font-semibold text-gray-900">Comercial e IA</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Regras de preço, negociação e ajuda humana.
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("responsavel_ativacao")}
+                        className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+                      >
+                        <div className="font-semibold text-gray-900">Responsável e ativação</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Ponte entre a IA e a operação humana da loja.
+                        </div>
+                      </button>
+                    </div>
+                  </SectionCard>
+
+                  <SectionCard
+                    title="Pendências prioritárias"
+                    description="Esses pontos ajudam a evitar loja com configuração crítica incompleta."
+                  >
+                    {pendingItems.length === 0 ? (
+                      <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+                        Tudo certo nessa base mínima. A estrutura principal da configuração está preenchida.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {pendingItems.map((item, index) => (
+                          <div
+                            key={`${item}-${index}`}
+                            className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20"
+                          >
+                            {item}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </SectionCard>
+
+                  <SectionCard
+                    title="Resumo operacional e comercial"
+                    description="Visão curta do que já está vivo na loja."
+                  >
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <SummaryCard
+                        title="Piscinas ativas"
+                        value={activePoolsCount}
+                        hint="Modelos liberados para oferta"
+                      />
+                      <SummaryCard
+                        title="Piscinas disponíveis"
+                        value={poolsAvailableCount}
+                        hint="Ativas e aptas para oferta"
+                      />
+                      <SummaryCard
+                        title="Itens ativos do catálogo"
+                        value={activeCatalogItemsCount}
+                      />
+                      <SummaryCard
+                        title="Itens disponíveis"
+                        value={catalogItemsAvailableCount}
+                        hint="Ativos e aptos para venda"
+                      />
+                    </div>
+                  </SectionCard>
+
+                  <SectionCard
+                    title="Atalhos externos"
+                    description="Ações úteis para continuar o trabalho da loja."
+                  >
+                    <div className="flex flex-wrap gap-3">
+                      <Link
+                        href="/onboarding"
+                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      >
+                        Abrir onboarding
+                      </Link>
+
+                      <Link
+                        href="/crm"
+                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      >
+                        Abrir CRM
+                      </Link>
+
+                      <Link
+                        href="/inbox"
+                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      >
+                        Abrir Inbox
+                      </Link>
+
+                      <Link
+                        href="/schedule"
+                        className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      >
+                        Abrir Agenda
+                      </Link>
+                    </div>
+                  </SectionCard>
+                </>
+              )}
+
+              {activeTab === "estrategia" && (
+                <div className="space-y-6">
+                  <SectionCard
+                    title="Estratégia = espelho estruturado do onboarding"
+                    description="Essa aba mostra a base levantada na entrada da loja. Ela não é a principal camada de edição fina da operação viva."
+                  >
+                    <div className="grid gap-4 md:grid-cols-4">
+                      <SummaryCard
+                        title="Loja e atuação"
+                        value={countFilledItems(strategySections.lojaEAtuacao)}
+                        hint="Campos preenchidos"
+                      />
+                      <SummaryCard
+                        title="Oferta principal"
+                        value={countFilledItems(strategySections.ofertaPrincipal)}
+                        hint="Campos preenchidos"
+                      />
+                      <SummaryCard
+                        title="Operação espelhada"
+                        value={countFilledItems(strategySections.operacaoDaLoja)}
+                        hint="Campos preenchidos"
+                      />
+                      <SummaryCard
+                        title="Comercial espelhado"
+                        value={countFilledItems(strategySections.comercialEIA)}
+                        hint="Campos preenchidos"
+                      />
+                    </div>
+                  </SectionCard>
+
+                  <StrategySection
+                    title="Loja e atuação"
+                    description="Base institucional, região, WhatsApp comercial e serviços principais."
+                    items={strategySections.lojaEAtuacao}
+                    onEdit={() => goToOnboardingStep(1)}
+                  />
+
+                  <StrategySection
+                    title="Oferta principal"
+                    description="Tipos de piscina, marca principal e linha geral do que a loja oferece."
+                    items={strategySections.ofertaPrincipal}
+                    onEdit={() => goToOnboardingStep(2)}
+                  />
+                </div>
+              )}
+
+              {activeTab === "piscinas" && (
+                <div className="space-y-6">
+                  <SectionCard
+                    title="Cadastrar piscina"
+                    description="Cadastre modelos reais que a loja pode ofertar."
+                  >
+                    <form onSubmit={handleCreatePool} className="grid gap-6 lg:grid-cols-2">
+                      <div className="space-y-4">
                         <div>
                           <label className="mb-1 block text-sm font-medium text-gray-700">
-                            Nome
+                            Nome da piscina
                           </label>
                           <input
                             value={poolName}
                             onChange={(e) => setPoolName(e.target.value)}
                             className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            placeholder="Ex.: Piscina Premium 7x3"
+                            placeholder="Ex.: Piscina Fibra 7x3"
                           />
                         </div>
 
@@ -1996,7 +2114,7 @@ export default function ConfiguracoesPage() {
                               value={poolLength}
                               onChange={(e) => setPoolLength(formatNumberInput(e.target.value))}
                               className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                              placeholder="6"
+                              placeholder="7"
                             />
                           </div>
 
@@ -2008,7 +2126,7 @@ export default function ConfiguracoesPage() {
                               value={poolDepth}
                               onChange={(e) => setPoolDepth(formatNumberInput(e.target.value))}
                               className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                              placeholder="1,5"
+                              placeholder="1.40"
                             />
                           </div>
                         </div>
@@ -2018,46 +2136,37 @@ export default function ConfiguracoesPage() {
                             <label className="mb-1 block text-sm font-medium text-gray-700">
                               Formato
                             </label>
-                            <select
+                            <input
                               value={poolShape}
                               onChange={(e) => setPoolShape(e.target.value)}
                               className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            >
-                              <option value="retangular">Retangular</option>
-                              <option value="quadrada">Quadrada</option>
-                              <option value="redonda">Redonda</option>
-                              <option value="oval">Oval</option>
-                              <option value="outro">Outro</option>
-                            </select>
+                              placeholder="Retangular"
+                            />
                           </div>
 
                           <div>
                             <label className="mb-1 block text-sm font-medium text-gray-700">
                               Material
                             </label>
-                            <select
+                            <input
                               value={poolMaterial}
                               onChange={(e) => setPoolMaterial(e.target.value)}
                               className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            >
-                              <option value="fibra">Fibra</option>
-                              <option value="vinil">Vinil</option>
-                              <option value="alvenaria">Alvenaria</option>
-                              <option value="outro">Outro</option>
-                            </select>
+                              placeholder="Fibra"
+                            />
                           </div>
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-3">
                           <div>
                             <label className="mb-1 block text-sm font-medium text-gray-700">
-                              Capacidade máxima (L)
+                              Capacidade (L)
                             </label>
                             <input
                               value={poolCapacity}
                               onChange={(e) => setPoolCapacity(formatNumberInput(e.target.value))}
                               className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                              placeholder="27000"
+                              placeholder="18000"
                             />
                           </div>
 
@@ -2069,7 +2178,7 @@ export default function ConfiguracoesPage() {
                               value={poolWeight}
                               onChange={(e) => setPoolWeight(formatNumberInput(e.target.value))}
                               className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                              placeholder="150"
+                              placeholder="450"
                             />
                           </div>
 
@@ -2081,91 +2190,9 @@ export default function ConfiguracoesPage() {
                               value={poolPrice}
                               onChange={(e) => setPoolPrice(formatPriceInput(e.target.value))}
                               className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                              placeholder="12.000 ou 10.500,10"
+                              placeholder="25.000,00"
                             />
                           </div>
-                        </div>
-
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                            <label className="flex items-center gap-3 text-sm text-gray-700">
-                              <input
-                                type="checkbox"
-                                checked={poolIsActive}
-                                onChange={(e) => setPoolIsActive(e.target.checked)}
-                              />
-                              Piscina ativa para oferta pela loja e pela IA
-                            </label>
-                          </div>
-
-                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                            <label className="flex items-center gap-3 text-sm text-gray-700">
-                              <input
-                                type="checkbox"
-                                checked={poolTrackStock}
-                                onChange={(e) => setPoolTrackStock(e.target.checked)}
-                              />
-                              Controlar estoque desta piscina
-                            </label>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
-                            Quantidade em estoque
-                          </label>
-                          <input
-                            value={poolStockQuantity}
-                            onChange={(e) => setPoolStockQuantity(formatIntegerInput(e.target.value))}
-                            disabled={!poolTrackStock}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
-                            placeholder={
-                              poolTrackStock
-                                ? "Ex.: 3"
-                                : "Desativado porque o controle de estoque está desligado"
-                            }
-                          />
-                          <div className="mt-2 text-xs text-gray-500">
-                            Quando o controle de estoque estiver desligado, a piscina poderá ser
-                            ofertada sem depender de quantidade.
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="mb-2 block text-sm font-medium text-gray-700">
-                            Fotos da piscina
-                          </label>
-
-                          <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
-                            Fazer upload das fotos
-                            <input
-                              type="file"
-                              accept="image/png,image/jpeg,image/jpg,image/webp"
-                              multiple
-                              onChange={handlePoolFilesChange}
-                              className="hidden"
-                            />
-                          </label>
-
-                          <div className="mt-2 text-xs text-gray-500">
-                            Máximo de {MAX_POOL_PHOTOS} fotos por piscina e até 50 MB por arquivo.
-                          </div>
-
-                          {selectedPoolFiles.length > 0 ? (
-                            <div className="mt-3 space-y-2 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                              {selectedPoolFiles.map((file, index) => (
-                                <div
-                                  key={`${file.name}-${index}`}
-                                  className="flex items-center justify-between gap-3 text-sm text-gray-700"
-                                >
-                                  <span className="truncate">{file.name}</span>
-                                  <span className="shrink-0 text-xs text-gray-500">
-                                    {formatFileSize(file.size)}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
                         </div>
 
                         <div>
@@ -2175,54 +2202,205 @@ export default function ConfiguracoesPage() {
                           <textarea
                             value={poolDescription}
                             onChange={(e) => setPoolDescription(e.target.value)}
-                            className="min-h-[120px] w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            placeholder="Descreva o modelo da piscina..."
+                            rows={4}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Detalhes do modelo, diferenciais e observações."
                           />
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                            <input
+                              type="checkbox"
+                              checked={poolIsActive}
+                              onChange={(e) => setPoolIsActive(e.target.checked)}
+                            />
+                            Piscina ativa para oferta
+                          </label>
+
+                          <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                            <input
+                              type="checkbox"
+                              checked={poolTrackStock}
+                              onChange={(e) => setPoolTrackStock(e.target.checked)}
+                            />
+                            Controlar estoque
+                          </label>
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Quantidade em estoque
+                          </label>
+                          <input
+                            value={poolStockQuantity}
+                            onChange={(e) =>
+                              setPoolStockQuantity(formatIntegerInput(e.target.value))
+                            }
+                            disabled={!poolTrackStock}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:bg-gray-100"
+                            placeholder="0"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Fotos da piscina
+                          </label>
+                          <input
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            onChange={handlePoolFilesChange}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none file:mr-4 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                          />
+                          <p className="mt-2 text-xs text-gray-500">
+                            Até {MAX_POOL_PHOTOS} imagens, máximo de 50 MB por arquivo.
+                          </p>
+
+                          {selectedPoolFiles.length > 0 ? (
+                            <div className="mt-3 space-y-2">
+                              {selectedPoolFiles.map((file) => (
+                                <div
+                                  key={`${file.name}-${file.size}`}
+                                  className="rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-700 ring-1 ring-black/5"
+                                >
+                                  {file.name} — {formatFileSize(file.size)}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
 
                         <button
                           type="submit"
                           disabled={savingPool || !hasValidStoreContext}
-                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="w-full rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {savingPool ? "Salvando..." : "Cadastrar piscina"}
+                          {savingPool ? "Salvando piscina..." : "Cadastrar piscina"}
                         </button>
-                      </form>
-
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-sm font-semibold text-gray-900">Resumo rápido</div>
-                        <div className="mt-3 space-y-3 text-sm text-gray-700">
-                          <div>Total de piscinas cadastradas: {totalPools}</div>
-                          <div>Piscinas ativas: {activePoolsCount}</div>
-                          <div>Piscinas disponíveis para oferta: {poolsAvailableCount}</div>
-                          <div>Total de fotos cadastradas: {poolPhotos.length}</div>
-                        </div>
-
-                        <Link
-                          href="/configuracoes/piscinas"
-                          className="mt-5 inline-flex rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                        >
-                          Ver todas as piscinas cadastradas
-                        </Link>
                       </div>
-                    </div>
-                  </section>
-                )}
+                    </form>
+                  </SectionCard>
 
-                {activeTab === "catalogo" && (
-                  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                    <div className="border-b border-black/5 px-6 py-4">
-                      <h2 className="text-lg font-semibold text-gray-900">
-                        Produtos/Acessórios da Loja
-                      </h2>
-                      <p className="mt-1 text-sm text-gray-600">
-                        Cadastre acessórios, produtos químicos e outros itens usando a base
-                        genérica do catálogo.
-                      </p>
-                    </div>
+                  <SectionCard
+                    title="Piscinas cadastradas"
+                    description="Lista viva dos modelos disponíveis na loja."
+                  >
+                    {pools.length === 0 ? (
+                      <EmptyState
+                        title="Nenhuma piscina cadastrada"
+                        description="Cadastre pelo menos um modelo para a loja começar a ter oferta viva nesta área."
+                      />
+                    ) : (
+                      <div className="grid gap-4 lg:grid-cols-2">
+                        {pools.map((pool) => {
+                          const photos = poolsPhotoMap.get(pool.id) ?? [];
 
-                    <div className="grid gap-6 p-6 lg:grid-cols-2">
-                      <form onSubmit={handleCreateCatalogItem} className="space-y-4">
+                          return (
+                            <div
+                              key={pool.id}
+                              className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-lg font-semibold text-gray-900">
+                                    {pool.name || "Piscina sem nome"}
+                                  </div>
+                                  <div className="mt-1 text-sm text-gray-600">
+                                    {pool.material || "Material não informado"} •{" "}
+                                    {pool.shape || "Formato não informado"}
+                                  </div>
+                                </div>
+
+                                <div
+                                  className={cx(
+                                    "rounded-full px-3 py-1 text-xs font-semibold",
+                                    pool.is_active
+                                      ? "bg-emerald-100 text-emerald-800"
+                                      : "bg-gray-200 text-gray-700"
+                                  )}
+                                >
+                                  {pool.is_active ? "Ativa" : "Inativa"}
+                                </div>
+                              </div>
+
+                              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Medidas</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {pool.length_m ?? "-"}m x {pool.width_m ?? "-"}m x{" "}
+                                    {pool.depth_m ?? "-"}m
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Capacidade</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {pool.max_capacity_l?.toLocaleString("pt-BR") ?? "-"} L
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Preço</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {moneyBRL(pool.price)}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Estoque</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {pool.track_stock
+                                      ? pool.stock_quantity ?? 0
+                                      : "Sem controle"}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {pool.description ? (
+                                <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
+                                  {pool.description}
+                                </div>
+                              ) : null}
+
+                              <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
+                                <div className="font-medium text-gray-900">
+                                  Fotos cadastradas: {photos.length}
+                                </div>
+                                {photos.length > 0 ? (
+                                  <div className="mt-2 space-y-1">
+                                    {photos.map((photo) => (
+                                      <div key={photo.id}>
+                                        {photo.file_name} — {formatFileSize(photo.file_size_bytes)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="mt-1 text-gray-500">
+                                    Nenhuma foto cadastrada para este modelo.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </SectionCard>
+                </div>
+              )}
+
+              {activeTab === "catalogo" && (
+                <div className="space-y-6">
+                  <SectionCard
+                    title="Cadastrar item em Produtos/Acessórios"
+                    description="Base viva de produtos químicos, acessórios e outros itens."
+                  >
+                    <form onSubmit={handleCreateCatalogItem} className="grid gap-6 lg:grid-cols-2">
+                      <div className="space-y-4">
                         <div>
                           <label className="mb-1 block text-sm font-medium text-gray-700">
                             Categoria
@@ -2240,30 +2418,28 @@ export default function ConfiguracoesPage() {
                           </select>
                         </div>
 
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
-                              Nome do item
-                            </label>
-                            <input
-                              value={catalogName}
-                              onChange={(e) => setCatalogName(e.target.value)}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                              placeholder="Ex.: Cloro granulado 10 kg"
-                            />
-                          </div>
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Código / SKU
+                          </label>
+                          <input
+                            value={catalogCode}
+                            onChange={(e) => setCatalogCode(e.target.value)}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Ex.: CL-001"
+                          />
+                        </div>
 
-                          <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
-                              Código do produto (opcional)
-                            </label>
-                            <input
-                              value={catalogCode}
-                              onChange={(e) => setCatalogCode(e.target.value)}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                              placeholder="Ex.: CLORO-10KG"
-                            />
-                          </div>
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Nome do item
+                          </label>
+                          <input
+                            value={catalogName}
+                            onChange={(e) => setCatalogName(e.target.value)}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Ex.: Cloro granulado 10kg"
+                          />
                         </div>
 
                         <div>
@@ -2274,32 +2450,43 @@ export default function ConfiguracoesPage() {
                             value={catalogPrice}
                             onChange={(e) => setCatalogPrice(formatPriceInput(e.target.value))}
                             className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            placeholder="Ex.: 129,90"
+                            placeholder="149,90"
                           />
                         </div>
 
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                            <label className="flex items-center gap-3 text-sm text-gray-700">
-                              <input
-                                type="checkbox"
-                                checked={catalogIsActive}
-                                onChange={(e) => setCatalogIsActive(e.target.checked)}
-                              />
-                              Item ativo para uso pela loja e pela IA
-                            </label>
-                          </div>
+                        <div>
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                            Descrição
+                          </label>
+                          <textarea
+                            value={catalogDescription}
+                            onChange={(e) => setCatalogDescription(e.target.value)}
+                            rows={4}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            placeholder="Detalhes do item, uso e observações."
+                          />
+                        </div>
+                      </div>
 
-                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                            <label className="flex items-center gap-3 text-sm text-gray-700">
-                              <input
-                                type="checkbox"
-                                checked={catalogTrackStock}
-                                onChange={(e) => setCatalogTrackStock(e.target.checked)}
-                              />
-                              Controlar estoque deste item
-                            </label>
-                          </div>
+                      <div className="space-y-4">
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                            <input
+                              type="checkbox"
+                              checked={catalogIsActive}
+                              onChange={(e) => setCatalogIsActive(e.target.checked)}
+                            />
+                            Item ativo para venda
+                          </label>
+
+                          <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                            <input
+                              type="checkbox"
+                              checked={catalogTrackStock}
+                              onChange={(e) => setCatalogTrackStock(e.target.checked)}
+                            />
+                            Controlar estoque
+                          </label>
                         </div>
 
                         <div>
@@ -2312,135 +2499,329 @@ export default function ConfiguracoesPage() {
                               setCatalogStockQuantity(formatIntegerInput(e.target.value))
                             }
                             disabled={!catalogTrackStock}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
-                            placeholder={
-                              catalogTrackStock
-                                ? "Ex.: 12"
-                                : "Desativado porque o controle de estoque está desligado"
-                            }
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:bg-gray-100"
+                            placeholder="0"
                           />
-                          <div className="mt-2 text-xs text-gray-500">
-                            Quando o controle estiver desligado, a IA poderá considerar o item
-                            disponível sem depender de quantidade.
-                          </div>
                         </div>
 
                         <div>
-                          <label className="mb-2 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-sm font-medium text-gray-700">
                             Fotos do item
                           </label>
-
-                          <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
-                            Fazer upload das fotos
-                            <input
-                              type="file"
-                              accept="image/png,image/jpeg,image/jpg,image/webp"
-                              multiple
-                              onChange={handleCatalogFilesChange}
-                              className="hidden"
-                            />
-                          </label>
-
-                          <div className="mt-2 text-xs text-gray-500">
-                            Máximo de {MAX_CATALOG_PHOTOS} fotos por item e até 50 MB por arquivo.
-                          </div>
+                          <input
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            onChange={handleCatalogFilesChange}
+                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none file:mr-4 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                          />
+                          <p className="mt-2 text-xs text-gray-500">
+                            Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.
+                          </p>
 
                           {selectedCatalogFiles.length > 0 ? (
-                            <div className="mt-3 space-y-2 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                              {selectedCatalogFiles.map((file, index) => (
+                            <div className="mt-3 space-y-2">
+                              {selectedCatalogFiles.map((file) => (
                                 <div
-                                  key={`${file.name}-${index}`}
-                                  className="flex items-center justify-between gap-3 text-sm text-gray-700"
+                                  key={`${file.name}-${file.size}`}
+                                  className="rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-700 ring-1 ring-black/5"
                                 >
-                                  <span className="truncate">{file.name}</span>
-                                  <span className="shrink-0 text-xs text-gray-500">
-                                    {formatFileSize(file.size)}
-                                  </span>
+                                  {file.name} — {formatFileSize(file.size)}
                                 </div>
                               ))}
                             </div>
                           ) : null}
                         </div>
 
-                        <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
-                            Descrição
-                          </label>
-                          <textarea
-                            value={catalogDescription}
-                            onChange={(e) => setCatalogDescription(e.target.value)}
-                            className="min-h-[120px] w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            placeholder="Descreva o item do catálogo..."
-                          />
-                        </div>
-
                         <button
                           type="submit"
                           disabled={savingCatalogItem || !hasValidStoreContext}
-                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="w-full rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {savingCatalogItem ? "Salvando..." : "Cadastrar item no catálogo"}
+                          {savingCatalogItem ? "Salvando item..." : "Cadastrar item"}
                         </button>
-                      </form>
+                      </div>
+                    </form>
+                  </SectionCard>
 
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-sm font-semibold text-gray-900">
-                          Resumo rápido do catálogo
-                        </div>
+                  <SectionCard
+                    title="Resumo por categoria"
+                    description="Visão prática do catálogo vivo da loja."
+                  >
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <SummaryCard
+                        title="Acessórios"
+                        value={catalogItemsByCategory.acessorios.length}
+                      />
+                      <SummaryCard
+                        title="Produtos químicos"
+                        value={catalogItemsByCategory.quimicos.length}
+                      />
+                      <SummaryCard
+                        title="Outros itens"
+                        value={catalogItemsByCategory.outros.length}
+                      />
+                    </div>
+                  </SectionCard>
 
-                        <div className="mt-3 space-y-3 text-sm text-gray-700">
-                          <div>Total de itens cadastrados: {totalCatalogItems}</div>
-                          <div>Itens ativos: {activeCatalogItemsCount}</div>
-                          <div>Itens disponíveis para oferta: {catalogItemsAvailableCount}</div>
-                          <div>
-                            Acessórios cadastrados: {catalogItemsByCategory.acessorios.length}
+                  {(["acessorios", "quimicos", "outros"] as const).map((category) => {
+                    const items = catalogItemsByCategory[category];
+                    const categoryLabel = getOptionLabel(category, CATALOG_CATEGORY_OPTIONS);
+
+                    return (
+                      <SectionCard
+                        key={category}
+                        title={categoryLabel}
+                        description={`Itens da categoria ${categoryLabel.toLowerCase()}.`}
+                      >
+                        {items.length === 0 ? (
+                          <EmptyState
+                            title={`Nenhum item em ${categoryLabel}`}
+                            description="Cadastre itens reais desta categoria para a IA ter base viva de oferta."
+                          />
+                        ) : (
+                          <div className="grid gap-4 lg:grid-cols-2">
+                            {items.map((item) => {
+                              const photos = catalogPhotosMap.get(item.id) ?? [];
+
+                              return (
+                                <div
+                                  key={item.id}
+                                  className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <div className="text-lg font-semibold text-gray-900">
+                                        {item.name}
+                                      </div>
+                                      <div className="mt-1 text-sm text-gray-600">
+                                        SKU: {item.sku || "Não informado"}
+                                      </div>
+                                    </div>
+
+                                    <div
+                                      className={cx(
+                                        "rounded-full px-3 py-1 text-xs font-semibold",
+                                        item.is_active
+                                          ? "bg-emerald-100 text-emerald-800"
+                                          : "bg-gray-200 text-gray-700"
+                                      )}
+                                    >
+                                      {item.is_active ? "Ativo" : "Inativo"}
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                    <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                      <div className="text-xs text-gray-500">Preço</div>
+                                      <div className="mt-1 text-sm font-medium text-gray-900">
+                                        {moneyFromCentsBRL(item.price_cents)}
+                                      </div>
+                                    </div>
+
+                                    <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                      <div className="text-xs text-gray-500">Estoque</div>
+                                      <div className="mt-1 text-sm font-medium text-gray-900">
+                                        {item.track_stock
+                                          ? item.stock_quantity ?? 0
+                                          : "Sem controle"}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {item.description ? (
+                                    <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
+                                      {item.description}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
+                                    <div className="font-medium text-gray-900">
+                                      Fotos cadastradas: {photos.length}
+                                    </div>
+                                    {photos.length > 0 ? (
+                                      <div className="mt-2 space-y-1">
+                                        {photos.map((photo) => (
+                                          <div key={photo.id}>
+                                            {photo.file_name} —{" "}
+                                            {formatFileSize(photo.file_size_bytes)}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <div className="mt-1 text-gray-500">
+                                        Nenhuma foto cadastrada para este item.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                          <div>
-                            Produtos químicos cadastrados: {catalogItemsByCategory.quimicos.length}
-                          </div>
-                          <div>Outros itens cadastrados: {catalogItemsByCategory.outros.length}</div>
-                          <div>Total de fotos cadastradas: {catalogItemPhotos.length}</div>
+                        )}
+                      </SectionCard>
+                    );
+                  })}
+                </div>
+              )}
+
+              {activeTab === "operacao" && (
+                <div className="space-y-6">
+                  <SectionCard
+                    title="Operação = módulo vivo operacional da loja"
+                    description="Aqui fica a leitura operacional que a IA precisa consultar para instalação, visita técnica, prazos e limitações."
+                  >
+                    <div className="grid gap-4 md:grid-cols-4">
+                      <SummaryCard
+                        title="Campos operacionais preenchidos"
+                        value={countFilledItems(strategySections.operacaoDaLoja)}
+                      />
+                      <SummaryCard
+                        title="Oferta de visita técnica"
+                        value={booleanToYesNo(strategyAnswers.offers_technical_visit)}
+                      />
+                      <SummaryCard
+                        title="Oferta de instalação"
+                        value={booleanToYesNo(strategyAnswers.offers_installation)}
+                      />
+                      <SummaryCard
+                        title="Resposta humana média"
+                        value={textValue(strategyAnswers.average_human_response_time)}
+                      />
+                    </div>
+                  </SectionCard>
+
+                  <StrategySection
+                    title="Operação da loja"
+                    description="Fluxo operacional, disponibilidade, visita técnica e limitações importantes."
+                    items={strategySections.operacaoDaLoja}
+                    onEdit={() => goToOnboardingStep(3)}
+                  />
+
+                  <SectionCard
+                    title="Observação estrutural"
+                    description="Neste pilar, esta aba já foi separada visualmente da Estratégia para deixar mais claro o papel operacional."
+                  >
+                    <div className="rounded-2xl bg-cyan-50 p-4 text-sm text-cyan-900 ring-1 ring-cyan-600/20">
+                      O conteúdo ainda nasce do onboarding, mas agora já está organizado em uma
+                      aba própria de Operação para preparar a fonte viva oficial da loja.
+                    </div>
+                  </SectionCard>
+                </div>
+              )}
+
+              {activeTab === "comercial_ia" && (
+                <div className="space-y-6">
+                  <SectionCard
+                    title="Comercial e IA = política viva de venda"
+                    description="Regras comerciais reais que a IA vendedora deve respeitar."
+                  >
+                    <div className="grid gap-4 md:grid-cols-4">
+                      <SummaryCard
+                        title="Campos comerciais preenchidos"
+                        value={countFilledItems(strategySections.comercialEIA)}
+                      />
+                      <SummaryCard
+                        title="IA pode falar preço?"
+                        value={booleanToYesNo(strategyAnswers.ai_can_send_price_directly)}
+                      />
+                      <SummaryCard
+                        title="Loja pode dar desconto?"
+                        value={booleanToYesNo(strategyAnswers.can_offer_discount)}
+                      />
+                      <SummaryCard
+                        title="Ticket médio"
+                        value={textValue(strategyAnswers.average_ticket)}
+                      />
+                    </div>
+                  </SectionCard>
+
+                  <StrategySection
+                    title="Política comercial e comportamento da IA"
+                    description="Preço, desconto geral, ajuda humana e forma de atuação comercial."
+                    items={strategySections.comercialEIA}
+                    onEdit={() => goToOnboardingStep(4)}
+                  />
+
+                  <SectionCard
+                    title="Integração com Descontos"
+                    description="A aba Descontos aprofunda a política. Esta aba define a direção comercial geral."
+                  >
+                    <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
+                      Comercial e IA define a regra viva geral de venda. Descontos complementa essa
+                      regra com limites e autorização, sem brigar com ela.
+                    </div>
+                  </SectionCard>
+                </div>
+              )}
+
+              {activeTab === "responsavel_ativacao" && (
+                <div className="space-y-6">
+                  <SectionCard
+                    title="Responsável e ativação"
+                    description="Ponte entre a IA e o humano responsável pela operação da loja."
+                  >
+                    <div className="grid gap-4 md:grid-cols-4">
+                      <SummaryCard
+                        title="Responsável principal"
+                        value={textValue(strategyAnswers.responsible_name)}
+                      />
+                      <SummaryCard
+                        title="WhatsApp do responsável"
+                        value={formatWhatsappPretty(textValue(strategyAnswers.responsible_whatsapp, ""))}
+                      />
+                      <SummaryCard
+                        title="IA deve notificar responsável?"
+                        value={booleanToYesNo(strategyAnswers.ai_should_notify_responsible)}
+                      />
+                      <SummaryCard
+                        title="Responsáveis cadastrados"
+                        value={totalResponsibles}
+                      />
+                    </div>
+                  </SectionCard>
+
+                  <StrategySection
+                    title="Base estratégica da ativação"
+                    description="Leitura estruturada do onboarding para responsável e ativação."
+                    items={strategySections.responsavelEAtivacao}
+                    onEdit={() => goToOnboardingStep(5)}
+                  />
+
+                  <SectionCard
+                    title="Número da IA assistente"
+                    description="Aqui fica o número/WhatsApp que o responsável da loja usa para conversar com a IA assistente operacional."
+                  >
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                        <div className="text-sm text-gray-500">Valor atual identificado</div>
+                        <div className="mt-2 text-lg font-semibold text-gray-900">
+                          {assistantIaNumber
+                            ? formatWhatsappPretty(assistantIaNumber)
+                            : "Ainda não configurado na fonte de dados"}
                         </div>
+                        <p className="mt-3 text-sm text-gray-600">
+                          Estrutura visual pronta no lugar correto. Se o backend/onboarding ainda
+                          não tiver um campo oficial para isso, ele continuará aparecendo como não configurado.
+                        </p>
+                      </div>
 
-                        <div className="mt-5 flex flex-wrap gap-3">
-                          <Link
-                            href="/configuracoes/catalogo/acessorios"
-                            className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                          >
-                            Ver acessórios
-                          </Link>
-
-                          <Link
-                            href="/configuracoes/catalogo/quimicos"
-                            className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                          >
-                            Ver produtos químicos
-                          </Link>
-
-                          <Link
-                            href="/configuracoes/catalogo/outros"
-                            className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                          >
-                            Ver outros itens
-                          </Link>
-                        </div>
+                      <div className="rounded-2xl bg-cyan-50 p-4 text-sm text-cyan-900 ring-1 ring-cyan-600/20">
+                        <div className="font-semibold">Separação correta dos números</div>
+                        <ul className="mt-3 space-y-2">
+                          <li>• WhatsApp comercial da loja = canal da IA vendedora</li>
+                          <li>• Número da IA assistente = canal do responsável falar com a IA operacional</li>
+                          <li>• WhatsApps dos responsáveis = números humanos reais da equipe</li>
+                        </ul>
                       </div>
                     </div>
-                  </section>
-                )}
+                  </SectionCard>
 
-                {activeTab === "responsaveis" && (
-                  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                    <div className="border-b border-black/5 px-6 py-4">
-                      <h2 className="text-lg font-semibold text-gray-900">
-                        Responsáveis WhatsApp
-                      </h2>
-                      <p className="mt-1 text-sm text-gray-600">
-                        Cadastre os responsáveis que podem assumir conversas.
-                      </p>
-                    </div>
-
-                    <div className="grid gap-6 p-6 lg:grid-cols-2">
+                  <SectionCard
+                    title="Responsáveis humanos da loja"
+                    description="Cadastre as pessoas reais que podem receber alertas e assumir pontos críticos."
+                  >
+                    <div className="grid gap-6 lg:grid-cols-2">
                       <form onSubmit={handleCreateResponsible} className="space-y-4">
                         <div>
                           <label className="mb-1 block text-sm font-medium text-gray-700">
@@ -2460,7 +2841,9 @@ export default function ConfiguracoesPage() {
                           </label>
                           <input
                             value={responsibleWhatsapp}
-                            onChange={(e) => setResponsibleWhatsapp(e.target.value)}
+                            onChange={(e) =>
+                              setResponsibleWhatsapp(formatWhatsappInput(e.target.value))
+                            }
                             className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
                             placeholder="Ex.: 5511999999999"
                           />
@@ -2521,57 +2904,77 @@ export default function ConfiguracoesPage() {
                         </button>
                       </form>
 
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-sm font-semibold text-gray-900">Resumo rápido</div>
-
-                        <div className="mt-3 text-sm text-gray-700">
-                          Total de responsáveis cadastrados: {totalResponsibles}
-                        </div>
-
-                        <div className="mt-4 space-y-3">
-                          {responsibles.slice(0, 5).map((responsible) => (
+                      <div className="space-y-4">
+                        {responsibles.length === 0 ? (
+                          <EmptyState
+                            title="Nenhum responsável cadastrado"
+                            description="Cadastre pelo menos um humano da loja para alertas críticos e apoio operacional."
+                          />
+                        ) : (
+                          responsibles.map((responsible) => (
                             <div
                               key={responsible.id}
-                              className="rounded-xl bg-white p-3 ring-1 ring-black/5"
+                              className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
                             >
-                              <div className="font-semibold text-gray-900">
-                                {responsible.name ?? "Responsável sem nome"}
+                              <div className="text-lg font-semibold text-gray-900">
+                                {responsible.name || "Responsável sem nome"}
                               </div>
                               <div className="mt-1 text-sm text-gray-600">
-                                {responsible.whatsapp_number ?? "Sem WhatsApp"}
-                              </div>
-                              <div className="mt-1 text-xs text-gray-500">
                                 {roleLabel(responsible.role)}
                               </div>
-                            </div>
-                          ))}
 
-                          {responsibles.length === 0 ? (
-                            <div className="rounded-xl bg-white p-3 text-sm text-gray-600 ring-1 ring-black/5">
-                              Nenhum responsável cadastrado.
+                              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">WhatsApp</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {formatWhatsappPretty(responsible.whatsapp_number)}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Criado em</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {responsible.created_at
+                                      ? new Date(responsible.created_at).toLocaleString("pt-BR")
+                                      : "Não informado"}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="mt-4 flex flex-wrap gap-2 text-xs font-medium">
+                                {responsible.receive_discount_alerts ? (
+                                  <span className="rounded-full bg-white px-3 py-1 text-gray-700 ring-1 ring-black/10">
+                                    Desconto
+                                  </span>
+                                ) : null}
+                                {responsible.receive_subscription_alerts ? (
+                                  <span className="rounded-full bg-white px-3 py-1 text-gray-700 ring-1 ring-black/10">
+                                    Assinatura
+                                  </span>
+                                ) : null}
+                                {responsible.receive_sla_alerts ? (
+                                  <span className="rounded-full bg-white px-3 py-1 text-gray-700 ring-1 ring-black/10">
+                                    SLA
+                                  </span>
+                                ) : null}
+                              </div>
                             </div>
-                          ) : null}
-                        </div>
+                          ))
+                        )}
                       </div>
                     </div>
-                  </section>
-                )}
+                  </SectionCard>
+                </div>
+              )}
 
-                {activeTab === "descontos" && (
-                  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                    <div className="border-b border-black/5 px-6 py-4">
-                      <h2 className="text-lg font-semibold text-gray-900">
-                        Política de Descontos
-                      </h2>
-                      <p className="mt-1 text-sm text-gray-600">
-                        A IA deve sempre tentar vender pelo maior valor possível. Ela só pode
-                        negociar dentro dos limites abaixo e nunca deve oferecer desconto
-                        desnecessário.
-                      </p>
-                    </div>
-
-                    <div className="grid gap-6 p-6 lg:grid-cols-2">
-                      <form onSubmit={handleSaveDiscountSettings} className="space-y-4">
+              {activeTab === "descontos" && (
+                <div className="space-y-6">
+                  <SectionCard
+                    title="Política de desconto"
+                    description="Módulo aprofundado da política de desconto da loja."
+                  >
+                    <form onSubmit={handleSaveDiscountSettings} className="grid gap-6 lg:grid-cols-2">
+                      <div className="space-y-4">
                         <div>
                           <label className="mb-1 block text-sm font-medium text-gray-700">
                             Desconto padrão da IA (%)
@@ -2579,15 +2982,13 @@ export default function ConfiguracoesPage() {
                           <input
                             value={defaultDiscountPercentInput}
                             onChange={(e) =>
-                              setDefaultDiscountPercentInput(formatPercentInput(e.target.value))
+                              setDefaultDiscountPercentInput(
+                                formatPercentInput(e.target.value)
+                              )
                             }
                             className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            placeholder="Ex.: 10"
+                            placeholder="0"
                           />
-                          <div className="mt-2 text-xs text-gray-500">
-                            Até este percentual a IA pode negociar sozinha, mas apenas quando
-                            realmente precisar para fechar a venda.
-                          </div>
                         </div>
 
                         <div>
@@ -2600,91 +3001,62 @@ export default function ConfiguracoesPage() {
                               setMaxDiscountPercentInput(formatPercentInput(e.target.value))
                             }
                             className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            placeholder="Ex.: 20"
+                            placeholder="10"
                           />
-                          <div className="mt-2 text-xs text-gray-500">
-                            Acima do padrão da IA e até este máximo, a IA precisa pedir
-                            autorização antes de conceder.
-                          </div>
                         </div>
 
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <label className="flex items-start gap-3 text-sm text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={allowAskAboveMaxDiscount}
-                              onChange={(e) => setAllowAskAboveMaxDiscount(e.target.checked)}
-                              className="mt-1"
-                            />
-                            <span>
-                              Permitir que a IA consulte acima do desconto máximo
-                              <span className="mt-1 block text-xs text-gray-500">
-                                Se desmarcado, a IA não pergunta nada acima do máximo e já
-                                entende que aquele desconto está fora da política da loja.
-                              </span>
-                            </span>
-                          </label>
-                        </div>
+                        <label className="flex items-center gap-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-black/5">
+                          <input
+                            type="checkbox"
+                            checked={allowAskAboveMaxDiscount}
+                            onChange={(e) => setAllowAskAboveMaxDiscount(e.target.checked)}
+                          />
+                          Permitir consulta humana para desconto acima do máximo
+                        </label>
 
                         <button
                           type="submit"
                           disabled={savingDiscountSettings || !hasValidStoreContext}
                           className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {savingDiscountSettings
-                            ? "Salvando..."
-                            : "Salvar política de descontos"}
+                          {savingDiscountSettings ? "Salvando..." : "Salvar política de desconto"}
                         </button>
-                      </form>
+                      </div>
 
                       <div className="space-y-4">
                         <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-sm font-semibold text-gray-900">
-                            Regra estratégica da IA
-                          </div>
-                          <div className="mt-2 text-sm text-gray-600">
-                            A IA nunca deve oferecer desconto à toa. Ela sempre precisa tentar
-                            preservar a margem da loja e conceder apenas o menor desconto
-                            necessário para fechar a venda.
+                          <div className="text-sm text-gray-500">Desconto padrão atual</div>
+                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                            {discountSettings?.default_discount_percent ?? 0}%
                           </div>
                         </div>
 
                         <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-sm font-semibold text-gray-900">
-                            Resumo da política atual
+                          <div className="text-sm text-gray-500">
+                            Desconto máximo com autorização
                           </div>
-                          <div className="mt-3 space-y-2 text-sm text-gray-700">
-                            <div>
-                              <span className="font-medium">Desconto padrão da IA:</span>{" "}
-                              {discountSettings?.default_discount_percent ?? 0}%
-                            </div>
-                            <div>
-                              <span className="font-medium">
-                                Desconto máximo com autorização:
-                              </span>{" "}
-                              {discountSettings?.max_discount_percent ?? 0}%
-                            </div>
-                            <div>
-                              <span className="font-medium">Consultar acima do máximo:</span>{" "}
-                              {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
-                            </div>
+                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                            {discountSettings?.max_discount_percent ?? 0}%
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="text-sm text-gray-500">Consultar acima do máximo</div>
+                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                            {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
                           </div>
                         </div>
 
                         <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
-                          <div className="font-semibold">Importante</div>
-                          <div className="mt-2">
-                            Mesmo que a IA tenha autorização para negociar até um certo
-                            percentual, ela não deve começar oferecendo esse valor. Ela deve
-                            sempre tentar vender pelo maior preço possível.
-                          </div>
+                          Esta aba aprofunda a política de desconto. A direção comercial geral
+                          continua na aba <strong>Comercial e IA</strong>.
                         </div>
                       </div>
-                    </div>
-                  </section>
-                )}
-              </div>
-            )}
+                    </form>
+                  </SectionCard>
+                </div>
+              )}
+            </div>
           </>
         )}
       </div>
