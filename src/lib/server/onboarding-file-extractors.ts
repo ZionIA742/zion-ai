@@ -20,8 +20,48 @@ async function extractTextFromPdf(_buffer: Buffer) {
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
-  const result = await mammoth.extractRawText({ buffer });
-  return (result.value || "").trim();
+  const raw = await mammoth.extractRawText({ buffer });
+  const baseText = (raw.value || "").replace(/\r/g, "").trim();
+
+  const htmlResult = await mammoth.convertToHtml({ buffer });
+  const html = htmlResult.value || "";
+
+  const tableRows = Array.from(
+    html.matchAll(/<tr[\s\S]*?>([\s\S]*?)<\/tr>/gi)
+  ).map((match) => match[1]);
+
+  const normalizedRows: string[] = [];
+
+  for (const rowHtml of tableRows) {
+    const cells = Array.from(
+      rowHtml.matchAll(/<(td|th)[^>]*>([\s\S]*?)<\/(td|th)>/gi)
+    ).map((match) =>
+      match[2]
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+    );
+
+    const filtered = cells.filter(Boolean);
+
+    if (filtered.length) {
+      normalizedRows.push(filtered.join(" | "));
+    }
+  }
+
+  const parts: string[] = [];
+
+  if (normalizedRows.length) {
+    parts.push(normalizedRows.join("\n"));
+  }
+
+  if (baseText) {
+    parts.push(baseText);
+  }
+
+  return parts.join("\n\n").trim();
 }
 
 async function extractTextFromTxt(buffer: Buffer) {
@@ -70,7 +110,10 @@ async function extractTextFromPptx(buffer: Buffer) {
   const parts: string[] = [];
 
   for (const slidePath of slideFiles) {
-    const xml = await zip.files[slidePath].async("string");
+    const parserTarget = zip.files[slidePath];
+    if (!parserTarget) continue;
+
+    const xml = await parserTarget.async("string");
     const parsed = parser.parse(xml);
 
     const texts: string[] = [];
