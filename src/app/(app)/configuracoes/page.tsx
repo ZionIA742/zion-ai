@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   useEffect,
   useMemo,
@@ -97,6 +97,15 @@ type CatalogItemPhotoRow = {
 
 type AnswersMap = Record<string, unknown>;
 
+type LocalConfigDraft = {
+  assistantIaNumber: string;
+  assistantIaName: string;
+  sellerIaName: string;
+  sellerIaStyle: string;
+  activationNotesExtra: string;
+  discountIntegrationNotes: string;
+};
+
 type Option = {
   value: string;
   label: string;
@@ -125,6 +134,17 @@ const MAX_CATALOG_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 const TAB_STORAGE_KEY = "zion_configuracoes_active_tab";
+const SCROLL_STORAGE_KEY = "zion_configuracoes_scroll_top";
+const LOCAL_CONFIG_DRAFT_KEY_PREFIX = "zion_configuracoes_local_complementos";
+
+const DEFAULT_LOCAL_CONFIG_DRAFT: LocalConfigDraft = {
+  assistantIaNumber: "",
+  assistantIaName: "",
+  sellerIaName: "",
+  sellerIaStyle: "",
+  activationNotesExtra: "",
+  discountIntegrationNotes: "",
+};
 
 const ROLE_OPTIONS: Option[] = [
   { value: "owner", label: "Proprietário" },
@@ -419,6 +439,18 @@ function formatWhatsappPretty(value: string | null | undefined) {
   return digits;
 }
 
+function moneyBRL(value: number | null) {
+  if (value == null) return "Sem preço";
+  return `R$ ${Number(value).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function moneyFromCentsBRL(value: number | null) {
+  if (value == null) return "Sem preço";
+  return moneyBRL(value / 100);
+}
 
 function formatFileSize(bytes: number) {
   if (bytes >= 1024 * 1024) {
@@ -514,10 +546,10 @@ function SummaryCard({
   hint?: string;
 }) {
   return (
-    <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-      <div className="text-sm text-gray-500">{title}</div>
-      <div className="mt-2 text-2xl font-bold text-gray-900">{value}</div>
-      {hint ? <div className="mt-2 text-xs text-gray-500">{hint}</div> : null}
+    <div className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
+      <div className="text-xs text-gray-500">{title}</div>
+      <div className="mt-1 text-xl font-bold text-gray-900">{value}</div>
+      {hint ? <div className="mt-1 text-[11px] text-gray-500">{hint}</div> : null}
     </div>
   );
 }
@@ -534,15 +566,15 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-      <div className="flex flex-col gap-3 border-b border-black/5 px-6 py-4 md:flex-row md:items-start md:justify-between">
+    <section className="rounded-xl bg-white shadow-sm ring-1 ring-black/5">
+      <div className="flex flex-col gap-2 border-b border-black/5 px-4 py-3 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
           {description ? <p className="mt-1 text-sm text-gray-600">{description}</p> : null}
         </div>
         {right}
       </div>
-      <div className="p-6">{children}</div>
+      <div className="p-4">{children}</div>
     </section>
   );
 }
@@ -559,10 +591,10 @@ function StrategySection({
   onEdit?: () => void;
 }) {
   return (
-    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-      <div className="flex flex-col gap-3 border-b border-black/5 px-6 py-4 md:flex-row md:items-start md:justify-between">
+    <section className="rounded-xl bg-white shadow-sm ring-1 ring-black/5">
+      <div className="flex flex-col gap-2 border-b border-black/5 px-4 py-3 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
           <p className="mt-1 text-sm text-gray-600">{description}</p>
         </div>
 
@@ -570,18 +602,18 @@ function StrategySection({
           <button
             type="button"
             onClick={onEdit}
-            className="inline-flex shrink-0 rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:border-gray-400 hover:bg-gray-50"
+            className="inline-flex shrink-0 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:border-gray-400 hover:bg-gray-50"
           >
             Editar no onboarding
           </button>
         ) : null}
       </div>
 
-      <div className="grid gap-4 p-6 md:grid-cols-2">
+      <div className="grid gap-3 p-4 md:grid-cols-2">
         {items.map((item) => (
-          <div key={item.label} className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-            <div className="text-sm text-gray-500">{item.label}</div>
-            <div className="mt-2 whitespace-pre-wrap text-sm font-medium leading-6 text-gray-900">
+          <div key={item.label} className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
+            <div className="text-xs text-gray-500">{item.label}</div>
+            <div className="mt-1 whitespace-pre-wrap text-sm font-medium leading-5 text-gray-900">
               {item.value}
             </div>
           </div>
@@ -599,7 +631,7 @@ function EmptyState({
   description: string;
 }) {
   return (
-    <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-6 text-sm text-gray-600">
+    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4 text-sm text-gray-600">
       <div className="font-semibold text-gray-900">{title}</div>
       <p className="mt-2">{description}</p>
     </div>
@@ -608,6 +640,7 @@ function EmptyState({
 
 export default function ConfiguracoesPage() {
   const router = useRouter();
+  const pathname = usePathname();
 
   const {
     loading: storeLoading,
@@ -619,8 +652,12 @@ export default function ConfiguracoesPage() {
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const ORGANIZATION_ID = organizationId ?? "";
   const STORE_ID = activeStoreId ?? "";
+  const scrollStorageKey = `${SCROLL_STORAGE_KEY}:${pathname ?? "/configuracoes"}:${STORE_ID || "sem-loja"}`;
+  const localConfigStorageKey = `${LOCAL_CONFIG_DRAFT_KEY_PREFIX}:${STORE_ID || "sem-loja"}`;
 
   const [activeTab, setActiveTab] = useState<TabKey>("visao_geral");
+  const [localConfigDraft, setLocalConfigDraft] =
+    useState<LocalConfigDraft>(DEFAULT_LOCAL_CONFIG_DRAFT);
 
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [reloading, setReloading] = useState(false);
@@ -629,9 +666,9 @@ export default function ConfiguracoesPage() {
 
   const [pools, setPools] = useState<PoolRow[]>([]);
   const [catalogItems, setCatalogItems] = useState<CatalogItemRow[]>([]);
-  const [, setCatalogItemPhotos] = useState<CatalogItemPhotoRow[]>([]);
+  const [catalogItemPhotos, setCatalogItemPhotos] = useState<CatalogItemPhotoRow[]>([]);
   const [responsibles, setResponsibles] = useState<ResponsibleRow[]>([]);
-  const [, setPoolPhotos] = useState<PoolPhotoRow[]>([]);
+  const [poolPhotos, setPoolPhotos] = useState<PoolPhotoRow[]>([]);
   const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
   const [strategyAnswers, setStrategyAnswers] = useState<AnswersMap>({});
 
@@ -690,6 +727,27 @@ export default function ConfiguracoesPage() {
     { key: "responsavel_ativacao", label: "Responsável e ativação" },
     { key: "descontos", label: "Descontos" },
   ];
+
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !STORE_ID) return;
+    try {
+      const raw = window.localStorage.getItem(localConfigStorageKey);
+      if (!raw) {
+        setLocalConfigDraft(DEFAULT_LOCAL_CONFIG_DRAFT);
+        return;
+      }
+      const parsed = JSON.parse(raw) as Partial<LocalConfigDraft>;
+      setLocalConfigDraft({ ...DEFAULT_LOCAL_CONFIG_DRAFT, ...parsed });
+    } catch {
+      setLocalConfigDraft(DEFAULT_LOCAL_CONFIG_DRAFT);
+    }
+  }, [STORE_ID, localConfigStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !STORE_ID) return;
+    window.localStorage.setItem(localConfigStorageKey, JSON.stringify(localConfigDraft));
+  }, [STORE_ID, localConfigDraft, localConfigStorageKey]);
 
   const catalogItemsByCategory = useMemo(() => {
     return {
@@ -1105,6 +1163,29 @@ export default function ConfiguracoesPage() {
     return Math.max(0, Math.min(100, Math.round((doneChecks / totalChecks) * 100)));
   }, [pendingItems]);
 
+  const poolsPhotoMap = useMemo(() => {
+    const map = new Map<string, PoolPhotoRow[]>();
+
+    for (const photo of poolPhotos) {
+      const current = map.get(photo.pool_id) ?? [];
+      current.push(photo);
+      map.set(photo.pool_id, current);
+    }
+
+    return map;
+  }, [poolPhotos]);
+
+  const catalogPhotosMap = useMemo(() => {
+    const map = new Map<string, CatalogItemPhotoRow[]>();
+
+    for (const photo of catalogItemPhotos) {
+      const current = map.get(photo.catalog_item_id) ?? [];
+      current.push(photo);
+      map.set(photo.catalog_item_id, current);
+    }
+
+    return map;
+  }, [catalogItemPhotos]);
 
   function goToOnboardingStep(step: number) {
     if (!hasValidStoreContext) return;
@@ -1733,11 +1814,53 @@ export default function ConfiguracoesPage() {
     }
   }, [activeTab]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasValidStoreContext) return;
+
+    const restore = () => {
+      const raw = window.localStorage.getItem(scrollStorageKey);
+      if (!raw) return;
+      const value = Number(raw);
+      if (Number.isFinite(value) && value >= 0) {
+        window.requestAnimationFrame(() => window.scrollTo({ top: value, behavior: "auto" }));
+      }
+    };
+
+    restore();
+    const timeout = window.setTimeout(restore, 120);
+    return () => window.clearTimeout(timeout);
+  }, [activeTab, hasValidStoreContext, loadingInitial, scrollStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasValidStoreContext) return;
+
+    const saveScroll = () => {
+      window.localStorage.setItem(scrollStorageKey, String(window.scrollY || window.pageYOffset || 0));
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        saveScroll();
+      }
+    };
+
+    window.addEventListener("scroll", saveScroll, { passive: true });
+    window.addEventListener("pagehide", saveScroll);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      saveScroll();
+      window.removeEventListener("scroll", saveScroll);
+      window.removeEventListener("pagehide", saveScroll);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [hasValidStoreContext, scrollStorageKey]);
+
   if (storeLoading || loadingInitial) {
     return (
       <div className="min-h-screen bg-gray-100">
-        <div className="mx-auto max-w-7xl px-6 py-6">
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+        <div className="mx-auto max-w-6xl px-4 py-4">
+          <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-black/5">
             Carregando loja ativa...
           </div>
         </div>
@@ -1747,7 +1870,7 @@ export default function ConfiguracoesPage() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-7xl px-6 py-6">
+      <div className="mx-auto max-w-6xl px-4 py-4">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-700">
@@ -1761,11 +1884,11 @@ export default function ConfiguracoesPage() {
               deixe Configurações como fonte viva oficial consultada pela IA.
             </p>
             {activeStore?.name ? (
-              <p className="mt-2 text-xs text-gray-500">Loja ativa: {activeStore.name}</p>
+              <p className="mt-1 text-[11px] text-gray-500">Loja ativa: {activeStore.name}</p>
             ) : null}
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => void fetchPageData("reload")}
@@ -1785,8 +1908,8 @@ export default function ConfiguracoesPage() {
         </div>
 
         {!hasValidStoreContext ? (
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-            <div className="text-lg font-semibold text-gray-900">
+          <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+            <div className="text-base font-semibold text-gray-900">
               Nenhuma loja ativa encontrada
             </div>
             <p className="mt-2 text-sm text-gray-600">
@@ -1796,28 +1919,28 @@ export default function ConfiguracoesPage() {
         ) : (
           <>
             {errorText ? (
-              <div className="mb-5 rounded-2xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
+              <div className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
                 <div className="font-semibold">Erro</div>
                 <div className="mt-1 break-words">{errorText}</div>
               </div>
             ) : null}
 
             {successText ? (
-              <div className="mb-5 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+              <div className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
                 <div className="font-semibold">Sucesso</div>
                 <div className="mt-1 break-words">{successText}</div>
               </div>
             ) : null}
 
-            <section className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-              <div className="flex flex-wrap gap-3">
+            <section className="rounded-xl bg-white p-3 shadow-sm ring-1 ring-black/5">
+              <div className="flex flex-wrap gap-2">
                 {tabs.map((tab) => (
                   <button
                     key={tab.key}
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
                     className={cx(
-                      "rounded-xl px-4 py-2 text-sm font-semibold ring-1 ring-black/10",
+                      "rounded-lg px-3 py-1.5 text-xs font-semibold ring-1 ring-black/10",
                       activeTab === tab.key
                         ? "bg-black text-white"
                         : "bg-white text-gray-900 hover:bg-gray-50"
@@ -1829,7 +1952,7 @@ export default function ConfiguracoesPage() {
               </div>
             </section>
 
-            <div className="mt-6 space-y-6">
+            <div className="mt-4 space-y-4">
               {activeTab === "visao_geral" && (
                 <>
                   <SectionCard
@@ -1856,75 +1979,51 @@ export default function ConfiguracoesPage() {
                   </SectionCard>
 
                   <SectionCard
-                    title="Hub rápido da configuração"
-                    description="Use esta página para cadastrar e configurar. Para ver e editar o que já existe, abra as telas específicas que o projeto já possui."
+                    title="Acessos rápidos"
+                    description="Cadastre em Configurações e veja o que já existe nas páginas próprias da loja."
                   >
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-lg font-semibold text-gray-900">Piscinas</div>
-                        <p className="mt-2 text-sm leading-6 text-gray-600">
-                          Nesta aba de Configurações você cadastra novas piscinas. Para visualizar e
-                          editar as piscinas já cadastradas, use a página existente do projeto.
-                        </p>
-
-                        <div className="mt-4 flex flex-wrap gap-3">
-                          <button
-                            type="button"
-                            onClick={() => setActiveTab("piscinas")}
-                            className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
-                          >
-                            Ir para cadastro de piscinas
-                          </button>
-
-                          <Link
-                            href="/configuracoes/piscinas"
-                            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-                          >
-                            Ver / editar piscinas cadastradas
-                          </Link>
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("piscinas")}
+                        className="rounded-xl bg-gray-50 p-3 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+                      >
+                        <div className="font-semibold text-gray-900">Piscinas</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Área de cadastro e configuração.
                         </div>
-                      </div>
+                      </button>
 
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-lg font-semibold text-gray-900">
-                          Produtos/Acessórios
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("catalogo")}
+                        className="rounded-xl bg-gray-50 p-3 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+                      >
+                        <div className="font-semibold text-gray-900">Produtos/Acessórios</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Área de cadastro e configuração.
                         </div>
-                        <p className="mt-2 text-sm leading-6 text-gray-600">
-                          Nesta aba de Configurações você cadastra novos itens. Para visualizar e
-                          editar o que já foi cadastrado, use as páginas de catálogo por categoria.
-                        </p>
+                      </button>
 
-                        <div className="mt-4 flex flex-wrap gap-3">
-                          <button
-                            type="button"
-                            onClick={() => setActiveTab("catalogo")}
-                            className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
-                          >
-                            Ir para cadastro de itens
-                          </button>
-
-                          <Link
-                            href="/configuracoes/catalogo/acessorios"
-                            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-                          >
-                            Acessórios
-                          </Link>
-
-                          <Link
-                            href="/configuracoes/catalogo/quimicos"
-                            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-                          >
-                            Produtos químicos
-                          </Link>
-
-                          <Link
-                            href="/configuracoes/catalogo/outros"
-                            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-                          >
-                            Outros itens
-                          </Link>
+                      <Link
+                        href="/configuracoes/catalogo"
+                        className="rounded-xl bg-gray-50 p-3 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+                      >
+                        <div className="font-semibold text-gray-900">Catálogo da loja</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Ver tudo que já está cadastrado por categoria.
                         </div>
-                      </div>
+                      </Link>
+
+                      <Link
+                        href="/configuracoes/piscinas"
+                        className="rounded-xl bg-gray-50 p-3 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+                      >
+                        <div className="font-semibold text-gray-900">Piscinas cadastradas</div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Ver e editar as piscinas já cadastradas.
+                        </div>
+                      </Link>
                     </div>
                   </SectionCard>
 
@@ -1977,58 +2076,6 @@ export default function ConfiguracoesPage() {
                     </div>
                   </SectionCard>
 
-                  <SectionCard
-                    title="Páginas existentes aproveitadas neste pilar"
-                    description="Sem criar aba nova: a visualização e edição do que já existe continua nas telas já prontas do projeto."
-                  >
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                      <Link
-                        href="/configuracoes/piscinas"
-                        className="rounded-2xl bg-white p-4 text-left ring-1 ring-black/10 transition hover:bg-gray-50"
-                      >
-                        <div className="font-semibold text-gray-900">/configuracoes/piscinas</div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Página existente para visualizar e editar piscinas cadastradas.
-                        </div>
-                      </Link>
-
-                      <Link
-                        href="/configuracoes/catalogo/acessorios"
-                        className="rounded-2xl bg-white p-4 text-left ring-1 ring-black/10 transition hover:bg-gray-50"
-                      >
-                        <div className="font-semibold text-gray-900">
-                          /configuracoes/catalogo/acessorios
-                        </div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Página existente para visualizar e editar acessórios cadastrados.
-                        </div>
-                      </Link>
-
-                      <Link
-                        href="/configuracoes/catalogo/quimicos"
-                        className="rounded-2xl bg-white p-4 text-left ring-1 ring-black/10 transition hover:bg-gray-50"
-                      >
-                        <div className="font-semibold text-gray-900">
-                          /configuracoes/catalogo/quimicos
-                        </div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Página existente para visualizar e editar produtos químicos cadastrados.
-                        </div>
-                      </Link>
-
-                      <Link
-                        href="/configuracoes/catalogo/outros"
-                        className="rounded-2xl bg-white p-4 text-left ring-1 ring-black/10 transition hover:bg-gray-50"
-                      >
-                        <div className="font-semibold text-gray-900">
-                          /configuracoes/catalogo/outros
-                        </div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          Página existente para visualizar e editar outros itens cadastrados.
-                        </div>
-                      </Link>
-                    </div>
-                  </SectionCard>
                 </>
               )}
 
@@ -2079,7 +2126,20 @@ export default function ConfiguracoesPage() {
               )}
 
               {activeTab === "piscinas" && (
-                <div className="space-y-6">
+                <div className="space-y-4">
+                  <SectionCard
+                    title="Acesso rápido"
+                    description="Cadastre aqui e visualize o que já existe na página própria."
+                  >
+                    <div className="flex flex-wrap gap-2">
+                      <Link href="/configuracoes/piscinas" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100">
+                        Ver piscinas cadastradas
+                      </Link>
+                      <Link href="/configuracoes/catalogo" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100">
+                        Abrir catálogo da loja
+                      </Link>
+                    </div>
+                  </SectionCard>
                   <SectionCard
                     title="Cadastrar piscina"
                     description="Cadastre modelos reais que a loja pode ofertar."
@@ -2261,7 +2321,7 @@ export default function ConfiguracoesPage() {
                             onChange={handlePoolFilesChange}
                             className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none file:mr-4 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
                           />
-                          <p className="mt-2 text-xs text-gray-500">
+                          <p className="mt-1 text-[11px] text-gray-500">
                             Até {MAX_POOL_PHOTOS} imagens, máximo de 50 MB por arquivo.
                           </p>
 
@@ -2291,57 +2351,128 @@ export default function ConfiguracoesPage() {
                   </SectionCard>
 
                   <SectionCard
-                    title="Área de visualização e edição já existente"
-                    description="A aba Configurações > Piscinas fica responsável pelo cadastro e pela configuração. A visualização e edição do que já existe acontece na página já pronta do projeto."
+                    title="Piscinas cadastradas"
+                    description="Lista viva dos modelos disponíveis na loja."
                   >
-                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-lg font-semibold text-gray-900">
-                          Separação correta desta etapa
-                        </div>
-                        <div className="mt-3 space-y-3 text-sm leading-6 text-gray-600">
-                          <p>
-                            <strong className="text-gray-900">Configurações &gt; Piscinas</strong> =
-                            área de cadastro e configuração.
-                          </p>
-                          <p>
-                            <strong className="text-gray-900">
-                              /configuracoes/piscinas
-                            </strong>{" "}
-                            = área para ver e editar o que já foi cadastrado.
-                          </p>
-                          <p>
-                            Isso aproveita a página já existente do projeto e mantém a persistência
-                            de edição em rascunho que ela já possui.
-                          </p>
-                        </div>
-                      </div>
+                    {pools.length === 0 ? (
+                      <EmptyState
+                        title="Nenhuma piscina cadastrada"
+                        description="Cadastre pelo menos um modelo para a loja começar a ter oferta viva nesta área."
+                      />
+                    ) : (
+                      <div className="grid gap-4 lg:grid-cols-2">
+                        {pools.map((pool) => {
+                          const photos = poolsPhotoMap.get(pool.id) ?? [];
 
-                      <div className="rounded-2xl bg-white p-5 ring-1 ring-black/5">
-                        <div className="text-sm text-gray-500">Piscinas cadastradas hoje</div>
-                        <div className="mt-2 text-3xl font-black tracking-tight text-gray-900">
-                          {totalPools}
-                        </div>
-                        <div className="mt-2 text-sm text-gray-600">
-                          {totalPools > 0
-                            ? `${activePoolsCount} ativas e ${poolsAvailableCount} disponíveis para oferta.`
-                            : "Nenhuma piscina cadastrada ainda."}
-                        </div>
+                          return (
+                            <div
+                              key={pool.id}
+                              className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-base font-semibold text-gray-900">
+                                    {pool.name || "Piscina sem nome"}
+                                  </div>
+                                  <div className="mt-1 text-sm text-gray-600">
+                                    {pool.material || "Material não informado"} •{" "}
+                                    {pool.shape || "Formato não informado"}
+                                  </div>
+                                </div>
 
-                        <Link
-                          href="/configuracoes/piscinas"
-                          className="mt-5 inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
-                        >
-                          Abrir página de piscinas cadastradas
-                        </Link>
+                                <div
+                                  className={cx(
+                                    "rounded-full px-3 py-1 text-xs font-semibold",
+                                    pool.is_active
+                                      ? "bg-emerald-100 text-emerald-800"
+                                      : "bg-gray-200 text-gray-700"
+                                  )}
+                                >
+                                  {pool.is_active ? "Ativa" : "Inativa"}
+                                </div>
+                              </div>
+
+                              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Medidas</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {pool.length_m ?? "-"}m x {pool.width_m ?? "-"}m x{" "}
+                                    {pool.depth_m ?? "-"}m
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Capacidade</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {pool.max_capacity_l?.toLocaleString("pt-BR") ?? "-"} L
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Preço</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {moneyBRL(pool.price)}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-xs text-gray-500">Estoque</div>
+                                  <div className="mt-1 text-sm font-medium text-gray-900">
+                                    {pool.track_stock
+                                      ? pool.stock_quantity ?? 0
+                                      : "Sem controle"}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {pool.description ? (
+                                <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
+                                  {pool.description}
+                                </div>
+                              ) : null}
+
+                              <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
+                                <div className="font-medium text-gray-900">
+                                  Fotos cadastradas: {photos.length}
+                                </div>
+                                {photos.length > 0 ? (
+                                  <div className="mt-2 space-y-1">
+                                    {photos.map((photo) => (
+                                      <div key={photo.id}>
+                                        {photo.file_name} — {formatFileSize(photo.file_size_bytes)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="mt-1 text-gray-500">
+                                    Nenhuma foto cadastrada para este modelo.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    </div>
+                    )}
                   </SectionCard>
                 </div>
               )}
 
               {activeTab === "catalogo" && (
-                <div className="space-y-6">
+                <div className="space-y-4">
+                  <SectionCard
+                    title="Acesso rápido"
+                    description="Cadastre aqui e visualize o que já existe na página própria do catálogo."
+                  >
+                    <div className="flex flex-wrap gap-2">
+                      <Link href="/configuracoes/catalogo" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100">
+                        Ver catálogo da loja
+                      </Link>
+                      <Link href="/configuracoes/piscinas" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100">
+                        Abrir piscinas cadastradas
+                      </Link>
+                    </div>
+                  </SectionCard>
                   <SectionCard
                     title="Cadastrar item em Produtos/Acessórios"
                     description="Base viva de produtos químicos, acessórios e outros itens."
@@ -2462,7 +2593,7 @@ export default function ConfiguracoesPage() {
                             onChange={handleCatalogFilesChange}
                             className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none file:mr-4 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
                           />
-                          <p className="mt-2 text-xs text-gray-500">
+                          <p className="mt-1 text-[11px] text-gray-500">
                             Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.
                           </p>
 
@@ -2492,63 +2623,123 @@ export default function ConfiguracoesPage() {
                   </SectionCard>
 
                   <SectionCard
-                    title="Categorias já existentes para ver e editar"
-                    description="A aba Configurações > Produtos/Acessórios fica responsável pelo cadastro. A visualização e edição do que já existe continua nas páginas já prontas do catálogo por categoria."
+                    title="Resumo por categoria"
+                    description="Visão prática do catálogo vivo da loja."
                   >
                     <div className="grid gap-4 md:grid-cols-3">
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-sm text-gray-500">Acessórios cadastrados</div>
-                        <div className="mt-2 text-3xl font-black tracking-tight text-gray-900">
-                          {catalogItemsByCategory.acessorios.length}
-                        </div>
-                        <div className="mt-3">
-                          <Link
-                            href="/configuracoes/catalogo/acessorios"
-                            className="inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
-                          >
-                            Abrir acessórios
-                          </Link>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-sm text-gray-500">Produtos químicos cadastrados</div>
-                        <div className="mt-2 text-3xl font-black tracking-tight text-gray-900">
-                          {catalogItemsByCategory.quimicos.length}
-                        </div>
-                        <div className="mt-3">
-                          <Link
-                            href="/configuracoes/catalogo/quimicos"
-                            className="inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
-                          >
-                            Abrir produtos químicos
-                          </Link>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5">
-                        <div className="text-sm text-gray-500">Outros itens cadastrados</div>
-                        <div className="mt-2 text-3xl font-black tracking-tight text-gray-900">
-                          {catalogItemsByCategory.outros.length}
-                        </div>
-                        <div className="mt-3">
-                          <Link
-                            href="/configuracoes/catalogo/outros"
-                            className="inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
-                          >
-                            Abrir outros itens
-                          </Link>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-6 rounded-2xl bg-cyan-50 p-4 text-sm text-cyan-900 ring-1 ring-cyan-600/20">
-                      <strong>Separação correta:</strong> Configurações &gt; Produtos/Acessórios =
-                      área de cadastro e configuração. As páginas{" "}
-                      <strong>/configuracoes/catalogo/[categoria]</strong> continuam sendo a área
-                      de visualização e edição do que já foi cadastrado.
+                      <SummaryCard
+                        title="Acessórios"
+                        value={catalogItemsByCategory.acessorios.length}
+                      />
+                      <SummaryCard
+                        title="Produtos químicos"
+                        value={catalogItemsByCategory.quimicos.length}
+                      />
+                      <SummaryCard
+                        title="Outros itens"
+                        value={catalogItemsByCategory.outros.length}
+                      />
                     </div>
                   </SectionCard>
+
+                  {(["acessorios", "quimicos", "outros"] as const).map((category) => {
+                    const items = catalogItemsByCategory[category];
+                    const categoryLabel = getOptionLabel(category, CATALOG_CATEGORY_OPTIONS);
+
+                    return (
+                      <SectionCard
+                        key={category}
+                        title={categoryLabel}
+                        description={`Itens da categoria ${categoryLabel.toLowerCase()}.`}
+                      >
+                        {items.length === 0 ? (
+                          <EmptyState
+                            title={`Nenhum item em ${categoryLabel}`}
+                            description="Cadastre itens reais desta categoria para a IA ter base viva de oferta."
+                          />
+                        ) : (
+                          <div className="grid gap-4 lg:grid-cols-2">
+                            {items.map((item) => {
+                              const photos = catalogPhotosMap.get(item.id) ?? [];
+
+                              return (
+                                <div
+                                  key={item.id}
+                                  className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <div className="text-base font-semibold text-gray-900">
+                                        {item.name}
+                                      </div>
+                                      <div className="mt-1 text-sm text-gray-600">
+                                        SKU: {item.sku || "Não informado"}
+                                      </div>
+                                    </div>
+
+                                    <div
+                                      className={cx(
+                                        "rounded-full px-3 py-1 text-xs font-semibold",
+                                        item.is_active
+                                          ? "bg-emerald-100 text-emerald-800"
+                                          : "bg-gray-200 text-gray-700"
+                                      )}
+                                    >
+                                      {item.is_active ? "Ativo" : "Inativo"}
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                    <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                      <div className="text-xs text-gray-500">Preço</div>
+                                      <div className="mt-1 text-sm font-medium text-gray-900">
+                                        {moneyFromCentsBRL(item.price_cents)}
+                                      </div>
+                                    </div>
+
+                                    <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
+                                      <div className="text-xs text-gray-500">Estoque</div>
+                                      <div className="mt-1 text-sm font-medium text-gray-900">
+                                        {item.track_stock
+                                          ? item.stock_quantity ?? 0
+                                          : "Sem controle"}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {item.description ? (
+                                    <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
+                                      {item.description}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="mt-4 rounded-xl bg-white p-3 text-sm text-gray-700 ring-1 ring-black/5">
+                                    <div className="font-medium text-gray-900">
+                                      Fotos cadastradas: {photos.length}
+                                    </div>
+                                    {photos.length > 0 ? (
+                                      <div className="mt-2 space-y-1">
+                                        {photos.map((photo) => (
+                                          <div key={photo.id}>
+                                            {photo.file_name} —{" "}
+                                            {formatFileSize(photo.file_size_bytes)}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <div className="mt-1 text-gray-500">
+                                        Nenhuma foto cadastrada para este item.
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </SectionCard>
+                    );
+                  })}
                 </div>
               )}
 
@@ -2586,12 +2777,22 @@ export default function ConfiguracoesPage() {
                   />
 
                   <SectionCard
-                    title="Observação estrutural"
-                    description="Neste pilar, esta aba já foi separada visualmente da Estratégia para deixar mais claro o papel operacional."
+                    title="Acesso rápido"
+                    description="Continue daqui para as páginas de visualização sem misturar com o cadastro."
                   >
-                    <div className="rounded-2xl bg-cyan-50 p-4 text-sm text-cyan-900 ring-1 ring-cyan-600/20">
-                      O conteúdo ainda nasce do onboarding, mas agora já está organizado em uma
-                      aba própria de Operação para preparar a fonte viva oficial da loja.
+                    <div className="flex flex-wrap gap-2">
+                      <Link
+                        href="/configuracoes/catalogo"
+                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      >
+                        Abrir catálogo da loja
+                      </Link>
+                      <Link
+                        href="/configuracoes/piscinas"
+                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      >
+                        Abrir piscinas cadastradas
+                      </Link>
                     </div>
                   </SectionCard>
                 </div>
@@ -2631,24 +2832,55 @@ export default function ConfiguracoesPage() {
                   />
 
                   <SectionCard
-                    title="Integração com Descontos"
-                    description="A aba Descontos aprofunda a política. Esta aba define a direção comercial geral."
+                    title="Configuração complementar"
+                    description="Use este espaço para registrar como a política comercial conversa com a aba de descontos."
                   >
-                    <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
-                      Comercial e IA define a regra viva geral de venda. Descontos complementa essa
-                      regra com limites e autorização, sem brigar com ela.
+                    <div className="space-y-3">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-700">
+                          Observações sobre integração com descontos
+                        </label>
+                        <textarea
+                          value={localConfigDraft.discountIntegrationNotes}
+                          onChange={(e) =>
+                            setLocalConfigDraft((current) => ({
+                              ...current,
+                              discountIntegrationNotes: e.target.value,
+                            }))
+                          }
+                          rows={4}
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
+                          placeholder="Ex.: acima de X% precisa aprovação humana, casos especiais devem ir para o responsável, descontos não podem contradizer a política comercial..."
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <Link
+                          href="/configuracoes/catalogo"
+                          className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                        >
+                          Abrir catálogo da loja
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("descontos")}
+                          className="rounded-lg bg-black px-3 py-2 text-xs font-semibold text-white hover:bg-gray-800"
+                        >
+                          Ir para descontos
+                        </button>
+                      </div>
                     </div>
                   </SectionCard>
                 </div>
               )}
 
               {activeTab === "responsavel_ativacao" && (
-                <div className="space-y-6">
+                <div className="space-y-4">
                   <SectionCard
                     title="Responsável e ativação"
-                    description="Ponte entre a IA e o humano responsável pela operação da loja."
+                    description="Cadastre primeiro e mantenha as informações importantes logo abaixo."
                   >
-                    <div className="grid gap-4 md:grid-cols-4">
+                    <div className="grid gap-3 md:grid-cols-4">
                       <SummaryCard
                         title="Responsável principal"
                         value={textValue(strategyAnswers.responsible_name)}
@@ -2668,62 +2900,46 @@ export default function ConfiguracoesPage() {
                     </div>
                   </SectionCard>
 
-                  <StrategySection
-                    title="Base estratégica da ativação"
-                    description="Leitura estruturada do onboarding para responsável e ativação."
-                    items={strategySections.responsavelEAtivacao}
-                    onEdit={() => goToOnboardingStep(5)}
-                  />
-
                   <SectionCard
-                    title="Número da IA assistente"
-                    description="Aqui fica o número/WhatsApp que o responsável da loja usa para conversar com a IA assistente operacional."
+                    title="Cadastro e acessos rápidos"
+                    description="Use esta área para cadastrar e abrir as páginas de visualização já existentes."
                   >
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                        <div className="text-sm text-gray-500">Valor atual identificado</div>
-                        <div className="mt-2 text-lg font-semibold text-gray-900">
-                          {assistantIaNumber
-                            ? formatWhatsappPretty(assistantIaNumber)
-                            : "Ainda não configurado na fonte de dados"}
-                        </div>
-                        <p className="mt-3 text-sm text-gray-600">
-                          Estrutura visual pronta no lugar correto. Se o backend/onboarding ainda
-                          não tiver um campo oficial para isso, ele continuará aparecendo como não configurado.
-                        </p>
-                      </div>
-
-                      <div className="rounded-2xl bg-cyan-50 p-4 text-sm text-cyan-900 ring-1 ring-cyan-600/20">
-                        <div className="font-semibold">Separação correta dos números</div>
-                        <ul className="mt-3 space-y-2">
-                          <li>• WhatsApp comercial da loja = canal da IA vendedora</li>
-                          <li>• Número da IA assistente = canal do responsável falar com a IA operacional</li>
-                          <li>• WhatsApps dos responsáveis = números humanos reais da equipe</li>
-                        </ul>
-                      </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Link
+                        href="/configuracoes/catalogo"
+                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      >
+                        Abrir catálogo da loja
+                      </Link>
+                      <Link
+                        href="/configuracoes/piscinas"
+                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                      >
+                        Abrir piscinas cadastradas
+                      </Link>
                     </div>
                   </SectionCard>
 
                   <SectionCard
                     title="Responsáveis humanos da loja"
-                    description="Cadastre as pessoas reais que podem receber alertas e assumir pontos críticos."
+                    description="Cadastro em cima e informações logo abaixo, do jeito que você pediu."
                   >
-                    <div className="grid gap-6 lg:grid-cols-2">
-                      <form onSubmit={handleCreateResponsible} className="space-y-4">
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <form onSubmit={handleCreateResponsible} className="space-y-3">
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Nome
                           </label>
                           <input
                             value={responsibleName}
                             onChange={(e) => setResponsibleName(e.target.value)}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="Ex.: Carlos Comercial"
                           />
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             WhatsApp
                           </label>
                           <input
@@ -2731,19 +2947,19 @@ export default function ConfiguracoesPage() {
                             onChange={(e) =>
                               setResponsibleWhatsapp(formatWhatsappInput(e.target.value))
                             }
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="Ex.: 5511999999999"
                           />
                         </div>
 
                         <div>
-                          <label className="mb-1 block text-sm font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-gray-700">
                             Papel
                           </label>
                           <select
                             value={responsibleRole}
                             onChange={(e) => setResponsibleRole(e.target.value)}
-                            className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
                           >
                             {ROLE_OPTIONS.map((option) => (
                               <option key={option.value} value={option.value}>
@@ -2753,7 +2969,7 @@ export default function ConfiguracoesPage() {
                           </select>
                         </div>
 
-                        <div className="space-y-3 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                        <div className="space-y-2 rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
                           <label className="flex items-center gap-3 text-sm text-gray-700">
                             <input
                               type="checkbox"
@@ -2785,13 +3001,13 @@ export default function ConfiguracoesPage() {
                         <button
                           type="submit"
                           disabled={savingResponsible || !hasValidStoreContext}
-                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-lg bg-black px-4 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {savingResponsible ? "Salvando..." : "Cadastrar responsável"}
                         </button>
                       </form>
 
-                      <div className="space-y-4">
+                      <div className="space-y-3">
                         {responsibles.length === 0 ? (
                           <EmptyState
                             title="Nenhum responsável cadastrado"
@@ -2801,25 +3017,25 @@ export default function ConfiguracoesPage() {
                           responsibles.map((responsible) => (
                             <div
                               key={responsible.id}
-                              className="rounded-2xl bg-gray-50 p-5 ring-1 ring-black/5"
+                              className="rounded-xl bg-gray-50 p-4 ring-1 ring-black/5"
                             >
-                              <div className="text-lg font-semibold text-gray-900">
+                              <div className="text-sm font-semibold text-gray-900">
                                 {responsible.name || "Responsável sem nome"}
                               </div>
-                              <div className="mt-1 text-sm text-gray-600">
+                              <div className="mt-1 text-xs text-gray-600">
                                 {roleLabel(responsible.role)}
                               </div>
 
-                              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">WhatsApp</div>
+                              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                                <div className="rounded-lg bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-[11px] text-gray-500">WhatsApp</div>
                                   <div className="mt-1 text-sm font-medium text-gray-900">
                                     {formatWhatsappPretty(responsible.whatsapp_number)}
                                   </div>
                                 </div>
 
-                                <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-xs text-gray-500">Criado em</div>
+                                <div className="rounded-lg bg-white p-3 ring-1 ring-black/5">
+                                  <div className="text-[11px] text-gray-500">Criado em</div>
                                   <div className="mt-1 text-sm font-medium text-gray-900">
                                     {responsible.created_at
                                       ? new Date(responsible.created_at).toLocaleString("pt-BR")
@@ -2827,30 +3043,112 @@ export default function ConfiguracoesPage() {
                                   </div>
                                 </div>
                               </div>
-
-                              <div className="mt-4 flex flex-wrap gap-2 text-xs font-medium">
-                                {responsible.receive_discount_alerts ? (
-                                  <span className="rounded-full bg-white px-3 py-1 text-gray-700 ring-1 ring-black/10">
-                                    Desconto
-                                  </span>
-                                ) : null}
-                                {responsible.receive_subscription_alerts ? (
-                                  <span className="rounded-full bg-white px-3 py-1 text-gray-700 ring-1 ring-black/10">
-                                    Assinatura
-                                  </span>
-                                ) : null}
-                                {responsible.receive_sla_alerts ? (
-                                  <span className="rounded-full bg-white px-3 py-1 text-gray-700 ring-1 ring-black/10">
-                                    SLA
-                                  </span>
-                                ) : null}
-                              </div>
                             </div>
                           ))
                         )}
                       </div>
                     </div>
                   </SectionCard>
+
+                  <SectionCard
+                    title="Configurações da IA assistente e ativação"
+                    description="Esses campos ficam na Configuração para não depender apenas do onboarding."
+                  >
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-700">
+                          Número da IA assistente
+                        </label>
+                        <input
+                          value={localConfigDraft.assistantIaNumber}
+                          onChange={(e) =>
+                            setLocalConfigDraft((current) => ({
+                              ...current,
+                              assistantIaNumber: formatWhatsappInput(e.target.value),
+                            }))
+                          }
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
+                          placeholder={assistantIaNumber || "Ex.: 5511999999999"}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-700">
+                          Nome da IA assistente
+                        </label>
+                        <input
+                          value={localConfigDraft.assistantIaName}
+                          onChange={(e) =>
+                            setLocalConfigDraft((current) => ({
+                              ...current,
+                              assistantIaName: e.target.value,
+                            }))
+                          }
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
+                          placeholder="Ex.: Zion Assistente"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-700">
+                          Nome / persona da IA vendedora
+                        </label>
+                        <input
+                          value={localConfigDraft.sellerIaName}
+                          onChange={(e) =>
+                            setLocalConfigDraft((current) => ({
+                              ...current,
+                              sellerIaName: e.target.value,
+                            }))
+                          }
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
+                          placeholder="Ex.: Consultora virtual da loja"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-700">
+                          Estilo da IA vendedora
+                        </label>
+                        <input
+                          value={localConfigDraft.sellerIaStyle}
+                          onChange={(e) =>
+                            setLocalConfigDraft((current) => ({
+                              ...current,
+                              sellerIaStyle: e.target.value,
+                            }))
+                          }
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
+                          placeholder="Ex.: consultiva, objetiva e humana"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <label className="mb-1 block text-xs font-medium text-gray-700">
+                        Observações extras da ativação
+                      </label>
+                      <textarea
+                        value={localConfigDraft.activationNotesExtra}
+                        onChange={(e) =>
+                          setLocalConfigDraft((current) => ({
+                            ...current,
+                            activationNotesExtra: e.target.value,
+                          }))
+                        }
+                        rows={4}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
+                        placeholder="Use este espaço para detalhes importantes da ativação."
+                      />
+                    </div>
+                  </SectionCard>
+
+                  <StrategySection
+                    title="Informações trazidas do onboarding"
+                    description="Essas informações continuam visíveis aqui, mas o cadastro principal fica acima."
+                    items={strategySections.responsavelEAtivacao}
+                    onEdit={() => goToOnboardingStep(5)}
+                  />
                 </div>
               )}
 
@@ -2911,25 +3209,25 @@ export default function ConfiguracoesPage() {
                       </div>
 
                       <div className="space-y-4">
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-sm text-gray-500">Desconto padrão atual</div>
-                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                        <div className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
+                          <div className="text-xs text-gray-500">Desconto padrão atual</div>
+                          <div className="mt-1 text-xl font-bold text-gray-900">
                             {discountSettings?.default_discount_percent ?? 0}%
                           </div>
                         </div>
 
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-sm text-gray-500">
+                        <div className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
+                          <div className="text-xs text-gray-500">
                             Desconto máximo com autorização
                           </div>
-                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                          <div className="mt-1 text-xl font-bold text-gray-900">
                             {discountSettings?.max_discount_percent ?? 0}%
                           </div>
                         </div>
 
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-sm text-gray-500">Consultar acima do máximo</div>
-                          <div className="mt-2 text-2xl font-bold text-gray-900">
+                        <div className="rounded-xl bg-gray-50 p-3 ring-1 ring-black/5">
+                          <div className="text-xs text-gray-500">Consultar acima do máximo</div>
+                          <div className="mt-1 text-xl font-bold text-gray-900">
                             {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
                           </div>
                         </div>
