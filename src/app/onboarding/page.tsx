@@ -100,6 +100,53 @@ type Step5FormData = {
 
 type AnswersMap = Record<string, unknown>;
 
+
+type IntelligentImportSummary = {
+  totalFiles: number;
+  extractedFiles: number;
+  normalizedItems: number;
+  dedupedItems: number;
+  duplicateItems: number;
+};
+
+type IntelligentImportExtractedPreview = {
+  fileName: string;
+  mimeType: string;
+  extension: string;
+  textPreview: string;
+};
+
+type IntelligentImportNormalizedPreview = {
+  type: string;
+  sourceFileName: string;
+  title: string;
+  rawText: string;
+  confidence: number;
+  metadata: Record<string, string>;
+};
+
+type IntelligentImportDedupedPreview = IntelligentImportNormalizedPreview & {
+  dedupKey: string;
+  duplicateOf?: string;
+  isDuplicate: boolean;
+};
+
+type IntelligentImportResponse =
+  | {
+      ok: true;
+      message: string;
+      summary: IntelligentImportSummary;
+      extractedPreview: IntelligentImportExtractedPreview[];
+      normalizedPreview: IntelligentImportNormalizedPreview[];
+      dedupedPreview: IntelligentImportDedupedPreview[];
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    };
+
+
 type DiscountSettingsRow = {
   store_id: string;
   organization_id: string;
@@ -332,6 +379,14 @@ function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
 
+function formatFileSize(size: number) {
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+
 function StepBadge({
   step,
   currentStep,
@@ -518,6 +573,13 @@ function OnboardingContent() {
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [hasCompletedOnboardingOnce, setHasCompletedOnboardingOnce] = useState(false);
+
+  const [intelligentImportFiles, setIntelligentImportFiles] = useState<File[]>([]);
+  const [intelligentImportLoading, setIntelligentImportLoading] = useState(false);
+  const [intelligentImportError, setIntelligentImportError] = useState<string | null>(null);
+  const [intelligentImportSuccess, setIntelligentImportSuccess] = useState<string | null>(null);
+  const [intelligentImportResult, setIntelligentImportResult] =
+    useState<IntelligentImportResponse | null>(null);
 
   const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
 
@@ -781,6 +843,55 @@ function OnboardingContent() {
     ignoreNextStepScrollRef.current = false;
     setCurrentStep(step);
   }
+
+  async function handleRunIntelligentImport() {
+    if (!organizationId || !activeStore?.id) {
+      setIntelligentImportError("Não foi possível identificar a organização e a loja ativa.");
+      return;
+    }
+
+    if (intelligentImportFiles.length === 0) {
+      setIntelligentImportError("Selecione pelo menos um arquivo para testar a importação inteligente.");
+      return;
+    }
+
+    setIntelligentImportLoading(true);
+    setIntelligentImportError(null);
+    setIntelligentImportSuccess(null);
+    setIntelligentImportResult(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("organizationId", organizationId);
+      formData.append("storeId", activeStore.id);
+
+      for (const file of intelligentImportFiles) {
+        formData.append("files", file);
+      }
+
+      const response = await fetch("/api/onboarding/intelligent-import", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = (await response.json()) as IntelligentImportResponse;
+
+      if (!response.ok || !result.ok) {
+        setIntelligentImportError(result.message || "Falha ao processar a importação inteligente.");
+        setIntelligentImportResult(result);
+        return;
+      }
+
+      setIntelligentImportResult(result);
+      setIntelligentImportSuccess(result.message || "Importação inteligente processada com sucesso.");
+    } catch (error) {
+      console.error("[OnboardingPage] handleRunIntelligentImport error:", error);
+      setIntelligentImportError("Erro inesperado ao testar a importação inteligente.");
+    } finally {
+      setIntelligentImportLoading(false);
+    }
+  }
+
 
   async function upsertAnswers(
     payloads: Array<[string, unknown]>,
@@ -1979,6 +2090,236 @@ function OnboardingContent() {
 
           {currentStep === 1 && (
             <form onSubmit={saveStep1} className="space-y-6">
+              <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-5">
+                <SectionTitle
+                  title="Importação inteligente da base da loja"
+                  hint="Aqui é um teste do novo upload inteligente. Você pode enviar arquivos como PDF, Word, Excel, PowerPoint, TXT e imagens para ver a prévia do processamento."
+                />
+
+                <div className="space-y-4">
+                  <input
+                    type="file"
+                    multiple
+                    accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp"
+                    onChange={(e) => {
+                      const selectedFiles = Array.from(e.target.files ?? []);
+                      setIntelligentImportFiles(selectedFiles);
+                      setIntelligentImportError(null);
+                      setIntelligentImportSuccess(null);
+                      setIntelligentImportResult(null);
+                    }}
+                    className="block w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-700 outline-none file:mr-4 file:rounded-lg file:border-0 file:bg-black file:px-4 file:py-2 file:text-sm file:font-medium file:text-white"
+                  />
+
+                  {intelligentImportFiles.length > 0 ? (
+                    <div className="rounded-xl border border-gray-200 bg-white p-4">
+                      <p className="text-sm font-semibold text-gray-900">
+                        Arquivos selecionados ({intelligentImportFiles.length})
+                      </p>
+                      <div className="mt-3 space-y-2">
+                        {intelligentImportFiles.map((file) => (
+                          <div
+                            key={`${file.name}-${file.size}-${file.lastModified}`}
+                            className="flex flex-col gap-1 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 md:flex-row md:items-center md:justify-between"
+                          >
+                            <span className="break-all font-medium text-gray-900">{file.name}</span>
+                            <span className="text-xs text-gray-500">
+                              {file.type || "tipo não informado"} • {formatFileSize(file.size)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center">
+                    <button
+                      type="button"
+                      onClick={() => void handleRunIntelligentImport()}
+                      disabled={intelligentImportLoading}
+                      className="rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white disabled:opacity-60"
+                    >
+                      {intelligentImportLoading
+                        ? "Processando importação..."
+                        : "Testar importação inteligente"}
+                    </button>
+
+                    {intelligentImportFiles.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIntelligentImportFiles([]);
+                          setIntelligentImportError(null);
+                          setIntelligentImportSuccess(null);
+                          setIntelligentImportResult(null);
+                        }}
+                        disabled={intelligentImportLoading}
+                        className="rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:opacity-60"
+                      >
+                        Limpar arquivos
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {intelligentImportError ? (
+                    <InfoBlock
+                      title="Falha na importação inteligente"
+                      description={intelligentImportError}
+                    />
+                  ) : null}
+
+                  {intelligentImportSuccess ? (
+                    <InfoBlock
+                      title="Importação inteligente processada"
+                      description={intelligentImportSuccess}
+                      subtle
+                    />
+                  ) : null}
+
+                  {intelligentImportResult?.ok ? (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                          <p className="text-xs text-gray-500">Arquivos enviados</p>
+                          <p className="mt-1 text-lg font-semibold text-gray-900">
+                            {intelligentImportResult.summary.totalFiles}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                          <p className="text-xs text-gray-500">Arquivos lidos</p>
+                          <p className="mt-1 text-lg font-semibold text-gray-900">
+                            {intelligentImportResult.summary.extractedFiles}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                          <p className="text-xs text-gray-500">Blocos normalizados</p>
+                          <p className="mt-1 text-lg font-semibold text-gray-900">
+                            {intelligentImportResult.summary.normalizedItems}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                          <p className="text-xs text-gray-500">Itens deduplicados</p>
+                          <p className="mt-1 text-lg font-semibold text-gray-900">
+                            {intelligentImportResult.summary.dedupedItems}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3">
+                          <p className="text-xs text-gray-500">Duplicados detectados</p>
+                          <p className="mt-1 text-lg font-semibold text-gray-900">
+                            {intelligentImportResult.summary.duplicateItems}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-gray-200 bg-white p-4">
+                        <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
+                        {intelligentImportResult.extractedPreview.length === 0 ? (
+                          <p className="mt-2 text-sm text-gray-500">
+                            Nenhum texto foi extraído nesta tentativa.
+                          </p>
+                        ) : (
+                          <div className="mt-3 space-y-3">
+                            {intelligentImportResult.extractedPreview.map((item) => (
+                              <div
+                                key={`${item.fileName}-${item.extension}`}
+                                className="rounded-xl border border-gray-200 bg-gray-50 p-4"
+                              >
+                                <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                                  <p className="text-sm font-semibold text-gray-900">{item.fileName}</p>
+                                  <p className="text-xs text-gray-500">
+                                    {item.extension.toUpperCase()} • {item.mimeType}
+                                  </p>
+                                </div>
+                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700">
+                                  {item.textPreview || "Sem texto extraído nesta fase."}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded-xl border border-gray-200 bg-white p-4">
+                        <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
+                        {intelligentImportResult.normalizedPreview.length === 0 ? (
+                          <p className="mt-2 text-sm text-gray-500">
+                            Nenhum bloco foi classificado nesta tentativa.
+                          </p>
+                        ) : (
+                          <div className="mt-3 space-y-3">
+                            {intelligentImportResult.normalizedPreview.slice(0, 12).map((item, index) => (
+                              <div key={`${item.sourceFileName}-${item.title}-${index}`} className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                  <div>
+                                    <p className="text-sm font-semibold text-gray-900">{item.title}</p>
+                                    <p className="text-xs text-gray-500">
+                                      Tipo: {item.type} • Arquivo: {item.sourceFileName}
+                                    </p>
+                                  </div>
+                                  <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-700 ring-1 ring-gray-200">
+                                    Confiança: {Math.round(item.confidence * 100)}%
+                                  </span>
+                                </div>
+                                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700">
+                                  {item.rawText}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded-xl border border-gray-200 bg-white p-4">
+                        <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
+                        {intelligentImportResult.dedupedPreview.length === 0 ? (
+                          <p className="mt-2 text-sm text-gray-500">
+                            Nenhum item foi analisado na deduplicação.
+                          </p>
+                        ) : (
+                          <div className="mt-3 space-y-3">
+                            {intelligentImportResult.dedupedPreview.slice(0, 12).map((item, index) => (
+                              <div
+                                key={`${item.dedupKey}-${index}`}
+                                className={cx(
+                                  "rounded-xl border p-4",
+                                  item.isDuplicate
+                                    ? "border-amber-300 bg-amber-50"
+                                    : "border-gray-200 bg-gray-50"
+                                )}
+                              >
+                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                  <div>
+                                    <p className="text-sm font-semibold text-gray-900">{item.title}</p>
+                                    <p className="text-xs text-gray-500">
+                                      Tipo: {item.type} • Arquivo: {item.sourceFileName}
+                                    </p>
+                                  </div>
+                                  <span
+                                    className={cx(
+                                      "rounded-full px-3 py-1 text-xs font-medium ring-1",
+                                      item.isDuplicate
+                                        ? "bg-white text-amber-800 ring-amber-200"
+                                        : "bg-white text-gray-700 ring-gray-200"
+                                    )}
+                                  >
+                                    {item.isDuplicate
+                                      ? `Duplicado de: ${item.duplicateOf ?? "item anterior"}`
+                                      : "Único nesta análise"}
+                                  </span>
+                                </div>
+                                <p className="mt-3 break-all text-xs text-gray-500">
+                                  Chave: {item.dedupKey}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
               <div>
                 <SectionTitle
                   title="Como a loja quer aparecer no sistema?"
