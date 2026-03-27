@@ -15,6 +15,16 @@ type OnboardingRow = {
   created_at?: string;
 };
 
+const ALLOWED_PATH_PREFIXES_WHEN_INCOMPLETE = ["/dashboard", "/configuracoes"];
+
+function isAllowedWhenOnboardingIncomplete(pathname: string | null) {
+  if (!pathname) return false;
+
+  return ALLOWED_PATH_PREFIXES_WHEN_INCOMPLETE.some((prefix) => {
+    return pathname === prefix || pathname.startsWith(`${prefix}/`);
+  });
+}
+
 export default function OnboardingGuard({
   children,
 }: {
@@ -45,8 +55,7 @@ export default function OnboardingGuard({
     let cancelled = false;
 
     const run = async () => {
-      console.log("ONBOARDING GUARD EXECUTANDO");
-        if (storeLoading) {
+      if (storeLoading) {
         return;
       }
 
@@ -89,8 +98,9 @@ export default function OnboardingGuard({
 
         const onboarding = data as OnboardingRow | null;
         const status = onboarding?.status ?? "not_started";
+        const allowedWhenIncomplete = isAllowedWhenOnboardingIncomplete(pathname);
 
-        if (status !== "completed") {
+        if (status !== "completed" && !allowedWhenIncomplete) {
           router.replace("/onboarding");
           return;
         }
@@ -105,7 +115,7 @@ export default function OnboardingGuard({
       }
     };
 
-    run();
+    void run();
 
     return () => {
       cancelled = true;
@@ -114,7 +124,7 @@ export default function OnboardingGuard({
 
   if (storeLoading || loading) {
     return (
-      <div className="flex items-center justify-center h-screen">
+      <div className="flex h-screen items-center justify-center">
         Verificando onboarding...
       </div>
     );
@@ -122,11 +132,11 @@ export default function OnboardingGuard({
 
   if (fatalError) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen text-center px-6 gap-3">
+      <div className="flex h-screen flex-col items-center justify-center gap-3 px-6 text-center">
         <h1 className="text-2xl font-bold">Ops…</h1>
         <p className="max-w-xl">{fatalError}</p>
         <button
-          className="px-4 py-2 rounded bg-black text-white"
+          className="rounded bg-black px-4 py-2 text-white"
           onClick={() => window.location.reload()}
         >
           Recarregar

@@ -172,6 +172,7 @@ type PersistedIntelligentImportState = {
 const MAX_PERSISTED_TEXT_LENGTH = 1200;
 const MAX_PERSISTED_IMPORT_ITEMS = 24;
 const INTELLIGENT_IMPORT_SESSION_STORAGE_PREFIX = "zion:onboarding:intelligent-import";
+const CATALOG_STORAGE_BUCKET = "store-catalog-photos";
 
 function truncateForStorage(value: string, maxLength = MAX_PERSISTED_TEXT_LENGTH) {
   const normalized = String(value ?? "").trim();
@@ -622,6 +623,7 @@ function decorateIntelligentImportResultWithImageFallback(
 }
 
 
+
 type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
 
 function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
@@ -692,6 +694,12 @@ function buildImportedCatalogDescription(
   return raw.slice(0, 4000);
 }
 
+async function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  const effectiveType = mimeType || blob.type || "image/jpeg";
+  return new File([blob], fileName, { type: effectiveType });
+}
 
 function StepBadge({
   step,
@@ -1459,14 +1467,17 @@ function OnboardingContent() {
     }
 
     if (!intelligentImportResult || !intelligentImportResult.ok) {
-      setFormError("Faça a importação inteligente antes de salvar itens no catálogo.");
+      setFormError("Faça a importação inteligente antes de salvar no catálogo.");
       return;
     }
 
-    const sourceItems = intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate);
+    const sourceItems =
+      intelligentImportResult.dedupedPreview.length > 0
+        ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
+        : intelligentImportResult.normalizedPreview;
 
     if (sourceItems.length === 0) {
-      setFormError("Nenhum item único foi encontrado para salvar no catálogo.");
+      setFormError("Não existem itens prontos para salvar no catálogo.");
       return;
     }
 
@@ -1475,14 +1486,24 @@ function OnboardingContent() {
     setSuccessMessage(null);
 
     try {
-      const createdItems: Array<{ id: string; category: ImportedCatalogCategory; name: string }> = [];
+      const createdByCategory: Record<ImportedCatalogCategory, number> = {
+        acessorios: 0,
+        quimicos: 0,
+        outros: 0,
+      };
+
+      const createdItemIdsByCategory: Record<ImportedCatalogCategory, string[]> = {
+        acessorios: [],
+        quimicos: [],
+        outros: [],
+      };
 
       for (const item of sourceItems) {
         const category = inferImportedCatalogCategory(item);
         const name = buildImportedCatalogName(item);
         const description = buildImportedCatalogDescription(item);
 
-        const { data: createdItem, error: createError } = await supabase
+        const { data: createdItem, error } = await supabase
           .from("store_catalog_items")
           .insert({
             organization_id: organizationId,
@@ -1497,69 +1518,72 @@ function OnboardingContent() {
             stock_quantity: null,
             metadata: {
               categoria: category,
-              imported_via: "onboarding_intelligent_import",
-              import_type: item.type,
-              import_confidence: item.confidence,
-              import_source_file_name: item.sourceFileName,
-              import_dedup_key: item.dedupKey,
+              source: "onboarding_intelligent_import",
+              source_file_name: item.sourceFileName,
+              source_type: item.type,
+              confidence: item.confidence,
+              dedup_key: "dedupKey" in item ? item.dedupKey : null,
             },
           })
-          .select("id,name")
+          .select("id")
           .single();
 
-        if (createError) {
-          throw createError;
-        }
+        if (error) throw error;
 
-        createdItems.push({
-          id: createdItem.id,
-          category,
-          name: createdItem.name ?? name,
-        });
+        createdByCategory[category] += 1;
+        createdItemIdsByCategory[category].push(createdItem.id);
+      }
 
-        const matchingImageFile = intelligentImportFiles.find((file) => {
-          if (!isImageLikeFileType(file.type)) return false;
-          const normalizedFileName = file.name.trim().toLowerCase();
-          const normalizedSource = String(item.sourceFileName ?? "").trim().toLowerCase();
-          const normalizedTitle = String(item.title ?? "").trim().toLowerCase();
-          return (
-            normalizedFileName === normalizedSource ||
-            normalizedFileName === normalizedTitle ||
-            normalizedTitle.includes(normalizedFileName.replace(/\.[^.]+$/, ""))
-          );
-        });
+      const selectedImageFiles = intelligentImportFiles.filter((file) =>
+        String(file.type || "").startsWith("image/")
+      );
 
-        if (matchingImageFile) {
-          const extension = matchingImageFile.name.includes(".")
-            ? matchingImageFile.name.split(".").pop()
-            : "jpg";
-          const safeExtension = extension ? extension.toLowerCase() : "jpg";
-          const filePath = `${organizationId}/${activeStore.id}/${createdItem.id}/${Date.now()}-${createdItems.length}.${safeExtension}`;
+      const firstCreatedCategory: ImportedCatalogCategory =
+        createdByCategory.acessorios > 0
+          ? "acessorios"
+          : createdByCategory.quimicos > 0
+          ? "quimicos"
+          : "outros";
 
-          const { error: uploadError } = await supabase.storage
-            .from("store-catalog-photos")
-            .upload(filePath, matchingImageFile, {
-              upsert: false,
-              contentType: matchingImageFile.type || undefined,
-            });
+      const firstCreatedItemId = createdItemIdsByCategory[firstCreatedCategory][0];
 
-          if (!uploadError) {
-            await supabase.from("store_catalog_item_photos").insert({
-              catalog_item_id: createdItem.id,
-              storage_path: filePath,
-              file_name: matchingImageFile.name,
-              file_size_bytes: matchingImageFile.size,
-              sort_order: 0,
-            });
-          }
+      if (firstCreatedItemId && selectedImageFiles.length > 0) {
+        const imageFile = selectedImageFiles[0];
+        const extension = imageFile.name.includes(".")
+          ? imageFile.name.split(".").pop()
+          : "jpg";
+        const safeExtension = extension ? extension.toLowerCase() : "jpg";
+        const filePath = `${organizationId}/${activeStore.id}/${firstCreatedItemId}/${Date.now()}-0.${safeExtension}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("store-catalog-photos")
+          .upload(filePath, imageFile, {
+            upsert: false,
+            contentType: imageFile.type || undefined,
+          });
+
+        if (!uploadError) {
+          await supabase.from("store_catalog_item_photos").insert({
+            catalog_item_id: firstCreatedItemId,
+            storage_path: filePath,
+            file_name: imageFile.name,
+            file_size_bytes: imageFile.size,
+            sort_order: 0,
+          });
         }
       }
 
-      const firstCategory = createdItems[0]?.category ?? "outros";
+      const totalCreated =
+        createdByCategory.acessorios +
+        createdByCategory.quimicos +
+        createdByCategory.outros;
+
       setSuccessMessage(
-        `${createdItems.length} item(ns) importado(s) e salvo(s) no catálogo com sucesso.`
+        `Importação salva no catálogo com sucesso. ${totalCreated} item(ns) criado(s).`
       );
-      navigateWithFallback(`/configuracoes/catalogo/${firstCategory}`);
+
+      clearIntelligentImportState();
+      navigateWithFallback(`/configuracoes/catalogo/${firstCreatedCategory}`);
     } catch (error) {
       console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
       setFormError(
@@ -2140,7 +2164,7 @@ function OnboardingContent() {
         ["service_region_outside_consultation", step1Form.service_region_outside_consultation],
       ],
       "Etapa 1 salva com sucesso.",
-      typeof options?.nextStep === "number" ? options.nextStep : options?.nextStep === null ? undefined : 2
+      options?.nextStep === null ? undefined : options?.nextStep ?? 2
     );
 
     if (!didSave) return false;
@@ -2206,7 +2230,7 @@ function OnboardingContent() {
         ["main_store_brand", step2Form.main_store_brand.trim()],
       ],
       "Etapa 2 salva com sucesso.",
-      typeof options?.nextStep === "number" ? options.nextStep : options?.nextStep === null ? undefined : 3
+      options?.nextStep === null ? undefined : options?.nextStep ?? 3
     );
 
     if (!didSave) return false;
@@ -2315,7 +2339,7 @@ function OnboardingContent() {
         ["sales_flow_final_confirmed", step3Form.sales_flow_final_confirmed],
       ],
       "Etapa 3 salva com sucesso.",
-      typeof options?.nextStep === "number" ? options.nextStep : options?.nextStep === null ? undefined : 4
+      options?.nextStep === null ? undefined : options?.nextStep ?? 4
     );
 
     if (!didSave) return false;
@@ -2546,12 +2570,7 @@ function OnboardingContent() {
           : "Etapa 4 salva com sucesso. A política inicial de desconto foi criada em Configurações."
       );
 
-      const nextStep =
-        typeof options?.nextStep === "number"
-          ? options.nextStep
-          : options?.nextStep === null
-          ? undefined
-          : 5;
+      const nextStep = options?.nextStep === null ? undefined : options?.nextStep ?? 5;
       if (typeof nextStep === "number") {
         ignoreNextStepScrollRef.current = false;
         setCurrentStep(nextStep);
@@ -3345,27 +3364,23 @@ function OnboardingContent() {
                           </div>
                         )}
                       </div>
-                      <div className="rounded-xl border border-gray-200 bg-white p-3">
+
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                           <div>
-                            <p className="text-sm font-semibold text-gray-900">
-                              Salvar itens importados no catálogo
+                            <p className="text-sm font-semibold text-emerald-900">
+                              Salvar resultado no catálogo da loja
                             </p>
-                            <p className="mt-1 text-sm text-gray-500">
-                              Isso pega os itens únicos desta análise e grava no catálogo real da loja.
+                            <p className="mt-1 text-sm leading-6 text-emerald-800">
+                              Isso cria os itens únicos da análise no catálogo real da loja e depois abre a categoria correspondente em Configurações.
                             </p>
                           </div>
 
                           <button
                             type="button"
                             onClick={() => void handleSaveImportedItemsToCatalog()}
-                            disabled={
-                              savingImportedCatalog ||
-                              intelligentImportLoading ||
-                              !intelligentImportResult?.ok ||
-                              safeDedupedPreview.filter((item) => !item.isDuplicate).length === 0
-                            }
-                            className="rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled={savingImportedCatalog || intelligentImportLoading}
+                            className="rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white disabled:opacity-60"
                           >
                             {savingImportedCatalog ? "Salvando no catálogo..." : "Salvar no catálogo"}
                           </button>
