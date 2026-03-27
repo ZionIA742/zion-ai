@@ -2,6 +2,7 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import sharp from "sharp";
+import { createCanvas } from "@napi-rs/canvas";
 import { XMLParser } from "fast-xml-parser";
 
 export type ExtractedImageAsset = {
@@ -352,7 +353,9 @@ async function resolvePdfJsObject(store: any, key: string) {
   });
 }
 
-async function extractImagesFromPdf(buffer: Buffer): Promise<ExtractedImageAsset[]> {
+async function extractEmbeddedImagesFromPdf(
+  buffer: Buffer
+): Promise<ExtractedImageAsset[]> {
   try {
     const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const OPS = pdfjs.OPS || {};
@@ -436,6 +439,71 @@ async function extractImagesFromPdf(buffer: Buffer): Promise<ExtractedImageAsset
   } catch {
     return [];
   }
+}
+
+async function renderPdfPagesAsImages(
+  buffer: Buffer
+): Promise<ExtractedImageAsset[]> {
+  try {
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+      disableFontFace: true,
+      standardFontDataUrl: undefined,
+    });
+
+    const pdf = await loadingTask.promise;
+    const images: ExtractedImageAsset[] = [];
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      const page = await pdf.getPage(pageNumber);
+
+      const baseViewport = page.getViewport({ scale: 1 });
+      const maxWidth = 1200;
+      const scale = Math.min(1.5, Math.max(0.9, maxWidth / baseViewport.width));
+      const viewport = page.getViewport({ scale });
+
+      const canvas = createCanvas(
+        Math.max(1, Math.ceil(viewport.width)),
+        Math.max(1, Math.ceil(viewport.height))
+      );
+      const context = canvas.getContext("2d") as any;
+
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      await page.render({
+        canvasContext: context,
+        viewport,
+      }).promise;
+
+      const imageBuffer = canvas.toBuffer("image/jpeg", 82);
+
+      images.push({
+        fileName: `pdf-render-page-${pageNumber}.jpg`,
+        source: "pdf",
+        mimeType: "image/jpeg",
+        dataUrl: bufferToDataUrl(imageBuffer, "image/jpeg"),
+      });
+    }
+
+    return images;
+  } catch {
+    return [];
+  }
+}
+
+async function extractImagesFromPdf(buffer: Buffer): Promise<ExtractedImageAsset[]> {
+  const embeddedImages = await extractEmbeddedImagesFromPdf(buffer);
+
+  if (embeddedImages.length > 0) {
+    return embeddedImages;
+  }
+
+  return renderPdfPagesAsImages(buffer);
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
