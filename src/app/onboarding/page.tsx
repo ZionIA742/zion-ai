@@ -764,11 +764,6 @@ function OnboardingContent() {
     return `zion_onboarding_scroll:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
 
-  const intelligentImportStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `zion_onboarding_intelligent_import:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-
   const ignoreNextStepScrollRef = useRef(false);
 
   const savePageScroll = useCallback(() => {
@@ -973,6 +968,27 @@ function OnboardingContent() {
     setCurrentStep(step);
   }
 
+  function navigateWithFallback(path: string) {
+    savePageScroll();
+    router.push(path);
+
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        if (window.location.pathname !== path) {
+          window.location.assign(path);
+        }
+      }, 150);
+    }
+  }
+
+  async function handleGoToSettings() {
+    navigateWithFallback("/configuracoes");
+  }
+
+  async function handleSaveAndExit() {
+    navigateWithFallback("/dashboard");
+  }
+
   function clearIntelligentImportState() {
     setIntelligentImportFiles([]);
     setIntelligentImportSelectedFilesPreview([]);
@@ -980,10 +996,6 @@ function OnboardingContent() {
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
     setIntelligentImportRecovered(false);
-
-    if (intelligentImportStorageKey && typeof window !== "undefined") {
-      window.localStorage.removeItem(intelligentImportStorageKey);
-    }
   }
 
   async function handleRunIntelligentImport() {
@@ -1116,58 +1128,6 @@ function OnboardingContent() {
     window.localStorage.setItem(currentStepStorageKey, String(currentStep));
   }, [currentStep, currentStepStorageKey]);
 
-  useEffect(() => {
-    if (!intelligentImportStorageKey || typeof window === "undefined") return;
-
-    const raw = window.localStorage.getItem(intelligentImportStorageKey);
-    if (!raw) {
-      setIntelligentImportRecovered(false);
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as PersistedIntelligentImportState;
-      setIntelligentImportSelectedFilesPreview(Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : []);
-      setIntelligentImportResult(parsed.result ?? null);
-      setIntelligentImportSuccess(parsed.successMessage ?? null);
-      setIntelligentImportError(parsed.errorMessage ?? null);
-      setIntelligentImportRecovered(Boolean((parsed.selectedFiles?.length ?? 0) > 0 || parsed.result));
-    } catch (error) {
-      console.error("[OnboardingPage] intelligent import restore error:", error);
-      window.localStorage.removeItem(intelligentImportStorageKey);
-      setIntelligentImportRecovered(false);
-    }
-  }, [intelligentImportStorageKey]);
-
-  useEffect(() => {
-    if (!intelligentImportStorageKey || typeof window === "undefined") return;
-
-    const hasPersistedContent =
-      visibleIntelligentImportFiles.length > 0 ||
-      Boolean(intelligentImportResult) ||
-      Boolean(intelligentImportSuccess) ||
-      Boolean(intelligentImportError);
-
-    if (!hasPersistedContent) {
-      window.localStorage.removeItem(intelligentImportStorageKey);
-      return;
-    }
-
-    const payload: PersistedIntelligentImportState = {
-      selectedFiles: visibleIntelligentImportFiles,
-      result: intelligentImportResult,
-      successMessage: intelligentImportSuccess,
-      errorMessage: intelligentImportError,
-    };
-
-    window.localStorage.setItem(intelligentImportStorageKey, JSON.stringify(payload));
-  }, [
-    intelligentImportStorageKey,
-    visibleIntelligentImportFiles,
-    intelligentImportResult,
-    intelligentImportSuccess,
-    intelligentImportError,
-  ]);
 
   useEffect(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
@@ -1611,26 +1571,6 @@ function OnboardingContent() {
     loadDiscountSettings();
   }, [organizationId, activeStore?.id]);
 
-  useEffect(() => {
-    if (currentStep === 1 && step1DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 1 recuperado.");
-    } else if (currentStep === 2 && step2DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 2 recuperado.");
-    } else if (currentStep === 3 && step3DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 3 recuperado.");
-    } else if (currentStep === 4 && step4DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 4 recuperado.");
-    } else if (currentStep === 5 && step5DraftRecovered) {
-      setSuccessMessage("Rascunho local da etapa 5 recuperado.");
-    }
-  }, [
-    currentStep,
-    step1DraftRecovered,
-    step2DraftRecovered,
-    step3DraftRecovered,
-    step4DraftRecovered,
-    step5DraftRecovered,
-  ]);
 
   async function saveStep1(e: FormEvent) {
     e.preventDefault();
@@ -2155,7 +2095,7 @@ function OnboardingContent() {
       setHasCompletedOnboardingOnce(true);
       setStep5DraftRecovered(false);
       setTimeout(() => {
-        router.push("/configuracoes");
+        navigateWithFallback("/configuracoes");
       }, 1000);
     } catch (err) {
       console.error("[OnboardingPage] saveStep5 error:", err);
@@ -2228,21 +2168,12 @@ function OnboardingContent() {
                   "Por fim, vamos organizar quem a IA deve avisar, em quais casos e quais orientações finais ela precisa seguir."}
               </p>
 
-              {hasCompletedOnboardingOnce ? (
-                <div className="mt-3">
-                  <InfoBlock
-                    title="Onboarding já concluído antes"
-                    description="Você pode revisar e ajustar os dados quando quiser. As regras vivas da loja continuam sendo controladas pela aba Configurações."
-                    subtle
-                  />
-                </div>
-              ) : null}
             </div>
 
-            <div className="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
+            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
               <button
                 type="button"
-                onClick={() => router.push("/configuracoes")}
+                onClick={handleGoToSettings}
                 className="inline-flex items-center justify-center rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
               >
                 Ir para Configurações
@@ -2250,10 +2181,10 @@ function OnboardingContent() {
 
               <button
                 type="button"
-                onClick={() => router.push("/dashboard")}
+                onClick={handleSaveAndExit}
                 className="inline-flex items-center justify-center rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
               >
-                Voltar ao painel
+                Salvar e sair
               </button>
             </div>
           </div>
@@ -3103,11 +3034,6 @@ function OnboardingContent() {
 
               {hasDiscountConfigOverride ? (
                 <div className="space-y-4">
-                  <InfoBlock
-                    title="Desconto controlado pela aba Configurações"
-                    description="Esses valores agora estão em modo espelho no onboarding. Quando você muda em Configurações, aqui atualiza junto. Alterações feitas aqui no onboarding não sobrescrevem mais a política viva."
-                  />
-
                   <div>
                     <SectionTitle title="A loja pode dar desconto?" />
                     <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
@@ -3281,13 +3207,6 @@ function OnboardingContent() {
                 </div>
               )}
 
-              {step4Form.ai_can_send_price_directly === "não" && (
-                <InfoBlock
-                  title="Preço com apoio humano"
-                  description="Nesse caso, a IA não deve falar preço sozinha. Ela pode qualificar, entender o caso e chamar alguém da loja para seguir."
-                  subtle
-                />
-              )}
 
               <div>
                 <SectionTitle
