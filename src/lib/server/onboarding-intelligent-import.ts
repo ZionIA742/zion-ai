@@ -1,4 +1,7 @@
-import { extractTextFromFile } from "./onboarding-file-extractors";
+import {
+  extractTextFromFile,
+  type ExtractedImageAsset,
+} from "./onboarding-file-extractors";
 import {
   normalizeMultipleExtractedFiles,
   type NormalizedImportItem,
@@ -20,28 +23,38 @@ export type IntelligentImportParams = {
   files: ImportableFile[];
 };
 
-export type IntelligentImportResult = {
-  ok: true;
-  summary: {
-    totalFiles: number;
-    extractedFiles: number;
-    normalizedItems: number;
-    dedupedItems: number;
-    duplicateItems: number;
-  };
-  extractedPreview: Array<{
-    fileName: string;
-    mimeType: string;
-    extension: string;
-    textPreview: string;
-  }>;
-  normalizedPreview: NormalizedImportItem[];
-  dedupedPreview: DedupedImportItem[];
-} | {
-  ok: false;
-  error: string;
-  message: string;
-};
+export type IntelligentImportResult =
+  | {
+      ok: true;
+      summary: {
+        totalFiles: number;
+        extractedFiles: number;
+        normalizedItems: number;
+        dedupedItems: number;
+        duplicateItems: number;
+        extractedImages: number;
+      };
+      extractedPreview: Array<{
+        fileName: string;
+        mimeType: string;
+        extension: string;
+        textPreview: string;
+      }>;
+      extractedImagePreview: Array<{
+        sourceFileName: string;
+        fileName: string;
+        source: ExtractedImageAsset["source"];
+        mimeType: string;
+        dataUrl: string;
+      }>;
+      normalizedPreview: NormalizedImportItem[];
+      dedupedPreview: DedupedImportItem[];
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    };
 
 function buildPreview(text: string, max = 300) {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -97,6 +110,16 @@ export async function runOnboardingIntelligentImport(
     const dedupedItems = dedupNormalizedItems(normalizedItems);
     const duplicateItems = dedupedItems.filter((item) => item.isDuplicate).length;
 
+    const extractedImagePreview = extractedFiles.flatMap((file) =>
+      (file.extractedImages ?? []).map((image) => ({
+        sourceFileName: file.fileName,
+        fileName: image.fileName,
+        source: image.source,
+        mimeType: image.mimeType,
+        dataUrl: image.dataUrl,
+      }))
+    );
+
     return {
       ok: true,
       summary: {
@@ -105,6 +128,7 @@ export async function runOnboardingIntelligentImport(
         normalizedItems: normalizedItems.length,
         dedupedItems: dedupedItems.length,
         duplicateItems,
+        extractedImages: extractedImagePreview.length,
       },
       extractedPreview: extractedFiles.map((file) => ({
         fileName: file.fileName,
@@ -112,6 +136,7 @@ export async function runOnboardingIntelligentImport(
         extension: file.extension,
         textPreview: buildPreview(file.text),
       })),
+      extractedImagePreview,
       normalizedPreview: normalizedItems,
       dedupedPreview: dedupedItems,
     };

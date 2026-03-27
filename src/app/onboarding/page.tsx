@@ -132,12 +132,21 @@ type IntelligentImportDedupedPreview = IntelligentImportNormalizedPreview & {
   isDuplicate: boolean;
 };
 
+type IntelligentImportExtractedImagePreview = {
+  sourceFileName: string;
+  fileName: string;
+  source: "docx" | "xlsx" | "pptx" | "image_file";
+  mimeType: string;
+  dataUrl: string;
+};
+
 type IntelligentImportResponse =
   | {
       ok: true;
       message: string;
       summary: IntelligentImportSummary;
       extractedPreview: IntelligentImportExtractedPreview[];
+      extractedImagePreview: IntelligentImportExtractedImagePreview[];
       normalizedPreview: IntelligentImportNormalizedPreview[];
       dedupedPreview: IntelligentImportDedupedPreview[];
     }
@@ -398,10 +407,6 @@ function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function isImageLikeFileType(fileType: string) {
-  return fileType.startsWith("image/");
 }
 
 
@@ -822,22 +827,8 @@ function OnboardingContent() {
     return intelligentImportSelectedFilesPreview;
   }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
 
-  const selectedImagePreviews = useMemo(() => {
-    return intelligentImportFiles
-      .filter((file) => isImageLikeFileType(file.type))
-      .map((file) => ({
-        name: file.name,
-        url: URL.createObjectURL(file),
-      }));
-  }, [intelligentImportFiles]);
-
-  useEffect(() => {
-    return () => {
-      for (const preview of selectedImagePreviews) {
-        URL.revokeObjectURL(preview.url);
-      }
-    };
-  }, [selectedImagePreviews]);
+  const extractedImagePreviewItems =
+    intelligentImportResult?.ok ? intelligentImportResult.extractedImagePreview : [];
 
   const updateStep1Field = <K extends keyof Step1FormData>(field: K, value: Step1FormData[K]) => {
     setStep1Form((prev) => ({ ...prev, [field]: value }));
@@ -2514,7 +2505,7 @@ function OnboardingContent() {
                   />
 
                   <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700">
-                    Você pode enviar fotos do catálogo, imagens de produtos, tabelas simples em foto, PDF, Word, Excel e PowerPoint. As imagens selecionadas aparecem em pré-visualização logo abaixo para facilitar a conferência antes do teste.
+                    Você pode enviar fotos diretas, Word, Excel, PDF e PowerPoint. Quando houver imagem embutida em Word, Excel, PowerPoint ou quando o arquivo enviado for uma imagem direta, a tela mostra uma galeria logo abaixo.
                   </div>
 
                   {visibleIntelligentImportFiles.length > 0 ? (
@@ -2541,27 +2532,30 @@ function OnboardingContent() {
                     </div>
                   ) : null}
 
-                  {selectedImagePreviews.length > 0 ? (
+                  {extractedImagePreviewItems.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
-                        Pré-visualização das fotos selecionadas ({selectedImagePreviews.length})
+                        Fotos encontradas nos arquivos ({extractedImagePreviewItems.length})
                       </p>
                       <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                        {selectedImagePreviews.map((preview) => (
+                        {extractedImagePreviewItems.map((image, index) => (
                           <div
-                            key={preview.name}
+                            key={`${image.sourceFileName}-${image.fileName}-${index}`}
                             className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
                           >
                             <div className="aspect-square w-full bg-white">
                               <img
-                                src={preview.url}
-                                alt={preview.name}
+                                src={image.dataUrl}
+                                alt={image.fileName}
                                 className="h-full w-full object-cover"
                               />
                             </div>
                             <div className="border-t border-gray-200 px-3 py-2">
-                              <p className="truncate text-xs font-medium text-gray-700">
-                                {preview.name}
+                              <p className="truncate text-xs font-semibold text-gray-800">
+                                {image.fileName}
+                              </p>
+                              <p className="truncate text-[11px] text-gray-500">
+                                Arquivo: {image.sourceFileName}
                               </p>
                             </div>
                           </div>
