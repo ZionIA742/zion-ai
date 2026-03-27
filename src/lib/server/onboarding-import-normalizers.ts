@@ -26,6 +26,18 @@ type SimpleCatalogRow = {
   rawText: string;
 };
 
+type SimplePoolCard = {
+  title: string;
+  tipo?: string;
+  medidas?: string;
+  profundidade?: string;
+  capacidade?: string;
+  prazoEstimado?: string;
+  faixaPreco?: string;
+  descricao?: string;
+  rawText: string;
+};
+
 function cleanText(text: string) {
   return text.replace(/\r/g, "").replace(/\t/g, " ").trim();
 }
@@ -82,6 +94,22 @@ function looksLikeCatalogHeader(text: string) {
   return score >= 3;
 }
 
+function looksLikePoolDocument(text: string) {
+  const lower = normalizeLoose(text);
+
+  const signals = [
+    lower.includes("piscina"),
+    lower.includes("tipo"),
+    lower.includes("medidas"),
+    lower.includes("profundidade"),
+    lower.includes("capacidade"),
+    lower.includes("prazo estimado"),
+    lower.includes("faixa de preco") || lower.includes("faixa de preço"),
+  ].filter(Boolean).length;
+
+  return signals >= 4;
+}
+
 function buildCatalogItem(
   extracted: ExtractedFileContent,
   row: SimpleCatalogRow,
@@ -103,6 +131,34 @@ function buildCatalogItem(
       valorCx: row.valorCx ?? "",
       valorUni: row.valorUni ?? "",
       valorVd: row.valorVd ?? "",
+    },
+  };
+}
+
+function buildPoolItem(
+  extracted: ExtractedFileContent,
+  pool: SimplePoolCard,
+  importMode: string,
+  confidence: number
+): NormalizedImportItem {
+  return {
+    type: "pool",
+    sourceFileName: extracted.fileName,
+    title: `Piscina: ${pool.title}`,
+    rawText: pool.rawText,
+    confidence,
+    metadata: {
+      extension: extracted.extension,
+      mimeType: extracted.mimeType,
+      importMode,
+      title: pool.title,
+      tipo: pool.tipo ?? "",
+      medidas: pool.medidas ?? "",
+      profundidade: pool.profundidade ?? "",
+      capacidade: pool.capacidade ?? "",
+      prazoEstimado: pool.prazoEstimado ?? "",
+      faixaPreco: pool.faixaPreco ?? "",
+      descricao: pool.descricao ?? "",
     },
   };
 }
@@ -222,6 +278,108 @@ function extractCatalogItemsFromFlatSequence(
     };
 
     items.push(buildCatalogItem(extracted, row, "simple_catalog_flat_sequence", 0.91));
+  }
+
+  return items;
+}
+
+function splitPoolSections(text: string) {
+  const cleaned = cleanText(text);
+
+  const sections = cleaned
+    .split(/\n(?=Piscina\s)/g)
+    .map((section) => section.trim())
+    .filter(Boolean);
+
+  return sections;
+}
+
+function extractValue(section: string, label: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`${escaped}\\s*[:|]\\s*(.+)`, "iu");
+  const match = section.match(regex);
+  return match?.[1]?.trim() || "";
+}
+
+function extractPoolItemsFromSimpleCards(
+  extracted: ExtractedFileContent
+): NormalizedImportItem[] {
+  if (!looksLikePoolDocument(extracted.text)) {
+    return [];
+  }
+
+  const sections = splitPoolSections(extracted.text);
+  const items: NormalizedImportItem[] = [];
+
+  for (const section of sections) {
+    const lines = section
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (!lines.length) continue;
+
+    const title = lines[0].replace(/^Piscina\s*/i, "").trim() || lines[0];
+
+    const tipo = extractValue(section, "Tipo");
+    const medidas = extractValue(section, "Medidas");
+    const profundidade = extractValue(section, "Profundidade");
+    const capacidade = extractValue(section, "Capacidade");
+    const prazoEstimado = extractValue(section, "Prazo estimado");
+    const faixaPreco = extractValue(section, "Faixa de preço") || extractValue(section, "Faixa de preco");
+
+    const knownLines = new Set([
+      lines[0],
+      ...lines.filter((line) =>
+        /^(tipo|medidas|profundidade|capacidade|prazo estimado|faixa de pre[cç]o)\s*[:|]/iu.test(line)
+      ),
+    ]);
+
+    const descricao = lines
+      .filter((line) => !knownLines.has(line))
+      .join(" ")
+      .trim();
+
+    const filled = [
+      title ? 1 : 0,
+      tipo ? 1 : 0,
+      medidas ? 1 : 0,
+      profundidade ? 1 : 0,
+      capacidade ? 1 : 0,
+      prazoEstimado ? 1 : 0,
+      faixaPreco ? 1 : 0,
+    ].reduce((acc, value) => acc + value, 0);
+
+    if (filled < 3) continue;
+
+    const pool: SimplePoolCard = {
+      title,
+      tipo,
+      medidas,
+      profundidade,
+      capacidade,
+      prazoEstimado,
+      faixaPreco,
+      descricao,
+      rawText: [
+        `Piscina: ${title}`,
+        tipo ? `Tipo: ${tipo}` : null,
+        medidas ? `Medidas: ${medidas}` : null,
+        profundidade ? `Profundidade: ${profundidade}` : null,
+        capacidade ? `Capacidade: ${capacidade}` : null,
+        prazoEstimado ? `Prazo estimado: ${prazoEstimado}` : null,
+        faixaPreco ? `Faixa de preço: ${faixaPreco}` : null,
+        descricao ? `Descrição: ${descricao}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    };
+
+    let confidence = 0.8;
+    if (filled >= 6) confidence = 0.92;
+    else if (filled >= 5) confidence = 0.88;
+
+    items.push(buildPoolItem(extracted, pool, "simple_pool_cards", confidence));
   }
 
   return items;
@@ -350,6 +508,11 @@ export function normalizeExtractedFile(
   const flatSequenceItems = extractCatalogItemsFromFlatSequence(extracted);
   if (flatSequenceItems.length > 0) {
     return flatSequenceItems;
+  }
+
+  const simplePoolItems = extractPoolItemsFromSimpleCards(extracted);
+  if (simplePoolItems.length > 0) {
+    return simplePoolItems;
   }
 
   return buildFallbackBlocks(extracted);
