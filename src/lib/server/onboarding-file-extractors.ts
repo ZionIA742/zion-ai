@@ -10,6 +10,7 @@ import {
   ImageData as NapiImageData,
   Path2D as NapiPath2D,
 } from "@napi-rs/canvas";
+import * as PdfJsWorkerModule from "pdfjs-dist/legacy/build/pdf.worker.mjs";
 
 export type ExtractedImageAsset = {
   fileName: string;
@@ -150,6 +151,12 @@ function logPdfError(
   });
 }
 
+function ensurePdfJsWorkerGlobals() {
+  if (!(globalThis as any).pdfjsWorker) {
+    (globalThis as any).pdfjsWorker = PdfJsWorkerModule;
+  }
+}
+
 function ensurePdfNodeCanvasGlobals() {
   if (!(globalThis as any).DOMMatrix) {
     (globalThis as any).DOMMatrix = NapiDOMMatrix;
@@ -162,6 +169,8 @@ function ensurePdfNodeCanvasGlobals() {
   if (!(globalThis as any).Path2D) {
     (globalThis as any).Path2D = NapiPath2D;
   }
+
+  ensurePdfJsWorkerGlobals();
 }
 
 async function extractImagesFromZip(params: {
