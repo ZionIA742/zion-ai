@@ -49,6 +49,15 @@ function normalizeInlineText(value: string) {
     .trim();
 }
 
+function normalizeExtractedText(value: string) {
+  return value
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
 function isPoolCardStart(line: string) {
   return /^piscina\b/i.test(line.trim());
 }
@@ -111,7 +120,7 @@ async function extractImagesFromZip(params: {
   return images;
 }
 
-async function extractTextFromPdf(buffer: Buffer) {
+async function extractTextFromPdfWithPdfParse(buffer: Buffer) {
   try {
     const imported: any = await import("pdf-parse");
     const pdfParse =
@@ -126,10 +135,82 @@ async function extractTextFromPdf(buffer: Buffer) {
     }
 
     const result = await pdfParse(buffer);
-    return (result?.text || "").replace(/\r/g, "").trim();
+    return normalizeExtractedText(result?.text || "");
   } catch {
     return "";
   }
+}
+
+async function extractTextFromPdfWithPdfJs(buffer: Buffer) {
+  try {
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+    });
+
+    const pdf = await loadingTask.promise;
+    const pages: string[] = [];
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      const page = await pdf.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+
+      const items = (textContent.items || []) as Array<any>;
+      const rows = new Map<string, string[]>();
+
+      for (const item of items) {
+        const str = String(item?.str || "").trim();
+        if (!str) continue;
+
+        const transform = Array.isArray(item?.transform) ? item.transform : [];
+        const y = typeof transform[5] === "number" ? transform[5] : 0;
+        const key = y.toFixed(1);
+
+        const bucket = rows.get(key) || [];
+        bucket.push(str);
+        rows.set(key, bucket);
+      }
+
+      const ordered = Array.from(rows.entries())
+        .sort((a, b) => Number(b[0]) - Number(a[0]))
+        .map(([, parts]) =>
+          parts
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim()
+        )
+        .filter(Boolean);
+
+      const pageText = ordered.join("\n").trim();
+
+      if (pageText) {
+        pages.push(pageText);
+      }
+    }
+
+    return normalizeExtractedText(pages.join("\n\n"));
+  } catch {
+    return "";
+  }
+}
+
+async function extractTextFromPdf(buffer: Buffer) {
+  const firstPass = await extractTextFromPdfWithPdfParse(buffer);
+
+  if (firstPass.length >= 120) {
+    return firstPass;
+  }
+
+  const secondPass = await extractTextFromPdfWithPdfJs(buffer);
+
+  if (secondPass.length > firstPass.length) {
+    return secondPass;
+  }
+
+  return firstPass;
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
@@ -190,7 +271,7 @@ async function extractTextFromDocx(buffer: Buffer) {
   }
 
   const raw = await mammoth.extractRawText({ buffer });
-  const baseText = (raw.value || "").replace(/\r/g, "").trim();
+  const baseText = normalizeExtractedText(raw.value || "");
 
   const strongPoolSections = sections.filter((section) => {
     const lower = section.toLowerCase();
@@ -204,20 +285,20 @@ async function extractTextFromDocx(buffer: Buffer) {
   });
 
   if (strongPoolSections.length >= 5) {
-    return strongPoolSections.join("\n\n").trim();
+    return normalizeExtractedText(strongPoolSections.join("\n\n"));
   }
 
   if (sections.length > 0 && normalizedRows.length === 0) {
-    return sections.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+    return normalizeExtractedText(sections.join("\n\n"));
   }
 
   if (normalizedRows.length > 0 && sections.length === 0) {
-    return normalizedRows.join("\n").trim();
+    return normalizeExtractedText(normalizedRows.join("\n"));
   }
 
   if (sections.length > 0 && normalizedRows.length > 0) {
-    const tableText = normalizedRows.join("\n").trim();
-    const sectionText = sections.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+    const tableText = normalizeExtractedText(normalizedRows.join("\n"));
+    const sectionText = normalizeExtractedText(sections.join("\n\n"));
 
     if (sectionText.length >= tableText.length) {
       return sectionText;
