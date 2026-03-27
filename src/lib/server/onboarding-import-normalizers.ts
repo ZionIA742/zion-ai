@@ -40,6 +40,20 @@ type SimplePoolCard = {
   rawText: string;
 };
 
+const POOL_FIELD_LABELS = [
+  "Tipo",
+  "Formato",
+  "Medidas",
+  "Profundidade",
+  "Capacidade",
+  "Prazo estimado",
+  "Faixa de preço",
+  "Faixa de preco",
+  "Acabamento",
+  "Observações",
+  "Observacoes",
+] as const;
+
 function cleanText(text: string) {
   return text.replace(/\r/g, "").replace(/\t/g, " ").trim();
 }
@@ -564,6 +578,131 @@ function extractRepeatedField(lineText: string, label: string) {
     .filter(Boolean);
 }
 
+function parsePoolFieldsFromFlatSection(section: string) {
+  const matches = Array.from(
+    section.matchAll(
+      /\b(Tipo|Formato|Medidas|Profundidade|Capacidade|Prazo estimado|Faixa de preço|Faixa de preco|Acabamento|Observações|Observacoes)\s*[:|]\s*/giu
+    )
+  );
+
+  const values: Record<string, string> = {};
+
+  for (let i = 0; i < matches.length; i++) {
+    const label = matches[i][1] || "";
+    const valueStart = (matches[i].index || 0) + matches[i][0].length;
+    const valueEnd =
+      i + 1 < matches.length ? (matches[i + 1].index || section.length) : section.length;
+
+    const value = section
+      .slice(valueStart, valueEnd)
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!value) continue;
+
+    const normalizedLabel = normalizeLoose(label);
+    values[normalizedLabel] = value;
+  }
+
+  return values;
+}
+
+function extractPoolItemsFromDocxAnchoredSections(
+  extracted: ExtractedFileContent
+): NormalizedImportItem[] {
+  if (extracted.extension !== "docx") return [];
+  if (!looksLikePoolDocument(extracted.text)) return [];
+
+  const flat = cleanText(extracted.text).replace(/\n+/g, " ");
+  const anchorRegex = /\bPiscina\s+[A-Za-zÀ-ÿ]+\s+\d{2,3}\b/giu;
+  const anchors = Array.from(flat.matchAll(anchorRegex));
+
+  if (anchors.length < 2) return [];
+
+  const items: NormalizedImportItem[] = [];
+
+  for (let i = 0; i < anchors.length; i++) {
+    const start = anchors[i].index ?? 0;
+    const end = i + 1 < anchors.length ? (anchors[i + 1].index ?? flat.length) : flat.length;
+    const section = flat.slice(start, end).replace(/\s+/g, " ").trim();
+
+    if (!section) continue;
+
+    const firstFieldMatch = section.match(
+      /\b(Tipo|Formato|Medidas|Profundidade|Capacidade|Prazo estimado|Faixa de preço|Faixa de preco|Acabamento|Observações|Observacoes)\s*[:|]\s*/iu
+    );
+
+    const title = firstFieldMatch
+      ? section.slice(0, firstFieldMatch.index).replace(/\s+/g, " ").trim()
+      : section;
+
+    const fields = parsePoolFieldsFromFlatSection(section);
+
+    const tipo = fields["tipo"] || "";
+    const formato = fields["formato"] || "";
+    const medidas = fields["medidas"] || "";
+    const profundidade = fields["profundidade"] || "";
+    const capacidade = fields["capacidade"] || "";
+    const prazoEstimado = fields["prazo estimado"] || "";
+    const faixaPreco = fields["faixa de preco"] || "";
+    const acabamento = fields["acabamento"] || "";
+    const descricao =
+      fields["observacoes"] ||
+      (firstFieldMatch
+        ? ""
+        : "");
+
+    const filled = [
+      title,
+      tipo,
+      formato,
+      medidas,
+      profundidade,
+      capacidade,
+      prazoEstimado,
+      faixaPreco,
+      acabamento,
+    ].filter(Boolean).length;
+
+    if (filled < 5) continue;
+
+    const pool: SimplePoolCard = {
+      title,
+      tipo,
+      formato,
+      medidas,
+      profundidade,
+      capacidade,
+      prazoEstimado,
+      faixaPreco,
+      acabamento,
+      descricao,
+      rawText: [
+        `Piscina: ${title}`,
+        tipo ? `Tipo: ${tipo}` : null,
+        formato ? `Formato: ${formato}` : null,
+        medidas ? `Medidas: ${medidas}` : null,
+        profundidade ? `Profundidade: ${profundidade}` : null,
+        capacidade ? `Capacidade: ${capacidade}` : null,
+        prazoEstimado ? `Prazo estimado: ${prazoEstimado}` : null,
+        faixaPreco ? `Faixa de preço: ${faixaPreco}` : null,
+        acabamento ? `Acabamento: ${acabamento}` : null,
+        descricao ? `Descrição: ${descricao}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    };
+
+    let confidence = 0.93;
+    if (filled >= 8) confidence = 0.97;
+    else if (filled >= 6) confidence = 0.95;
+
+    items.push(buildPoolItem(extracted, pool, "docx_pool_anchor_sections", confidence));
+  }
+
+  return items;
+}
+
 function extractPoolItemsFromRepeatedFieldSequence(
   extracted: ExtractedFileContent
 ): NormalizedImportItem[] {
@@ -878,6 +1017,11 @@ export function normalizeExtractedFile(
   const flatSequenceItems = extractCatalogItemsFromFlatSequence(extracted);
   if (flatSequenceItems.length > 0) {
     return flatSequenceItems;
+  }
+
+  const docxAnchoredItems = extractPoolItemsFromDocxAnchoredSections(extracted);
+  if (docxAnchoredItems.length > 0) {
+    return docxAnchoredItems;
   }
 
   const repeatedPoolItems = extractPoolItemsFromRepeatedFieldSequence(extracted);
