@@ -1,11 +1,12 @@
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
+import sharp from "sharp";
 import { XMLParser } from "fast-xml-parser";
 
 export type ExtractedImageAsset = {
   fileName: string;
-  source: "docx" | "xlsx" | "pptx" | "image_file";
+  source: "docx" | "xlsx" | "pptx" | "pdf" | "image_file";
   mimeType: string;
   dataUrl: string;
 };
@@ -127,8 +128,8 @@ async function extractTextFromPdfWithPdfParse(buffer: Buffer) {
       typeof imported?.default === "function"
         ? imported.default
         : typeof imported === "function"
-        ? imported
-        : null;
+          ? imported
+          : null;
 
     if (!pdfParse) return "";
 
@@ -269,6 +270,172 @@ async function extractTextFromPdf(buffer: Buffer) {
     .sort((a, b) => b.length - a.length)[0];
 
   return best || "";
+}
+
+function inferRawChannels(dataLength: number, width: number, height: number) {
+  const pixels = width * height;
+
+  if (pixels <= 0) return 0;
+  if (dataLength === pixels * 4) return 4;
+  if (dataLength === pixels * 3) return 3;
+  if (dataLength === pixels) return 1;
+
+  return 0;
+}
+
+async function rawPdfImageToDataUrl(imageData: any) {
+  try {
+    const width = Number(imageData?.width || imageData?.w || 0);
+    const height = Number(imageData?.height || imageData?.h || 0);
+
+    if (!width || !height) return null;
+
+    const data = imageData?.data;
+    if (!data) return null;
+
+    const rawBuffer = Buffer.isBuffer(data)
+      ? data
+      : data instanceof Uint8Array || data instanceof Uint8ClampedArray
+        ? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+        : Array.isArray(data)
+          ? Buffer.from(data)
+          : null;
+
+    if (!rawBuffer) return null;
+
+    const channels = inferRawChannels(rawBuffer.length, width, height);
+    if (!channels) return null;
+
+    const png = await sharp(rawBuffer, {
+      raw: {
+        width,
+        height,
+        channels,
+      },
+    })
+      .png()
+      .toBuffer();
+
+    return bufferToDataUrl(png, "image/png");
+  } catch {
+    return null;
+  }
+}
+
+async function resolvePdfJsObject(store: any, key: string) {
+  if (!store || !key) return null;
+
+  try {
+    const syncValue = store.get(key);
+    if (syncValue) return syncValue;
+  } catch {}
+
+  return await new Promise<any>((resolve) => {
+    let resolved = false;
+
+    try {
+      store.get(key, (value: any) => {
+        if (resolved) return;
+        resolved = true;
+        resolve(value || null);
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+
+    setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      resolve(null);
+    }, 300);
+  });
+}
+
+async function extractImagesFromPdf(buffer: Buffer): Promise<ExtractedImageAsset[]> {
+  try {
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const OPS = pdfjs.OPS || {};
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+      disableFontFace: true,
+      standardFontDataUrl: undefined,
+    });
+
+    const pdf = await loadingTask.promise;
+    const images: ExtractedImageAsset[] = [];
+    const seen = new Set<string>();
+    let imageIndex = 0;
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      const page = await pdf.getPage(pageNumber);
+      const operatorList = await page.getOperatorList();
+
+      const fnArray: number[] = Array.isArray(operatorList?.fnArray)
+        ? operatorList.fnArray
+        : [];
+      const argsArray: any[] = Array.isArray(operatorList?.argsArray)
+        ? operatorList.argsArray
+        : [];
+
+      for (let i = 0; i < fnArray.length; i++) {
+        const fn = fnArray[i];
+        const args = argsArray[i];
+
+        if (fn === OPS.paintInlineImageXObject && args?.data) {
+          const dataUrl = await rawPdfImageToDataUrl(args);
+
+          if (dataUrl) {
+            imageIndex += 1;
+            images.push({
+              fileName: `pdf-inline-page-${pageNumber}-image-${imageIndex}.png`,
+              source: "pdf",
+              mimeType: "image/png",
+              dataUrl,
+            });
+          }
+
+          continue;
+        }
+
+        if (
+          fn === OPS.paintImageXObject ||
+          fn === OPS.paintJpegXObject ||
+          fn === OPS.paintImageXObjectRepeat
+        ) {
+          const objectKey = Array.isArray(args) ? String(args[0] || "") : String(args || "");
+          if (!objectKey) continue;
+
+          const seenKey = `${pageNumber}:${objectKey}`;
+          if (seen.has(seenKey)) continue;
+          seen.add(seenKey);
+
+          const pdfImage =
+            (await resolvePdfJsObject(page.objs, objectKey)) ||
+            (await resolvePdfJsObject(page.commonObjs, objectKey));
+
+          const dataUrl = await rawPdfImageToDataUrl(pdfImage);
+
+          if (dataUrl) {
+            imageIndex += 1;
+            images.push({
+              fileName: `pdf-page-${pageNumber}-image-${imageIndex}.png`,
+              source: "pdf",
+              mimeType: "image/png",
+              dataUrl,
+            });
+          }
+        }
+      }
+    }
+
+    return images;
+  } catch {
+    return [];
+  }
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
@@ -523,6 +690,7 @@ export async function extractTextFromFile(params: {
 
   if (extension === "pdf") {
     text = await extractTextFromPdf(buffer);
+    extractedImages = await extractImagesFromPdf(buffer);
   } else if (extension === "docx") {
     text = await extractTextFromDocx(buffer);
     extractedImages = await extractImagesFromDocx(buffer);
