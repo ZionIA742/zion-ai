@@ -29,11 +29,13 @@ type SimpleCatalogRow = {
 type SimplePoolCard = {
   title: string;
   tipo?: string;
+  formato?: string;
   medidas?: string;
   profundidade?: string;
   capacidade?: string;
   prazoEstimado?: string;
   faixaPreco?: string;
+  acabamento?: string;
   descricao?: string;
   rawText: string;
 };
@@ -73,6 +75,21 @@ function isMoneyLike(value: string) {
 
 function isIntegerLike(value: string) {
   return /^\d+$/.test(value.trim());
+}
+
+function getPipeLines(text: string) {
+  return cleanText(text)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => line.includes("|"));
+}
+
+function splitPipeCells(line: string) {
+  return line
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean);
 }
 
 function looksLikeCatalogHeader(text: string) {
@@ -123,6 +140,29 @@ function looksLikePoolDocument(text: string) {
   return signals >= 4;
 }
 
+function looksLikePoolHeader(text: string) {
+  const lower = normalizeLoose(text);
+
+  const score = [
+    lower.includes("modelo"),
+    lower.includes("tipo"),
+    lower.includes("formato"),
+    lower.includes("medidas"),
+    lower.includes("profundidade"),
+    lower.includes("capacidade"),
+    lower.includes("prazo estimado") || lower.includes("prazo"),
+    lower.includes("faixa de preco") ||
+      lower.includes("faixa de preço") ||
+      lower.includes("preco"),
+  ].filter(Boolean).length;
+
+  return score >= 4;
+}
+
+function normalizeHeaderCell(value: string) {
+  return normalizeLoose(value).replace(/\s+/g, " ").trim();
+}
+
 function buildCatalogItem(
   extracted: ExtractedFileContent,
   row: SimpleCatalogRow,
@@ -166,11 +206,13 @@ function buildPoolItem(
       importMode,
       title: pool.title,
       tipo: pool.tipo ?? "",
+      formato: pool.formato ?? "",
       medidas: pool.medidas ?? "",
       profundidade: pool.profundidade ?? "",
       capacidade: pool.capacidade ?? "",
       prazoEstimado: pool.prazoEstimado ?? "",
       faixaPreco: pool.faixaPreco ?? "",
+      acabamento: pool.acabamento ?? "",
       descricao: pool.descricao ?? "",
     },
   };
@@ -179,12 +221,7 @@ function buildPoolItem(
 function extractCatalogItemsFromPipeTable(
   extracted: ExtractedFileContent
 ): NormalizedImportItem[] {
-  const lines = cleanText(extracted.text)
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const relevantLines = lines.filter((line) => line.includes("|"));
+  const relevantLines = getPipeLines(extracted.text);
 
   if (!relevantLines.length) return [];
 
@@ -197,10 +234,7 @@ function extractCatalogItemsFromPipeTable(
   const items: NormalizedImportItem[] = [];
 
   for (const line of dataLines) {
-    const cells = line
-      .split("|")
-      .map((cell) => cell.trim())
-      .filter(Boolean);
+    const cells = splitPipeCells(line);
 
     if (cells.length < 2) continue;
 
@@ -236,6 +270,220 @@ function extractCatalogItemsFromPipeTable(
     items.push(
       buildCatalogItem(extracted, row, "simple_catalog_pipe_table", 0.93)
     );
+  }
+
+  return items;
+}
+
+function detectPoolColumnMap(headerCells: string[]) {
+  const map: Partial<
+    Record<
+      | "modelo"
+      | "tipo"
+      | "formato"
+      | "medidas"
+      | "profundidade"
+      | "capacidade"
+      | "prazo"
+      | "faixa"
+      | "acabamento"
+      | "observacoes",
+      number
+    >
+  > = {};
+
+  headerCells.forEach((cell, index) => {
+    const normalized = normalizeHeaderCell(cell);
+
+    if (!normalized) return;
+
+    if (normalized === "modelo" || normalized.includes("modelo")) {
+      map.modelo = index;
+      return;
+    }
+
+    if (normalized === "tipo" || normalized.includes("tipo")) {
+      map.tipo = index;
+      return;
+    }
+
+    if (normalized === "formato" || normalized.includes("formato")) {
+      map.formato = index;
+      return;
+    }
+
+    if (normalized === "medidas" || normalized.includes("medidas")) {
+      map.medidas = index;
+      return;
+    }
+
+    if (
+      normalized === "profundidade" ||
+      normalized.includes("profundidade")
+    ) {
+      map.profundidade = index;
+      return;
+    }
+
+    if (normalized === "capacidade" || normalized.includes("capacidade")) {
+      map.capacidade = index;
+      return;
+    }
+
+    if (
+      normalized === "prazo estimado" ||
+      normalized === "prazo" ||
+      normalized.includes("prazo estimado") ||
+      normalized.includes("prazo")
+    ) {
+      map.prazo = index;
+      return;
+    }
+
+    if (
+      normalized === "faixa de preco" ||
+      normalized === "faixa de preço" ||
+      normalized.includes("faixa de preco") ||
+      normalized.includes("faixa de preço") ||
+      normalized.includes("preco") ||
+      normalized.includes("preço")
+    ) {
+      map.faixa = index;
+      return;
+    }
+
+    if (normalized === "acabamento" || normalized.includes("acabamento")) {
+      map.acabamento = index;
+      return;
+    }
+
+    if (
+      normalized === "observacoes" ||
+      normalized === "observação" ||
+      normalized === "observacoes gerais" ||
+      normalized.includes("observa")
+    ) {
+      map.observacoes = index;
+    }
+  });
+
+  return map;
+}
+
+function countMappedColumns(columnMap: ReturnType<typeof detectPoolColumnMap>) {
+  return Object.values(columnMap).filter(
+    (value) => typeof value === "number"
+  ).length;
+}
+
+function getCell(
+  cells: string[],
+  columnMap: ReturnType<typeof detectPoolColumnMap>,
+  key: keyof ReturnType<typeof detectPoolColumnMap>
+) {
+  const index = columnMap[key];
+  if (typeof index !== "number") return "";
+  return (cells[index] || "").trim();
+}
+
+function buildPoolTitle(modelo: string, tipo: string, medidas: string) {
+  const parts = [modelo, tipo, medidas]
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function extractPoolItemsFromPipeTable(
+  extracted: ExtractedFileContent
+): NormalizedImportItem[] {
+  const relevantLines = getPipeLines(extracted.text);
+
+  if (!relevantLines.length) return [];
+
+  const headerIndex = relevantLines.findIndex((line) => looksLikePoolHeader(line));
+  if (headerIndex === -1) return [];
+
+  const headerCells = splitPipeCells(relevantLines[headerIndex]);
+  const columnMap = detectPoolColumnMap(headerCells);
+
+  if (countMappedColumns(columnMap) < 4) {
+    return [];
+  }
+
+  const dataLines = relevantLines.slice(headerIndex + 1);
+  const items: NormalizedImportItem[] = [];
+
+  for (const line of dataLines) {
+    const cells = splitPipeCells(line);
+
+    if (!cells.length) continue;
+
+    const modelo = getCell(cells, columnMap, "modelo");
+    const tipo = getCell(cells, columnMap, "tipo");
+    const formato = getCell(cells, columnMap, "formato");
+    const medidas = getCell(cells, columnMap, "medidas");
+    const profundidade = getCell(cells, columnMap, "profundidade");
+    const capacidade = getCell(cells, columnMap, "capacidade");
+    const prazoEstimado = getCell(cells, columnMap, "prazo");
+    const faixaPreco = getCell(cells, columnMap, "faixa");
+    const acabamento = getCell(cells, columnMap, "acabamento");
+    const descricao = getCell(cells, columnMap, "observacoes");
+
+    const filled = [
+      modelo,
+      tipo,
+      formato,
+      medidas,
+      profundidade,
+      capacidade,
+      prazoEstimado,
+      faixaPreco,
+      acabamento,
+      descricao,
+    ].filter(Boolean).length;
+
+    if (filled < 3) continue;
+
+    const title =
+      buildPoolTitle(modelo, tipo, medidas) ||
+      modelo ||
+      tipo ||
+      `Piscina ${items.length + 1}`;
+
+    const pool: SimplePoolCard = {
+      title,
+      tipo,
+      formato,
+      medidas,
+      profundidade,
+      capacidade,
+      prazoEstimado,
+      faixaPreco,
+      acabamento,
+      descricao,
+      rawText: [
+        `Piscina: ${title}`,
+        modelo ? `Modelo: ${modelo}` : null,
+        tipo ? `Tipo: ${tipo}` : null,
+        formato ? `Formato: ${formato}` : null,
+        medidas ? `Medidas: ${medidas}` : null,
+        profundidade ? `Profundidade: ${profundidade}` : null,
+        capacidade ? `Capacidade: ${capacidade}` : null,
+        prazoEstimado ? `Prazo estimado: ${prazoEstimado}` : null,
+        faixaPreco ? `Faixa de preço: ${faixaPreco}` : null,
+        acabamento ? `Acabamento: ${acabamento}` : null,
+        descricao ? `Descrição: ${descricao}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    };
+
+    let confidence = 0.9;
+    if (filled >= 6) confidence = 0.95;
+    else if (filled >= 4) confidence = 0.92;
+
+    items.push(buildPoolItem(extracted, pool, "pipe_pool_table", confidence));
   }
 
   return items;
@@ -617,6 +865,11 @@ function buildFallbackBlocks(
 export function normalizeExtractedFile(
   extracted: ExtractedFileContent
 ): NormalizedImportItem[] {
+  const poolPipeTableItems = extractPoolItemsFromPipeTable(extracted);
+  if (poolPipeTableItems.length > 0) {
+    return poolPipeTableItems;
+  }
+
   const pipeTableItems = extractCatalogItemsFromPipeTable(extracted);
   if (pipeTableItems.length > 0) {
     return pipeTableItems;
