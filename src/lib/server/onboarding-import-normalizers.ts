@@ -54,14 +54,21 @@ function normalizeLoose(value: string) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}\s.,/%|-]/gu, " ")
+    .replace(/[^\p{L}\p{N}\s.,/%|:\-]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function isMoneyLike(value: string) {
   const v = value.trim();
-  return /^-?\d{1,3}(\.\d{3})*,\d{2}$/.test(v) || /^-?\d+,\d{2}$/.test(v);
+
+  return (
+    /^r\$\s*\d{1,3}(\.\d{3})*,\d{2}(\s*a\s*r\$\s*\d{1,3}(\.\d{3})*,\d{2})?$/i.test(
+      v
+    ) ||
+    /^-?\d{1,3}(\.\d{3})*,\d{2}$/.test(v) ||
+    /^-?\d+,\d{2}$/.test(v)
+  );
 }
 
 function isIntegerLike(value: string) {
@@ -89,7 +96,13 @@ function looksLikeCatalogHeader(text: string) {
     lower.includes("valor venda") ||
     lower.includes("venda");
 
-  const score = [hasProdutos, hasQtd, hasValorCx, hasValorUni, hasValorVenda].filter(Boolean).length;
+  const score = [
+    hasProdutos,
+    hasQtd,
+    hasValorCx,
+    hasValorUni,
+    hasValorVenda,
+  ].filter(Boolean).length;
 
   return score >= 3;
 }
@@ -104,7 +117,7 @@ function looksLikePoolDocument(text: string) {
     lower.includes("profundidade"),
     lower.includes("capacidade"),
     lower.includes("prazo estimado"),
-    lower.includes("faixa de preco") || lower.includes("faixa de preço"),
+    lower.includes("faixa de preco"),
   ].filter(Boolean).length;
 
   return signals >= 4;
@@ -175,7 +188,9 @@ function extractCatalogItemsFromPipeTable(
 
   if (!relevantLines.length) return [];
 
-  const headerIndex = relevantLines.findIndex((line) => looksLikeCatalogHeader(line));
+  const headerIndex = relevantLines.findIndex((line) =>
+    looksLikeCatalogHeader(line)
+  );
   if (headerIndex === -1) return [];
 
   const dataLines = relevantLines.slice(headerIndex + 1);
@@ -193,8 +208,11 @@ function extractCatalogItemsFromPipeTable(
 
     if (!productName) continue;
 
-    const moneyCount = [valorCx, valorUni, valorVd].filter((v) => v && isMoneyLike(v)).length;
-    const hasStructure = Boolean(isIntegerLike(qtdCaixa || "") || moneyCount >= 2);
+    const moneyCount = [valorCx, valorUni, valorVd].filter(
+      (v) => v && isMoneyLike(v)
+    ).length;
+    const hasStructure =
+      Boolean(isIntegerLike(qtdCaixa || "")) || moneyCount >= 2;
 
     if (!hasStructure) continue;
 
@@ -215,17 +233,21 @@ function extractCatalogItemsFromPipeTable(
         .join("\n"),
     };
 
-    items.push(buildCatalogItem(extracted, row, "simple_catalog_pipe_table", 0.93));
+    items.push(
+      buildCatalogItem(extracted, row, "simple_catalog_pipe_table", 0.93)
+    );
   }
 
   return items;
 }
 
 function stripCatalogHeader(text: string) {
-  return cleanText(text).replace(
-    /tabela\s+de\s+pre[cç]os\s+produtos?\s+qtd\s+caixa\s+valor\s+cx\s+valor\s+uni\s+valor\s+vd/iu,
-    ""
-  ).trim();
+  return cleanText(text)
+    .replace(
+      /tabela\s+de\s+pre[cç]os\s+produtos?\s+qtd\s+caixa\s+valor\s+cx\s+valor\s+uni\s+valor\s+vd/iu,
+      ""
+    )
+    .trim();
 }
 
 function extractCatalogItemsFromFlatSequence(
@@ -277,7 +299,98 @@ function extractCatalogItemsFromFlatSequence(
       ].join("\n"),
     };
 
-    items.push(buildCatalogItem(extracted, row, "simple_catalog_flat_sequence", 0.91));
+    items.push(
+      buildCatalogItem(extracted, row, "simple_catalog_flat_sequence", 0.91)
+    );
+  }
+
+  return items;
+}
+
+function extractRepeatedField(lineText: string, label: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`${escaped}\\s*[|:]\\s*([^|\\n]+)`, "giu");
+
+  return Array.from(lineText.matchAll(regex))
+    .map((m) => (m[1] || "").trim())
+    .filter(Boolean);
+}
+
+function extractPoolItemsFromRepeatedFieldSequence(
+  extracted: ExtractedFileContent
+): NormalizedImportItem[] {
+  if (!looksLikePoolDocument(extracted.text)) return [];
+
+  const flat = cleanText(extracted.text).replace(/\n+/g, " ");
+
+  const tipos = extractRepeatedField(flat, "Tipo");
+  const medidas = extractRepeatedField(flat, "Medidas");
+  const profundidades = extractRepeatedField(flat, "Profundidade");
+  const capacidades = extractRepeatedField(flat, "Capacidade");
+  const prazos = extractRepeatedField(flat, "Prazo estimado");
+  const faixas = extractRepeatedField(flat, "Faixa de preço");
+
+  const maxLen = Math.max(
+    tipos.length,
+    medidas.length,
+    profundidades.length,
+    capacidades.length,
+    prazos.length,
+    faixas.length
+  );
+
+  if (maxLen < 2) return [];
+
+  const items: NormalizedImportItem[] = [];
+
+  for (let i = 0; i < maxLen; i++) {
+    const tipo = tipos[i] || "";
+    const medida = medidas[i] || "";
+    const profundidade = profundidades[i] || "";
+    const capacidade = capacidades[i] || "";
+    const prazo = prazos[i] || "";
+    const faixa = faixas[i] || "";
+
+    const filled = [tipo, medida, profundidade, capacidade, prazo, faixa].filter(
+      Boolean
+    ).length;
+
+    if (filled < 3) continue;
+
+    const titleBase = [tipo ? `Piscina ${tipo}` : "Piscina", medida || ""]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+
+    const pool: SimplePoolCard = {
+      title: titleBase || `Piscina ${i + 1}`,
+      tipo,
+      medidas: medida,
+      profundidade,
+      capacidade,
+      prazoEstimado: prazo,
+      faixaPreco: faixa,
+      descricao: "",
+      rawText: [
+        `Piscina: ${titleBase || `Piscina ${i + 1}`}`,
+        tipo ? `Tipo: ${tipo}` : null,
+        medida ? `Medidas: ${medida}` : null,
+        profundidade ? `Profundidade: ${profundidade}` : null,
+        capacidade ? `Capacidade: ${capacidade}` : null,
+        prazo ? `Prazo estimado: ${prazo}` : null,
+        faixa ? `Faixa de preço: ${faixa}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    };
+
+    let confidence = 0.84;
+    if (filled >= 5) confidence = 0.9;
+    if (filled >= 6) confidence = 0.94;
+
+    items.push(
+      buildPoolItem(extracted, pool, "repeated_pool_field_sequence", confidence)
+    );
   }
 
   return items;
@@ -286,12 +399,10 @@ function extractCatalogItemsFromFlatSequence(
 function splitPoolSections(text: string) {
   const cleaned = cleanText(text);
 
-  const sections = cleaned
+  return cleaned
     .split(/\n(?=Piscina\s)/g)
     .map((section) => section.trim())
     .filter(Boolean);
-
-  return sections;
 }
 
 function extractValue(section: string, label: string) {
@@ -326,12 +437,16 @@ function extractPoolItemsFromSimpleCards(
     const profundidade = extractValue(section, "Profundidade");
     const capacidade = extractValue(section, "Capacidade");
     const prazoEstimado = extractValue(section, "Prazo estimado");
-    const faixaPreco = extractValue(section, "Faixa de preço") || extractValue(section, "Faixa de preco");
+    const faixaPreco =
+      extractValue(section, "Faixa de preço") ||
+      extractValue(section, "Faixa de preco");
 
     const knownLines = new Set([
       lines[0],
       ...lines.filter((line) =>
-        /^(tipo|medidas|profundidade|capacidade|prazo estimado|faixa de pre[cç]o)\s*[:|]/iu.test(line)
+        /^(tipo|medidas|profundidade|capacidade|prazo estimado|faixa de pre[cç]o)\s*[:|]/iu.test(
+          line
+        )
       ),
     ]);
 
@@ -476,7 +591,9 @@ function buildTitle(type: NormalizedImportItemType, block: string) {
   return firstLine;
 }
 
-function buildFallbackBlocks(extracted: ExtractedFileContent): NormalizedImportItem[] {
+function buildFallbackBlocks(
+  extracted: ExtractedFileContent
+): NormalizedImportItem[] {
   const blocks = splitIntoParagraphBlocks(extracted.text);
 
   return blocks.map((block) => {
@@ -508,6 +625,11 @@ export function normalizeExtractedFile(
   const flatSequenceItems = extractCatalogItemsFromFlatSequence(extracted);
   if (flatSequenceItems.length > 0) {
     return flatSequenceItems;
+  }
+
+  const repeatedPoolItems = extractPoolItemsFromRepeatedFieldSequence(extracted);
+  if (repeatedPoolItems.length > 0) {
+    return repeatedPoolItems;
   }
 
   const simplePoolItems = extractPoolItemsFromSimpleCards(extracted);
