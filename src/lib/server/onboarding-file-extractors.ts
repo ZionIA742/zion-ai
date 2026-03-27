@@ -40,6 +40,40 @@ function bufferToDataUrl(buffer: Buffer, mimeType: string) {
   return `data:${mimeType};base64,${buffer.toString("base64")}`;
 }
 
+function normalizeInlineText(value: string) {
+  return value
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isPoolCardStart(line: string) {
+  return /^piscina\b/i.test(line.trim());
+}
+
+function isPoolFieldLine(line: string) {
+  return /^(tipo|formato|medidas|profundidade|capacidade|prazo estimado|faixa de preço|faixa de preco|acabamento|observações|observacoes)\b\s*[:|]/iu.test(
+    line.trim()
+  );
+}
+
+function pushCurrentSection(sections: string[], currentLines: string[]) {
+  const normalized = currentLines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (normalized) {
+    sections.push(normalized);
+  }
+
+  currentLines.length = 0;
+}
+
 async function extractImagesFromZip(params: {
   buffer: Buffer;
   mediaPrefix: string;
@@ -99,9 +133,6 @@ async function extractTextFromPdf(buffer: Buffer) {
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
-  const raw = await mammoth.extractRawText({ buffer });
-  const baseText = (raw.value || "").replace(/\r/g, "").trim();
-
   const htmlResult = await mammoth.convertToHtml({ buffer });
   const html = htmlResult.value || "";
 
@@ -109,34 +140,40 @@ async function extractTextFromDocx(buffer: Buffer) {
     html.matchAll(/<(p|h1|h2|h3|li)[^>]*>([\s\S]*?)<\/(p|h1|h2|h3|li)>/gi)
   );
 
-  const blocks: string[] = [];
+  const sections: string[] = [];
+  const currentSection: string[] = [];
 
   for (const match of blockMatches) {
     const tag = (match[1] || "").toLowerCase();
-
-    const inner = (match[2] || "")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/gi, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const inner = normalizeInlineText(match[2] || "");
 
     if (!inner) continue;
 
-    const normalized = inner.replace(/\s+/g, " ").trim();
+    if (isPoolCardStart(inner)) {
+      pushCurrentSection(sections, currentSection);
+      currentSection.push(inner);
+      continue;
+    }
 
-    if (/^piscina\b/i.test(normalized)) {
-      blocks.push(`\n${normalized}\n`);
+    if (isPoolFieldLine(inner)) {
+      currentSection.push(inner);
       continue;
     }
 
     if (tag === "h1" || tag === "h2" || tag === "h3") {
-      blocks.push(`\n${normalized}\n`);
+      pushCurrentSection(sections, currentSection);
+      currentSection.push(inner);
       continue;
     }
 
-    blocks.push(normalized);
+    if (currentSection.length > 0) {
+      currentSection.push(inner);
+    } else {
+      currentSection.push(inner);
+    }
   }
+
+  pushCurrentSection(sections, currentSection);
 
   const tableRows = Array.from(
     html.matchAll(/<tr[\s\S]*?>([\s\S]*?)<\/tr>/gi)
@@ -147,14 +184,7 @@ async function extractTextFromDocx(buffer: Buffer) {
   for (const rowHtml of tableRows) {
     const cells = Array.from(
       rowHtml.matchAll(/<(td|th)[^>]*>([\s\S]*?)<\/(td|th)>/gi)
-    ).map((match) =>
-      match[2]
-        .replace(/<br\s*\/?>/gi, "\n")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/&nbsp;/gi, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-    );
+    ).map((match) => normalizeInlineText(match[2] || ""));
 
     const filtered = cells.filter(Boolean);
 
@@ -163,22 +193,20 @@ async function extractTextFromDocx(buffer: Buffer) {
     }
   }
 
+  const raw = await mammoth.extractRawText({ buffer });
+  const baseText = (raw.value || "").replace(/\r/g, "").trim();
+
   const parts: string[] = [];
 
-  if (blocks.length) {
-    parts.push(
-      blocks
-        .join("\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim()
-    );
+  if (sections.length) {
+    parts.push(sections.join("\n\n"));
   }
 
   if (normalizedRows.length) {
     parts.push(normalizedRows.join("\n"));
   }
 
-  if (baseText) {
+  if (!sections.length && !normalizedRows.length && baseText) {
     parts.push(baseText);
   }
 
