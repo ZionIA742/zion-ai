@@ -4,6 +4,12 @@ import JSZip from "jszip";
 import sharp from "sharp";
 import { XMLParser } from "fast-xml-parser";
 import { createHash } from "crypto";
+import {
+  createCanvas,
+  DOMMatrix as NapiDOMMatrix,
+  ImageData as NapiImageData,
+  Path2D as NapiPath2D,
+} from "@napi-rs/canvas";
 
 export type ExtractedImageAsset = {
   fileName: string;
@@ -133,11 +139,29 @@ function logPdfDebug(step: string, details?: Record<string, unknown>) {
   console.log(`[onboarding-pdf] ${step}`);
 }
 
-function logPdfError(step: string, error: unknown, details?: Record<string, unknown>) {
+function logPdfError(
+  step: string,
+  error: unknown,
+  details?: Record<string, unknown>
+) {
   console.error(`[onboarding-pdf] ${step}`, {
     ...(details || {}),
     error: getErrorMessage(error),
   });
+}
+
+function ensurePdfNodeCanvasGlobals() {
+  if (!(globalThis as any).DOMMatrix) {
+    (globalThis as any).DOMMatrix = NapiDOMMatrix;
+  }
+
+  if (!(globalThis as any).ImageData) {
+    (globalThis as any).ImageData = NapiImageData;
+  }
+
+  if (!(globalThis as any).Path2D) {
+    (globalThis as any).Path2D = NapiPath2D;
+  }
 }
 
 async function extractImagesFromZip(params: {
@@ -179,6 +203,8 @@ async function extractImagesFromZip(params: {
 
 async function extractTextFromPdfWithPdfParse(buffer: Buffer) {
   try {
+    ensurePdfNodeCanvasGlobals();
+
     const imported: any = await import("pdf-parse");
     const pdfParse =
       typeof imported?.default === "function"
@@ -199,6 +225,8 @@ async function extractTextFromPdfWithPdfParse(buffer: Buffer) {
 
 async function extractTextFromPdfWithPdfJs(buffer: Buffer) {
   try {
+    ensurePdfNodeCanvasGlobals();
+
     const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const loadingTask = pdfjs.getDocument({
       data: new Uint8Array(buffer),
@@ -277,7 +305,10 @@ async function extractTextFromPdfWithPdf2Json(buffer: Buffer) {
 
           resolve(normalizeExtractedText(chunks.join("\n")));
         } catch (error) {
-          logPdfError("extractTextFromPdfWithPdf2Json read ready data failed", error);
+          logPdfError(
+            "extractTextFromPdfWithPdf2Json read ready data failed",
+            error
+          );
           resolve("");
         }
       });
@@ -431,6 +462,8 @@ async function extractEmbeddedImagesFromPdf(
   buffer: Buffer
 ): Promise<ExtractedImageAsset[]> {
   try {
+    ensurePdfNodeCanvasGlobals();
+
     const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const OPS = pdfjs.OPS || {};
     const loadingTask = pdfjs.getDocument({
@@ -537,25 +570,20 @@ async function extractEmbeddedImagesFromPdf(
 }
 
 type RuntimeCanvasModule = {
-  createCanvas: (width: number, height: number) => {
-    width: number;
-    height: number;
-    getContext: (kind: "2d") => any;
-    toBuffer: (mimeType?: string, quality?: number) => Buffer;
-  };
+  createCanvas: typeof createCanvas;
 };
 
 function getRuntimeCanvasModule(): RuntimeCanvasModule | null {
   try {
-    const moduleName = "@napi-rs/canvas";
-    const runtimeRequire = eval("require") as NodeRequire;
-    const module = runtimeRequire(moduleName) as RuntimeCanvasModule;
+    ensurePdfNodeCanvasGlobals();
 
     logPdfDebug("getRuntimeCanvasModule success", {
       available: true,
     });
 
-    return module;
+    return {
+      createCanvas,
+    };
   } catch (error) {
     logPdfError("getRuntimeCanvasModule failed", error, {
       available: false,
@@ -568,6 +596,8 @@ async function renderPdfPagesAsImages(
   buffer: Buffer
 ): Promise<ExtractedImageAsset[]> {
   try {
+    ensurePdfNodeCanvasGlobals();
+
     const canvasModule = getRuntimeCanvasModule();
 
     if (!canvasModule) {
