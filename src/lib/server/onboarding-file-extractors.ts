@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import sharp from "sharp";
 import { XMLParser } from "fast-xml-parser";
+import { createHash } from "crypto";
 
 export type ExtractedImageAsset = {
   fileName: string;
@@ -82,6 +83,33 @@ function pushCurrentSection(sections: string[], currentLines: string[]) {
   }
 
   currentLines.length = 0;
+}
+
+function getDataUrlPayload(dataUrl: string) {
+  const commaIndex = dataUrl.indexOf(",");
+  if (commaIndex === -1) return dataUrl;
+  return dataUrl.slice(commaIndex + 1);
+}
+
+function hashDataUrl(dataUrl: string) {
+  return createHash("sha1").update(getDataUrlPayload(dataUrl)).digest("hex");
+}
+
+function dedupeExtractedImages(images: ExtractedImageAsset[]) {
+  const seen = new Set<string>();
+  const deduped: ExtractedImageAsset[] = [];
+
+  for (const image of images) {
+    if (!image?.dataUrl) continue;
+
+    const key = `${image.mimeType}:${hashDataUrl(image.dataUrl)}`;
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    deduped.push(image);
+  }
+
+  return deduped;
 }
 
 async function extractImagesFromZip(params: {
@@ -408,7 +436,10 @@ async function extractEmbeddedImagesFromPdf(
           fn === OPS.paintJpegXObject ||
           fn === OPS.paintImageXObjectRepeat
         ) {
-          const objectKey = Array.isArray(args) ? String(args[0] || "") : String(args || "");
+          const objectKey = Array.isArray(args)
+            ? String(args[0] || "")
+            : String(args || "");
+
           if (!objectKey) continue;
 
           const seenKey = `${pageNumber}:${objectKey}`;
@@ -424,7 +455,7 @@ async function extractEmbeddedImagesFromPdf(
           if (dataUrl) {
             imageIndex += 1;
             images.push({
-              fileName: `pdf-page-${pageNumber}-image-${imageIndex}.png`,
+              fileName: `pdf-page-${pageNumber}-embedded-${imageIndex}.png`,
               source: "pdf",
               mimeType: "image/png",
               dataUrl,
@@ -483,8 +514,8 @@ async function renderPdfPagesAsImages(
       const page = await pdf.getPage(pageNumber);
 
       const baseViewport = page.getViewport({ scale: 1 });
-      const maxWidth = 1200;
-      const scale = Math.min(1.5, Math.max(0.9, maxWidth / baseViewport.width));
+      const maxWidth = 1400;
+      const scale = Math.min(2, Math.max(1.15, maxWidth / baseViewport.width));
       const viewport = page.getViewport({ scale });
 
       const canvas = canvasModule.createCanvas(
@@ -501,7 +532,7 @@ async function renderPdfPagesAsImages(
         viewport,
       }).promise;
 
-      const imageBuffer = canvas.toBuffer("image/jpeg", 82);
+      const imageBuffer = canvas.toBuffer("image/jpeg", 88);
 
       images.push({
         fileName: `pdf-render-page-${pageNumber}.jpg`,
@@ -517,14 +548,18 @@ async function renderPdfPagesAsImages(
   }
 }
 
-async function extractImagesFromPdf(buffer: Buffer): Promise<ExtractedImageAsset[]> {
+async function extractImagesFromPdf(
+  buffer: Buffer
+): Promise<ExtractedImageAsset[]> {
+  const renderedPages = await renderPdfPagesAsImages(buffer);
   const embeddedImages = await extractEmbeddedImagesFromPdf(buffer);
 
-  if (embeddedImages.length > 0) {
-    return embeddedImages;
-  }
+  const combined = dedupeExtractedImages([
+    ...renderedPages,
+    ...embeddedImages,
+  ]);
 
-  return renderPdfPagesAsImages(buffer);
+  return combined;
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
