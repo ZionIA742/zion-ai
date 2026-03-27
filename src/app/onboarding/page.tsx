@@ -2229,6 +2229,11 @@ function OnboardingContent() {
     }
   }
 
+  async function saveStep4(e: FormEvent) {
+    e.preventDefault();
+    await submitStep4();
+  }
+
   async function saveStep5(e: FormEvent) {
     e.preventDefault();
     await submitStep5();
