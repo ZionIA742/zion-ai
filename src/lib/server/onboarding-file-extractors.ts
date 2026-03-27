@@ -2,7 +2,6 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import sharp from "sharp";
-import { createCanvas } from "@napi-rs/canvas";
 import { XMLParser } from "fast-xml-parser";
 
 export type ExtractedImageAsset = {
@@ -441,10 +440,32 @@ async function extractEmbeddedImagesFromPdf(
   }
 }
 
+type RuntimeCanvasModule = {
+  createCanvas: (width: number, height: number) => {
+    width: number;
+    height: number;
+    getContext: (kind: "2d") => any;
+    toBuffer: (mimeType?: string, quality?: number) => Buffer;
+  };
+};
+
+function getRuntimeCanvasModule(): RuntimeCanvasModule | null {
+  try {
+    const moduleName = "@napi-rs/canvas";
+    const runtimeRequire = eval("require") as NodeRequire;
+    return runtimeRequire(moduleName) as RuntimeCanvasModule;
+  } catch {
+    return null;
+  }
+}
+
 async function renderPdfPagesAsImages(
   buffer: Buffer
 ): Promise<ExtractedImageAsset[]> {
   try {
+    const canvasModule = getRuntimeCanvasModule();
+    if (!canvasModule) return [];
+
     const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const loadingTask = pdfjs.getDocument({
       data: new Uint8Array(buffer),
@@ -466,12 +487,12 @@ async function renderPdfPagesAsImages(
       const scale = Math.min(1.5, Math.max(0.9, maxWidth / baseViewport.width));
       const viewport = page.getViewport({ scale });
 
-      const canvas = createCanvas(
+      const canvas = canvasModule.createCanvas(
         Math.max(1, Math.ceil(viewport.width)),
         Math.max(1, Math.ceil(viewport.height))
       );
-      const context = canvas.getContext("2d") as any;
 
+      const context = canvas.getContext("2d");
       context.fillStyle = "#ffffff";
       context.fillRect(0, 0, canvas.width, canvas.height);
 
