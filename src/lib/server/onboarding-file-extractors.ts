@@ -112,6 +112,34 @@ function dedupeExtractedImages(images: ExtractedImageAsset[]) {
   return deduped;
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function logPdfDebug(step: string, details?: Record<string, unknown>) {
+  if (details) {
+    console.log(`[onboarding-pdf] ${step}`, details);
+    return;
+  }
+
+  console.log(`[onboarding-pdf] ${step}`);
+}
+
+function logPdfError(step: string, error: unknown, details?: Record<string, unknown>) {
+  console.error(`[onboarding-pdf] ${step}`, {
+    ...(details || {}),
+    error: getErrorMessage(error),
+  });
+}
+
 async function extractImagesFromZip(params: {
   buffer: Buffer;
   mediaPrefix: string;
@@ -163,7 +191,8 @@ async function extractTextFromPdfWithPdfParse(buffer: Buffer) {
 
     const result = await pdfParse(buffer);
     return normalizeExtractedText(result?.text || "");
-  } catch {
+  } catch (error) {
+    logPdfError("extractTextFromPdfWithPdfParse failed", error);
     return "";
   }
 }
@@ -204,7 +233,8 @@ async function extractTextFromPdfWithPdfJs(buffer: Buffer) {
     }
 
     return normalizeExtractedText(pages.join("\n\n"));
-  } catch {
+  } catch (error) {
+    logPdfError("extractTextFromPdfWithPdfJs failed", error);
     return "";
   }
 }
@@ -216,7 +246,10 @@ async function extractTextFromPdfWithPdf2Json(buffer: Buffer) {
     const parser = new PDFParserClass(undefined, true);
 
     const text = await new Promise<string>((resolve) => {
-      parser.on("pdfParser_dataError", () => resolve(""));
+      parser.on("pdfParser_dataError", (parserError: unknown) => {
+        logPdfError("extractTextFromPdfWithPdf2Json parser error", parserError);
+        resolve("");
+      });
 
       parser.on("pdfParser_dataReady", (pdfData: any) => {
         try {
@@ -243,7 +276,8 @@ async function extractTextFromPdfWithPdf2Json(buffer: Buffer) {
           }
 
           resolve(normalizeExtractedText(chunks.join("\n")));
-        } catch {
+        } catch (error) {
+          logPdfError("extractTextFromPdfWithPdf2Json read ready data failed", error);
           resolve("");
         }
       });
@@ -252,7 +286,8 @@ async function extractTextFromPdfWithPdf2Json(buffer: Buffer) {
     });
 
     return text;
-  } catch {
+  } catch (error) {
+    logPdfError("extractTextFromPdfWithPdf2Json failed", error);
     return "";
   }
 }
@@ -280,7 +315,8 @@ function extractReadableStringsFromPdfBinary(buffer: Buffer) {
       .join("\n");
 
     return normalizeExtractedText(cleaned);
-  } catch {
+  } catch (error) {
+    logPdfError("extractReadableStringsFromPdfBinary failed", error);
     return "";
   }
 }
@@ -293,11 +329,21 @@ async function extractTextFromPdf(buffer: Buffer) {
     extractReadableStringsFromPdfBinary(buffer),
   ];
 
-  const best = attempts
+  const ranked = attempts
     .map((text) => normalizeExtractedText(text))
-    .sort((a, b) => b.length - a.length)[0];
+    .sort((a, b) => b.length - a.length);
 
-  return best || "";
+  const best = ranked[0] || "";
+
+  logPdfDebug("extractTextFromPdf summary", {
+    candidates: ranked.map((text, index) => ({
+      index,
+      length: text.length,
+    })),
+    selectedLength: best.length,
+  });
+
+  return best;
 }
 
 function inferRawChannels(dataLength: number, width: number, height: number) {
@@ -345,7 +391,8 @@ async function rawPdfImageToDataUrl(imageData: any) {
       .toBuffer();
 
     return bufferToDataUrl(png, "image/png");
-  } catch {
+  } catch (error) {
+    logPdfError("rawPdfImageToDataUrl failed", error);
     return null;
   }
 }
@@ -400,6 +447,10 @@ async function extractEmbeddedImagesFromPdf(
     const seen = new Set<string>();
     let imageIndex = 0;
 
+    logPdfDebug("extractEmbeddedImagesFromPdf started", {
+      numPages: pdf.numPages,
+    });
+
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
       const page = await pdf.getPage(pageNumber);
       const operatorList = await page.getOperatorList();
@@ -411,6 +462,8 @@ async function extractEmbeddedImagesFromPdf(
         ? operatorList.argsArray
         : [];
 
+      let pageHits = 0;
+
       for (let i = 0; i < fnArray.length; i++) {
         const fn = fnArray[i];
         const args = argsArray[i];
@@ -420,6 +473,7 @@ async function extractEmbeddedImagesFromPdf(
 
           if (dataUrl) {
             imageIndex += 1;
+            pageHits += 1;
             images.push({
               fileName: `pdf-inline-page-${pageNumber}-image-${imageIndex}.png`,
               source: "pdf",
@@ -454,6 +508,7 @@ async function extractEmbeddedImagesFromPdf(
 
           if (dataUrl) {
             imageIndex += 1;
+            pageHits += 1;
             images.push({
               fileName: `pdf-page-${pageNumber}-embedded-${imageIndex}.png`,
               source: "pdf",
@@ -463,10 +518,20 @@ async function extractEmbeddedImagesFromPdf(
           }
         }
       }
+
+      logPdfDebug("extractEmbeddedImagesFromPdf page processed", {
+        pageNumber,
+        pageHits,
+      });
     }
 
+    logPdfDebug("extractEmbeddedImagesFromPdf finished", {
+      totalEmbeddedImages: images.length,
+    });
+
     return images;
-  } catch {
+  } catch (error) {
+    logPdfError("extractEmbeddedImagesFromPdf failed", error);
     return [];
   }
 }
@@ -484,8 +549,17 @@ function getRuntimeCanvasModule(): RuntimeCanvasModule | null {
   try {
     const moduleName = "@napi-rs/canvas";
     const runtimeRequire = eval("require") as NodeRequire;
-    return runtimeRequire(moduleName) as RuntimeCanvasModule;
-  } catch {
+    const module = runtimeRequire(moduleName) as RuntimeCanvasModule;
+
+    logPdfDebug("getRuntimeCanvasModule success", {
+      available: true,
+    });
+
+    return module;
+  } catch (error) {
+    logPdfError("getRuntimeCanvasModule failed", error, {
+      available: false,
+    });
     return null;
   }
 }
@@ -495,7 +569,13 @@ async function renderPdfPagesAsImages(
 ): Promise<ExtractedImageAsset[]> {
   try {
     const canvasModule = getRuntimeCanvasModule();
-    if (!canvasModule) return [];
+
+    if (!canvasModule) {
+      logPdfDebug("renderPdfPagesAsImages aborted", {
+        reason: "canvas_module_unavailable",
+      });
+      return [];
+    }
 
     const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const loadingTask = pdfjs.getDocument({
@@ -510,6 +590,10 @@ async function renderPdfPagesAsImages(
     const pdf = await loadingTask.promise;
     const images: ExtractedImageAsset[] = [];
 
+    logPdfDebug("renderPdfPagesAsImages started", {
+      numPages: pdf.numPages,
+    });
+
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
       const page = await pdf.getPage(pageNumber);
 
@@ -517,6 +601,13 @@ async function renderPdfPagesAsImages(
       const maxWidth = 1400;
       const scale = Math.min(2, Math.max(1.15, maxWidth / baseViewport.width));
       const viewport = page.getViewport({ scale });
+
+      logPdfDebug("renderPdfPagesAsImages page start", {
+        pageNumber,
+        width: Math.ceil(viewport.width),
+        height: Math.ceil(viewport.height),
+        scale,
+      });
 
       const canvas = canvasModule.createCanvas(
         Math.max(1, Math.ceil(viewport.width)),
@@ -540,10 +631,20 @@ async function renderPdfPagesAsImages(
         mimeType: "image/jpeg",
         dataUrl: bufferToDataUrl(imageBuffer, "image/jpeg"),
       });
+
+      logPdfDebug("renderPdfPagesAsImages page success", {
+        pageNumber,
+        imageBytes: imageBuffer.length,
+      });
     }
 
+    logPdfDebug("renderPdfPagesAsImages finished", {
+      totalRenderedPages: images.length,
+    });
+
     return images;
-  } catch {
+  } catch (error) {
+    logPdfError("renderPdfPagesAsImages failed", error);
     return [];
   }
 }
@@ -551,15 +652,30 @@ async function renderPdfPagesAsImages(
 async function extractImagesFromPdf(
   buffer: Buffer
 ): Promise<ExtractedImageAsset[]> {
-  const renderedPages = await renderPdfPagesAsImages(buffer);
-  const embeddedImages = await extractEmbeddedImagesFromPdf(buffer);
+  try {
+    logPdfDebug("extractImagesFromPdf started", {
+      pdfBytes: buffer.length,
+    });
 
-  const combined = dedupeExtractedImages([
-    ...renderedPages,
-    ...embeddedImages,
-  ]);
+    const renderedPages = await renderPdfPagesAsImages(buffer);
+    const embeddedImages = await extractEmbeddedImagesFromPdf(buffer);
 
-  return combined;
+    const combined = dedupeExtractedImages([
+      ...renderedPages,
+      ...embeddedImages,
+    ]);
+
+    logPdfDebug("extractImagesFromPdf summary", {
+      renderedPages: renderedPages.length,
+      embeddedImages: embeddedImages.length,
+      combinedImages: combined.length,
+    });
+
+    return combined;
+  } catch (error) {
+    logPdfError("extractImagesFromPdf failed", error);
+    return [];
+  }
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
@@ -812,9 +928,22 @@ export async function extractTextFromFile(params: {
   let text = "";
   let extractedImages: ExtractedImageAsset[] = [];
 
+  logPdfDebug("extractTextFromFile started", {
+    fileName,
+    mimeType,
+    extension,
+    bufferBytes: buffer.length,
+  });
+
   if (extension === "pdf") {
     text = await extractTextFromPdf(buffer);
     extractedImages = await extractImagesFromPdf(buffer);
+
+    logPdfDebug("extractTextFromFile pdf result", {
+      fileName,
+      textLength: text.length,
+      extractedImages: extractedImages.length,
+    });
   } else if (extension === "docx") {
     text = await extractTextFromDocx(buffer);
     extractedImages = await extractImagesFromDocx(buffer);
