@@ -168,6 +168,119 @@ type PersistedIntelligentImportState = {
   errorMessage: string | null;
 };
 
+const MAX_PERSISTED_TEXT_LENGTH = 1200;
+const MAX_PERSISTED_IMPORT_ITEMS = 24;
+const INTELLIGENT_IMPORT_SESSION_STORAGE_PREFIX = "zion:onboarding:intelligent-import";
+
+function truncateForStorage(value: string, maxLength = MAX_PERSISTED_TEXT_LENGTH) {
+  const normalized = String(value ?? "").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength)}…`;
+}
+
+function sanitizeMetadataForStorage(metadata: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(metadata ?? {})
+      .slice(0, 12)
+      .map(([key, value]) => [truncateForStorage(key, 80), truncateForStorage(String(value), 180)])
+  );
+}
+
+function createLightweightIntelligentImportResult(
+  result: IntelligentImportResponse | null
+): IntelligentImportResponse | null {
+  if (!result) return null;
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: truncateForStorage(result.error, 300),
+      message: truncateForStorage(result.message, 300),
+    };
+  }
+
+  return {
+    ok: true,
+    message: truncateForStorage(result.message, 300),
+    summary: result.summary,
+    extractedPreview: result.extractedPreview.slice(0, MAX_PERSISTED_IMPORT_ITEMS).map((item) => ({
+      fileName: truncateForStorage(item.fileName, 180),
+      mimeType: truncateForStorage(item.mimeType, 120),
+      extension: truncateForStorage(item.extension, 20),
+      textPreview: truncateForStorage(item.textPreview, 900),
+    })),
+    normalizedPreview: result.normalizedPreview
+      .slice(0, MAX_PERSISTED_IMPORT_ITEMS)
+      .map((item) => ({
+        type: truncateForStorage(item.type, 60),
+        sourceFileName: truncateForStorage(item.sourceFileName, 180),
+        title: truncateForStorage(item.title, 220),
+        rawText: truncateForStorage(item.rawText, 900),
+        confidence: item.confidence,
+        metadata: sanitizeMetadataForStorage(item.metadata),
+      })),
+    dedupedPreview: result.dedupedPreview.slice(0, MAX_PERSISTED_IMPORT_ITEMS).map((item) => ({
+      type: truncateForStorage(item.type, 60),
+      sourceFileName: truncateForStorage(item.sourceFileName, 180),
+      title: truncateForStorage(item.title, 220),
+      rawText: truncateForStorage(item.rawText, 900),
+      confidence: item.confidence,
+      metadata: sanitizeMetadataForStorage(item.metadata),
+      dedupKey: truncateForStorage(item.dedupKey, 220),
+      duplicateOf: item.duplicateOf ? truncateForStorage(item.duplicateOf, 220) : undefined,
+      isDuplicate: Boolean(item.isDuplicate),
+    })),
+  };
+}
+
+function persistSessionStorageSafely(key: string, value: PersistedIntelligentImportState | null) {
+  if (typeof window === "undefined") return;
+
+  try {
+    if (!value) {
+      window.sessionStorage.removeItem(key);
+      return;
+    }
+
+    window.sessionStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    console.error("[OnboardingPage] sessionStorage persist error:", error);
+    try {
+      window.sessionStorage.removeItem(key);
+    } catch {}
+  }
+}
+
+function readSessionStorageSafely(key: string): PersistedIntelligentImportState | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedIntelligentImportState;
+
+    return {
+      selectedFiles: Array.isArray(parsed?.selectedFiles)
+        ? parsed.selectedFiles.map((item) => ({
+            name: truncateForStorage(String(item?.name ?? ""), 180),
+            type: truncateForStorage(String(item?.type ?? ""), 120),
+            size: Number(item?.size ?? 0),
+            lastModified: Number(item?.lastModified ?? 0),
+          }))
+        : [],
+      result: createLightweightIntelligentImportResult(parsed?.result ?? null),
+      successMessage: parsed?.successMessage ? truncateForStorage(parsed.successMessage, 300) : null,
+      errorMessage: parsed?.errorMessage ? truncateForStorage(parsed.errorMessage, 300) : null,
+    };
+  } catch (error) {
+    console.error("[OnboardingPage] sessionStorage read error:", error);
+    try {
+      window.sessionStorage.removeItem(key);
+    } catch {}
+    return null;
+  }
+}
+
 type DiscountSettingsRow = {
   store_id: string;
   organization_id: string;
@@ -620,8 +733,16 @@ function OnboardingContent() {
   const [step4DraftRecovered, setStep4DraftRecovered] = useState(false);
   const [step5DraftRecovered, setStep5DraftRecovered] = useState(false);
 
+  const intelligentImportSessionStorageKey = useMemo(() => {
+    if (!organizationId || !activeStore?.id) return null;
+    return `${INTELLIGENT_IMPORT_SESSION_STORAGE_PREFIX}:${organizationId}:${activeStore.id}`;
+  }, [organizationId, activeStore?.id]);
+
   const scrollRestoreTimeoutRef = useRef<number | null>(null);
   const lastRestoredScrollRef = useRef<number | null>(null);
+
+  const topActionButtonClassName =
+    "inline-flex min-h-[46px] min-w-[180px] items-center justify-center rounded-xl px-5 py-2.5 text-sm font-medium transition";
 
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
@@ -861,6 +982,17 @@ function OnboardingContent() {
   }, [intelligentImportResult]);
 
   useEffect(() => {
+    if (!intelligentImportSessionStorageKey) return;
+    persistCurrentIntelligentImportState();
+  }, [
+    intelligentImportSessionStorageKey,
+    intelligentImportSelectedFilesPreview,
+    intelligentImportResult,
+    intelligentImportSuccess,
+    intelligentImportError,
+  ]);
+
+  useEffect(() => {
     return () => {
       for (const preview of selectedImagePreviews) {
         URL.revokeObjectURL(preview.url);
@@ -970,23 +1102,65 @@ function OnboardingContent() {
 
   function navigateWithFallback(path: string) {
     savePageScroll();
-    router.push(path);
+
+    try {
+      router.push(path);
+    } catch (error) {
+      console.error("[OnboardingPage] router push error:", error);
+    }
 
     if (typeof window !== "undefined") {
       window.setTimeout(() => {
         if (window.location.pathname !== path) {
-          window.location.assign(path);
+          window.location.href = path;
         }
-      }, 150);
+      }, 120);
     }
   }
 
+  function persistCurrentIntelligentImportState(nextResult?: IntelligentImportResponse | null) {
+    if (!intelligentImportSessionStorageKey) return;
+
+    persistSessionStorageSafely(intelligentImportSessionStorageKey, {
+      selectedFiles: intelligentImportSelectedFilesPreview,
+      result: createLightweightIntelligentImportResult(
+        typeof nextResult === "undefined" ? intelligentImportResult : nextResult
+      ),
+      successMessage: intelligentImportSuccess,
+      errorMessage: intelligentImportError,
+    });
+  }
+
+  async function persistCurrentStepBeforeLeaving() {
+    switch (currentStep) {
+      case 1:
+        return await submitStep1({ navigateTo: null });
+      case 2:
+        return await submitStep2({ navigateTo: null });
+      case 3:
+        return await submitStep3({ navigateTo: null });
+      case 4:
+        return await submitStep4({ navigateTo: null });
+      case 5:
+        return await submitStep5({ navigateTo: null, skipDelayedRedirect: true });
+      default:
+        return false;
+    }
+  }
+
+  async function handleTopNavigation(targetPath: string) {
+    savePageScroll();
+    persistCurrentIntelligentImportState();
+    await persistCurrentStepBeforeLeaving();
+    navigateWithFallback(targetPath);
+  }
+
   async function handleGoToSettings() {
-    navigateWithFallback("/configuracoes");
+    await handleTopNavigation("/configuracoes");
   }
 
   async function handleSaveAndExit() {
-    navigateWithFallback("/dashboard");
+    await handleTopNavigation("/dashboard");
   }
 
   function clearIntelligentImportState() {
@@ -996,6 +1170,9 @@ function OnboardingContent() {
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
     setIntelligentImportRecovered(false);
+    if (intelligentImportSessionStorageKey) {
+      persistSessionStorageSafely(intelligentImportSessionStorageKey, null);
+    }
   }
 
   async function handleRunIntelligentImport() {
@@ -1063,8 +1240,8 @@ function OnboardingContent() {
     nextSuccessMessage: string,
     nextStep?: number,
     finalStatus?: "in_progress" | "completed"
-  ) {
-    if (!organizationId || !activeStore?.id) return;
+  ): Promise<boolean> {
+    if (!organizationId || !activeStore?.id) return false;
 
     setSaving(true);
     setFormError(null);
@@ -1096,9 +1273,12 @@ function OnboardingContent() {
         ignoreNextStepScrollRef.current = false;
         setCurrentStep(nextStep);
       }
+
+      return true;
     } catch (err) {
       console.error("[OnboardingPage] upsertAnswers error:", err);
       setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -1572,8 +1752,7 @@ function OnboardingContent() {
   }, [organizationId, activeStore?.id]);
 
 
-  async function saveStep1(e: FormEvent) {
-    e.preventDefault();
+  async function submitStep1(options?: { nextStep?: number | null; navigateTo?: string | null }) {
 
     if (!step1Form.store_display_name.trim()) {
       setFormError("Preencha o nome que a loja quer usar no sistema.");
@@ -1607,7 +1786,7 @@ function OnboardingContent() {
 
     if (!organizationId || !activeStore?.id) return;
 
-    await upsertAnswers(
+    const didSave = await upsertAnswers(
       [
         ["store_display_name", step1Form.store_display_name.trim()],
         ["store_description", step1Form.store_description.trim()],
@@ -1623,14 +1802,26 @@ function OnboardingContent() {
         ["service_region_outside_consultation", step1Form.service_region_outside_consultation],
       ],
       "Etapa 1 salva com sucesso.",
-      2
+      options?.nextStep === null ? undefined : options?.nextStep ?? 2
     );
 
+    if (!didSave) return false;
+
     setStep1DraftRecovered(false);
+
+    if (options?.navigateTo) {
+      navigateWithFallback(options.navigateTo);
+    }
+
+    return true;
   }
 
-  async function saveStep2(e: FormEvent) {
+  async function saveStep1(e: FormEvent) {
     e.preventDefault();
+    await submitStep1();
+  }
+
+  async function submitStep2(options?: { nextStep?: number | null; navigateTo?: string | null }) {
 
     if (step2Form.pool_types_selected.length === 0 && !step2Form.pool_types_other.trim()) {
       setFormError("Marque pelo menos um tipo de piscina ou preencha o campo complementar.");
@@ -1664,7 +1855,7 @@ function OnboardingContent() {
 
     if (!organizationId || !activeStore?.id) return;
 
-    await upsertAnswers(
+    const didSave = await upsertAnswers(
       [
         ["pool_types", step2Form.pool_types.trim()],
         ["sells_chemicals", step2Form.sells_chemicals.trim().toLowerCase() === "sim"],
@@ -1677,14 +1868,26 @@ function OnboardingContent() {
         ["main_store_brand", step2Form.main_store_brand.trim()],
       ],
       "Etapa 2 salva com sucesso.",
-      3
+      options?.nextStep === null ? undefined : options?.nextStep ?? 3
     );
 
+    if (!didSave) return false;
+
     setStep2DraftRecovered(false);
+
+    if (options?.navigateTo) {
+      navigateWithFallback(options.navigateTo);
+    }
+
+    return true;
   }
 
-  async function saveStep3(e: FormEvent) {
+  async function saveStep2(e: FormEvent) {
     e.preventDefault();
+    await submitStep2();
+  }
+
+  async function submitStep3(options?: { nextStep?: number | null; navigateTo?: string | null }) {
 
     if (!step3Form.average_human_response_time.trim()) {
       setFormError("Preencha o tempo médio de resposta humana.");
@@ -1751,7 +1954,7 @@ function OnboardingContent() {
 
     if (!organizationId || !activeStore?.id) return;
 
-    await upsertAnswers(
+    const didSave = await upsertAnswers(
       [
         ["average_installation_time_days", step3Form.average_installation_time_days.trim()],
         ["installation_days_rule", step3Form.installation_days_rule.trim()],
@@ -1774,14 +1977,26 @@ function OnboardingContent() {
         ["sales_flow_final_confirmed", step3Form.sales_flow_final_confirmed],
       ],
       "Etapa 3 salva com sucesso.",
-      4
+      options?.nextStep === null ? undefined : options?.nextStep ?? 4
     );
 
+    if (!didSave) return false;
+
     setStep3DraftRecovered(false);
+
+    if (options?.navigateTo) {
+      navigateWithFallback(options.navigateTo);
+    }
+
+    return true;
   }
 
-  async function saveStep4(e: FormEvent) {
+  async function saveStep3(e: FormEvent) {
     e.preventDefault();
+    await submitStep3();
+  }
+
+  async function submitStep4(options?: { nextStep?: number | null; navigateTo?: string | null }) {
 
     if (!step4Form.average_ticket.trim()) {
       setFormError("Informe o ticket médio da loja.");
@@ -1993,12 +2208,22 @@ function OnboardingContent() {
           : "Etapa 4 salva com sucesso. A política inicial de desconto foi criada em Configurações."
       );
 
-      ignoreNextStepScrollRef.current = false;
-      setCurrentStep(5);
+      const nextStep = options?.nextStep === null ? undefined : options?.nextStep ?? 5;
+      if (typeof nextStep === "number") {
+        ignoreNextStepScrollRef.current = false;
+        setCurrentStep(nextStep);
+      }
       setStep4DraftRecovered(false);
+
+      if (options?.navigateTo) {
+        navigateWithFallback(options.navigateTo);
+      }
+
+      return true;
     } catch (err) {
       console.error("[OnboardingPage] saveStep4 error:", err);
       setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -2006,6 +2231,10 @@ function OnboardingContent() {
 
   async function saveStep5(e: FormEvent) {
     e.preventDefault();
+    await submitStep5();
+  }
+
+  async function submitStep5(options?: { navigateTo?: string | null; skipDelayedRedirect?: boolean }) {
 
     if (!step5Form.responsible_name.trim()) {
       setFormError("Preencha o nome da pessoa principal que a IA deve acionar.");
@@ -2094,12 +2323,20 @@ function OnboardingContent() {
       setSuccessMessage("Onboarding concluído com sucesso.");
       setHasCompletedOnboardingOnce(true);
       setStep5DraftRecovered(false);
-      setTimeout(() => {
-        navigateWithFallback("/configuracoes");
-      }, 1000);
+
+      if (options?.navigateTo) {
+        navigateWithFallback(options.navigateTo);
+      } else if (!options?.skipDelayedRedirect) {
+        window.setTimeout(() => {
+          navigateWithFallback("/configuracoes");
+        }, 1000);
+      }
+
+      return true;
     } catch (err) {
       console.error("[OnboardingPage] saveStep5 error:", err);
       setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -2173,16 +2410,16 @@ function OnboardingContent() {
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
               <button
                 type="button"
-                onClick={handleGoToSettings}
-                className="inline-flex items-center justify-center rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                onClick={() => void handleGoToSettings()}
+                className={`${topActionButtonClassName} whitespace-nowrap border border-gray-300 text-gray-700 hover:bg-gray-50`}
               >
                 Ir para Configurações
               </button>
 
               <button
                 type="button"
-                onClick={handleSaveAndExit}
-                className="inline-flex items-center justify-center rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
+                onClick={() => void handleSaveAndExit()}
+                className={`${topActionButtonClassName} whitespace-nowrap bg-black text-white hover:opacity-90`}
               >
                 Salvar e sair
               </button>
@@ -2474,6 +2711,21 @@ function OnboardingContent() {
                       setIntelligentImportError(null);
                       setIntelligentImportSuccess(null);
                       setIntelligentImportResult(null);
+                      window.setTimeout(() => {
+                        if (intelligentImportSessionStorageKey) {
+                          persistSessionStorageSafely(intelligentImportSessionStorageKey, {
+                            selectedFiles: selectedFiles.map((file) => ({
+                              name: file.name,
+                              type: file.type || "tipo não informado",
+                              size: file.size,
+                              lastModified: file.lastModified,
+                            })),
+                            result: null,
+                            successMessage: null,
+                            errorMessage: null,
+                          });
+                        }
+                      }, 0);
                     }}
                     className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />
