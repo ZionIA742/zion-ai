@@ -400,6 +400,10 @@ function formatFileSize(size: number) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function isImageLikeFileType(fileType: string) {
+  return fileType.startsWith("image/");
+}
+
 
 function StepBadge({
   step,
@@ -817,6 +821,23 @@ function OnboardingContent() {
 
     return intelligentImportSelectedFilesPreview;
   }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
+
+  const selectedImagePreviews = useMemo(() => {
+    return intelligentImportFiles
+      .filter((file) => isImageLikeFileType(file.type))
+      .map((file) => ({
+        name: file.name,
+        url: URL.createObjectURL(file),
+      }));
+  }, [intelligentImportFiles]);
+
+  useEffect(() => {
+    return () => {
+      for (const preview of selectedImagePreviews) {
+        URL.revokeObjectURL(preview.url);
+      }
+    };
+  }, [selectedImagePreviews]);
 
   const updateStep1Field = <K extends keyof Step1FormData>(field: K, value: Step1FormData[K]) => {
     setStep1Form((prev) => ({ ...prev, [field]: value }));
@@ -2203,45 +2224,9 @@ function OnboardingContent() {
             </div>
           </div>
 
-          {successMessage ? (
-            <div className="mb-6">
-              <InfoBlock title="Tudo certo" description={successMessage} subtle />
-            </div>
-          ) : null}
-
           {formError ? (
             <div className="mb-6">
               <InfoBlock title="Ajuste necessário" description={formError} />
-            </div>
-          ) : null}
-
-          {currentStep === 1 && step1DraftRecovered ? (
-            <div className="mb-6">
-              <InfoBlock title="Rascunho recuperado" description="Rascunho local da etapa 1 recuperado." subtle />
-            </div>
-          ) : null}
-
-          {currentStep === 2 && step2DraftRecovered ? (
-            <div className="mb-6">
-              <InfoBlock title="Rascunho recuperado" description="Rascunho local da etapa 2 recuperado." subtle />
-            </div>
-          ) : null}
-
-          {currentStep === 3 && step3DraftRecovered ? (
-            <div className="mb-6">
-              <InfoBlock title="Rascunho recuperado" description="Rascunho local da etapa 3 recuperado." subtle />
-            </div>
-          ) : null}
-
-          {currentStep === 4 && step4DraftRecovered ? (
-            <div className="mb-6">
-              <InfoBlock title="Rascunho recuperado" description="Rascunho local da etapa 4 recuperado." subtle />
-            </div>
-          ) : null}
-
-          {currentStep === 5 && step5DraftRecovered ? (
-            <div className="mb-6">
-              <InfoBlock title="Rascunho recuperado" description="Rascunho local da etapa 5 recuperado." subtle />
             </div>
           ) : null}
 
@@ -2508,7 +2493,7 @@ function OnboardingContent() {
                   <input
                     type="file"
                     multiple
-                    accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp"
+                    accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,image/*"
                     onChange={(e) => {
                       const selectedFiles = Array.from(e.target.files ?? []);
                       setIntelligentImportFiles(selectedFiles);
@@ -2528,17 +2513,9 @@ function OnboardingContent() {
                     className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />
 
-                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-sm text-blue-900">
-                    A prioridade aqui é entender muito bem documentos simples de lojas de piscina, como catálogos em foto, Excel básico, Word básico e PDF básico. Depois desta mudança, o próximo ajuste vai ser melhorar a leitura dessas tabelas simples para reconhecer melhor produto, quantidade e preço.
+                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700">
+                    Você pode enviar fotos do catálogo, imagens de produtos, tabelas simples em foto, PDF, Word, Excel e PowerPoint. As imagens selecionadas aparecem em pré-visualização logo abaixo para facilitar a conferência antes do teste.
                   </div>
-
-                  {intelligentImportRecovered && intelligentImportResult?.ok && intelligentImportFiles.length === 0 ? (
-                    <InfoBlock
-                      title="Última análise restaurada"
-                      description="A última análise foi recuperada quando você voltou para a tela. Para rodar uma nova leitura, selecione os arquivos novamente e clique no botão de testar."
-                      subtle
-                    />
-                  ) : null}
 
                   {visibleIntelligentImportFiles.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
@@ -2558,6 +2535,35 @@ function OnboardingContent() {
                             <span className="text-xs text-gray-500 md:text-right">
                               {file.type || "tipo não informado"} • {formatFileSize(file.size)}
                             </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {selectedImagePreviews.length > 0 ? (
+                    <div className="rounded-xl border border-gray-200 bg-white p-3">
+                      <p className="text-sm font-semibold text-gray-900">
+                        Pré-visualização das fotos selecionadas ({selectedImagePreviews.length})
+                      </p>
+                      <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                        {selectedImagePreviews.map((preview) => (
+                          <div
+                            key={preview.name}
+                            className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
+                          >
+                            <div className="aspect-square w-full bg-white">
+                              <img
+                                src={preview.url}
+                                alt={preview.name}
+                                className="h-full w-full object-cover"
+                              />
+                            </div>
+                            <div className="border-t border-gray-200 px-3 py-2">
+                              <p className="truncate text-xs font-medium text-gray-700">
+                                {preview.name}
+                              </p>
+                            </div>
                           </div>
                         ))}
                       </div>
