@@ -159,6 +159,7 @@ type IntelligentImportSelectedFilePreview = {
   type: string;
   size: number;
   lastModified: number;
+  previewDataUrl?: string;
 };
 
 type PersistedIntelligentImportState = {
@@ -266,6 +267,9 @@ function readSessionStorageSafely(key: string): PersistedIntelligentImportState 
             type: truncateForStorage(String(item?.type ?? ""), 120),
             size: Number(item?.size ?? 0),
             lastModified: Number(item?.lastModified ?? 0),
+            previewDataUrl: item?.previewDataUrl
+              ? truncateForStorage(String(item.previewDataUrl), 24000)
+              : undefined,
           }))
         : [],
       result: createLightweightIntelligentImportResult(parsed?.result ?? null),
@@ -522,6 +526,99 @@ function formatFileSize(size: number) {
 
 function isImageLikeFileType(fileType: string) {
   return fileType.startsWith("image/");
+}
+
+function buildImageFallbackTitle(fileName: string) {
+  const normalized = String(fileName ?? "").trim();
+  if (!normalized) return "Imagem enviada pela loja";
+
+  const withoutExtension = normalized.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+  return withoutExtension || normalized;
+}
+
+async function createImagePreviewDataUrl(file: File, maxSide = 240) {
+  if (typeof window === "undefined" || !isImageLikeFileType(file.type)) return undefined;
+
+  try {
+    const objectUrl = URL.createObjectURL(file);
+
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Falha ao gerar miniatura da imagem."));
+      img.src = objectUrl;
+    });
+
+    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
+    canvas.height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
+
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Falha ao abrir contexto da miniatura.");
+
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const previewDataUrl = canvas.toDataURL("image/jpeg", 0.62);
+    URL.revokeObjectURL(objectUrl);
+    return previewDataUrl;
+  } catch (error) {
+    console.error("[OnboardingPage] createImagePreviewDataUrl error:", error);
+    return undefined;
+  }
+}
+
+async function buildSelectedFilePreviews(files: File[]) {
+  const previews = await Promise.all(
+    files.map(async (file) => ({
+      name: file.name,
+      type: file.type || "tipo não informado",
+      size: file.size,
+      lastModified: file.lastModified,
+      previewDataUrl: await createImagePreviewDataUrl(file),
+    }))
+  );
+
+  return previews;
+}
+
+function decorateIntelligentImportResultWithImageFallback(
+  result: IntelligentImportResponse,
+  selectedFiles: IntelligentImportSelectedFilePreview[]
+): IntelligentImportResponse {
+  if (!result.ok) return result;
+
+  const hasStructuredItems = result.normalizedPreview.length > 0 || result.dedupedPreview.length > 0;
+  if (hasStructuredItems) return result;
+
+  const visualSources = selectedFiles.filter((file) => isImageLikeFileType(file.type));
+  if (visualSources.length === 0) return result;
+
+  const fallbackItems = visualSources.slice(0, 12).map((file, index) => ({
+    type: "image_reference",
+    sourceFileName: file.name,
+    title: buildImageFallbackTitle(file.name),
+    rawText:
+      "Imagem enviada como referência visual da loja. Nesta prévia, a importação inteligente preservou o arquivo visual, mas ainda não transformou automaticamente a imagem em um item textual estruturado.",
+    confidence: 0.42,
+    metadata: {
+      origem: "imagem_enviada",
+      mime_type: file.type || "image/*",
+      modo: "fallback_visual_frontend",
+    },
+  }));
+
+  return {
+    ...result,
+    message: result.message || "Importação inteligente processada com apoio visual para imagens.",
+    normalizedPreview: fallbackItems,
+    dedupedPreview: fallbackItems.map((item, index) => ({
+      ...item,
+      dedupKey: `${item.sourceFileName}:${index}`,
+      duplicateOf: undefined,
+      isDuplicate: false,
+    })),
+  };
 }
 
 
@@ -946,13 +1043,24 @@ function OnboardingContent() {
   }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
 
   const selectedImagePreviews = useMemo(() => {
-    return intelligentImportFiles
-      .filter((file) => isImageLikeFileType(file.type))
+    if (intelligentImportFiles.length > 0) {
+      return intelligentImportFiles
+        .filter((file) => isImageLikeFileType(file.type))
+        .map((file) => ({
+          name: file.name,
+          url: URL.createObjectURL(file),
+          source: "memory" as const,
+        }));
+    }
+
+    return intelligentImportSelectedFilesPreview
+      .filter((file) => Boolean(file.previewDataUrl))
       .map((file) => ({
         name: file.name,
-        url: URL.createObjectURL(file),
+        url: file.previewDataUrl as string,
+        source: "session" as const,
       }));
-  }, [intelligentImportFiles]);
+  }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
 
   const safeExtractedPreview = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) return [];
@@ -993,9 +1101,43 @@ function OnboardingContent() {
   ]);
 
   useEffect(() => {
+    if (!intelligentImportSessionStorageKey) return;
+
+    const restored = readSessionStorageSafely(intelligentImportSessionStorageKey);
+    if (!restored) return;
+
+    if (restored.selectedFiles.length > 0) {
+      setIntelligentImportSelectedFilesPreview(restored.selectedFiles);
+    }
+
+    if (restored.result) {
+      setIntelligentImportResult(restored.result);
+    }
+
+    if (restored.successMessage) {
+      setIntelligentImportSuccess(restored.successMessage);
+    }
+
+    if (restored.errorMessage) {
+      setIntelligentImportError(restored.errorMessage);
+    }
+
+    if (
+      restored.selectedFiles.length > 0 ||
+      restored.result ||
+      restored.successMessage ||
+      restored.errorMessage
+    ) {
+      setIntelligentImportRecovered(true);
+    }
+  }, [intelligentImportSessionStorageKey]);
+
+  useEffect(() => {
     return () => {
       for (const preview of selectedImagePreviews) {
-        URL.revokeObjectURL(preview.url);
+        if (preview.source === "memory") {
+          URL.revokeObjectURL(preview.url);
+        }
       }
     };
   }, [selectedImagePreviews]);
@@ -1134,13 +1276,13 @@ function OnboardingContent() {
   async function persistCurrentStepBeforeLeaving() {
     switch (currentStep) {
       case 1:
-        return await submitStep1({ navigateTo: null });
+        return await submitStep1({ nextStep: null, navigateTo: null });
       case 2:
-        return await submitStep2({ navigateTo: null });
+        return await submitStep2({ nextStep: null, navigateTo: null });
       case 3:
-        return await submitStep3({ navigateTo: null });
+        return await submitStep3({ nextStep: null, navigateTo: null });
       case 4:
-        return await submitStep4({ navigateTo: null });
+        return await submitStep4({ nextStep: null, navigateTo: null });
       case 5:
         return await submitStep5({ navigateTo: null, skipDelayedRedirect: true });
       default:
@@ -1151,7 +1293,12 @@ function OnboardingContent() {
   async function handleTopNavigation(targetPath: string) {
     savePageScroll();
     persistCurrentIntelligentImportState();
-    await persistCurrentStepBeforeLeaving();
+    const didSave = await persistCurrentStepBeforeLeaving();
+
+    if (!didSave) {
+      console.warn("[OnboardingPage] etapa não validou para salvar no banco antes de sair; mantendo rascunho local.");
+    }
+
     navigateWithFallback(targetPath);
   }
 
@@ -1193,14 +1340,9 @@ function OnboardingContent() {
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
     setIntelligentImportRecovered(false);
-    setIntelligentImportSelectedFilesPreview(
-      intelligentImportFiles.map((file) => ({
-        name: file.name,
-        type: file.type || "tipo não informado",
-        size: file.size,
-        lastModified: file.lastModified,
-      }))
-    );
+
+    const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
+    setIntelligentImportSelectedFilesPreview(selectedFilesPreview);
 
     try {
       const formData = new FormData();
@@ -1224,8 +1366,11 @@ function OnboardingContent() {
         return;
       }
 
-      setIntelligentImportResult(result);
-      setIntelligentImportSuccess(result.message || "Importação inteligente processada com sucesso.");
+      const decoratedResult = decorateIntelligentImportResultWithImageFallback(result, selectedFilesPreview);
+      setIntelligentImportResult(decoratedResult);
+      setIntelligentImportSuccess(
+        decoratedResult.message || "Importação inteligente processada com sucesso."
+      );
     } catch (error) {
       console.error("[OnboardingPage] handleRunIntelligentImport error:", error);
       setIntelligentImportError("Erro inesperado ao testar a importação inteligente.");
@@ -2701,17 +2846,11 @@ function OnboardingContent() {
                     type="file"
                     multiple
                     accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,image/*"
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const selectedFiles = Array.from(e.target.files ?? []);
                       setIntelligentImportFiles(selectedFiles);
-                      setIntelligentImportSelectedFilesPreview(
-                        selectedFiles.map((file) => ({
-                          name: file.name,
-                          type: file.type || "tipo não informado",
-                          size: file.size,
-                          lastModified: file.lastModified,
-                        }))
-                      );
+                      const selectedFilesPreview = await buildSelectedFilePreviews(selectedFiles);
+                      setIntelligentImportSelectedFilesPreview(selectedFilesPreview);
                       setIntelligentImportRecovered(false);
                       setIntelligentImportError(null);
                       setIntelligentImportSuccess(null);
@@ -2719,12 +2858,7 @@ function OnboardingContent() {
                       window.setTimeout(() => {
                         if (intelligentImportSessionStorageKey) {
                           persistSessionStorageSafely(intelligentImportSessionStorageKey, {
-                            selectedFiles: selectedFiles.map((file) => ({
-                              name: file.name,
-                              type: file.type || "tipo não informado",
-                              size: file.size,
-                              lastModified: file.lastModified,
-                            })),
+                            selectedFiles: selectedFilesPreview,
                             result: null,
                             successMessage: null,
                             errorMessage: null,
@@ -2738,6 +2872,12 @@ function OnboardingContent() {
                   <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700">
                     Você pode enviar fotos do catálogo, imagens de produtos, tabelas simples em foto, PDF, Word, Excel e PowerPoint. As imagens selecionadas aparecem em pré-visualização logo abaixo para facilitar a conferência antes do teste.
                   </div>
+
+                  {intelligentImportRecovered ? (
+                    <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-900">
+                      Prévia restaurada desta aba. Você voltou exatamente para o ponto salvo mais recente da importação inteligente, inclusive etapa atual, rolagem e resultados leves da análise.
+                    </div>
+                  ) : null}
 
                   {visibleIntelligentImportFiles.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
