@@ -166,11 +166,7 @@ async function extractTextFromDocx(buffer: Buffer) {
       continue;
     }
 
-    if (currentSection.length > 0) {
-      currentSection.push(inner);
-    } else {
-      currentSection.push(inner);
-    }
+    currentSection.push(inner);
   }
 
   pushCurrentSection(sections, currentSection);
@@ -196,24 +192,41 @@ async function extractTextFromDocx(buffer: Buffer) {
   const raw = await mammoth.extractRawText({ buffer });
   const baseText = (raw.value || "").replace(/\r/g, "").trim();
 
-  const parts: string[] = [];
+  const strongPoolSections = sections.filter((section) => {
+    const lower = section.toLowerCase();
 
-  if (sections.length) {
-    parts.push(sections.join("\n\n"));
+    return (
+      /^piscina\b/i.test(section) &&
+      (lower.includes("tipo:") || lower.includes("tipo|")) &&
+      (lower.includes("medidas:") || lower.includes("medidas|")) &&
+      (lower.includes("profundidade:") || lower.includes("profundidade|"))
+    );
+  });
+
+  if (strongPoolSections.length >= 5) {
+    return strongPoolSections.join("\n\n").trim();
   }
 
-  if (normalizedRows.length) {
-    parts.push(normalizedRows.join("\n"));
+  if (sections.length > 0 && normalizedRows.length === 0) {
+    return sections.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   }
 
-  if (!sections.length && !normalizedRows.length && baseText) {
-    parts.push(baseText);
+  if (normalizedRows.length > 0 && sections.length === 0) {
+    return normalizedRows.join("\n").trim();
   }
 
-  return parts
-    .join("\n\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  if (sections.length > 0 && normalizedRows.length > 0) {
+    const tableText = normalizedRows.join("\n").trim();
+    const sectionText = sections.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+
+    if (sectionText.length >= tableText.length) {
+      return sectionText;
+    }
+
+    return tableText;
+  }
+
+  return baseText;
 }
 
 async function extractImagesFromDocx(buffer: Buffer) {
