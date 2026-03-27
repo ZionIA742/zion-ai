@@ -130,9 +130,7 @@ async function extractTextFromPdfWithPdfParse(buffer: Buffer) {
         ? imported
         : null;
 
-    if (!pdfParse) {
-      return "";
-    }
+    if (!pdfParse) return "";
 
     const result = await pdfParse(buffer);
     return normalizeExtractedText(result?.text || "");
@@ -149,6 +147,8 @@ async function extractTextFromPdfWithPdfJs(buffer: Buffer) {
       useWorkerFetch: false,
       isEvalSupported: false,
       useSystemFonts: true,
+      disableFontFace: true,
+      standardFontDataUrl: undefined,
     });
 
     const pdf = await loadingTask.promise;
@@ -158,33 +158,16 @@ async function extractTextFromPdfWithPdfJs(buffer: Buffer) {
       const page = await pdf.getPage(pageNumber);
       const textContent = await page.getTextContent();
 
-      const items = (textContent.items || []) as Array<any>;
-      const rows = new Map<string, string[]>();
+      const items = Array.isArray(textContent?.items)
+        ? (textContent.items as Array<any>)
+        : [];
 
-      for (const item of items) {
-        const str = String(item?.str || "").trim();
-        if (!str) continue;
-
-        const transform = Array.isArray(item?.transform) ? item.transform : [];
-        const y = typeof transform[5] === "number" ? transform[5] : 0;
-        const key = y.toFixed(1);
-
-        const bucket = rows.get(key) || [];
-        bucket.push(str);
-        rows.set(key, bucket);
-      }
-
-      const ordered = Array.from(rows.entries())
-        .sort((a, b) => Number(b[0]) - Number(a[0]))
-        .map(([, parts]) =>
-          parts
-            .join(" ")
-            .replace(/\s+/g, " ")
-            .trim()
-        )
-        .filter(Boolean);
-
-      const pageText = ordered.join("\n").trim();
+      const pageText = items
+        .map((item) => String(item?.str || "").trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
 
       if (pageText) {
         pages.push(pageText);
@@ -197,20 +180,95 @@ async function extractTextFromPdfWithPdfJs(buffer: Buffer) {
   }
 }
 
+async function extractTextFromPdfWithPdf2Json(buffer: Buffer) {
+  try {
+    const imported: any = await import("pdf2json");
+    const PDFParserClass = imported?.default || imported;
+    const parser = new PDFParserClass(undefined, true);
+
+    const text = await new Promise<string>((resolve) => {
+      parser.on("pdfParser_dataError", () => resolve(""));
+
+      parser.on("pdfParser_dataReady", (pdfData: any) => {
+        try {
+          const pages = Array.isArray(pdfData?.Pages) ? pdfData.Pages : [];
+          const chunks: string[] = [];
+
+          for (const page of pages) {
+            const texts = Array.isArray(page?.Texts) ? page.Texts : [];
+
+            for (const textItem of texts) {
+              const runs = Array.isArray(textItem?.R) ? textItem.R : [];
+              const line = runs
+                .map((run: any) => decodeURIComponent(String(run?.T || "")))
+                .join(" ")
+                .replace(/\s+/g, " ")
+                .trim();
+
+              if (line) {
+                chunks.push(line);
+              }
+            }
+
+            chunks.push("");
+          }
+
+          resolve(normalizeExtractedText(chunks.join("\n")));
+        } catch {
+          resolve("");
+        }
+      });
+
+      parser.parseBuffer(buffer);
+    });
+
+    return text;
+  } catch {
+    return "";
+  }
+}
+
+function extractReadableStringsFromPdfBinary(buffer: Buffer) {
+  try {
+    const raw = buffer.toString("latin1");
+    const matches = raw.match(/[\x20-\x7EÀ-ÿ]{8,}/g) || [];
+
+    const cleaned = matches
+      .map((item) => item.replace(/\s+/g, " ").trim())
+      .filter((item) => {
+        const lower = item.toLowerCase();
+        return (
+          item.length >= 8 &&
+          !lower.includes("obj") &&
+          !lower.includes("endobj") &&
+          !lower.includes("/type") &&
+          !lower.includes("/page") &&
+          !lower.includes("/font") &&
+          !lower.includes("stream") &&
+          !lower.includes("endstream")
+        );
+      })
+      .join("\n");
+
+    return normalizeExtractedText(cleaned);
+  } catch {
+    return "";
+  }
+}
+
 async function extractTextFromPdf(buffer: Buffer) {
-  const firstPass = await extractTextFromPdfWithPdfParse(buffer);
+  const attempts = [
+    await extractTextFromPdfWithPdfParse(buffer),
+    await extractTextFromPdfWithPdfJs(buffer),
+    await extractTextFromPdfWithPdf2Json(buffer),
+    extractReadableStringsFromPdfBinary(buffer),
+  ];
 
-  if (firstPass.length >= 120) {
-    return firstPass;
-  }
+  const best = attempts
+    .map((text) => normalizeExtractedText(text))
+    .sort((a, b) => b.length - a.length)[0];
 
-  const secondPass = await extractTextFromPdfWithPdfJs(buffer);
-
-  if (secondPass.length > firstPass.length) {
-    return secondPass;
-  }
-
-  return firstPass;
+  return best || "";
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
