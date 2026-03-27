@@ -50,6 +50,7 @@ export async function POST(request: Request) {
       message: "Importação inteligente processada com sucesso.",
       summary: result.summary,
       extractedPreview: result.extractedPreview,
+      extractedImagePreview: result.extractedImagePreview,
       normalizedPreview: result.normalizedPreview,
       dedupedPreview: result.dedupedPreview,
     });

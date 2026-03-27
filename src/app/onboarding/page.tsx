@@ -132,21 +132,19 @@ type IntelligentImportDedupedPreview = IntelligentImportNormalizedPreview & {
   isDuplicate: boolean;
 };
 
-type IntelligentImportExtractedImagePreview = {
-  sourceFileName: string;
-  fileName: string;
-  source: "docx" | "xlsx" | "pptx" | "image_file";
-  mimeType: string;
-  dataUrl: string;
-};
-
 type IntelligentImportResponse =
   | {
       ok: true;
       message: string;
       summary: IntelligentImportSummary;
       extractedPreview: IntelligentImportExtractedPreview[];
-      extractedImagePreview: IntelligentImportExtractedImagePreview[];
+      extractedImagePreview?: Array<{
+        sourceFileName: string;
+        fileName: string;
+        source: string;
+        mimeType: string;
+        dataUrl: string;
+      }>;
       normalizedPreview: IntelligentImportNormalizedPreview[];
       dedupedPreview: IntelligentImportDedupedPreview[];
     }
@@ -407,6 +405,10 @@ function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isImageLikeFileType(fileType: string) {
+  return fileType.startsWith("image/");
 }
 
 
@@ -827,8 +829,49 @@ function OnboardingContent() {
     return intelligentImportSelectedFilesPreview;
   }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
 
-  const extractedImagePreviewItems =
-    intelligentImportResult?.ok ? intelligentImportResult.extractedImagePreview : [];
+  const selectedImagePreviews = useMemo(() => {
+    return intelligentImportFiles
+      .filter((file) => isImageLikeFileType(file.type))
+      .map((file) => ({
+        name: file.name,
+        url: URL.createObjectURL(file),
+      }));
+  }, [intelligentImportFiles]);
+
+  const safeExtractedPreview = useMemo(() => {
+    if (!intelligentImportResult || !intelligentImportResult.ok) return [];
+    return Array.isArray(intelligentImportResult.extractedPreview)
+      ? intelligentImportResult.extractedPreview
+      : [];
+  }, [intelligentImportResult]);
+
+  const safeNormalizedPreview = useMemo(() => {
+    if (!intelligentImportResult || !intelligentImportResult.ok) return [];
+    return Array.isArray(intelligentImportResult.normalizedPreview)
+      ? intelligentImportResult.normalizedPreview
+      : [];
+  }, [intelligentImportResult]);
+
+  const safeDedupedPreview = useMemo(() => {
+    if (!intelligentImportResult || !intelligentImportResult.ok) return [];
+    return Array.isArray(intelligentImportResult.dedupedPreview)
+      ? intelligentImportResult.dedupedPreview
+      : [];
+  }, [intelligentImportResult]);
+
+  const safeExtractedImagePreview = useMemo(() => {
+    if (!intelligentImportResult || !intelligentImportResult.ok) return [];
+    const candidate = intelligentImportResult.extractedImagePreview;
+    return Array.isArray(candidate) ? candidate : [];
+  }, [intelligentImportResult]);
+
+  useEffect(() => {
+    return () => {
+      for (const preview of selectedImagePreviews) {
+        URL.revokeObjectURL(preview.url);
+      }
+    };
+  }, [selectedImagePreviews]);
 
   const updateStep1Field = <K extends keyof Step1FormData>(field: K, value: Step1FormData[K]) => {
     setStep1Form((prev) => ({ ...prev, [field]: value }));
@@ -2505,7 +2548,7 @@ function OnboardingContent() {
                   />
 
                   <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700">
-                    Você pode enviar fotos diretas, Word, Excel, PDF e PowerPoint. Quando houver imagem embutida em Word, Excel, PowerPoint ou quando o arquivo enviado for uma imagem direta, a tela mostra uma galeria logo abaixo.
+                    Você pode enviar fotos do catálogo, imagens de produtos, tabelas simples em foto, PDF, Word, Excel e PowerPoint. As imagens selecionadas aparecem em pré-visualização logo abaixo para facilitar a conferência antes do teste.
                   </div>
 
                   {visibleIntelligentImportFiles.length > 0 ? (
@@ -2532,30 +2575,27 @@ function OnboardingContent() {
                     </div>
                   ) : null}
 
-                  {extractedImagePreviewItems.length > 0 ? (
+                  {selectedImagePreviews.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
-                        Fotos encontradas nos arquivos ({extractedImagePreviewItems.length})
+                        Pré-visualização das fotos selecionadas ({selectedImagePreviews.length})
                       </p>
                       <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                        {extractedImagePreviewItems.map((image, index) => (
+                        {selectedImagePreviews.map((preview) => (
                           <div
-                            key={`${image.sourceFileName}-${image.fileName}-${index}`}
+                            key={preview.name}
                             className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
                           >
                             <div className="aspect-square w-full bg-white">
                               <img
-                                src={image.dataUrl}
-                                alt={image.fileName}
+                                src={preview.url}
+                                alt={preview.name}
                                 className="h-full w-full object-cover"
                               />
                             </div>
                             <div className="border-t border-gray-200 px-3 py-2">
-                              <p className="truncate text-xs font-semibold text-gray-800">
-                                {image.fileName}
-                              </p>
-                              <p className="truncate text-[11px] text-gray-500">
-                                Arquivo: {image.sourceFileName}
+                              <p className="truncate text-xs font-medium text-gray-700">
+                                {preview.name}
                               </p>
                             </div>
                           </div>
@@ -2640,13 +2680,13 @@ function OnboardingContent() {
 
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
-                        {intelligentImportResult.extractedPreview.length === 0 ? (
+                        {safeExtractedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum texto foi extraído nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {intelligentImportResult.extractedPreview.map((item, index) => (
+                            {safeExtractedPreview.map((item, index) => (
                               <div
                                 key={`${item.fileName}-${item.extension}`}
                                 className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}
@@ -2667,14 +2707,52 @@ function OnboardingContent() {
                       </div>
 
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
+                        <p className="text-sm font-semibold text-gray-900">
+                          Fotos encontradas nos arquivos
+                        </p>
+
+                        {safeExtractedImagePreview.length === 0 ? (
+                          <p className="mt-2 text-sm text-gray-500">
+                            Nenhuma foto embutida foi encontrada nos arquivos desta análise.
+                          </p>
+                        ) : (
+                          <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                            {safeExtractedImagePreview.map((image, index) => (
+                              <div
+                                key={`${image.sourceFileName}-${image.fileName}-${index}`}
+                                className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
+                              >
+                                <div className="aspect-square w-full bg-white">
+                                  <img
+                                    src={image.dataUrl}
+                                    alt={image.fileName}
+                                    className="h-full w-full object-cover"
+                                  />
+                                </div>
+
+                                <div className="border-t border-gray-200 px-3 py-2">
+                                  <p className="truncate text-xs font-semibold text-gray-800">
+                                    {image.fileName}
+                                  </p>
+                                  <p className="mt-1 truncate text-[11px] text-gray-500">
+                                    Origem: {image.sourceFileName}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
-                        {intelligentImportResult.normalizedPreview.length === 0 ? (
+                        {safeNormalizedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum bloco foi classificado nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {intelligentImportResult.normalizedPreview.slice(0, 12).map((item, index) => (
+                            {safeNormalizedPreview.slice(0, 12).map((item, index) => (
                               <div key={`${item.sourceFileName}-${item.title}-${index}`} className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}>
                                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-3">
                                   <div className="min-w-0">
@@ -2698,13 +2776,13 @@ function OnboardingContent() {
 
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
-                        {intelligentImportResult.dedupedPreview.length === 0 ? (
+                        {safeDedupedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum item foi analisado na deduplicação.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {intelligentImportResult.dedupedPreview.slice(0, 12).map((item, index) => (
+                            {safeDedupedPreview.slice(0, 12).map((item, index) => (
                               <div
                                 key={`${item.dedupKey}-${index}`}
                                 className={cx(
