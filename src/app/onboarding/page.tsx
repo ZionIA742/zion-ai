@@ -622,6 +622,77 @@ function decorateIntelligentImportResultWithImageFallback(
 }
 
 
+type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
+
+function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
+  const normalized = String(value ?? "").trim().toLowerCase();
+
+  if (
+    normalized.includes("quim") ||
+    normalized.includes("cloro") ||
+    normalized.includes("algicida") ||
+    normalized.includes("ph") ||
+    normalized.includes("elevador") ||
+    normalized.includes("redutor") ||
+    normalized.includes("clarificante") ||
+    normalized.includes("sulfato")
+  ) {
+    return "quimicos";
+  }
+
+  if (
+    normalized.includes("acessor") ||
+    normalized.includes("aspirador") ||
+    normalized.includes("escova") ||
+    normalized.includes("peneira") ||
+    normalized.includes("dispositivo") ||
+    normalized.includes("led") ||
+    normalized.includes("lumin") ||
+    normalized.includes("mangueira") ||
+    normalized.includes("clorador") ||
+    normalized.includes("hidromassagem")
+  ) {
+    return "acessorios";
+  }
+
+  return "outros";
+}
+
+function inferImportedCatalogCategory(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+): ImportedCatalogCategory {
+  const source = [
+    item.type,
+    item.title,
+    item.rawText,
+    ...Object.values(item.metadata ?? {}),
+  ]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  return normalizeImportedCatalogCategory(source);
+}
+
+function buildImportedCatalogName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const title = String(item.title ?? "").trim();
+  if (title) return title.slice(0, 160);
+
+  const raw = String(item.rawText ?? "").trim();
+  if (!raw) return "Item importado";
+  return raw.slice(0, 160);
+}
+
+function buildImportedCatalogDescription(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const raw = String(item.rawText ?? "").trim();
+  if (!raw) return null;
+  return raw.slice(0, 4000);
+}
+
+
 function StepBadge({
   step,
   currentStep,
@@ -821,6 +892,7 @@ function OnboardingContent() {
     useState<IntelligentImportResponse | null>(null);
 
   const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
+  const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
 
   const hasDiscountConfigOverride = Boolean(discountSettings);
 
@@ -1376,6 +1448,127 @@ function OnboardingContent() {
       setIntelligentImportError("Erro inesperado ao testar a importação inteligente.");
     } finally {
       setIntelligentImportLoading(false);
+    }
+  }
+
+
+  async function handleSaveImportedItemsToCatalog() {
+    if (!organizationId || !activeStore?.id) {
+      setFormError("Não foi possível identificar a organização e a loja ativa.");
+      return;
+    }
+
+    if (!intelligentImportResult || !intelligentImportResult.ok) {
+      setFormError("Faça a importação inteligente antes de salvar itens no catálogo.");
+      return;
+    }
+
+    const sourceItems = intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate);
+
+    if (sourceItems.length === 0) {
+      setFormError("Nenhum item único foi encontrado para salvar no catálogo.");
+      return;
+    }
+
+    setSavingImportedCatalog(true);
+    setFormError(null);
+    setSuccessMessage(null);
+
+    try {
+      const createdItems: Array<{ id: string; category: ImportedCatalogCategory; name: string }> = [];
+
+      for (const item of sourceItems) {
+        const category = inferImportedCatalogCategory(item);
+        const name = buildImportedCatalogName(item);
+        const description = buildImportedCatalogDescription(item);
+
+        const { data: createdItem, error: createError } = await supabase
+          .from("store_catalog_items")
+          .insert({
+            organization_id: organizationId,
+            store_id: activeStore.id,
+            sku: null,
+            name,
+            description,
+            price_cents: null,
+            currency: "BRL",
+            is_active: true,
+            track_stock: false,
+            stock_quantity: null,
+            metadata: {
+              categoria: category,
+              imported_via: "onboarding_intelligent_import",
+              import_type: item.type,
+              import_confidence: item.confidence,
+              import_source_file_name: item.sourceFileName,
+              import_dedup_key: item.dedupKey,
+            },
+          })
+          .select("id,name")
+          .single();
+
+        if (createError) {
+          throw createError;
+        }
+
+        createdItems.push({
+          id: createdItem.id,
+          category,
+          name: createdItem.name ?? name,
+        });
+
+        const matchingImageFile = intelligentImportFiles.find((file) => {
+          if (!isImageLikeFileType(file.type)) return false;
+          const normalizedFileName = file.name.trim().toLowerCase();
+          const normalizedSource = String(item.sourceFileName ?? "").trim().toLowerCase();
+          const normalizedTitle = String(item.title ?? "").trim().toLowerCase();
+          return (
+            normalizedFileName === normalizedSource ||
+            normalizedFileName === normalizedTitle ||
+            normalizedTitle.includes(normalizedFileName.replace(/\.[^.]+$/, ""))
+          );
+        });
+
+        if (matchingImageFile) {
+          const extension = matchingImageFile.name.includes(".")
+            ? matchingImageFile.name.split(".").pop()
+            : "jpg";
+          const safeExtension = extension ? extension.toLowerCase() : "jpg";
+          const filePath = `${organizationId}/${activeStore.id}/${createdItem.id}/${Date.now()}-${createdItems.length}.${safeExtension}`;
+
+          const { error: uploadError } = await supabase.storage
+            .from("store-catalog-photos")
+            .upload(filePath, matchingImageFile, {
+              upsert: false,
+              contentType: matchingImageFile.type || undefined,
+            });
+
+          if (!uploadError) {
+            await supabase.from("store_catalog_item_photos").insert({
+              catalog_item_id: createdItem.id,
+              storage_path: filePath,
+              file_name: matchingImageFile.name,
+              file_size_bytes: matchingImageFile.size,
+              sort_order: 0,
+            });
+          }
+        }
+      }
+
+      const firstCategory = createdItems[0]?.category ?? "outros";
+      setSuccessMessage(
+        `${createdItems.length} item(ns) importado(s) e salvo(s) no catálogo com sucesso.`
+      );
+      navigateWithFallback(`/configuracoes/catalogo/${firstCategory}`);
+    } catch (error) {
+      console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Erro ao salvar os itens importados no catálogo."
+      );
+    } finally {
+      setSavingImportedCatalog(false);
     }
   }
 
@@ -1947,7 +2140,7 @@ function OnboardingContent() {
         ["service_region_outside_consultation", step1Form.service_region_outside_consultation],
       ],
       "Etapa 1 salva com sucesso.",
-      options?.nextStep === null ? undefined : options?.nextStep ?? 2
+      typeof options?.nextStep === "number" ? options.nextStep : options?.nextStep === null ? undefined : 2
     );
 
     if (!didSave) return false;
@@ -2013,7 +2206,7 @@ function OnboardingContent() {
         ["main_store_brand", step2Form.main_store_brand.trim()],
       ],
       "Etapa 2 salva com sucesso.",
-      options?.nextStep === null ? undefined : options?.nextStep ?? 3
+      typeof options?.nextStep === "number" ? options.nextStep : options?.nextStep === null ? undefined : 3
     );
 
     if (!didSave) return false;
@@ -2122,7 +2315,7 @@ function OnboardingContent() {
         ["sales_flow_final_confirmed", step3Form.sales_flow_final_confirmed],
       ],
       "Etapa 3 salva com sucesso.",
-      options?.nextStep === null ? undefined : options?.nextStep ?? 4
+      typeof options?.nextStep === "number" ? options.nextStep : options?.nextStep === null ? undefined : 4
     );
 
     if (!didSave) return false;
@@ -2353,7 +2546,12 @@ function OnboardingContent() {
           : "Etapa 4 salva com sucesso. A política inicial de desconto foi criada em Configurações."
       );
 
-      const nextStep = options?.nextStep === null ? undefined : options?.nextStep ?? 5;
+      const nextStep =
+        typeof options?.nextStep === "number"
+          ? options.nextStep
+          : options?.nextStep === null
+          ? undefined
+          : 5;
       if (typeof nextStep === "number") {
         ignoreNextStepScrollRef.current = false;
         setCurrentStep(nextStep);
@@ -3146,6 +3344,32 @@ function OnboardingContent() {
                             ))}
                           </div>
                         )}
+                      </div>
+                      <div className="rounded-xl border border-gray-200 bg-white p-3">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                          <div>
+                            <p className="text-sm font-semibold text-gray-900">
+                              Salvar itens importados no catálogo
+                            </p>
+                            <p className="mt-1 text-sm text-gray-500">
+                              Isso pega os itens únicos desta análise e grava no catálogo real da loja.
+                            </p>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleSaveImportedItemsToCatalog()}
+                            disabled={
+                              savingImportedCatalog ||
+                              intelligentImportLoading ||
+                              !intelligentImportResult?.ok ||
+                              safeDedupedPreview.filter((item) => !item.isDuplicate).length === 0
+                            }
+                            className="rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {savingImportedCatalog ? "Salvando no catálogo..." : "Salvar no catálogo"}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : null}
