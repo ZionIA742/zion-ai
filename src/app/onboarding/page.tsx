@@ -624,10 +624,23 @@ function decorateIntelligentImportResultWithImageFallback(
 
 
 
-type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
+type ImportedSaveTarget = "piscinas" | "acessorios" | "quimicos" | "outros";
 
-function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
+function normalizeImportedSaveTarget(value: string): ImportedSaveTarget {
   const normalized = String(value ?? "").trim().toLowerCase();
+
+  if (
+    normalized.includes("piscina") ||
+    normalized.includes("spa") ||
+    normalized.includes("vinil") ||
+    normalized.includes("fibra") ||
+    normalized.includes("alvenaria") ||
+    normalized.includes("pastilha") ||
+    normalized.includes("prainha") ||
+    normalized.includes("raia")
+  ) {
+    return "piscinas";
+  }
 
   if (
     normalized.includes("quim") ||
@@ -651,8 +664,7 @@ function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategor
     normalized.includes("led") ||
     normalized.includes("lumin") ||
     normalized.includes("mangueira") ||
-    normalized.includes("clorador") ||
-    normalized.includes("hidromassagem")
+    normalized.includes("clorador")
   ) {
     return "acessorios";
   }
@@ -660,9 +672,9 @@ function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategor
   return "outros";
 }
 
-function inferImportedCatalogCategory(
+function inferImportedSaveTarget(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-): ImportedCatalogCategory {
+): ImportedSaveTarget {
   const source = [
     item.type,
     item.title,
@@ -672,7 +684,15 @@ function inferImportedCatalogCategory(
     .map((value) => String(value ?? ""))
     .join(" ");
 
-  return normalizeImportedCatalogCategory(source);
+  return normalizeImportedSaveTarget(source);
+}
+
+function getCatalogCategoryFromTarget(
+  target: ImportedSaveTarget
+): "acessorios" | "quimicos" | "outros" {
+  if (target === "quimicos") return "quimicos";
+  if (target === "acessorios") return "acessorios";
+  return "outros";
 }
 
 function buildImportedCatalogName(
@@ -1477,7 +1497,7 @@ function OnboardingContent() {
         : intelligentImportResult.normalizedPreview;
 
     if (sourceItems.length === 0) {
-      setFormError("Não existem itens prontos para salvar no catálogo.");
+      setFormError("Não existem itens prontos para salvar.");
       return;
     }
 
@@ -1486,22 +1506,55 @@ function OnboardingContent() {
     setSuccessMessage(null);
 
     try {
-      const createdByCategory: Record<ImportedCatalogCategory, number> = {
+      const createdCounters: Record<ImportedSaveTarget, number> = {
+        piscinas: 0,
         acessorios: 0,
         quimicos: 0,
         outros: 0,
       };
 
-      const createdItemIdsByCategory: Record<ImportedCatalogCategory, string[]> = {
+      const createdCatalogItemIdsByCategory: Record<"acessorios" | "quimicos" | "outros", string[]> = {
         acessorios: [],
         quimicos: [],
         outros: [],
       };
 
+      const createdPoolIds: string[] = [];
+
       for (const item of sourceItems) {
-        const category = inferImportedCatalogCategory(item);
+        const target = inferImportedSaveTarget(item);
         const name = buildImportedCatalogName(item);
         const description = buildImportedCatalogDescription(item);
+
+        if (target === "piscinas") {
+          const { data: createdPool, error } = await supabase
+            .from("pools")
+            .insert({
+              name,
+              width_m: null,
+              length_m: null,
+              depth_m: null,
+              shape: null,
+              material: null,
+              max_capacity_l: null,
+              weight_kg: null,
+              price: null,
+              description,
+              is_active: true,
+              track_stock: false,
+              stock_quantity: null,
+            })
+            .select("id")
+            .single();
+
+          if (error) throw error;
+
+          createdCounters.piscinas += 1;
+          createdPoolIds.push(createdPool.id);
+          continue;
+        }
+
+        const category = getCatalogCategoryFromTarget(target);
 
         const { data: createdItem, error } = await supabase
           .from("store_catalog_items")
@@ -1530,72 +1583,100 @@ function OnboardingContent() {
 
         if (error) throw error;
 
-        createdByCategory[category] += 1;
-        createdItemIdsByCategory[category].push(createdItem.id);
+        createdCounters[target] += 1;
+        createdCatalogItemIdsByCategory[category].push(createdItem.id);
       }
 
       const selectedImageFiles = intelligentImportFiles.filter((file) =>
         String(file.type || "").startsWith("image/")
       );
 
-      const firstCreatedCategory: ImportedCatalogCategory =
-        createdByCategory.acessorios > 0
+      const firstPoolId = createdPoolIds[0];
+      const firstCatalogCategory =
+        createdCounters.acessorios > 0
           ? "acessorios"
-          : createdByCategory.quimicos > 0
+          : createdCounters.quimicos > 0
           ? "quimicos"
           : "outros";
+      const firstCatalogItemId = createdCatalogItemIdsByCategory[firstCatalogCategory][0];
 
-      const firstCreatedItemId = createdItemIdsByCategory[firstCreatedCategory][0];
-
-      if (firstCreatedItemId && selectedImageFiles.length > 0) {
+      if (selectedImageFiles.length > 0) {
         const imageFile = selectedImageFiles[0];
         const extension = imageFile.name.includes(".")
           ? imageFile.name.split(".").pop()
           : "jpg";
         const safeExtension = extension ? extension.toLowerCase() : "jpg";
-        const filePath = `${organizationId}/${activeStore.id}/${firstCreatedItemId}/${Date.now()}-0.${safeExtension}`;
 
-        const { error: uploadError } = await supabase.storage
-          .from("store-catalog-photos")
-          .upload(filePath, imageFile, {
-            upsert: false,
-            contentType: imageFile.type || undefined,
-          });
+        if (firstPoolId) {
+          const poolFilePath = `${organizationId}/${activeStore.id}/${firstPoolId}/${Date.now()}-0.${safeExtension}`;
 
-        if (!uploadError) {
-          await supabase.from("store_catalog_item_photos").insert({
-            catalog_item_id: firstCreatedItemId,
-            storage_path: filePath,
-            file_name: imageFile.name,
-            file_size_bytes: imageFile.size,
-            sort_order: 0,
-          });
+          const { error: uploadPoolError } = await supabase.storage
+            .from("pool-photos")
+            .upload(poolFilePath, imageFile, {
+              upsert: false,
+              contentType: imageFile.type || undefined,
+            });
+
+          if (!uploadPoolError) {
+            await supabase.from("pool_photos").insert({
+              pool_id: firstPoolId,
+              storage_path: poolFilePath,
+              file_name: imageFile.name,
+              file_size_bytes: imageFile.size,
+              sort_order: 0,
+            });
+          }
+        } else if (firstCatalogItemId) {
+          const catalogFilePath = `${organizationId}/${activeStore.id}/${firstCatalogItemId}/${Date.now()}-0.${safeExtension}`;
+
+          const { error: uploadCatalogError } = await supabase.storage
+            .from("store-catalog-photos")
+            .upload(catalogFilePath, imageFile, {
+              upsert: false,
+              contentType: imageFile.type || undefined,
+            });
+
+          if (!uploadCatalogError) {
+            await supabase.from("store_catalog_item_photos").insert({
+              catalog_item_id: firstCatalogItemId,
+              storage_path: catalogFilePath,
+              file_name: imageFile.name,
+              file_size_bytes: imageFile.size,
+              sort_order: 0,
+            });
+          }
         }
       }
 
       const totalCreated =
-        createdByCategory.acessorios +
-        createdByCategory.quimicos +
-        createdByCategory.outros;
+        createdCounters.piscinas +
+        createdCounters.acessorios +
+        createdCounters.quimicos +
+        createdCounters.outros;
 
       setSuccessMessage(
-        `Importação salva no catálogo com sucesso. ${totalCreated} item(ns) criado(s).`
+        `Importação salva com sucesso. ${totalCreated} item(ns) criado(s).`
       );
 
       clearIntelligentImportState();
-      navigateWithFallback(`/configuracoes/catalogo/${firstCreatedCategory}`);
+
+      if (createdCounters.piscinas > 0) {
+        navigateWithFallback("/configuracoes/piscinas");
+        return;
+      }
+
+      navigateWithFallback(`/configuracoes/catalogo/${firstCatalogCategory}`);
     } catch (error) {
       console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
       setFormError(
         error instanceof Error
           ? error.message
-          : "Erro ao salvar os itens importados no catálogo."
+          : "Erro ao salvar os itens importados."
       );
     } finally {
       setSavingImportedCatalog(false);
     }
   }
-
 
   async function upsertAnswers(
     payloads: Array<[string, unknown]>,
