@@ -2,7 +2,7 @@ import type { ExtractedFileContent } from "./onboarding-file-extractors";
 import {
   parseStructuredImportItems,
   type StructuredImportItem,
-} from "./onboarding-import-structured-parser";
+} from "../onboarding-import-structured-parser";
 
 export type NormalizedImportItemType =
   | "store_info"
