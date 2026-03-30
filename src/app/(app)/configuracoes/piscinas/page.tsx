@@ -171,6 +171,7 @@ export default function PiscinasPage() {
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
   const [editPoolForm, setEditPoolForm] = useState<EditPoolForm | null>(null);
   const [savingPoolId, setSavingPoolId] = useState<string | null>(null);
+  const [deletingPoolId, setDeletingPoolId] = useState<string | null>(null);
 
   const [selectedPoolFilesByPoolId, setSelectedPoolFilesByPoolId] = useState<Record<string, File[]>>(
     {}
@@ -538,6 +539,88 @@ export default function PiscinasPage() {
     await fetchData();
   }
 
+  async function handleDeletePool(poolId: string) {
+    if (!hasValidStoreContext) return;
+
+    const confirmed = window.confirm(
+      "Tem certeza que deseja excluir esta piscina? Essa ação também excluirá as fotos dela."
+    );
+
+    if (!confirmed) return;
+
+    setErrorText(null);
+    setSuccessText(null);
+    setDeletingPoolId(poolId);
+
+    try {
+      const relatedPhotos = photosByPoolId[poolId] || [];
+
+      if (relatedPhotos.length > 0) {
+        const storagePaths = relatedPhotos
+          .map((photo) => photo.storage_path)
+          .filter(Boolean);
+
+        if (storagePaths.length > 0) {
+          const { error: storageError } = await supabase.storage
+            .from(STORAGE_BUCKET)
+            .remove(storagePaths);
+
+          if (storageError) throw storageError;
+        }
+
+        const { error: photosDeleteError } = await supabase
+          .from("pool_photos")
+          .delete()
+          .eq("pool_id", poolId)
+          .eq("organization_id", ORGANIZATION_ID)
+          .eq("store_id", STORE_ID);
+
+        if (photosDeleteError) throw photosDeleteError;
+      }
+
+      const { error: poolDeleteError } = await supabase
+        .from("pools")
+        .delete()
+        .eq("id", poolId)
+        .eq("organization_id", ORGANIZATION_ID)
+        .eq("store_id", STORE_ID);
+
+      if (poolDeleteError) throw poolDeleteError;
+
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(
+          getPoolDraftKey({
+            organizationId: ORGANIZATION_ID,
+            storeId: STORE_ID,
+            poolId,
+          })
+        );
+
+        window.localStorage.removeItem(
+          getActiveEditingPoolKey({
+            organizationId: ORGANIZATION_ID,
+            storeId: STORE_ID,
+          })
+        );
+      }
+
+      setSelectedPoolFilesByPoolId((prev) => {
+        const next = { ...prev };
+        delete next[poolId];
+        return next;
+      });
+
+      setEditingPoolId(null);
+      setEditPoolForm(null);
+      setSuccessText("Piscina excluída com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao excluir piscina.");
+    } finally {
+      setDeletingPoolId(null);
+    }
+  }
+
   function handlePoolFilesChange(poolId: string, event: React.ChangeEvent<HTMLInputElement>) {
     const fileList = Array.from(event.target.files || []);
     const existingCount = (photosByPoolId[poolId] || []).length;
@@ -748,6 +831,7 @@ export default function PiscinasPage() {
               const availability = getPoolAvailability(pool);
               const isEditing = editingPoolId === pool.id && editPoolForm;
               const isSaving = savingPoolId === pool.id;
+              const isDeleting = deletingPoolId === pool.id;
               const isUploadingPhotos = uploadingPoolPhotosId === pool.id;
               const selectedNewFiles = selectedPoolFilesByPoolId[pool.id] || [];
 
@@ -796,7 +880,7 @@ export default function PiscinasPage() {
                             <button
                               type="button"
                               onClick={() => void handleSavePool(pool.id)}
-                              disabled={isSaving}
+                              disabled={isSaving || isDeleting}
                               className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {isSaving ? "Salvando..." : "Salvar"}
@@ -805,10 +889,19 @@ export default function PiscinasPage() {
                             <button
                               type="button"
                               onClick={cancelEditing}
-                              disabled={isSaving}
+                              disabled={isSaving || isDeleting}
                               className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Cancelar
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => void handleDeletePool(pool.id)}
+                              disabled={isSaving || isDeleting}
+                              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isDeleting ? "Excluindo..." : "Excluir"}
                             </button>
                           </>
                         )}

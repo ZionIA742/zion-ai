@@ -207,6 +207,7 @@ export default function CatalogoCategoriaPage() {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editItemForm, setEditItemForm] = useState<EditCatalogForm | null>(null);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
   const [selectedCatalogFilesByItemId, setSelectedCatalogFilesByItemId] = useState<
     Record<string, File[]>
@@ -604,6 +605,87 @@ export default function CatalogoCategoriaPage() {
     await fetchData();
   }
 
+  async function handleDeleteItem(itemId: string) {
+    if (!hasValidStoreContext) return;
+
+    const confirmed = window.confirm(
+      "Tem certeza que deseja excluir este item? Essa ação também excluirá as fotos dele."
+    );
+
+    if (!confirmed) return;
+
+    setErrorText(null);
+    setSuccessText(null);
+    setDeletingItemId(itemId);
+
+    try {
+      const relatedPhotos = photosByItemId[itemId] || [];
+
+      if (relatedPhotos.length > 0) {
+        const storagePaths = relatedPhotos
+          .map((photo) => photo.storage_path)
+          .filter(Boolean);
+
+        if (storagePaths.length > 0) {
+          const { error: storageError } = await supabase.storage
+            .from(STORAGE_BUCKET)
+            .remove(storagePaths);
+
+          if (storageError) throw storageError;
+        }
+
+        const { error: photosDeleteError } = await supabase
+          .from("store_catalog_item_photos")
+          .delete()
+          .eq("catalog_item_id", itemId);
+
+        if (photosDeleteError) throw photosDeleteError;
+      }
+
+      const { error: itemDeleteError } = await supabase
+        .from("store_catalog_items")
+        .delete()
+        .eq("id", itemId)
+        .eq("organization_id", ORGANIZATION_ID)
+        .eq("store_id", STORE_ID);
+
+      if (itemDeleteError) throw itemDeleteError;
+
+      if (typeof window !== "undefined") {
+        const key = getCatalogDraftKey({
+          organizationId: ORGANIZATION_ID,
+          storeId: STORE_ID,
+          category: categoria,
+          itemId,
+        });
+
+        window.localStorage.removeItem(key);
+        window.localStorage.removeItem(
+          getActiveEditingCatalogItemKey({
+            organizationId: ORGANIZATION_ID,
+            storeId: STORE_ID,
+            category: categoria,
+          })
+        );
+      }
+
+      setSelectedCatalogFilesByItemId((prev) => {
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
+
+      setEditingItemId(null);
+      setEditItemForm(null);
+      setSuccessText("Item excluído com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao excluir item.");
+    } finally {
+      setDeletingItemId(null);
+    }
+  }
+
   function handleCatalogFilesChange(itemId: string, event: React.ChangeEvent<HTMLInputElement>) {
     const fileList = Array.from(event.target.files || []);
     const existingCount = (photosByItemId[itemId] || []).length;
@@ -810,6 +892,7 @@ export default function CatalogoCategoriaPage() {
               const availability = getCatalogAvailability(item);
               const isEditing = editingItemId === item.id && editItemForm;
               const isSaving = savingItemId === item.id;
+              const isDeleting = deletingItemId === item.id;
               const isUploadingPhotos = uploadingCatalogPhotosId === item.id;
               const selectedNewFiles = selectedCatalogFilesByItemId[item.id] || [];
 
@@ -856,7 +939,7 @@ export default function CatalogoCategoriaPage() {
                             <button
                               type="button"
                               onClick={() => void handleSaveItem(item.id)}
-                              disabled={isSaving}
+                              disabled={isSaving || isDeleting}
                               className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {isSaving ? "Salvando..." : "Salvar"}
@@ -865,10 +948,19 @@ export default function CatalogoCategoriaPage() {
                             <button
                               type="button"
                               onClick={cancelEditing}
-                              disabled={isSaving}
+                              disabled={isSaving || isDeleting}
                               className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Cancelar
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteItem(item.id)}
+                              disabled={isSaving || isDeleting}
+                              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isDeleting ? "Excluindo..." : "Excluir"}
                             </button>
                           </>
                         )}

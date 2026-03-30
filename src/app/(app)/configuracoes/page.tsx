@@ -695,7 +695,7 @@ function SmallNavButton({
   return (
     <Link
       href={href}
-      className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
+      className="inline-flex items-center rounded-md bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
     >
       {children}
     </Link>
@@ -2227,31 +2227,23 @@ export default function ConfiguracoesPage() {
                 <div className="space-y-4">
                   <SectionCard
                     title="Acesso rápido"
-                    description="Cadastre aqui e abra rapidamente as duas áreas sem precisar voltar para a visão geral."
+                    description="Abra rapidamente as páginas reais de visualização e edição."
                   >
-                    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("piscinas")}
-                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-                      >
-                        Ir para cadastro de piscinas
-                      </button>
-
+                    <div className="flex flex-wrap gap-2">
                       <SmallNavButton href="/configuracoes/piscinas">
                         Ver piscinas cadastradas
                       </SmallNavButton>
 
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("catalogo")}
-                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-                      >
-                        Ir para cadastro de produtos
-                      </button>
+                      <SmallNavButton href="/configuracoes/catalogo/quimicos">
+                        Ver químicos cadastrados
+                      </SmallNavButton>
 
-                      <SmallNavButton href={currentCatalogCategoryHref}>
-                        Ver produtos e acessórios cadastrados
+                      <SmallNavButton href="/configuracoes/catalogo/acessorios">
+                        Ver acessórios cadastrados
+                      </SmallNavButton>
+
+                      <SmallNavButton href="/configuracoes/catalogo/outros">
+                        Ver outros cadastrados
                       </SmallNavButton>
                     </div>
                   </SectionCard>
@@ -2472,31 +2464,23 @@ export default function ConfiguracoesPage() {
                 <div className="space-y-4">
                   <SectionCard
                     title="Acesso rápido"
-                    description="Cadastre aqui e abra rapidamente as duas áreas sem precisar voltar para a visão geral."
+                    description="Abra rapidamente as páginas reais de visualização e edição."
                   >
-                    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("catalogo")}
-                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-                      >
-                        Ir para cadastro de produtos
-                      </button>
-
-                      <SmallNavButton href={currentCatalogCategoryHref}>
-                        Ver produtos e acessórios cadastrados
-                      </SmallNavButton>
-
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("piscinas")}
-                        className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-                      >
-                        Ir para cadastro de piscinas
-                      </button>
-
+                    <div className="flex flex-wrap gap-2">
                       <SmallNavButton href="/configuracoes/piscinas">
                         Ver piscinas cadastradas
+                      </SmallNavButton>
+
+                      <SmallNavButton href="/configuracoes/catalogo/quimicos">
+                        Ver químicos cadastrados
+                      </SmallNavButton>
+
+                      <SmallNavButton href="/configuracoes/catalogo/acessorios">
+                        Ver acessórios cadastrados
+                      </SmallNavButton>
+
+                      <SmallNavButton href="/configuracoes/catalogo/outros">
+                        Ver outros cadastrados
                       </SmallNavButton>
                     </div>
                   </SectionCard>
