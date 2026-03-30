@@ -411,8 +411,102 @@ function isImageLikeFileType(fileType: string) {
   return fileType.startsWith("image/");
 }
 
+function buildImageFallbackTitle(fileName: string) {
+  const normalized = String(fileName ?? "").trim();
+  if (!normalized) return "Imagem enviada pela loja";
+
+  const withoutExtension = normalized.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+  return withoutExtension || normalized;
+}
+
+async function createImagePreviewDataUrl(file: File, maxSide = 240) {
+  if (typeof window === "undefined" || !isImageLikeFileType(file.type)) return undefined;
+
+  try {
+    const objectUrl = URL.createObjectURL(file);
+
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Falha ao gerar miniatura da imagem."));
+      img.src = objectUrl;
+    });
+
+    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
+    canvas.height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
+
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Falha ao abrir contexto da miniatura.");
+
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const previewDataUrl = canvas.toDataURL("image/jpeg", 0.62);
+    URL.revokeObjectURL(objectUrl);
+    return previewDataUrl;
+  } catch (error) {
+    console.error("[OnboardingPage] createImagePreviewDataUrl error:", error);
+    return undefined;
+  }
+}
+
+async function buildSelectedFilePreviews(files: File[]) {
+  const previews = await Promise.all(
+    files.map(async (file) => ({
+      name: file.name,
+      type: file.type || "tipo não informado",
+      size: file.size,
+      lastModified: file.lastModified,
+      previewDataUrl: await createImagePreviewDataUrl(file),
+    }))
+  );
+
+  return previews;
+}
 
 
+
+
+
+function decorateIntelligentImportResultWithImageFallback(
+  result: IntelligentImportResponse,
+  selectedFiles: IntelligentImportSelectedFilePreview[]
+): IntelligentImportResponse {
+  if (!result.ok) return result;
+
+  const hasStructuredItems = result.normalizedPreview.length > 0 || result.dedupedPreview.length > 0;
+  if (hasStructuredItems) return result;
+
+  const visualSources = selectedFiles.filter((file) => isImageLikeFileType(file.type));
+  if (visualSources.length === 0) return result;
+
+  const fallbackItems = visualSources.slice(0, 12).map((file, index) => ({
+    type: "image_reference",
+    sourceFileName: file.name,
+    title: buildImageFallbackTitle(file.name),
+    rawText:
+      "Imagem enviada como referência visual da loja. Nesta prévia, a importação inteligente preservou o arquivo visual, mas ainda não transformou automaticamente a imagem em um item textual estruturado.",
+    confidence: 0.42,
+    metadata: {
+      origem: "imagem_enviada",
+      mime_type: file.type || "image/*",
+      modo: "fallback_visual_frontend",
+    },
+  }));
+
+  return {
+    ...result,
+    message: result.message || "Importação inteligente processada com apoio visual para imagens.",
+    normalizedPreview: fallbackItems,
+    dedupedPreview: fallbackItems.map((item, index) => ({
+      ...item,
+      dedupKey: `${item.sourceFileName}:${index}`,
+      duplicateOf: undefined,
+      isDuplicate: false,
+    })),
+  };
+}
 
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
 type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
@@ -1186,6 +1280,26 @@ function OnboardingContent() {
 
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       window.localStorage.removeItem(intelligentImportStorageKey);
+    }
+  }
+
+
+
+  function navigateWithFallback(path: string) {
+    savePageScroll();
+
+    try {
+      router.push(path);
+    } catch (error) {
+      console.error("[OnboardingPage] router push error:", error);
+    }
+
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        if (window.location.pathname !== path) {
+          window.location.href = path;
+        }
+      }, 120);
     }
   }
 
