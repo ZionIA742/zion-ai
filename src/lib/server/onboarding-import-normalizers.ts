@@ -34,9 +34,9 @@ function normalizeLoose(value: string) {
 function isGenericTitle(value: string) {
   const normalized = normalizeLoose(value);
   if (!normalized) return true;
+
   const blocked = [
     "catalogo de teste",
-    "catálogo de teste",
     "descricao detalhada",
     "descrição detalhada",
     "piscina",
@@ -45,66 +45,39 @@ function isGenericTitle(value: string) {
     "arquivo de teste",
     "nome do item",
   ];
-  return blocked.some((item) => normalized === normalizeLoose(item) || normalized.startsWith(normalizeLoose(item)));
+
+  return blocked.some((item) => normalized === item || normalized.startsWith(item));
 }
 
-function stripFieldFragments(text: string, item: StructuredImportItem) {
-  let result = String(text || "");
-
-  const fragments = [
-    item.title,
-    item.price ? `Preço ${item.price}` : "",
-    item.dimensions ? `Medidas ${item.dimensions}` : "",
-    item.depth ? `Profundidade ${item.depth}` : "",
-    item.capacity ? `Capacidade ${item.capacity}` : "",
-    item.material ? `Material ${item.material}` : "",
-    item.shape ? `Formato ${item.shape}` : "",
-    item.brand ? `Marca ${item.brand}` : "",
-    item.usage ? `Uso ${item.usage}` : "",
-    item.notes ? `Observação ${item.notes}` : "",
-  ].filter(Boolean);
-
-  for (const fragment of fragments) {
-    const normalized = fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    result = result.replace(new RegExp(normalized, "gi"), " ");
+function buildCleanNarrative(item: StructuredImportItem) {
+  const cleanedDescription = String(item.description || "").trim();
+  if (cleanedDescription) {
+    return cleanedDescription.slice(0, 4000);
   }
 
-  return result.replace(/\s+/g, " ").trim();
-}
+  const fragments = [
+    item.usage,
+    item.notes,
+    item.material ? `Material ${item.material}` : "",
+    item.color ? `Cor ${item.color}` : "",
+    item.brand ? `Marca ${item.brand}` : "",
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
 
-function buildCleanDescription(item: StructuredImportItem) {
-  const base = item.description || stripFieldFragments(item.rawBlock, item);
-  const cleaned = base
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => !/^pre[cç]o\b/i.test(line))
-    .filter((line) => !/^medidas?\b/i.test(line))
-    .filter((line) => !/^profundidade\b/i.test(line))
-    .filter((line) => !/^capacidade\b/i.test(line))
-    .filter((line) => !/^material\b/i.test(line))
-    .filter((line) => !/^formato\b/i.test(line))
-    .filter((line) => !/^marca\b/i.test(line))
-    .filter((line) => !/^observa[cç][aã]o\b/i.test(line))
-    .join("\n")
-    .trim();
-
-  return cleaned.slice(0, 4000);
+  return fragments.join(". ").slice(0, 4000);
 }
 
 function descriptionToRawText(item: StructuredImportItem) {
-  const cleanDescription = buildCleanDescription(item);
-
   const parts = [
     item.title,
-    cleanDescription,
+    buildCleanNarrative(item),
     item.price ? `Preço ${item.price}` : "",
     item.dimensions ? `Medidas ${item.dimensions}` : "",
     item.depth ? `Profundidade ${item.depth}` : "",
     item.capacity ? `Capacidade ${item.capacity}` : "",
     item.material ? `Material ${item.material}` : "",
     item.shape ? `Formato ${item.shape}` : "",
-    item.brand ? `Marca ${item.brand}` : "",
     item.usage ? `Uso ${item.usage}` : "",
     item.notes ? `Observação ${item.notes}` : "",
   ].filter(Boolean);
@@ -113,7 +86,7 @@ function descriptionToRawText(item: StructuredImportItem) {
 }
 
 function buildMetadata(item: StructuredImportItem) {
-  const cleanDescription = buildCleanDescription(item);
+  const cleanDescription = buildCleanNarrative(item);
 
   return {
     destination: item.destination,
@@ -144,7 +117,8 @@ function buildMetadata(item: StructuredImportItem) {
 function toNormalizedItem(item: StructuredImportItem): NormalizedImportItem | null {
   if (!item.title || isGenericTitle(item.title)) return null;
 
-  const type: NormalizedImportItemType = item.destination === "pool" ? "pool" : "catalog_item";
+  const type: NormalizedImportItemType =
+    item.destination === "pool" ? "pool" : "catalog_item";
   const rawText = descriptionToRawText(item);
   if (!rawText) return null;
 
