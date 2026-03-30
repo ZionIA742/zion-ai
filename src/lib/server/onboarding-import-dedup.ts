@@ -1,5 +1,4 @@
-
-import type { NormalizedImportItem } from "./onboarding-import-normalizers"
+import type { NormalizedImportItem } from "./onboarding-import-normalizers";
 
 export type DedupedImportItem = NormalizedImportItem & {
   dedupKey: string;
@@ -8,69 +7,57 @@ export type DedupedImportItem = NormalizedImportItem & {
 };
 
 function normalizeForKey(value: string) {
-  return value
+  return String(value || "")
+    .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function buildDedupKey(item: NormalizedImportItem) {
-  const destination = normalizeForKey(
-    item.metadata?.destination || item.metadata?.categoria || item.type
-  );
-  const title = normalizeForKey(item.title);
-  return `${destination}::${title}`;
+function completenessScore(item: NormalizedImportItem) {
+  const metadata = item.metadata || {};
+  return [
+    metadata.clean_description,
+    metadata.price,
+    metadata.dimensions,
+    metadata.depth,
+    metadata.capacity,
+    metadata.material,
+    metadata.brand,
+    metadata.notes,
+  ].filter(Boolean).length;
 }
 
-function scoreItem(item: NormalizedImportItem) {
-  let score = 0;
-  score += item.confidence * 100;
-  score += Math.min((item.rawText || "").length / 50, 20);
-
-  const metadataValues = Object.values(item.metadata || {}).filter(Boolean).length;
-  score += metadataValues * 3;
-
-  if (item.type === "pool") score += 10;
-  if (item.type === "catalog_item") score += 6;
-  if ((item.metadata?.price || "").trim()) score += 4;
-  if ((item.metadata?.dimensions || "").trim()) score += 4;
-  if ((item.metadata?.capacity || "").trim()) score += 4;
-  if ((item.metadata?.material || "").trim()) score += 2;
-
-  return score;
+function buildDedupKey(item: NormalizedImportItem) {
+  const type = normalizeForKey(item.type);
+  const title = normalizeForKey(item.title);
+  const category = normalizeForKey(item.metadata?.categoria || item.metadata?.destination || "");
+  return `${type}::${category}::${title}`;
 }
 
 export function dedupNormalizedItems(items: NormalizedImportItem[]): DedupedImportItem[] {
-  const bestByKey = new Map<string, { index: number; score: number; title: string }>();
-  const keys = items.map(buildDedupKey);
+  const chosenByKey = new Map<string, { title: string; score: number }>();
 
-  items.forEach((item, index) => {
-    const dedupKey = keys[index];
-    const score = scoreItem(item);
-    const existing = bestByKey.get(dedupKey);
-
+  for (const item of items) {
+    const dedupKey = buildDedupKey(item);
+    const score = completenessScore(item);
+    const existing = chosenByKey.get(dedupKey);
     if (!existing || score > existing.score) {
-      bestByKey.set(dedupKey, {
-        index,
-        score,
-        title: item.title,
-      });
+      chosenByKey.set(dedupKey, { title: item.title, score });
     }
-  });
+  }
 
-  return items.map((item, index) => {
-    const dedupKey = keys[index];
-    const best = bestByKey.get(dedupKey);
-    const isDuplicate = best ? best.index !== index : false;
-
+  return items.map((item) => {
+    const dedupKey = buildDedupKey(item);
+    const winner = chosenByKey.get(dedupKey);
+    const isWinner = winner?.title === item.title;
     return {
       ...item,
       dedupKey,
-      duplicateOf: isDuplicate ? best?.title : undefined,
-      isDuplicate,
+      duplicateOf: isWinner ? undefined : winner?.title,
+      isDuplicate: !isWinner,
     };
   });
 }

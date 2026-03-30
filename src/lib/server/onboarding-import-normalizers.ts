@@ -1,4 +1,3 @@
-
 import type { ExtractedFileContent } from "./onboarding-file-extractors";
 import {
   parseStructuredImportItems,
@@ -23,138 +22,103 @@ export type NormalizedImportItem = {
 };
 
 function normalizeLoose(value: string) {
-  return value
+  return String(value || "")
+    .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function isNoiseItemTitle(title: string) {
-  const normalized = normalizeLoose(title);
-  return [
+function isGenericTitle(value: string) {
+  const normalized = normalizeLoose(value);
+  if (!normalized) return true;
+  const blocked = [
+    "catalogo de teste",
     "descricao detalhada",
-    "campo valor",
+    "descrição detalhada",
+    "piscina",
+    "item importado",
+    "regra comercial",
+    "arquivo de teste",
     "nome do item",
-    "imagem ilustrativa",
-  ].includes(normalized);
+  ];
+  return blocked.some((item) => normalized === item || normalized.startsWith(item));
 }
 
-function looksLikeNoiseBlock(text: string) {
-  const normalized = normalizeLoose(text);
+function descriptionToRawText(item: StructuredImportItem) {
+  const parts = [
+    item.title,
+    item.description,
+    item.price ? `Preço ${item.price}` : "",
+    item.dimensions ? `Medidas ${item.dimensions}` : "",
+    item.depth ? `Profundidade ${item.depth}` : "",
+    item.capacity ? `Capacidade ${item.capacity}` : "",
+    item.material ? `Material ${item.material}` : "",
+    item.shape ? `Formato ${item.shape}` : "",
+    item.usage ? `Uso ${item.usage}` : "",
+    item.notes ? `Observação ${item.notes}` : "",
+  ].filter(Boolean);
 
-  return (
-    normalized.length < 16 ||
-    normalized.startsWith("catalogo de teste") ||
-    normalized.startsWith("arquivo de teste") ||
-    normalized.startsWith("objetivo validar") ||
-    normalized.startsWith("salvar em configuracoes") ||
-    normalized === "descricao detalhada" ||
-    normalized === "campo valor"
-  );
+  return parts.join("\n").trim().slice(0, 4000);
 }
 
-function cleanCatalogDescription(text: string) {
-  return text
-    .replace(/categoria esperada no sistema:[^\n]+/gi, "")
-    .replace(/arquivo de teste[^\n]*/gi, "")
-    .replace(/objetivo validar[^\n]*/gi, "")
-    .replace(/salvar em configura[cç][oõ]es[^\n]*/gi, "")
-    .replace(/imagem ilustrativa de alta qualidade para teste/gi, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
-function mapStructuredItem(item: StructuredImportItem): NormalizedImportItem | null {
-  if (isNoiseItemTitle(item.title) || looksLikeNoiseBlock(item.rawBlock)) {
-    return null;
-  }
-
-  if (item.destination === "pool") {
-    return {
-      type: "pool",
-      sourceFileName: item.sourceFileName,
-      title: item.title,
-      rawText: cleanCatalogDescription(item.description || item.rawBlock),
-      confidence: 0.95,
-      metadata: {
-        destination: item.destination,
-        dimensions: item.dimensions ?? "",
-        depth: item.depth ?? "",
-        capacity: item.capacity ?? "",
-        material: item.material ?? "",
-        shape: item.shape ?? "",
-        price: item.price ?? "",
-        brand: item.brand ?? "",
-        notes: item.notes ?? "",
-        usage: item.usage ?? "",
-      },
-    };
-  }
-
+function buildMetadata(item: StructuredImportItem) {
   return {
-    type: "catalog_item",
-    sourceFileName: item.sourceFileName,
-    title: item.title,
-    rawText: cleanCatalogDescription(item.description || item.rawBlock),
-    confidence: item.destination === "acessorios" ? 0.94 : item.destination === "quimicos" ? 0.95 : 0.9,
-    metadata: {
-      destination: item.destination,
-      categoria: item.destination,
-      categoryHint: item.categoryHint ?? "",
-      price: item.price ?? "",
-      dimensions: item.dimensions ?? "",
-      depth: item.depth ?? "",
-      capacity: item.capacity ?? "",
-      material: item.material ?? "",
-      shape: item.shape ?? "",
-      brand: item.brand ?? "",
-      sku: item.sku ?? "",
-      weight: item.weight ?? "",
-      dosage: item.dosage ?? "",
-      color: item.color ?? "",
-      usage: item.usage ?? "",
-      notes: item.notes ?? "",
-      clean_description: cleanCatalogDescription(item.description || item.rawBlock),
-    },
+    destination: item.destination,
+    categoria: item.destination === "pool" ? "piscinas" : item.destination,
+    categoryHint: item.categoryHint || "",
+    clean_description: item.description || "",
+    description: item.description || "",
+    title: item.title || "",
+    price: item.price || "",
+    dimensions: item.dimensions || "",
+    depth: item.depth || "",
+    capacity: item.capacity || "",
+    material: item.material || "",
+    shape: item.shape || "",
+    brand: item.brand || "",
+    sku: item.sku || "",
+    weight: item.weight || "",
+    dosage: item.dosage || "",
+    color: item.color || "",
+    usage: item.usage || "",
+    notes: item.notes || "",
+    item_index: String(item.itemIndex),
+    original_source_file_name: item.sourceFileName,
+    source_file_name: item.sourceFileName,
   };
 }
 
-function buildFallbackBlock(extracted: ExtractedFileContent): NormalizedImportItem[] {
-  const text = extracted.text.trim();
-  if (!text) return [];
+function toNormalizedItem(item: StructuredImportItem): NormalizedImportItem | null {
+  if (!item.title || isGenericTitle(item.title)) return null;
 
-  const firstLine = text.split("\n").map((line) => line.trim()).find(Boolean) || "";
-  if (!firstLine || looksLikeNoiseBlock(firstLine)) return [];
+  const type: NormalizedImportItemType = item.destination === "pool" ? "pool" : "catalog_item";
+  const rawText = descriptionToRawText(item);
+  if (!rawText) return null;
 
-  return [
-    {
-      type: "unknown",
-      sourceFileName: extracted.fileName,
-      title: firstLine.slice(0, 160),
-      rawText: cleanCatalogDescription(text).slice(0, 4000),
-      confidence: 0.35,
-      metadata: {
-        extension: extracted.extension,
-        mimeType: extracted.mimeType,
-      },
-    },
-  ];
+  const confidence = item.destination === "pool" ? 0.97 : 0.95;
+
+  return {
+    type,
+    sourceFileName: item.sourceFileName,
+    title: item.title,
+    rawText,
+    confidence,
+    metadata: buildMetadata(item),
+  };
 }
 
-export function normalizeExtractedFile(extracted: ExtractedFileContent): NormalizedImportItem[] {
-  const structured = parseStructuredImportItems(extracted)
-    .map(mapStructuredItem)
-    .filter((item): item is NormalizedImportItem => Boolean(item));
-
-  if (structured.length > 0) {
-    return structured;
+function normalizeExtractedFile(extracted: ExtractedFileContent): NormalizedImportItem[] {
+  const structuredItems = parseStructuredImportItems(extracted);
+  if (structuredItems.length === 0) {
+    return [];
   }
 
-  return buildFallbackBlock(extracted);
+  return structuredItems
+    .map(toNormalizedItem)
+    .filter((item): item is NormalizedImportItem => Boolean(item));
 }
 
 export function normalizeMultipleExtractedFiles(

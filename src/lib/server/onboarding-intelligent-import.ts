@@ -62,23 +62,81 @@ function buildPreview(text: string, max = 300) {
   return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
 }
 
-function normalizeKey(value: string) {
+function normalizeLoose(value: string) {
   return String(value || "")
-    .trim()
     .toLowerCase()
-    .replace(/\.[^.]+$/, "");
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function dedupeImagePreview(images: Array<{sourceFileName:string; fileName:string; source:ExtractedImageAsset['source']; mimeType:string; dataUrl:string;}>) {
-  const seen = new Set<string>();
-  const out = [] as typeof images;
-  for (const image of images) {
-    const key = `${normalizeKey(image.sourceFileName)}::${image.fileName}::${image.dataUrl.slice(0, 80)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(image);
+function buildFileItemAlias(fileName: string, index: number) {
+  return `${fileName} • item ${index + 1}`;
+}
+
+function attachPerItemAliases(
+  items: NormalizedImportItem[],
+  extractedImages: Array<{
+    sourceFileName: string;
+    fileName: string;
+    source: ExtractedImageAsset["source"];
+    mimeType: string;
+    dataUrl: string;
+  }>
+) {
+  const groupedItems = new Map<string, NormalizedImportItem[]>();
+  for (const item of items) {
+    const key = item.metadata?.original_source_file_name || item.sourceFileName;
+    const current = groupedItems.get(key) || [];
+    current.push(item);
+    groupedItems.set(key, current);
   }
-  return out;
+
+  const groupedImages = new Map<string, typeof extractedImages>();
+  for (const image of extractedImages) {
+    const key = image.sourceFileName;
+    const current = groupedImages.get(key) || [];
+    current.push(image);
+    groupedImages.set(key, current);
+  }
+
+  const normalizedPreview: NormalizedImportItem[] = [];
+  const imagePreview: typeof extractedImages = [];
+
+  for (const [sourceFileName, fileItems] of groupedItems.entries()) {
+    const fileImages = groupedImages.get(sourceFileName) || [];
+    if (fileItems.length <= 1) {
+      normalizedPreview.push(...fileItems);
+      imagePreview.push(...fileImages);
+      continue;
+    }
+
+    fileItems.forEach((item, index) => {
+      const alias = buildFileItemAlias(sourceFileName, index);
+      normalizedPreview.push({
+        ...item,
+        sourceFileName: alias,
+        metadata: {
+          ...item.metadata,
+          original_source_file_name: sourceFileName,
+          source_file_name: sourceFileName,
+          item_index: String(index),
+        },
+      });
+
+      const assignedImage = fileImages[index];
+      if (assignedImage) {
+        imagePreview.push({
+          ...assignedImage,
+          sourceFileName: alias,
+        });
+      }
+    });
+  }
+
+  return { normalizedPreview, imagePreview };
 }
 
 export async function runOnboardingIntelligentImport(
@@ -90,46 +148,67 @@ export async function runOnboardingIntelligentImport(
     const files = Array.isArray(params.files) ? params.files : [];
 
     if (!organizationId) {
-      return { ok: false, error: "MISSING_ORGANIZATION_ID", message: "organizationId é obrigatório." };
+      return {
+        ok: false,
+        error: "MISSING_ORGANIZATION_ID",
+        message: "organizationId é obrigatório.",
+      };
     }
+
     if (!storeId) {
-      return { ok: false, error: "MISSING_STORE_ID", message: "storeId é obrigatório." };
+      return {
+        ok: false,
+        error: "MISSING_STORE_ID",
+        message: "storeId é obrigatório.",
+      };
     }
+
     if (!files.length) {
-      return { ok: false, error: "NO_FILES", message: "Nenhum arquivo foi enviado para importação." };
+      return {
+        ok: false,
+        error: "NO_FILES",
+        message: "Nenhum arquivo foi enviado para importação.",
+      };
     }
 
     const extractedFiles = await Promise.all(
       files.map((file) =>
-        extractTextFromFile({ fileName: file.fileName, mimeType: file.mimeType, buffer: file.buffer })
+        extractTextFromFile({
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          buffer: file.buffer,
+        })
       )
     );
 
     const normalizedItems = normalizeMultipleExtractedFiles(extractedFiles);
-    const dedupedItems = dedupNormalizedItems(normalizedItems);
-    const duplicateItems = dedupedItems.filter((item) => item.isDuplicate).length;
-
-    const extractedImagePreview = dedupeImagePreview(
-      extractedFiles.flatMap((file) =>
-        (file.extractedImages ?? []).map((image) => ({
-          sourceFileName: file.fileName,
-          fileName: image.fileName,
-          source: image.source,
-          mimeType: image.mimeType,
-          dataUrl: image.dataUrl,
-        }))
-      )
+    const extractedImagePreviewRaw = extractedFiles.flatMap((file) =>
+      (file.extractedImages ?? []).map((image) => ({
+        sourceFileName: file.fileName,
+        fileName: image.fileName,
+        source: image.source,
+        mimeType: image.mimeType,
+        dataUrl: image.dataUrl,
+      }))
     );
+
+    const aliased = attachPerItemAliases(normalizedItems, extractedImagePreviewRaw);
+    const dedupedItems = dedupNormalizedItems(aliased.normalizedPreview).filter((item) => {
+      const normalizedTitle = normalizeLoose(item.title);
+      return normalizedTitle && !normalizedTitle.startsWith("descricao detalhada") && !normalizedTitle.startsWith("catalogo de teste");
+    });
+
+    const duplicateItems = dedupedItems.filter((item) => item.isDuplicate).length;
 
     return {
       ok: true,
       summary: {
         totalFiles: files.length,
         extractedFiles: extractedFiles.length,
-        normalizedItems: normalizedItems.length,
+        normalizedItems: aliased.normalizedPreview.length,
         dedupedItems: dedupedItems.length,
         duplicateItems,
-        extractedImages: extractedImagePreview.length,
+        extractedImages: aliased.imagePreview.length,
       },
       extractedPreview: extractedFiles.map((file) => ({
         fileName: file.fileName,
@@ -137,15 +216,17 @@ export async function runOnboardingIntelligentImport(
         extension: file.extension,
         textPreview: buildPreview(file.text),
       })),
-      extractedImagePreview,
-      normalizedPreview: normalizedItems,
+      extractedImagePreview: aliased.imagePreview,
+      normalizedPreview: aliased.normalizedPreview,
       dedupedPreview: dedupedItems,
     };
   } catch (error: any) {
     return {
       ok: false,
       error: "ONBOARDING_INTELLIGENT_IMPORT_FAILED",
-      message: error?.message || "Erro interno ao processar importação inteligente do onboarding.",
+      message:
+        error?.message ||
+        "Erro interno ao processar importação inteligente do onboarding.",
     };
   }
 }
