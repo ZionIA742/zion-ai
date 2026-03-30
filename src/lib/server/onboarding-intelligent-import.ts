@@ -59,9 +59,26 @@ export type IntelligentImportResult =
 function buildPreview(text: string, max = 300) {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return "";
-  return normalized.length > max
-    ? `${normalized.slice(0, max)}...`
-    : normalized;
+  return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
+}
+
+function normalizeKey(value: string) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.[^.]+$/, "");
+}
+
+function dedupeImagePreview(images: Array<{sourceFileName:string; fileName:string; source:ExtractedImageAsset['source']; mimeType:string; dataUrl:string;}>) {
+  const seen = new Set<string>();
+  const out = [] as typeof images;
+  for (const image of images) {
+    const key = `${normalizeKey(image.sourceFileName)}::${image.fileName}::${image.dataUrl.slice(0, 80)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(image);
+  }
+  return out;
 }
 
 export async function runOnboardingIntelligentImport(
@@ -73,36 +90,18 @@ export async function runOnboardingIntelligentImport(
     const files = Array.isArray(params.files) ? params.files : [];
 
     if (!organizationId) {
-      return {
-        ok: false,
-        error: "MISSING_ORGANIZATION_ID",
-        message: "organizationId é obrigatório.",
-      };
+      return { ok: false, error: "MISSING_ORGANIZATION_ID", message: "organizationId é obrigatório." };
     }
-
     if (!storeId) {
-      return {
-        ok: false,
-        error: "MISSING_STORE_ID",
-        message: "storeId é obrigatório.",
-      };
+      return { ok: false, error: "MISSING_STORE_ID", message: "storeId é obrigatório." };
     }
-
     if (!files.length) {
-      return {
-        ok: false,
-        error: "NO_FILES",
-        message: "Nenhum arquivo foi enviado para importação.",
-      };
+      return { ok: false, error: "NO_FILES", message: "Nenhum arquivo foi enviado para importação." };
     }
 
     const extractedFiles = await Promise.all(
       files.map((file) =>
-        extractTextFromFile({
-          fileName: file.fileName,
-          mimeType: file.mimeType,
-          buffer: file.buffer,
-        })
+        extractTextFromFile({ fileName: file.fileName, mimeType: file.mimeType, buffer: file.buffer })
       )
     );
 
@@ -110,14 +109,16 @@ export async function runOnboardingIntelligentImport(
     const dedupedItems = dedupNormalizedItems(normalizedItems);
     const duplicateItems = dedupedItems.filter((item) => item.isDuplicate).length;
 
-    const extractedImagePreview = extractedFiles.flatMap((file) =>
-      (file.extractedImages ?? []).map((image) => ({
-        sourceFileName: file.fileName,
-        fileName: image.fileName,
-        source: image.source,
-        mimeType: image.mimeType,
-        dataUrl: image.dataUrl,
-      }))
+    const extractedImagePreview = dedupeImagePreview(
+      extractedFiles.flatMap((file) =>
+        (file.extractedImages ?? []).map((image) => ({
+          sourceFileName: file.fileName,
+          fileName: image.fileName,
+          source: image.source,
+          mimeType: image.mimeType,
+          dataUrl: image.dataUrl,
+        }))
+      )
     );
 
     return {
@@ -144,9 +145,7 @@ export async function runOnboardingIntelligentImport(
     return {
       ok: false,
       error: "ONBOARDING_INTELLIGENT_IMPORT_FAILED",
-      message:
-        error?.message ||
-        "Erro interno ao processar importação inteligente do onboarding.",
+      message: error?.message || "Erro interno ao processar importação inteligente do onboarding.",
     };
   }
 }

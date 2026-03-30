@@ -1,9 +1,8 @@
-
 "use client";
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
@@ -164,24 +163,18 @@ function buildEditForm(item: CatalogItemRow): EditCatalogForm {
   };
 }
 
-function DetailChip({ value }: { value: string }) {
+function CompactChip({ value }: { value: string }) {
   return (
-    <span className="inline-flex rounded-full bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10">
+    <span className="inline-flex rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-900 ring-1 ring-black/10">
       {value}
     </span>
   );
 }
 
-function SectionCard({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function CompactCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-[24px] bg-white p-5 ring-1 ring-black/5">
-      <h3 className="mb-3 text-xl font-bold text-gray-900">{title}</h3>
+    <div className="rounded-2xl bg-gray-50 p-3 ring-1 ring-black/5">
+      <h3 className="mb-2 text-sm font-bold text-gray-900">{title}</h3>
       {children}
     </div>
   );
@@ -204,6 +197,7 @@ export default function CatalogCategoryPage() {
   const [deletingPhotoId, setDeletingPhotoId] = useState<string | null>(null);
   const [selectedCatalogFilesByItemId, setSelectedCatalogFilesByItemId] = useState<Record<string, File[]>>({});
   const [uploadingPhotosItemId, setUploadingPhotosItemId] = useState<string | null>(null);
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
 
@@ -340,17 +334,20 @@ export default function CatalogCategoryPage() {
         .from("store_catalog_item_photos")
         .delete()
         .eq("catalog_item_id", itemId);
-
       if (photosError) throw photosError;
 
-      const { error: itemError } = await supabase
+      const { data: deletedRows, error: itemError } = await supabase
         .from("store_catalog_items")
         .delete()
         .eq("id", itemId)
         .eq("organization_id", organizationId)
-        .eq("store_id", activeStoreId);
+        .eq("store_id", activeStoreId)
+        .select("id");
 
       if (itemError) throw itemError;
+      if (!deletedRows || deletedRows.length === 0) {
+        throw new Error("O item não foi excluído de verdade. Atualize a página e tente novamente.");
+      }
 
       setItems((prev) => prev.filter((item) => item.id !== itemId));
       setPhotosByItemId((prev) => {
@@ -359,7 +356,12 @@ export default function CatalogCategoryPage() {
         return next;
       });
       setEditingItemId((prev) => (prev === itemId ? null : prev));
-      setEditForm((prev) => (editingItemId === itemId ? null : prev));
+      setEditForm(null);
+      setSelectedCatalogFilesByItemId((prev) => {
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
       setSuccessText("Item excluído com sucesso.");
       await fetchData();
     } catch (error: any) {
@@ -410,6 +412,7 @@ export default function CatalogCategoryPage() {
       const { error: uploadError } = await supabase.storage.from(STORAGE_BUCKET).upload(storagePath, file, {
         cacheControl: "3600",
         upsert: false,
+        contentType: file.type || undefined,
       });
       if (uploadError) throw uploadError;
 
@@ -439,6 +442,7 @@ export default function CatalogCategoryPage() {
     try {
       await uploadCatalogFiles(itemId, files);
       setSelectedCatalogFilesByItemId((prev) => ({ ...prev, [itemId]: [] }));
+      if (fileInputRefs.current[itemId]) fileInputRefs.current[itemId]!.value = "";
       setSuccessText("Fotos adicionadas com sucesso.");
       await fetchData();
     } catch (error: any) {
@@ -480,37 +484,30 @@ export default function CatalogCategoryPage() {
   const heading = useMemo(() => categoryLabel(category), [category]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-[42px] font-bold tracking-tight text-gray-950">{heading}</h1>
-          <p className="mt-2 max-w-2xl text-lg leading-8 text-gray-700">
-            Visualize e edite todos os itens cadastrados desta categoria.
-          </p>
+          <h1 className="text-2xl font-bold tracking-tight text-gray-950">{heading}</h1>
+          <p className="mt-1 max-w-2xl text-sm text-gray-700">Visualize e edite todos os itens cadastrados desta categoria.</p>
         </div>
 
         <Link
           href="/configuracoes"
-          className="inline-flex items-center justify-center rounded-[20px] bg-white px-6 py-4 text-lg font-semibold text-gray-900 ring-1 ring-black/10"
+          className="inline-flex items-center justify-center rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10"
         >
           Voltar para configurações
         </Link>
       </div>
 
-      {errorText ? (
-        <div className="rounded-[24px] bg-red-50 p-5 text-red-800 ring-1 ring-red-200">{errorText}</div>
-      ) : null}
-
-      {successText ? (
-        <div className="rounded-[24px] bg-emerald-50 p-5 text-emerald-800 ring-1 ring-emerald-200">{successText}</div>
-      ) : null}
+      {errorText ? <div className="rounded-xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-200">{errorText}</div> : null}
+      {successText ? <div className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-200">{successText}</div> : null}
 
       {loading ? (
-        <div className="rounded-[24px] bg-white p-6 ring-1 ring-black/5">Carregando itens...</div>
+        <div className="rounded-xl bg-white p-4 ring-1 ring-black/5">Carregando itens...</div>
       ) : items.length === 0 ? (
-        <div className="rounded-[24px] bg-white p-6 ring-1 ring-black/5">Nenhum item cadastrado nesta categoria.</div>
+        <div className="rounded-xl bg-white p-4 ring-1 ring-black/5">Nenhum item cadastrado nesta categoria.</div>
       ) : (
-        <div className="space-y-8">
+        <div className="space-y-4">
           {items.map((item) => {
             const itemPhotos = photosByItemId[item.id] || [];
             const isEditing = editingItemId === item.id && editForm;
@@ -534,24 +531,24 @@ export default function CatalogCategoryPage() {
             ].filter(([, value]) => Boolean(value));
 
             return (
-              <section key={item.id} className="overflow-hidden rounded-[28px] bg-white ring-1 ring-black/5">
-                <div className="border-b border-black/5 p-6">
-                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+              <section key={item.id} className="overflow-hidden rounded-2xl bg-white ring-1 ring-black/5">
+                <div className="border-b border-black/5 p-4">
+                  <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                     <div className="max-w-2xl">
-                      <h2 className="text-[30px] font-bold leading-tight text-gray-950">{item.name}</h2>
-                      <p className="mt-2 text-xl text-gray-600">{item.sku ? `SKU ${item.sku}` : "Sem código do produto"}</p>
+                      <h2 className="text-xl font-bold leading-tight text-gray-950">{item.name}</h2>
+                      <p className="mt-1 text-sm text-gray-600">{item.sku ? `SKU ${item.sku}` : "Sem código do produto"}</p>
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      <DetailChip value={formatMoney(item.price_cents)} />
-                      <DetailChip value={item.is_active ? "Ativo" : "Inativo"} />
-                      <DetailChip value={item.track_stock ? "Controla estoque" : "Sem controle de estoque"} />
-                      <DetailChip value={item.is_active ? "Disponível para oferta" : "Indisponível"} />
+                      <CompactChip value={formatMoney(item.price_cents)} />
+                      <CompactChip value={item.is_active ? "Ativo" : "Inativo"} />
+                      <CompactChip value={item.track_stock ? "Controla estoque" : "Sem controle de estoque"} />
+                      <CompactChip value={item.is_active ? "Disponível para oferta" : "Indisponível"} />
                       {!isEditing ? (
                         <button
                           type="button"
                           onClick={() => startEditing(item)}
-                          className="inline-flex rounded-full bg-white px-6 py-3 text-lg font-semibold text-gray-900 ring-1 ring-black/10"
+                          className="inline-flex rounded-full bg-white px-4 py-1.5 text-sm font-semibold text-gray-900 ring-1 ring-black/10"
                         >
                           Editar
                         </button>
@@ -560,197 +557,101 @@ export default function CatalogCategoryPage() {
                   </div>
                 </div>
 
-                <div className="space-y-6 p-6">
+                <div className="space-y-4 p-4">
                   {isEditing && editForm ? (
-                    <div className="space-y-4 rounded-[24px] bg-gray-50 p-5 ring-1 ring-black/5">
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <input
-                          value={editForm.name}
-                          onChange={(event) => setEditForm((prev) => (prev ? { ...prev, name: event.target.value } : prev))}
-                          className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-base outline-none focus:border-black"
-                          placeholder="Nome do item"
-                        />
-                        <input
-                          value={editForm.sku}
-                          onChange={(event) => setEditForm((prev) => (prev ? { ...prev, sku: event.target.value } : prev))}
-                          className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-base outline-none focus:border-black"
-                          placeholder="SKU"
-                        />
-                        <input
-                          value={editForm.price}
-                          onChange={(event) => setEditForm((prev) => (prev ? { ...prev, price: event.target.value } : prev))}
-                          className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-base outline-none focus:border-black"
-                          placeholder="Preço"
-                        />
-                        <input
-                          value={editForm.stock_quantity}
-                          onChange={(event) => setEditForm((prev) => (prev ? { ...prev, stock_quantity: event.target.value } : prev))}
-                          className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-base outline-none focus:border-black"
-                          placeholder="Quantidade em estoque"
-                        />
+                    <div className="space-y-3 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <input value={editForm.name} onChange={(event) => setEditForm((prev) => (prev ? { ...prev, name: event.target.value } : prev))} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black" placeholder="Nome do item" />
+                        <input value={editForm.sku} onChange={(event) => setEditForm((prev) => (prev ? { ...prev, sku: event.target.value } : prev))} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black" placeholder="SKU" />
+                        <input value={editForm.price} onChange={(event) => setEditForm((prev) => (prev ? { ...prev, price: event.target.value } : prev))} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black" placeholder="Preço" />
+                        <input value={editForm.stock_quantity} onChange={(event) => setEditForm((prev) => (prev ? { ...prev, stock_quantity: event.target.value } : prev))} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black" placeholder="Quantidade em estoque" />
                       </div>
 
-                      <textarea
-                        value={editForm.description}
-                        onChange={(event) => setEditForm((prev) => (prev ? { ...prev, description: event.target.value } : prev))}
-                        className="min-h-[160px] w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-base outline-none focus:border-black"
-                        placeholder="Descrição"
-                      />
+                      <textarea value={editForm.description} onChange={(event) => setEditForm((prev) => (prev ? { ...prev, description: event.target.value } : prev))} className="min-h-[110px] w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black" placeholder="Descrição" />
 
                       <div className="flex flex-wrap gap-4">
-                        <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-                          <input
-                            type="checkbox"
-                            checked={editForm.is_active}
-                            onChange={(event) => setEditForm((prev) => (prev ? { ...prev, is_active: event.target.checked } : prev))}
-                          />
-                          Item ativo
+                        <label className="inline-flex items-center gap-2 text-xs text-gray-700">
+                          <input type="checkbox" checked={editForm.is_active} onChange={(event) => setEditForm((prev) => (prev ? { ...prev, is_active: event.target.checked } : prev))} /> Item ativo
                         </label>
-                        <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-                          <input
-                            type="checkbox"
-                            checked={editForm.track_stock}
-                            onChange={(event) => setEditForm((prev) => (prev ? { ...prev, track_stock: event.target.checked } : prev))}
-                          />
-                          Controlar estoque
+                        <label className="inline-flex items-center gap-2 text-xs text-gray-700">
+                          <input type="checkbox" checked={editForm.track_stock} onChange={(event) => setEditForm((prev) => (prev ? { ...prev, track_stock: event.target.checked } : prev))} /> Controlar estoque
                         </label>
                       </div>
 
-                      <div className="flex flex-wrap gap-3">
-                        <button
-                          type="button"
-                          onClick={() => void handleSaveItem(item.id)}
-                          disabled={isSaving || isDeleting}
-                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                        >
-                          {isSaving ? "Salvando..." : "Salvar"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={cancelEditing}
-                          disabled={isSaving || isDeleting}
-                          className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 disabled:opacity-50"
-                        >
-                          Cancelar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteItem(item.id)}
-                          disabled={isSaving || isDeleting}
-                          className="rounded-xl bg-red-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                        >
-                          {isDeleting ? "Excluindo..." : "Excluir"}
-                        </button>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => void handleSaveItem(item.id)} disabled={isSaving || isDeleting} className="rounded-xl bg-black px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">{isSaving ? "Salvando..." : "Salvar"}</button>
+                        <button type="button" onClick={cancelEditing} disabled={isSaving || isDeleting} className="rounded-xl bg-white px-4 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 disabled:opacity-50">Cancelar</button>
+                        <button type="button" onClick={() => void handleDeleteItem(item.id)} disabled={isSaving || isDeleting} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">{isDeleting ? "Excluindo..." : "Excluir"}</button>
                       </div>
                     </div>
                   ) : null}
 
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <SectionCard title="Arquivo de origem">
-                      <div className="text-lg text-gray-800">{metadata.source_file_name || "Não informado"}</div>
-                    </SectionCard>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <CompactCard title="Arquivo de origem">
+                      <div className="text-sm text-gray-800">{metadata.source_file_name || "Não informado"}</div>
+                    </CompactCard>
 
-                    {extraFields.length > 0 ? (
-                      <SectionCard title="Campos identificados">
-                        <div className="space-y-2 text-base text-gray-800">
-                          {extraFields.slice(0, 4).map(([label, value]) => (
-                            <div key={label}>
-                              <span className="font-semibold">{label}:</span> {value}
-                            </div>
-                          ))}
-                        </div>
-                      </SectionCard>
-                    ) : (
-                      <SectionCard title="Informações do item">
-                        <div className="space-y-2 text-base text-gray-800">
-                          <div><span className="font-semibold">Categoria:</span> {categoryLabel(category)}</div>
-                          <div><span className="font-semibold">Fotos cadastradas:</span> {itemPhotos.length}</div>
-                          <div><span className="font-semibold">Moeda:</span> {item.currency || "BRL"}</div>
-                        </div>
-                      </SectionCard>
-                    )}
+                    <CompactCard title={extraFields.length > 0 ? "Campos identificados" : "Informações do item"}>
+                      <div className="space-y-1.5 text-sm text-gray-800">
+                        {(extraFields.length > 0 ? extraFields.slice(0, 4) : [["Categoria", categoryLabel(category)], ["Fotos cadastradas", String(itemPhotos.length)], ["Moeda", item.currency || "BRL"]]).map(([label, value]) => (
+                          <div key={label}><span className="font-semibold">{label}:</span> {value}</div>
+                        ))}
+                      </div>
+                    </CompactCard>
                   </div>
 
                   {description ? (
-                    <SectionCard title="Descrição limpa">
-                      <div className="whitespace-pre-wrap text-lg leading-8 text-gray-800">{description}</div>
-                    </SectionCard>
+                    <CompactCard title="Descrição limpa">
+                      <div className="whitespace-pre-wrap text-sm leading-6 text-gray-800">{description}</div>
+                    </CompactCard>
                   ) : null}
 
                   {extraFields.length > 4 ? (
-                    <SectionCard title="Informações adicionais">
-                      <div className="space-y-2 text-base text-gray-800">
+                    <CompactCard title="Informações adicionais">
+                      <div className="space-y-1.5 text-sm text-gray-800">
                         {extraFields.slice(4).map(([label, value]) => (
-                          <div key={label}>
-                            <span className="font-semibold">{label}:</span> {value}
-                          </div>
+                          <div key={label}><span className="font-semibold">{label}:</span> {value}</div>
                         ))}
                       </div>
-                    </SectionCard>
+                    </CompactCard>
                   ) : null}
 
-                  <SectionCard title="Fotos do item">
+                  <CompactCard title="Fotos do item">
                     {isEditing ? (
-                      <div className="space-y-4">
+                      <div className="space-y-3">
                         <div>
                           <input
+                            ref={(node) => { fileInputRefs.current[item.id] = node; }}
                             type="file"
                             multiple
                             accept="image/*"
                             onChange={(event) => handleCatalogFilesChange(item.id, event)}
                             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
                           />
-                          <p className="mt-1 text-[10px] text-gray-500">
-                            Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.
-                          </p>
+                          <p className="mt-1 text-[10px] text-gray-500">Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.</p>
                           {selectedCatalogFiles.length > 0 ? (
                             <div className="mt-2 space-y-2">
                               {selectedCatalogFiles.map((file) => (
-                                <div
-                                  key={`${file.name}-${file.size}`}
-                                  className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-700 ring-1 ring-black/5"
-                                >
-                                  {file.name} — {formatFileSize(file.size)}
-                                </div>
+                                <div key={`${file.name}-${file.size}`} className="rounded-lg bg-white px-3 py-2 text-xs text-gray-700 ring-1 ring-black/5">{file.name} — {formatFileSize(file.size)}</div>
                               ))}
                             </div>
                           ) : null}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => void handleUploadNewCatalogPhotos(item.id)}
-                          disabled={uploadingPhotosItemId === item.id}
-                          className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                        >
-                          {uploadingPhotosItemId === item.id ? "Enviando fotos..." : "Adicionar fotos"}
-                        </button>
+                        <button type="button" onClick={() => void handleUploadNewCatalogPhotos(item.id)} disabled={uploadingPhotosItemId === item.id} className="rounded-xl bg-black px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">{uploadingPhotosItemId === item.id ? "Enviando fotos..." : "Adicionar fotos"}</button>
 
                         {itemPhotos.length === 0 ? (
-                          <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
-                            Nenhuma foto cadastrada para este item.
-                          </div>
+                          <div className="rounded-xl bg-white p-4 text-sm text-gray-600 ring-1 ring-black/5">Nenhuma foto cadastrada para este item.</div>
                         ) : (
-                          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
                             {itemPhotos.map((photo) => {
                               const isDeletingPhoto = deletingPhotoId === photo.id;
                               return (
-                                <div key={photo.id} className="overflow-hidden rounded-xl bg-gray-50 ring-1 ring-black/5">
-                                  <img
-                                    src={getPublicImageUrl(photo.storage_path)}
-                                    alt={photo.file_name || item.name}
-                                    className="block h-28 w-full object-cover"
-                                  />
-                                  <div className="space-y-2 p-3">
-                                    <div className="truncate text-xs text-gray-600">{photo.file_name || "Foto"}</div>
-                                    <button
-                                      type="button"
-                                      onClick={() => void handleDeleteCatalogPhoto(photo)}
-                                      disabled={isDeletingPhoto}
-                                      className="w-full rounded-lg bg-white px-3 py-2 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:opacity-50"
-                                    >
-                                      {isDeletingPhoto ? "Excluindo..." : "Excluir foto"}
-                                    </button>
+                                <div key={photo.id} className="overflow-hidden rounded-xl bg-white ring-1 ring-black/5">
+                                  <img src={getPublicImageUrl(photo.storage_path)} alt={photo.file_name || item.name} className="block h-24 w-full object-cover" />
+                                  <div className="space-y-2 p-2">
+                                    <div className="truncate text-[11px] text-gray-600">{photo.file_name || "Foto"}</div>
+                                    <button type="button" onClick={() => void handleDeleteCatalogPhoto(photo)} disabled={isDeletingPhoto} className="w-full rounded-lg bg-white px-3 py-1.5 text-[11px] font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:opacity-50">{isDeletingPhoto ? "Excluindo..." : "Excluir foto"}</button>
                                   </div>
                                 </div>
                               );
@@ -759,23 +660,17 @@ export default function CatalogCategoryPage() {
                         )}
                       </div>
                     ) : itemPhotos.length === 0 ? (
-                      <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
-                        Nenhuma foto cadastrada para este item.
-                      </div>
+                      <div className="rounded-xl bg-white p-4 text-sm text-gray-600 ring-1 ring-black/5">Nenhuma foto cadastrada para este item.</div>
                     ) : (
                       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
                         {itemPhotos.map((photo) => (
-                          <div key={photo.id} className="overflow-hidden rounded-xl bg-gray-50 ring-1 ring-black/5">
-                            <img
-                              src={getPublicImageUrl(photo.storage_path)}
-                              alt={photo.file_name || item.name}
-                              className="block h-20 w-full object-cover"
-                            />
+                          <div key={photo.id} className="overflow-hidden rounded-xl bg-white ring-1 ring-black/5">
+                            <img src={getPublicImageUrl(photo.storage_path)} alt={photo.file_name || item.name} className="block h-16 w-full object-cover" />
                           </div>
                         ))}
                       </div>
                     )}
-                  </SectionCard>
+                  </CompactCard>
                 </div>
               </section>
             );
