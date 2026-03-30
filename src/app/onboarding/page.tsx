@@ -560,12 +560,16 @@ function inferImportedDestination(
     .map((value) => String(value ?? "").toLowerCase())
     .join(" ");
 
+  const typeValue = String(item.type ?? "").toLowerCase();
+
   const chemicalScore =
     (source.includes("quim") ? 3 : 0) +
     (source.includes("cloro") ? 3 : 0) +
     (source.includes("algicida") ? 3 : 0) +
     (source.includes("clarificante") ? 3 : 0) +
     (source.includes("sulfato") ? 3 : 0) +
+    (source.includes("elevador de ph") ? 3 : 0) +
+    (source.includes("redutor de ph") ? 3 : 0) +
     (source.includes("ph") ? 2 : 0);
 
   const accessoryScore =
@@ -576,10 +580,17 @@ function inferImportedDestination(
     (source.includes("dispositivo") ? 3 : 0) +
     (source.includes("led") ? 2 : 0) +
     (source.includes("mangueira") ? 2 : 0) +
-    (source.includes("clorador") ? 2 : 0);
+    (source.includes("clorador") ? 2 : 0) +
+    (source.includes("nicho") ? 2 : 0) +
+    (source.includes("retorno") ? 2 : 0);
 
   if (chemicalScore >= 3 && chemicalScore >= accessoryScore) return "quimicos";
   if (accessoryScore >= 3 && accessoryScore > chemicalScore) return "acessorios";
+
+  const typeSuggestsPool =
+    typeValue === "pool" ||
+    typeValue.includes("pool") ||
+    typeValue.includes("piscina");
 
   const hasPoolKeyword =
     source.includes("piscina") ||
@@ -587,14 +598,16 @@ function inferImportedDestination(
     source.includes("vinil") ||
     source.includes("fibra") ||
     source.includes("alvenaria") ||
-    source.includes("pastilha");
+    source.includes("pastilha") ||
+    source.includes("prainha");
 
   const hasPoolMeasure =
-    /\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ||
-    /\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ||
-    /\b\d+[\.,]?\d*\s*l\b/i.test(source);
+    /(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i.test(source) ||
+    /(\d+[\.,]?\d*)\s*m\s*di[âa]m/i.test(source) ||
+    /(capacidade\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*))/i.test(source) ||
+    /(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*l\b/i.test(source);
 
-  if (hasPoolKeyword && hasPoolMeasure) return "pool";
+  if (typeSuggestsPool || (hasPoolKeyword && hasPoolMeasure)) return "pool";
 
   const category = normalizeImportedCatalogCategory(source);
   return category;
@@ -639,6 +652,7 @@ function extractImportedPoolMetrics(
   let length: number | null = null;
   let depth: number | null = null;
   let capacity: number | null = null;
+  let price: number | null = null;
 
   const rectMatch = source.match(/(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i);
   if (rectMatch) {
@@ -666,6 +680,13 @@ function extractImportedPoolMetrics(
     capacity = parseImportedDecimal(capacityMatch[1]);
   }
 
+  const priceMatch =
+    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)/i) ||
+    source.match(/pre[cç]o\s*(?:estimado)?\s*(?:de)?\s*r\$\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)/i);
+  if (priceMatch) {
+    price = parseImportedDecimal(priceMatch[1]);
+  }
+
   let material = "fibra";
   if (lowered.includes("vinil")) material = "vinil";
   else if (lowered.includes("alvenaria")) material = "alvenaria";
@@ -690,6 +711,7 @@ function extractImportedPoolMetrics(
     max_capacity_l: capacity,
     material,
     shape,
+    price,
   };
 }
 
@@ -1554,6 +1576,18 @@ function OnboardingContent() {
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
 
+      const getRelatedExtractedImages = (itemSourceKey: string) => {
+        const direct = extractedImageBuckets.get(itemSourceKey) ?? [];
+        if (direct.length > 0) return direct;
+
+        if (sourceItems.length === 1 && extractedImageBuckets.size === 1) {
+          const onlyBucket = Array.from(extractedImageBuckets.values())[0] ?? [];
+          return onlyBucket;
+        }
+
+        return [];
+      };
+
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
 
@@ -1566,16 +1600,32 @@ function OnboardingContent() {
       for (const item of sourceItems) {
         const destination = inferImportedDestination(item);
         const itemSourceKey = String(item.sourceFileName || "").trim().toLowerCase();
-        const relatedExtractedImages = extractedImageBuckets.get(itemSourceKey) ?? [];
+        const relatedExtractedImages = getRelatedExtractedImages(itemSourceKey);
 
         if (destination === "pool") {
           const metrics = extractImportedPoolMetrics(item);
 
           if (canPersistAsPool(metrics)) {
+            const poolName = buildImportedCatalogName(item).replace(/^Piscina:\s*/i, "").trim();
+            const poolDescriptionParts = [
+              buildImportedCatalogDescription(item),
+              metrics.width_m != null && metrics.length_m != null
+                ? `Medidas: ${String(metrics.width_m).replace(".", ",")} x ${String(metrics.length_m).replace(".", ",")} m`
+                : "",
+              metrics.depth_m != null
+                ? `Profundidade: ${String(metrics.depth_m).replace(".", ",")} m`
+                : "",
+              metrics.max_capacity_l != null
+                ? `Capacidade: ${Number(metrics.max_capacity_l).toLocaleString("pt-BR")} L`
+                : "",
+              metrics.material ? `Material: ${metrics.material}` : "",
+              metrics.shape ? `Formato: ${metrics.shape}` : "",
+            ].filter(Boolean);
+
             const { data: createdPool, error } = await supabase
               .from("pools")
               .insert({
-                name: buildImportedCatalogName(item),
+                name: poolName || buildImportedCatalogName(item),
                 width_m: metrics.width_m,
                 length_m: metrics.length_m,
                 depth_m: metrics.depth_m,
@@ -1583,8 +1633,8 @@ function OnboardingContent() {
                 material: metrics.material,
                 max_capacity_l: metrics.max_capacity_l,
                 weight_kg: null,
-                price: null,
-                description: buildImportedCatalogDescription(item),
+                price: metrics.price,
+                description: poolDescriptionParts.join(" | "),
                 is_active: true,
                 track_stock: false,
                 stock_quantity: null,
@@ -1599,9 +1649,19 @@ function OnboardingContent() {
 
             if (relatedExtractedImages.length > 0) {
               for (let index = 0; index < relatedExtractedImages.length; index += 1) {
-                await uploadExtractedImageToPool(organizationId, activeStore.id, createdPool.id, relatedExtractedImages[index], index);
+                await uploadExtractedImageToPool(
+                  organizationId,
+                  activeStore.id,
+                  createdPool.id,
+                  relatedExtractedImages[index],
+                  index
+                );
               }
-              extractedImageBuckets.delete(itemSourceKey);
+              if (extractedImageBuckets.has(itemSourceKey)) {
+                extractedImageBuckets.delete(itemSourceKey);
+              } else if (sourceItems.length === 1 && extractedImageBuckets.size === 1) {
+                extractedImageBuckets.clear();
+              }
             } else if (selectedImageFiles[imageCursor]) {
               try {
                 await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor], 0);
@@ -1622,15 +1682,17 @@ function OnboardingContent() {
                 [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
               );
 
+        const parsedCatalogPrice = extractImportedPoolMetrics(item).price;
+
         const { data: createdItem, error } = await supabase
           .from("store_catalog_items")
           .insert({
             organization_id: organizationId,
             store_id: activeStore.id,
             sku: null,
-            name: buildImportedCatalogName(item),
+            name: buildImportedCatalogName(item).replace(/^Piscina:\s*/i, "").trim(),
             description: buildImportedCatalogDescription(item),
-            price_cents: null,
+            price_cents: parsedCatalogPrice == null ? null : Math.round(parsedCatalogPrice * 100),
             currency: "BRL",
             is_active: true,
             track_stock: false,
@@ -1657,9 +1719,19 @@ function OnboardingContent() {
 
         if (relatedExtractedImages.length > 0) {
           for (let index = 0; index < relatedExtractedImages.length; index += 1) {
-            await uploadExtractedImageToCatalog(organizationId, activeStore.id, createdItem.id, relatedExtractedImages[index], index);
+            await uploadExtractedImageToCatalog(
+              organizationId,
+              activeStore.id,
+              createdItem.id,
+              relatedExtractedImages[index],
+              index
+            );
           }
-          extractedImageBuckets.delete(itemSourceKey);
+          if (extractedImageBuckets.has(itemSourceKey)) {
+            extractedImageBuckets.delete(itemSourceKey);
+          } else if (sourceItems.length === 1 && extractedImageBuckets.size === 1) {
+            extractedImageBuckets.clear();
+          }
         } else if (selectedImageFiles[imageCursor]) {
           try {
             await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor], 0);
