@@ -629,12 +629,88 @@ function buildImportedCatalogName(
   return raw.slice(0, 160);
 }
 
+
+function dedupeDescriptionLines(lines: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const line of lines) {
+    const key = normalizeImportedLoose(line);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(line.trim());
+  }
+
+  return result;
+}
+
+function sanitizeImportedDescriptionText(
+  source: string,
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const title = buildImportedCatalogName(item);
+  const titleLoose = normalizeImportedLoose(title);
+
+  const rawLines = String(source || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const filtered = rawLines.filter((line) => {
+    const normalized = normalizeImportedLoose(line);
+    if (!normalized) return false;
+    if (normalized === titleLoose) return false;
+    if (normalized.startsWith("preco ")) return false;
+    if (normalized.startsWith("preço ")) return false;
+    if (normalized.startsWith("medidas ")) return false;
+    if (normalized.startsWith("profundidade ")) return false;
+    if (normalized.startsWith("capacidade ")) return false;
+    if (normalized.startsWith("material ")) return false;
+    if (normalized.startsWith("formato ")) return false;
+    if (normalized.startsWith("marca ")) return false;
+    if (normalized.startsWith("sku ")) return false;
+    if (normalized.startsWith("peso ")) return false;
+    if (normalized.startsWith("dosagem ")) return false;
+    if (normalized.startsWith("cor ")) return false;
+    if (normalized.startsWith("uso ")) return false;
+    if (normalized.startsWith("observacao ")) return false;
+    if (normalized.startsWith("observação ")) return false;
+    if (normalized.includes("arquivo de teste")) return false;
+    if (normalized.includes("validar upload inteligente")) return false;
+    if (normalized.includes("categoria esperada no sistema")) return false;
+    if (normalized.includes("salvar em configuracoes")) return false;
+    return true;
+  });
+
+  const joined = dedupeDescriptionLines(filtered).join("\n").trim();
+  return joined ? joined.slice(0, 4000) : null;
+}
+
+function buildImportedCleanDescription(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const metadataCandidates = [
+    extractMetadataValue(item, ["clean_description", "cleanDescription"]),
+    extractMetadataValue(item, ["descricao", "descrição", "description"]),
+    extractMetadataValue(item, ["notes", "observacao", "observação"]),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const candidate of metadataCandidates) {
+    const cleaned = sanitizeImportedDescriptionText(candidate, item);
+    if (cleaned) return cleaned;
+  }
+
+  return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
+}
+
+
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const raw = String(item.rawText ?? "").trim();
-  if (!raw) return null;
-  return raw.slice(0, 4000);
+  return buildImportedCleanDescription(item);
 }
 
 function parseImportedDecimal(value: string | null | undefined) {
@@ -942,17 +1018,7 @@ function buildImportedPoolName(
 function buildImportedPoolDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const descriptionParts = [
-    extractMetadataValue(item, ["descricao", "descrição", "description"]),
-    item.rawText,
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-
-  if (descriptionParts.length === 0) return null;
-
-  const merged = Array.from(new Set(descriptionParts)).join("\n\n");
-  return merged.slice(0, 4000);
+  return buildImportedCleanDescription(item);
 }
 
 function buildImportedCatalogMetadata(
@@ -972,6 +1038,7 @@ function buildImportedCatalogMetadata(
     imported_capacity: extractMetadataValue(item, ["capacidade", "capacity"]),
     imported_material: extractMetadataValue(item, ["material"]),
     imported_shape: extractMetadataValue(item, ["formato", "shape"]),
+    clean_description: buildImportedCleanDescription(item) || "",
   };
 }
 
@@ -3483,21 +3550,17 @@ async function upsertAnswers(
                     type="file"
                     multiple
                     accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,image/*"
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const selectedFiles = Array.from(e.target.files ?? []);
                       setIntelligentImportFiles(selectedFiles);
                       setIntelligentImportSelectedFilesPreview(
-                        selectedFiles.map((file) => ({
-                          name: file.name,
-                          type: file.type || "tipo não informado",
-                          size: file.size,
-                          lastModified: file.lastModified,
-                        }))
+                        await buildSelectedFilePreviews(selectedFiles)
                       );
                       setIntelligentImportRecovered(false);
                       setIntelligentImportError(null);
                       setIntelligentImportSuccess(null);
                       setIntelligentImportResult(null);
+                      e.currentTarget.value = "";
                     }}
                     className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />

@@ -28,8 +28,8 @@ export type StructuredImportItem = {
 const GENERIC_TITLES = [
   "catalogo de teste",
   "catálogo de teste",
-  "descrição detalhada",
   "descricao detalhada",
+  "descrição detalhada",
   "nome do item",
   "regra comercial",
   "arquivo de teste",
@@ -37,6 +37,19 @@ const GENERIC_TITLES = [
   "piscina",
   "catálogo",
   "catalogo",
+  "campo valor",
+  "campo informacao",
+];
+
+const TITLE_LABELS = [
+  "nome do item",
+  "nome comercial",
+  "nome",
+  "produto",
+  "modelo",
+  "titulo",
+  "título",
+  "item",
 ];
 
 function normalizeLoose(value: string) {
@@ -47,13 +60,6 @@ function normalizeLoose(value: string) {
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function isProbablyGenericTitle(value: string) {
-  const normalized = normalizeLoose(value);
-  if (!normalized) return true;
-  if (GENERIC_TITLES.map(normalizeLoose).includes(normalized)) return true;
-  return GENERIC_TITLES.some((item) => normalized === normalizeLoose(item) || normalized.startsWith(normalizeLoose(item)));
 }
 
 function cleanLine(value: string) {
@@ -75,39 +81,80 @@ function normalizeBlock(value: string) {
     .trim();
 }
 
+function isProbablyGenericTitle(value: string) {
+  const normalized = normalizeLoose(value);
+  if (!normalized) return true;
+  if (GENERIC_TITLES.some((item) => normalized === normalizeLoose(item))) return true;
+  return GENERIC_TITLES.some((item) => normalized.startsWith(normalizeLoose(item)));
+}
+
+function stripLeadingNoise(value: string) {
+  return cleanLine(
+    String(value || "")
+      .replace(/^\d+[\).\-]\s+/, "")
+      .replace(/^piscina\s*:\s*/i, "")
+      .replace(/^produto\s*:\s*/i, "")
+      .replace(/^nome do item\s*[:|-]?\s*/i, "")
+      .replace(/^nome comercial\s*[:|-]?\s*/i, "")
+      .replace(/^modelo\s*[:|-]?\s*/i, "")
+  );
+}
+
 function stripBoilerplateLine(line: string) {
   const normalized = normalizeLoose(line);
   if (!normalized) return true;
+
   const blockedFragments = [
     "arquivo de teste",
     "validar upload inteligente",
-    "classificacao e salvamento no sistema",
+    "classificacao e salvamento",
     "objetivo validar",
     "categoria esperada no sistema",
     "isso salva tudo no lugar certo",
     "salvar em configuracoes",
     "upload inteligente envia corretamente",
-    "foto 5 formato catalogo de teste",
+    "catalogo de teste",
+    "imagem ilustrativa de alta qualidade para teste",
+    "use este arquivo para testar",
+    "nesta previa",
   ];
+
   return blockedFragments.some((item) => normalized.includes(item));
 }
 
 function splitNumberedBlocks(text: string) {
-  const lines = normalizeBlock(text).split("\n").map(cleanLine).filter(Boolean);
-  const numberedIndices = lines
+  const normalized = normalizeBlock(text);
+  if (!normalized) return [] as string[];
+
+  const lines = normalized.split("\n").map(cleanLine).filter(Boolean);
+  const indexes = lines
     .map((line, index) => ({ line, index }))
     .filter(({ line }) => /^\d+[\).\-]\s+/.test(line));
 
-  if (numberedIndices.length < 2) return [] as string[];
+  if (indexes.length < 2) return [] as string[];
 
   const blocks: string[] = [];
-  for (let i = 0; i < numberedIndices.length; i += 1) {
-    const start = numberedIndices[i].index;
-    const end = i + 1 < numberedIndices.length ? numberedIndices[i + 1].index : lines.length;
+  for (let i = 0; i < indexes.length; i += 1) {
+    const start = indexes[i].index;
+    const end = i + 1 < indexes.length ? indexes[i + 1].index : lines.length;
     const block = lines.slice(start, end).join("\n").trim();
     if (block) blocks.push(block);
   }
+
   return blocks;
+}
+
+function splitByKnownLabels(text: string) {
+  const normalized = normalizeBlock(text);
+  if (!normalized) return [] as string[];
+
+  const pattern = /(?=^(?:nome do item|nome comercial|modelo|produto)\s*[:|])/gim;
+  const blocks = normalized
+    .split(pattern)
+    .map(normalizeBlock)
+    .filter(Boolean);
+
+  return blocks.length > 1 ? blocks : [];
 }
 
 function splitParagraphBlocks(text: string) {
@@ -120,35 +167,88 @@ function splitParagraphBlocks(text: string) {
 function parseLabelValue(line: string) {
   const match = line.match(/^([^:|]{2,50})[:|]\s*(.+)$/);
   if (!match) return null;
+
   return {
     label: normalizeLoose(match[1]),
     value: cleanLine(match[2]),
   };
 }
 
+function extractLabeledValue(text: string, labels: string[]) {
+  for (const label of labels) {
+    const matcher = new RegExp(`${label}\\s*[:|]\\s*(.+)`, "i");
+    const direct = text.match(matcher);
+    if (direct?.[1]) {
+      const value = cleanLine(direct[1].split("\n")[0] || "");
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
 function extractFirstPrice(block: string) {
   const match =
     block.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
     block.match(/pre[cç]o(?:\s+sugerido|\s+estimado|\s+aproximado)?\s*(?:de)?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
+
   return match?.[1] || "";
 }
 
 function inferDestination(source: string, explicitCategory = ""): StructuredImportDestination {
   const normalized = normalizeLoose(`${explicitCategory} ${source}`);
-  const chemicalHits = ["quim", "cloro", "algicida", "clarificante", "sulfato", "elevador de ph", "redutor de ph"];
-  const accessoryHits = ["acessor", "aspirador", "escova", "peneira", "mangueira", "clorador", "dispositivo", "led", "nicho", "retorno", "hidromassagem"];
-  const poolHits = ["piscina", "fibra", "vinil", "alvenaria", "pastilha", "profundidade", "capacidade", "litros"];
 
-  const chemicalScore = chemicalHits.reduce((acc, item) => acc + (normalized.includes(normalizeLoose(item)) ? 2 : 0), 0);
-  const accessoryScore = accessoryHits.reduce((acc, item) => acc + (normalized.includes(normalizeLoose(item)) ? 2 : 0), 0);
+  const chemicalHits = [
+    "quim",
+    "cloro",
+    "algicida",
+    "clarificante",
+    "sulfato",
+    "elevador de ph",
+    "redutor de ph",
+    "dosagem",
+    "desinfeccao",
+    "desinfecção",
+  ];
+  const accessoryHits = [
+    "acessor",
+    "aspirador",
+    "escova",
+    "peneira",
+    "mangueira",
+    "clorador",
+    "dispositivo",
+    "led",
+    "nicho",
+    "retorno",
+    "hidromassagem",
+    "ombrelone",
+  ];
+  const poolHits = [
+    "piscina",
+    "fibra",
+    "vinil",
+    "alvenaria",
+    "pastilha",
+    "profundidade",
+    "capacidade",
+    "litros",
+    "spa",
+  ];
+
+  const score = (hits: string[], weight = 2) =>
+    hits.reduce((acc, item) => acc + (normalized.includes(normalizeLoose(item)) ? weight : 0), 0);
+
+  const chemicalScore = score(chemicalHits, 2);
+  const accessoryScore = score(accessoryHits, 2);
   const poolScore =
-    poolHits.reduce((acc, item) => acc + (normalized.includes(normalizeLoose(item)) ? 1 : 0), 0) +
-    (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 3 : 0);
+    score(poolHits, 1) +
+    (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 3 : 0) +
+    (/\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ? 3 : 0);
 
-  if (chemicalScore >= accessoryScore && chemicalScore >= 4 && chemicalScore >= poolScore) {
+  if (chemicalScore >= 4 && chemicalScore >= accessoryScore && chemicalScore >= poolScore) {
     return "quimicos";
   }
-  if (accessoryScore > chemicalScore && accessoryScore >= 4 && accessoryScore >= poolScore) {
+  if (accessoryScore >= 4 && accessoryScore > chemicalScore && accessoryScore >= poolScore) {
     return "acessorios";
   }
   if (poolScore >= 5) {
@@ -156,35 +256,32 @@ function inferDestination(source: string, explicitCategory = ""): StructuredImpo
   }
   if (normalizeLoose(explicitCategory).includes("quim")) return "quimicos";
   if (normalizeLoose(explicitCategory).includes("acessor")) return "acessorios";
+  if (normalizeLoose(explicitCategory).includes("piscina")) return "pool";
+
   return "outros";
 }
 
-function cleanupTitle(value: string) {
-  return cleanLine(
-    String(value || "")
-      .replace(/^\d+[\).\-]\s+/, "")
-      .replace(/^nome do item\s*[:|-]?\s*/i, "")
-      .replace(/^produto\s*[:|-]?\s*/i, "")
-      .replace(/^piscina\s*[:|-]?\s*/i, "")
-  ).slice(0, 180);
-}
+function cleanupDescription(lines: string[], title: string) {
+  const normalizedTitle = normalizeLoose(title);
 
-function cleanupDescription(lines: string[]) {
-  const cleaned = lines
+  return lines
     .map(cleanLine)
     .filter(Boolean)
     .filter((line) => !stripBoilerplateLine(line))
     .filter((line) => !/^\d+[\).\-]\s*$/.test(line))
     .filter((line) => !parseLabelValue(line))
+    .filter((line) => normalizeLoose(line) !== normalizedTitle)
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  return cleaned.slice(0, 4000);
+    .trim()
+    .slice(0, 4000);
 }
 
 function parseSingleBlock(block: string, sourceFileName: string, itemIndex: number): StructuredImportItem | null {
-  const lines = normalizeBlock(block).split("\n").map(cleanLine).filter(Boolean);
+  const normalizedBlock = normalizeBlock(block);
+  if (!normalizedBlock) return null;
+
+  const lines = normalizedBlock.split("\n").map(cleanLine).filter(Boolean);
   if (lines.length === 0) return null;
 
   const fieldMap: Record<string, string> = {};
@@ -201,35 +298,42 @@ function parseSingleBlock(block: string, sourceFileName: string, itemIndex: numb
   }
 
   const explicitTitle =
-    fieldMap["nome do item"] ||
-    fieldMap["nome"] ||
-    fieldMap["produto"] ||
-    fieldMap["titulo"] ||
-    fieldMap["título"];
+    extractLabeledValue(normalizedBlock, TITLE_LABELS) ||
+    TITLE_LABELS.map((label) => fieldMap[normalizeLoose(label)]).find(Boolean) ||
+    "";
 
-  let title = cleanupTitle(explicitTitle || freeLines[0] || "");
-  if (!title && lines.length > 0) {
-    title = cleanupTitle(lines[0]);
-  }
+  const freeTitleCandidates = freeLines
+    .map(stripLeadingNoise)
+    .filter(Boolean)
+    .filter((line) => !stripBoilerplateLine(line))
+    .filter((line) => !isProbablyGenericTitle(line));
+
+  const title = stripLeadingNoise(explicitTitle || freeTitleCandidates[0] || "");
   if (!title || isProbablyGenericTitle(title)) return null;
 
-  const categoryHint = fieldMap["categoria"] || fieldMap["tipo"] || "";
-  const destination = inferDestination(block, categoryHint);
+  const categoryHint =
+    fieldMap["categoria"] ||
+    fieldMap["tipo"] ||
+    extractLabeledValue(normalizedBlock, ["categoria", "tipo"]);
+
+  const destination = inferDestination(normalizedBlock, categoryHint);
 
   const descriptionCandidates = [
     fieldMap["descricao"],
     fieldMap["descrição"],
     fieldMap["description"],
+    fieldMap["descricao comercial"],
+    fieldMap["descrição comercial"],
     fieldMap["finalidade"],
     fieldMap["aplicacao"],
     fieldMap["aplicação"],
     fieldMap["uso"],
     fieldMap["observacao"],
     fieldMap["observação"],
-    ...freeLines.slice(1),
+    ...freeLines.filter((line) => normalizeLoose(line) !== normalizeLoose(title)),
   ].filter(Boolean) as string[];
 
-  const description = cleanupDescription(descriptionCandidates);
+  const description = cleanupDescription(descriptionCandidates, title);
 
   const item: StructuredImportItem = {
     sourceFileName,
@@ -237,9 +341,14 @@ function parseSingleBlock(block: string, sourceFileName: string, itemIndex: numb
     destination,
     title,
     description,
-    rawBlock: normalizeBlock([title, description, fieldMap["medidas"], fieldMap["profundidade"], fieldMap["capacidade"], fieldMap["preco"], fieldMap["preço"], fieldMap["preco sugerido"], fieldMap["preço sugerido"]].filter(Boolean).join("\n")),
+    rawBlock: normalizedBlock,
     categoryHint,
-    price: extractFirstPrice(block),
+    price:
+      fieldMap["preco"] ||
+      fieldMap["preço"] ||
+      fieldMap["preco sugerido"] ||
+      fieldMap["preço sugerido"] ||
+      extractFirstPrice(normalizedBlock),
     dimensions: fieldMap["medidas"] || fieldMap["dimensoes"] || fieldMap["dimensões"] || "",
     depth: fieldMap["profundidade"] || fieldMap["prof"] || "",
     capacity: fieldMap["capacidade"] || "",
@@ -254,7 +363,6 @@ function parseSingleBlock(block: string, sourceFileName: string, itemIndex: numb
     notes: fieldMap["observacao"] || fieldMap["observação"] || "",
   };
 
-  item.rawBlock = item.rawBlock || normalizeBlock([title, description].filter(Boolean).join("\n"));
   return item;
 }
 
@@ -262,11 +370,14 @@ function chooseBlocks(extracted: ExtractedFileContent) {
   const numberedBlocks = splitNumberedBlocks(extracted.text);
   if (numberedBlocks.length > 0) return numberedBlocks;
 
+  const labeledBlocks = splitByKnownLabels(extracted.text);
+  if (labeledBlocks.length > 0) return labeledBlocks;
+
   const paragraphBlocks = splitParagraphBlocks(extracted.text).filter((block) => {
     const normalized = normalizeLoose(block);
     if (!normalized) return false;
-    if (stripBoilerplateLine(block)) return false;
-    return normalized.length > 20;
+    if (normalized.length < 24) return false;
+    return true;
   });
 
   if (paragraphBlocks.length > 1) {
@@ -276,40 +387,52 @@ function chooseBlocks(extracted: ExtractedFileContent) {
   return [normalizeBlock(extracted.text)].filter(Boolean);
 }
 
+function qualityScore(item: StructuredImportItem) {
+  return (
+    Math.min(item.description.length, 600) +
+    (item.price ? 60 : 0) +
+    (item.dimensions ? 60 : 0) +
+    (item.depth ? 40 : 0) +
+    (item.capacity ? 40 : 0) +
+    (item.material ? 20 : 0) +
+    (item.brand ? 20 : 0) +
+    (item.notes ? 10 : 0)
+  );
+}
+
 export function parseStructuredImportItems(extracted: ExtractedFileContent): StructuredImportItem[] {
   const blocks = chooseBlocks(extracted);
-  const items: StructuredImportItem[] = [];
+  const parsed = blocks
+    .map((block, index) => parseSingleBlock(block, extracted.fileName, index))
+    .filter((item): item is StructuredImportItem => Boolean(item));
 
-  blocks.forEach((block, index) => {
-    const parsed = parseSingleBlock(block, extracted.fileName, index);
-    if (parsed) {
-      items.push(parsed);
-    }
-  });
-
-  if (items.length === 0) return [];
-
-  const qualitySorted = [...items].sort((a, b) => {
-    const score = (item: StructuredImportItem) =>
-      (item.description ? Math.min(item.description.length, 600) : 0) +
-      (item.price ? 50 : 0) +
-      (item.dimensions ? 50 : 0) +
-      (item.capacity ? 50 : 0) +
-      (item.material ? 20 : 0) +
-      (item.brand ? 20 : 0);
-    return score(b) - score(a);
-  });
+  if (parsed.length === 0) return [];
 
   const sourceLooksSingleItem =
     !/^\d+[\).\-]\s+/m.test(normalizeBlock(extracted.text)) &&
-    (items.length === 1 || normalizeLoose(extracted.text).includes("nome do item") || normalizeLoose(extracted.text).includes("descricao detalhada") || normalizeLoose(extracted.text).includes("preco sugerido") || normalizeLoose(extracted.text).includes("preço sugerido"));
+    (normalizeLoose(extracted.text).includes("nome do item") ||
+      normalizeLoose(extracted.text).includes("descricao detalhada") ||
+      normalizeLoose(extracted.text).includes("descrição detalhada") ||
+      normalizeLoose(extracted.text).includes("preco sugerido") ||
+      normalizeLoose(extracted.text).includes("preço sugerido"));
 
-  if (sourceLooksSingleItem) {
-    return [qualitySorted[0]];
+  const sorted = [...parsed].sort((a, b) => qualityScore(b) - qualityScore(a));
+
+  if (sourceLooksSingleItem || parsed.length === 1) {
+    return [sorted[0]];
   }
 
-  return qualitySorted.filter((item, index) => {
-    if (index === 0) return true;
-    return !isProbablyGenericTitle(item.title) && item.description.length >= 25;
-  });
+  const kept: StructuredImportItem[] = [];
+  const seenTitles = new Set<string>();
+
+  for (const item of sorted) {
+    const titleKey = normalizeLoose(item.title);
+    if (!titleKey || seenTitles.has(titleKey)) continue;
+    if (isProbablyGenericTitle(item.title)) continue;
+    if (!item.description && !item.price && !item.dimensions && !item.capacity) continue;
+    seenTitles.add(titleKey);
+    kept.push(item);
+  }
+
+  return kept;
 }

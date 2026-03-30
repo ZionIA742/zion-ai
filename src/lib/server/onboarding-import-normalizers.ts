@@ -36,6 +36,7 @@ function isGenericTitle(value: string) {
   if (!normalized) return true;
   const blocked = [
     "catalogo de teste",
+    "catálogo de teste",
     "descricao detalhada",
     "descrição detalhada",
     "piscina",
@@ -44,19 +45,66 @@ function isGenericTitle(value: string) {
     "arquivo de teste",
     "nome do item",
   ];
-  return blocked.some((item) => normalized === item || normalized.startsWith(item));
+  return blocked.some((item) => normalized === normalizeLoose(item) || normalized.startsWith(normalizeLoose(item)));
 }
 
-function descriptionToRawText(item: StructuredImportItem) {
-  const parts = [
+function stripFieldFragments(text: string, item: StructuredImportItem) {
+  let result = String(text || "");
+
+  const fragments = [
     item.title,
-    item.description,
     item.price ? `Preço ${item.price}` : "",
     item.dimensions ? `Medidas ${item.dimensions}` : "",
     item.depth ? `Profundidade ${item.depth}` : "",
     item.capacity ? `Capacidade ${item.capacity}` : "",
     item.material ? `Material ${item.material}` : "",
     item.shape ? `Formato ${item.shape}` : "",
+    item.brand ? `Marca ${item.brand}` : "",
+    item.usage ? `Uso ${item.usage}` : "",
+    item.notes ? `Observação ${item.notes}` : "",
+  ].filter(Boolean);
+
+  for (const fragment of fragments) {
+    const normalized = fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    result = result.replace(new RegExp(normalized, "gi"), " ");
+  }
+
+  return result.replace(/\s+/g, " ").trim();
+}
+
+function buildCleanDescription(item: StructuredImportItem) {
+  const base = item.description || stripFieldFragments(item.rawBlock, item);
+  const cleaned = base
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^pre[cç]o\b/i.test(line))
+    .filter((line) => !/^medidas?\b/i.test(line))
+    .filter((line) => !/^profundidade\b/i.test(line))
+    .filter((line) => !/^capacidade\b/i.test(line))
+    .filter((line) => !/^material\b/i.test(line))
+    .filter((line) => !/^formato\b/i.test(line))
+    .filter((line) => !/^marca\b/i.test(line))
+    .filter((line) => !/^observa[cç][aã]o\b/i.test(line))
+    .join("\n")
+    .trim();
+
+  return cleaned.slice(0, 4000);
+}
+
+function descriptionToRawText(item: StructuredImportItem) {
+  const cleanDescription = buildCleanDescription(item);
+
+  const parts = [
+    item.title,
+    cleanDescription,
+    item.price ? `Preço ${item.price}` : "",
+    item.dimensions ? `Medidas ${item.dimensions}` : "",
+    item.depth ? `Profundidade ${item.depth}` : "",
+    item.capacity ? `Capacidade ${item.capacity}` : "",
+    item.material ? `Material ${item.material}` : "",
+    item.shape ? `Formato ${item.shape}` : "",
+    item.brand ? `Marca ${item.brand}` : "",
     item.usage ? `Uso ${item.usage}` : "",
     item.notes ? `Observação ${item.notes}` : "",
   ].filter(Boolean);
@@ -65,12 +113,14 @@ function descriptionToRawText(item: StructuredImportItem) {
 }
 
 function buildMetadata(item: StructuredImportItem) {
+  const cleanDescription = buildCleanDescription(item);
+
   return {
     destination: item.destination,
     categoria: item.destination === "pool" ? "piscinas" : item.destination,
     categoryHint: item.categoryHint || "",
-    clean_description: item.description || "",
-    description: item.description || "",
+    clean_description: cleanDescription,
+    description: cleanDescription,
     title: item.title || "",
     price: item.price || "",
     dimensions: item.dimensions || "",

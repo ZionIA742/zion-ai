@@ -57,7 +57,7 @@ export type IntelligentImportResult =
     };
 
 function buildPreview(text: string, max = 300) {
-  const normalized = text.replace(/\s+/g, " ").trim();
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
   if (!normalized) return "";
   return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
 }
@@ -70,6 +70,26 @@ function normalizeLoose(value: string) {
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isGenericTitle(value: string) {
+  const normalized = normalizeLoose(value);
+  if (!normalized) return true;
+
+  const blockedStarts = [
+    "descricao detalhada",
+    "descrição detalhada",
+    "catalogo de teste",
+    "catálogo de teste",
+    "arquivo de teste",
+    "nome do item",
+    "item importado",
+    "regra comercial",
+  ];
+
+  return blockedStarts.some(
+    (item) => normalized === normalizeLoose(item) || normalized.startsWith(normalizeLoose(item))
+  );
 }
 
 function buildFileItemAlias(fileName: string, index: number) {
@@ -87,6 +107,7 @@ function attachPerItemAliases(
   }>
 ) {
   const groupedItems = new Map<string, NormalizedImportItem[]>();
+
   for (const item of items) {
     const key = item.metadata?.original_source_file_name || item.sourceFileName;
     const current = groupedItems.get(key) || [];
@@ -95,6 +116,7 @@ function attachPerItemAliases(
   }
 
   const groupedImages = new Map<string, typeof extractedImages>();
+
   for (const image of extractedImages) {
     const key = image.sourceFileName;
     const current = groupedImages.get(key) || [];
@@ -107,6 +129,7 @@ function attachPerItemAliases(
 
   for (const [sourceFileName, fileItems] of groupedItems.entries()) {
     const fileImages = groupedImages.get(sourceFileName) || [];
+
     if (fileItems.length <= 1) {
       normalizedPreview.push(...fileItems);
       imagePreview.push(...fileImages);
@@ -115,6 +138,7 @@ function attachPerItemAliases(
 
     fileItems.forEach((item, index) => {
       const alias = buildFileItemAlias(sourceFileName, index);
+
       normalizedPreview.push({
         ...item,
         sourceFileName: alias,
@@ -136,7 +160,19 @@ function attachPerItemAliases(
     });
   }
 
-  return { normalizedPreview, imagePreview };
+  return {
+    normalizedPreview,
+    imagePreview,
+  };
+}
+
+function filterUsefulItems(items: DedupedImportItem[]) {
+  return items.filter((item) => {
+    const normalizedTitle = normalizeLoose(item.title);
+    if (!normalizedTitle) return false;
+    if (isGenericTitle(item.title)) return false;
+    return true;
+  });
 }
 
 export async function runOnboardingIntelligentImport(
@@ -182,6 +218,7 @@ export async function runOnboardingIntelligentImport(
     );
 
     const normalizedItems = normalizeMultipleExtractedFiles(extractedFiles);
+
     const extractedImagePreviewRaw = extractedFiles.flatMap((file) =>
       (file.extractedImages ?? []).map((image) => ({
         sourceFileName: file.fileName,
@@ -193,10 +230,10 @@ export async function runOnboardingIntelligentImport(
     );
 
     const aliased = attachPerItemAliases(normalizedItems, extractedImagePreviewRaw);
-    const dedupedItems = dedupNormalizedItems(aliased.normalizedPreview).filter((item) => {
-      const normalizedTitle = normalizeLoose(item.title);
-      return normalizedTitle && !normalizedTitle.startsWith("descricao detalhada") && !normalizedTitle.startsWith("catalogo de teste");
-    });
+
+    const dedupedItems = filterUsefulItems(
+      dedupNormalizedItems(aliased.normalizedPreview)
+    );
 
     const duplicateItems = dedupedItems.filter((item) => item.isDuplicate).length;
 
