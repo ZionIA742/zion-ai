@@ -1,4 +1,5 @@
-import type { NormalizedImportItem } from "./onboarding-import-normalizers";
+
+import type { NormalizedImportItem } from "./onboarding-import-normalizers"
 
 export type DedupedImportItem = NormalizedImportItem & {
   dedupKey: string;
@@ -7,93 +8,69 @@ export type DedupedImportItem = NormalizedImportItem & {
 };
 
 function normalizeForKey(value: string) {
-  return String(value || "")
-    .toLowerCase()
+  return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function field(item: NormalizedImportItem, key: string) {
-  return normalizeForKey(item.metadata?.[key] || "");
-}
-
 function buildDedupKey(item: NormalizedImportItem) {
-  const type = normalizeForKey(item.type);
-  const destination = field(item, "destination");
+  const destination = normalizeForKey(
+    item.metadata?.destination || item.metadata?.categoria || item.type
+  );
   const title = normalizeForKey(item.title);
-  const dimensions = field(item, "dimensions");
-  const capacity = field(item, "capacity");
-  const material = field(item, "material");
-  const sku = field(item, "sku");
-  const raw = normalizeForKey(item.rawText).slice(0, 140);
-
-  return [type, destination, title, dimensions, capacity, material, sku, raw]
-    .filter(Boolean)
-    .join("::");
+  return `${destination}::${title}`;
 }
 
-function scoreCompleteness(item: NormalizedImportItem) {
+function scoreItem(item: NormalizedImportItem) {
   let score = 0;
-  if (item.title) score += 3;
-  if (item.rawText && item.rawText.length > 40) score += 3;
-  if (item.metadata?.price) score += 1;
-  if (item.metadata?.dimensions) score += 2;
-  if (item.metadata?.capacity) score += 1;
-  if (item.metadata?.material) score += 1;
-  if (item.metadata?.shape) score += 1;
-  if (item.metadata?.sku) score += 1;
-  return score + item.confidence;
+  score += item.confidence * 100;
+  score += Math.min((item.rawText || "").length / 50, 20);
+
+  const metadataValues = Object.values(item.metadata || {}).filter(Boolean).length;
+  score += metadataValues * 3;
+
+  if (item.type === "pool") score += 10;
+  if (item.type === "catalog_item") score += 6;
+  if ((item.metadata?.price || "").trim()) score += 4;
+  if ((item.metadata?.dimensions || "").trim()) score += 4;
+  if ((item.metadata?.capacity || "").trim()) score += 4;
+  if ((item.metadata?.material || "").trim()) score += 2;
+
+  return score;
 }
 
-export function dedupNormalizedItems(
-  items: NormalizedImportItem[]
-): DedupedImportItem[] {
-  const seen = new Map<string, { title: string; index: number; score: number }>();
-  const result: DedupedImportItem[] = [];
+export function dedupNormalizedItems(items: NormalizedImportItem[]): DedupedImportItem[] {
+  const bestByKey = new Map<string, { index: number; score: number; title: string }>();
+  const keys = items.map(buildDedupKey);
 
-  for (const item of items) {
-    const dedupKey = buildDedupKey(item);
-    const score = scoreCompleteness(item);
-    const existing = seen.get(dedupKey);
+  items.forEach((item, index) => {
+    const dedupKey = keys[index];
+    const score = scoreItem(item);
+    const existing = bestByKey.get(dedupKey);
 
-    if (!existing) {
-      seen.set(dedupKey, { title: item.title, index: result.length, score });
-      result.push({
-        ...item,
-        dedupKey,
-        isDuplicate: false,
+    if (!existing || score > existing.score) {
+      bestByKey.set(dedupKey, {
+        index,
+        score,
+        title: item.title,
       });
-      continue;
     }
+  });
 
-    if (score > existing.score) {
-      result[existing.index] = {
-        ...item,
-        dedupKey,
-        isDuplicate: false,
-      };
+  return items.map((item, index) => {
+    const dedupKey = keys[index];
+    const best = bestByKey.get(dedupKey);
+    const isDuplicate = best ? best.index !== index : false;
 
-      result.push({
-        ...result[existing.index],
-        dedupKey,
-        duplicateOf: item.title,
-        isDuplicate: true,
-      });
-
-      seen.set(dedupKey, { title: item.title, index: existing.index, score });
-      continue;
-    }
-
-    result.push({
+    return {
       ...item,
       dedupKey,
-      duplicateOf: existing.title,
-      isDuplicate: true,
-    });
-  }
-
-  return result;
+      duplicateOf: isDuplicate ? best?.title : undefined,
+      isDuplicate,
+    };
+  });
 }
