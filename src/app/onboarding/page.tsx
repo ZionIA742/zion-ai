@@ -159,7 +159,6 @@ type IntelligentImportSelectedFilePreview = {
   type: string;
   size: number;
   lastModified: number;
-  previewDataUrl?: string;
 };
 
 type PersistedIntelligentImportState = {
@@ -168,123 +167,6 @@ type PersistedIntelligentImportState = {
   successMessage: string | null;
   errorMessage: string | null;
 };
-
-const MAX_PERSISTED_TEXT_LENGTH = 1200;
-const MAX_PERSISTED_IMPORT_ITEMS = 24;
-const INTELLIGENT_IMPORT_SESSION_STORAGE_PREFIX = "zion:onboarding:intelligent-import";
-const CATALOG_STORAGE_BUCKET = "store-catalog-photos";
-
-function truncateForStorage(value: string, maxLength = MAX_PERSISTED_TEXT_LENGTH) {
-  const normalized = String(value ?? "").trim();
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, maxLength)}…`;
-}
-
-function sanitizeMetadataForStorage(metadata: Record<string, string>) {
-  return Object.fromEntries(
-    Object.entries(metadata ?? {})
-      .slice(0, 12)
-      .map(([key, value]) => [truncateForStorage(key, 80), truncateForStorage(String(value), 180)])
-  );
-}
-
-function createLightweightIntelligentImportResult(
-  result: IntelligentImportResponse | null
-): IntelligentImportResponse | null {
-  if (!result) return null;
-
-  if (!result.ok) {
-    return {
-      ok: false,
-      error: truncateForStorage(result.error, 300),
-      message: truncateForStorage(result.message, 300),
-    };
-  }
-
-  return {
-    ok: true,
-    message: truncateForStorage(result.message, 300),
-    summary: result.summary,
-    extractedPreview: result.extractedPreview.slice(0, MAX_PERSISTED_IMPORT_ITEMS).map((item) => ({
-      fileName: truncateForStorage(item.fileName, 180),
-      mimeType: truncateForStorage(item.mimeType, 120),
-      extension: truncateForStorage(item.extension, 20),
-      textPreview: truncateForStorage(item.textPreview, 900),
-    })),
-    normalizedPreview: result.normalizedPreview
-      .slice(0, MAX_PERSISTED_IMPORT_ITEMS)
-      .map((item) => ({
-        type: truncateForStorage(item.type, 60),
-        sourceFileName: truncateForStorage(item.sourceFileName, 180),
-        title: truncateForStorage(item.title, 220),
-        rawText: truncateForStorage(item.rawText, 900),
-        confidence: item.confidence,
-        metadata: sanitizeMetadataForStorage(item.metadata),
-      })),
-    dedupedPreview: result.dedupedPreview.slice(0, MAX_PERSISTED_IMPORT_ITEMS).map((item) => ({
-      type: truncateForStorage(item.type, 60),
-      sourceFileName: truncateForStorage(item.sourceFileName, 180),
-      title: truncateForStorage(item.title, 220),
-      rawText: truncateForStorage(item.rawText, 900),
-      confidence: item.confidence,
-      metadata: sanitizeMetadataForStorage(item.metadata),
-      dedupKey: truncateForStorage(item.dedupKey, 220),
-      duplicateOf: item.duplicateOf ? truncateForStorage(item.duplicateOf, 220) : undefined,
-      isDuplicate: Boolean(item.isDuplicate),
-    })),
-  };
-}
-
-function persistSessionStorageSafely(key: string, value: PersistedIntelligentImportState | null) {
-  if (typeof window === "undefined") return;
-
-  try {
-    if (!value) {
-      window.sessionStorage.removeItem(key);
-      return;
-    }
-
-    window.sessionStorage.setItem(key, JSON.stringify(value));
-  } catch (error) {
-    console.error("[OnboardingPage] sessionStorage persist error:", error);
-    try {
-      window.sessionStorage.removeItem(key);
-    } catch {}
-  }
-}
-
-function readSessionStorageSafely(key: string): PersistedIntelligentImportState | null {
-  if (typeof window === "undefined") return null;
-
-  try {
-    const raw = window.sessionStorage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as PersistedIntelligentImportState;
-
-    return {
-      selectedFiles: Array.isArray(parsed?.selectedFiles)
-        ? parsed.selectedFiles.map((item) => ({
-            name: truncateForStorage(String(item?.name ?? ""), 180),
-            type: truncateForStorage(String(item?.type ?? ""), 120),
-            size: Number(item?.size ?? 0),
-            lastModified: Number(item?.lastModified ?? 0),
-            previewDataUrl: item?.previewDataUrl
-              ? truncateForStorage(String(item.previewDataUrl), 24000)
-              : undefined,
-          }))
-        : [],
-      result: createLightweightIntelligentImportResult(parsed?.result ?? null),
-      successMessage: parsed?.successMessage ? truncateForStorage(parsed.successMessage, 300) : null,
-      errorMessage: parsed?.errorMessage ? truncateForStorage(parsed.errorMessage, 300) : null,
-    };
-  } catch (error) {
-    console.error("[OnboardingPage] sessionStorage read error:", error);
-    try {
-      window.sessionStorage.removeItem(key);
-    } catch {}
-    return null;
-  }
-}
 
 type DiscountSettingsRow = {
   store_id: string;
@@ -529,195 +411,14 @@ function isImageLikeFileType(fileType: string) {
   return fileType.startsWith("image/");
 }
 
-function buildImageFallbackTitle(fileName: string) {
-  const normalized = String(fileName ?? "").trim();
-  if (!normalized) return "Imagem enviada pela loja";
-
-  const withoutExtension = normalized.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
-  return withoutExtension || normalized;
-}
-
-async function createImagePreviewDataUrl(file: File, maxSide = 240) {
-  if (typeof window === "undefined" || !isImageLikeFileType(file.type)) return undefined;
-
-  try {
-    const objectUrl = URL.createObjectURL(file);
-
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("Falha ao gerar miniatura da imagem."));
-      img.src = objectUrl;
-    });
-
-    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
-    canvas.height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
-
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Falha ao abrir contexto da miniatura.");
-
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-
-    const previewDataUrl = canvas.toDataURL("image/jpeg", 0.62);
-    URL.revokeObjectURL(objectUrl);
-    return previewDataUrl;
-  } catch (error) {
-    console.error("[OnboardingPage] createImagePreviewDataUrl error:", error);
-    return undefined;
-  }
-}
-
-async function buildSelectedFilePreviews(files: File[]) {
-  const previews = await Promise.all(
-    files.map(async (file) => ({
-      name: file.name,
-      type: file.type || "tipo não informado",
-      size: file.size,
-      lastModified: file.lastModified,
-      previewDataUrl: await createImagePreviewDataUrl(file),
-    }))
-  );
-
-  return previews;
-}
-
-function decorateIntelligentImportResultWithImageFallback(
-  result: IntelligentImportResponse,
-  selectedFiles: IntelligentImportSelectedFilePreview[]
-): IntelligentImportResponse {
-  if (!result.ok) return result;
-
-  const hasStructuredItems = result.normalizedPreview.length > 0 || result.dedupedPreview.length > 0;
-  if (hasStructuredItems) return result;
-
-  const visualSources = selectedFiles.filter((file) => isImageLikeFileType(file.type));
-  if (visualSources.length === 0) return result;
-
-  const fallbackItems = visualSources.slice(0, 12).map((file, index) => ({
-    type: "image_reference",
-    sourceFileName: file.name,
-    title: buildImageFallbackTitle(file.name),
-    rawText:
-      "Imagem enviada como referência visual da loja. Nesta prévia, a importação inteligente preservou o arquivo visual, mas ainda não transformou automaticamente a imagem em um item textual estruturado.",
-    confidence: 0.42,
-    metadata: {
-      origem: "imagem_enviada",
-      mime_type: file.type || "image/*",
-      modo: "fallback_visual_frontend",
-    },
-  }));
-
-  return {
-    ...result,
-    message: result.message || "Importação inteligente processada com apoio visual para imagens.",
-    normalizedPreview: fallbackItems,
-    dedupedPreview: fallbackItems.map((item, index) => ({
-      ...item,
-      dedupKey: `${item.sourceFileName}:${index}`,
-      duplicateOf: undefined,
-      isDuplicate: false,
-    })),
-  };
-}
 
 
 
-type ImportedSaveTarget = "piscinas" | "acessorios" | "quimicos" | "outros";
+type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
+type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
 
-type ParsedImportedPoolData = {
-  width_m: number | null;
-  length_m: number | null;
-  depth_m: number | null;
-  max_capacity_l: number | null;
-  shape: string | null;
-  material: string | null;
-};
-
-function parseImportedDecimal(value: string | null | undefined) {
-  if (!value) return null;
-  const normalized = String(value).replace(/\./g, "").replace(/,/g, ".").trim();
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseImportedInteger(value: string | null | undefined) {
-  if (!value) return null;
-  const normalized = String(value).replace(/\./g, "").replace(/,/g, "").trim();
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-}
-
-function extractImportedPoolData(value: string): ParsedImportedPoolData {
-  const normalized = String(value ?? "");
-  const lower = normalized.toLowerCase();
-
-  let width_m: number | null = null;
-  let length_m: number | null = null;
-  let depth_m: number | null = null;
-  let max_capacity_l: number | null = null;
-
-  const pairMatch = lower.match(/(\d+[\.,]?\d*)\s*m\s*(?:x|×)\s*(\d+[\.,]?\d*)\s*m/);
-  if (pairMatch) {
-    width_m = parseImportedDecimal(pairMatch[1]);
-    length_m = parseImportedDecimal(pairMatch[2]);
-  }
-
-  const diameterMatch = lower.match(/(\d+[\.,]?\d*)\s*m\s*(?:diam|diâm|diâmetro)/);
-  if (diameterMatch) {
-    const diameter = parseImportedDecimal(diameterMatch[1]);
-    width_m = width_m ?? diameter;
-    length_m = length_m ?? diameter;
-  }
-
-  const depthMatch = lower.match(/profundidade\s*(?:de)?\s*(\d+[\.,]?\d*)\s*m/);
-  if (depthMatch) {
-    depth_m = parseImportedDecimal(depthMatch[1]);
-  } else {
-    const allMeterMatches = Array.from(lower.matchAll(/(\d+[\.,]?\d*)\s*m/g));
-    if (allMeterMatches.length >= 3) {
-      const maybeDepth = parseImportedDecimal(allMeterMatches[allMeterMatches.length - 1][1]);
-      if (maybeDepth !== width_m && maybeDepth !== length_m) {
-        depth_m = maybeDepth;
-      }
-    }
-  }
-
-  const capacityMatch = lower.match(/(\d{1,3}(?:[\.,]\d{3})+|\d+)\s*l/);
-  if (capacityMatch) {
-    max_capacity_l = parseImportedInteger(capacityMatch[1]);
-  }
-
-  const shape =
-    lower.includes("retangular")
-      ? "retangular"
-      : lower.includes("oval")
-      ? "oval"
-      : lower.includes("redonda") || lower.includes("diam") || lower.includes("diâm")
-      ? "redonda"
-      : lower.includes("raia")
-      ? "raia"
-      : lower.includes("spa")
-      ? "spa"
-      : null;
-
-  const material =
-    lower.includes("fibra")
-      ? "fibra"
-      : lower.includes("vinil")
-      ? "vinil"
-      : lower.includes("alvenaria")
-      ? "alvenaria"
-      : lower.includes("pastilha")
-      ? "pastilha"
-      : null;
-
-  return { width_m, length_m, depth_m, max_capacity_l, shape, material };
-}
-
-function normalizeImportedSaveTarget(value: string): ImportedSaveTarget {
-  const normalized = String(value ?? "").trim().toLowerCase();
+function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
+  const normalized = String(value || "").trim().toLowerCase();
 
   if (
     normalized.includes("quim") ||
@@ -742,59 +443,67 @@ function normalizeImportedSaveTarget(value: string): ImportedSaveTarget {
     normalized.includes("lumin") ||
     normalized.includes("mangueira") ||
     normalized.includes("clorador") ||
-    normalized.includes("hidromassagem")
+    normalized.includes("hidromassagem") ||
+    normalized.includes("nicho") ||
+    normalized.includes("retorno")
   ) {
     return "acessorios";
   }
 
-  const parsedPool = extractImportedPoolData(normalized);
-  const hasPoolMeasures =
-    parsedPool.width_m !== null &&
-    parsedPool.length_m !== null &&
-    parsedPool.depth_m !== null;
-
-  const hasPoolSignals =
-    normalized.includes("piscina") ||
-    normalized.includes("spa") ||
-    normalized.includes("vinil") ||
-    normalized.includes("fibra") ||
-    normalized.includes("alvenaria") ||
-    normalized.includes("pastilha") ||
-    normalized.includes("prainha") ||
-    normalized.includes("raia") ||
-    normalized.includes("capacidade") ||
-    normalized.includes("profundidade") ||
-    normalized.includes("diâmetro") ||
-    normalized.includes("diâm");
-
-  if (hasPoolSignals && hasPoolMeasures) {
-    return "piscinas";
-  }
-
   return "outros";
 }
 
-function inferImportedSaveTarget(
+function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-): ImportedSaveTarget {
+): ImportedDestination {
   const source = [
     item.type,
     item.title,
     item.rawText,
+    item.sourceFileName,
     ...Object.values(item.metadata ?? {}),
   ]
-    .map((value) => String(value ?? ""))
+    .map((value) => String(value ?? "").toLowerCase())
     .join(" ");
 
-  return normalizeImportedSaveTarget(source);
-}
+  const chemicalScore =
+    (source.includes("quim") ? 3 : 0) +
+    (source.includes("cloro") ? 3 : 0) +
+    (source.includes("algicida") ? 3 : 0) +
+    (source.includes("clarificante") ? 3 : 0) +
+    (source.includes("sulfato") ? 3 : 0) +
+    (source.includes("ph") ? 2 : 0);
 
-function getCatalogCategoryFromTarget(
-  target: ImportedSaveTarget
-): "acessorios" | "quimicos" | "outros" {
-  if (target === "quimicos") return "quimicos";
-  if (target === "acessorios") return "acessorios";
-  return "outros";
+  const accessoryScore =
+    (source.includes("acessor") ? 3 : 0) +
+    (source.includes("peneira") ? 3 : 0) +
+    (source.includes("escova") ? 3 : 0) +
+    (source.includes("aspirador") ? 3 : 0) +
+    (source.includes("dispositivo") ? 3 : 0) +
+    (source.includes("led") ? 2 : 0) +
+    (source.includes("mangueira") ? 2 : 0) +
+    (source.includes("clorador") ? 2 : 0);
+
+  if (chemicalScore >= 3 && chemicalScore >= accessoryScore) return "quimicos";
+  if (accessoryScore >= 3 && accessoryScore > chemicalScore) return "acessorios";
+
+  const hasPoolKeyword =
+    source.includes("piscina") ||
+    source.includes("spa") ||
+    source.includes("vinil") ||
+    source.includes("fibra") ||
+    source.includes("alvenaria") ||
+    source.includes("pastilha");
+
+  const hasPoolMeasure =
+    /\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ||
+    /\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ||
+    /\b\d+[\.,]?\d*\s*l\b/i.test(source);
+
+  if (hasPoolKeyword && hasPoolMeasure) return "pool";
+
+  const category = normalizeImportedCatalogCategory(source);
+  return category;
 }
 
 function buildImportedCatalogName(
@@ -816,12 +525,94 @@ function buildImportedCatalogDescription(
   return raw.slice(0, 4000);
 }
 
-async function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
-  const response = await fetch(dataUrl);
-  const blob = await response.blob();
-  const effectiveType = mimeType || blob.type || "image/jpeg";
-  return new File([blob], fileName, { type: effectiveType });
+function parseImportedDecimal(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = String(value).replace(/\./g, "").replace(",", ".").trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 }
+
+function extractImportedPoolMetrics(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  const lowered = source.toLowerCase();
+
+  let width: number | null = null;
+  let length: number | null = null;
+  let depth: number | null = null;
+  let capacity: number | null = null;
+
+  const rectMatch = source.match(/(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i);
+  if (rectMatch) {
+    width = parseImportedDecimal(rectMatch[1]);
+    length = parseImportedDecimal(rectMatch[2]);
+  }
+
+  const diamMatch = source.match(/(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
+  if (diamMatch) {
+    width = parseImportedDecimal(diamMatch[1]);
+    length = parseImportedDecimal(diamMatch[1]);
+  }
+
+  const depthMatch =
+    source.match(/profundidade\s*(?:de)?\s*(\d+[\.,]?\d*)\s*m/i) ||
+    source.match(/\b(\d+[\.,]?\d*)\s*m\b(?=.*profundidade)/i);
+  if (depthMatch) {
+    depth = parseImportedDecimal(depthMatch[1]);
+  }
+
+  const capacityMatch =
+    source.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*l\b/i) ||
+    source.match(/capacidade\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)/i);
+  if (capacityMatch) {
+    capacity = parseImportedDecimal(capacityMatch[1]);
+  }
+
+  let material = "fibra";
+  if (lowered.includes("vinil")) material = "vinil";
+  else if (lowered.includes("alvenaria")) material = "alvenaria";
+  else if (lowered.includes("pastilha")) material = "pastilha";
+  else if (lowered.includes("fibra")) material = "fibra";
+
+  let shape = "retangular";
+  if (lowered.includes("diâm") || lowered.includes("diam") || lowered.includes("redonda")) {
+    shape = "redonda";
+  } else if (lowered.includes("oval")) {
+    shape = "oval";
+  } else if (lowered.includes("raia")) {
+    shape = "raia";
+  } else if (lowered.includes("retangular")) {
+    shape = "retangular";
+  }
+
+  return {
+    width_m: width,
+    length_m: length,
+    depth_m: depth,
+    max_capacity_l: capacity,
+    material,
+    shape,
+  };
+}
+
+function canPersistAsPool(metrics: {
+  width_m: number | null;
+  length_m: number | null;
+  depth_m: number | null;
+  max_capacity_l: number | null;
+}) {
+  return (
+    metrics.width_m != null &&
+    metrics.length_m != null &&
+    metrics.depth_m != null &&
+    metrics.max_capacity_l != null
+  );
+}
+
 
 function StepBadge({
   step,
@@ -1032,16 +823,8 @@ function OnboardingContent() {
   const [step4DraftRecovered, setStep4DraftRecovered] = useState(false);
   const [step5DraftRecovered, setStep5DraftRecovered] = useState(false);
 
-  const intelligentImportSessionStorageKey = useMemo(() => {
-    if (!organizationId || !activeStore?.id) return null;
-    return `${INTELLIGENT_IMPORT_SESSION_STORAGE_PREFIX}:${organizationId}:${activeStore.id}`;
-  }, [organizationId, activeStore?.id]);
-
   const scrollRestoreTimeoutRef = useRef<number | null>(null);
   const lastRestoredScrollRef = useRef<number | null>(null);
-
-  const topActionButtonClassName =
-    "inline-flex min-h-[46px] min-w-[180px] items-center justify-center rounded-xl px-5 py-2.5 text-sm font-medium transition";
 
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
@@ -1184,6 +967,11 @@ function OnboardingContent() {
     return `zion_onboarding_scroll:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
 
+  const intelligentImportStorageKey = useMemo(() => {
+    if (!organizationId || !activeStore?.id) return null;
+    return `zion_onboarding_intelligent_import:${organizationId}:${activeStore.id}`;
+  }, [organizationId, activeStore?.id]);
+
   const ignoreNextStepScrollRef = useRef(false);
 
   const savePageScroll = useCallback(() => {
@@ -1245,24 +1033,13 @@ function OnboardingContent() {
   }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
 
   const selectedImagePreviews = useMemo(() => {
-    if (intelligentImportFiles.length > 0) {
-      return intelligentImportFiles
-        .filter((file) => isImageLikeFileType(file.type))
-        .map((file) => ({
-          name: file.name,
-          url: URL.createObjectURL(file),
-          source: "memory" as const,
-        }));
-    }
-
-    return intelligentImportSelectedFilesPreview
-      .filter((file) => Boolean(file.previewDataUrl))
+    return intelligentImportFiles
+      .filter((file) => isImageLikeFileType(file.type))
       .map((file) => ({
         name: file.name,
-        url: file.previewDataUrl as string,
-        source: "session" as const,
+        url: URL.createObjectURL(file),
       }));
-  }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
+  }, [intelligentImportFiles]);
 
   const safeExtractedPreview = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) return [];
@@ -1292,54 +1069,9 @@ function OnboardingContent() {
   }, [intelligentImportResult]);
 
   useEffect(() => {
-    if (!intelligentImportSessionStorageKey) return;
-    persistCurrentIntelligentImportState();
-  }, [
-    intelligentImportSessionStorageKey,
-    intelligentImportSelectedFilesPreview,
-    intelligentImportResult,
-    intelligentImportSuccess,
-    intelligentImportError,
-  ]);
-
-  useEffect(() => {
-    if (!intelligentImportSessionStorageKey) return;
-
-    const restored = readSessionStorageSafely(intelligentImportSessionStorageKey);
-    if (!restored) return;
-
-    if (restored.selectedFiles.length > 0) {
-      setIntelligentImportSelectedFilesPreview(restored.selectedFiles);
-    }
-
-    if (restored.result) {
-      setIntelligentImportResult(restored.result);
-    }
-
-    if (restored.successMessage) {
-      setIntelligentImportSuccess(restored.successMessage);
-    }
-
-    if (restored.errorMessage) {
-      setIntelligentImportError(restored.errorMessage);
-    }
-
-    if (
-      restored.selectedFiles.length > 0 ||
-      restored.result ||
-      restored.successMessage ||
-      restored.errorMessage
-    ) {
-      setIntelligentImportRecovered(true);
-    }
-  }, [intelligentImportSessionStorageKey]);
-
-  useEffect(() => {
     return () => {
       for (const preview of selectedImagePreviews) {
-        if (preview.source === "memory") {
-          URL.revokeObjectURL(preview.url);
-        }
+        URL.revokeObjectURL(preview.url);
       }
     };
   }, [selectedImagePreviews]);
@@ -1444,74 +1176,6 @@ function OnboardingContent() {
     setCurrentStep(step);
   }
 
-  function navigateWithFallback(path: string) {
-    savePageScroll();
-
-    try {
-      router.push(path);
-    } catch (error) {
-      console.error("[OnboardingPage] router push error:", error);
-    }
-
-    if (typeof window !== "undefined") {
-      window.setTimeout(() => {
-        if (window.location.pathname !== path) {
-          window.location.href = path;
-        }
-      }, 120);
-    }
-  }
-
-  function persistCurrentIntelligentImportState(nextResult?: IntelligentImportResponse | null) {
-    if (!intelligentImportSessionStorageKey) return;
-
-    persistSessionStorageSafely(intelligentImportSessionStorageKey, {
-      selectedFiles: intelligentImportSelectedFilesPreview,
-      result: createLightweightIntelligentImportResult(
-        typeof nextResult === "undefined" ? intelligentImportResult : nextResult
-      ),
-      successMessage: intelligentImportSuccess,
-      errorMessage: intelligentImportError,
-    });
-  }
-
-  async function persistCurrentStepBeforeLeaving() {
-    switch (currentStep) {
-      case 1:
-        return await submitStep1({ nextStep: null, navigateTo: null });
-      case 2:
-        return await submitStep2({ nextStep: null, navigateTo: null });
-      case 3:
-        return await submitStep3({ nextStep: null, navigateTo: null });
-      case 4:
-        return await submitStep4({ nextStep: null, navigateTo: null });
-      case 5:
-        return await submitStep5({ navigateTo: null, skipDelayedRedirect: true });
-      default:
-        return false;
-    }
-  }
-
-  async function handleTopNavigation(targetPath: string) {
-    savePageScroll();
-    persistCurrentIntelligentImportState();
-    const didSave = await persistCurrentStepBeforeLeaving();
-
-    if (!didSave) {
-      console.warn("[OnboardingPage] etapa não validou para salvar no banco antes de sair; mantendo rascunho local.");
-    }
-
-    navigateWithFallback(targetPath);
-  }
-
-  async function handleGoToSettings() {
-    await handleTopNavigation("/configuracoes");
-  }
-
-  async function handleSaveAndExit() {
-    await handleTopNavigation("/dashboard");
-  }
-
   function clearIntelligentImportState() {
     setIntelligentImportFiles([]);
     setIntelligentImportSelectedFilesPreview([]);
@@ -1519,8 +1183,9 @@ function OnboardingContent() {
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
     setIntelligentImportRecovered(false);
-    if (intelligentImportSessionStorageKey) {
-      persistSessionStorageSafely(intelligentImportSessionStorageKey, null);
+
+    if (intelligentImportStorageKey && typeof window !== "undefined") {
+      window.localStorage.removeItem(intelligentImportStorageKey);
     }
   }
 
@@ -1581,6 +1246,55 @@ function OnboardingContent() {
     }
   }
 
+  async function uploadImportedImageToPool(poolId: string, file: File) {
+    const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
+    const safeExtension = extension ? extension.toLowerCase() : "jpg";
+    const filePath = `${organizationId}/${activeStore?.id}/${poolId}/${Date.now()}-0.${safeExtension}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("pool-photos")
+      .upload(filePath, file, {
+        upsert: false,
+        contentType: file.type || undefined,
+      });
+
+    if (uploadError) throw uploadError;
+
+    const { error: metadataError } = await supabase.from("pool_photos").insert({
+      pool_id: poolId,
+      storage_path: filePath,
+      file_name: file.name,
+      file_size_bytes: file.size,
+      sort_order: 0,
+    });
+
+    if (metadataError) throw metadataError;
+  }
+
+  async function uploadImportedImageToCatalog(catalogItemId: string, file: File) {
+    const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
+    const safeExtension = extension ? extension.toLowerCase() : "jpg";
+    const filePath = `${organizationId}/${activeStore?.id}/${catalogItemId}/${Date.now()}-0.${safeExtension}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("store-catalog-photos")
+      .upload(filePath, file, {
+        upsert: false,
+        contentType: file.type || undefined,
+      });
+
+    if (uploadError) throw uploadError;
+
+    const { error: metadataError } = await supabase.from("store_catalog_item_photos").insert({
+      catalog_item_id: catalogItemId,
+      storage_path: filePath,
+      file_name: file.name,
+      file_size_bytes: file.size,
+      sort_order: 0,
+    });
+
+    if (metadataError) throw metadataError;
+  }
 
   async function handleSaveImportedItemsToCatalog() {
     if (!organizationId || !activeStore?.id) {
@@ -1589,7 +1303,7 @@ function OnboardingContent() {
     }
 
     if (!intelligentImportResult || !intelligentImportResult.ok) {
-      setFormError("Faça a importação inteligente antes de salvar no catálogo.");
+      setFormError("Faça a importação inteligente antes de salvar no sistema.");
       return;
     }
 
@@ -1608,47 +1322,40 @@ function OnboardingContent() {
     setSuccessMessage(null);
 
     try {
-      const createdCounters: Record<ImportedSaveTarget, number> = {
-        piscinas: 0,
-        acessorios: 0,
-        quimicos: 0,
-        outros: 0,
-      };
+      const selectedImageFiles = intelligentImportFiles.filter((file) =>
+        String(file.type || "").startsWith("image/")
+      );
 
-      const createdCatalogItemIdsByCategory: Record<"acessorios" | "quimicos" | "outros", string[]> = {
-        acessorios: [],
-        quimicos: [],
-        outros: [],
-      };
+      let firstPoolId: string | null = null;
+      let firstCatalogCategory: ImportedCatalogCategory | null = null;
+      let firstCatalogId: string | null = null;
 
-      const createdPoolIds: string[] = [];
+      let savedPools = 0;
+      let savedAcessorios = 0;
+      let savedQuimicos = 0;
+      let savedOutros = 0;
+      let imageCursor = 0;
 
       for (const item of sourceItems) {
-        const target = inferImportedSaveTarget(item);
-        const name = buildImportedCatalogName(item);
-        const description = buildImportedCatalogDescription(item);
+        const destination = inferImportedDestination(item);
 
-        if (target === "piscinas") {
-          const parsedPool = extractImportedPoolData(`${item.title} ${item.rawText}`);
+        if (destination === "pool") {
+          const metrics = extractImportedPoolMetrics(item);
 
-          if (
-            parsedPool.width_m !== null &&
-            parsedPool.length_m !== null &&
-            parsedPool.depth_m !== null
-          ) {
+          if (canPersistAsPool(metrics)) {
             const { data: createdPool, error } = await supabase
               .from("pools")
               .insert({
-                name,
-                width_m: parsedPool.width_m,
-                length_m: parsedPool.length_m,
-                depth_m: parsedPool.depth_m,
-                shape: parsedPool.shape,
-                material: parsedPool.material,
-                max_capacity_l: parsedPool.max_capacity_l,
+                name: buildImportedCatalogName(item),
+                width_m: metrics.width_m,
+                length_m: metrics.length_m,
+                depth_m: metrics.depth_m,
+                shape: metrics.shape,
+                material: metrics.material,
+                max_capacity_l: metrics.max_capacity_l,
                 weight_kg: null,
                 price: null,
-                description,
+                description: buildImportedCatalogDescription(item),
                 is_active: true,
                 track_stock: false,
                 stock_quantity: null,
@@ -1658,13 +1365,28 @@ function OnboardingContent() {
 
             if (error) throw error;
 
-            createdCounters.piscinas += 1;
-            createdPoolIds.push(createdPool.id);
+            if (!firstPoolId) firstPoolId = createdPool.id;
+            savedPools += 1;
+
+            if (selectedImageFiles[imageCursor]) {
+              try {
+                await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor]);
+                imageCursor += 1;
+              } catch (uploadError) {
+                console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
+              }
+            }
+
             continue;
           }
         }
 
-        const category = getCatalogCategoryFromTarget(target === "piscinas" ? "outros" : target);
+        const category =
+          destination === "quimicos" || destination === "acessorios" || destination === "outros"
+            ? destination
+            : normalizeImportedCatalogCategory(
+                [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
+              );
 
         const { data: createdItem, error } = await supabase
           .from("store_catalog_items")
@@ -1672,8 +1394,8 @@ function OnboardingContent() {
             organization_id: organizationId,
             store_id: activeStore.id,
             sku: null,
-            name,
-            description,
+            name: buildImportedCatalogName(item),
+            description: buildImportedCatalogDescription(item),
             price_cents: null,
             currency: "BRL",
             is_active: true,
@@ -1693,108 +1415,63 @@ function OnboardingContent() {
 
         if (error) throw error;
 
-        createdCounters[target] += 1;
-        createdCatalogItemIdsByCategory[category].push(createdItem.id);
-      }
+        if (!firstCatalogCategory) firstCatalogCategory = category;
+        if (!firstCatalogId) firstCatalogId = createdItem.id;
 
-      const selectedImageFiles = intelligentImportFiles.filter((file) =>
-        String(file.type || "").startsWith("image/")
-      );
+        if (category === "quimicos") savedQuimicos += 1;
+        else if (category === "acessorios") savedAcessorios += 1;
+        else savedOutros += 1;
 
-      const firstPoolId = createdPoolIds[0];
-      const firstCatalogCategory =
-        createdCounters.acessorios > 0
-          ? "acessorios"
-          : createdCounters.quimicos > 0
-          ? "quimicos"
-          : "outros";
-      const firstCatalogItemId = createdCatalogItemIdsByCategory[firstCatalogCategory][0];
-
-      if (selectedImageFiles.length > 0) {
-        const imageFile = selectedImageFiles[0];
-        const extension = imageFile.name.includes(".")
-          ? imageFile.name.split(".").pop()
-          : "jpg";
-        const safeExtension = extension ? extension.toLowerCase() : "jpg";
-
-        if (firstPoolId) {
-          const poolFilePath = `${organizationId}/${activeStore.id}/${firstPoolId}/${Date.now()}-0.${safeExtension}`;
-
-          const { error: uploadPoolError } = await supabase.storage
-            .from("pool-photos")
-            .upload(poolFilePath, imageFile, {
-              upsert: false,
-              contentType: imageFile.type || undefined,
-            });
-
-          if (!uploadPoolError) {
-            await supabase.from("pool_photos").insert({
-              pool_id: firstPoolId,
-              storage_path: poolFilePath,
-              file_name: imageFile.name,
-              file_size_bytes: imageFile.size,
-              sort_order: 0,
-            });
-          }
-        } else if (firstCatalogItemId) {
-          const catalogFilePath = `${organizationId}/${activeStore.id}/${firstCatalogItemId}/${Date.now()}-0.${safeExtension}`;
-
-          const { error: uploadCatalogError } = await supabase.storage
-            .from("store-catalog-photos")
-            .upload(catalogFilePath, imageFile, {
-              upsert: false,
-              contentType: imageFile.type || undefined,
-            });
-
-          if (!uploadCatalogError) {
-            await supabase.from("store_catalog_item_photos").insert({
-              catalog_item_id: firstCatalogItemId,
-              storage_path: catalogFilePath,
-              file_name: imageFile.name,
-              file_size_bytes: imageFile.size,
-              sort_order: 0,
-            });
+        if (selectedImageFiles[imageCursor]) {
+          try {
+            await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor]);
+            imageCursor += 1;
+          } catch (uploadError) {
+            console.error("[OnboardingPage] uploadImportedImageToCatalog error:", uploadError);
           }
         }
       }
 
-      const totalCreated =
-        createdCounters.piscinas +
-        createdCounters.acessorios +
-        createdCounters.quimicos +
-        createdCounters.outros;
-
+      const totalCreated = savedPools + savedAcessorios + savedQuimicos + savedOutros;
       setSuccessMessage(
-        `Importação salva com sucesso. ${totalCreated} item(ns) criado(s).`
+        `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}.`
       );
 
       clearIntelligentImportState();
 
-      if (createdCounters.piscinas > 0) {
+      if (savedPools > 0 && firstPoolId) {
         navigateWithFallback("/configuracoes/piscinas");
         return;
       }
 
-      navigateWithFallback(`/configuracoes/catalogo/${firstCatalogCategory}`);
+      if (firstCatalogCategory) {
+        navigateWithFallback(`/configuracoes/catalogo/${firstCatalogCategory}`);
+        return;
+      }
+
+      if (totalCreated > 0) {
+        navigateWithFallback("/configuracoes");
+      }
     } catch (error) {
       console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
       setFormError(
         error instanceof Error
           ? error.message
-          : "Erro ao salvar os itens importados."
+          : "Erro ao salvar os itens importados no sistema."
       );
     } finally {
       setSavingImportedCatalog(false);
     }
   }
 
+
   async function upsertAnswers(
     payloads: Array<[string, unknown]>,
     nextSuccessMessage: string,
     nextStep?: number,
     finalStatus?: "in_progress" | "completed"
-  ): Promise<boolean> {
-    if (!organizationId || !activeStore?.id) return false;
+  ) {
+    if (!organizationId || !activeStore?.id) return;
 
     setSaving(true);
     setFormError(null);
@@ -1826,12 +1503,9 @@ function OnboardingContent() {
         ignoreNextStepScrollRef.current = false;
         setCurrentStep(nextStep);
       }
-
-      return true;
     } catch (err) {
       console.error("[OnboardingPage] upsertAnswers error:", err);
       setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
-      return false;
     } finally {
       setSaving(false);
     }
@@ -1861,6 +1535,58 @@ function OnboardingContent() {
     window.localStorage.setItem(currentStepStorageKey, String(currentStep));
   }, [currentStep, currentStepStorageKey]);
 
+  useEffect(() => {
+    if (!intelligentImportStorageKey || typeof window === "undefined") return;
+
+    const raw = window.localStorage.getItem(intelligentImportStorageKey);
+    if (!raw) {
+      setIntelligentImportRecovered(false);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as PersistedIntelligentImportState;
+      setIntelligentImportSelectedFilesPreview(Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : []);
+      setIntelligentImportResult(parsed.result ?? null);
+      setIntelligentImportSuccess(parsed.successMessage ?? null);
+      setIntelligentImportError(parsed.errorMessage ?? null);
+      setIntelligentImportRecovered(Boolean((parsed.selectedFiles?.length ?? 0) > 0 || parsed.result));
+    } catch (error) {
+      console.error("[OnboardingPage] intelligent import restore error:", error);
+      window.localStorage.removeItem(intelligentImportStorageKey);
+      setIntelligentImportRecovered(false);
+    }
+  }, [intelligentImportStorageKey]);
+
+  useEffect(() => {
+    if (!intelligentImportStorageKey || typeof window === "undefined") return;
+
+    const hasPersistedContent =
+      visibleIntelligentImportFiles.length > 0 ||
+      Boolean(intelligentImportResult) ||
+      Boolean(intelligentImportSuccess) ||
+      Boolean(intelligentImportError);
+
+    if (!hasPersistedContent) {
+      window.localStorage.removeItem(intelligentImportStorageKey);
+      return;
+    }
+
+    const payload: PersistedIntelligentImportState = {
+      selectedFiles: visibleIntelligentImportFiles,
+      result: intelligentImportResult,
+      successMessage: intelligentImportSuccess,
+      errorMessage: intelligentImportError,
+    };
+
+    window.localStorage.setItem(intelligentImportStorageKey, JSON.stringify(payload));
+  }, [
+    intelligentImportStorageKey,
+    visibleIntelligentImportFiles,
+    intelligentImportResult,
+    intelligentImportSuccess,
+    intelligentImportError,
+  ]);
 
   useEffect(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
@@ -2304,8 +2030,29 @@ function OnboardingContent() {
     loadDiscountSettings();
   }, [organizationId, activeStore?.id]);
 
+  useEffect(() => {
+    if (currentStep === 1 && step1DraftRecovered) {
+      setSuccessMessage("Rascunho local da etapa 1 recuperado.");
+    } else if (currentStep === 2 && step2DraftRecovered) {
+      setSuccessMessage("Rascunho local da etapa 2 recuperado.");
+    } else if (currentStep === 3 && step3DraftRecovered) {
+      setSuccessMessage("Rascunho local da etapa 3 recuperado.");
+    } else if (currentStep === 4 && step4DraftRecovered) {
+      setSuccessMessage("Rascunho local da etapa 4 recuperado.");
+    } else if (currentStep === 5 && step5DraftRecovered) {
+      setSuccessMessage("Rascunho local da etapa 5 recuperado.");
+    }
+  }, [
+    currentStep,
+    step1DraftRecovered,
+    step2DraftRecovered,
+    step3DraftRecovered,
+    step4DraftRecovered,
+    step5DraftRecovered,
+  ]);
 
-  async function submitStep1(options?: { nextStep?: number | null; navigateTo?: string | null }) {
+  async function saveStep1(e: FormEvent) {
+    e.preventDefault();
 
     if (!step1Form.store_display_name.trim()) {
       setFormError("Preencha o nome que a loja quer usar no sistema.");
@@ -2339,7 +2086,7 @@ function OnboardingContent() {
 
     if (!organizationId || !activeStore?.id) return;
 
-    const didSave = await upsertAnswers(
+    await upsertAnswers(
       [
         ["store_display_name", step1Form.store_display_name.trim()],
         ["store_description", step1Form.store_description.trim()],
@@ -2355,26 +2102,14 @@ function OnboardingContent() {
         ["service_region_outside_consultation", step1Form.service_region_outside_consultation],
       ],
       "Etapa 1 salva com sucesso.",
-      options?.nextStep === null ? undefined : options?.nextStep ?? 2
+      2
     );
 
-    if (!didSave) return false;
-
     setStep1DraftRecovered(false);
-
-    if (options?.navigateTo) {
-      navigateWithFallback(options.navigateTo);
-    }
-
-    return true;
   }
 
-  async function saveStep1(e: FormEvent) {
+  async function saveStep2(e: FormEvent) {
     e.preventDefault();
-    await submitStep1();
-  }
-
-  async function submitStep2(options?: { nextStep?: number | null; navigateTo?: string | null }) {
 
     if (step2Form.pool_types_selected.length === 0 && !step2Form.pool_types_other.trim()) {
       setFormError("Marque pelo menos um tipo de piscina ou preencha o campo complementar.");
@@ -2408,7 +2143,7 @@ function OnboardingContent() {
 
     if (!organizationId || !activeStore?.id) return;
 
-    const didSave = await upsertAnswers(
+    await upsertAnswers(
       [
         ["pool_types", step2Form.pool_types.trim()],
         ["sells_chemicals", step2Form.sells_chemicals.trim().toLowerCase() === "sim"],
@@ -2421,26 +2156,14 @@ function OnboardingContent() {
         ["main_store_brand", step2Form.main_store_brand.trim()],
       ],
       "Etapa 2 salva com sucesso.",
-      options?.nextStep === null ? undefined : options?.nextStep ?? 3
+      3
     );
 
-    if (!didSave) return false;
-
     setStep2DraftRecovered(false);
-
-    if (options?.navigateTo) {
-      navigateWithFallback(options.navigateTo);
-    }
-
-    return true;
   }
 
-  async function saveStep2(e: FormEvent) {
+  async function saveStep3(e: FormEvent) {
     e.preventDefault();
-    await submitStep2();
-  }
-
-  async function submitStep3(options?: { nextStep?: number | null; navigateTo?: string | null }) {
 
     if (!step3Form.average_human_response_time.trim()) {
       setFormError("Preencha o tempo médio de resposta humana.");
@@ -2507,7 +2230,7 @@ function OnboardingContent() {
 
     if (!organizationId || !activeStore?.id) return;
 
-    const didSave = await upsertAnswers(
+    await upsertAnswers(
       [
         ["average_installation_time_days", step3Form.average_installation_time_days.trim()],
         ["installation_days_rule", step3Form.installation_days_rule.trim()],
@@ -2530,26 +2253,14 @@ function OnboardingContent() {
         ["sales_flow_final_confirmed", step3Form.sales_flow_final_confirmed],
       ],
       "Etapa 3 salva com sucesso.",
-      options?.nextStep === null ? undefined : options?.nextStep ?? 4
+      4
     );
 
-    if (!didSave) return false;
-
     setStep3DraftRecovered(false);
-
-    if (options?.navigateTo) {
-      navigateWithFallback(options.navigateTo);
-    }
-
-    return true;
   }
 
-  async function saveStep3(e: FormEvent) {
+  async function saveStep4(e: FormEvent) {
     e.preventDefault();
-    await submitStep3();
-  }
-
-  async function submitStep4(options?: { nextStep?: number | null; navigateTo?: string | null }) {
 
     if (!step4Form.average_ticket.trim()) {
       setFormError("Informe o ticket médio da loja.");
@@ -2761,38 +2472,19 @@ function OnboardingContent() {
           : "Etapa 4 salva com sucesso. A política inicial de desconto foi criada em Configurações."
       );
 
-      const nextStep = options?.nextStep === null ? undefined : options?.nextStep ?? 5;
-      if (typeof nextStep === "number") {
-        ignoreNextStepScrollRef.current = false;
-        setCurrentStep(nextStep);
-      }
+      ignoreNextStepScrollRef.current = false;
+      setCurrentStep(5);
       setStep4DraftRecovered(false);
-
-      if (options?.navigateTo) {
-        navigateWithFallback(options.navigateTo);
-      }
-
-      return true;
     } catch (err) {
       console.error("[OnboardingPage] saveStep4 error:", err);
       setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
-      return false;
     } finally {
       setSaving(false);
     }
   }
 
-  async function saveStep4(e: FormEvent) {
-    e.preventDefault();
-    await submitStep4();
-  }
-
   async function saveStep5(e: FormEvent) {
     e.preventDefault();
-    await submitStep5();
-  }
-
-  async function submitStep5(options?: { navigateTo?: string | null; skipDelayedRedirect?: boolean }) {
 
     if (!step5Form.responsible_name.trim()) {
       setFormError("Preencha o nome da pessoa principal que a IA deve acionar.");
@@ -2881,20 +2573,12 @@ function OnboardingContent() {
       setSuccessMessage("Onboarding concluído com sucesso.");
       setHasCompletedOnboardingOnce(true);
       setStep5DraftRecovered(false);
-
-      if (options?.navigateTo) {
-        navigateWithFallback(options.navigateTo);
-      } else if (!options?.skipDelayedRedirect) {
-        window.setTimeout(() => {
-          navigateWithFallback("/configuracoes");
-        }, 1000);
-      }
-
-      return true;
+      setTimeout(() => {
+        router.push("/configuracoes");
+      }, 1000);
     } catch (err) {
       console.error("[OnboardingPage] saveStep5 error:", err);
       setFormError(err instanceof Error ? err.message : "Erro ao salvar etapa.");
-      return false;
     } finally {
       setSaving(false);
     }
@@ -2963,23 +2647,32 @@ function OnboardingContent() {
                   "Por fim, vamos organizar quem a IA deve avisar, em quais casos e quais orientações finais ela precisa seguir."}
               </p>
 
+              {hasCompletedOnboardingOnce ? (
+                <div className="mt-3">
+                  <InfoBlock
+                    title="Onboarding já concluído antes"
+                    description="Você pode revisar e ajustar os dados quando quiser. As regras vivas da loja continuam sendo controladas pela aba Configurações."
+                    subtle
+                  />
+                </div>
+              ) : null}
             </div>
 
-            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
+            <div className="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
               <button
                 type="button"
-                onClick={() => void handleGoToSettings()}
-                className={`${topActionButtonClassName} whitespace-nowrap border border-gray-300 text-gray-700 hover:bg-gray-50`}
+                onClick={() => router.push("/configuracoes")}
+                className="inline-flex items-center justify-center rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
               >
                 Ir para Configurações
               </button>
 
               <button
                 type="button"
-                onClick={() => void handleSaveAndExit()}
-                className={`${topActionButtonClassName} whitespace-nowrap bg-black text-white hover:opacity-90`}
+                onClick={() => router.push("/dashboard")}
+                className="inline-flex items-center justify-center rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
               >
-                Salvar e sair
+                Voltar ao painel
               </button>
             </div>
           </div>
@@ -3254,25 +2947,21 @@ function OnboardingContent() {
                     type="file"
                     multiple
                     accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,image/*"
-                    onChange={async (e) => {
+                    onChange={(e) => {
                       const selectedFiles = Array.from(e.target.files ?? []);
                       setIntelligentImportFiles(selectedFiles);
-                      const selectedFilesPreview = await buildSelectedFilePreviews(selectedFiles);
-                      setIntelligentImportSelectedFilesPreview(selectedFilesPreview);
+                      setIntelligentImportSelectedFilesPreview(
+                        selectedFiles.map((file) => ({
+                          name: file.name,
+                          type: file.type || "tipo não informado",
+                          size: file.size,
+                          lastModified: file.lastModified,
+                        }))
+                      );
                       setIntelligentImportRecovered(false);
                       setIntelligentImportError(null);
                       setIntelligentImportSuccess(null);
                       setIntelligentImportResult(null);
-                      window.setTimeout(() => {
-                        if (intelligentImportSessionStorageKey) {
-                          persistSessionStorageSafely(intelligentImportSessionStorageKey, {
-                            selectedFiles: selectedFilesPreview,
-                            result: null,
-                            successMessage: null,
-                            errorMessage: null,
-                          });
-                        }
-                      }, 0);
                     }}
                     className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />
@@ -3280,12 +2969,6 @@ function OnboardingContent() {
                   <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700">
                     Você pode enviar fotos do catálogo, imagens de produtos, tabelas simples em foto, PDF, Word, Excel e PowerPoint. As imagens selecionadas aparecem em pré-visualização logo abaixo para facilitar a conferência antes do teste.
                   </div>
-
-                  {intelligentImportRecovered ? (
-                    <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-900">
-                      Prévia restaurada desta aba. Você voltou exatamente para o ponto salvo mais recente da importação inteligente, inclusive etapa atual, rolagem e resultados leves da análise.
-                    </div>
-                  ) : null}
 
                   {visibleIntelligentImportFiles.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
@@ -3555,32 +3238,37 @@ function OnboardingContent() {
                           </div>
                         )}
                       </div>
-
-                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                          <div>
-                            <p className="text-sm font-semibold text-emerald-900">
-                              Salvar resultado no catálogo da loja
-                            </p>
-                            <p className="mt-1 text-sm leading-6 text-emerald-800">
-                              Isso cria os itens únicos da análise no catálogo real da loja e depois abre a categoria correspondente em Configurações.
-                            </p>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => void handleSaveImportedItemsToCatalog()}
-                            disabled={savingImportedCatalog || intelligentImportLoading}
-                            className="rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white disabled:opacity-60"
-                          >
-                            {savingImportedCatalog ? "Salvando no catálogo..." : "Salvar no catálogo"}
-                          </button>
-                        </div>
-                      </div>
                     </div>
                   ) : null}
                 </div>
               </div>
+
+
+              {intelligentImportResult?.ok ? (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="text-base font-semibold text-emerald-900">
+                        Salvar resultado no catálogo da loja
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-emerald-900">
+                        Isso salva tudo no lugar certo: piscinas em Piscinas, produtos químicos em Químicos,
+                        acessórios em Acessórios e o restante em Outros.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveImportedItemsToCatalog()}
+                      disabled={savingImportedCatalog || intelligentImportLoading}
+                      className="rounded-xl bg-black px-5 py-3 text-sm font-medium text-white disabled:opacity-60"
+                    >
+                      {savingImportedCatalog ? "Salvando no sistema..." : "Salvar no catálogo"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
 
               <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
                 <button
@@ -3861,6 +3549,11 @@ function OnboardingContent() {
 
               {hasDiscountConfigOverride ? (
                 <div className="space-y-4">
+                  <InfoBlock
+                    title="Desconto controlado pela aba Configurações"
+                    description="Esses valores agora estão em modo espelho no onboarding. Quando você muda em Configurações, aqui atualiza junto. Alterações feitas aqui no onboarding não sobrescrevem mais a política viva."
+                  />
+
                   <div>
                     <SectionTitle title="A loja pode dar desconto?" />
                     <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
@@ -4034,6 +3727,13 @@ function OnboardingContent() {
                 </div>
               )}
 
+              {step4Form.ai_can_send_price_directly === "não" && (
+                <InfoBlock
+                  title="Preço com apoio humano"
+                  description="Nesse caso, a IA não deve falar preço sozinha. Ela pode qualificar, entender o caso e chamar alguém da loja para seguir."
+                  subtle
+                />
+              )}
 
               <div>
                 <SectionTitle
