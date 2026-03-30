@@ -15,7 +15,14 @@ type OnboardingRow = {
   created_at?: string;
 };
 
-const ALLOWED_PATH_PREFIXES_WHEN_INCOMPLETE = ["/dashboard", "/configuracoes"];
+const ALLOWED_PATH_PREFIXES_WHEN_INCOMPLETE = [
+  "/dashboard",
+  "/crm",
+  "/inbox",
+  "/schedule",
+  "/configuracoes",
+  "/onboarding",
+];
 
 function isAllowedWhenOnboardingIncomplete(pathname: string | null) {
   if (!pathname) return false;
