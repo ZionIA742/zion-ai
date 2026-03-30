@@ -626,21 +626,98 @@ function decorateIntelligentImportResultWithImageFallback(
 
 type ImportedSaveTarget = "piscinas" | "acessorios" | "quimicos" | "outros";
 
+type ParsedImportedPoolData = {
+  width_m: number | null;
+  length_m: number | null;
+  depth_m: number | null;
+  max_capacity_l: number | null;
+  shape: string | null;
+  material: string | null;
+};
+
+function parseImportedDecimal(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = String(value).replace(/\./g, "").replace(/,/g, ".").trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseImportedInteger(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = String(value).replace(/\./g, "").replace(/,/g, "").trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+}
+
+function extractImportedPoolData(value: string): ParsedImportedPoolData {
+  const normalized = String(value ?? "");
+  const lower = normalized.toLowerCase();
+
+  let width_m: number | null = null;
+  let length_m: number | null = null;
+  let depth_m: number | null = null;
+  let max_capacity_l: number | null = null;
+
+  const pairMatch = lower.match(/(\d+[\.,]?\d*)\s*m\s*(?:x|×)\s*(\d+[\.,]?\d*)\s*m/);
+  if (pairMatch) {
+    width_m = parseImportedDecimal(pairMatch[1]);
+    length_m = parseImportedDecimal(pairMatch[2]);
+  }
+
+  const diameterMatch = lower.match(/(\d+[\.,]?\d*)\s*m\s*(?:diam|diâm|diâmetro)/);
+  if (diameterMatch) {
+    const diameter = parseImportedDecimal(diameterMatch[1]);
+    width_m = width_m ?? diameter;
+    length_m = length_m ?? diameter;
+  }
+
+  const depthMatch = lower.match(/profundidade\s*(?:de)?\s*(\d+[\.,]?\d*)\s*m/);
+  if (depthMatch) {
+    depth_m = parseImportedDecimal(depthMatch[1]);
+  } else {
+    const allMeterMatches = Array.from(lower.matchAll(/(\d+[\.,]?\d*)\s*m/g));
+    if (allMeterMatches.length >= 3) {
+      const maybeDepth = parseImportedDecimal(allMeterMatches[allMeterMatches.length - 1][1]);
+      if (maybeDepth !== width_m && maybeDepth !== length_m) {
+        depth_m = maybeDepth;
+      }
+    }
+  }
+
+  const capacityMatch = lower.match(/(\d{1,3}(?:[\.,]\d{3})+|\d+)\s*l/);
+  if (capacityMatch) {
+    max_capacity_l = parseImportedInteger(capacityMatch[1]);
+  }
+
+  const shape =
+    lower.includes("retangular")
+      ? "retangular"
+      : lower.includes("oval")
+      ? "oval"
+      : lower.includes("redonda") || lower.includes("diam") || lower.includes("diâm")
+      ? "redonda"
+      : lower.includes("raia")
+      ? "raia"
+      : lower.includes("spa")
+      ? "spa"
+      : null;
+
+  const material =
+    lower.includes("fibra")
+      ? "fibra"
+      : lower.includes("vinil")
+      ? "vinil"
+      : lower.includes("alvenaria")
+      ? "alvenaria"
+      : lower.includes("pastilha")
+      ? "pastilha"
+      : null;
+
+  return { width_m, length_m, depth_m, max_capacity_l, shape, material };
+}
+
 function normalizeImportedSaveTarget(value: string): ImportedSaveTarget {
   const normalized = String(value ?? "").trim().toLowerCase();
-
-  if (
-    normalized.includes("piscina") ||
-    normalized.includes("spa") ||
-    normalized.includes("vinil") ||
-    normalized.includes("fibra") ||
-    normalized.includes("alvenaria") ||
-    normalized.includes("pastilha") ||
-    normalized.includes("prainha") ||
-    normalized.includes("raia")
-  ) {
-    return "piscinas";
-  }
 
   if (
     normalized.includes("quim") ||
@@ -664,9 +741,34 @@ function normalizeImportedSaveTarget(value: string): ImportedSaveTarget {
     normalized.includes("led") ||
     normalized.includes("lumin") ||
     normalized.includes("mangueira") ||
-    normalized.includes("clorador")
+    normalized.includes("clorador") ||
+    normalized.includes("hidromassagem")
   ) {
     return "acessorios";
+  }
+
+  const parsedPool = extractImportedPoolData(normalized);
+  const hasPoolMeasures =
+    parsedPool.width_m !== null &&
+    parsedPool.length_m !== null &&
+    parsedPool.depth_m !== null;
+
+  const hasPoolSignals =
+    normalized.includes("piscina") ||
+    normalized.includes("spa") ||
+    normalized.includes("vinil") ||
+    normalized.includes("fibra") ||
+    normalized.includes("alvenaria") ||
+    normalized.includes("pastilha") ||
+    normalized.includes("prainha") ||
+    normalized.includes("raia") ||
+    normalized.includes("capacidade") ||
+    normalized.includes("profundidade") ||
+    normalized.includes("diâmetro") ||
+    normalized.includes("diâm");
+
+  if (hasPoolSignals && hasPoolMeasures) {
+    return "piscinas";
   }
 
   return "outros";
@@ -1527,34 +1629,42 @@ function OnboardingContent() {
         const description = buildImportedCatalogDescription(item);
 
         if (target === "piscinas") {
-          const { data: createdPool, error } = await supabase
-            .from("pools")
-            .insert({
-              name,
-              width_m: null,
-              length_m: null,
-              depth_m: null,
-              shape: null,
-              material: null,
-              max_capacity_l: null,
-              weight_kg: null,
-              price: null,
-              description,
-              is_active: true,
-              track_stock: false,
-              stock_quantity: null,
-            })
-            .select("id")
-            .single();
+          const parsedPool = extractImportedPoolData(`${item.title} ${item.rawText}`);
 
-          if (error) throw error;
+          if (
+            parsedPool.width_m !== null &&
+            parsedPool.length_m !== null &&
+            parsedPool.depth_m !== null
+          ) {
+            const { data: createdPool, error } = await supabase
+              .from("pools")
+              .insert({
+                name,
+                width_m: parsedPool.width_m,
+                length_m: parsedPool.length_m,
+                depth_m: parsedPool.depth_m,
+                shape: parsedPool.shape,
+                material: parsedPool.material,
+                max_capacity_l: parsedPool.max_capacity_l,
+                weight_kg: null,
+                price: null,
+                description,
+                is_active: true,
+                track_stock: false,
+                stock_quantity: null,
+              })
+              .select("id")
+              .single();
 
-          createdCounters.piscinas += 1;
-          createdPoolIds.push(createdPool.id);
-          continue;
+            if (error) throw error;
+
+            createdCounters.piscinas += 1;
+            createdPoolIds.push(createdPool.id);
+            continue;
+          }
         }
 
-        const category = getCatalogCategoryFromTarget(target);
+        const category = getCatalogCategoryFromTarget(target === "piscinas" ? "outros" : target);
 
         const { data: createdItem, error } = await supabase
           .from("store_catalog_items")
