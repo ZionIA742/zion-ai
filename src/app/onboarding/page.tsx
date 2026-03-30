@@ -560,37 +560,27 @@ function inferImportedDestination(
     .map((value) => String(value ?? "").toLowerCase())
     .join(" ");
 
-  const typeValue = String(item.type ?? "").toLowerCase();
-
   const chemicalScore =
-    (source.includes("quim") ? 3 : 0) +
-    (source.includes("cloro") ? 3 : 0) +
-    (source.includes("algicida") ? 3 : 0) +
-    (source.includes("clarificante") ? 3 : 0) +
-    (source.includes("sulfato") ? 3 : 0) +
-    (source.includes("elevador de ph") ? 3 : 0) +
-    (source.includes("redutor de ph") ? 3 : 0) +
+    (source.includes("quim") ? 4 : 0) +
+    (source.includes("cloro") ? 4 : 0) +
+    (source.includes("algicida") ? 4 : 0) +
+    (source.includes("clarificante") ? 4 : 0) +
+    (source.includes("sulfato") ? 4 : 0) +
+    (source.includes("elevador de ph") ? 4 : 0) +
+    (source.includes("redutor de ph") ? 4 : 0) +
     (source.includes("ph") ? 2 : 0);
 
   const accessoryScore =
-    (source.includes("acessor") ? 3 : 0) +
-    (source.includes("peneira") ? 3 : 0) +
-    (source.includes("escova") ? 3 : 0) +
-    (source.includes("aspirador") ? 3 : 0) +
-    (source.includes("dispositivo") ? 3 : 0) +
-    (source.includes("led") ? 2 : 0) +
-    (source.includes("mangueira") ? 2 : 0) +
-    (source.includes("clorador") ? 2 : 0) +
-    (source.includes("nicho") ? 2 : 0) +
-    (source.includes("retorno") ? 2 : 0);
-
-  if (chemicalScore >= 3 && chemicalScore >= accessoryScore) return "quimicos";
-  if (accessoryScore >= 3 && accessoryScore > chemicalScore) return "acessorios";
-
-  const typeSuggestsPool =
-    typeValue === "pool" ||
-    typeValue.includes("pool") ||
-    typeValue.includes("piscina");
+    (source.includes("acessor") ? 4 : 0) +
+    (source.includes("peneira") ? 4 : 0) +
+    (source.includes("escova") ? 4 : 0) +
+    (source.includes("aspirador") ? 4 : 0) +
+    (source.includes("dispositivo") ? 4 : 0) +
+    (source.includes("led") ? 3 : 0) +
+    (source.includes("mangueira") ? 3 : 0) +
+    (source.includes("clorador") ? 3 : 0) +
+    (source.includes("nicho") ? 3 : 0) +
+    (source.includes("retorno") ? 3 : 0);
 
   const hasPoolKeyword =
     source.includes("piscina") ||
@@ -598,16 +588,31 @@ function inferImportedDestination(
     source.includes("vinil") ||
     source.includes("fibra") ||
     source.includes("alvenaria") ||
-    source.includes("pastilha") ||
-    source.includes("prainha");
+    source.includes("pastilha");
 
-  const hasPoolMeasure =
-    /(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i.test(source) ||
-    /(\d+[\.,]?\d*)\s*m\s*di[âa]m/i.test(source) ||
-    /(capacidade\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*))/i.test(source) ||
-    /(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*l\b/i.test(source);
+  const poolScore =
+    (source.includes("piscina") ? 4 : 0) +
+    (source.includes("fibra") ? 2 : 0) +
+    (source.includes("vinil") ? 2 : 0) +
+    (source.includes("alvenaria") ? 2 : 0) +
+    (source.includes("pastilha") ? 2 : 0) +
+    (source.includes("profundidade") ? 2 : 0) +
+    (source.includes("capacidade") ? 2 : 0) +
+    (source.includes("litros") ? 2 : 0) +
+    (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 3 : 0) +
+    (/\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ? 3 : 0);
 
-  if (typeSuggestsPool || (hasPoolKeyword && hasPoolMeasure)) return "pool";
+  if (chemicalScore >= 4 && chemicalScore >= accessoryScore && chemicalScore >= poolScore) {
+    return "quimicos";
+  }
+
+  if (accessoryScore >= 4 && accessoryScore > chemicalScore && accessoryScore >= poolScore) {
+    return "acessorios";
+  }
+
+  if (hasPoolKeyword && poolScore >= 6) {
+    return "pool";
+  }
 
   const category = normalizeImportedCatalogCategory(source);
   return category;
@@ -667,22 +672,22 @@ function extractImportedPoolMetrics(
   }
 
   const depthMatch =
-    source.match(/profundidade\s*(?:de)?\s*(\d+[\.,]?\d*)\s*m/i) ||
-    source.match(/\b(\d+[\.,]?\d*)\s*m\b(?=.*profundidade)/i);
+    source.match(/profundidade\s*(?:de|do|da)?\s*(\d+[\.,]?\d*)\s*m/i) ||
+    source.match(/prof\.?\s*(\d+[\.,]?\d*)\s*m/i);
   if (depthMatch) {
     depth = parseImportedDecimal(depthMatch[1]);
   }
 
   const capacityMatch =
-    source.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*l\b/i) ||
-    source.match(/capacidade\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)/i);
+    source.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
+    source.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)\b/i);
   if (capacityMatch) {
     capacity = parseImportedDecimal(capacityMatch[1]);
   }
 
   const priceMatch =
-    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)/i) ||
-    source.match(/pre[cç]o\s*(?:estimado)?\s*(?:de)?\s*r\$\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)/i);
+    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
+    source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
   if (priceMatch) {
     price = parseImportedDecimal(priceMatch[1]);
   }
@@ -713,6 +718,59 @@ function extractImportedPoolMetrics(
     shape,
     price,
   };
+}
+
+function extractImportedCatalogPriceCents(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  const priceMatch =
+    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
+    source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
+
+  if (!priceMatch) return null;
+
+  const parsed = parseImportedDecimal(priceMatch[1]);
+  if (parsed == null) return null;
+
+  return Math.round(parsed * 100);
+}
+
+function pickRelatedExtractedImages(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  extractedImageBuckets: Map<string, Array<{ fileName: string; mimeType: string; dataUrl: string }>>,
+  totalSourceItems: number
+) {
+  const sourceKey = String(item.sourceFileName || "").trim().toLowerCase();
+  const direct = extractedImageBuckets.get(sourceKey);
+  if (direct && direct.length > 0) {
+    extractedImageBuckets.delete(sourceKey);
+    return direct;
+  }
+
+  const normalizedSourceKey = sourceKey.replace(/\.[^.]+$/, "");
+  for (const [key, images] of extractedImageBuckets.entries()) {
+    const normalizedKey = key.replace(/\.[^.]+$/, "");
+    if (
+      normalizedKey === normalizedSourceKey ||
+      normalizedKey.includes(normalizedSourceKey) ||
+      normalizedSourceKey.includes(normalizedKey)
+    ) {
+      extractedImageBuckets.delete(key);
+      return images;
+    }
+  }
+
+  if (totalSourceItems === 1 && extractedImageBuckets.size > 0) {
+    const [firstKey, firstImages] = Array.from(extractedImageBuckets.entries())[0];
+    extractedImageBuckets.delete(firstKey);
+    return firstImages;
+  }
+
+  return [];
 }
 
 function canPersistAsPool(metrics: {
@@ -1576,18 +1634,6 @@ function OnboardingContent() {
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
 
-      const getRelatedExtractedImages = (itemSourceKey: string) => {
-        const direct = extractedImageBuckets.get(itemSourceKey) ?? [];
-        if (direct.length > 0) return direct;
-
-        if (sourceItems.length === 1 && extractedImageBuckets.size === 1) {
-          const onlyBucket = Array.from(extractedImageBuckets.values())[0] ?? [];
-          return onlyBucket;
-        }
-
-        return [];
-      };
-
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
 
@@ -1600,32 +1646,20 @@ function OnboardingContent() {
       for (const item of sourceItems) {
         const destination = inferImportedDestination(item);
         const itemSourceKey = String(item.sourceFileName || "").trim().toLowerCase();
-        const relatedExtractedImages = getRelatedExtractedImages(itemSourceKey);
+        const relatedExtractedImages = pickRelatedExtractedImages(
+          item,
+          extractedImageBuckets,
+          sourceItems.length
+        );
 
         if (destination === "pool") {
           const metrics = extractImportedPoolMetrics(item);
 
           if (canPersistAsPool(metrics)) {
-            const poolName = buildImportedCatalogName(item).replace(/^Piscina:\s*/i, "").trim();
-            const poolDescriptionParts = [
-              buildImportedCatalogDescription(item),
-              metrics.width_m != null && metrics.length_m != null
-                ? `Medidas: ${String(metrics.width_m).replace(".", ",")} x ${String(metrics.length_m).replace(".", ",")} m`
-                : "",
-              metrics.depth_m != null
-                ? `Profundidade: ${String(metrics.depth_m).replace(".", ",")} m`
-                : "",
-              metrics.max_capacity_l != null
-                ? `Capacidade: ${Number(metrics.max_capacity_l).toLocaleString("pt-BR")} L`
-                : "",
-              metrics.material ? `Material: ${metrics.material}` : "",
-              metrics.shape ? `Formato: ${metrics.shape}` : "",
-            ].filter(Boolean);
-
             const { data: createdPool, error } = await supabase
               .from("pools")
               .insert({
-                name: poolName || buildImportedCatalogName(item),
+                name: buildImportedCatalogName(item),
                 width_m: metrics.width_m,
                 length_m: metrics.length_m,
                 depth_m: metrics.depth_m,
@@ -1634,7 +1668,7 @@ function OnboardingContent() {
                 max_capacity_l: metrics.max_capacity_l,
                 weight_kg: null,
                 price: metrics.price,
-                description: poolDescriptionParts.join(" | "),
+                description: buildImportedCatalogDescription(item),
                 is_active: true,
                 track_stock: false,
                 stock_quantity: null,
@@ -1649,18 +1683,7 @@ function OnboardingContent() {
 
             if (relatedExtractedImages.length > 0) {
               for (let index = 0; index < relatedExtractedImages.length; index += 1) {
-                await uploadExtractedImageToPool(
-                  organizationId,
-                  activeStore.id,
-                  createdPool.id,
-                  relatedExtractedImages[index],
-                  index
-                );
-              }
-              if (extractedImageBuckets.has(itemSourceKey)) {
-                extractedImageBuckets.delete(itemSourceKey);
-              } else if (sourceItems.length === 1 && extractedImageBuckets.size === 1) {
-                extractedImageBuckets.clear();
+                await uploadExtractedImageToPool(organizationId, activeStore.id, createdPool.id, relatedExtractedImages[index], index);
               }
             } else if (selectedImageFiles[imageCursor]) {
               try {
@@ -1682,17 +1705,15 @@ function OnboardingContent() {
                 [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
               );
 
-        const parsedCatalogPrice = extractImportedPoolMetrics(item).price;
-
         const { data: createdItem, error } = await supabase
           .from("store_catalog_items")
           .insert({
             organization_id: organizationId,
             store_id: activeStore.id,
             sku: null,
-            name: buildImportedCatalogName(item).replace(/^Piscina:\s*/i, "").trim(),
+            name: buildImportedCatalogName(item),
             description: buildImportedCatalogDescription(item),
-            price_cents: parsedCatalogPrice == null ? null : Math.round(parsedCatalogPrice * 100),
+            price_cents: extractImportedCatalogPriceCents(item),
             currency: "BRL",
             is_active: true,
             track_stock: false,
@@ -1719,18 +1740,7 @@ function OnboardingContent() {
 
         if (relatedExtractedImages.length > 0) {
           for (let index = 0; index < relatedExtractedImages.length; index += 1) {
-            await uploadExtractedImageToCatalog(
-              organizationId,
-              activeStore.id,
-              createdItem.id,
-              relatedExtractedImages[index],
-              index
-            );
-          }
-          if (extractedImageBuckets.has(itemSourceKey)) {
-            extractedImageBuckets.delete(itemSourceKey);
-          } else if (sourceItems.length === 1 && extractedImageBuckets.size === 1) {
-            extractedImageBuckets.clear();
+            await uploadExtractedImageToCatalog(organizationId, activeStore.id, createdItem.id, relatedExtractedImages[index], index);
           }
         } else if (selectedImageFiles[imageCursor]) {
           try {
@@ -2970,7 +2980,7 @@ async function upsertAnswers(
             <div className="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
               <button
                 type="button"
-                onClick={() => router.push("/configuracoes")}
+                onClick={() => navigateWithFallback("/configuracoes")}
                 className="inline-flex items-center justify-center rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
               >
                 Ir para Configurações
@@ -2978,10 +2988,10 @@ async function upsertAnswers(
 
               <button
                 type="button"
-                onClick={() => router.push("/dashboard")}
+                onClick={() => navigateWithFallback("/dashboard")}
                 className="inline-flex items-center justify-center rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
               >
-                Voltar ao painel
+                Salvar e sair
               </button>
             </div>
           </div>
