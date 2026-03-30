@@ -708,6 +708,95 @@ function canPersistAsPool(metrics: {
 }
 
 
+function dataUrlToBlob(dataUrl: string) {
+  const [header, data] = String(dataUrl || "").split(",");
+  if (!header || !data) {
+    throw new Error("Data URL inválida para upload da imagem.");
+  }
+
+  const mimeMatch = header.match(/data:(.*?);base64/i);
+  const mimeType = mimeMatch?.[1] || "image/jpeg";
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Blob([bytes], { type: mimeType });
+}
+
+function buildSafeImportedImageExtension(fileName: string, mimeType: string) {
+  const byName = String(fileName || "").split(".").pop()?.toLowerCase();
+  if (byName) return byName;
+  if (mimeType.includes("png")) return "png";
+  if (mimeType.includes("webp")) return "webp";
+  return "jpg";
+}
+
+async function uploadExtractedImageToPool(
+  organizationId: string,
+  storeId: string,
+  poolId: string,
+  image: { fileName: string; mimeType: string; dataUrl: string },
+  sortOrder: number
+) {
+  const blob = dataUrlToBlob(image.dataUrl);
+  const extension = buildSafeImportedImageExtension(image.fileName, image.mimeType);
+  const filePath = `${organizationId}/${storeId}/${poolId}/${Date.now()}-${sortOrder}.${extension}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from("pool-photos")
+    .upload(filePath, blob, {
+      upsert: false,
+      contentType: image.mimeType || blob.type || "image/jpeg",
+    });
+
+  if (uploadError) throw uploadError;
+
+  const { error: metadataError } = await supabase.from("pool_photos").insert({
+    pool_id: poolId,
+    storage_path: filePath,
+    file_name: image.fileName,
+    file_size_bytes: blob.size,
+    sort_order: sortOrder,
+  });
+
+  if (metadataError) throw metadataError;
+}
+
+async function uploadExtractedImageToCatalog(
+  organizationId: string,
+  storeId: string,
+  catalogItemId: string,
+  image: { fileName: string; mimeType: string; dataUrl: string },
+  sortOrder: number
+) {
+  const blob = dataUrlToBlob(image.dataUrl);
+  const extension = buildSafeImportedImageExtension(image.fileName, image.mimeType);
+  const filePath = `${organizationId}/${storeId}/${catalogItemId}/${Date.now()}-${sortOrder}.${extension}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from("store-catalog-photos")
+    .upload(filePath, blob, {
+      upsert: false,
+      contentType: image.mimeType || blob.type || "image/jpeg",
+    });
+
+  if (uploadError) throw uploadError;
+
+  const { error: metadataError } = await supabase.from("store_catalog_item_photos").insert({
+    catalog_item_id: catalogItemId,
+    storage_path: filePath,
+    file_name: image.fileName,
+    file_size_bytes: blob.size,
+    sort_order: sortOrder,
+  });
+
+  if (metadataError) throw metadataError;
+}
+
+
 function StepBadge({
   step,
   currentStep,
@@ -1360,10 +1449,15 @@ function OnboardingContent() {
     }
   }
 
-  async function uploadImportedImageToPool(poolId: string, file: File) {
+  
+  async function uploadImportedImageToPool(poolId: string, file: File, sortOrder = 0) {
+    if (!organizationId || !activeStore?.id) {
+      throw new Error("Loja ativa não identificada para salvar a foto da piscina.");
+    }
+
     const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
     const safeExtension = extension ? extension.toLowerCase() : "jpg";
-    const filePath = `${organizationId}/${activeStore?.id}/${poolId}/${Date.now()}-0.${safeExtension}`;
+    const filePath = `${organizationId}/${activeStore.id}/${poolId}/${Date.now()}-${sortOrder}.${safeExtension}`;
 
     const { error: uploadError } = await supabase.storage
       .from("pool-photos")
@@ -1379,16 +1473,20 @@ function OnboardingContent() {
       storage_path: filePath,
       file_name: file.name,
       file_size_bytes: file.size,
-      sort_order: 0,
+      sort_order: sortOrder,
     });
 
     if (metadataError) throw metadataError;
   }
 
-  async function uploadImportedImageToCatalog(catalogItemId: string, file: File) {
+  async function uploadImportedImageToCatalog(catalogItemId: string, file: File, sortOrder = 0) {
+    if (!organizationId || !activeStore?.id) {
+      throw new Error("Loja ativa não identificada para salvar a foto do catálogo.");
+    }
+
     const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
     const safeExtension = extension ? extension.toLowerCase() : "jpg";
-    const filePath = `${organizationId}/${activeStore?.id}/${catalogItemId}/${Date.now()}-0.${safeExtension}`;
+    const filePath = `${organizationId}/${activeStore.id}/${catalogItemId}/${Date.now()}-${sortOrder}.${safeExtension}`;
 
     const { error: uploadError } = await supabase.storage
       .from("store-catalog-photos")
@@ -1404,7 +1502,7 @@ function OnboardingContent() {
       storage_path: filePath,
       file_name: file.name,
       file_size_bytes: file.size,
-      sort_order: 0,
+      sort_order: sortOrder,
     });
 
     if (metadataError) throw metadataError;
@@ -1440,9 +1538,24 @@ function OnboardingContent() {
         String(file.type || "").startsWith("image/")
       );
 
+      const extractedImageBuckets = new Map<
+        string,
+        Array<{ fileName: string; mimeType: string; dataUrl: string }>
+      >();
+
+      for (const image of safeExtractedImagePreview) {
+        const bucketKey = String(image.sourceFileName || "").trim().toLowerCase();
+        const currentBucket = extractedImageBuckets.get(bucketKey) ?? [];
+        currentBucket.push({
+          fileName: image.fileName || "imagem-extraida.jpg",
+          mimeType: image.mimeType || "image/jpeg",
+          dataUrl: image.dataUrl,
+        });
+        extractedImageBuckets.set(bucketKey, currentBucket);
+      }
+
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
-      let firstCatalogId: string | null = null;
 
       let savedPools = 0;
       let savedAcessorios = 0;
@@ -1452,6 +1565,8 @@ function OnboardingContent() {
 
       for (const item of sourceItems) {
         const destination = inferImportedDestination(item);
+        const itemSourceKey = String(item.sourceFileName || "").trim().toLowerCase();
+        const relatedExtractedImages = extractedImageBuckets.get(itemSourceKey) ?? [];
 
         if (destination === "pool") {
           const metrics = extractImportedPoolMetrics(item);
@@ -1482,9 +1597,14 @@ function OnboardingContent() {
             if (!firstPoolId) firstPoolId = createdPool.id;
             savedPools += 1;
 
-            if (selectedImageFiles[imageCursor]) {
+            if (relatedExtractedImages.length > 0) {
+              for (let index = 0; index < relatedExtractedImages.length; index += 1) {
+                await uploadExtractedImageToPool(organizationId, activeStore.id, createdPool.id, relatedExtractedImages[index], index);
+              }
+              extractedImageBuckets.delete(itemSourceKey);
+            } else if (selectedImageFiles[imageCursor]) {
               try {
-                await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor]);
+                await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor], 0);
                 imageCursor += 1;
               } catch (uploadError) {
                 console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
@@ -1530,15 +1650,19 @@ function OnboardingContent() {
         if (error) throw error;
 
         if (!firstCatalogCategory) firstCatalogCategory = category;
-        if (!firstCatalogId) firstCatalogId = createdItem.id;
 
         if (category === "quimicos") savedQuimicos += 1;
         else if (category === "acessorios") savedAcessorios += 1;
         else savedOutros += 1;
 
-        if (selectedImageFiles[imageCursor]) {
+        if (relatedExtractedImages.length > 0) {
+          for (let index = 0; index < relatedExtractedImages.length; index += 1) {
+            await uploadExtractedImageToCatalog(organizationId, activeStore.id, createdItem.id, relatedExtractedImages[index], index);
+          }
+          extractedImageBuckets.delete(itemSourceKey);
+        } else if (selectedImageFiles[imageCursor]) {
           try {
-            await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor]);
+            await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor], 0);
             imageCursor += 1;
           } catch (uploadError) {
             console.error("[OnboardingPage] uploadImportedImageToCatalog error:", uploadError);
@@ -1578,8 +1702,7 @@ function OnboardingContent() {
     }
   }
 
-
-  async function upsertAnswers(
+async function upsertAnswers(
     payloads: Array<[string, unknown]>,
     nextSuccessMessage: string,
     nextStep?: number,
