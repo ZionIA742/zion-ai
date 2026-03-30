@@ -65,6 +65,20 @@ function categoryLabel(category: string) {
   return "Outros itens";
 }
 
+function getCatalogImportedFields(metadata: CatalogItemMetadata | null | undefined) {
+  const rows = [
+    { label: "Dimensões", value: metadata?.imported_dimensions },
+    { label: "Profundidade", value: metadata?.imported_depth },
+    { label: "Capacidade", value: metadata?.imported_capacity },
+    { label: "Material", value: metadata?.imported_material },
+    { label: "Formato", value: metadata?.imported_shape },
+    { label: "Arquivo de origem", value: metadata?.source_file_name },
+  ];
+
+  return rows.filter((row) => String(row.value || "").trim());
+}
+
+
 function moneyFromCentsBRL(value: number | null) {
   if (value == null) return "Sem preço";
   return `R$ ${(value / 100).toLocaleString("pt-BR", {
@@ -890,6 +904,7 @@ export default function CatalogoCategoriaPage() {
             {items.map((item) => {
               const itemPhotos = photosByItemId[item.id] || [];
               const availability = getCatalogAvailability(item);
+              const importedFields = getCatalogImportedFields(item.metadata);
               const isEditing = editingItemId === item.id && editItemForm;
               const isSaving = savingItemId === item.id;
               const isDeleting = deletingItemId === item.id;
@@ -1090,6 +1105,24 @@ export default function CatalogoCategoriaPage() {
                         </div>
                       ) : (
                         <>
+                          {importedFields.length > 0 ? (
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              {importedFields.map((field) => (
+                                <div
+                                  key={field.label}
+                                  className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5"
+                                >
+                                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    {field.label}
+                                  </div>
+                                  <div className="mt-2 text-sm font-medium text-gray-900">
+                                    {String(field.value)}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+
                           <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
                             <div className="text-sm font-semibold text-gray-900">Descrição</div>
                             <div className="mt-2 text-sm text-gray-600">

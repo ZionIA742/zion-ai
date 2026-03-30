@@ -780,11 +780,199 @@ function canPersistAsPool(metrics: {
   max_capacity_l: number | null;
 }) {
   return (
-    metrics.width_m != null &&
-    metrics.length_m != null &&
-    metrics.depth_m != null &&
+    metrics.width_m != null ||
+    metrics.length_m != null ||
+    metrics.depth_m != null ||
     metrics.max_capacity_l != null
   );
+}
+
+function normalizeImportedLoose(value: string | null | undefined) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractMetadataValue(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  keys: string[]
+) {
+  for (const key of keys) {
+    const direct = item.metadata?.[key];
+    if (typeof direct === "string" && direct.trim()) return direct.trim();
+  }
+
+  const lowerKeyMap = Object.entries(item.metadata ?? {}).reduce<Record<string, string>>(
+    (acc, [key, value]) => {
+      if (typeof value === "string" && value.trim()) {
+        acc[key.toLowerCase()] = value.trim();
+      }
+      return acc;
+    },
+    {}
+  );
+
+  for (const key of keys) {
+    const found = lowerKeyMap[key.toLowerCase()];
+    if (found) return found;
+  }
+
+  return "";
+}
+
+function isGenericImportedTitle(title: string) {
+  const normalized = normalizeImportedLoose(title);
+
+  if (!normalized) return true;
+
+  const blockedStarts = [
+    "catalogo de teste",
+    "descricao detalhada",
+    "regra comercial",
+    "arquivo de teste",
+    "nome do item",
+  ];
+
+  if (blockedStarts.some((item) => normalized === item || normalized.startsWith(item))) {
+    return true;
+  }
+
+  if (normalized === "piscina" || normalized === "item importado") {
+    return true;
+  }
+
+  return false;
+}
+
+function shouldSkipImportedItem(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const normalizedTitle = normalizeImportedLoose(item.title);
+  const normalizedRaw = normalizeImportedLoose(item.rawText);
+  const normalizedType = normalizeImportedLoose(item.type);
+
+  if (normalizedType === "commercial rule" || normalizedType === "commercial_rule") {
+    return true;
+  }
+
+  if (normalizedType === "store info" || normalizedType === "store_info") {
+    return true;
+  }
+
+  if (normalizedType === "responsible info" || normalizedType === "responsible_info") {
+    return true;
+  }
+
+  if (normalizedType === "unknown" && item.confidence <= 0.35) {
+    return true;
+  }
+
+  if (isGenericImportedTitle(item.title) && item.confidence <= 0.75) {
+    return true;
+  }
+
+  if (
+    normalizedRaw.includes("arquivo de teste") &&
+    normalizedRaw.includes("validar upload inteligente") &&
+    !normalizedRaw.includes("r$") &&
+    !normalizedRaw.includes("capacidade") &&
+    !normalizedRaw.includes("profundidade")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function resolveImportedDestination(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+): ImportedDestination {
+  const explicitDestination = normalizeImportedLoose(
+    extractMetadataValue(item, [
+      "destination",
+      "destino",
+      "categoryhint",
+      "category_hint",
+      "categoria",
+      "source_type",
+      "import_type",
+    ])
+  );
+
+  if (explicitDestination === "pool") return "pool";
+  if (explicitDestination === "quimicos" || explicitDestination === "quimico") return "quimicos";
+  if (explicitDestination === "acessorios" || explicitDestination === "acessorio")
+    return "acessorios";
+  if (explicitDestination === "outros" || explicitDestination === "outro") return "outros";
+
+  const inferred = inferImportedDestination(item);
+
+  if (inferred !== "outros") return inferred;
+
+  const raw = normalizeImportedLoose([item.title, item.rawText].join(" "));
+  if (
+    raw.includes("capacidade") ||
+    raw.includes("profundidade") ||
+    /\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(raw) ||
+    /\b\d+[\.,]?\d*\s*m\s*diam/i.test(raw)
+  ) {
+    return "pool";
+  }
+
+  return inferred;
+}
+
+function buildImportedPoolName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const explicitTitle = extractMetadataValue(item, ["title", "titulo", "nome", "productName"]);
+  const candidate = explicitTitle || item.title || item.rawText || "Piscina importada";
+  return candidate
+    .replace(/^Piscina\s*:\s*/i, "")
+    .replace(/^Cat[aá]logo\s*:\s*/i, "")
+    .replace(/^Nome do item\s*:\s*/i, "")
+    .trim()
+    .slice(0, 160);
+}
+
+function buildImportedPoolDescription(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const descriptionParts = [
+    extractMetadataValue(item, ["descricao", "descrição", "description"]),
+    item.rawText,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  if (descriptionParts.length === 0) return null;
+
+  const merged = Array.from(new Set(descriptionParts)).join("\n\n");
+  return merged.slice(0, 4000);
+}
+
+function buildImportedCatalogMetadata(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  category: ImportedCatalogCategory
+) {
+  return {
+    categoria: category,
+    source: "onboarding_intelligent_import",
+    source_file_name: item.sourceFileName,
+    source_type: item.type,
+    confidence: item.confidence,
+    dedup_key: "dedupKey" in item ? item.dedupKey : null,
+    imported_title: buildImportedCatalogName(item),
+    imported_dimensions: extractMetadataValue(item, ["medidas", "dimensions"]),
+    imported_depth: extractMetadataValue(item, ["profundidade", "depth"]),
+    imported_capacity: extractMetadataValue(item, ["capacidade", "capacity"]),
+    imported_material: extractMetadataValue(item, ["material"]),
+    imported_shape: extractMetadataValue(item, ["formato", "shape"]),
+  };
 }
 
 
@@ -835,6 +1023,8 @@ async function uploadExtractedImageToPool(
   if (uploadError) throw uploadError;
 
   const { error: metadataError } = await supabase.from("pool_photos").insert({
+    organization_id: organizationId,
+    store_id: storeId,
     pool_id: poolId,
     storage_path: filePath,
     file_name: image.fileName,
@@ -1549,6 +1739,8 @@ function OnboardingContent() {
     if (uploadError) throw uploadError;
 
     const { error: metadataError } = await supabase.from("pool_photos").insert({
+      organization_id: organizationId,
+      store_id: activeStore.id,
       pool_id: poolId,
       storage_path: filePath,
       file_name: file.name,
@@ -1599,13 +1791,17 @@ function OnboardingContent() {
       return;
     }
 
-    const sourceItems =
+    const rawSourceItems =
       intelligentImportResult.dedupedPreview.length > 0
         ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
         : intelligentImportResult.normalizedPreview;
 
+    const sourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
+
     if (sourceItems.length === 0) {
-      setFormError("Não existem itens prontos para salvar.");
+      setFormError(
+        "A análise não encontrou itens prontos para salvar. Tente um arquivo mais direto ou revise a importação."
+      );
       return;
     }
 
@@ -1644,8 +1840,7 @@ function OnboardingContent() {
       let imageCursor = 0;
 
       for (const item of sourceItems) {
-        const destination = inferImportedDestination(item);
-        const itemSourceKey = String(item.sourceFileName || "").trim().toLowerCase();
+        const destination = resolveImportedDestination(item);
         const relatedExtractedImages = pickRelatedExtractedImages(
           item,
           extractedImageBuckets,
@@ -1654,48 +1849,60 @@ function OnboardingContent() {
 
         if (destination === "pool") {
           const metrics = extractImportedPoolMetrics(item);
+          const poolName = buildImportedPoolName(item);
+          const poolDescription = buildImportedPoolDescription(item);
 
-          if (canPersistAsPool(metrics)) {
-            const { data: createdPool, error } = await supabase
-              .from("pools")
-              .insert({
-                name: buildImportedCatalogName(item),
-                width_m: metrics.width_m,
-                length_m: metrics.length_m,
-                depth_m: metrics.depth_m,
-                shape: metrics.shape,
-                material: metrics.material,
-                max_capacity_l: metrics.max_capacity_l,
-                weight_kg: null,
-                price: metrics.price,
-                description: buildImportedCatalogDescription(item),
-                is_active: true,
-                track_stock: false,
-                stock_quantity: null,
-              })
-              .select("id")
-              .single();
-
-            if (error) throw error;
-
-            if (!firstPoolId) firstPoolId = createdPool.id;
-            savedPools += 1;
-
-            if (relatedExtractedImages.length > 0) {
-              for (let index = 0; index < relatedExtractedImages.length; index += 1) {
-                await uploadExtractedImageToPool(organizationId, activeStore.id, createdPool.id, relatedExtractedImages[index], index);
-              }
-            } else if (selectedImageFiles[imageCursor]) {
-              try {
-                await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor], 0);
-                imageCursor += 1;
-              } catch (uploadError) {
-                console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
-              }
-            }
-
+          if (!poolName || isGenericImportedTitle(poolName)) {
             continue;
           }
+
+          const { data: createdPool, error } = await supabase
+            .from("pools")
+            .insert({
+              organization_id: organizationId,
+              store_id: activeStore.id,
+              name: poolName,
+              width_m: metrics.width_m,
+              length_m: metrics.length_m,
+              depth_m: metrics.depth_m,
+              shape: metrics.shape,
+              material: metrics.material,
+              max_capacity_l: metrics.max_capacity_l,
+              weight_kg: null,
+              price: metrics.price,
+              description: poolDescription,
+              is_active: true,
+              track_stock: false,
+              stock_quantity: null,
+            })
+            .select("id")
+            .single();
+
+          if (error) throw error;
+
+          if (!firstPoolId) firstPoolId = createdPool.id;
+          savedPools += 1;
+
+          if (relatedExtractedImages.length > 0) {
+            for (let index = 0; index < relatedExtractedImages.length; index += 1) {
+              await uploadExtractedImageToPool(
+                organizationId,
+                activeStore.id,
+                createdPool.id,
+                relatedExtractedImages[index],
+                index
+              );
+            }
+          } else if (selectedImageFiles[imageCursor]) {
+            try {
+              await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor], 0);
+              imageCursor += 1;
+            } catch (uploadError) {
+              console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
+            }
+          }
+
+          continue;
         }
 
         const category =
@@ -1705,27 +1912,25 @@ function OnboardingContent() {
                 [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
               );
 
+        const itemName = buildImportedCatalogName(item);
+        if (!itemName || isGenericImportedTitle(itemName)) {
+          continue;
+        }
+
         const { data: createdItem, error } = await supabase
           .from("store_catalog_items")
           .insert({
             organization_id: organizationId,
             store_id: activeStore.id,
             sku: null,
-            name: buildImportedCatalogName(item),
+            name: itemName,
             description: buildImportedCatalogDescription(item),
             price_cents: extractImportedCatalogPriceCents(item),
             currency: "BRL",
             is_active: true,
             track_stock: false,
             stock_quantity: null,
-            metadata: {
-              categoria: category,
-              source: "onboarding_intelligent_import",
-              source_file_name: item.sourceFileName,
-              source_type: item.type,
-              confidence: item.confidence,
-              dedup_key: "dedupKey" in item ? item.dedupKey : null,
-            },
+            metadata: buildImportedCatalogMetadata(item, category),
           })
           .select("id")
           .single();
@@ -1740,7 +1945,13 @@ function OnboardingContent() {
 
         if (relatedExtractedImages.length > 0) {
           for (let index = 0; index < relatedExtractedImages.length; index += 1) {
-            await uploadExtractedImageToCatalog(organizationId, activeStore.id, createdItem.id, relatedExtractedImages[index], index);
+            await uploadExtractedImageToCatalog(
+              organizationId,
+              activeStore.id,
+              createdItem.id,
+              relatedExtractedImages[index],
+              index
+            );
           }
         } else if (selectedImageFiles[imageCursor]) {
           try {
@@ -1753,6 +1964,14 @@ function OnboardingContent() {
       }
 
       const totalCreated = savedPools + savedAcessorios + savedQuimicos + savedOutros;
+
+      if (totalCreated === 0) {
+        setFormError(
+          "A análise foi concluída, mas nenhum item válido ficou pronto para salvar. Revise o arquivo e teste novamente."
+        );
+        return;
+      }
+
       setSuccessMessage(
         `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}.`
       );
@@ -1769,9 +1988,7 @@ function OnboardingContent() {
         return;
       }
 
-      if (totalCreated > 0) {
-        navigateWithFallback("/configuracoes");
-      }
+      navigateWithFallback("/configuracoes");
     } catch (error) {
       console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
       setFormError(

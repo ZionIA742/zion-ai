@@ -1,4 +1,8 @@
 import type { ExtractedFileContent } from "./onboarding-file-extractors";
+import {
+  parseStructuredImportItems,
+  type StructuredImportItem,
+} from "./onboarding-import-structured-parser";
 
 export type NormalizedImportItemType =
   | "store_info"
@@ -17,1024 +21,134 @@ export type NormalizedImportItem = {
   metadata: Record<string, string>;
 };
 
-type SimpleCatalogRow = {
-  productName: string;
-  qtdCaixa?: string;
-  valorCx?: string;
-  valorUni?: string;
-  valorVd?: string;
-  rawText: string;
-};
-
-type SimplePoolCard = {
-  title: string;
-  tipo?: string;
-  formato?: string;
-  medidas?: string;
-  profundidade?: string;
-  capacidade?: string;
-  prazoEstimado?: string;
-  faixaPreco?: string;
-  acabamento?: string;
-  descricao?: string;
-  rawText: string;
-};
-
-const POOL_FIELD_LABELS = [
-  "Tipo",
-  "Formato",
-  "Medidas",
-  "Profundidade",
-  "Capacidade",
-  "Prazo estimado",
-  "Faixa de preço",
-  "Faixa de preco",
-  "Acabamento",
-  "Observações",
-  "Observacoes",
-] as const;
-
 function cleanText(text: string) {
-  return text.replace(/\r/g, "").replace(/\t/g, " ").trim();
-}
-
-function splitIntoParagraphBlocks(text: string) {
-  return cleanText(text)
-    .split(/\n\s*\n+/)
-    .map((block) => block.trim())
-    .filter(Boolean);
+  return String(text || "")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function normalizeLoose(value: string) {
-  return value
+  return String(value || "")
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}\s.,/%|:\-]/gu, " ")
+    .replace(/[^\p{L}\p{N}\s:.,/%x()-]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function isMoneyLike(value: string) {
-  const v = value.trim();
-
-  return (
-    /^r\$\s*\d{1,3}(\.\d{3})*,\d{2}(\s*a\s*r\$\s*\d{1,3}(\.\d{3})*,\d{2})?$/i.test(
-      v
-    ) ||
-    /^-?\d{1,3}(\.\d{3})*,\d{2}$/.test(v) ||
-    /^-?\d+,\d{2}$/.test(v)
-  );
-}
-
-function isIntegerLike(value: string) {
-  return /^\d+$/.test(value.trim());
-}
-
-function getPipeLines(text: string) {
-  return cleanText(text)
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => line.includes("|"));
-}
-
-function splitPipeCells(line: string) {
-  return line
-    .split("|")
-    .map((cell) => cell.trim())
-    .filter(Boolean);
-}
-
-function looksLikeCatalogHeader(text: string) {
-  const lower = normalizeLoose(text);
-
-  const hasProdutos = lower.includes("produto") || lower.includes("produtos");
-  const hasQtd =
-    lower.includes("qtd caixa") ||
-    lower.includes("qtd") ||
-    lower.includes("quantidade");
-  const hasValorCx =
-    lower.includes("valor cx") ||
-    lower.includes("valor caixa") ||
-    lower.includes("vlr cx");
-  const hasValorUni =
-    lower.includes("valor uni") ||
-    lower.includes("valor unit") ||
-    lower.includes("valor unitario");
-  const hasValorVenda =
-    lower.includes("valor vd") ||
-    lower.includes("valor venda") ||
-    lower.includes("venda");
-
-  const score = [
-    hasProdutos,
-    hasQtd,
-    hasValorCx,
-    hasValorUni,
-    hasValorVenda,
-  ].filter(Boolean).length;
-
-  return score >= 3;
-}
-
-function looksLikePoolDocument(text: string) {
-  const lower = normalizeLoose(text);
-
-  const signals = [
-    lower.includes("piscina"),
-    lower.includes("tipo"),
-    lower.includes("medidas"),
-    lower.includes("profundidade"),
-    lower.includes("capacidade"),
-    lower.includes("prazo estimado"),
-    lower.includes("faixa de preco"),
-  ].filter(Boolean).length;
-
-  return signals >= 4;
-}
-
-function looksLikePoolHeader(text: string) {
-  const lower = normalizeLoose(text);
-
-  const score = [
-    lower.includes("modelo"),
-    lower.includes("tipo"),
-    lower.includes("formato"),
-    lower.includes("medidas"),
-    lower.includes("profundidade"),
-    lower.includes("capacidade"),
-    lower.includes("prazo estimado") || lower.includes("prazo"),
-    lower.includes("faixa de preco") ||
-      lower.includes("faixa de preço") ||
-      lower.includes("preco"),
-  ].filter(Boolean).length;
-
-  return score >= 4;
-}
-
-function normalizeHeaderCell(value: string) {
-  return normalizeLoose(value).replace(/\s+/g, " ").trim();
-}
-
-function buildCatalogItem(
-  extracted: ExtractedFileContent,
-  row: SimpleCatalogRow,
-  importMode: string,
-  confidence: number
-): NormalizedImportItem {
+function buildMetadata(item: StructuredImportItem) {
   return {
-    type: "catalog_item",
-    sourceFileName: extracted.fileName,
-    title: `Catálogo: ${row.productName}`,
-    rawText: row.rawText,
-    confidence,
-    metadata: {
-      extension: extracted.extension,
-      mimeType: extracted.mimeType,
-      importMode,
-      productName: row.productName,
-      qtdCaixa: row.qtdCaixa ?? "",
-      valorCx: row.valorCx ?? "",
-      valorUni: row.valorUni ?? "",
-      valorVd: row.valorVd ?? "",
-    },
+    destination: item.destination,
+    categoryHint: item.categoryHint || "",
+    price: item.price || "",
+    dimensions: item.dimensions || "",
+    depth: item.depth || "",
+    capacity: item.capacity || "",
+    material: item.material || "",
+    shape: item.shape || "",
+    sku: item.sku || "",
   };
 }
 
-function buildPoolItem(
-  extracted: ExtractedFileContent,
-  pool: SimplePoolCard,
-  importMode: string,
-  confidence: number
-): NormalizedImportItem {
-  return {
-    type: "pool",
-    sourceFileName: extracted.fileName,
-    title: `Piscina: ${pool.title}`,
-    rawText: pool.rawText,
-    confidence,
-    metadata: {
-      extension: extracted.extension,
-      mimeType: extracted.mimeType,
-      importMode,
-      title: pool.title,
-      tipo: pool.tipo ?? "",
-      formato: pool.formato ?? "",
-      medidas: pool.medidas ?? "",
-      profundidade: pool.profundidade ?? "",
-      capacidade: pool.capacidade ?? "",
-      prazoEstimado: pool.prazoEstimado ?? "",
-      faixaPreco: pool.faixaPreco ?? "",
-      acabamento: pool.acabamento ?? "",
-      descricao: pool.descricao ?? "",
-    },
-  };
+function scoreStructuredItem(item: StructuredImportItem) {
+  let score = 0.62;
+
+  if (item.title && item.title.length > 4) score += 0.08;
+  if (item.description && item.description.length > 20) score += 0.08;
+  if (item.price) score += 0.05;
+  if (item.dimensions) score += 0.05;
+  if (item.capacity) score += 0.04;
+  if (item.material) score += 0.03;
+  if (item.shape) score += 0.03;
+  if (item.destination === "pool") score += 0.08;
+  if (item.destination === "quimicos" || item.destination === "acessorios") score += 0.05;
+
+  return Math.min(0.97, Number(score.toFixed(2)));
 }
 
-function extractCatalogItemsFromPipeTable(
-  extracted: ExtractedFileContent
-): NormalizedImportItem[] {
-  const relevantLines = getPipeLines(extracted.text);
-
-  if (!relevantLines.length) return [];
-
-  const headerIndex = relevantLines.findIndex((line) =>
-    looksLikeCatalogHeader(line)
-  );
-  if (headerIndex === -1) return [];
-
-  const dataLines = relevantLines.slice(headerIndex + 1);
-  const items: NormalizedImportItem[] = [];
-
-  for (const line of dataLines) {
-    const cells = splitPipeCells(line);
-
-    if (cells.length < 2) continue;
-
-    const [productName, qtdCaixa, valorCx, valorUni, valorVd] = cells;
-
-    if (!productName) continue;
-
-    const moneyCount = [valorCx, valorUni, valorVd].filter(
-      (v) => v && isMoneyLike(v)
-    ).length;
-    const hasStructure =
-      Boolean(isIntegerLike(qtdCaixa || "")) || moneyCount >= 2;
-
-    if (!hasStructure) continue;
-
-    const row: SimpleCatalogRow = {
-      productName,
-      qtdCaixa,
-      valorCx,
-      valorUni,
-      valorVd,
-      rawText: [
-        `Produto: ${productName}`,
-        qtdCaixa ? `Qtd caixa: ${qtdCaixa}` : null,
-        valorCx ? `Valor cx: ${valorCx}` : null,
-        valorUni ? `Valor uni: ${valorUni}` : null,
-        valorVd ? `Valor vd: ${valorVd}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    };
-
-    items.push(
-      buildCatalogItem(extracted, row, "simple_catalog_pipe_table", 0.93)
-    );
-  }
-
-  return items;
-}
-
-function detectPoolColumnMap(headerCells: string[]) {
-  const map: Partial<
-    Record<
-      | "modelo"
-      | "tipo"
-      | "formato"
-      | "medidas"
-      | "profundidade"
-      | "capacidade"
-      | "prazo"
-      | "faixa"
-      | "acabamento"
-      | "observacoes",
-      number
-    >
-  > = {};
-
-  headerCells.forEach((cell, index) => {
-    const normalized = normalizeHeaderCell(cell);
-
-    if (!normalized) return;
-
-    if (normalized === "modelo" || normalized.includes("modelo")) {
-      map.modelo = index;
-      return;
-    }
-
-    if (normalized === "tipo" || normalized.includes("tipo")) {
-      map.tipo = index;
-      return;
-    }
-
-    if (normalized === "formato" || normalized.includes("formato")) {
-      map.formato = index;
-      return;
-    }
-
-    if (normalized === "medidas" || normalized.includes("medidas")) {
-      map.medidas = index;
-      return;
-    }
-
-    if (
-      normalized === "profundidade" ||
-      normalized.includes("profundidade")
-    ) {
-      map.profundidade = index;
-      return;
-    }
-
-    if (normalized === "capacidade" || normalized.includes("capacidade")) {
-      map.capacidade = index;
-      return;
-    }
-
-    if (
-      normalized === "prazo estimado" ||
-      normalized === "prazo" ||
-      normalized.includes("prazo estimado") ||
-      normalized.includes("prazo")
-    ) {
-      map.prazo = index;
-      return;
-    }
-
-    if (
-      normalized === "faixa de preco" ||
-      normalized === "faixa de preço" ||
-      normalized.includes("faixa de preco") ||
-      normalized.includes("faixa de preço") ||
-      normalized.includes("preco") ||
-      normalized.includes("preço")
-    ) {
-      map.faixa = index;
-      return;
-    }
-
-    if (normalized === "acabamento" || normalized.includes("acabamento")) {
-      map.acabamento = index;
-      return;
-    }
-
-    if (
-      normalized === "observacoes" ||
-      normalized === "observação" ||
-      normalized === "observacoes gerais" ||
-      normalized.includes("observa")
-    ) {
-      map.observacoes = index;
-    }
-  });
-
-  return map;
-}
-
-function countMappedColumns(columnMap: ReturnType<typeof detectPoolColumnMap>) {
-  return Object.values(columnMap).filter(
-    (value) => typeof value === "number"
-  ).length;
-}
-
-function getCell(
-  cells: string[],
-  columnMap: ReturnType<typeof detectPoolColumnMap>,
-  key: keyof ReturnType<typeof detectPoolColumnMap>
-) {
-  const index = columnMap[key];
-  if (typeof index !== "number") return "";
-  return (cells[index] || "").trim();
-}
-
-function buildPoolTitle(modelo: string, tipo: string, medidas: string) {
-  const parts = [modelo, tipo, medidas]
-    .map((value) => value.trim())
-    .filter(Boolean);
-
-  return parts.join(" ").replace(/\s+/g, " ").trim();
-}
-
-function extractPoolItemsFromPipeTable(
-  extracted: ExtractedFileContent
-): NormalizedImportItem[] {
-  const relevantLines = getPipeLines(extracted.text);
-
-  if (!relevantLines.length) return [];
-
-  const headerIndex = relevantLines.findIndex((line) => looksLikePoolHeader(line));
-  if (headerIndex === -1) return [];
-
-  const headerCells = splitPipeCells(relevantLines[headerIndex]);
-  const columnMap = detectPoolColumnMap(headerCells);
-
-  if (countMappedColumns(columnMap) < 4) {
-    return [];
-  }
-
-  const dataLines = relevantLines.slice(headerIndex + 1);
-  const items: NormalizedImportItem[] = [];
-
-  for (const line of dataLines) {
-    const cells = splitPipeCells(line);
-
-    if (!cells.length) continue;
-
-    const modelo = getCell(cells, columnMap, "modelo");
-    const tipo = getCell(cells, columnMap, "tipo");
-    const formato = getCell(cells, columnMap, "formato");
-    const medidas = getCell(cells, columnMap, "medidas");
-    const profundidade = getCell(cells, columnMap, "profundidade");
-    const capacidade = getCell(cells, columnMap, "capacidade");
-    const prazoEstimado = getCell(cells, columnMap, "prazo");
-    const faixaPreco = getCell(cells, columnMap, "faixa");
-    const acabamento = getCell(cells, columnMap, "acabamento");
-    const descricao = getCell(cells, columnMap, "observacoes");
-
-    const filled = [
-      modelo,
-      tipo,
-      formato,
-      medidas,
-      profundidade,
-      capacidade,
-      prazoEstimado,
-      faixaPreco,
-      acabamento,
-      descricao,
-    ].filter(Boolean).length;
-
-    if (filled < 3) continue;
-
-    const title =
-      buildPoolTitle(modelo, tipo, medidas) ||
-      modelo ||
-      tipo ||
-      `Piscina ${items.length + 1}`;
-
-    const pool: SimplePoolCard = {
-      title,
-      tipo,
-      formato,
-      medidas,
-      profundidade,
-      capacidade,
-      prazoEstimado,
-      faixaPreco,
-      acabamento,
-      descricao,
-      rawText: [
-        `Piscina: ${title}`,
-        modelo ? `Modelo: ${modelo}` : null,
-        tipo ? `Tipo: ${tipo}` : null,
-        formato ? `Formato: ${formato}` : null,
-        medidas ? `Medidas: ${medidas}` : null,
-        profundidade ? `Profundidade: ${profundidade}` : null,
-        capacidade ? `Capacidade: ${capacidade}` : null,
-        prazoEstimado ? `Prazo estimado: ${prazoEstimado}` : null,
-        faixaPreco ? `Faixa de preço: ${faixaPreco}` : null,
-        acabamento ? `Acabamento: ${acabamento}` : null,
-        descricao ? `Descrição: ${descricao}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    };
-
-    let confidence = 0.9;
-    if (filled >= 6) confidence = 0.95;
-    else if (filled >= 4) confidence = 0.92;
-
-    items.push(buildPoolItem(extracted, pool, "pipe_pool_table", confidence));
-  }
-
-  return items;
-}
-
-function stripCatalogHeader(text: string) {
-  return cleanText(text)
-    .replace(
-      /tabela\s+de\s+pre[cç]os\s+produtos?\s+qtd\s+caixa\s+valor\s+cx\s+valor\s+uni\s+valor\s+vd/iu,
-      ""
-    )
-    .trim();
-}
-
-function extractCatalogItemsFromFlatSequence(
-  extracted: ExtractedFileContent
-): NormalizedImportItem[] {
-  if (!looksLikeCatalogHeader(extracted.text)) {
-    return [];
-  }
-
-  const flattened = stripCatalogHeader(
-    cleanText(extracted.text).replace(/\n+/g, " ")
-  );
-
-  if (!flattened) return [];
-
-  const pattern =
-    /([A-Za-zÀ-ÿ0-9/\-–—+().,%\s]+?)\s+(\d+)\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s+(\d{1,3}(?:\.\d{3})*,\d{2})(?=\s+[A-Za-zÀ-ÿ]|$)/g;
-
-  const items: NormalizedImportItem[] = [];
-  const matches = Array.from(flattened.matchAll(pattern));
-
-  for (const match of matches) {
-    const rawName = (match[1] || "").trim();
-    const qtdCaixa = (match[2] || "").trim();
-    const valorCx = (match[3] || "").trim();
-    const valorUni = (match[4] || "").trim();
-    const valorVd = (match[5] || "").trim();
-
-    const productName = rawName
-      .replace(/\s+/g, " ")
-      .replace(/^[|,:;\-]+/, "")
-      .replace(/[|,:;\-]+$/, "")
-      .trim();
-
-    if (!productName) continue;
-
-    const row: SimpleCatalogRow = {
-      productName,
-      qtdCaixa,
-      valorCx,
-      valorUni,
-      valorVd,
-      rawText: [
-        `Produto: ${productName}`,
-        `Qtd caixa: ${qtdCaixa}`,
-        `Valor cx: ${valorCx}`,
-        `Valor uni: ${valorUni}`,
-        `Valor vd: ${valorVd}`,
-      ].join("\n"),
-    };
-
-    items.push(
-      buildCatalogItem(extracted, row, "simple_catalog_flat_sequence", 0.91)
-    );
-  }
-
-  return items;
-}
-
-function extractRepeatedField(lineText: string, label: string) {
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(`${escaped}\\s*[|:]\\s*([^|\\n]+)`, "giu");
-
-  return Array.from(lineText.matchAll(regex))
-    .map((m) => (m[1] || "").trim())
-    .filter(Boolean);
-}
-
-function parsePoolFieldsFromFlatSection(section: string) {
-  const matches = Array.from(
-    section.matchAll(
-      /\b(Tipo|Formato|Medidas|Profundidade|Capacidade|Prazo estimado|Faixa de preço|Faixa de preco|Acabamento|Observações|Observacoes)\s*[:|]\s*/giu
-    )
-  );
-
-  const values: Record<string, string> = {};
-
-  for (let i = 0; i < matches.length; i++) {
-    const label = matches[i][1] || "";
-    const valueStart = (matches[i].index || 0) + matches[i][0].length;
-    const valueEnd =
-      i + 1 < matches.length ? (matches[i + 1].index || section.length) : section.length;
-
-    const value = section
-      .slice(valueStart, valueEnd)
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (!value) continue;
-
-    const normalizedLabel = normalizeLoose(label);
-    values[normalizedLabel] = value;
-  }
-
-  return values;
-}
-
-function extractPoolItemsFromDocxAnchoredSections(
-  extracted: ExtractedFileContent
-): NormalizedImportItem[] {
-  if (extracted.extension !== "docx") return [];
-  if (!looksLikePoolDocument(extracted.text)) return [];
-
-  const flat = cleanText(extracted.text).replace(/\n+/g, " ");
-  const anchorRegex = /\bPiscina\s+[A-Za-zÀ-ÿ]+\s+\d{2,3}\b/giu;
-  const anchors = Array.from(flat.matchAll(anchorRegex));
-
-  if (anchors.length < 2) return [];
-
-  const items: NormalizedImportItem[] = [];
-
-  for (let i = 0; i < anchors.length; i++) {
-    const start = anchors[i].index ?? 0;
-    const end = i + 1 < anchors.length ? (anchors[i + 1].index ?? flat.length) : flat.length;
-    const section = flat.slice(start, end).replace(/\s+/g, " ").trim();
-
-    if (!section) continue;
-
-    const firstFieldMatch = section.match(
-      /\b(Tipo|Formato|Medidas|Profundidade|Capacidade|Prazo estimado|Faixa de preço|Faixa de preco|Acabamento|Observações|Observacoes)\s*[:|]\s*/iu
-    );
-
-    const title = firstFieldMatch
-      ? section.slice(0, firstFieldMatch.index).replace(/\s+/g, " ").trim()
-      : section;
-
-    const fields = parsePoolFieldsFromFlatSection(section);
-
-    const tipo = fields["tipo"] || "";
-    const formato = fields["formato"] || "";
-    const medidas = fields["medidas"] || "";
-    const profundidade = fields["profundidade"] || "";
-    const capacidade = fields["capacidade"] || "";
-    const prazoEstimado = fields["prazo estimado"] || "";
-    const faixaPreco = fields["faixa de preco"] || "";
-    const acabamento = fields["acabamento"] || "";
-    const descricao =
-      fields["observacoes"] ||
-      (firstFieldMatch
-        ? ""
-        : "");
-
-    const filled = [
-      title,
-      tipo,
-      formato,
-      medidas,
-      profundidade,
-      capacidade,
-      prazoEstimado,
-      faixaPreco,
-      acabamento,
-    ].filter(Boolean).length;
-
-    if (filled < 5) continue;
-
-    const pool: SimplePoolCard = {
-      title,
-      tipo,
-      formato,
-      medidas,
-      profundidade,
-      capacidade,
-      prazoEstimado,
-      faixaPreco,
-      acabamento,
-      descricao,
-      rawText: [
-        `Piscina: ${title}`,
-        tipo ? `Tipo: ${tipo}` : null,
-        formato ? `Formato: ${formato}` : null,
-        medidas ? `Medidas: ${medidas}` : null,
-        profundidade ? `Profundidade: ${profundidade}` : null,
-        capacidade ? `Capacidade: ${capacidade}` : null,
-        prazoEstimado ? `Prazo estimado: ${prazoEstimado}` : null,
-        faixaPreco ? `Faixa de preço: ${faixaPreco}` : null,
-        acabamento ? `Acabamento: ${acabamento}` : null,
-        descricao ? `Descrição: ${descricao}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    };
-
-    let confidence = 0.93;
-    if (filled >= 8) confidence = 0.97;
-    else if (filled >= 6) confidence = 0.95;
-
-    items.push(buildPoolItem(extracted, pool, "docx_pool_anchor_sections", confidence));
-  }
-
-  return items;
-}
-
-function extractPoolItemsFromRepeatedFieldSequence(
-  extracted: ExtractedFileContent
-): NormalizedImportItem[] {
-  if (!looksLikePoolDocument(extracted.text)) return [];
-
-  const flat = cleanText(extracted.text).replace(/\n+/g, " ");
-
-  const tipos = extractRepeatedField(flat, "Tipo");
-  const medidas = extractRepeatedField(flat, "Medidas");
-  const profundidades = extractRepeatedField(flat, "Profundidade");
-  const capacidades = extractRepeatedField(flat, "Capacidade");
-  const prazos = extractRepeatedField(flat, "Prazo estimado");
-  const faixas = extractRepeatedField(flat, "Faixa de preço");
-
-  const maxLen = Math.max(
-    tipos.length,
-    medidas.length,
-    profundidades.length,
-    capacidades.length,
-    prazos.length,
-    faixas.length
-  );
-
-  if (maxLen < 2) return [];
-
-  const items: NormalizedImportItem[] = [];
-
-  for (let i = 0; i < maxLen; i++) {
-    const tipo = tipos[i] || "";
-    const medida = medidas[i] || "";
-    const profundidade = profundidades[i] || "";
-    const capacidade = capacidades[i] || "";
-    const prazo = prazos[i] || "";
-    const faixa = faixas[i] || "";
-
-    const filled = [tipo, medida, profundidade, capacidade, prazo, faixa].filter(
-      Boolean
-    ).length;
-
-    if (filled < 3) continue;
-
-    const titleBase = [tipo ? `Piscina ${tipo}` : "Piscina", medida || ""]
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-
-    const pool: SimplePoolCard = {
-      title: titleBase || `Piscina ${i + 1}`,
-      tipo,
-      medidas: medida,
-      profundidade,
-      capacidade,
-      prazoEstimado: prazo,
-      faixaPreco: faixa,
-      descricao: "",
-      rawText: [
-        `Piscina: ${titleBase || `Piscina ${i + 1}`}`,
-        tipo ? `Tipo: ${tipo}` : null,
-        medida ? `Medidas: ${medida}` : null,
-        profundidade ? `Profundidade: ${profundidade}` : null,
-        capacidade ? `Capacidade: ${capacidade}` : null,
-        prazo ? `Prazo estimado: ${prazo}` : null,
-        faixa ? `Faixa de preço: ${faixa}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    };
-
-    let confidence = 0.84;
-    if (filled >= 5) confidence = 0.9;
-    if (filled >= 6) confidence = 0.94;
-
-    items.push(
-      buildPoolItem(extracted, pool, "repeated_pool_field_sequence", confidence)
-    );
-  }
-
-  return items;
-}
-
-function splitPoolSections(text: string) {
-  const cleaned = cleanText(text);
-
-  return cleaned
-    .split(/\n(?=Piscina\s)/g)
-    .map((section) => section.trim())
-    .filter(Boolean);
-}
-
-function extractValue(section: string, label: string) {
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(`${escaped}\\s*[:|]\\s*(.+)`, "iu");
-  const match = section.match(regex);
-  return match?.[1]?.trim() || "";
-}
-
-function extractPoolItemsFromSimpleCards(
-  extracted: ExtractedFileContent
-): NormalizedImportItem[] {
-  if (!looksLikePoolDocument(extracted.text)) {
-    return [];
-  }
-
-  const sections = splitPoolSections(extracted.text);
-  const items: NormalizedImportItem[] = [];
-
-  for (const section of sections) {
-    const lines = section
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (!lines.length) continue;
-
-    const title = lines[0].replace(/^Piscina\s*/i, "").trim() || lines[0];
-
-    const tipo = extractValue(section, "Tipo");
-    const medidas = extractValue(section, "Medidas");
-    const profundidade = extractValue(section, "Profundidade");
-    const capacidade = extractValue(section, "Capacidade");
-    const prazoEstimado = extractValue(section, "Prazo estimado");
-    const faixaPreco =
-      extractValue(section, "Faixa de preço") ||
-      extractValue(section, "Faixa de preco");
-
-    const knownLines = new Set([
-      lines[0],
-      ...lines.filter((line) =>
-        /^(tipo|medidas|profundidade|capacidade|prazo estimado|faixa de pre[cç]o)\s*[:|]/iu.test(
-          line
-        )
-      ),
-    ]);
-
-    const descricao = lines
-      .filter((line) => !knownLines.has(line))
-      .join(" ")
-      .trim();
-
-    const filled = [
-      title ? 1 : 0,
-      tipo ? 1 : 0,
-      medidas ? 1 : 0,
-      profundidade ? 1 : 0,
-      capacidade ? 1 : 0,
-      prazoEstimado ? 1 : 0,
-      faixaPreco ? 1 : 0,
-    ].reduce((acc, value) => acc + value, 0);
-
-    if (filled < 3) continue;
-
-    const pool: SimplePoolCard = {
-      title,
-      tipo,
-      medidas,
-      profundidade,
-      capacidade,
-      prazoEstimado,
-      faixaPreco,
-      descricao,
-      rawText: [
-        `Piscina: ${title}`,
-        tipo ? `Tipo: ${tipo}` : null,
-        medidas ? `Medidas: ${medidas}` : null,
-        profundidade ? `Profundidade: ${profundidade}` : null,
-        capacidade ? `Capacidade: ${capacidade}` : null,
-        prazoEstimado ? `Prazo estimado: ${prazoEstimado}` : null,
-        faixaPreco ? `Faixa de preço: ${faixaPreco}` : null,
-        descricao ? `Descrição: ${descricao}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    };
-
-    let confidence = 0.8;
-    if (filled >= 6) confidence = 0.92;
-    else if (filled >= 5) confidence = 0.88;
-
-    items.push(buildPoolItem(extracted, pool, "simple_pool_cards", confidence));
-  }
-
-  return items;
-}
-
-function detectType(block: string): NormalizedImportItemType {
-  const lower = normalizeLoose(block);
-
+function toNormalizedType(item: StructuredImportItem): NormalizedImportItemType {
+  if (item.destination === "pool") return "pool";
   if (
-    lower.includes("responsavel") ||
-    lower.includes("proprietario") ||
-    lower.includes("telefone") ||
-    lower.includes("whatsapp") ||
-    lower.includes("email")
-  ) {
-    return "responsible_info";
-  }
-
-  if (
-    lower.includes("desconto") ||
-    lower.includes("pagamento") ||
-    lower.includes("parcelamento") ||
-    lower.includes("sinal") ||
-    lower.includes("entrada")
-  ) {
-    return "commercial_rule";
-  }
-
-  if (
-    lower.includes("piscina") ||
-    lower.includes("fibra") ||
-    lower.includes("alvenaria") ||
-    lower.includes("vinil") ||
-    lower.includes("pastilha") ||
-    lower.includes("revestida") ||
-    lower.includes("medidas") ||
-    lower.includes("comprimento") ||
-    lower.includes("largura")
-  ) {
-    return "pool";
-  }
-
-  if (
-    lower.includes("cloro") ||
-    lower.includes("algicida") ||
-    lower.includes("bomba") ||
-    lower.includes("filtro") ||
-    lower.includes("aspirador") ||
-    lower.includes("escova") ||
-    lower.includes("peneira") ||
-    lower.includes("led") ||
-    lower.includes("hidromassagem") ||
-    lower.includes("clarificante") ||
-    lower.includes("limpa borda") ||
-    lower.includes("redutor de ph") ||
-    lower.includes("elevador de ph")
+    item.destination === "quimicos" ||
+    item.destination === "acessorios" ||
+    item.destination === "outros"
   ) {
     return "catalog_item";
   }
-
-  if (
-    lower.includes("loja") ||
-    lower.includes("empresa") ||
-    lower.includes("endereco") ||
-    lower.includes("cidade") ||
-    lower.includes("bairro") ||
-    lower.includes("horario")
-  ) {
-    return "store_info";
-  }
-
   return "unknown";
 }
 
-function estimateConfidence(type: NormalizedImportItemType, block: string) {
-  const textLength = block.trim().length;
-
-  if (type === "unknown") return 0.2;
-  if (textLength > 250) return 0.92;
-  if (textLength > 120) return 0.82;
-  if (textLength > 60) return 0.72;
-  return 0.6;
+function buildNormalizedItem(item: StructuredImportItem): NormalizedImportItem {
+  return {
+    type: toNormalizedType(item),
+    sourceFileName: item.sourceFileName,
+    title: item.title,
+    rawText: cleanText(item.rawBlock),
+    confidence: scoreStructuredItem(item),
+    metadata: buildMetadata(item),
+  };
 }
 
-function buildTitle(type: NormalizedImportItemType, block: string) {
-  const firstLine = block.split("\n")[0]?.trim() || "Sem título";
+function buildFallbackBlock(extracted: ExtractedFileContent): NormalizedImportItem[] {
+  const text = cleanText(extracted.text);
+  if (!text) return [];
 
-  if (type === "pool") return `Piscina: ${firstLine}`;
-  if (type === "catalog_item") return `Catálogo: ${firstLine}`;
-  if (type === "commercial_rule") return `Regra comercial: ${firstLine}`;
-  if (type === "responsible_info") return `Responsável: ${firstLine}`;
-  if (type === "store_info") return `Loja: ${firstLine}`;
+  const block = text.split(/\n\s*\n+/).find((entry) => entry.trim());
+  if (!block) return [];
 
-  return firstLine;
-}
+  const destination = normalizeLoose(block).includes("piscina") ? "pool" : "outros";
 
-function buildFallbackBlocks(
-  extracted: ExtractedFileContent
-): NormalizedImportItem[] {
-  const blocks = splitIntoParagraphBlocks(extracted.text);
-
-  return blocks.map((block) => {
-    const type = detectType(block);
-
-    return {
-      type,
+  return [
+    {
+      type: destination === "pool" ? "pool" : "unknown",
       sourceFileName: extracted.fileName,
-      title: buildTitle(type, block),
+      title: block.split("\n")[0].slice(0, 160) || "Bloco importado",
       rawText: block,
-      confidence: estimateConfidence(type, block),
+      confidence: 0.35,
       metadata: {
-        extension: extracted.extension,
-        mimeType: extracted.mimeType,
-        importMode: "fallback_blocks",
+        destination,
+        categoryHint: destination,
       },
-    };
+    },
+  ];
+}
+
+function filterBadItems(items: StructuredImportItem[]) {
+  return items.filter((item) => {
+    const title = normalizeLoose(item.title);
+    const raw = normalizeLoose(item.rawBlock);
+
+    if (!title && !raw) return false;
+    if (title === "descricao detalhada") return false;
+    if (title.startsWith("catalogo de teste")) return false;
+
+    if (
+      item.destination === "pool" &&
+      !item.dimensions &&
+      !item.capacity &&
+      !item.depth &&
+      /(acessor|quimic|cloro|algicida|peneira|escova|aspirador|refletor|led)/i.test(raw)
+    ) {
+      return false;
+    }
+
+    return true;
   });
 }
 
 export function normalizeExtractedFile(
   extracted: ExtractedFileContent
 ): NormalizedImportItem[] {
-  const poolPipeTableItems = extractPoolItemsFromPipeTable(extracted);
-  if (poolPipeTableItems.length > 0) {
-    return poolPipeTableItems;
+  const structuredItems = filterBadItems(parseStructuredImportItems(extracted));
+
+  if (structuredItems.length > 0) {
+    return structuredItems.map(buildNormalizedItem);
   }
 
-  const pipeTableItems = extractCatalogItemsFromPipeTable(extracted);
-  if (pipeTableItems.length > 0) {
-    return pipeTableItems;
-  }
-
-  const flatSequenceItems = extractCatalogItemsFromFlatSequence(extracted);
-  if (flatSequenceItems.length > 0) {
-    return flatSequenceItems;
-  }
-
-  const docxAnchoredItems = extractPoolItemsFromDocxAnchoredSections(extracted);
-  if (docxAnchoredItems.length > 0) {
-    return docxAnchoredItems;
-  }
-
-  const repeatedPoolItems = extractPoolItemsFromRepeatedFieldSequence(extracted);
-  if (repeatedPoolItems.length > 0) {
-    return repeatedPoolItems;
-  }
-
-  const simplePoolItems = extractPoolItemsFromSimpleCards(extracted);
-  if (simplePoolItems.length > 0) {
-    return simplePoolItems;
-  }
-
-  return buildFallbackBlocks(extracted);
+  return buildFallbackBlock(extracted);
 }
 
 export function normalizeMultipleExtractedFiles(

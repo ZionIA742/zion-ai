@@ -12,6 +12,7 @@ export async function POST(request: Request) {
     const storeId = String(formData.get("storeId") || "").trim();
 
     const uploadedEntries = formData.getAll("files");
+
     const files = await Promise.all(
       uploadedEntries.map(async (entry) => {
         if (!(entry instanceof File)) {

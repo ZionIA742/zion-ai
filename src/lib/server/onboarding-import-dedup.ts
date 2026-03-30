@@ -7,7 +7,7 @@ export type DedupedImportItem = NormalizedImportItem & {
 };
 
 function normalizeForKey(value: string) {
-  return value
+  return String(value || "")
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -16,38 +16,84 @@ function normalizeForKey(value: string) {
     .trim();
 }
 
+function field(item: NormalizedImportItem, key: string) {
+  return normalizeForKey(item.metadata?.[key] || "");
+}
+
 function buildDedupKey(item: NormalizedImportItem) {
   const type = normalizeForKey(item.type);
+  const destination = field(item, "destination");
   const title = normalizeForKey(item.title);
-  const raw = normalizeForKey(item.rawText).slice(0, 180);
+  const dimensions = field(item, "dimensions");
+  const capacity = field(item, "capacity");
+  const material = field(item, "material");
+  const sku = field(item, "sku");
+  const raw = normalizeForKey(item.rawText).slice(0, 140);
 
-  return `${type}::${title}::${raw}`;
+  return [type, destination, title, dimensions, capacity, material, sku, raw]
+    .filter(Boolean)
+    .join("::");
+}
+
+function scoreCompleteness(item: NormalizedImportItem) {
+  let score = 0;
+  if (item.title) score += 3;
+  if (item.rawText && item.rawText.length > 40) score += 3;
+  if (item.metadata?.price) score += 1;
+  if (item.metadata?.dimensions) score += 2;
+  if (item.metadata?.capacity) score += 1;
+  if (item.metadata?.material) score += 1;
+  if (item.metadata?.shape) score += 1;
+  if (item.metadata?.sku) score += 1;
+  return score + item.confidence;
 }
 
 export function dedupNormalizedItems(
   items: NormalizedImportItem[]
 ): DedupedImportItem[] {
-  const seen = new Map<string, string>();
+  const seen = new Map<string, { title: string; index: number; score: number }>();
+  const result: DedupedImportItem[] = [];
 
-  return items.map((item) => {
+  for (const item of items) {
     const dedupKey = buildDedupKey(item);
+    const score = scoreCompleteness(item);
     const existing = seen.get(dedupKey);
 
-    if (existing) {
-      return {
+    if (!existing) {
+      seen.set(dedupKey, { title: item.title, index: result.length, score });
+      result.push({
         ...item,
         dedupKey,
-        duplicateOf: existing,
-        isDuplicate: true,
-      };
+        isDuplicate: false,
+      });
+      continue;
     }
 
-    seen.set(dedupKey, item.title);
+    if (score > existing.score) {
+      result[existing.index] = {
+        ...item,
+        dedupKey,
+        isDuplicate: false,
+      };
 
-    return {
+      result.push({
+        ...result[existing.index],
+        dedupKey,
+        duplicateOf: item.title,
+        isDuplicate: true,
+      });
+
+      seen.set(dedupKey, { title: item.title, index: existing.index, score });
+      continue;
+    }
+
+    result.push({
       ...item,
       dedupKey,
-      isDuplicate: false,
-    };
-  });
+      duplicateOf: existing.title,
+      isDuplicate: true,
+    });
+  }
+
+  return result;
 }

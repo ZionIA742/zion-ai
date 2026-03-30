@@ -941,6 +941,24 @@ export default function PiscinasPage() {
 
                         <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
                           <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            Capacidade
+                          </div>
+                          <div className="mt-2 text-lg font-semibold text-gray-900">
+                            {pool.max_capacity_l != null ? `${Number(pool.max_capacity_l).toLocaleString("pt-BR")} L` : "-"}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            Material
+                          </div>
+                          <div className="mt-2 text-lg font-semibold text-gray-900">
+                            {pool.material ?? "-"}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                             Fotos
                           </div>
                           <div className="mt-2 text-lg font-semibold text-gray-900">
