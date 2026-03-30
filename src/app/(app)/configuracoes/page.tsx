@@ -1,19 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type ChangeEvent,
-  type FormEvent,
-} from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type PoolRow = {
   id: string;
+  organization_id: string;
+  store_id: string;
   name: string | null;
   width_m: number | null;
   length_m: number | null;
@@ -30,418 +25,35 @@ type PoolRow = {
   created_at?: string | null;
 };
 
-type ResponsibleRow = {
-  id: string;
-  organization_id: string;
-  store_id: string;
-  name: string | null;
-  whatsapp_number: string | null;
-  role: string | null;
-  receive_discount_alerts: boolean;
-  receive_subscription_alerts: boolean;
-  receive_sla_alerts: boolean;
-  created_at?: string | null;
-};
-
 type PoolPhotoRow = {
   id: string;
   pool_id: string;
+  organization_id: string;
+  store_id: string;
   storage_path: string;
-  file_name: string;
-  file_size_bytes: number;
-  sort_order: number;
+  file_name: string | null;
+  file_size_bytes: number | null;
+  sort_order: number | null;
   created_at?: string | null;
 };
 
-type DiscountSettingsRow = {
-  store_id: string;
-  organization_id: string;
-  default_discount_percent: number;
-  max_discount_percent: number;
-  allow_ask_above_max_discount: boolean;
-  created_at?: string | null;
-  updated_at?: string | null;
-};
-
-type CatalogItemMetadata = {
-  categoria?: string | null;
-  [key: string]: any;
-};
-
-type CatalogItemRow = {
-  id: string;
-  organization_id: string;
-  store_id: string;
-  sku: string | null;
+type EditPoolForm = {
   name: string;
-  description: string | null;
-  price_cents: number | null;
-  currency: string;
+  description: string;
+  price: string;
   is_active: boolean;
   track_stock: boolean;
-  stock_quantity: number | null;
-  metadata: CatalogItemMetadata | null;
-  created_at?: string | null;
-  updated_at?: string | null;
+  stock_quantity: string;
 };
 
-type CatalogItemPhotoRow = {
-  id: string;
-  catalog_item_id: string;
-  storage_path: string;
-  file_name: string;
-  file_size_bytes: number;
-  sort_order: number;
-  created_at?: string | null;
-};
-
-type AnswersMap = Record<string, unknown>;
-
-type LocalConfigDraft = {
-  assistantIaNumber: string;
-  assistantIaName: string;
-  sellerIaName: string;
-  sellerIaStyleMode: string;
-  activationPriorityMode: string;
-  activationGuardrailMode: string;
-  activationNotesExtra: string;
-  discountIntegrationNotes: string;
-};
-
-type Option = {
-  value: string;
-  label: string;
-};
-
-type StrategyBlockItem = {
+type CharacteristicRow = {
   label: string;
   value: string;
 };
 
-type TabKey =
-  | "visao_geral"
-  | "estrategia"
-  | "piscinas"
-  | "catalogo"
-  | "operacao"
-  | "comercial_ia"
-  | "responsavel_ativacao"
-  | "descontos";
-
-const POOL_STORAGE_BUCKET = "pool-photos";
-const CATALOG_STORAGE_BUCKET = "store-catalog-photos";
-
+const STORAGE_BUCKET = "pool-photos";
 const MAX_POOL_PHOTOS = 10;
-const MAX_CATALOG_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
-
-const TAB_STORAGE_KEY = "zion_configuracoes_active_tab";
-const SCROLL_STORAGE_KEY = "zion_configuracoes_scroll_top";
-const LOCAL_CONFIG_DRAFT_KEY_PREFIX = "zion_configuracoes_local_complementos";
-
-const DEFAULT_LOCAL_CONFIG_DRAFT: LocalConfigDraft = {
-  assistantIaNumber: "",
-  assistantIaName: "",
-  sellerIaName: "",
-  sellerIaStyleMode: "ia_humanizada",
-  activationPriorityMode: "priorizar_qualificacao",
-  activationGuardrailMode: "encaminhar_humano_casos_criticos",
-  activationNotesExtra: "",
-  discountIntegrationNotes: "",
-};
-
-const ROLE_OPTIONS: Option[] = [
-  { value: "owner", label: "Proprietário" },
-  { value: "manager", label: "Gerente" },
-  { value: "sales", label: "Vendas" },
-  { value: "support", label: "Suporte" },
-];
-
-const CATALOG_CATEGORY_OPTIONS: Option[] = [
-  { value: "acessorios", label: "Acessórios" },
-  { value: "quimicos", label: "Produtos químicos" },
-  { value: "outros", label: "Outros itens" },
-];
-
-const STORE_SERVICE_OPTIONS: Option[] = [
-  { value: "venda_piscinas", label: "Venda de piscinas" },
-  { value: "instalacao_piscinas", label: "Instalação de piscinas" },
-  { value: "venda_produtos_quimicos", label: "Venda de produtos químicos" },
-  { value: "venda_acessorios", label: "Venda de acessórios para piscina" },
-  { value: "visita_tecnica", label: "Visita técnica" },
-  { value: "manutencao", label: "Limpeza / manutenção" },
-];
-
-const SERVICE_REGION_PRIMARY_OPTIONS: Option[] = [
-  { value: "somente_cidade_loja", label: "Somente a cidade da loja" },
-  { value: "cidade_e_vizinhas", label: "Cidade da loja + cidades vizinhas" },
-  { value: "grande_regiao", label: "Atende várias cidades da região" },
-  { value: "todo_estado", label: "Todo o estado" },
-  { value: "sob_consulta", label: "Fora da região, só sob consulta" },
-];
-
-const POOL_TYPE_OPTIONS: Option[] = [
-  { value: "fibra", label: "Fibra" },
-  { value: "vinil", label: "Vinil" },
-  { value: "alvenaria", label: "Alvenaria" },
-  { value: "pastilha", label: "Revestida / pastilha" },
-  { value: "spa", label: "SPA / hidromassagem" },
-  { value: "prainha", label: "Prainha / complemento" },
-];
-
-const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
-  { value: "precisa_agendar", label: "Precisa agendar antes" },
-  { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
-  { value: "analise_do_local", label: "Pode depender de avaliação do local" },
-  { value: "pode_ter_taxa", label: "Pode ter taxa de deslocamento" },
-  { value: "somente_regiao_atendida", label: "Só atende a região cadastrada" },
-  { value: "horario_comercial", label: "Somente em horário comercial" },
-];
-
-const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
-  { value: "nao_atende_domingo", label: "Não atende domingo" },
-  { value: "nao_atende_fora_regiao", label: "Não atende fora da região definida" },
-  {
-    value: "nao_faz_obra_entorno",
-    label: "Não faz a obra estética completa do entorno",
-  },
-  {
-    value: "nao_passa_preco_sem_contexto",
-    label: "Não passa preço sem entender o caso",
-  },
-  {
-    value: "depende_avaliacao_tecnica",
-    label: "Alguns casos dependem de avaliação técnica",
-  },
-  { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
-];
-
-const SALES_FLOW_START_OPTIONS: Option[] = [
-  { value: "primeiro_atendimento", label: "Primeiro atendimento" },
-  { value: "cliente_explica_o_que_quer", label: "Cliente explica o que quer" },
-  { value: "cliente_manda_foto_do_local", label: "Cliente manda foto do local" },
-  { value: "cliente_pergunta_preco", label: "Cliente pergunta preço" },
-  { value: "cliente_pede_visita_tecnica", label: "Cliente pede visita técnica" },
-  { value: "cliente_pede_orcamento", label: "Cliente pede orçamento" },
-];
-
-const SALES_FLOW_MIDDLE_OPTIONS: Option[] = [
-  { value: "entender_melhor_a_necessidade", label: "Entender melhor a necessidade" },
-  { value: "mostrar_opcoes_de_piscina", label: "Mostrar opções de piscina" },
-  { value: "passar_faixa_de_valor", label: "Passar faixa de valor" },
-  { value: "montar_orcamento", label: "Montar orçamento" },
-  { value: "tirar_duvidas_tecnicas", label: "Tirar dúvidas técnicas" },
-  { value: "negociar_condicao", label: "Negociar condição" },
-  { value: "agendar_visita_tecnica", label: "Agendar visita técnica" },
-];
-
-const SALES_FLOW_FINAL_OPTIONS: Option[] = [
-  { value: "aprovacao_do_orcamento", label: "Aprovação do orçamento" },
-  { value: "pagamento_sinal", label: "Pagamento / sinal" },
-  { value: "confirmacao_do_pagamento", label: "Confirmação do pagamento" },
-  { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
-  { value: "instalacao", label: "Instalação" },
-  { value: "entrega_final", label: "Entrega final" },
-  { value: "pos_venda", label: "Pós-venda" },
-];
-
-const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
-  { value: "pix", label: "Pix" },
-  { value: "cartao_credito", label: "Cartão de crédito" },
-  { value: "cartao_debito", label: "Cartão de débito" },
-  { value: "boleto", label: "Boleto" },
-  { value: "dinheiro", label: "Dinheiro" },
-  { value: "transferencia", label: "Transferência" },
-];
-
-const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
-  { value: "parcelado", label: "Aceita parcelamento" },
-  { value: "financiamento", label: "Trabalha com financiamento" },
-];
-
-const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
-  {
-    value: "so_apos_entender_objetivo",
-    label: "Só depois de entender o que o cliente quer",
-  },
-  {
-    value: "so_apos_identificar_interesse_real",
-    label: "Só depois de perceber interesse real",
-  },
-  {
-    value: "so_apos_entender_tipo",
-    label: "Só depois de entender o tipo de piscina ou produto",
-  },
-  {
-    value: "so_apos_entender_medidas",
-    label: "Só depois de entender medidas ou porte do projeto",
-  },
-  {
-    value: "so_apos_entender_instalacao",
-    label: "Só depois de entender se precisa instalação",
-  },
-];
-
-const PRICE_TALK_MODE_OPTIONS: Option[] = [
-  {
-    value: "quando_cliente_perguntar",
-    label: "Pode falar preço quando o cliente perguntar",
-  },
-  {
-    value: "apenas_faixa_inicial",
-    label: "Pode falar só uma faixa inicial, não valor fechado",
-  },
-  { value: "nao_falar_sozinha", label: "Não deve falar preço sozinha" },
-];
-
-const HUMAN_HELP_DISCOUNT_OPTIONS: Option[] = [
-  { value: "pediu_desconto_maior", label: "Pediu desconto maior que o permitido" },
-  { value: "quer_condicao_especial", label: "Quer condição especial" },
-  { value: "fechamento_imediato", label: "Cliente quer fechar agora" },
-  { value: "cliente_importante", label: "Cliente com alto potencial de fechar" },
-];
-
-const HUMAN_HELP_CUSTOM_PROJECT_OPTIONS: Option[] = [
-  { value: "projeto_fora_padrao", label: "Projeto fora do padrão" },
-  { value: "terreno_dificil", label: "Local ou terreno com dificuldade" },
-  { value: "duvida_tecnica_complexa", label: "Dúvida técnica complexa" },
-  { value: "pedido_muito_personalizado", label: "Pedido muito personalizado" },
-  { value: "obra_complementar", label: "Pedido com obra extra além da piscina" },
-];
-
-const HUMAN_HELP_PAYMENT_OPTIONS: Option[] = [
-  { value: "parcelamento_diferente", label: "Parcelamento diferente do padrão" },
-  { value: "financiamento_especifico", label: "Pedido de financiamento específico" },
-  { value: "prazo_especial", label: "Prazo especial de pagamento" },
-  { value: "comprovante_pagamento", label: "Validação manual de pagamento" },
-];
-
-const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
-  { value: "pedido_desconto", label: "Pedido de desconto" },
-  { value: "cliente_quase_fechando", label: "Cliente com alta chance de fechar" },
-  { value: "duvida_tecnica", label: "Dúvida técnica importante" },
-  { value: "pedido_visita", label: "Pedido de visita técnica" },
-  { value: "pedido_instalacao", label: "Pedido de instalação" },
-  { value: "problema_pagamento", label: "Problema de pagamento" },
-];
-
-const ACTIVATION_STYLE_OPTIONS: Option[] = [
-  { value: "ia_direta", label: "Mais direta" },
-  { value: "ia_humanizada", label: "Mais humana" },
-  {
-    value: "priorizar_qualificacao",
-    label: "Priorizar qualificação antes de preço",
-  },
-  {
-    value: "priorizar_agendamento",
-    label: "Priorizar visita ou agendamento",
-  },
-];
-
-const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
-  {
-    value: "nao_prometer_fora_escopo",
-    label: "Nunca prometer fora do escopo",
-  },
-  {
-    value: "encaminhar_humano_casos_criticos",
-    label: "Chamar humano em casos críticos",
-  },
-];
-
-function cx(...parts: Array<string | false | null | undefined>) {
-  return parts.filter(Boolean).join(" ");
-}
-
-function toNullableNumber(value: string) {
-  const cleaned = value.replace(/\./g, "").replace(",", ".").trim();
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
-function toNullableInteger(value: string) {
-  const cleaned = value.replace(/[^\d-]/g, "").trim();
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  if (Number.isNaN(parsed)) return null;
-  return Math.trunc(parsed);
-}
-
-function parseArrayAnswer(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(String).filter(Boolean);
-  if (typeof value === "string") {
-    return value
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
-  return [];
-}
-
-function formatPriceInput(value: string) {
-  const cleaned = value.replace(/[^\d,]/g, "");
-  if (!cleaned) return "";
-
-  const parts = cleaned.split(",");
-  const integerPartRaw = parts[0].replace(/^0+(?=\d)/, "");
-  const integerPart = integerPartRaw || (parts[0] ? "0" : "");
-  const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-
-  if (parts.length === 1) return formattedInteger;
-
-  const decimalPart = parts.slice(1).join("").slice(0, 2);
-  return `${formattedInteger},${decimalPart}`;
-}
-
-function formatPercentInput(value: string) {
-  const cleaned = value.replace(/[^\d,]/g, "");
-  if (!cleaned) return "";
-
-  const parts = cleaned.split(",");
-  const integerPartRaw = parts[0].replace(/^0+(?=\d)/, "");
-  const integerPart = integerPartRaw || (parts[0] ? "0" : "");
-
-  if (parts.length === 1) return integerPart;
-
-  const decimalPart = parts.slice(1).join("").slice(0, 2);
-  return `${integerPart},${decimalPart}`;
-}
-
-function formatNumberInput(value: string) {
-  return value.replace(/[^\d.,]/g, "").replace(",", ".");
-}
-
-function formatIntegerInput(value: string) {
-  return value.replace(/[^\d]/g, "");
-}
-
-function formatWhatsappInput(value: string) {
-  return value.replace(/[^\d]/g, "");
-}
-
-function formatWhatsappPretty(value: string | null | undefined) {
-  const digits = (value ?? "").replace(/\D/g, "");
-
-  if (!digits) return "Não informado";
-
-  if (digits.length === 13) {
-    return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(
-      4,
-      9
-    )}-${digits.slice(9)}`;
-  }
-
-  if (digits.length === 11) {
-    return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
-  }
-
-  if (digits.length === 10) {
-    return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
-  }
-
-  return digits;
-}
 
 function moneyBRL(value: number | null) {
   if (value == null) return "Sem preço";
@@ -451,1025 +63,263 @@ function moneyBRL(value: number | null) {
   })}`;
 }
 
-function moneyFromCentsBRL(value: number | null) {
-  if (value == null) return "Sem preço";
-  return moneyBRL(value / 100);
+function getPublicImageUrl(storagePath: string) {
+  const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
+  return data.publicUrl;
 }
 
-function formatFileSize(bytes: number) {
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(2)} KB`;
-  }
-  return `${bytes} B`;
+function formatPriceInput(value: string) {
+  const cleaned = value.replace(/[^\d,]/g, "");
+  if (!cleaned) return "";
+  const parts = cleaned.split(",");
+  const integerPartRaw = parts[0].replace(/^0+(?=\d)/, "");
+  const integerPart = integerPartRaw || (parts[0] ? "0" : "");
+  const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  const decimalPart = parts[1] ? parts[1].slice(0, 2) : "";
+  return decimalPart ? `${formattedInteger},${decimalPart}` : formattedInteger;
 }
 
-function roleLabel(role: string | null) {
-  const found = ROLE_OPTIONS.find((item) => item.value === role);
-  return found?.label ?? "Não definido";
+function priceInputToNumber(value: string) {
+  const normalized = value.replace(/\./g, "").replace(",", ".").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-function isValidTab(tab: string | null): tab is TabKey {
+function formatFileSize(size: number) {
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function cleanLooseText(value: string | null | undefined) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeLoose(value: string | null | undefined) {
+  return cleanLooseText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isJunkDescriptionLine(value: string) {
+  const normalized = normalizeLoose(value);
+  if (!normalized) return true;
   return (
-    tab === "visao_geral" ||
-    tab === "estrategia" ||
-    tab === "piscinas" ||
-    tab === "catalogo" ||
-    tab === "operacao" ||
-    tab === "comercial_ia" ||
-    tab === "responsavel_ativacao" ||
-    tab === "descontos"
+    normalized === "descricao detalhada" ||
+    normalized === "descrição detalhada" ||
+    normalized.startsWith("arquivo de teste") ||
+    normalized.startsWith("imagem de referencia visual") ||
+    normalized.startsWith("imagem de referência visual") ||
+    normalized.startsWith("campo") ||
+    normalized.startsWith("valor") ||
+    normalized.startsWith("categoria") ||
+    normalized.startsWith("modelo") ||
+    normalized.startsWith("tipo") ||
+    normalized.startsWith("medidas") ||
+    normalized.startsWith("profundidade") ||
+    normalized.startsWith("capacidade") ||
+    normalized.startsWith("material") ||
+    normalized.startsWith("preco") ||
+    normalized.startsWith("preço") ||
+    normalized.startsWith("prazo") ||
+    normalized.startsWith("observacao de teste") ||
+    normalized.startsWith("observação de teste")
   );
 }
 
-function normalizeCatalogCategory(category: string | null | undefined) {
-  if (category === "acessorios") return "acessorios";
-  if (category === "quimicos") return "quimicos";
-  return "outros";
+function pushCharacteristic(rows: CharacteristicRow[], label: string, value: string | null | undefined) {
+  const safeValue = cleanLooseText(value);
+  if (!safeValue) return;
+  if (rows.some((row) => row.label === label && row.value === safeValue)) return;
+  rows.push({ label, value: safeValue });
 }
 
-function getOptionLabel(value: string, options: Option[]) {
-  return options.find((item) => item.value === value)?.label ?? value;
+function buildPoolCharacteristics(pool: PoolRow): CharacteristicRow[] {
+  const rows: CharacteristicRow[] = [];
+  pushCharacteristic(rows, "Nome", pool.name || "");
+  if (pool.price != null) pushCharacteristic(rows, "Preço", moneyBRL(pool.price));
+  pushCharacteristic(rows, "Formato", pool.shape);
+  pushCharacteristic(rows, "Material", pool.material);
+  if (pool.width_m != null) pushCharacteristic(rows, "Largura", `${pool.width_m} m`);
+  if (pool.length_m != null) pushCharacteristic(rows, "Comprimento", `${pool.length_m} m`);
+  if (pool.depth_m != null) pushCharacteristic(rows, "Profundidade", `${pool.depth_m} m`);
+  if (pool.max_capacity_l != null) pushCharacteristic(rows, "Capacidade", `${pool.max_capacity_l.toLocaleString("pt-BR")} L`);
+  if (pool.weight_kg != null) pushCharacteristic(rows, "Peso", `${pool.weight_kg} kg`);
+  return rows;
 }
 
-function joinOptionLabels(
-  values: string[],
-  options: Option[],
-  otherText?: string | null,
-  emptyFallback = "Não informado"
-) {
-  const labels = values.map((value) => getOptionLabel(value, options)).filter(Boolean);
+function buildComplementaryDescription(pool: PoolRow, characteristics: CharacteristicRow[]) {
+  const sourceText = cleanLooseText(pool.description || "");
+  if (!sourceText) return "";
 
-  if (otherText?.trim()) labels.push(otherText.trim());
+  const characteristicValues = characteristics.map((row) => normalizeLoose(row.value)).filter(Boolean);
+  const lines = sourceText
+    .split(/\n+/)
+    .map((line) => cleanLooseText(line))
+    .filter(Boolean)
+    .filter((line) => !isJunkDescriptionLine(line))
+    .filter((line) => {
+      const normalized = normalizeLoose(line);
+      if (!normalized) return false;
+      if (characteristicValues.includes(normalized)) return false;
+      return !characteristicValues.some((value) => value.length >= 8 && normalized === value);
+    });
 
-  if (labels.length === 0) return emptyFallback;
-  return labels.join(", ");
-}
-
-function booleanToYesNo(value: unknown) {
-  if (typeof value === "boolean") return value ? "Sim" : "Não";
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "sim") return "Sim";
-    if (normalized === "não" || normalized === "nao") return "Não";
+  const unique: string[] = [];
+  for (const line of lines) {
+    if (!unique.some((existing) => normalizeLoose(existing) === normalizeLoose(line))) {
+      unique.push(line);
+    }
   }
-  return "Não informado";
+
+  return unique.join("\n").trim();
 }
 
-function textValue(value: unknown, fallback = "Não informado") {
-  if (value == null) return fallback;
-  const asText = String(value).trim();
-  return asText ? asText : fallback;
+function buildEditForm(pool: PoolRow): EditPoolForm {
+  return {
+    name: pool.name || "",
+    description: pool.description || "",
+    price: pool.price == null ? "" : formatPriceInput(String(pool.price.toFixed(2).replace(".", ","))),
+    is_active: pool.is_active,
+    track_stock: pool.track_stock,
+    stock_quantity: pool.stock_quantity == null ? "" : String(pool.stock_quantity),
+  };
 }
 
-function arrayOrTextValue(value: unknown, fallback = "Não informado") {
-  if (Array.isArray(value)) {
-    const items = value.map(String).filter(Boolean);
-    return items.length ? items.join(", ") : fallback;
-  }
-
-  return textValue(value, fallback);
-}
-
-function countFilledItems(items: StrategyBlockItem[]) {
-  return items.filter((item) => {
-    const normalized = item.value.trim().toLowerCase();
-    return normalized && normalized !== "não informado";
-  }).length;
-}
-
-function SummaryCard({
-  title,
-  value,
-  hint,
-}: {
-  title: string;
-  value: string | number;
-  hint?: string;
-}) {
+function DetailChip({ value }: { value: string }) {
   return (
-    <div className="rounded-lg bg-gray-50 p-2.5 ring-1 ring-black/5">
-      <div className="text-[11px] text-gray-500">{title}</div>
-      <div className="mt-1 text-lg font-bold text-gray-900">{value}</div>
-      {hint ? <div className="mt-1 text-[10px] text-gray-500">{hint}</div> : null}
+    <span className="inline-flex rounded-full bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10">
+      {value}
+    </span>
+  );
+}
+
+function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-[24px] bg-white p-5 ring-1 ring-black/5">
+      <h3 className="mb-3 text-xl font-bold text-gray-900">{title}</h3>
+      {children}
     </div>
   );
 }
 
-function SectionCard({
-  title,
-  description,
-  right,
-  children,
-}: {
-  title: string;
-  description?: string;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-}) {
+function CharacteristicsTable({ title, rows }: { title: string; rows: CharacteristicRow[] }) {
+  if (rows.length === 0) return null;
   return (
-    <section className="rounded-lg bg-white shadow-sm ring-1 ring-black/5">
-      <div className="flex flex-col gap-2 border-b border-black/5 px-3 py-2.5 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
-          {description ? <p className="mt-1 text-xs text-gray-600">{description}</p> : null}
-        </div>
-        {right}
-      </div>
-      <div className="p-3">{children}</div>
-    </section>
-  );
-}
-
-function StrategySection({
-  title,
-  description,
-  items,
-  onEdit,
-}: {
-  title: string;
-  description: string;
-  items: StrategyBlockItem[];
-  onEdit?: () => void;
-}) {
-  return (
-    <section className="rounded-lg bg-white shadow-sm ring-1 ring-black/5">
-      <div className="flex flex-col gap-2 border-b border-black/5 px-3 py-2.5 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
-          <p className="mt-1 text-xs text-gray-600">{description}</p>
-        </div>
-
-        {onEdit ? (
-          <button
-            type="button"
-            onClick={onEdit}
-            className="inline-flex shrink-0 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 transition hover:border-gray-400 hover:bg-gray-50"
+    <SectionCard title={title}>
+      <div className="overflow-hidden rounded-2xl ring-1 ring-black/5">
+        {rows.map((row, index) => (
+          <div
+            key={`${row.label}-${index}`}
+            className={`grid gap-2 px-4 py-3 text-sm sm:grid-cols-[220px_minmax(0,1fr)] sm:items-start ${index % 2 === 0 ? "bg-gray-50" : "bg-white"} ${index > 0 ? "border-t border-gray-200" : ""}`}
           >
-            Editar no onboarding
-          </button>
-        ) : null}
-      </div>
-
-      <div className="grid gap-2.5 p-3 md:grid-cols-2">
-        {items.map((item) => (
-          <div key={item.label} className="rounded-lg bg-gray-50 p-2.5 ring-1 ring-black/5">
-            <div className="text-[11px] text-gray-500">{item.label}</div>
-            <div className="mt-1 whitespace-pre-wrap text-xs font-medium leading-5 text-gray-900">
-              {item.value}
-            </div>
+            <div className="font-semibold text-gray-700">{row.label}</div>
+            <div className="break-words text-gray-900">{row.value}</div>
           </div>
         ))}
       </div>
-    </section>
+    </SectionCard>
   );
 }
 
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3 text-xs text-gray-600">
-      <div className="font-semibold text-gray-900">{title}</div>
-      <p className="mt-2">{description}</p>
-    </div>
-  );
-}
-
-function OptionCardGroup({
-  title,
-  description,
-  value,
-  options,
-  onChange,
-}: {
-  title: string;
-  description?: string;
-  value: string;
-  options: Option[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div className="rounded-lg bg-gray-50 p-2.5 ring-1 ring-black/5">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-700">
-        {title}
-      </div>
-      {description ? <div className="mt-1 text-[11px] text-gray-500">{description}</div> : null}
-      <div className="mt-2.5 grid gap-2">
-        {options.map((option) => {
-          const active = value === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => onChange(option.value)}
-              className={cx(
-                "rounded-lg border px-3 py-2 text-left text-xs font-medium transition",
-                active
-                  ? "border-black bg-black text-white"
-                  : "border-gray-300 bg-white text-gray-700 hover:border-gray-500 hover:bg-gray-100"
-              )}
-            >
-              {option.label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function SmallNavButton({
-  href,
-  children,
-}: {
-  href: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex items-center rounded-md bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-100"
-    >
-      {children}
-    </Link>
-  );
-}
-
-export default function ConfiguracoesPage() {
-  const router = useRouter();
-  const pathname = usePathname();
-
-  const {
-    loading: storeLoading,
-    organizationId,
-    activeStoreId,
-    activeStore,
-  } = useStoreContext();
-
-  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
-  const ORGANIZATION_ID = organizationId ?? "";
-  const STORE_ID = activeStoreId ?? "";
-  const scrollStorageKey = `${SCROLL_STORAGE_KEY}:${pathname ?? "/configuracoes"}:${STORE_ID || "sem-loja"}`;
-  const localConfigStorageKey = `${LOCAL_CONFIG_DRAFT_KEY_PREFIX}:${STORE_ID || "sem-loja"}`;
-
-  const [activeTab, setActiveTab] = useState<TabKey>("visao_geral");
-  const [localConfigDraft, setLocalConfigDraft] =
-    useState<LocalConfigDraft>(DEFAULT_LOCAL_CONFIG_DRAFT);
-
-  const [loadingInitial, setLoadingInitial] = useState(true);
-  const [reloading, setReloading] = useState(false);
-  const [errorText, setErrorText] = useState<string | null>(null);
-  const [successText, setSuccessText] = useState<string | null>(null);
+export default function PoolsPage() {
+  const { organizationId, activeStoreId } = useStoreContext();
 
   const [pools, setPools] = useState<PoolRow[]>([]);
-  const [catalogItems, setCatalogItems] = useState<CatalogItemRow[]>([]);
-  const [catalogItemPhotos, setCatalogItemPhotos] = useState<CatalogItemPhotoRow[]>([]);
-  const [responsibles, setResponsibles] = useState<ResponsibleRow[]>([]);
-  const [poolPhotos, setPoolPhotos] = useState<PoolPhotoRow[]>([]);
-  const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
-  const [strategyAnswers, setStrategyAnswers] = useState<AnswersMap>({});
-
-  const [savingPool, setSavingPool] = useState(false);
-  const [savingCatalogItem, setSavingCatalogItem] = useState(false);
-  const [savingResponsible, setSavingResponsible] = useState(false);
-  const [savingDiscountSettings, setSavingDiscountSettings] = useState(false);
-
-  const [poolName, setPoolName] = useState("");
-  const [poolWidth, setPoolWidth] = useState("");
-  const [poolLength, setPoolLength] = useState("");
-  const [poolDepth, setPoolDepth] = useState("");
-  const [poolShape, setPoolShape] = useState("retangular");
-  const [poolMaterial, setPoolMaterial] = useState("fibra");
-  const [poolCapacity, setPoolCapacity] = useState("");
-  const [poolWeight, setPoolWeight] = useState("");
-  const [poolPrice, setPoolPrice] = useState("");
-  const [poolDescription, setPoolDescription] = useState("");
-  const [poolIsActive, setPoolIsActive] = useState(true);
-  const [poolTrackStock, setPoolTrackStock] = useState(true);
-  const [poolStockQuantity, setPoolStockQuantity] = useState("");
-  const [selectedPoolFiles, setSelectedPoolFiles] = useState<File[]>([]);
-
-  const [catalogCategory, setCatalogCategory] = useState("acessorios");
-  const [catalogCode, setCatalogCode] = useState("");
-  const [catalogName, setCatalogName] = useState("");
-  const [catalogPrice, setCatalogPrice] = useState("");
-  const [catalogDescription, setCatalogDescription] = useState("");
-  const [catalogIsActive, setCatalogIsActive] = useState(true);
-  const [catalogTrackStock, setCatalogTrackStock] = useState(true);
-  const [catalogStockQuantity, setCatalogStockQuantity] = useState("");
-  const [selectedCatalogFiles, setSelectedCatalogFiles] = useState<File[]>([]);
-
-  const [responsibleName, setResponsibleName] = useState("");
-  const [responsibleWhatsapp, setResponsibleWhatsapp] = useState("");
-  const [responsibleRole, setResponsibleRole] = useState("owner");
-  const [receiveDiscountAlerts, setReceiveDiscountAlerts] = useState(true);
-  const [receiveSubscriptionAlerts, setReceiveSubscriptionAlerts] = useState(true);
-  const [receiveSlaAlerts, setReceiveSlaAlerts] = useState(true);
-
-  const [defaultDiscountPercentInput, setDefaultDiscountPercentInput] = useState("");
-  const [maxDiscountPercentInput, setMaxDiscountPercentInput] = useState("");
-  const [allowAskAboveMaxDiscount, setAllowAskAboveMaxDiscount] = useState(false);
-
-  const totalPools = pools.length;
-  const totalResponsibles = responsibles.length;
-  const totalCatalogItems = catalogItems.length;
-
-  const sellerIaStyleLabel =
-    getOptionLabel(
-      localConfigDraft.sellerIaStyleMode,
-      ACTIVATION_STYLE_OPTIONS.filter(
-        (item) => item.value === "ia_direta" || item.value === "ia_humanizada"
-      )
-    ) || "Não definido";
-
-  const activationPriorityLabel =
-    getOptionLabel(
-      localConfigDraft.activationPriorityMode,
-      ACTIVATION_STYLE_OPTIONS.filter(
-        (item) =>
-          item.value === "priorizar_qualificacao" ||
-          item.value === "priorizar_agendamento"
-      )
-    ) || "Não definido";
-
-  const activationGuardrailLabel =
-    getOptionLabel(localConfigDraft.activationGuardrailMode, ACTIVATION_GUARDRAIL_OPTIONS) ||
-    "Não definido";
-
-  const tabs: Array<{ key: TabKey; label: string }> = [
-    { key: "visao_geral", label: "Visão Geral" },
-    { key: "estrategia", label: "Estratégia" },
-    { key: "piscinas", label: "Piscinas" },
-    { key: "catalogo", label: "Produtos/Acessórios" },
-    { key: "operacao", label: "Operação" },
-    { key: "comercial_ia", label: "Comercial e IA" },
-    { key: "responsavel_ativacao", label: "Responsável e ativação" },
-    { key: "descontos", label: "Descontos" },
-  ];
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !STORE_ID) return;
-    try {
-      const raw = window.localStorage.getItem(localConfigStorageKey);
-      if (!raw) {
-        setLocalConfigDraft(DEFAULT_LOCAL_CONFIG_DRAFT);
-        return;
-      }
-      const parsed = JSON.parse(raw) as Partial<LocalConfigDraft>;
-      setLocalConfigDraft({ ...DEFAULT_LOCAL_CONFIG_DRAFT, ...parsed });
-    } catch {
-      setLocalConfigDraft(DEFAULT_LOCAL_CONFIG_DRAFT);
-    }
-  }, [STORE_ID, localConfigStorageKey]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !STORE_ID) return;
-    window.localStorage.setItem(localConfigStorageKey, JSON.stringify(localConfigDraft));
-  }, [STORE_ID, localConfigDraft, localConfigStorageKey]);
-
-  const catalogItemsByCategory = useMemo(() => {
-    return {
-      acessorios: catalogItems.filter(
-        (item) => normalizeCatalogCategory(item.metadata?.categoria) === "acessorios"
-      ),
-      quimicos: catalogItems.filter(
-        (item) => normalizeCatalogCategory(item.metadata?.categoria) === "quimicos"
-      ),
-      outros: catalogItems.filter(
-        (item) => normalizeCatalogCategory(item.metadata?.categoria) === "outros"
-      ),
-    };
-  }, [catalogItems]);
-
-  const activePoolsCount = useMemo(
-    () => pools.filter((pool) => pool.is_active).length,
-    [pools]
-  );
-
-  const poolsAvailableCount = useMemo(
-    () =>
-      pools.filter((pool) => {
-        if (!pool.is_active) return false;
-        if (!pool.track_stock) return true;
-        return (pool.stock_quantity ?? 0) > 0;
-      }).length,
-    [pools]
-  );
-
-  const activeCatalogItemsCount = useMemo(
-    () => catalogItems.filter((item) => item.is_active).length,
-    [catalogItems]
-  );
-
-  const catalogItemsAvailableCount = useMemo(
-    () =>
-      catalogItems.filter((item) => {
-        if (!item.is_active) return false;
-        if (!item.track_stock) return true;
-        return (item.stock_quantity ?? 0) > 0;
-      }).length,
-    [catalogItems]
-  );
-
-  const strategySections = useMemo(() => {
-    const serviceRegionModes = parseArrayAnswer(strategyAnswers.service_region_modes);
-    const storeServices = parseArrayAnswer(strategyAnswers.store_services);
-    const poolTypesSelected = parseArrayAnswer(strategyAnswers.pool_types_selected);
-    const technicalVisitRulesSelected = parseArrayAnswer(
-      strategyAnswers.technical_visit_rules_selected
-    );
-    const importantLimitationsSelected = parseArrayAnswer(
-      strategyAnswers.important_limitations_selected
-    );
-    const salesFlowStartSteps = parseArrayAnswer(strategyAnswers.sales_flow_start_steps);
-    const salesFlowMiddleSteps = parseArrayAnswer(strategyAnswers.sales_flow_middle_steps);
-    const salesFlowFinalSteps = parseArrayAnswer(strategyAnswers.sales_flow_final_steps);
-    const acceptedPaymentMethods = parseArrayAnswer(strategyAnswers.accepted_payment_methods);
-    const priceMustUnderstandBefore = parseArrayAnswer(
-      strategyAnswers.price_must_understand_before ?? strategyAnswers.price_direct_conditions
-    );
-    const humanHelpDiscountCases = parseArrayAnswer(
-      strategyAnswers.human_help_discount_cases_selected
-    );
-    const humanHelpCustomProjectCases = parseArrayAnswer(
-      strategyAnswers.human_help_custom_project_cases_selected
-    );
-    const humanHelpPaymentCases = parseArrayAnswer(
-      strategyAnswers.human_help_payment_cases_selected
-    );
-    const responsibleNotificationCases = parseArrayAnswer(
-      strategyAnswers.responsible_notification_cases
-    );
-    const activationPreferences = parseArrayAnswer(strategyAnswers.activation_preferences);
-
-    const lojaEAtuacao: StrategyBlockItem[] = [
-      {
-        label: "Nome da loja",
-        value:
-          textValue(strategyAnswers.store_display_name, "") ||
-          activeStore?.name ||
-          "Não informado",
-      },
-      {
-        label: "Descrição da loja",
-        value: textValue(strategyAnswers.store_description),
-      },
-      {
-        label: "Cidade",
-        value: textValue(strategyAnswers.city),
-      },
-      {
-        label: "Estado",
-        value: textValue(strategyAnswers.state),
-      },
-      {
-        label: "WhatsApp comercial",
-        value: textValue(strategyAnswers.commercial_whatsapp),
-      },
-      {
-        label: "Alcance regional principal",
-        value: strategyAnswers.service_region_primary_mode
-          ? getOptionLabel(
-              String(strategyAnswers.service_region_primary_mode),
-              SERVICE_REGION_PRIMARY_OPTIONS
-            )
-          : "Não informado",
-      },
-      {
-        label: "Modos de atendimento regional",
-        value: serviceRegionModes.length
-          ? joinOptionLabels(serviceRegionModes, SERVICE_REGION_PRIMARY_OPTIONS)
-          : "Não informado",
-      },
-      {
-        label: "Atendimento fora da região",
-        value:
-          typeof strategyAnswers.service_region_outside_consultation === "boolean"
-            ? strategyAnswers.service_region_outside_consultation
-              ? "Sim, sob consulta"
-              : "Não"
-            : "Não informado",
-      },
-      {
-        label: "Observações sobre a região",
-        value: textValue(strategyAnswers.service_region_notes),
-      },
-      {
-        label: "Serviços da loja",
-        value: joinOptionLabels(
-          storeServices,
-          STORE_SERVICE_OPTIONS,
-          textValue(strategyAnswers.store_services_other, "")
-        ),
-      },
-    ];
-
-    const ofertaPrincipal: StrategyBlockItem[] = [
-      {
-        label: "Tipos de piscina",
-        value: joinOptionLabels(
-          poolTypesSelected,
-          POOL_TYPE_OPTIONS,
-          textValue(strategyAnswers.pool_types_other, "")
-        ),
-      },
-      {
-        label: "Marca principal da loja",
-        value: textValue(strategyAnswers.main_store_brand),
-      },
-      {
-        label: "Vende produtos químicos?",
-        value: booleanToYesNo(strategyAnswers.sells_chemicals),
-      },
-      {
-        label: "Vende acessórios?",
-        value: booleanToYesNo(strategyAnswers.sells_accessories),
-      },
-      {
-        label: "Oferece instalação?",
-        value: booleanToYesNo(strategyAnswers.offers_installation),
-      },
-      {
-        label: "Oferece visita técnica?",
-        value: booleanToYesNo(strategyAnswers.offers_technical_visit),
-      },
-    ];
-
-    const operacaoDaLoja: StrategyBlockItem[] = [
-      {
-        label: "Tempo médio de instalação",
-        value: textValue(strategyAnswers.average_installation_time_days),
-      },
-      {
-        label: "Dias disponíveis para instalação",
-        value: arrayOrTextValue(strategyAnswers.installation_available_days),
-      },
-      {
-        label: "Regra complementar de instalação",
-        value: textValue(strategyAnswers.installation_days_rule),
-      },
-      {
-        label: "Dias disponíveis para visita técnica",
-        value: arrayOrTextValue(strategyAnswers.technical_visit_available_days),
-      },
-      {
-        label: "Regra complementar de visita técnica",
-        value: textValue(strategyAnswers.technical_visit_days_rule),
-      },
-      {
-        label: "Tempo médio de resposta humana",
-        value: textValue(strategyAnswers.average_human_response_time),
-      },
-      {
-        label: "Regras de visita técnica",
-        value: joinOptionLabels(
-          technicalVisitRulesSelected,
-          TECHNICAL_VISIT_RULE_OPTIONS,
-          textValue(strategyAnswers.technical_visit_rules_other, "")
-        ),
-      },
-      {
-        label: "Limitações importantes",
-        value: joinOptionLabels(
-          importantLimitationsSelected,
-          IMPORTANT_LIMITATION_OPTIONS,
-          textValue(strategyAnswers.important_limitations_other, "")
-        ),
-      },
-      {
-        label: "Fluxo comercial — início",
-        value: joinOptionLabels(salesFlowStartSteps, SALES_FLOW_START_OPTIONS, ""),
-      },
-      {
-        label: "Fluxo comercial — negociação",
-        value: joinOptionLabels(salesFlowMiddleSteps, SALES_FLOW_MIDDLE_OPTIONS, ""),
-      },
-      {
-        label: "Fluxo comercial — final",
-        value: joinOptionLabels(salesFlowFinalSteps, SALES_FLOW_FINAL_OPTIONS, ""),
-      },
-      {
-        label: "Observações do fluxo",
-        value: textValue(strategyAnswers.sales_flow_notes),
-      },
-    ];
-
-    const comercialEIA: StrategyBlockItem[] = [
-      {
-        label: "Ticket médio",
-        value: textValue(strategyAnswers.average_ticket),
-      },
-      {
-        label: "A loja pode dar desconto?",
-        value: booleanToYesNo(strategyAnswers.can_offer_discount),
-      },
-      {
-        label: "Desconto máximo informado no onboarding",
-        value: textValue(strategyAnswers.max_discount_percent),
-      },
-      {
-        label: "Formas de pagamento e condições",
-        value: joinOptionLabels(
-          acceptedPaymentMethods,
-          [...PAYMENT_METHOD_MAIN_OPTIONS, ...PAYMENT_METHOD_CONDITION_OPTIONS],
-          ""
-        ),
-      },
-      {
-        label: "A IA pode falar preço?",
-        value: booleanToYesNo(strategyAnswers.ai_can_send_price_directly),
-      },
-      {
-        label: "O que a IA deve entender antes de falar preço",
-        value: joinOptionLabels(
-          priceMustUnderstandBefore,
-          PRICE_DIRECT_BEFORE_OPTIONS,
-          textValue(strategyAnswers.price_direct_rule_other, "")
-        ),
-      },
-      {
-        label: "Modo de conversa sobre preço",
-        value: strategyAnswers.price_talk_mode
-          ? getOptionLabel(String(strategyAnswers.price_talk_mode), PRICE_TALK_MODE_OPTIONS)
-          : "Não informado",
-      },
-      {
-        label: "Preço precisa de ajuda humana?",
-        value: textValue(strategyAnswers.price_needs_human_help),
-      },
-      {
-        label: "Casos para ajuda humana por desconto",
-        value: joinOptionLabels(
-          humanHelpDiscountCases,
-          HUMAN_HELP_DISCOUNT_OPTIONS,
-          textValue(strategyAnswers.human_help_discount_cases_other, "")
-        ),
-      },
-      {
-        label: "Casos para ajuda humana por projeto especial",
-        value: joinOptionLabels(
-          humanHelpCustomProjectCases,
-          HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
-          textValue(strategyAnswers.human_help_custom_project_cases_other, "")
-        ),
-      },
-      {
-        label: "Casos para ajuda humana por pagamento",
-        value: joinOptionLabels(
-          humanHelpPaymentCases,
-          HUMAN_HELP_PAYMENT_OPTIONS,
-          textValue(strategyAnswers.human_help_payment_cases_other, "")
-        ),
-      },
-      {
-        label: "Regra consolidada de preço",
-        value: textValue(strategyAnswers.price_direct_rule),
-      },
-    ];
-
-    const responsavelEAtivacao: StrategyBlockItem[] = [
-      {
-        label: "Responsável principal",
-        value: textValue(strategyAnswers.responsible_name),
-      },
-      {
-        label: "WhatsApp do responsável",
-        value: textValue(strategyAnswers.responsible_whatsapp),
-      },
-      {
-        label: "A IA deve notificar o responsável?",
-        value: booleanToYesNo(strategyAnswers.ai_should_notify_responsible),
-      },
-      {
-        label: "Casos de notificação",
-        value: joinOptionLabels(
-          responsibleNotificationCases,
-          RESPONSIBLE_NOTIFICATION_CASE_OPTIONS,
-          textValue(strategyAnswers.responsible_notification_cases_other, "")
-        ),
-      },
-      {
-        label: "Preferências de ativação e estilo",
-        value: joinOptionLabels(
-          activationPreferences,
-          [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS],
-          textValue(strategyAnswers.activation_preferences_other, "")
-        ),
-      },
-      {
-        label: "Notas finais de ativação",
-        value: textValue(strategyAnswers.final_activation_notes),
-      },
-      {
-        label: "Informações finais confirmadas?",
-        value:
-          typeof strategyAnswers.confirm_information_is_correct === "boolean"
-            ? strategyAnswers.confirm_information_is_correct
-              ? "Sim"
-              : "Não"
-            : "Não informado",
-      },
-    ];
-
-    return {
-      lojaEAtuacao,
-      ofertaPrincipal,
-      operacaoDaLoja,
-      comercialEIA,
-      responsavelEAtivacao,
-    };
-  }, [strategyAnswers, activeStore?.name]);
-
-  const assistantIaNumber = useMemo(() => {
-    const possibleKeys = [
-      "assistant_whatsapp",
-      "assistant_ia_whatsapp",
-      "responsible_ai_whatsapp",
-      "ia_assistant_whatsapp",
-      "ai_assistant_number",
-      "responsavel_ia_numero",
-      "numero_ia_assistente",
-    ];
-
-    for (const key of possibleKeys) {
-      const value = strategyAnswers[key];
-      if (typeof value === "string" && value.trim()) return value.trim();
-    }
-
-    return "";
-  }, [strategyAnswers]);
-
-  const pendingItems = useMemo(() => {
-    const items: string[] = [];
-
-    if (!strategyAnswers.commercial_whatsapp) {
-      items.push("Cadastrar o WhatsApp comercial da loja.");
-    }
-
-    if (totalPools === 0) {
-      items.push("Cadastrar pelo menos uma piscina.");
-    }
-
-    if (totalCatalogItems === 0) {
-      items.push("Cadastrar pelo menos um produto ou acessório.");
-    }
-
-    if (totalResponsibles === 0) {
-      items.push("Cadastrar pelo menos um responsável humano.");
-    }
-
-    if (!discountSettings) {
-      items.push("Salvar a política de desconto.");
-    }
-
-    if (!strategyAnswers.responsible_name) {
-      items.push("Confirmar o responsável principal na ativação.");
-    }
-
-    if (!(localConfigDraft.assistantIaNumber.trim() || assistantIaNumber.trim())) {
-      items.push("Definir o número/canal da IA assistente operacional.");
-    }
-
-    if (!localConfigDraft.sellerIaName.trim()) {
-      items.push("Definir o nome ou a persona da IA vendedora.");
-    }
-
-    if (!localConfigDraft.discountIntegrationNotes.trim()) {
-      items.push("Revisar a integração entre Comercial e IA e Descontos.");
-    }
-
-    return items;
-  }, [
-    strategyAnswers,
-    totalPools,
-    totalCatalogItems,
-    totalResponsibles,
-    discountSettings,
-    localConfigDraft,
-    assistantIaNumber,
-  ]);
-
-  const readinessPercent = useMemo(() => {
-    const totalChecks = 9;
-    const doneChecks = totalChecks - pendingItems.length;
-    return Math.max(0, Math.min(100, Math.round((doneChecks / totalChecks) * 100)));
-  }, [pendingItems]);
-
-  const poolsPhotoMap = useMemo(() => {
-    const map = new Map<string, PoolPhotoRow[]>();
-
-    for (const photo of poolPhotos) {
-      const current = map.get(photo.pool_id) ?? [];
-      current.push(photo);
-      map.set(photo.pool_id, current);
-    }
-
-    return map;
-  }, [poolPhotos]);
-
-  const catalogPhotosMap = useMemo(() => {
-    const map = new Map<string, CatalogItemPhotoRow[]>();
-
-    for (const photo of catalogItemPhotos) {
-      const current = map.get(photo.catalog_item_id) ?? [];
-      current.push(photo);
-      map.set(photo.catalog_item_id, current);
-    }
-
-    return map;
-  }, [catalogItemPhotos]);
-
-  function goToOnboardingStep(step: number) {
-    if (!hasValidStoreContext) return;
-
-    if (typeof window !== "undefined") {
-      const onboardingStepKey = `zion_onboarding_current_step:${ORGANIZATION_ID}:${STORE_ID}`;
-      window.localStorage.setItem(onboardingStepKey, String(step));
-    }
-
-    router.push("/onboarding");
-  }
-
-  async function fetchPools() {
-    const { data, error } = await supabase
-      .from("pools")
-      .select(
-        "id,name,width_m,length_m,depth_m,shape,material,max_capacity_l,weight_kg,price,description,is_active,track_stock,stock_quantity,created_at"
-      )
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-    setPools((data || []) as PoolRow[]);
-  }
-
-  async function fetchCatalogItems() {
-    const { data, error } = await supabase
-      .from("store_catalog_items")
-      .select(
-        "id,organization_id,store_id,sku,name,description,price_cents,currency,is_active,track_stock,stock_quantity,metadata,created_at,updated_at"
-      )
-      .eq("organization_id", ORGANIZATION_ID)
-      .eq("store_id", STORE_ID)
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-    setCatalogItems((data || []) as CatalogItemRow[]);
-  }
-
-  async function fetchCatalogItemPhotos() {
-    const { data, error } = await supabase
-      .from("store_catalog_item_photos")
-      .select("id,catalog_item_id,storage_path,file_name,file_size_bytes,sort_order,created_at")
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-    setCatalogItemPhotos((data || []) as CatalogItemPhotoRow[]);
-  }
-
-  async function fetchResponsibles() {
-    const { data, error } = await supabase
-      .from("store_responsibles")
-      .select(
-        "id,organization_id,store_id,name,whatsapp_number,role,receive_discount_alerts,receive_subscription_alerts,receive_sla_alerts,created_at"
-      )
-      .eq("organization_id", ORGANIZATION_ID)
-      .eq("store_id", STORE_ID)
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-    setResponsibles((data || []) as ResponsibleRow[]);
-  }
-
-  async function fetchPoolPhotos() {
-    const { data, error } = await supabase
-      .from("pool_photos")
-      .select("id,pool_id,storage_path,file_name,file_size_bytes,sort_order,created_at")
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-    setPoolPhotos((data || []) as PoolPhotoRow[]);
-  }
-
-  async function fetchDiscountSettings() {
-    const { data, error } = await supabase
-      .from("store_discount_settings")
-      .select(
-        "store_id,organization_id,default_discount_percent,max_discount_percent,allow_ask_above_max_discount,created_at,updated_at"
-      )
-      .eq("store_id", STORE_ID)
-      .eq("organization_id", ORGANIZATION_ID)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    const row = (data || null) as DiscountSettingsRow | null;
-    setDiscountSettings(row);
-
-    if (row) {
-      setDefaultDiscountPercentInput(String(row.default_discount_percent ?? 0).replace(".", ","));
-      setMaxDiscountPercentInput(String(row.max_discount_percent ?? 0).replace(".", ","));
-      setAllowAskAboveMaxDiscount(Boolean(row.allow_ask_above_max_discount));
-    } else {
-      setDefaultDiscountPercentInput("0");
-      setMaxDiscountPercentInput("0");
-      setAllowAskAboveMaxDiscount(false);
-    }
-  }
-
-  async function fetchStrategyAnswers() {
-    const { data, error } = await supabase.rpc("onboarding_get_answers_scoped", {
-      p_organization_id: ORGANIZATION_ID,
-      p_store_id: STORE_ID,
-    });
-
-    if (error) throw error;
-    setStrategyAnswers((data ?? {}) as AnswersMap);
-  }
-
-  async function fetchPageData(mode: "initial" | "reload" = "initial") {
-    setErrorText(null);
-
-    if (!hasValidStoreContext) {
-      if (mode === "initial") setLoadingInitial(false);
-      if (mode === "reload") setReloading(false);
+  const [photosByPoolId, setPhotosByPoolId] = useState<Record<string, PoolPhotoRow[]>>({});
+  const [loading, setLoading] = useState(true);
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const [successText, setSuccessText] = useState<string | null>(null);
+  const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
+  const [editPoolForm, setEditPoolForm] = useState<EditPoolForm | null>(null);
+  const [savingPoolId, setSavingPoolId] = useState<string | null>(null);
+  const [deletingPoolId, setDeletingPoolId] = useState<string | null>(null);
+  const [deletingPoolPhotoId, setDeletingPoolPhotoId] = useState<string | null>(null);
+  const [selectedPoolFilesByPoolId, setSelectedPoolFilesByPoolId] = useState<Record<string, File[]>>({});
+  const [uploadingPoolPhotosId, setUploadingPoolPhotosId] = useState<string | null>(null);
+
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
+
+  async function fetchData() {
+    if (!organizationId || !activeStoreId) {
+      setPools([]);
+      setPhotosByPoolId({});
+      setLoading(false);
       return;
     }
 
-    if (mode === "initial") setLoadingInitial(true);
-    if (mode === "reload") setReloading(true);
+    setLoading(true);
+    setErrorText(null);
 
     try {
-      await Promise.all([
-        fetchPools(),
-        fetchCatalogItems(),
-        fetchCatalogItemPhotos(),
-        fetchResponsibles(),
-        fetchPoolPhotos(),
-        fetchDiscountSettings(),
-        fetchStrategyAnswers(),
-      ]);
+      const { data: poolRows, error } = await supabase
+        .from("pools")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      const nextPools = (poolRows || []) as PoolRow[];
+      setPools(nextPools);
+
+      if (nextPools.length === 0) {
+        setPhotosByPoolId({});
+        return;
+      }
+
+      const poolIds = nextPools.map((pool) => pool.id);
+      const { data: photoRows, error: photosError } = await supabase
+        .from("pool_photos")
+        .select("*")
+        .in("pool_id", poolIds)
+        .order("sort_order", { ascending: true });
+
+      if (photosError) throw photosError;
+
+      const grouped: Record<string, PoolPhotoRow[]> = {};
+      for (const photo of (photoRows || []) as PoolPhotoRow[]) {
+        if (!grouped[photo.pool_id]) grouped[photo.pool_id] = [];
+        grouped[photo.pool_id].push(photo);
+      }
+      setPhotosByPoolId(grouped);
     } catch (error: any) {
-      console.error("Erro ao carregar configurações:", error);
-      setErrorText(error?.message ?? "Erro ao carregar configurações.");
-      setPools([]);
-      setCatalogItems([]);
-      setCatalogItemPhotos([]);
-      setResponsibles([]);
-      setPoolPhotos([]);
-      setDiscountSettings(null);
-      setStrategyAnswers({});
+      setErrorText(error?.message ?? "Erro ao carregar piscinas.");
     } finally {
-      if (mode === "initial") setLoadingInitial(false);
-      if (mode === "reload") setReloading(false);
+      setLoading(false);
     }
   }
 
-  function resetPoolForm() {
-    setPoolName("");
-    setPoolWidth("");
-    setPoolLength("");
-    setPoolDepth("");
-    setPoolShape("retangular");
-    setPoolMaterial("fibra");
-    setPoolCapacity("");
-    setPoolWeight("");
-    setPoolPrice("");
-    setPoolDescription("");
-    setPoolIsActive(true);
-    setPoolTrackStock(true);
-    setPoolStockQuantity("");
-    setSelectedPoolFiles([]);
+  useEffect(() => {
+    void fetchData();
+  }, [organizationId, activeStoreId]);
+
+  function startEditing(pool: PoolRow) {
+    setEditingPoolId(pool.id);
+    setEditPoolForm(buildEditForm(pool));
+    setErrorText(null);
+    setSuccessText(null);
   }
 
-  function resetCatalogForm() {
-    setCatalogCategory("acessorios");
-    setCatalogCode("");
-    setCatalogName("");
-    setCatalogPrice("");
-    setCatalogDescription("");
-    setCatalogIsActive(true);
-    setCatalogTrackStock(true);
-    setCatalogStockQuantity("");
-    setSelectedCatalogFiles([]);
+  function cancelEditing() {
+    setEditingPoolId(null);
+    setEditPoolForm(null);
   }
 
-  function resetResponsibleForm() {
-    setResponsibleName("");
-    setResponsibleWhatsapp("");
-    setResponsibleRole("owner");
-    setReceiveDiscountAlerts(true);
-    setReceiveSubscriptionAlerts(true);
-    setReceiveSlaAlerts(true);
-  }
-
-  function handlePoolFilesChange(event: ChangeEvent<HTMLInputElement>) {
+  function handlePoolFilesChange(poolId: string, event: ChangeEvent<HTMLInputElement>) {
     const fileList = Array.from(event.target.files || []);
 
     if (fileList.length > MAX_POOL_PHOTOS) {
@@ -1492,1698 +342,424 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    setSelectedPoolFiles(fileList);
     setErrorText(null);
-  }
-
-  function handleCatalogFilesChange(event: ChangeEvent<HTMLInputElement>) {
-    const fileList = Array.from(event.target.files || []);
-
-    if (fileList.length > MAX_CATALOG_PHOTOS) {
-      setErrorText(
-        `Você pode selecionar no máximo ${MAX_CATALOG_PHOTOS} fotos por produto/acessório.`
-      );
-      event.target.value = "";
-      return;
-    }
-
-    const oversized = fileList.find((file) => file.size > MAX_FILE_SIZE_BYTES);
-    if (oversized) {
-      setErrorText(`A imagem "${oversized.name}" ultrapassa o limite de 50 MB.`);
-      event.target.value = "";
-      return;
-    }
-
-    const invalidType = fileList.find((file) => !file.type.startsWith("image/"));
-    if (invalidType) {
-      setErrorText(`O arquivo "${invalidType.name}" não é uma imagem válida.`);
-      event.target.value = "";
-      return;
-    }
-
-    setSelectedCatalogFiles(fileList);
-    setErrorText(null);
+    setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: fileList }));
   }
 
   async function uploadPoolFiles(poolId: string, files: File[]) {
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index];
-      const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
-      const safeExtension = extension ? extension.toLowerCase() : "jpg";
-      const filePath = `${ORGANIZATION_ID}/${STORE_ID}/${poolId}/${Date.now()}-${index}.${safeExtension}`;
+    if (!organizationId || !activeStoreId) throw new Error("Loja ativa não encontrada.");
+
+    const existingPhotos = photosByPoolId[poolId] || [];
+    let nextSortOrder = existingPhotos.length;
+
+    for (const file of files) {
+      const extension = file.name.split(".").pop() || "jpg";
+      const safeFileName = `${crypto.randomUUID()}.${extension}`;
+      const storagePath = `${organizationId}/${activeStoreId}/${poolId}/${safeFileName}`;
 
       const { error: uploadError } = await supabase.storage
-        .from(POOL_STORAGE_BUCKET)
-        .upload(filePath, file, {
+        .from(STORAGE_BUCKET)
+        .upload(storagePath, file, {
+          cacheControl: "3600",
           upsert: false,
-          contentType: file.type || undefined,
         });
 
       if (uploadError) throw uploadError;
 
       const { error: metadataError } = await supabase.from("pool_photos").insert({
         pool_id: poolId,
-        storage_path: filePath,
+        organization_id: organizationId,
+        store_id: activeStoreId,
+        storage_path: storagePath,
         file_name: file.name,
         file_size_bytes: file.size,
-        sort_order: index,
+        sort_order: nextSortOrder,
       });
 
       if (metadataError) throw metadataError;
+      nextSortOrder += 1;
     }
   }
 
-  async function uploadCatalogFiles(catalogItemId: string, files: File[]) {
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index];
-      const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
-      const safeExtension = extension ? extension.toLowerCase() : "jpg";
-      const filePath = `${ORGANIZATION_ID}/${STORE_ID}/${catalogItemId}/${Date.now()}-${index}.${safeExtension}`;
+  async function handleUploadNewPoolPhotos(poolId: string) {
+    const files = selectedPoolFilesByPoolId[poolId] || [];
 
-      const { error: uploadError } = await supabase.storage
-        .from(CATALOG_STORAGE_BUCKET)
-        .upload(filePath, file, {
-          upsert: false,
-          contentType: file.type || undefined,
-        });
-
-      if (uploadError) throw uploadError;
-
-      const { error: metadataError } = await supabase
-        .from("store_catalog_item_photos")
-        .insert({
-          catalog_item_id: catalogItemId,
-          storage_path: filePath,
-          file_name: file.name,
-          file_size_bytes: file.size,
-          sort_order: index,
-        });
-
-      if (metadataError) throw metadataError;
+    if (files.length === 0) {
+      setErrorText("Selecione uma ou mais fotos para adicionar.");
+      return;
     }
-  }
 
-  async function handleCreatePool(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
     setErrorText(null);
     setSuccessText(null);
-
-    if (!hasValidStoreContext) {
-      setErrorText("A loja ativa ainda não foi carregada. Tente novamente em instantes.");
-      return;
-    }
-
-    if (!poolName.trim()) {
-      setErrorText("O nome da piscina é obrigatório.");
-      return;
-    }
-
-    const widthValue = toNullableNumber(poolWidth);
-    const lengthValue = toNullableNumber(poolLength);
-    const depthValue = toNullableNumber(poolDepth);
-    const capacityValue = toNullableNumber(poolCapacity);
-    const stockQuantityValue = toNullableInteger(poolStockQuantity);
-
-    if (widthValue == null) {
-      setErrorText("A largura da piscina é obrigatória.");
-      return;
-    }
-
-    if (lengthValue == null) {
-      setErrorText("O comprimento da piscina é obrigatório.");
-      return;
-    }
-
-    if (depthValue == null) {
-      setErrorText("A profundidade da piscina é obrigatória.");
-      return;
-    }
-
-    if (!poolShape.trim()) {
-      setErrorText("O formato da piscina é obrigatório.");
-      return;
-    }
-
-    if (!poolMaterial.trim()) {
-      setErrorText("O material da piscina é obrigatório.");
-      return;
-    }
-
-    if (capacityValue == null) {
-      setErrorText("A capacidade máxima em litros é obrigatória.");
-      return;
-    }
-
-    if (poolTrackStock) {
-      if (stockQuantityValue == null) {
-        setErrorText(
-          "A quantidade em estoque da piscina é obrigatória quando o controle de estoque está ativado."
-        );
-        return;
-      }
-
-      if (stockQuantityValue < 0) {
-        setErrorText("A quantidade em estoque da piscina não pode ser negativa.");
-        return;
-      }
-    }
-
-    setSavingPool(true);
-
-    const { data: createdPool, error } = await supabase
-      .from("pools")
-      .insert({
-        name: poolName.trim(),
-        width_m: widthValue,
-        length_m: lengthValue,
-        depth_m: depthValue,
-        shape: poolShape.trim(),
-        material: poolMaterial.trim(),
-        max_capacity_l: capacityValue,
-        weight_kg: toNullableNumber(poolWeight),
-        price: toNullableNumber(poolPrice),
-        description: poolDescription.trim() || null,
-        is_active: poolIsActive,
-        track_stock: poolTrackStock,
-        stock_quantity: poolTrackStock ? stockQuantityValue : null,
-      })
-      .select("id")
-      .single();
-
-    if (error) {
-      setErrorText(error.message ?? "Erro ao cadastrar piscina.");
-      setSavingPool(false);
-      return;
-    }
+    setUploadingPoolPhotosId(poolId);
 
     try {
-      if (selectedPoolFiles.length > 0) {
-        await uploadPoolFiles(createdPool.id, selectedPoolFiles);
-      }
-    } catch (uploadError: any) {
-      setErrorText(
-        uploadError?.message ?? "A piscina foi cadastrada, mas houve erro ao enviar as fotos."
-      );
-      setSavingPool(false);
-      await fetchPageData("reload");
-      return;
+      await uploadPoolFiles(poolId, files);
+      setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: [] }));
+      const input = fileInputRefs.current[poolId];
+      if (input) input.value = "";
+      setSuccessText("Fotos adicionadas com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao adicionar fotos da piscina.");
+    } finally {
+      setUploadingPoolPhotosId(null);
     }
-
-    resetPoolForm();
-    setSuccessText("Piscina cadastrada com sucesso.");
-    setSavingPool(false);
-    await fetchPageData("reload");
-    setActiveTab("piscinas");
   }
 
-  async function handleCreateCatalogItem(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleDeletePoolPhoto(photo: PoolPhotoRow) {
     setErrorText(null);
     setSuccessText(null);
-
-    if (!hasValidStoreContext) {
-      setErrorText("A loja ativa ainda não foi carregada. Tente novamente em instantes.");
-      return;
-    }
-
-    if (!catalogName.trim()) {
-      setErrorText("O nome do item é obrigatório.");
-      return;
-    }
-
-    const stockQuantityValue = toNullableInteger(catalogStockQuantity);
-
-    if (catalogTrackStock) {
-      if (stockQuantityValue == null) {
-        setErrorText(
-          "A quantidade em estoque do item é obrigatória quando o controle de estoque está ativado."
-        );
-        return;
-      }
-
-      if (stockQuantityValue < 0) {
-        setErrorText("A quantidade em estoque do item não pode ser negativa.");
-        return;
-      }
-    }
-
-    setSavingCatalogItem(true);
-
-    const parsedCatalogPrice = toNullableNumber(catalogPrice);
-
-    const { data: createdItem, error } = await supabase
-      .from("store_catalog_items")
-      .insert({
-        organization_id: ORGANIZATION_ID,
-        store_id: STORE_ID,
-        sku: catalogCode.trim() || null,
-        name: catalogName.trim(),
-        description: catalogDescription.trim() || null,
-        price_cents:
-          parsedCatalogPrice == null ? null : Math.round(parsedCatalogPrice * 100),
-        currency: "BRL",
-        is_active: catalogIsActive,
-        track_stock: catalogTrackStock,
-        stock_quantity: catalogTrackStock ? stockQuantityValue : null,
-        metadata: {
-          categoria: catalogCategory,
-        },
-      })
-      .select("id")
-      .single();
-
-    if (error) {
-      setErrorText(error.message ?? "Erro ao cadastrar item do catálogo.");
-      setSavingCatalogItem(false);
-      return;
-    }
+    setDeletingPoolPhotoId(photo.id);
 
     try {
-      if (selectedCatalogFiles.length > 0) {
-        await uploadCatalogFiles(createdItem.id, selectedCatalogFiles);
-      }
-    } catch (uploadError: any) {
-      setErrorText(
-        uploadError?.message ?? "O item foi cadastrado, mas houve erro ao enviar as fotos."
-      );
-      setSavingCatalogItem(false);
-      await fetchPageData("reload");
-      return;
-    }
+      const { error: storageError } = await supabase.storage.from(STORAGE_BUCKET).remove([photo.storage_path]);
+      if (storageError) throw storageError;
 
-    resetCatalogForm();
-    setSuccessText("Item cadastrado com sucesso.");
-    setSavingCatalogItem(false);
-    await fetchPageData("reload");
-    setActiveTab("catalogo");
+      const { error: dbError } = await supabase.from("pool_photos").delete().eq("id", photo.id);
+      if (dbError) throw dbError;
+
+      setSuccessText("Foto excluída com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao excluir foto da piscina.");
+    } finally {
+      setDeletingPoolPhotoId(null);
+    }
   }
 
-  async function handleCreateResponsible(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleSavePool(poolId: string) {
+    if (!editPoolForm || !organizationId || !activeStoreId) return;
+    setSavingPoolId(poolId);
     setErrorText(null);
     setSuccessText(null);
 
-    if (!hasValidStoreContext) {
-      setErrorText("A loja ativa ainda não foi carregada. Tente novamente em instantes.");
-      return;
+    try {
+      const parsedPrice = priceInputToNumber(editPoolForm.price);
+      const { error } = await supabase
+        .from("pools")
+        .update({
+          name: editPoolForm.name.trim() || null,
+          description: editPoolForm.description.trim() || null,
+          price: parsedPrice,
+          is_active: editPoolForm.is_active,
+          track_stock: editPoolForm.track_stock,
+          stock_quantity:
+            editPoolForm.track_stock && editPoolForm.stock_quantity.trim() ? Number(editPoolForm.stock_quantity) : null,
+        })
+        .eq("id", poolId)
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (error) throw error;
+
+      const pendingFiles = selectedPoolFilesByPoolId[poolId] || [];
+      if (pendingFiles.length > 0) {
+        await uploadPoolFiles(poolId, pendingFiles);
+        setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: [] }));
+        const input = fileInputRefs.current[poolId];
+        if (input) input.value = "";
+      }
+
+      setSuccessText("Piscina salva com sucesso.");
+      setEditingPoolId(null);
+      setEditPoolForm(null);
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao salvar piscina.");
+    } finally {
+      setSavingPoolId(null);
     }
-
-    if (!responsibleName.trim()) {
-      setErrorText("O nome do responsável é obrigatório.");
-      return;
-    }
-
-    if (!responsibleWhatsapp.trim()) {
-      setErrorText("O WhatsApp do responsável é obrigatório.");
-      return;
-    }
-
-    setSavingResponsible(true);
-
-    const { error } = await supabase.from("store_responsibles").insert({
-      organization_id: ORGANIZATION_ID,
-      store_id: STORE_ID,
-      name: responsibleName.trim(),
-      whatsapp_number: responsibleWhatsapp.trim(),
-      role: responsibleRole,
-      receive_discount_alerts: receiveDiscountAlerts,
-      receive_subscription_alerts: receiveSubscriptionAlerts,
-      receive_sla_alerts: receiveSlaAlerts,
-    });
-
-    if (error) {
-      setErrorText(error.message ?? "Erro ao cadastrar responsável.");
-      setSavingResponsible(false);
-      return;
-    }
-
-    resetResponsibleForm();
-    setSuccessText("Responsável cadastrado com sucesso.");
-    setSavingResponsible(false);
-    await fetchResponsibles();
-    setActiveTab("responsavel_ativacao");
   }
 
-  async function handleSaveDiscountSettings(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleDeletePool(poolId: string) {
+    if (!organizationId || !activeStoreId) return;
+    const confirmed = window.confirm("Tem certeza que deseja excluir esta piscina? Essa ação também apaga as fotos dela.");
+    if (!confirmed) return;
+
+    setDeletingPoolId(poolId);
     setErrorText(null);
     setSuccessText(null);
 
-    if (!hasValidStoreContext) {
-      setErrorText("A loja ativa ainda não foi carregada. Tente novamente em instantes.");
-      return;
-    }
+    try {
+      const poolPhotos = photosByPoolId[poolId] || [];
+      const storagePaths = poolPhotos.map((photo) => photo.storage_path).filter(Boolean);
 
-    const defaultDiscountPercent = toNullableNumber(defaultDiscountPercentInput);
-    const maxDiscountPercent = toNullableNumber(maxDiscountPercentInput);
-
-    if (defaultDiscountPercent == null) {
-      setErrorText("O desconto padrão é obrigatório.");
-      return;
-    }
-
-    if (maxDiscountPercent == null) {
-      setErrorText("O desconto máximo é obrigatório.");
-      return;
-    }
-
-    if (defaultDiscountPercent < 0) {
-      setErrorText("O desconto padrão não pode ser negativo.");
-      return;
-    }
-
-    if (maxDiscountPercent < 0) {
-      setErrorText("O desconto máximo não pode ser negativo.");
-      return;
-    }
-
-    if (defaultDiscountPercent > maxDiscountPercent) {
-      setErrorText("O desconto padrão não pode ser maior que o desconto máximo.");
-      return;
-    }
-
-    setSavingDiscountSettings(true);
-
-    const { error } = await supabase.from("store_discount_settings").upsert(
-      {
-        organization_id: ORGANIZATION_ID,
-        store_id: STORE_ID,
-        default_discount_percent: defaultDiscountPercent,
-        max_discount_percent: maxDiscountPercent,
-        allow_ask_above_max_discount: allowAskAboveMaxDiscount,
-      },
-      {
-        onConflict: "store_id",
+      if (storagePaths.length > 0) {
+        const { error: storageError } = await supabase.storage.from(STORAGE_BUCKET).remove(storagePaths);
+        if (storageError) throw storageError;
       }
-    );
 
-    if (error) {
-      setErrorText(error.message ?? "Erro ao salvar política de desconto.");
-      setSavingDiscountSettings(false);
-      return;
+      if (poolPhotos.length > 0) {
+        const { error: photoDeleteError } = await supabase.from("pool_photos").delete().eq("pool_id", poolId);
+        if (photoDeleteError) throw photoDeleteError;
+      }
+
+      const { error: poolDeleteError } = await supabase
+        .from("pools")
+        .delete()
+        .eq("id", poolId)
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+      if (poolDeleteError) throw poolDeleteError;
+
+      setPools((prev) => prev.filter((pool) => pool.id !== poolId));
+      setPhotosByPoolId((prev) => {
+        const next = { ...prev };
+        delete next[poolId];
+        return next;
+      });
+      if (editingPoolId === poolId) {
+        setEditingPoolId(null);
+        setEditPoolForm(null);
+      }
+      setSuccessText("Piscina excluída com sucesso.");
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao excluir piscina.");
+    } finally {
+      setDeletingPoolId(null);
     }
-
-    setSavingDiscountSettings(false);
-    setSuccessText("Política de desconto salva com sucesso.");
-    await fetchDiscountSettings();
-    setActiveTab("descontos");
   }
 
-  useEffect(() => {
-    const savedTab =
-      typeof window !== "undefined" ? localStorage.getItem(TAB_STORAGE_KEY) : null;
-
-    if (isValidTab(savedTab)) {
-      setActiveTab(savedTab);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (storeLoading) return;
-
-    if (!hasValidStoreContext) {
-      setLoadingInitial(false);
-      setErrorText("Nenhuma loja ativa foi encontrada para carregar as configurações.");
-      return;
-    }
-
-    void fetchPageData("initial");
-  }, [storeLoading, hasValidStoreContext]);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem(TAB_STORAGE_KEY, activeTab);
-    }
-  }, [activeTab]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !hasValidStoreContext) return;
-
-    const restore = () => {
-      const raw = window.localStorage.getItem(scrollStorageKey);
-      if (!raw) return;
-      const value = Number(raw);
-      if (Number.isFinite(value) && value >= 0) {
-        window.requestAnimationFrame(() => window.scrollTo({ top: value, behavior: "auto" }));
-      }
-    };
-
-    restore();
-    const timeout = window.setTimeout(restore, 120);
-    return () => window.clearTimeout(timeout);
-  }, [activeTab, hasValidStoreContext, loadingInitial, scrollStorageKey]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !hasValidStoreContext) return;
-
-    const saveScroll = () => {
-      window.localStorage.setItem(
-        scrollStorageKey,
-        String(window.scrollY || window.pageYOffset || 0)
-      );
-    };
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        saveScroll();
-      }
-    };
-
-    window.addEventListener("scroll", saveScroll, { passive: true });
-    window.addEventListener("pagehide", saveScroll);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      saveScroll();
-      window.removeEventListener("scroll", saveScroll);
-      window.removeEventListener("pagehide", saveScroll);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [hasValidStoreContext, scrollStorageKey]);
-
-  if (storeLoading || loadingInitial) {
-    return (
-      <div className="min-h-screen bg-gray-100">
-        <div className="mx-auto max-w-6xl px-4 py-4">
-          <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-black/5">
-            Carregando loja ativa...
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const currentCatalogCategoryHref = `/configuracoes/catalogo/${catalogCategory}`;
+  const totalPools = useMemo(() => pools.length, [pools]);
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-6xl px-4 py-4">
-        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div>
-            {activeStore?.name ? (
-              <p className="text-xs text-gray-500">Loja ativa: {activeStore.name}</p>
-            ) : null}
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => void fetchPageData("reload")}
-              disabled={reloading || !hasValidStoreContext}
-              className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {reloading ? "Recarregando..." : "Recarregar"}
-            </button>
-
-            <Link
-              href="/dashboard"
-              className="inline-flex items-center justify-center rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800"
-            >
-              Voltar ao dashboard
-            </Link>
-          </div>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-[42px] font-black tracking-[-0.03em] text-black">Piscinas cadastradas</h1>
+          <p className="mt-2 text-lg text-gray-700">Visualize e edite todas as piscinas cadastradas.</p>
+          <p className="mt-2 text-sm text-gray-500">Total de piscinas: {totalPools}</p>
         </div>
+        <Link
+          href="/configuracoes"
+          className="rounded-2xl bg-white px-6 py-3 text-base font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50"
+        >
+          Voltar para configurações
+        </Link>
+      </div>
 
-        {!hasValidStoreContext ? (
-          <div className="rounded-lg bg-white p-3 shadow-sm ring-1 ring-black/5">
-            <div className="text-sm font-semibold text-gray-900">
-              Nenhuma loja ativa encontrada
-            </div>
-            <p className="mt-2 text-xs text-gray-600">
-              Não foi possível identificar a loja ativa para carregar as configurações.
-            </p>
-          </div>
-        ) : (
-          <>
-            {errorText ? (
-              <div className="mb-3 rounded-lg bg-red-50 p-3 text-xs text-red-800 ring-1 ring-red-600/20">
-                <div className="font-semibold">Erro</div>
-                <div className="mt-1 break-words">{errorText}</div>
-              </div>
-            ) : null}
+      {errorText ? (
+        <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-200">{errorText}</div>
+      ) : null}
+      {successText ? (
+        <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 ring-1 ring-emerald-200">{successText}</div>
+      ) : null}
 
-            {successText ? (
-              <div className="mb-3 rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800 ring-1 ring-emerald-600/20">
-                <div className="font-semibold">Sucesso</div>
-                <div className="mt-1 break-words">{successText}</div>
-              </div>
-            ) : null}
+      {loading ? (
+        <div className="rounded-[28px] bg-white p-10 text-sm text-gray-600 ring-1 ring-black/5">Carregando piscinas...</div>
+      ) : pools.length === 0 ? (
+        <div className="rounded-[28px] bg-white p-10 text-sm text-gray-600 ring-1 ring-black/5">Nenhuma piscina cadastrada.</div>
+      ) : (
+        <div className="space-y-5">
+          {pools.map((pool) => {
+            const poolPhotos = photosByPoolId[pool.id] || [];
+            const isEditing = editingPoolId === pool.id;
+            const characteristics = buildPoolCharacteristics(pool);
+            const complementaryDescription = buildComplementaryDescription(pool, characteristics);
 
-            <section className="rounded-lg bg-white p-2.5 shadow-sm ring-1 ring-black/5">
-              <div className="flex flex-wrap gap-2">
-                {tabs.map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setActiveTab(tab.key)}
-                    className={cx(
-                      "rounded-lg px-3 py-1.5 text-[11px] font-semibold ring-1 ring-black/10",
-                      activeTab === tab.key
-                        ? "bg-black text-white"
-                        : "bg-white text-gray-900 hover:bg-gray-50"
-                    )}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <div className="mt-4 space-y-4">
-              {activeTab === "visao_geral" && (
-                <>
-                  <SectionCard
-                    title="Status geral da configuração"
-                    description="Resumo vivo da base mínima para a loja operar e a IA consultar as informações corretas."
-                  >
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                      <SummaryCard
-                        title="Prontidão atual"
-                        value={`${readinessPercent}%`}
-                        hint="Leitura prática da base mínima obrigatória"
-                      />
-                      <SummaryCard title="Piscinas" value={totalPools} />
-                      <SummaryCard title="Itens no catálogo" value={totalCatalogItems} />
-                      <SummaryCard title="Responsáveis" value={totalResponsibles} />
+            return (
+              <section key={pool.id} className="overflow-hidden rounded-[28px] bg-white ring-1 ring-black/5">
+                <div className="border-b border-gray-200 px-4 py-4 sm:px-6">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div className="min-w-0">
+                      <h2 className="max-w-4xl text-[22px] font-black leading-tight tracking-[-0.02em] text-black">{pool.name || "Piscina sem nome"}</h2>
+                      <p className="mt-2 text-base text-gray-600">{pool.shape && pool.material ? `${pool.shape} • ${pool.material}` : "Dados básicos da piscina"}</p>
                     </div>
 
-                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-gray-200">
-                      <div
-                        className="h-full rounded-full bg-gray-900 transition-all"
-                        style={{ width: `${readinessPercent}%` }}
-                      />
+                    <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                      <DetailChip value={moneyBRL(pool.price)} />
+                      <DetailChip value={pool.is_active ? "Ativa" : "Inativa"} />
+                      <DetailChip value={pool.track_stock ? `Estoque: ${pool.stock_quantity ?? 0}` : "Sem controle de estoque"} />
+                      <DetailChip value={pool.is_active && (!pool.track_stock || (pool.stock_quantity ?? 0) > 0) ? "Disponível para oferta" : "Indisponível"} />
+                      <button
+                        type="button"
+                        onClick={() => startEditing(pool)}
+                        className="rounded-2xl bg-white px-5 py-3 text-base font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50"
+                      >
+                        Editar
+                      </button>
                     </div>
-                  </SectionCard>
+                  </div>
+                </div>
 
-                  <SectionCard
-                    title="Acessos rápidos"
-                    description="Cadastre aqui e abra as páginas reais de visualização e edição."
-                  >
-                    <div className="grid gap-3 lg:grid-cols-2">
-                      <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
-                        <div className="font-semibold text-gray-900">Piscinas</div>
-                        <div className="mt-1 text-xs text-gray-600">
-                          Cadastro nesta tela. Visualização e edição na página própria.
+                <div className="space-y-4 px-4 py-4 sm:px-6 sm:py-5">
+                  {isEditing && editPoolForm ? (
+                    <div className="rounded-[24px] bg-gray-50 p-4 ring-1 ring-black/5">
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome</label>
+                          <input
+                            value={editPoolForm.name}
+                            onChange={(event) => setEditPoolForm((current) => (current ? { ...current, name: event.target.value } : current))}
+                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                          />
                         </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setActiveTab("piscinas")}
-                            className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                          >
-                            Ir para cadastro de piscinas
-                          </button>
-                          <SmallNavButton href="/configuracoes/piscinas">
-                            Ver piscinas cadastradas
-                          </SmallNavButton>
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</label>
+                          <input
+                            value={editPoolForm.price}
+                            onChange={(event) => setEditPoolForm((current) => (current ? { ...current, price: formatPriceInput(event.target.value) } : current))}
+                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                            placeholder="58.900,00"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quantidade em estoque</label>
+                          <input
+                            value={editPoolForm.stock_quantity}
+                            onChange={(event) => setEditPoolForm((current) => (current ? { ...current, stock_quantity: event.target.value } : current))}
+                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                            placeholder="0"
+                          />
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição</label>
+                          <textarea
+                            value={editPoolForm.description}
+                            onChange={(event) => setEditPoolForm((current) => (current ? { ...current, description: event.target.value } : current))}
+                            rows={6}
+                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                          />
                         </div>
                       </div>
 
-                      <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
-                        <div className="font-semibold text-gray-900">Produtos e acessórios</div>
-                        <div className="mt-1 text-xs text-gray-600">
-                          Cadastro nesta tela. Visualização e edição nas categorias já existentes.
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setActiveTab("catalogo")}
-                            className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                          >
-                            Ir para cadastro de produtos
-                          </button>
-                          <SmallNavButton href="/configuracoes/catalogo/acessorios">
-                            Ver acessórios cadastrados
-                          </SmallNavButton>
-                          <SmallNavButton href="/configuracoes/catalogo/quimicos">
-                            Ver químicos cadastrados
-                          </SmallNavButton>
-                          <SmallNavButton href="/configuracoes/catalogo/outros">
-                            Ver outros cadastrados
-                          </SmallNavButton>
-                        </div>
+                      <div className="mt-4 flex flex-wrap gap-4 text-sm text-gray-800">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={editPoolForm.is_active}
+                            onChange={(event) => setEditPoolForm((current) => (current ? { ...current, is_active: event.target.checked } : current))}
+                          />
+                          Piscina ativa
+                        </label>
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={editPoolForm.track_stock}
+                            onChange={(event) => setEditPoolForm((current) => (current ? { ...current, track_stock: event.target.checked } : current))}
+                          />
+                          Controlar estoque
+                        </label>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleSavePool(pool.id)}
+                          disabled={savingPoolId === pool.id}
+                          className="rounded-2xl bg-black px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {savingPoolId === pool.id ? "Salvando..." : "Salvar"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEditing}
+                          className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeletePool(pool.id)}
+                          disabled={deletingPoolId === pool.id}
+                          className="rounded-2xl bg-red-600 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deletingPoolId === pool.id ? "Excluindo..." : "Excluir"}
+                        </button>
                       </div>
                     </div>
-                  </SectionCard>
+                  ) : null}
 
-                  <SectionCard
-                    title="Pendências prioritárias"
-                    description="Esses pontos ajudam a evitar loja com configuração crítica incompleta."
-                  >
-                    {pendingItems.length === 0 ? (
-                      <div className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800 ring-1 ring-emerald-600/20">
-                        Tudo certo nessa base mínima. A estrutura principal da configuração está preenchida.
+                  <CharacteristicsTable title="Características da piscina" rows={characteristics} />
+
+                  {complementaryDescription ? (
+                    <SectionCard title="Descrição complementar">
+                      <div className="whitespace-pre-wrap text-[15px] leading-7 text-gray-800">{complementaryDescription}</div>
+                    </SectionCard>
+                  ) : null}
+
+                  <SectionCard title="Fotos da piscina">
+                    {isEditing ? (
+                      <div className="space-y-4">
+                        <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-4">
+                          <input
+                            ref={(element) => {
+                              fileInputRefs.current[pool.id] = element;
+                            }}
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            onChange={(event) => handlePoolFilesChange(pool.id, event)}
+                            className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
+                          />
+                          <p className="mt-2 text-xs text-gray-500">Até {MAX_POOL_PHOTOS} imagens, máximo de 50 MB por arquivo.</p>
+                        </div>
+
+                        {(selectedPoolFilesByPoolId[pool.id] || []).length > 0 ? (
+                          <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                            {(selectedPoolFilesByPoolId[pool.id] || []).map((file) => (
+                              <div key={`${file.name}-${file.size}`} className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 py-2 last:border-b-0">
+                                <span className="truncate font-medium text-gray-900">{file.name}</span>
+                                <span className="text-xs text-gray-500">{formatFileSize(file.size)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <button
+                          type="button"
+                          onClick={() => void handleUploadNewPoolPhotos(pool.id)}
+                          disabled={uploadingPoolPhotosId === pool.id}
+                          className="rounded-2xl bg-black px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {uploadingPoolPhotosId === pool.id ? "Adicionando fotos..." : "Adicionar fotos"}
+                        </button>
+
+                        {poolPhotos.length === 0 ? (
+                          <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">Nenhuma foto cadastrada para esta piscina.</div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                            {poolPhotos.map((photo) => {
+                              const isDeletingPhoto = deletingPoolPhotoId === photo.id;
+                              return (
+                                <div key={photo.id} className="overflow-hidden rounded-2xl bg-gray-50 ring-1 ring-black/5">
+                                  <img src={getPublicImageUrl(photo.storage_path)} alt={photo.file_name || pool.name || "Foto da piscina"} className="block h-28 w-full object-cover" />
+                                  <div className="space-y-2 p-3">
+                                    <div className="truncate text-xs text-gray-600">{photo.file_name || "Foto"}</div>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleDeletePoolPhoto(photo)}
+                                      disabled={isDeletingPhoto}
+                                      className="w-full rounded-xl bg-white px-3 py-2 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {isDeletingPhoto ? "Excluindo..." : "Excluir foto"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
+                    ) : poolPhotos.length === 0 ? (
+                      <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">Nenhuma foto cadastrada para esta piscina.</div>
                     ) : (
-                      <div className="space-y-2.5">
-                        {pendingItems.map((item, index) => (
-                          <div
-                            key={`${item}-${index}`}
-                            className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-600/20"
-                          >
-                            {item}
+                      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
+                        {poolPhotos.map((photo) => (
+                          <div key={photo.id} className="overflow-hidden rounded-xl bg-gray-50 ring-1 ring-black/5">
+                            <img src={getPublicImageUrl(photo.storage_path)} alt={photo.file_name || pool.name || "Foto da piscina"} className="block h-20 w-full object-cover" />
                           </div>
                         ))}
                       </div>
                     )}
                   </SectionCard>
-
-                  <SectionCard
-                    title="Resumo operacional e comercial"
-                    description="Visão curta do que já está vivo na loja."
-                  >
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                      <SummaryCard
-                        title="Piscinas ativas"
-                        value={activePoolsCount}
-                        hint="Modelos liberados para oferta"
-                      />
-                      <SummaryCard
-                        title="Piscinas disponíveis"
-                        value={poolsAvailableCount}
-                        hint="Ativas e aptas para oferta"
-                      />
-                      <SummaryCard
-                        title="Itens ativos do catálogo"
-                        value={activeCatalogItemsCount}
-                      />
-                      <SummaryCard
-                        title="Itens disponíveis"
-                        value={catalogItemsAvailableCount}
-                        hint="Ativos e aptos para venda"
-                      />
-                    </div>
-                  </SectionCard>
-                </>
-              )}
-
-              {activeTab === "estrategia" && (
-                <div className="space-y-4">
-                  <SectionCard
-                    title="Estratégia"
-                    description="Espelho estruturado do onboarding."
-                  >
-                    <div className="grid gap-3 md:grid-cols-4">
-                      <SummaryCard
-                        title="Loja e atuação"
-                        value={countFilledItems(strategySections.lojaEAtuacao)}
-                        hint="Campos preenchidos"
-                      />
-                      <SummaryCard
-                        title="Oferta principal"
-                        value={countFilledItems(strategySections.ofertaPrincipal)}
-                        hint="Campos preenchidos"
-                      />
-                      <SummaryCard
-                        title="Operação espelhada"
-                        value={countFilledItems(strategySections.operacaoDaLoja)}
-                        hint="Campos preenchidos"
-                      />
-                      <SummaryCard
-                        title="Comercial espelhado"
-                        value={countFilledItems(strategySections.comercialEIA)}
-                        hint="Campos preenchidos"
-                      />
-                    </div>
-                  </SectionCard>
-
-                  <StrategySection
-                    title="Loja e atuação"
-                    description="Base institucional, região, WhatsApp comercial e serviços principais."
-                    items={strategySections.lojaEAtuacao}
-                    onEdit={() => goToOnboardingStep(1)}
-                  />
-
-                  <StrategySection
-                    title="Oferta principal"
-                    description="Tipos de piscina, marca principal e linha geral do que a loja oferece."
-                    items={strategySections.ofertaPrincipal}
-                    onEdit={() => goToOnboardingStep(2)}
-                  />
                 </div>
-              )}
-
-              {activeTab === "piscinas" && (
-                <div className="space-y-4">
-                  <SectionCard
-                    title="Acesso rápido"
-                    description="Abra rapidamente as páginas reais de visualização e edição."
-                  >
-                    <div className="flex flex-wrap gap-2">
-                      <SmallNavButton href="/configuracoes/piscinas">
-                        Ver piscinas cadastradas
-                      </SmallNavButton>
-
-                      <SmallNavButton href="/configuracoes/catalogo/quimicos">
-                        Ver químicos cadastrados
-                      </SmallNavButton>
-
-                      <SmallNavButton href="/configuracoes/catalogo/acessorios">
-                        Ver acessórios cadastrados
-                      </SmallNavButton>
-
-                      <SmallNavButton href="/configuracoes/catalogo/outros">
-                        Ver outros cadastrados
-                      </SmallNavButton>
-                    </div>
-                  </SectionCard>
-
-                  <SectionCard
-                    title="Cadastrar piscina"
-                    description="Cadastre modelos reais que a loja pode ofertar."
-                  >
-                    <form onSubmit={handleCreatePool} className="grid gap-4 lg:grid-cols-2">
-                      <div className="space-y-3">
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Nome da piscina
-                          </label>
-                          <input
-                            value={poolName}
-                            onChange={(e) => setPoolName(e.target.value)}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="Ex.: Piscina Fibra 7x3"
-                          />
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-3">
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-gray-700">
-                              Largura (m)
-                            </label>
-                            <input
-                              value={poolWidth}
-                              onChange={(e) => setPoolWidth(formatNumberInput(e.target.value))}
-                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                              placeholder="3"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-gray-700">
-                              Comprimento (m)
-                            </label>
-                            <input
-                              value={poolLength}
-                              onChange={(e) => setPoolLength(formatNumberInput(e.target.value))}
-                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                              placeholder="7"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-gray-700">
-                              Profundidade (m)
-                            </label>
-                            <input
-                              value={poolDepth}
-                              onChange={(e) => setPoolDepth(formatNumberInput(e.target.value))}
-                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                              placeholder="1.40"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-gray-700">
-                              Formato
-                            </label>
-                            <input
-                              value={poolShape}
-                              onChange={(e) => setPoolShape(e.target.value)}
-                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                              placeholder="Retangular"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-gray-700">
-                              Material
-                            </label>
-                            <input
-                              value={poolMaterial}
-                              onChange={(e) => setPoolMaterial(e.target.value)}
-                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                              placeholder="Fibra"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-3">
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-gray-700">
-                              Capacidade (L)
-                            </label>
-                            <input
-                              value={poolCapacity}
-                              onChange={(e) => setPoolCapacity(formatNumberInput(e.target.value))}
-                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                              placeholder="18000"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-gray-700">
-                              Peso (kg)
-                            </label>
-                            <input
-                              value={poolWeight}
-                              onChange={(e) => setPoolWeight(formatNumberInput(e.target.value))}
-                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                              placeholder="450"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-gray-700">
-                              Preço
-                            </label>
-                            <input
-                              value={poolPrice}
-                              onChange={(e) => setPoolPrice(formatPriceInput(e.target.value))}
-                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                              placeholder="25.000,00"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Descrição
-                          </label>
-                          <textarea
-                            value={poolDescription}
-                            onChange={(e) => setPoolDescription(e.target.value)}
-                            rows={4}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="Detalhes do modelo, diferenciais e observações."
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
-                            <input
-                              type="checkbox"
-                              checked={poolIsActive}
-                              onChange={(e) => setPoolIsActive(e.target.checked)}
-                            />
-                            Piscina ativa para oferta
-                          </label>
-
-                          <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
-                            <input
-                              type="checkbox"
-                              checked={poolTrackStock}
-                              onChange={(e) => setPoolTrackStock(e.target.checked)}
-                            />
-                            Controlar estoque
-                          </label>
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Quantidade em estoque
-                          </label>
-                          <input
-                            value={poolStockQuantity}
-                            onChange={(e) =>
-                              setPoolStockQuantity(formatIntegerInput(e.target.value))
-                            }
-                            disabled={!poolTrackStock}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black disabled:bg-gray-100"
-                            placeholder="0"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Fotos da piscina
-                          </label>
-                          <input
-                            type="file"
-                            multiple
-                            accept="image/*"
-                            onChange={handlePoolFilesChange}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
-                          />
-                          <p className="mt-1 text-[10px] text-gray-500">
-                            Até {MAX_POOL_PHOTOS} imagens, máximo de 50 MB por arquivo.
-                          </p>
-
-                          {selectedPoolFiles.length > 0 ? (
-                            <div className="mt-2 space-y-2">
-                              {selectedPoolFiles.map((file) => (
-                                <div
-                                  key={`${file.name}-${file.size}`}
-                                  className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-700 ring-1 ring-black/5"
-                                >
-                                  {file.name} — {formatFileSize(file.size)}
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={savingPool || !hasValidStoreContext}
-                          className="w-full rounded-lg bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {savingPool ? "Salvando piscina..." : "Cadastrar piscina"}
-                        </button>
-                      </div>
-                    </form>
-                  </SectionCard>
-                </div>
-              )}
-
-              {activeTab === "catalogo" && (
-                <div className="space-y-4">
-                  <SectionCard
-                    title="Acesso rápido"
-                    description="Abra rapidamente as páginas reais de visualização e edição."
-                  >
-                    <div className="flex flex-wrap gap-2">
-                      <SmallNavButton href="/configuracoes/piscinas">
-                        Ver piscinas cadastradas
-                      </SmallNavButton>
-
-                      <SmallNavButton href="/configuracoes/catalogo/quimicos">
-                        Ver químicos cadastrados
-                      </SmallNavButton>
-
-                      <SmallNavButton href="/configuracoes/catalogo/acessorios">
-                        Ver acessórios cadastrados
-                      </SmallNavButton>
-
-                      <SmallNavButton href="/configuracoes/catalogo/outros">
-                        Ver outros cadastrados
-                      </SmallNavButton>
-                    </div>
-                  </SectionCard>
-
-                  <SectionCard
-                    title="Cadastrar item em Produtos/Acessórios"
-                    description="Base viva de produtos químicos, acessórios e outros itens."
-                  >
-                    <form onSubmit={handleCreateCatalogItem} className="grid gap-4 lg:grid-cols-2">
-                      <div className="space-y-3">
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Categoria
-                          </label>
-                          <select
-                            value={catalogCategory}
-                            onChange={(e) => setCatalogCategory(e.target.value)}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                          >
-                            {CATALOG_CATEGORY_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Código / SKU
-                          </label>
-                          <input
-                            value={catalogCode}
-                            onChange={(e) => setCatalogCode(e.target.value)}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="Ex.: CL-001"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Nome do item
-                          </label>
-                          <input
-                            value={catalogName}
-                            onChange={(e) => setCatalogName(e.target.value)}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="Ex.: Cloro granulado 10kg"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Preço
-                          </label>
-                          <input
-                            value={catalogPrice}
-                            onChange={(e) => setCatalogPrice(formatPriceInput(e.target.value))}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="149,90"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Descrição
-                          </label>
-                          <textarea
-                            value={catalogDescription}
-                            onChange={(e) => setCatalogDescription(e.target.value)}
-                            rows={4}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="Detalhes do item, uso e observações."
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
-                            <input
-                              type="checkbox"
-                              checked={catalogIsActive}
-                              onChange={(e) => setCatalogIsActive(e.target.checked)}
-                            />
-                            Item ativo para venda
-                          </label>
-
-                          <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
-                            <input
-                              type="checkbox"
-                              checked={catalogTrackStock}
-                              onChange={(e) => setCatalogTrackStock(e.target.checked)}
-                            />
-                            Controlar estoque
-                          </label>
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Quantidade em estoque
-                          </label>
-                          <input
-                            value={catalogStockQuantity}
-                            onChange={(e) =>
-                              setCatalogStockQuantity(formatIntegerInput(e.target.value))
-                            }
-                            disabled={!catalogTrackStock}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black disabled:bg-gray-100"
-                            placeholder="0"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Fotos do item
-                          </label>
-                          <input
-                            type="file"
-                            multiple
-                            accept="image/*"
-                            onChange={handleCatalogFilesChange}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-gray-900 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
-                          />
-                          <p className="mt-1 text-[10px] text-gray-500">
-                            Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.
-                          </p>
-
-                          {selectedCatalogFiles.length > 0 ? (
-                            <div className="mt-2 space-y-2">
-                              {selectedCatalogFiles.map((file) => (
-                                <div
-                                  key={`${file.name}-${file.size}`}
-                                  className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-700 ring-1 ring-black/5"
-                                >
-                                  {file.name} — {formatFileSize(file.size)}
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={savingCatalogItem || !hasValidStoreContext}
-                          className="w-full rounded-lg bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {savingCatalogItem ? "Salvando item..." : "Cadastrar item"}
-                        </button>
-                      </div>
-                    </form>
-                  </SectionCard>
-
-                  <SectionCard
-                    title="Resumo por categoria"
-                    description="Visão curta do catálogo da loja."
-                  >
-                    <div className="grid gap-3 md:grid-cols-3">
-                      <SummaryCard
-                        title="Acessórios"
-                        value={catalogItemsByCategory.acessorios.length}
-                      />
-                      <SummaryCard
-                        title="Produtos químicos"
-                        value={catalogItemsByCategory.quimicos.length}
-                      />
-                      <SummaryCard
-                        title="Outros itens"
-                        value={catalogItemsByCategory.outros.length}
-                      />
-                    </div>
-                  </SectionCard>
-                </div>
-              )}
-
-              {activeTab === "operacao" && (
-                <div className="space-y-4">
-                  <SectionCard
-                    title="Operação"
-                    description="Leitura operacional que a IA precisa consultar para instalação, visita técnica, prazos e limitações."
-                  >
-                    <div className="grid gap-3 md:grid-cols-4">
-                      <SummaryCard
-                        title="Campos operacionais preenchidos"
-                        value={countFilledItems(strategySections.operacaoDaLoja)}
-                      />
-                      <SummaryCard
-                        title="Oferta de visita técnica"
-                        value={booleanToYesNo(strategyAnswers.offers_technical_visit)}
-                      />
-                      <SummaryCard
-                        title="Oferta de instalação"
-                        value={booleanToYesNo(strategyAnswers.offers_installation)}
-                      />
-                      <SummaryCard
-                        title="Resposta humana média"
-                        value={textValue(strategyAnswers.average_human_response_time)}
-                      />
-                    </div>
-                  </SectionCard>
-
-                  <StrategySection
-                    title="Operação da loja"
-                    description="Fluxo operacional, disponibilidade, visita técnica e limitações importantes."
-                    items={strategySections.operacaoDaLoja}
-                    onEdit={() => goToOnboardingStep(3)}
-                  />
-                </div>
-              )}
-
-              {activeTab === "comercial_ia" && (
-                <div className="space-y-4">
-                  <SectionCard
-                    title="Comercial e IA"
-                    description="Regras comerciais reais que a IA vendedora deve respeitar."
-                  >
-                    <div className="grid gap-3 md:grid-cols-4">
-                      <SummaryCard
-                        title="Campos comerciais preenchidos"
-                        value={countFilledItems(strategySections.comercialEIA)}
-                      />
-                      <SummaryCard
-                        title="IA pode falar preço?"
-                        value={booleanToYesNo(strategyAnswers.ai_can_send_price_directly)}
-                      />
-                      <SummaryCard
-                        title="Loja pode dar desconto?"
-                        value={booleanToYesNo(strategyAnswers.can_offer_discount)}
-                      />
-                      <SummaryCard
-                        title="Ticket médio"
-                        value={textValue(strategyAnswers.average_ticket)}
-                      />
-                    </div>
-                  </SectionCard>
-
-                  <StrategySection
-                    title="Política comercial e comportamento da IA"
-                    description="Preço, desconto geral, ajuda humana e forma de atuação comercial."
-                    items={strategySections.comercialEIA}
-                    onEdit={() => goToOnboardingStep(4)}
-                  />
-
-                  <SectionCard
-                    title="Integração com descontos"
-                    description="Use este espaço para registrar como a política comercial conversa com a aba de descontos."
-                  >
-                    <div className="space-y-3">
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-gray-700">
-                          Observações sobre integração com descontos
-                        </label>
-                        <textarea
-                          value={localConfigDraft.discountIntegrationNotes}
-                          onChange={(e) =>
-                            setLocalConfigDraft((current) => ({
-                              ...current,
-                              discountIntegrationNotes: e.target.value,
-                            }))
-                          }
-                          rows={4}
-                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                          placeholder="Ex.: acima de X% precisa aprovação humana, casos especiais devem ir para o responsável, descontos não podem contradizer a política comercial..."
-                        />
-                      </div>
-
-                      <div className="flex flex-wrap gap-2">
-                        <SmallNavButton href={currentCatalogCategoryHref}>
-                          Ver produtos e acessórios cadastrados
-                        </SmallNavButton>
-                        <button
-                          type="button"
-                          onClick={() => setActiveTab("descontos")}
-                          className="rounded-lg bg-black px-3 py-2 text-xs font-semibold text-white hover:bg-gray-800"
-                        >
-                          Ir para descontos
-                        </button>
-                      </div>
-                    </div>
-                  </SectionCard>
-                </div>
-              )}
-
-              {activeTab === "responsavel_ativacao" && (
-                <div className="space-y-4">
-                  <SectionCard
-                    title="Responsável e ativação"
-                    description="Cadastro em cima e informações logo abaixo."
-                  >
-                    <div className="grid gap-3 md:grid-cols-4">
-                      <SummaryCard
-                        title="Responsável principal"
-                        value={textValue(strategyAnswers.responsible_name)}
-                      />
-                      <SummaryCard
-                        title="WhatsApp do responsável"
-                        value={formatWhatsappPretty(textValue(strategyAnswers.responsible_whatsapp, ""))}
-                      />
-                      <SummaryCard
-                        title="IA deve notificar responsável?"
-                        value={booleanToYesNo(strategyAnswers.ai_should_notify_responsible)}
-                      />
-                      <SummaryCard
-                        title="Responsáveis cadastrados"
-                        value={totalResponsibles}
-                      />
-                    </div>
-                  </SectionCard>
-
-                  <SectionCard
-                    title="Responsáveis humanos da loja"
-                    description="Cadastre primeiro e acompanhe os responsáveis logo abaixo."
-                  >
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <form onSubmit={handleCreateResponsible} className="space-y-3">
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Nome
-                          </label>
-                          <input
-                            value={responsibleName}
-                            onChange={(e) => setResponsibleName(e.target.value)}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="Ex.: Carlos Comercial"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            WhatsApp
-                          </label>
-                          <input
-                            value={responsibleWhatsapp}
-                            onChange={(e) =>
-                              setResponsibleWhatsapp(formatWhatsappInput(e.target.value))
-                            }
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="Ex.: 5511999999999"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Papel
-                          </label>
-                          <select
-                            value={responsibleRole}
-                            onChange={(e) => setResponsibleRole(e.target.value)}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                          >
-                            {ROLE_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="space-y-2 rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
-                          <label className="flex items-center gap-3 text-xs text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={receiveDiscountAlerts}
-                              onChange={(e) => setReceiveDiscountAlerts(e.target.checked)}
-                            />
-                            Receber alertas de desconto
-                          </label>
-
-                          <label className="flex items-center gap-3 text-xs text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={receiveSubscriptionAlerts}
-                              onChange={(e) => setReceiveSubscriptionAlerts(e.target.checked)}
-                            />
-                            Receber alertas de assinatura
-                          </label>
-
-                          <label className="flex items-center gap-3 text-xs text-gray-700">
-                            <input
-                              type="checkbox"
-                              checked={receiveSlaAlerts}
-                              onChange={(e) => setReceiveSlaAlerts(e.target.checked)}
-                            />
-                            Receber alertas de SLA
-                          </label>
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={savingResponsible || !hasValidStoreContext}
-                          className="rounded-lg bg-black px-4 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {savingResponsible ? "Salvando..." : "Cadastrar responsável"}
-                        </button>
-                      </form>
-
-                      <div className="space-y-3">
-                        {responsibles.length === 0 ? (
-                          <EmptyState
-                            title="Nenhum responsável cadastrado"
-                            description="Cadastre pelo menos um humano da loja para alertas críticos e apoio operacional."
-                          />
-                        ) : (
-                          responsibles.map((responsible) => (
-                            <div
-                              key={responsible.id}
-                              className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5"
-                            >
-                              <div className="text-sm font-semibold text-gray-900">
-                                {responsible.name || "Responsável sem nome"}
-                              </div>
-                              <div className="mt-1 text-[11px] text-gray-600">
-                                {roleLabel(responsible.role)}
-                              </div>
-
-                              <div className="mt-3 grid gap-2 md:grid-cols-2">
-                                <div className="rounded-lg bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-[11px] text-gray-500">WhatsApp</div>
-                                  <div className="mt-1 text-xs font-medium text-gray-900">
-                                    {formatWhatsappPretty(responsible.whatsapp_number)}
-                                  </div>
-                                </div>
-
-                                <div className="rounded-lg bg-white p-3 ring-1 ring-black/5">
-                                  <div className="text-[11px] text-gray-500">Criado em</div>
-                                  <div className="mt-1 text-xs font-medium text-gray-900">
-                                    {responsible.created_at
-                                      ? new Date(responsible.created_at).toLocaleString("pt-BR")
-                                      : "Não informado"}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </SectionCard>
-
-                  <SectionCard
-                    title="Configurações da IA assistente e ativação"
-                    description="Caixas de opção sempre que possível. Escrita livre só onde realmente precisa."
-                  >
-                    <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900 ring-1 ring-blue-600/20">
-                      <div className="font-semibold">Número da IA assistente operacional</div>
-                      <div className="mt-1">
-                        Esse é o número ou canal usado pelo responsável da loja para falar com a IA assistente operacional. Não é o WhatsApp comercial que atende clientes.
-                      </div>
-                      {(assistantIaNumber || localConfigDraft.assistantIaNumber) ? (
-                        <div className="mt-2 font-medium">
-                          Valor atual:{" "}
-                          {formatWhatsappPretty(
-                            localConfigDraft.assistantIaNumber || assistantIaNumber
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-gray-700">
-                          Número da IA assistente operacional
-                        </label>
-                        <input
-                          value={localConfigDraft.assistantIaNumber}
-                          onChange={(e) =>
-                            setLocalConfigDraft((current) => ({
-                              ...current,
-                              assistantIaNumber: formatWhatsappInput(e.target.value),
-                            }))
-                          }
-                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                          placeholder={assistantIaNumber || "Ex.: 5511999999999"}
-                        />
-                      </div>
-
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-gray-700">
-                          Nome da IA assistente
-                        </label>
-                        <input
-                          value={localConfigDraft.assistantIaName}
-                          onChange={(e) =>
-                            setLocalConfigDraft((current) => ({
-                              ...current,
-                              assistantIaName: e.target.value,
-                            }))
-                          }
-                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                          placeholder="Ex.: Zion Assistente"
-                        />
-                      </div>
-
-                      <div className="lg:col-span-2">
-                        <label className="mb-1 block text-xs font-medium text-gray-700">
-                          Nome / persona da IA vendedora
-                        </label>
-                        <input
-                          value={localConfigDraft.sellerIaName}
-                          onChange={(e) =>
-                            setLocalConfigDraft((current) => ({
-                              ...current,
-                              sellerIaName: e.target.value,
-                            }))
-                          }
-                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                          placeholder="Ex.: Consultora virtual da loja"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="mt-3 grid gap-3 lg:grid-cols-3">
-                      <OptionCardGroup
-                        title="Estilo principal da IA vendedora"
-                        description="Escolha o jeito principal que a IA deve se comportar."
-                        value={localConfigDraft.sellerIaStyleMode}
-                        options={ACTIVATION_STYLE_OPTIONS.filter(
-                          (item) =>
-                            item.value === "ia_direta" || item.value === "ia_humanizada"
-                        )}
-                        onChange={(value) =>
-                          setLocalConfigDraft((current) => ({
-                            ...current,
-                            sellerIaStyleMode: value,
-                          }))
-                        }
-                      />
-
-                      <OptionCardGroup
-                        title="Prioridade de ativação"
-                        description="Defina o foco comercial principal da IA."
-                        value={localConfigDraft.activationPriorityMode}
-                        options={ACTIVATION_STYLE_OPTIONS.filter(
-                          (item) =>
-                            item.value === "priorizar_qualificacao" ||
-                            item.value === "priorizar_agendamento"
-                        )}
-                        onChange={(value) =>
-                          setLocalConfigDraft((current) => ({
-                            ...current,
-                            activationPriorityMode: value,
-                          }))
-                        }
-                      />
-
-                      <OptionCardGroup
-                        title="Regra de segurança"
-                        description="Escolha a trava mais importante da ativação."
-                        value={localConfigDraft.activationGuardrailMode}
-                        options={ACTIVATION_GUARDRAIL_OPTIONS}
-                        onChange={(value) =>
-                          setLocalConfigDraft((current) => ({
-                            ...current,
-                            activationGuardrailMode: value,
-                          }))
-                        }
-                      />
-                    </div>
-
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
-                      <SummaryCard title="Estilo selecionado" value={sellerIaStyleLabel} />
-                      <SummaryCard
-                        title="Prioridade selecionada"
-                        value={activationPriorityLabel}
-                      />
-                      <SummaryCard
-                        title="Regra de segurança"
-                        value={activationGuardrailLabel}
-                      />
-                    </div>
-
-                    <div className="mt-3">
-                      <label className="mb-1 block text-xs font-medium text-gray-700">
-                        Observações extras da ativação
-                      </label>
-                      <textarea
-                        value={localConfigDraft.activationNotesExtra}
-                        onChange={(e) =>
-                          setLocalConfigDraft((current) => ({
-                            ...current,
-                            activationNotesExtra: e.target.value,
-                          }))
-                        }
-                        rows={4}
-                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                        placeholder="Use este espaço para detalhes importantes da ativação."
-                      />
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <SmallNavButton href={currentCatalogCategoryHref}>
-                        Ver produtos e acessórios cadastrados
-                      </SmallNavButton>
-                      <SmallNavButton href="/configuracoes/piscinas">
-                        Abrir piscinas cadastradas
-                      </SmallNavButton>
-                    </div>
-                  </SectionCard>
-
-                  <StrategySection
-                    title="Informações trazidas do onboarding"
-                    description="Essas informações continuam visíveis aqui, mas o cadastro principal fica acima."
-                    items={strategySections.responsavelEAtivacao}
-                    onEdit={() => goToOnboardingStep(5)}
-                  />
-                </div>
-              )}
-
-              {activeTab === "descontos" && (
-                <div className="space-y-4">
-                  <SectionCard
-                    title="Política de desconto"
-                    description="Módulo aprofundado da política de desconto da loja."
-                  >
-                    <form onSubmit={handleSaveDiscountSettings} className="grid gap-4 lg:grid-cols-2">
-                      <div className="space-y-3">
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Desconto padrão da IA (%)
-                          </label>
-                          <input
-                            value={defaultDiscountPercentInput}
-                            onChange={(e) =>
-                              setDefaultDiscountPercentInput(
-                                formatPercentInput(e.target.value)
-                              )
-                            }
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="0"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
-                            Desconto máximo com autorização (%)
-                          </label>
-                          <input
-                            value={maxDiscountPercentInput}
-                            onChange={(e) =>
-                              setMaxDiscountPercentInput(formatPercentInput(e.target.value))
-                            }
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="10"
-                          />
-                        </div>
-
-                        <label className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 ring-1 ring-black/5">
-                          <input
-                            type="checkbox"
-                            checked={allowAskAboveMaxDiscount}
-                            onChange={(e) => setAllowAskAboveMaxDiscount(e.target.checked)}
-                          />
-                          Permitir consulta humana para desconto acima do máximo
-                        </label>
-
-                        <button
-                          type="submit"
-                          disabled={savingDiscountSettings || !hasValidStoreContext}
-                          className="rounded-lg bg-black px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {savingDiscountSettings
-                            ? "Salvando..."
-                            : "Salvar política de desconto"}
-                        </button>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
-                          <div className="text-[11px] text-gray-500">Desconto padrão atual</div>
-                          <div className="mt-1 text-lg font-bold text-gray-900">
-                            {discountSettings?.default_discount_percent ?? 0}%
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
-                          <div className="text-[11px] text-gray-500">
-                            Desconto máximo com autorização
-                          </div>
-                          <div className="mt-1 text-lg font-bold text-gray-900">
-                            {discountSettings?.max_discount_percent ?? 0}%
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg bg-gray-50 p-3 ring-1 ring-black/5">
-                          <div className="text-[11px] text-gray-500">Consultar acima do máximo</div>
-                          <div className="mt-1 text-lg font-bold text-gray-900">
-                            {discountSettings?.allow_ask_above_max_discount ? "Sim" : "Não"}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-600/20">
-                          Esta aba aprofunda a política de desconto. A direção comercial geral
-                          continua na aba <strong>Comercial e IA</strong>.
-                        </div>
-                      </div>
-                    </form>
-                  </SectionCard>
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
