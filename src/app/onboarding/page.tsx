@@ -1,5 +1,4 @@
 "use client";
-
 import {
   useEffect,
   useMemo,
@@ -14,7 +13,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import OrgGuard from "../../components/OrgGuard";
 import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
-
 type Step1FormData = {
   store_display_name: string;
   store_description: string;
@@ -29,7 +27,6 @@ type Step1FormData = {
   service_region_primary_mode: string;
   service_region_outside_consultation: boolean;
 };
-
 type Step2FormData = {
   pool_types: string;
   sells_chemicals: string;
@@ -41,7 +38,6 @@ type Step2FormData = {
   pool_types_other: string;
   main_store_brand: string;
 };
-
 type Step3FormData = {
   average_installation_time_days: string;
   installation_days_rule: string;
@@ -63,7 +59,6 @@ type Step3FormData = {
   sales_flow_middle_confirmed: boolean;
   sales_flow_final_confirmed: boolean;
 };
-
 type Step4FormData = {
   average_ticket: string;
   can_offer_discount: string;
@@ -86,7 +81,6 @@ type Step4FormData = {
   price_talk_mode: string;
   price_must_understand_before: string[];
 };
-
 type Step5FormData = {
   responsible_name: string;
   responsible_whatsapp: string;
@@ -98,10 +92,7 @@ type Step5FormData = {
   activation_preferences: string[];
   activation_preferences_other: string;
 };
-
 type AnswersMap = Record<string, unknown>;
-
-
 type IntelligentImportSummary = {
   totalFiles: number;
   extractedFiles: number;
@@ -109,14 +100,12 @@ type IntelligentImportSummary = {
   dedupedItems: number;
   duplicateItems: number;
 };
-
 type IntelligentImportExtractedPreview = {
   fileName: string;
   mimeType: string;
   extension: string;
   textPreview: string;
 };
-
 type IntelligentImportNormalizedPreview = {
   type: string;
   sourceFileName: string;
@@ -125,13 +114,11 @@ type IntelligentImportNormalizedPreview = {
   confidence: number;
   metadata: Record<string, string>;
 };
-
 type IntelligentImportDedupedPreview = IntelligentImportNormalizedPreview & {
   dedupKey: string;
   duplicateOf?: string;
   isDuplicate: boolean;
 };
-
 type IntelligentImportResponse =
   | {
       ok: true;
@@ -153,21 +140,17 @@ type IntelligentImportResponse =
       error: string;
       message: string;
     };
-
 type IntelligentImportSelectedFilePreview = {
   name: string;
   type: string;
   size: number;
   lastModified: number;
 };
-
 type PersistedIntelligentImportState = {
   selectedFiles: IntelligentImportSelectedFilePreview[];
-  result: IntelligentImportResponse | null;
   successMessage: string | null;
   errorMessage: string | null;
 };
-
 type DiscountSettingsRow = {
   store_id: string;
   organization_id: string;
@@ -177,18 +160,15 @@ type DiscountSettingsRow = {
   created_at?: string | null;
   updated_at?: string | null;
 };
-
 type Option = {
   value: string;
   label: string;
   hint?: string;
 };
-
 const YES_NO_OPTIONS: Option[] = [
   { value: "sim", label: "Sim" },
   { value: "não", label: "Não" },
 ];
-
 const STORE_SERVICE_OPTIONS: Option[] = [
   { value: "venda_piscinas", label: "Venda de piscinas" },
   { value: "instalacao_piscinas", label: "Instalação de piscinas" },
@@ -197,7 +177,6 @@ const STORE_SERVICE_OPTIONS: Option[] = [
   { value: "visita_tecnica", label: "Visita técnica" },
   { value: "manutencao", label: "Limpeza / manutenção" },
 ];
-
 const SERVICE_REGION_MODE_OPTIONS: Option[] = [
   { value: "somente_cidade_loja", label: "Somente a cidade da loja" },
   { value: "cidade_e_vizinhas", label: "Cidade da loja + cidades vizinhas" },
@@ -205,7 +184,6 @@ const SERVICE_REGION_MODE_OPTIONS: Option[] = [
   { value: "todo_estado", label: "Todo o estado" },
   { value: "sob_consulta", label: "Fora da região, só sob consulta" },
 ];
-
 const POOL_TYPE_OPTIONS: Option[] = [
   { value: "fibra", label: "Fibra" },
   { value: "vinil", label: "Vinil" },
@@ -214,7 +192,6 @@ const POOL_TYPE_OPTIONS: Option[] = [
   { value: "spa", label: "SPA / hidromassagem" },
   { value: "prainha", label: "Prainha / complemento" },
 ];
-
 const DAYS_OF_WEEK_OPTIONS: Option[] = [
   { value: "segunda", label: "Segunda" },
   { value: "terça", label: "Terça" },
@@ -224,7 +201,6 @@ const DAYS_OF_WEEK_OPTIONS: Option[] = [
   { value: "sábado", label: "Sábado" },
   { value: "domingo", label: "Domingo" },
 ];
-
 const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
   { value: "precisa_agendar", label: "Precisa agendar antes" },
   { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
@@ -233,7 +209,6 @@ const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
   { value: "somente_regiao_atendida", label: "Só atende a região cadastrada" },
   { value: "horario_comercial", label: "Somente em horário comercial" },
 ];
-
 const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
   { value: "nao_atende_domingo", label: "Não atende domingo" },
   { value: "nao_atende_fora_regiao", label: "Não atende fora da região definida" },
@@ -242,7 +217,6 @@ const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
   { value: "depende_avaliacao_tecnica", label: "Alguns casos dependem de avaliação técnica" },
   { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
 ];
-
 const SALES_FLOW_START_OPTIONS: Option[] = [
   { value: "primeiro_atendimento", label: "Primeiro atendimento" },
   { value: "cliente_explica_o_que_quer", label: "Cliente explica o que quer" },
@@ -251,7 +225,6 @@ const SALES_FLOW_START_OPTIONS: Option[] = [
   { value: "cliente_pede_visita_tecnica", label: "Cliente pede visita técnica" },
   { value: "cliente_pede_orcamento", label: "Cliente pede orçamento" },
 ];
-
 const SALES_FLOW_MIDDLE_OPTIONS: Option[] = [
   { value: "entender_melhor_a_necessidade", label: "Entender melhor a necessidade" },
   { value: "mostrar_opcoes_de_piscina", label: "Mostrar opções de piscina" },
@@ -261,7 +234,6 @@ const SALES_FLOW_MIDDLE_OPTIONS: Option[] = [
   { value: "negociar_condicao", label: "Negociar condição" },
   { value: "agendar_visita_tecnica", label: "Agendar visita técnica" },
 ];
-
 const SALES_FLOW_FINAL_OPTIONS: Option[] = [
   { value: "aprovacao_do_orcamento", label: "Aprovação do orçamento" },
   { value: "pagamento_sinal", label: "Pagamento / sinal" },
@@ -271,7 +243,6 @@ const SALES_FLOW_FINAL_OPTIONS: Option[] = [
   { value: "entrega_final", label: "Entrega final" },
   { value: "pos_venda", label: "Pós-venda" },
 ];
-
 const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
   { value: "pix", label: "Pix" },
   { value: "cartao_credito", label: "Cartão de crédito" },
@@ -280,12 +251,10 @@ const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
   { value: "dinheiro", label: "Dinheiro" },
   { value: "transferencia", label: "Transferência" },
 ];
-
 const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
   { value: "parcelado", label: "Aceita parcelamento" },
   { value: "financiamento", label: "Trabalha com financiamento" },
 ];
-
 const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
   { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
   {
@@ -305,7 +274,6 @@ const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
     label: "Só depois de entender se precisa instalação",
   },
 ];
-
 const PRICE_TALK_MODE_OPTIONS: Option[] = [
   {
     value: "quando_cliente_perguntar",
@@ -317,14 +285,12 @@ const PRICE_TALK_MODE_OPTIONS: Option[] = [
   },
   { value: "nao_falar_sozinha", label: "Não deve falar preço sozinha" },
 ];
-
 const HUMAN_HELP_DISCOUNT_OPTIONS: Option[] = [
   { value: "pediu_desconto_maior", label: "Pediu desconto maior que o permitido" },
   { value: "quer_condicao_especial", label: "Quer condição especial" },
   { value: "fechamento_imediato", label: "Cliente quer fechar agora" },
   { value: "cliente_importante", label: "Cliente com alto potencial de fechar" },
 ];
-
 const HUMAN_HELP_CUSTOM_PROJECT_OPTIONS: Option[] = [
   { value: "projeto_fora_padrao", label: "Projeto fora do padrão" },
   { value: "terreno_dificil", label: "Local ou terreno com dificuldade" },
@@ -332,14 +298,12 @@ const HUMAN_HELP_CUSTOM_PROJECT_OPTIONS: Option[] = [
   { value: "pedido_muito_personalizado", label: "Pedido muito personalizado" },
   { value: "obra_complementar", label: "Pedido com obra extra além da piscina" },
 ];
-
 const HUMAN_HELP_PAYMENT_OPTIONS: Option[] = [
   { value: "parcelamento_diferente", label: "Parcelamento diferente do padrão" },
   { value: "financiamento_especifico", label: "Pedido de financiamento específico" },
   { value: "prazo_especial", label: "Prazo especial de pagamento" },
   { value: "comprovante_pagamento", label: "Validação manual de pagamento" },
 ];
-
 const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
   { value: "pedido_desconto", label: "Pedido de desconto" },
   { value: "cliente_quase_fechando", label: "Cliente com alta chance de fechar" },
@@ -348,100 +312,77 @@ const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
   { value: "pedido_instalacao", label: "Pedido de instalação" },
   { value: "problema_pagamento", label: "Problema de pagamento" },
 ];
-
 const ACTIVATION_STYLE_OPTIONS: Option[] = [
   { value: "ia_direta", label: "Mais direta" },
   { value: "ia_humanizada", label: "Mais humana" },
   { value: "priorizar_qualificacao", label: "Priorizar qualificação antes de preço" },
   { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento" },
 ];
-
 const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
   { value: "nao_prometer_fora_escopo", label: "Nunca prometer fora do escopo" },
   { value: "encaminhar_humano_casos_criticos", label: "Chamar humano em casos críticos" },
 ];
-
 function parseArrayAnswer(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
-
   if (typeof value === "string") {
     return value
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean);
   }
-
   return [];
 }
-
 function joinSelectedLabels(values: string[], options: Option[], extra?: string) {
   const labels = values
     .map((value) => options.find((option) => option.value === value)?.label || value)
     .filter(Boolean);
-
   if (extra?.trim()) labels.push(extra.trim());
-
   return labels.join(", ");
 }
-
 function formatBrazilCurrencyInput(value: string) {
   return value.replace(/[^\d.]/g, "");
 }
-
 function formatPercentInput(value: string) {
   return value.replace(/[^\d]/g, "");
 }
-
 function formatWhatsappInput(value: string) {
   return value.replace(/[^\d]/g, "");
 }
-
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
-
 function formatFileSize(size: number) {
   if (!Number.isFinite(size) || size <= 0) return "0 B";
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
-
 function isImageLikeFileType(fileType: string) {
   return fileType.startsWith("image/");
 }
-
 function buildImageFallbackTitle(fileName: string) {
   const normalized = String(fileName ?? "").trim();
   if (!normalized) return "Imagem enviada pela loja";
-
   const withoutExtension = normalized.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
   return withoutExtension || normalized;
 }
-
 async function createImagePreviewDataUrl(file: File, maxSide = 240) {
   if (typeof window === "undefined" || !isImageLikeFileType(file.type)) return undefined;
-
   try {
     const objectUrl = URL.createObjectURL(file);
-
     const image = await new Promise<HTMLImageElement>((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error("Falha ao gerar miniatura da imagem."));
       img.src = objectUrl;
     });
-
     const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
     canvas.height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
-
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Falha ao abrir contexto da miniatura.");
-
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
-
     const previewDataUrl = canvas.toDataURL("image/jpeg", 0.62);
     URL.revokeObjectURL(objectUrl);
     return previewDataUrl;
@@ -450,7 +391,6 @@ async function createImagePreviewDataUrl(file: File, maxSide = 240) {
     return undefined;
   }
 }
-
 async function buildSelectedFilePreviews(files: File[]) {
   const previews = await Promise.all(
     files.map(async (file) => ({
@@ -458,29 +398,19 @@ async function buildSelectedFilePreviews(files: File[]) {
       type: file.type || "tipo não informado",
       size: file.size,
       lastModified: file.lastModified,
-      previewDataUrl: await createImagePreviewDataUrl(file),
     }))
   );
-
   return previews;
 }
-
-
-
-
-
 function decorateIntelligentImportResultWithImageFallback(
   result: IntelligentImportResponse,
   selectedFiles: IntelligentImportSelectedFilePreview[]
 ): IntelligentImportResponse {
   if (!result.ok) return result;
-
   const hasStructuredItems = result.normalizedPreview.length > 0 || result.dedupedPreview.length > 0;
   if (hasStructuredItems) return result;
-
   const visualSources = selectedFiles.filter((file) => isImageLikeFileType(file.type));
   if (visualSources.length === 0) return result;
-
   const fallbackItems = visualSources.slice(0, 12).map((file, index) => ({
     type: "image_reference",
     sourceFileName: file.name,
@@ -494,7 +424,6 @@ function decorateIntelligentImportResultWithImageFallback(
       modo: "fallback_visual_frontend",
     },
   }));
-
   return {
     ...result,
     message: result.message || "Importação inteligente processada com apoio visual para imagens.",
@@ -507,13 +436,10 @@ function decorateIntelligentImportResultWithImageFallback(
     })),
   };
 }
-
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
 type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
-
 function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
   const normalized = String(value || "").trim().toLowerCase();
-
   if (
     normalized.includes("quim") ||
     normalized.includes("cloro") ||
@@ -526,7 +452,6 @@ function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategor
   ) {
     return "quimicos";
   }
-
   if (
     normalized.includes("acessor") ||
     normalized.includes("aspirador") ||
@@ -543,10 +468,8 @@ function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategor
   ) {
     return "acessorios";
   }
-
   return "outros";
 }
-
 function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
@@ -559,7 +482,6 @@ function inferImportedDestination(
   ]
     .map((value) => String(value ?? "").toLowerCase())
     .join(" ");
-
   const chemicalScore =
     (source.includes("quim") ? 4 : 0) +
     (source.includes("cloro") ? 4 : 0) +
@@ -569,7 +491,6 @@ function inferImportedDestination(
     (source.includes("elevador de ph") ? 4 : 0) +
     (source.includes("redutor de ph") ? 4 : 0) +
     (source.includes("ph") ? 2 : 0);
-
   const accessoryScore =
     (source.includes("acessor") ? 4 : 0) +
     (source.includes("peneira") ? 4 : 0) +
@@ -581,7 +502,6 @@ function inferImportedDestination(
     (source.includes("clorador") ? 3 : 0) +
     (source.includes("nicho") ? 3 : 0) +
     (source.includes("retorno") ? 3 : 0);
-
   const hasPoolKeyword =
     source.includes("piscina") ||
     source.includes("spa") ||
@@ -589,7 +509,6 @@ function inferImportedDestination(
     source.includes("fibra") ||
     source.includes("alvenaria") ||
     source.includes("pastilha");
-
   const poolScore =
     (source.includes("piscina") ? 4 : 0) +
     (source.includes("fibra") ? 2 : 0) +
@@ -601,62 +520,49 @@ function inferImportedDestination(
     (source.includes("litros") ? 2 : 0) +
     (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 3 : 0) +
     (/\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ? 3 : 0);
-
   if (chemicalScore >= 4 && chemicalScore >= accessoryScore && chemicalScore >= poolScore) {
     return "quimicos";
   }
-
   if (accessoryScore >= 4 && accessoryScore > chemicalScore && accessoryScore >= poolScore) {
     return "acessorios";
   }
-
   if (hasPoolKeyword && poolScore >= 6) {
     return "pool";
   }
-
   const category = normalizeImportedCatalogCategory(source);
   return category;
 }
-
 function buildImportedCatalogName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const title = String(item.title ?? "").trim();
   if (title) return title.slice(0, 160);
-
   const raw = String(item.rawText ?? "").trim();
   if (!raw) return "Item importado";
   return raw.slice(0, 160);
 }
-
-
 function dedupeDescriptionLines(lines: string[]) {
   const seen = new Set<string>();
   const result: string[] = [];
-
   for (const line of lines) {
     const key = normalizeImportedLoose(line);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     result.push(line.trim());
   }
-
   return result;
 }
-
 function sanitizeImportedDescriptionText(
   source: string,
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const title = buildImportedCatalogName(item);
   const titleLoose = normalizeImportedLoose(title);
-
   const rawLines = String(source || "")
     .replace(/\r/g, "")
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-
   const filtered = rawLines.filter((line) => {
     const normalized = normalizeImportedLoose(line);
     if (!normalized) return false;
@@ -682,11 +588,9 @@ function sanitizeImportedDescriptionText(
     if (normalized.includes("salvar em configuracoes")) return false;
     return true;
   });
-
   const joined = dedupeDescriptionLines(filtered).join("\n").trim();
   return joined ? joined.slice(0, 4000) : null;
 }
-
 function buildImportedCleanDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -697,83 +601,68 @@ function buildImportedCleanDescription(
   ]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
-
   for (const candidate of metadataCandidates) {
     const cleaned = sanitizeImportedDescriptionText(candidate, item);
     if (cleaned) return cleaned;
   }
-
   return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
 }
-
-
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   return buildImportedCleanDescription(item);
 }
-
 function parseImportedDecimal(value: string | null | undefined) {
   if (!value) return null;
   const normalized = String(value).replace(/\./g, "").replace(",", ".").trim();
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
-
 function extractImportedPoolMetrics(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
-
   const lowered = source.toLowerCase();
-
   let width: number | null = null;
   let length: number | null = null;
   let depth: number | null = null;
   let capacity: number | null = null;
   let price: number | null = null;
-
   const rectMatch = source.match(/(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i);
   if (rectMatch) {
     width = parseImportedDecimal(rectMatch[1]);
     length = parseImportedDecimal(rectMatch[2]);
   }
-
   const diamMatch = source.match(/(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
   if (diamMatch) {
     width = parseImportedDecimal(diamMatch[1]);
     length = parseImportedDecimal(diamMatch[1]);
   }
-
   const depthMatch =
     source.match(/profundidade\s*(?:de|do|da)?\s*(\d+[\.,]?\d*)\s*m/i) ||
     source.match(/prof\.?\s*(\d+[\.,]?\d*)\s*m/i);
   if (depthMatch) {
     depth = parseImportedDecimal(depthMatch[1]);
   }
-
   const capacityMatch =
     source.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
     source.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)\b/i);
   if (capacityMatch) {
     capacity = parseImportedDecimal(capacityMatch[1]);
   }
-
   const priceMatch =
     source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
     source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
   if (priceMatch) {
     price = parseImportedDecimal(priceMatch[1]);
   }
-
   let material = "fibra";
   if (lowered.includes("vinil")) material = "vinil";
   else if (lowered.includes("alvenaria")) material = "alvenaria";
   else if (lowered.includes("pastilha")) material = "pastilha";
   else if (lowered.includes("fibra")) material = "fibra";
-
   let shape = "retangular";
   if (lowered.includes("diâm") || lowered.includes("diam") || lowered.includes("redonda")) {
     shape = "redonda";
@@ -784,7 +673,6 @@ function extractImportedPoolMetrics(
   } else if (lowered.includes("retangular")) {
     shape = "retangular";
   }
-
   return {
     width_m: width,
     length_m: length,
@@ -795,26 +683,20 @@ function extractImportedPoolMetrics(
     price,
   };
 }
-
 function extractImportedCatalogPriceCents(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
-
   const priceMatch =
     source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
     source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
-
   if (!priceMatch) return null;
-
   const parsed = parseImportedDecimal(priceMatch[1]);
   if (parsed == null) return null;
-
   return Math.round(parsed * 100);
 }
-
 function pickRelatedExtractedImages(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   extractedImageBuckets: Map<string, Array<{ fileName: string; mimeType: string; dataUrl: string }>>,
@@ -826,7 +708,6 @@ function pickRelatedExtractedImages(
     extractedImageBuckets.delete(sourceKey);
     return direct;
   }
-
   const normalizedSourceKey = sourceKey.replace(/\.[^.]+$/, "");
   for (const [key, images] of extractedImageBuckets.entries()) {
     const normalizedKey = key.replace(/\.[^.]+$/, "");
@@ -839,16 +720,13 @@ function pickRelatedExtractedImages(
       return images;
     }
   }
-
   if (totalSourceItems === 1 && extractedImageBuckets.size > 0) {
     const [firstKey, firstImages] = Array.from(extractedImageBuckets.entries())[0];
     extractedImageBuckets.delete(firstKey);
     return firstImages;
   }
-
   return [];
 }
-
 function canPersistAsPool(metrics: {
   width_m: number | null;
   length_m: number | null;
@@ -862,7 +740,6 @@ function canPersistAsPool(metrics: {
     metrics.max_capacity_l != null
   );
 }
-
 function normalizeImportedLoose(value: string | null | undefined) {
   return String(value || "")
     .toLowerCase()
@@ -872,7 +749,6 @@ function normalizeImportedLoose(value: string | null | undefined) {
     .replace(/\s+/g, " ")
     .trim();
 }
-
 function extractMetadataValue(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   keys: string[]
@@ -881,7 +757,6 @@ function extractMetadataValue(
     const direct = item.metadata?.[key];
     if (typeof direct === "string" && direct.trim()) return direct.trim();
   }
-
   const lowerKeyMap = Object.entries(item.metadata ?? {}).reduce<Record<string, string>>(
     (acc, [key, value]) => {
       if (typeof value === "string" && value.trim()) {
@@ -891,20 +766,15 @@ function extractMetadataValue(
     },
     {}
   );
-
   for (const key of keys) {
     const found = lowerKeyMap[key.toLowerCase()];
     if (found) return found;
   }
-
   return "";
 }
-
 function isGenericImportedTitle(title: string) {
   const normalized = normalizeImportedLoose(title);
-
   if (!normalized) return true;
-
   const blockedStarts = [
     "catalogo de teste",
     "descricao detalhada",
@@ -912,45 +782,35 @@ function isGenericImportedTitle(title: string) {
     "arquivo de teste",
     "nome do item",
   ];
-
   if (blockedStarts.some((item) => normalized === item || normalized.startsWith(item))) {
     return true;
   }
-
   if (normalized === "piscina" || normalized === "item importado") {
     return true;
   }
-
   return false;
 }
-
 function shouldSkipImportedItem(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const normalizedTitle = normalizeImportedLoose(item.title);
   const normalizedRaw = normalizeImportedLoose(item.rawText);
   const normalizedType = normalizeImportedLoose(item.type);
-
   if (normalizedType === "commercial rule" || normalizedType === "commercial_rule") {
     return true;
   }
-
   if (normalizedType === "store info" || normalizedType === "store_info") {
     return true;
   }
-
   if (normalizedType === "responsible info" || normalizedType === "responsible_info") {
     return true;
   }
-
   if (normalizedType === "unknown" && item.confidence <= 0.35) {
     return true;
   }
-
   if (isGenericImportedTitle(item.title) && item.confidence <= 0.75) {
     return true;
   }
-
   if (
     normalizedRaw.includes("arquivo de teste") &&
     normalizedRaw.includes("validar upload inteligente") &&
@@ -960,10 +820,8 @@ function shouldSkipImportedItem(
   ) {
     return true;
   }
-
   return false;
 }
-
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
@@ -978,17 +836,13 @@ function resolveImportedDestination(
       "import_type",
     ])
   );
-
   if (explicitDestination === "pool") return "pool";
   if (explicitDestination === "quimicos" || explicitDestination === "quimico") return "quimicos";
   if (explicitDestination === "acessorios" || explicitDestination === "acessorio")
     return "acessorios";
   if (explicitDestination === "outros" || explicitDestination === "outro") return "outros";
-
   const inferred = inferImportedDestination(item);
-
   if (inferred !== "outros") return inferred;
-
   const raw = normalizeImportedLoose([item.title, item.rawText].join(" "));
   if (
     raw.includes("capacidade") ||
@@ -998,10 +852,8 @@ function resolveImportedDestination(
   ) {
     return "pool";
   }
-
   return inferred;
 }
-
 function buildImportedPoolName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -1014,13 +866,11 @@ function buildImportedPoolName(
     .trim()
     .slice(0, 160);
 }
-
 function buildImportedPoolDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   return buildImportedCleanDescription(item);
 }
-
 function buildImportedCatalogMetadata(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   category: ImportedCatalogCategory
@@ -1041,26 +891,20 @@ function buildImportedCatalogMetadata(
     clean_description: buildImportedCleanDescription(item) || "",
   };
 }
-
-
 function dataUrlToBlob(dataUrl: string) {
   const [header, data] = String(dataUrl || "").split(",");
   if (!header || !data) {
     throw new Error("Data URL inválida para upload da imagem.");
   }
-
   const mimeMatch = header.match(/data:(.*?);base64/i);
   const mimeType = mimeMatch?.[1] || "image/jpeg";
   const binary = atob(data);
   const bytes = new Uint8Array(binary.length);
-
   for (let index = 0; index < binary.length; index += 1) {
     bytes[index] = binary.charCodeAt(index);
   }
-
   return new Blob([bytes], { type: mimeType });
 }
-
 function buildSafeImportedImageExtension(fileName: string, mimeType: string) {
   const byName = String(fileName || "").split(".").pop()?.toLowerCase();
   if (byName) return byName;
@@ -1068,7 +912,6 @@ function buildSafeImportedImageExtension(fileName: string, mimeType: string) {
   if (mimeType.includes("webp")) return "webp";
   return "jpg";
 }
-
 async function uploadExtractedImageToPool(
   organizationId: string,
   storeId: string,
@@ -1079,16 +922,13 @@ async function uploadExtractedImageToPool(
   const blob = dataUrlToBlob(image.dataUrl);
   const extension = buildSafeImportedImageExtension(image.fileName, image.mimeType);
   const filePath = `${organizationId}/${storeId}/${poolId}/${Date.now()}-${sortOrder}.${extension}`;
-
   const { error: uploadError } = await supabase.storage
     .from("pool-photos")
     .upload(filePath, blob, {
       upsert: false,
       contentType: image.mimeType || blob.type || "image/jpeg",
     });
-
   if (uploadError) throw uploadError;
-
   const { error: metadataError } = await supabase.from("pool_photos").insert({
     organization_id: organizationId,
     store_id: storeId,
@@ -1098,10 +938,8 @@ async function uploadExtractedImageToPool(
     file_size_bytes: blob.size,
     sort_order: sortOrder,
   });
-
   if (metadataError) throw metadataError;
 }
-
 async function uploadExtractedImageToCatalog(
   organizationId: string,
   storeId: string,
@@ -1112,16 +950,13 @@ async function uploadExtractedImageToCatalog(
   const blob = dataUrlToBlob(image.dataUrl);
   const extension = buildSafeImportedImageExtension(image.fileName, image.mimeType);
   const filePath = `${organizationId}/${storeId}/${catalogItemId}/${Date.now()}-${sortOrder}.${extension}`;
-
   const { error: uploadError } = await supabase.storage
     .from("store-catalog-photos")
     .upload(filePath, blob, {
       upsert: false,
       contentType: image.mimeType || blob.type || "image/jpeg",
     });
-
   if (uploadError) throw uploadError;
-
   const { error: metadataError } = await supabase.from("store_catalog_item_photos").insert({
     catalog_item_id: catalogItemId,
     storage_path: filePath,
@@ -1129,11 +964,8 @@ async function uploadExtractedImageToCatalog(
     file_size_bytes: blob.size,
     sort_order: sortOrder,
   });
-
   if (metadataError) throw metadataError;
 }
-
-
 function StepBadge({
   step,
   currentStep,
@@ -1146,7 +978,6 @@ function StepBadge({
   onClick: () => void;
 }) {
   const active = step === currentStep;
-
   return (
     <button
       type="button"
@@ -1163,7 +994,6 @@ function StepBadge({
     </button>
   );
 }
-
 function SectionTitle({
   title,
   hint,
@@ -1178,7 +1008,6 @@ function SectionTitle({
     </div>
   );
 }
-
 function InfoBlock({
   title,
   description,
@@ -1202,7 +1031,6 @@ function InfoBlock({
     </div>
   );
 }
-
 function SelectorGrid({
   options,
   selectedValues,
@@ -1216,7 +1044,6 @@ function SelectorGrid({
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
       {options.map((option) => {
         const selected = selectedValues.includes(option.value);
-
         return (
           <button
             key={option.value}
@@ -1255,7 +1082,6 @@ function SelectorGrid({
     </div>
   );
 }
-
 function SingleSelectorGrid({
   options,
   value,
@@ -1269,7 +1095,6 @@ function SingleSelectorGrid({
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
       {options.map((option) => {
         const selected = value === option.value;
-
         return (
           <button
             key={option.value}
@@ -1308,19 +1133,16 @@ function SingleSelectorGrid({
     </div>
   );
 }
-
 function OnboardingContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { activeStore, organizationId, loading: storeLoading } = useStoreContext();
-
   const [currentStep, setCurrentStep] = useState(1);
   const [saving, setSaving] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [hasCompletedOnboardingOnce, setHasCompletedOnboardingOnce] = useState(false);
-
   const [intelligentImportFiles, setIntelligentImportFiles] = useState<File[]>([]);
   const [intelligentImportSelectedFilesPreview, setIntelligentImportSelectedFilesPreview] = useState<
     IntelligentImportSelectedFilePreview[]
@@ -1331,21 +1153,16 @@ function OnboardingContent() {
   const [intelligentImportRecovered, setIntelligentImportRecovered] = useState(false);
   const [intelligentImportResult, setIntelligentImportResult] =
     useState<IntelligentImportResponse | null>(null);
-
   const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
   const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
-
   const hasDiscountConfigOverride = Boolean(discountSettings);
-
   const [step1DraftRecovered, setStep1DraftRecovered] = useState(false);
   const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
   const [step3DraftRecovered, setStep3DraftRecovered] = useState(false);
   const [step4DraftRecovered, setStep4DraftRecovered] = useState(false);
   const [step5DraftRecovered, setStep5DraftRecovered] = useState(false);
-
   const scrollRestoreTimeoutRef = useRef<number | null>(null);
   const lastRestoredScrollRef = useRef<number | null>(null);
-
   const [step1Form, setStep1Form] = useState<Step1FormData>({
     store_display_name: "",
     store_description: "",
@@ -1360,7 +1177,6 @@ function OnboardingContent() {
     service_region_primary_mode: "",
     service_region_outside_consultation: false,
   });
-
   const [step2Form, setStep2Form] = useState<Step2FormData>({
     pool_types: "",
     sells_chemicals: "",
@@ -1372,7 +1188,6 @@ function OnboardingContent() {
     pool_types_other: "",
     main_store_brand: "",
   });
-
   const [step3Form, setStep3Form] = useState<Step3FormData>({
     average_installation_time_days: "",
     installation_days_rule: "",
@@ -1394,7 +1209,6 @@ function OnboardingContent() {
     sales_flow_middle_confirmed: false,
     sales_flow_final_confirmed: false,
   });
-
   const [step4Form, setStep4Form] = useState<Step4FormData>({
     average_ticket: "",
     can_offer_discount: "",
@@ -1417,7 +1231,6 @@ function OnboardingContent() {
     price_talk_mode: "",
     price_must_understand_before: [],
   });
-
   const [step5Form, setStep5Form] = useState<Step5FormData>({
     responsible_name: "",
     responsible_whatsapp: "",
@@ -1429,116 +1242,91 @@ function OnboardingContent() {
     activation_preferences: [],
     activation_preferences_other: "",
   });
-
   const effectiveDiscountCanOffer = useMemo(() => {
     if (!discountSettings) {
       return step4Form.can_offer_discount === "sim";
     }
-
     return (
       Number(discountSettings.default_discount_percent ?? 0) > 0 ||
       Number(discountSettings.max_discount_percent ?? 0) > 0 ||
       Boolean(discountSettings.allow_ask_above_max_discount)
     );
   }, [discountSettings, step4Form.can_offer_discount]);
-
   const effectiveDiscountCanOfferValue = effectiveDiscountCanOffer ? "sim" : "não";
-
   const effectiveOnboardingDiscountPercent = useMemo(() => {
     if (!discountSettings) {
       return step4Form.max_discount_percent;
     }
-
     return String(discountSettings.default_discount_percent ?? 0);
   }, [discountSettings, step4Form.max_discount_percent]);
-
   const step1DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step1_draft:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
-
   const step2DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step2_draft:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
-
   const step3DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step3_draft:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
-
   const step4DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step4_draft:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
-
   const step5DraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_step5_draft:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
-
   const currentStepStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_current_step:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
-
   const pageScrollStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_scroll:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
-
   const intelligentImportStorageKey = useMemo(() => {
     if (!organizationId || !activeStore?.id) return null;
     return `zion_onboarding_intelligent_import:${organizationId}:${activeStore.id}`;
   }, [organizationId, activeStore?.id]);
-
   const ignoreNextStepScrollRef = useRef(false);
-
   const savePageScroll = useCallback(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
     window.localStorage.setItem(pageScrollStorageKey, String(window.scrollY || 0));
   }, [pageScrollStorageKey]);
-
   const restorePageScroll = useCallback((delay = 0) => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
-
     const runRestore = () => {
       const raw = window.localStorage.getItem(pageScrollStorageKey);
       if (!raw) return;
-
       const scroll = Number(raw);
       if (!Number.isFinite(scroll)) return;
-
       lastRestoredScrollRef.current = scroll;
       window.scrollTo({ top: scroll, behavior: "auto" });
     };
-
     if (scrollRestoreTimeoutRef.current !== null) {
       window.clearTimeout(scrollRestoreTimeoutRef.current);
       scrollRestoreTimeoutRef.current = null;
     }
-
     if (delay <= 0) {
       window.requestAnimationFrame(runRestore);
       return;
     }
-
     scrollRestoreTimeoutRef.current = window.setTimeout(() => {
       runRestore();
       scrollRestoreTimeoutRef.current = null;
     }, delay);
   }, [pageScrollStorageKey]);
-
   const storeHasInstallation = useMemo(
     () => step1Form.store_services.includes("instalacao_piscinas"),
     [step1Form.store_services]
   );
-
   const storeHasTechnicalVisit = useMemo(
     () => step1Form.store_services.includes("visita_tecnica"),
     [step1Form.store_services]
   );
-
   const visibleIntelligentImportFiles = useMemo(() => {
     if (intelligentImportFiles.length > 0) {
       return intelligentImportFiles.map((file) => ({
@@ -1548,10 +1336,8 @@ function OnboardingContent() {
         lastModified: file.lastModified,
       }));
     }
-
     return intelligentImportSelectedFilesPreview;
   }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
-
   const selectedImagePreviews = useMemo(() => {
     return intelligentImportFiles
       .filter((file) => isImageLikeFileType(file.type))
@@ -1560,34 +1346,29 @@ function OnboardingContent() {
         url: URL.createObjectURL(file),
       }));
   }, [intelligentImportFiles]);
-
   const safeExtractedPreview = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) return [];
     return Array.isArray(intelligentImportResult.extractedPreview)
       ? intelligentImportResult.extractedPreview
       : [];
   }, [intelligentImportResult]);
-
   const safeNormalizedPreview = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) return [];
     return Array.isArray(intelligentImportResult.normalizedPreview)
       ? intelligentImportResult.normalizedPreview
       : [];
   }, [intelligentImportResult]);
-
   const safeDedupedPreview = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) return [];
     return Array.isArray(intelligentImportResult.dedupedPreview)
       ? intelligentImportResult.dedupedPreview
       : [];
   }, [intelligentImportResult]);
-
   const safeExtractedImagePreview = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) return [];
     const candidate = intelligentImportResult.extractedImagePreview;
     return Array.isArray(candidate) ? candidate : [];
   }, [intelligentImportResult]);
-
   useEffect(() => {
     return () => {
       for (const preview of selectedImagePreviews) {
@@ -1595,34 +1376,27 @@ function OnboardingContent() {
       }
     };
   }, [selectedImagePreviews]);
-
   const updateStep1Field = <K extends keyof Step1FormData>(field: K, value: Step1FormData[K]) => {
     setStep1Form((prev) => ({ ...prev, [field]: value }));
   };
-
   const updateStep2Field = <K extends keyof Step2FormData>(field: K, value: Step2FormData[K]) => {
     setStep2Form((prev) => ({ ...prev, [field]: value }));
   };
-
   const updateStep3Field = <K extends keyof Step3FormData>(field: K, value: Step3FormData[K]) => {
     setStep3Form((prev) => ({ ...prev, [field]: value }));
   };
-
   const updateStep4Field = <K extends keyof Step4FormData>(field: K, value: Step4FormData[K]) => {
     setStep4Form((prev) => ({ ...prev, [field]: value }));
   };
-
   const updateStep5Field = <K extends keyof Step5FormData>(field: K, value: Step5FormData[K]) => {
     setStep5Form((prev) => ({ ...prev, [field]: value }));
   };
-
   const toggleArrayValue = <T extends string>(
     setter: Dispatch<SetStateAction<T[]>>,
     value: T
   ) => {
     setter((prev) => (prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value]));
   };
-
   const toggleStep1ArrayField = (field: "store_services" | "service_region_modes", value: string) => {
     setStep1Form((prev) => ({
       ...prev,
@@ -1631,7 +1405,6 @@ function OnboardingContent() {
         : [...prev[field], value],
     }));
   };
-
   const toggleStep2ArrayField = (field: "pool_types_selected", value: string) => {
     setStep2Form((prev) => ({
       ...prev,
@@ -1640,7 +1413,6 @@ function OnboardingContent() {
         : [...prev[field], value],
     }));
   };
-
   const toggleStep3ArrayField = (
     field:
       | "installation_available_days"
@@ -1660,7 +1432,6 @@ function OnboardingContent() {
         : [...prev[field], value],
     }));
   };
-
   const toggleStep4ArrayField = (
     field:
       | "accepted_payment_methods"
@@ -1678,7 +1449,6 @@ function OnboardingContent() {
         : [...prev[field], value],
     }));
   };
-
   const toggleStep5ArrayField = (
     field: "responsible_notification_cases" | "activation_preferences",
     value: string
@@ -1690,12 +1460,10 @@ function OnboardingContent() {
         : [...prev[field], value],
     }));
   };
-
   function changeStep(step: number) {
     ignoreNextStepScrollRef.current = false;
     setCurrentStep(step);
   }
-
   function clearIntelligentImportState() {
     setIntelligentImportFiles([]);
     setIntelligentImportSelectedFilesPreview([]);
@@ -1703,23 +1471,17 @@ function OnboardingContent() {
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
     setIntelligentImportRecovered(false);
-
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       window.localStorage.removeItem(intelligentImportStorageKey);
     }
   }
-
-
-
   function navigateWithFallback(path: string) {
     savePageScroll();
-
     try {
       router.push(path);
     } catch (error) {
       console.error("[OnboardingPage] router push error:", error);
     }
-
     if (typeof window !== "undefined") {
       window.setTimeout(() => {
         if (window.location.pathname !== path) {
@@ -1728,51 +1490,41 @@ function OnboardingContent() {
       }, 120);
     }
   }
-
   async function handleRunIntelligentImport() {
     if (!organizationId || !activeStore?.id) {
       setIntelligentImportError("Não foi possível identificar a organização e a loja ativa.");
       return;
     }
-
     if (intelligentImportFiles.length === 0) {
       setIntelligentImportError(
         "Selecione pelo menos um arquivo para testar a importação inteligente novamente."
       );
       return;
     }
-
     setIntelligentImportLoading(true);
     setIntelligentImportError(null);
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
     setIntelligentImportRecovered(false);
-
     const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
     setIntelligentImportSelectedFilesPreview(selectedFilesPreview);
-
     try {
       const formData = new FormData();
       formData.append("organizationId", organizationId);
       formData.append("storeId", activeStore.id);
-
       for (const file of intelligentImportFiles) {
         formData.append("files", file);
       }
-
       const response = await fetch("/api/onboarding/intelligent-import", {
         method: "POST",
         body: formData,
       });
-
       const result = (await response.json()) as IntelligentImportResponse;
-
       if (!response.ok || !result.ok) {
         setIntelligentImportError(result.message || "Falha ao processar a importação inteligente.");
         setIntelligentImportResult(result);
         return;
       }
-
       const decoratedResult = decorateIntelligentImportResultWithImageFallback(result, selectedFilesPreview);
       setIntelligentImportResult(decoratedResult);
       setIntelligentImportSuccess(
@@ -1785,26 +1537,21 @@ function OnboardingContent() {
       setIntelligentImportLoading(false);
     }
   }
-
   
   async function uploadImportedImageToPool(poolId: string, file: File, sortOrder = 0) {
     if (!organizationId || !activeStore?.id) {
       throw new Error("Loja ativa não identificada para salvar a foto da piscina.");
     }
-
     const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
     const safeExtension = extension ? extension.toLowerCase() : "jpg";
     const filePath = `${organizationId}/${activeStore.id}/${poolId}/${Date.now()}-${sortOrder}.${safeExtension}`;
-
     const { error: uploadError } = await supabase.storage
       .from("pool-photos")
       .upload(filePath, file, {
         upsert: false,
         contentType: file.type || undefined,
       });
-
     if (uploadError) throw uploadError;
-
     const { error: metadataError } = await supabase.from("pool_photos").insert({
       organization_id: organizationId,
       store_id: activeStore.id,
@@ -1814,28 +1561,22 @@ function OnboardingContent() {
       file_size_bytes: file.size,
       sort_order: sortOrder,
     });
-
     if (metadataError) throw metadataError;
   }
-
   async function uploadImportedImageToCatalog(catalogItemId: string, file: File, sortOrder = 0) {
     if (!organizationId || !activeStore?.id) {
       throw new Error("Loja ativa não identificada para salvar a foto do catálogo.");
     }
-
     const extension = file.name.includes(".") ? file.name.split(".").pop() : "jpg";
     const safeExtension = extension ? extension.toLowerCase() : "jpg";
     const filePath = `${organizationId}/${activeStore.id}/${catalogItemId}/${Date.now()}-${sortOrder}.${safeExtension}`;
-
     const { error: uploadError } = await supabase.storage
       .from("store-catalog-photos")
       .upload(filePath, file, {
         upsert: false,
         contentType: file.type || undefined,
       });
-
     if (uploadError) throw uploadError;
-
     const { error: metadataError } = await supabase.from("store_catalog_item_photos").insert({
       catalog_item_id: catalogItemId,
       storage_path: filePath,
@@ -1843,49 +1584,39 @@ function OnboardingContent() {
       file_size_bytes: file.size,
       sort_order: sortOrder,
     });
-
     if (metadataError) throw metadataError;
   }
-
   async function handleSaveImportedItemsToCatalog() {
     if (!organizationId || !activeStore?.id) {
       setFormError("Não foi possível identificar a organização e a loja ativa.");
       return;
     }
-
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       setFormError("Faça a importação inteligente antes de salvar no sistema.");
       return;
     }
-
     const rawSourceItems =
       intelligentImportResult.dedupedPreview.length > 0
         ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
         : intelligentImportResult.normalizedPreview;
-
     const sourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
-
     if (sourceItems.length === 0) {
       setFormError(
         "A análise não encontrou itens prontos para salvar. Tente um arquivo mais direto ou revise a importação."
       );
       return;
     }
-
     setSavingImportedCatalog(true);
     setFormError(null);
     setSuccessMessage(null);
-
     try {
       const selectedImageFiles = intelligentImportFiles.filter((file) =>
         String(file.type || "").startsWith("image/")
       );
-
       const extractedImageBuckets = new Map<
         string,
         Array<{ fileName: string; mimeType: string; dataUrl: string }>
       >();
-
       for (const image of safeExtractedImagePreview) {
         const bucketKey = String(image.sourceFileName || "").trim().toLowerCase();
         const currentBucket = extractedImageBuckets.get(bucketKey) ?? [];
@@ -1896,16 +1627,13 @@ function OnboardingContent() {
         });
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
-
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
-
       let savedPools = 0;
       let savedAcessorios = 0;
       let savedQuimicos = 0;
       let savedOutros = 0;
       let imageCursor = 0;
-
       for (const item of sourceItems) {
         const destination = resolveImportedDestination(item);
         const relatedExtractedImages = pickRelatedExtractedImages(
@@ -1913,16 +1641,13 @@ function OnboardingContent() {
           extractedImageBuckets,
           sourceItems.length
         );
-
         if (destination === "pool") {
           const metrics = extractImportedPoolMetrics(item);
           const poolName = buildImportedPoolName(item);
           const poolDescription = buildImportedPoolDescription(item);
-
           if (!poolName || isGenericImportedTitle(poolName)) {
             continue;
           }
-
           const { data: createdPool, error } = await supabase
             .from("pools")
             .insert({
@@ -1944,12 +1669,9 @@ function OnboardingContent() {
             })
             .select("id")
             .single();
-
           if (error) throw error;
-
           if (!firstPoolId) firstPoolId = createdPool.id;
           savedPools += 1;
-
           if (relatedExtractedImages.length > 0) {
             for (let index = 0; index < relatedExtractedImages.length; index += 1) {
               await uploadExtractedImageToPool(
@@ -1968,22 +1690,18 @@ function OnboardingContent() {
               console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
             }
           }
-
           continue;
         }
-
         const category =
           destination === "quimicos" || destination === "acessorios" || destination === "outros"
             ? destination
             : normalizeImportedCatalogCategory(
                 [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
               );
-
         const itemName = buildImportedCatalogName(item);
         if (!itemName || isGenericImportedTitle(itemName)) {
           continue;
         }
-
         const { data: createdItem, error } = await supabase
           .from("store_catalog_items")
           .insert({
@@ -2001,15 +1719,11 @@ function OnboardingContent() {
           })
           .select("id")
           .single();
-
         if (error) throw error;
-
         if (!firstCatalogCategory) firstCatalogCategory = category;
-
         if (category === "quimicos") savedQuimicos += 1;
         else if (category === "acessorios") savedAcessorios += 1;
         else savedOutros += 1;
-
         if (relatedExtractedImages.length > 0) {
           for (let index = 0; index < relatedExtractedImages.length; index += 1) {
             await uploadExtractedImageToCatalog(
@@ -2029,32 +1743,25 @@ function OnboardingContent() {
           }
         }
       }
-
       const totalCreated = savedPools + savedAcessorios + savedQuimicos + savedOutros;
-
       if (totalCreated === 0) {
         setFormError(
           "A análise foi concluída, mas nenhum item válido ficou pronto para salvar. Revise o arquivo e teste novamente."
         );
         return;
       }
-
       setSuccessMessage(
         `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}.`
       );
-
       clearIntelligentImportState();
-
       if (savedPools > 0 && firstPoolId) {
         navigateWithFallback("/configuracoes/piscinas");
         return;
       }
-
       if (firstCatalogCategory) {
         navigateWithFallback(`/configuracoes/catalogo/${firstCatalogCategory}`);
         return;
       }
-
       navigateWithFallback("/configuracoes");
     } catch (error) {
       console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
@@ -2067,7 +1774,6 @@ function OnboardingContent() {
       setSavingImportedCatalog(false);
     }
   }
-
 async function upsertAnswers(
     payloads: Array<[string, unknown]>,
     nextSuccessMessage: string,
@@ -2075,11 +1781,9 @@ async function upsertAnswers(
     finalStatus?: "in_progress" | "completed"
   ) {
     if (!organizationId || !activeStore?.id) return;
-
     setSaving(true);
     setFormError(null);
     setSuccessMessage(null);
-
     try {
       for (const [questionKey, answer] of payloads) {
         const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
@@ -2088,20 +1792,15 @@ async function upsertAnswers(
           p_question_key: questionKey,
           p_answer: answer,
         });
-
         if (rpcError) throw new Error(`Falha ao salvar campo: ${questionKey}`);
       }
-
       const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
         p_organization_id: organizationId,
         p_store_id: activeStore.id,
         p_status: finalStatus ?? "in_progress",
       });
-
       if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
-
       setSuccessMessage(nextSuccessMessage);
-
       if (typeof nextStep === "number") {
         ignoreNextStepScrollRef.current = false;
         setCurrentStep(nextStep);
@@ -2113,18 +1812,14 @@ async function upsertAnswers(
       setSaving(false);
     }
   }
-
   useEffect(() => {
     if (!currentStepStorageKey || typeof window === "undefined") return;
-
     const storedStep = window.localStorage.getItem(currentStepStorageKey);
     const paramStep = Number(searchParams.get("step"));
-
     if (paramStep >= 1 && paramStep <= 5) {
       setCurrentStep(paramStep);
       return;
     }
-
     if (storedStep) {
       const parsedStep = Number(storedStep);
       if (parsedStep >= 1 && parsedStep <= 5) {
@@ -2132,75 +1827,66 @@ async function upsertAnswers(
       }
     }
   }, [currentStepStorageKey, searchParams]);
-
   useEffect(() => {
     if (!currentStepStorageKey || typeof window === "undefined") return;
     window.localStorage.setItem(currentStepStorageKey, String(currentStep));
   }, [currentStep, currentStepStorageKey]);
-
   useEffect(() => {
     if (!intelligentImportStorageKey || typeof window === "undefined") return;
-
     const raw = window.localStorage.getItem(intelligentImportStorageKey);
     if (!raw) {
       setIntelligentImportRecovered(false);
       return;
     }
-
     try {
       const parsed = JSON.parse(raw) as PersistedIntelligentImportState;
       setIntelligentImportSelectedFilesPreview(Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : []);
-      setIntelligentImportResult(parsed.result ?? null);
+      setIntelligentImportResult(null);
       setIntelligentImportSuccess(parsed.successMessage ?? null);
       setIntelligentImportError(parsed.errorMessage ?? null);
-      setIntelligentImportRecovered(Boolean((parsed.selectedFiles?.length ?? 0) > 0 || parsed.result));
+      setIntelligentImportRecovered(
+        Boolean((parsed.selectedFiles?.length ?? 0) > 0 || parsed.successMessage || parsed.errorMessage)
+      );
     } catch (error) {
       console.error("[OnboardingPage] intelligent import restore error:", error);
       window.localStorage.removeItem(intelligentImportStorageKey);
       setIntelligentImportRecovered(false);
     }
   }, [intelligentImportStorageKey]);
-
   useEffect(() => {
     if (!intelligentImportStorageKey || typeof window === "undefined") return;
-
     const hasPersistedContent =
       visibleIntelligentImportFiles.length > 0 ||
-      Boolean(intelligentImportResult) ||
       Boolean(intelligentImportSuccess) ||
       Boolean(intelligentImportError);
-
     if (!hasPersistedContent) {
       window.localStorage.removeItem(intelligentImportStorageKey);
       return;
     }
-
     const payload: PersistedIntelligentImportState = {
       selectedFiles: visibleIntelligentImportFiles,
-      result: intelligentImportResult,
       successMessage: intelligentImportSuccess,
       errorMessage: intelligentImportError,
     };
-
-    window.localStorage.setItem(intelligentImportStorageKey, JSON.stringify(payload));
+    try {
+      window.localStorage.setItem(intelligentImportStorageKey, JSON.stringify(payload));
+    } catch (error) {
+      console.error("[OnboardingPage] intelligent import persist error:", error);
+      window.localStorage.removeItem(intelligentImportStorageKey);
+    }
   }, [
     intelligentImportStorageKey,
     visibleIntelligentImportFiles,
-    intelligentImportResult,
     intelligentImportSuccess,
     intelligentImportError,
   ]);
-
   useEffect(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
-
     if ("scrollRestoration" in window.history) {
       window.history.scrollRestoration = "manual";
     }
-
     restorePageScroll();
     restorePageScroll(120);
-
     return () => {
       if (scrollRestoreTimeoutRef.current !== null) {
         window.clearTimeout(scrollRestoreTimeoutRef.current);
@@ -2208,10 +1894,8 @@ async function upsertAnswers(
       }
     };
   }, [pageScrollStorageKey, currentStep, restorePageScroll]);
-
   useEffect(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
-
     const onScroll = () => savePageScroll();
     const onPageHide = () => savePageScroll();
     const onPageShow = () => restorePageScroll(30);
@@ -2221,16 +1905,13 @@ async function upsertAnswers(
         savePageScroll();
         return;
       }
-
       restorePageScroll(30);
     };
-
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
-
     return () => {
       savePageScroll();
       window.removeEventListener("scroll", onScroll);
@@ -2240,110 +1921,90 @@ async function upsertAnswers(
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [pageScrollStorageKey, restorePageScroll, savePageScroll]);
-
   useEffect(() => {
     if (!step1DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step1DraftStorageKey);
     if (!raw) return;
-
     try {
       const parsed = JSON.parse(raw) as Step1FormData;
       setStep1Form((prev) => ({ ...prev, ...parsed }));
       setStep1DraftRecovered(true);
     } catch {}
   }, [step1DraftStorageKey]);
-
   useEffect(() => {
     if (!step2DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step2DraftStorageKey);
     if (!raw) return;
-
     try {
       const parsed = JSON.parse(raw) as Step2FormData;
       setStep2Form((prev) => ({ ...prev, ...parsed }));
       setStep2DraftRecovered(true);
     } catch {}
   }, [step2DraftStorageKey]);
-
   useEffect(() => {
     if (!step3DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step3DraftStorageKey);
     if (!raw) return;
-
     try {
       const parsed = JSON.parse(raw) as Step3FormData;
       setStep3Form((prev) => ({ ...prev, ...parsed }));
       setStep3DraftRecovered(true);
     } catch {}
   }, [step3DraftStorageKey]);
-
   useEffect(() => {
     if (!step4DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step4DraftStorageKey);
     if (!raw) return;
-
     try {
       const parsed = JSON.parse(raw) as Step4FormData;
       setStep4Form((prev) => ({ ...prev, ...parsed }));
       setStep4DraftRecovered(true);
     } catch {}
   }, [step4DraftStorageKey]);
-
   useEffect(() => {
     if (!step5DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step5DraftStorageKey);
     if (!raw) return;
-
     try {
       const parsed = JSON.parse(raw) as Step5FormData;
       setStep5Form((prev) => ({ ...prev, ...parsed }));
       setStep5DraftRecovered(true);
     } catch {}
   }, [step5DraftStorageKey]);
-
   useEffect(() => {
     if (!step1DraftStorageKey || typeof window === "undefined") return;
     window.localStorage.setItem(step1DraftStorageKey, JSON.stringify(step1Form));
   }, [step1Form, step1DraftStorageKey]);
-
   useEffect(() => {
     if (!step2DraftStorageKey || typeof window === "undefined") return;
     window.localStorage.setItem(step2DraftStorageKey, JSON.stringify(step2Form));
   }, [step2Form, step2DraftStorageKey]);
-
   useEffect(() => {
     if (!step3DraftStorageKey || typeof window === "undefined") return;
     window.localStorage.setItem(step3DraftStorageKey, JSON.stringify(step3Form));
   }, [step3Form, step3DraftStorageKey]);
-
   useEffect(() => {
     if (!step4DraftStorageKey || typeof window === "undefined") return;
     window.localStorage.setItem(step4DraftStorageKey, JSON.stringify(step4Form));
   }, [step4Form, step4DraftStorageKey]);
-
   useEffect(() => {
     if (!step5DraftStorageKey || typeof window === "undefined") return;
     window.localStorage.setItem(step5DraftStorageKey, JSON.stringify(step5Form));
   }, [step5Form, step5DraftStorageKey]);
-
   useEffect(() => {
     const loadAnswers = async () => {
       if (!organizationId || !activeStore?.id) return;
-
       try {
         const { data, error: rpcError } = await supabase.rpc("onboarding_get_answers_scoped", {
           p_organization_id: organizationId,
           p_store_id: activeStore.id,
         });
-
         if (rpcError) {
           console.error("[OnboardingPage] loadAnswers RPC error:", rpcError);
           setFatalError("Falha ao carregar respostas do onboarding.");
           return;
         }
-
         const answers = (data ?? {}) as AnswersMap;
-
         const remoteStoreServices = parseArrayAnswer(answers.store_services);
         const remotePoolTypesSelected = parseArrayAnswer(answers.pool_types_selected);
         const remoteTechnicalVisitRulesSelected = parseArrayAnswer(answers.technical_visit_rules_selected);
@@ -2359,18 +2020,15 @@ async function upsertAnswers(
         const remoteSalesFlowMiddleSteps = parseArrayAnswer(answers.sales_flow_middle_steps);
         const remoteSalesFlowFinalSteps = parseArrayAnswer(answers.sales_flow_final_steps);
         const legacyInstallationSteps = parseArrayAnswer(answers.installation_process_steps);
-
         const remoteServiceRegionModes = parseArrayAnswer(answers.service_region_modes);
         const fallbackPrimaryRegion =
           String(answers.service_region_primary_mode ?? "") ||
           remoteServiceRegionModes.find((value) => value !== "sob_consulta") ||
           "";
-
         const fallbackOutsideConsultation =
           typeof answers.service_region_outside_consultation === "boolean"
             ? answers.service_region_outside_consultation
             : remoteServiceRegionModes.includes("sob_consulta");
-
         setStep1Form((prev) => ({
           store_display_name: prev.store_display_name || String(answers.store_display_name ?? activeStore.name ?? ""),
           store_description: prev.store_description || String(answers.store_description ?? ""),
@@ -2390,7 +2048,6 @@ async function upsertAnswers(
           service_region_outside_consultation:
             prev.service_region_outside_consultation || fallbackOutsideConsultation,
         }));
-
         setStep2Form((prev) => ({
           pool_types:
             prev.pool_types ||
@@ -2437,7 +2094,6 @@ async function upsertAnswers(
               ? String(answers.brands_worked[0] ?? "")
               : String(answers.brands_worked ?? "")),
         }));
-
         setStep3Form((prev) => ({
           average_installation_time_days:
             prev.average_installation_time_days || String(answers.average_installation_time_days ?? ""),
@@ -2490,11 +2146,9 @@ async function upsertAnswers(
           sales_flow_final_confirmed:
             prev.sales_flow_final_confirmed || Boolean(answers.sales_flow_final_confirmed),
         }));
-
         const remotePriceMustUnderstandBefore = parseArrayAnswer(
           answers.price_must_understand_before ?? answers.price_direct_conditions
         );
-
         setStep4Form((prev) => ({
           average_ticket: prev.average_ticket || String(answers.average_ticket ?? ""),
           can_offer_discount:
@@ -2554,7 +2208,6 @@ async function upsertAnswers(
               ? prev.price_must_understand_before
               : remotePriceMustUnderstandBefore,
         }));
-
         setStep5Form((prev) => ({
           responsible_name: prev.responsible_name || String(answers.responsible_name ?? ""),
           responsible_whatsapp: prev.responsible_whatsapp || String(answers.responsible_whatsapp ?? ""),
@@ -2580,21 +2233,17 @@ async function upsertAnswers(
           activation_preferences_other:
             prev.activation_preferences_other || String(answers.activation_preferences_other ?? ""),
         }));
-
         setHasCompletedOnboardingOnce(Boolean((answers as any)?.status === "completed"));
       } catch (err) {
         console.error("[OnboardingPage] loadAnswers unexpected error:", err);
         setFatalError("Falha ao carregar respostas do onboarding.");
       }
     };
-
     loadAnswers();
   }, [organizationId, activeStore?.id, activeStore?.name]);
-
   useEffect(() => {
     const loadDiscountSettings = async () => {
       if (!organizationId || !activeStore?.id) return;
-
       try {
         const { data, error } = await supabase
           .from("store_discount_settings")
@@ -2604,21 +2253,17 @@ async function upsertAnswers(
           .eq("organization_id", organizationId)
           .eq("store_id", activeStore.id)
           .maybeSingle();
-
         if (error) {
           console.error("[OnboardingPage] loadDiscountSettings error:", error);
           return;
         }
-
         const row = (data ?? null) as DiscountSettingsRow | null;
         setDiscountSettings(row);
-
         if (row) {
           const canOffer =
             Number(row.default_discount_percent ?? 0) > 0 ||
             Number(row.max_discount_percent ?? 0) > 0 ||
             Boolean(row.allow_ask_above_max_discount);
-
           setStep4Form((prev) => ({
             ...prev,
             can_offer_discount: canOffer ? "sim" : "não",
@@ -2629,10 +2274,8 @@ async function upsertAnswers(
         console.error("[OnboardingPage] loadDiscountSettings unexpected error:", err);
       }
     };
-
     loadDiscountSettings();
   }, [organizationId, activeStore?.id]);
-
   useEffect(() => {
     if (currentStep === 1 && step1DraftRecovered) {
       setSuccessMessage("Rascunho local da etapa 1 recuperado.");
@@ -2653,42 +2296,33 @@ async function upsertAnswers(
     step4DraftRecovered,
     step5DraftRecovered,
   ]);
-
   async function saveStep1(e: FormEvent) {
     e.preventDefault();
-
     if (!step1Form.store_display_name.trim()) {
       setFormError("Preencha o nome que a loja quer usar no sistema.");
       return;
     }
-
     if (!step1Form.city.trim()) {
       setFormError("Preencha a cidade da loja.");
       return;
     }
-
     if (!step1Form.state.trim()) {
       setFormError("Preencha o estado da loja.");
       return;
     }
-
     if (!step1Form.commercial_whatsapp.trim()) {
       setFormError("Preencha o WhatsApp comercial da loja.");
       return;
     }
-
     if (!step1Form.service_region_primary_mode) {
       setFormError("Escolha o alcance regional principal da loja.");
       return;
     }
-
     if (step1Form.store_services.length === 0 && !step1Form.store_services_other.trim()) {
       setFormError("Marque pelo menos um serviço principal da loja.");
       return;
     }
-
     if (!organizationId || !activeStore?.id) return;
-
     await upsertAnswers(
       [
         ["store_display_name", step1Form.store_display_name.trim()],
@@ -2707,45 +2341,35 @@ async function upsertAnswers(
       "Etapa 1 salva com sucesso.",
       2
     );
-
     setStep1DraftRecovered(false);
   }
-
   async function saveStep2(e: FormEvent) {
     e.preventDefault();
-
     if (step2Form.pool_types_selected.length === 0 && !step2Form.pool_types_other.trim()) {
       setFormError("Marque pelo menos um tipo de piscina ou preencha o campo complementar.");
       return;
     }
-
     if (!step2Form.sells_chemicals) {
       setFormError("Informe se a loja vende produtos químicos.");
       return;
     }
-
     if (!step2Form.sells_accessories) {
       setFormError("Informe se a loja vende acessórios.");
       return;
     }
-
     if (!step2Form.offers_installation) {
       setFormError("Informe se a loja oferece instalação.");
       return;
     }
-
     if (!step2Form.offers_technical_visit) {
       setFormError("Informe se a loja oferece visita técnica.");
       return;
     }
-
     if (!step2Form.main_store_brand.trim()) {
       setFormError("Preencha a principal marca trabalhada pela loja.");
       return;
     }
-
     if (!organizationId || !activeStore?.id) return;
-
     await upsertAnswers(
       [
         ["pool_types", step2Form.pool_types.trim()],
@@ -2761,29 +2385,23 @@ async function upsertAnswers(
       "Etapa 2 salva com sucesso.",
       3
     );
-
     setStep2DraftRecovered(false);
   }
-
   async function saveStep3(e: FormEvent) {
     e.preventDefault();
-
     if (!step3Form.average_human_response_time.trim()) {
       setFormError("Preencha o tempo médio de resposta humana.");
       return;
     }
-
     if (storeHasInstallation) {
       if (!step3Form.average_installation_time_days.trim()) {
         setFormError("Preencha o tempo médio de instalação.");
         return;
       }
-
       if (step3Form.installation_available_days.length === 0) {
         setFormError("Marque os dias disponíveis para instalação.");
         return;
       }
-
       if (
         step3Form.installation_process_steps.length === 0 &&
         !step3Form.installation_process_other.trim()
@@ -2792,13 +2410,11 @@ async function upsertAnswers(
         return;
       }
     }
-
     if (storeHasTechnicalVisit) {
       if (step3Form.technical_visit_available_days.length === 0) {
         setFormError("Marque os dias disponíveis para visita técnica.");
         return;
       }
-
       if (
         step3Form.technical_visit_rules_selected.length === 0 &&
         !step3Form.technical_visit_rules_other.trim()
@@ -2807,7 +2423,6 @@ async function upsertAnswers(
         return;
       }
     }
-
     if (
       step3Form.important_limitations_selected.length === 0 &&
       !step3Form.important_limitations_other.trim()
@@ -2815,24 +2430,19 @@ async function upsertAnswers(
       setFormError("Marque ou escreva pelo menos uma limitação importante.");
       return;
     }
-
     if (step3Form.sales_flow_start_steps.length === 0) {
       setFormError("Marque pelo menos uma etapa do início do fluxo comercial.");
       return;
     }
-
     if (step3Form.sales_flow_middle_steps.length === 0) {
       setFormError("Marque pelo menos uma etapa da negociação.");
       return;
     }
-
     if (step3Form.sales_flow_final_steps.length === 0) {
       setFormError("Marque pelo menos uma etapa do final do fluxo.");
       return;
     }
-
     if (!organizationId || !activeStore?.id) return;
-
     await upsertAnswers(
       [
         ["average_installation_time_days", step3Form.average_installation_time_days.trim()],
@@ -2858,40 +2468,32 @@ async function upsertAnswers(
       "Etapa 3 salva com sucesso.",
       4
     );
-
     setStep3DraftRecovered(false);
   }
-
   async function saveStep4(e: FormEvent) {
     e.preventDefault();
-
     if (!step4Form.average_ticket.trim()) {
       setFormError("Informe o ticket médio da loja.");
       return;
     }
-
     if (!hasDiscountConfigOverride) {
       if (!step4Form.can_offer_discount) {
         setFormError("Informe se a loja pode ou não dar desconto.");
         return;
       }
-
       if (step4Form.can_offer_discount === "sim" && !step4Form.max_discount_percent.trim()) {
         setFormError("Informe o desconto máximo permitido.");
         return;
       }
     }
-
     if (step4Form.accepted_payment_methods.length === 0) {
       setFormError("Selecione pelo menos uma forma de pagamento ou condição comercial.");
       return;
     }
-
     if (!step4Form.ai_can_send_price_directly) {
       setFormError("Informe se a IA pode ou não falar preço sem chamar alguém da loja.");
       return;
     }
-
     if (step4Form.ai_can_send_price_directly === "sim") {
       if (
         step4Form.price_must_understand_before.length === 0 &&
@@ -2900,18 +2502,15 @@ async function upsertAnswers(
         setFormError("Informe o que a IA precisa entender antes de falar preço.");
         return;
       }
-
       if (!step4Form.price_talk_mode) {
         setFormError("Escolha como a IA pode falar preço.");
         return;
       }
-
       if (!step4Form.price_needs_human_help) {
         setFormError("Informe se a IA precisa ou não de ajuda humana para falar preço.");
         return;
       }
     }
-
     if (
       step4Form.human_help_discount_cases_selected.length === 0 &&
       !step4Form.human_help_discount_cases_other.trim()
@@ -2919,7 +2518,6 @@ async function upsertAnswers(
       setFormError("Informe em quais casos a IA deve chamar alguém por causa de desconto.");
       return;
     }
-
     if (
       step4Form.human_help_custom_project_cases_selected.length === 0 &&
       !step4Form.human_help_custom_project_cases_other.trim()
@@ -2927,7 +2525,6 @@ async function upsertAnswers(
       setFormError("Informe em quais casos a IA deve chamar alguém por causa de projeto especial.");
       return;
     }
-
     if (
       step4Form.human_help_payment_cases_selected.length === 0 &&
       !step4Form.human_help_payment_cases_other.trim()
@@ -2935,21 +2532,17 @@ async function upsertAnswers(
       setFormError("Informe em quais casos a IA deve chamar alguém por causa de pagamento.");
       return;
     }
-
     const effectiveCanOfferDiscountForSave = hasDiscountConfigOverride
       ? effectiveDiscountCanOfferValue
       : step4Form.can_offer_discount;
-
     const effectiveMaxDiscountPercentForSave = hasDiscountConfigOverride
       ? effectiveOnboardingDiscountPercent
       : step4Form.max_discount_percent.trim();
-
     const priceDirectConditionsLegacy = [
       ...step4Form.price_must_understand_before,
       ...(step4Form.price_talk_mode ? [step4Form.price_talk_mode] : []),
       ...(step4Form.price_needs_human_help === "sim" ? ["nunca_sem_chamar_humano"] : []),
     ];
-
     const priceDirectRuleText =
       step4Form.ai_can_send_price_directly === "não"
         ? "A IA não pode falar preço sem chamar uma pessoa da loja."
@@ -2966,31 +2559,25 @@ async function upsertAnswers(
           ]
             .filter(Boolean)
             .join(" | ");
-
     const humanHelpDiscountText = joinSelectedLabels(
       step4Form.human_help_discount_cases_selected,
       HUMAN_HELP_DISCOUNT_OPTIONS,
       step4Form.human_help_discount_cases_other
     );
-
     const humanHelpCustomProjectText = joinSelectedLabels(
       step4Form.human_help_custom_project_cases_selected,
       HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
       step4Form.human_help_custom_project_cases_other
     );
-
     const humanHelpPaymentText = joinSelectedLabels(
       step4Form.human_help_payment_cases_selected,
       HUMAN_HELP_PAYMENT_OPTIONS,
       step4Form.human_help_payment_cases_other
     );
-
     if (!organizationId || !activeStore?.id) return;
-
     setSaving(true);
     setFormError(null);
     setSuccessMessage(null);
-
     try {
       const payloads: Array<[string, unknown]> = [
         ["average_ticket", step4Form.average_ticket.trim()],
@@ -3020,7 +2607,6 @@ async function upsertAnswers(
         ["price_talk_mode", step4Form.price_talk_mode],
         ["price_must_understand_before", step4Form.price_must_understand_before],
       ];
-
       for (const [questionKey, answer] of payloads) {
         const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
           p_organization_id: organizationId,
@@ -3028,16 +2614,13 @@ async function upsertAnswers(
           p_question_key: questionKey,
           p_answer: answer,
         });
-
         if (rpcError) throw new Error(`Falha ao salvar campo: ${questionKey}`);
       }
-
       if (!discountSettings) {
         const onboardingDiscountPercent =
           step4Form.can_offer_discount === "sim"
             ? Number(step4Form.max_discount_percent.trim() || 0)
             : 0;
-
         const bootstrapPayload = {
           organization_id: organizationId,
           store_id: activeStore.id,
@@ -3045,7 +2628,6 @@ async function upsertAnswers(
           max_discount_percent: onboardingDiscountPercent,
           allow_ask_above_max_discount: false,
         };
-
         const { data: bootData, error: bootstrapError } = await supabase
           .from("store_discount_settings")
           .upsert(bootstrapPayload, { onConflict: "store_id" })
@@ -3053,28 +2635,22 @@ async function upsertAnswers(
             "store_id,organization_id,default_discount_percent,max_discount_percent,allow_ask_above_max_discount,created_at,updated_at"
           )
           .single();
-
         if (bootstrapError) {
           throw new Error("Falha ao criar a política inicial de desconto nas Configurações.");
         }
-
         setDiscountSettings((bootData ?? bootstrapPayload) as DiscountSettingsRow);
       }
-
       const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
         p_organization_id: organizationId,
         p_store_id: activeStore.id,
         p_status: "in_progress",
       });
-
       if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
-
       setSuccessMessage(
         hasDiscountConfigOverride
           ? "Etapa 4 salva com sucesso. Os descontos continuam sendo controlados pela aba Configurações."
           : "Etapa 4 salva com sucesso. A política inicial de desconto foi criada em Configurações."
       );
-
       ignoreNextStepScrollRef.current = false;
       setCurrentStep(5);
       setStep4DraftRecovered(false);
@@ -3085,25 +2661,20 @@ async function upsertAnswers(
       setSaving(false);
     }
   }
-
   async function saveStep5(e: FormEvent) {
     e.preventDefault();
-
     if (!step5Form.responsible_name.trim()) {
       setFormError("Preencha o nome da pessoa principal que a IA deve acionar.");
       return;
     }
-
     if (!step5Form.responsible_whatsapp.trim()) {
       setFormError("Preencha o WhatsApp dessa pessoa.");
       return;
     }
-
     if (!step5Form.ai_should_notify_responsible) {
       setFormError("Informe se a IA deve ou não avisar essa pessoa quando surgir algo importante.");
       return;
     }
-
     if (
       step5Form.ai_should_notify_responsible === "sim" &&
       step5Form.responsible_notification_cases.length === 0 &&
@@ -3112,7 +2683,6 @@ async function upsertAnswers(
       setFormError("Informe em quais casos essa pessoa deve ser avisada.");
       return;
     }
-
     if (
       step5Form.activation_preferences.length === 0 &&
       !step5Form.activation_preferences_other.trim()
@@ -3120,24 +2690,19 @@ async function upsertAnswers(
       setFormError("Marque pelo menos uma orientação final para ativar a IA.");
       return;
     }
-
     if (!step5Form.confirm_information_is_correct) {
       setFormError("Confirme que as informações estão corretas para concluir o onboarding.");
       return;
     }
-
     const finalActivationNotesText = joinSelectedLabels(
       step5Form.activation_preferences,
       [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS],
       step5Form.activation_preferences_other
     );
-
     if (!organizationId || !activeStore?.id) return;
-
     setSaving(true);
     setFormError(null);
     setSuccessMessage(null);
-
     try {
       const payloads: Array<[string, unknown]> = [
         ["responsible_name", step5Form.responsible_name.trim()],
@@ -3153,7 +2718,6 @@ async function upsertAnswers(
         ["activation_preferences", step5Form.activation_preferences],
         ["activation_preferences_other", step5Form.activation_preferences_other.trim()],
       ];
-
       for (const [questionKey, answer] of payloads) {
         const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
           p_organization_id: organizationId,
@@ -3161,18 +2725,14 @@ async function upsertAnswers(
           p_question_key: questionKey,
           p_answer: answer,
         });
-
         if (rpcError) throw new Error(`Falha ao salvar campo: ${questionKey}`);
       }
-
       const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
         p_organization_id: organizationId,
         p_store_id: activeStore.id,
         p_status: "completed",
       });
-
       if (statusError) throw new Error("Falha ao concluir o onboarding.");
-
       setSuccessMessage("Onboarding concluído com sucesso.");
       setHasCompletedOnboardingOnce(true);
       setStep5DraftRecovered(false);
@@ -3186,7 +2746,6 @@ async function upsertAnswers(
       setSaving(false);
     }
   }
-
   if (storeLoading) {
     return (
       <div className="min-h-screen bg-gray-100 px-4 py-6">
@@ -3198,7 +2757,6 @@ async function upsertAnswers(
       </div>
     );
   }
-
   if (fatalError) {
     return (
       <div className="min-h-screen bg-gray-100 px-4 py-6">
@@ -3210,9 +2768,7 @@ async function upsertAnswers(
       </div>
     );
   }
-
   if (!activeStore || !organizationId) return null;
-
   return (
     <div className="min-h-screen bg-gray-100 px-4 py-6">
       <div className="mx-auto max-w-5xl">
@@ -3223,12 +2779,10 @@ async function upsertAnswers(
           <StepBadge step={4} currentStep={currentStep} title="Comercial" onClick={() => changeStep(4)} />
           <StepBadge step={5} currentStep={currentStep} title="Ativação" onClick={() => changeStep(5)} />
         </div>
-
         <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
           <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div>
               <p className="mb-1 text-sm font-medium text-gray-500">Onboarding inicial</p>
-
               <h1 className="mb-2 text-2xl font-bold text-gray-900">
                 {currentStep === 1 && "Etapa 1 — Loja"}
                 {currentStep === 2 && "Etapa 2 — Piscinas"}
@@ -3236,7 +2790,6 @@ async function upsertAnswers(
                 {currentStep === 4 && "Etapa 4 — Comercial"}
                 {currentStep === 5 && "Etapa 5 — Ativação"}
               </h1>
-
               <p className="text-sm leading-6 text-gray-600">
                 {currentStep === 1 &&
                   "Vamos preencher os dados principais da loja de um jeito rápido, claro e sem complicação."}
@@ -3249,7 +2802,6 @@ async function upsertAnswers(
                 {currentStep === 5 &&
                   "Por fim, vamos organizar quem a IA deve avisar, em quais casos e quais orientações finais ela precisa seguir."}
               </p>
-
               {hasCompletedOnboardingOnce ? (
                 <div className="mt-3">
                   <InfoBlock
@@ -3260,7 +2812,6 @@ async function upsertAnswers(
                 </div>
               ) : null}
             </div>
-
             <div className="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
               <button
                 type="button"
@@ -3269,7 +2820,6 @@ async function upsertAnswers(
               >
                 Ir para Configurações
               </button>
-
               <button
                 type="button"
                 onClick={() => navigateWithFallback("/dashboard")}
@@ -3279,13 +2829,11 @@ async function upsertAnswers(
               </button>
             </div>
           </div>
-
           {formError ? (
             <div className="mb-6">
               <InfoBlock title="Ajuste necessário" description={formError} />
             </div>
           ) : null}
-
           {currentStep === 1 && (
             <form onSubmit={saveStep1} className="space-y-6">
               <div>
@@ -3302,7 +2850,6 @@ async function upsertAnswers(
                   required
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Como você descreve a loja em poucas palavras?"
@@ -3316,7 +2863,6 @@ async function upsertAnswers(
                   placeholder="Ex.: Loja especializada em piscinas, produtos químicos e instalação."
                 />
               </div>
-
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div>
                   <SectionTitle title="Cidade da loja" />
@@ -3329,7 +2875,6 @@ async function upsertAnswers(
                     required
                   />
                 </div>
-
                 <div>
                   <SectionTitle title="Estado da loja" />
                   <input
@@ -3342,7 +2887,6 @@ async function upsertAnswers(
                   />
                 </div>
               </div>
-
               <div>
                 <SectionTitle
                   title="Quais regiões a loja atende?"
@@ -3356,7 +2900,6 @@ async function upsertAnswers(
                   placeholder="Ex.: Suzano, Mogi, Poá e região"
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Qual é o WhatsApp comercial da loja?"
@@ -3371,7 +2914,6 @@ async function upsertAnswers(
                   required
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Quais serviços principais a loja oferece?"
@@ -3390,7 +2932,6 @@ async function upsertAnswers(
                   placeholder="Se tiver algo fora da lista, escreva aqui (opcional)"
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Qual é o alcance regional principal da loja?"
@@ -3402,7 +2943,6 @@ async function upsertAnswers(
                   onChange={(value) => updateStep1Field("service_region_primary_mode", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Como a loja trata atendimento fora da região principal?"
@@ -3414,7 +2954,6 @@ async function upsertAnswers(
                   onToggle={(value) => toggleStep1ArrayField("service_region_modes", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="A loja atende fora da região principal só sob consulta?"
@@ -3426,7 +2965,6 @@ async function upsertAnswers(
                   onChange={(value) => updateStep1Field("service_region_outside_consultation", value === "sim")}
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Observações sobre a região atendida"
@@ -3440,7 +2978,6 @@ async function upsertAnswers(
                   placeholder="Ex.: Fora da região só com taxa, dependendo do projeto."
                 />
               </div>
-
               <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-end">
                 <button
                   type="submit"
@@ -3452,7 +2989,6 @@ async function upsertAnswers(
               </div>
             </form>
           )}
-
           {currentStep === 2 && (
             <form onSubmit={saveStep2} className="space-y-6">
               <div>
@@ -3473,7 +3009,6 @@ async function upsertAnswers(
                   placeholder="Se quiser complementar, escreva aqui (opcional)"
                 />
               </div>
-
               <div>
                 <SectionTitle title="A loja vende produtos químicos?" />
                 <SingleSelectorGrid
@@ -3482,7 +3017,6 @@ async function upsertAnswers(
                   onChange={(value) => updateStep2Field("sells_chemicals", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle title="A loja vende acessórios?" />
                 <SingleSelectorGrid
@@ -3491,7 +3025,6 @@ async function upsertAnswers(
                   onChange={(value) => updateStep2Field("sells_accessories", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle title="A loja oferece instalação?" />
                 <SingleSelectorGrid
@@ -3500,7 +3033,6 @@ async function upsertAnswers(
                   onChange={(value) => updateStep2Field("offers_installation", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle title="A loja oferece visita técnica?" />
                 <SingleSelectorGrid
@@ -3509,7 +3041,6 @@ async function upsertAnswers(
                   onChange={(value) => updateStep2Field("offers_technical_visit", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Quais marcas a loja trabalha?"
@@ -3523,7 +3054,6 @@ async function upsertAnswers(
                   placeholder="Ex.: Cris Água, Brustec, Sodramar"
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Qual é a principal marca trabalhada pela loja?"
@@ -3538,20 +3068,20 @@ async function upsertAnswers(
                   required
                 />
               </div>
-
               <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4">
                 <SectionTitle
                   title="Importar catálogo, piscinas e materiais da loja"
                   hint="Envie fotos, Excel básico, Word básico ou PDF básico para a IA começar a entender os produtos, piscinas, acessórios e materiais mais comuns da loja. Nesta fase ela ainda mostra uma prévia da leitura antes da parte de salvamento real."
                 />
-
                 <div className="space-y-3">
                   <input
                     type="file"
                     multiple
                     accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,image/*"
                     onChange={async (e) => {
-                      const selectedFiles = Array.from(e.target.files ?? []);
+                      const input = e.currentTarget;
+                      const selectedFiles = Array.from(input.files ?? []);
+                      input.value = "";
                       setIntelligentImportFiles(selectedFiles);
                       setIntelligentImportSelectedFilesPreview(
                         await buildSelectedFilePreviews(selectedFiles)
@@ -3560,15 +3090,12 @@ async function upsertAnswers(
                       setIntelligentImportError(null);
                       setIntelligentImportSuccess(null);
                       setIntelligentImportResult(null);
-                      e.currentTarget.value = "";
                     }}
                     className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />
-
                   <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700">
                     Você pode enviar fotos do catálogo, imagens de produtos, tabelas simples em foto, PDF, Word, Excel e PowerPoint. As imagens selecionadas aparecem em pré-visualização logo abaixo para facilitar a conferência antes do teste.
                   </div>
-
                   {visibleIntelligentImportFiles.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
@@ -3592,7 +3119,6 @@ async function upsertAnswers(
                       </div>
                     </div>
                   ) : null}
-
                   {selectedImagePreviews.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
@@ -3621,7 +3147,6 @@ async function upsertAnswers(
                       </div>
                     </div>
                   ) : null}
-
                   <div className="flex flex-col gap-3 md:flex-row md:items-center">
                     <button
                       type="button"
@@ -3633,7 +3158,6 @@ async function upsertAnswers(
                         ? "Processando importação..."
                         : "Testar importação inteligente"}
                     </button>
-
                     {visibleIntelligentImportFiles.length > 0 ? (
                       <button
                         type="button"
@@ -3645,14 +3169,12 @@ async function upsertAnswers(
                       </button>
                     ) : null}
                   </div>
-
                   {intelligentImportError ? (
                     <InfoBlock
                       title="Falha na importação inteligente"
                       description={intelligentImportError}
                     />
                   ) : null}
-
                   {intelligentImportSuccess ? (
                     <InfoBlock
                       title="Importação inteligente processada"
@@ -3660,7 +3182,6 @@ async function upsertAnswers(
                       subtle
                     />
                   ) : null}
-
                   {intelligentImportResult?.ok ? (
                     <div className="space-y-4">
                       <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
@@ -3695,7 +3216,6 @@ async function upsertAnswers(
                           </p>
                         </div>
                       </div>
-
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
                         {safeExtractedPreview.length === 0 ? (
@@ -3723,12 +3243,10 @@ async function upsertAnswers(
                           </div>
                         )}
                       </div>
-
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">
                           Fotos encontradas nos arquivos
                         </p>
-
                         {safeExtractedImagePreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhuma foto embutida foi encontrada nos arquivos desta análise.
@@ -3747,7 +3265,6 @@ async function upsertAnswers(
                                     className="h-full w-full object-cover"
                                   />
                                 </div>
-
                                 <div className="border-t border-gray-200 px-3 py-2">
                                   <p className="truncate text-xs font-semibold text-gray-800">
                                     {image.fileName}
@@ -3761,7 +3278,6 @@ async function upsertAnswers(
                           </div>
                         )}
                       </div>
-
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
                         {safeNormalizedPreview.length === 0 ? (
@@ -3791,7 +3307,6 @@ async function upsertAnswers(
                           </div>
                         )}
                       </div>
-
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
                         {safeDedupedPreview.length === 0 ? (
@@ -3841,8 +3356,6 @@ async function upsertAnswers(
                   ) : null}
                 </div>
               </div>
-
-
               {intelligentImportResult?.ok ? (
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -3855,7 +3368,6 @@ async function upsertAnswers(
                         acessórios em Acessórios e o restante em Outros.
                       </p>
                     </div>
-
                     <button
                       type="button"
                       onClick={() => void handleSaveImportedItemsToCatalog()}
@@ -3867,8 +3379,6 @@ async function upsertAnswers(
                   </div>
                 </div>
               ) : null}
-
-
               <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
                 <button
                   type="button"
@@ -3877,7 +3387,6 @@ async function upsertAnswers(
                 >
                   Voltar
                 </button>
-
                 <button
                   type="submit"
                   disabled={saving}
@@ -3888,7 +3397,6 @@ async function upsertAnswers(
               </div>
             </form>
           )}
-
           {currentStep === 3 && (
             <form onSubmit={saveStep3} className="space-y-6">
               <div>
@@ -3905,7 +3413,6 @@ async function upsertAnswers(
                   required
                 />
               </div>
-
               {storeHasInstallation && (
                 <>
                   <div>
@@ -3921,7 +3428,6 @@ async function upsertAnswers(
                       placeholder="Ex.: 10 dias"
                     />
                   </div>
-
                   <div>
                     <SectionTitle
                       title="Quais dias a loja costuma instalar?"
@@ -3940,7 +3446,6 @@ async function upsertAnswers(
                       placeholder="Regra complementar da instalação (opcional)"
                     />
                   </div>
-
                   <div>
                     <SectionTitle
                       title="Como costuma funcionar a instalação?"
@@ -3961,7 +3466,6 @@ async function upsertAnswers(
                   </div>
                 </>
               )}
-
               {storeHasTechnicalVisit && (
                 <>
                   <div>
@@ -3982,7 +3486,6 @@ async function upsertAnswers(
                       placeholder="Regra complementar da visita técnica (opcional)"
                     />
                   </div>
-
                   <div>
                     <SectionTitle
                       title="Quais regras a IA precisa respeitar na visita técnica?"
@@ -4003,7 +3506,6 @@ async function upsertAnswers(
                   </div>
                 </>
               )}
-
               <div>
                 <SectionTitle
                   title="Quais limitações importantes a IA precisa saber?"
@@ -4022,7 +3524,6 @@ async function upsertAnswers(
                   placeholder="Se quiser complementar, escreva aqui (opcional)"
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Como começa o fluxo comercial?"
@@ -4034,7 +3535,6 @@ async function upsertAnswers(
                   onToggle={(value) => toggleStep3ArrayField("sales_flow_start_steps", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Como costuma seguir a negociação?"
@@ -4046,7 +3546,6 @@ async function upsertAnswers(
                   onToggle={(value) => toggleStep3ArrayField("sales_flow_middle_steps", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Como costuma terminar o fluxo?"
@@ -4058,7 +3557,6 @@ async function upsertAnswers(
                   onToggle={(value) => toggleStep3ArrayField("sales_flow_final_steps", value)}
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Observações extras sobre o fluxo"
@@ -4072,7 +3570,6 @@ async function upsertAnswers(
                   placeholder="Ex.: Antes de falar preço, normalmente a loja entende o tipo de piscina e se tem instalação."
                 />
               </div>
-
               <div className="space-y-3">
                 <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
                   <input
@@ -4082,7 +3579,6 @@ async function upsertAnswers(
                   />
                   <span className="text-sm text-gray-700">Confirmo que o início do fluxo está correto</span>
                 </label>
-
                 <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
                   <input
                     type="checkbox"
@@ -4091,7 +3587,6 @@ async function upsertAnswers(
                   />
                   <span className="text-sm text-gray-700">Confirmo que a parte do meio do fluxo está correta</span>
                 </label>
-
                 <label className="flex items-center gap-3 rounded-xl border border-gray-200 px-4 py-3">
                   <input
                     type="checkbox"
@@ -4101,7 +3596,6 @@ async function upsertAnswers(
                   <span className="text-sm text-gray-700">Confirmo que o final do fluxo está correto</span>
                 </label>
               </div>
-
               <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
                 <button
                   type="button"
@@ -4110,7 +3604,6 @@ async function upsertAnswers(
                 >
                   Voltar
                 </button>
-
                 <button
                   type="submit"
                   disabled={saving}
@@ -4121,7 +3614,6 @@ async function upsertAnswers(
               </div>
             </form>
           )}
-
           {currentStep === 4 && (
             <form onSubmit={saveStep4} className="space-y-6">
               <div>
@@ -4145,21 +3637,18 @@ async function upsertAnswers(
                   />
                 </div>
               </div>
-
               {hasDiscountConfigOverride ? (
                 <div className="space-y-4">
                   <InfoBlock
                     title="Desconto controlado pela aba Configurações"
                     description="Esses valores agora estão em modo espelho no onboarding. Quando você muda em Configurações, aqui atualiza junto. Alterações feitas aqui no onboarding não sobrescrevem mais a política viva."
                   />
-
                   <div>
                     <SectionTitle title="A loja pode dar desconto?" />
                     <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-800">
                       Valor efetivo atual: <strong>{effectiveDiscountCanOffer ? "Sim" : "Não"}</strong>
                     </div>
                   </div>
-
                   {effectiveDiscountCanOffer && (
                     <div>
                       <SectionTitle
@@ -4180,7 +3669,6 @@ async function upsertAnswers(
                       </div>
                     </div>
                   )}
-
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                     <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                       <p className="text-xs text-gray-500">Desconto padrão atual</p>
@@ -4188,14 +3676,12 @@ async function upsertAnswers(
                         {discountSettings?.default_discount_percent ?? 0}%
                       </p>
                     </div>
-
                     <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                       <p className="text-xs text-gray-500">Desconto máximo com autorização</p>
                       <p className="mt-1 text-lg font-semibold text-gray-900">
                         {discountSettings?.max_discount_percent ?? 0}%
                       </p>
                     </div>
-
                     <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                       <p className="text-xs text-gray-500">Consultar acima do máximo</p>
                       <p className="mt-1 text-lg font-semibold text-gray-900">
@@ -4214,7 +3700,6 @@ async function upsertAnswers(
                       onChange={(value) => updateStep4Field("can_offer_discount", value)}
                     />
                   </div>
-
                   {step4Form.can_offer_discount === "sim" && (
                     <div>
                       <SectionTitle
@@ -4240,13 +3725,11 @@ async function upsertAnswers(
                   )}
                 </>
               )}
-
               <div className="space-y-4">
                 <SectionTitle
                   title="Como o cliente pode pagar?"
                   hint="Marque as formas de pagamento e também as condições comerciais que a loja aceita."
                 />
-
                 <div>
                   <p className="mb-2 text-sm font-medium text-gray-700">Formas de pagamento</p>
                   <SelectorGrid
@@ -4255,7 +3738,6 @@ async function upsertAnswers(
                     onToggle={(value) => toggleStep4ArrayField("accepted_payment_methods", value)}
                   />
                 </div>
-
                 <div>
                   <p className="mb-2 text-sm font-medium text-gray-700">Condições comerciais</p>
                   <SelectorGrid
@@ -4265,7 +3747,6 @@ async function upsertAnswers(
                   />
                 </div>
               </div>
-
               <div>
                 <SectionTitle
                   title="A IA pode falar preço sem chamar alguém da loja?"
@@ -4277,7 +3758,6 @@ async function upsertAnswers(
                   onChange={(value) => updateStep4Field("ai_can_send_price_directly", value)}
                 />
               </div>
-
               {step4Form.ai_can_send_price_directly === "sim" && (
                 <div className="space-y-6">
                   <div>
@@ -4291,7 +3771,6 @@ async function upsertAnswers(
                       onToggle={(value) => toggleStep4ArrayField("price_must_understand_before", value)}
                     />
                   </div>
-
                   <div>
                     <SectionTitle
                       title="Como a IA pode falar preço?"
@@ -4303,7 +3782,6 @@ async function upsertAnswers(
                       onChange={(value) => updateStep4Field("price_talk_mode", value)}
                     />
                   </div>
-
                   <div>
                     <SectionTitle
                       title="A IA precisa de ajuda humana para isso?"
@@ -4315,7 +3793,6 @@ async function upsertAnswers(
                       onChange={(value) => updateStep4Field("price_needs_human_help", value)}
                     />
                   </div>
-
                   <input
                     type="text"
                     value={step4Form.price_direct_rule_other}
@@ -4325,7 +3802,6 @@ async function upsertAnswers(
                   />
                 </div>
               )}
-
               {step4Form.ai_can_send_price_directly === "não" && (
                 <InfoBlock
                   title="Preço com apoio humano"
@@ -4333,7 +3809,6 @@ async function upsertAnswers(
                   subtle
                 />
               )}
-
               <div>
                 <SectionTitle
                   title="Quando a IA deve chamar uma pessoa por causa de desconto?"
@@ -4352,7 +3827,6 @@ async function upsertAnswers(
                   placeholder="Se quiser complementar, escreva aqui (opcional)"
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Quando a IA deve chamar uma pessoa por causa de projeto especial?"
@@ -4371,7 +3845,6 @@ async function upsertAnswers(
                   placeholder="Se quiser complementar, escreva aqui (opcional)"
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Quando a IA deve chamar uma pessoa por causa de pagamento?"
@@ -4390,7 +3863,6 @@ async function upsertAnswers(
                   placeholder="Se quiser complementar, escreva aqui (opcional)"
                 />
               </div>
-
               <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
                 <button
                   type="button"
@@ -4399,7 +3871,6 @@ async function upsertAnswers(
                 >
                   Voltar
                 </button>
-
                 <button
                   type="submit"
                   disabled={saving}
@@ -4410,7 +3881,6 @@ async function upsertAnswers(
               </div>
             </form>
           )}
-
           {currentStep === 5 && (
             <form onSubmit={saveStep5} className="space-y-6">
               <div>
@@ -4427,7 +3897,6 @@ async function upsertAnswers(
                   required
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="Qual é o WhatsApp dessa pessoa?"
@@ -4442,7 +3911,6 @@ async function upsertAnswers(
                   required
                 />
               </div>
-
               <div>
                 <SectionTitle
                   title="A IA deve avisar essa pessoa quando surgir algo importante?"
@@ -4453,7 +3921,6 @@ async function upsertAnswers(
                   onChange={(value) => updateStep5Field("ai_should_notify_responsible", value)}
                 />
               </div>
-
               {step5Form.ai_should_notify_responsible === "sim" && (
                 <div>
                   <SectionTitle
@@ -4474,7 +3941,6 @@ async function upsertAnswers(
                   />
                 </div>
               )}
-
               <div>
                 <SectionTitle
                   title="Quais orientações finais a IA deve seguir na ativação?"
@@ -4493,7 +3959,6 @@ async function upsertAnswers(
                   placeholder="Se quiser complementar, escreva aqui (opcional)"
                 />
               </div>
-
               <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
                 <label className="flex items-start gap-3">
                   <input
@@ -4507,7 +3972,6 @@ async function upsertAnswers(
                   </span>
                 </label>
               </div>
-
               <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-between">
                 <button
                   type="button"
@@ -4516,7 +3980,6 @@ async function upsertAnswers(
                 >
                   Voltar
                 </button>
-
                 <button
                   type="submit"
                   disabled={saving}
@@ -4532,7 +3995,6 @@ async function upsertAnswers(
     </div>
   );
 }
-
 export default function OnboardingPage() {
   return (
     <OrgGuard>
