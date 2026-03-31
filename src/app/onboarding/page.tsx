@@ -644,12 +644,20 @@ function buildImportedCatalogDescription(
 ) {
   return buildImportedCleanDescription(item);
 }
-function parseImportedDecimal(value: string | null | undefined) {
+function parseImportedMetricNumber(value: string | null | undefined) {
   if (!value) return null;
-  const normalized = String(value).replace(/\./g, "").replace(",", ".").trim();
+  const normalized = String(value).trim().replace(",", ".");
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
+
+function parseImportedLargeNumber(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = String(value).trim().replace(/\./g, "").replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function extractImportedPoolMetrics(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -657,54 +665,84 @@ function extractImportedPoolMetrics(
     .map((value) => String(value ?? ""))
     .join(" ");
   const lowered = source.toLowerCase();
+
   let width: number | null = null;
   let length: number | null = null;
   let depth: number | null = null;
   let capacity: number | null = null;
   let price: number | null = null;
-  const rectMatch = source.match(/(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i);
+
+  const dimensionsText =
+    extractMetadataValue(item, ["medidas", "dimensions", "tamanho", "size"]) || source;
+  const depthText =
+    extractMetadataValue(item, ["profundidade", "depth"]) || source;
+  const capacityText =
+    extractMetadataValue(item, ["capacidade", "capacity"]) || source;
+  const priceText =
+    extractMetadataValue(item, ["preco", "preço", "price", "faixa de preco", "faixa de preço"]) || source;
+
+  const rectMatch = dimensionsText.match(/(\d+(?:[\.,]\d+)?)\s*x\s*(\d+(?:[\.,]\d+)?)\s*m\b/i);
   if (rectMatch) {
-    width = parseImportedDecimal(rectMatch[1]);
-    length = parseImportedDecimal(rectMatch[2]);
+    width = parseImportedMetricNumber(rectMatch[1]);
+    length = parseImportedMetricNumber(rectMatch[2]);
   }
-  const diamMatch = source.match(/(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
+
+  const diamMatch = dimensionsText.match(/(\d+(?:[\.,]\d+)?)\s*m\s*di[âa]m/i);
   if (diamMatch) {
-    width = parseImportedDecimal(diamMatch[1]);
-    length = parseImportedDecimal(diamMatch[1]);
+    width = parseImportedMetricNumber(diamMatch[1]);
+    length = parseImportedMetricNumber(diamMatch[1]);
   }
+
   const depthMatch =
-    source.match(/profundidade\s*(?:de|do|da)?\s*(\d+[\.,]?\d*)\s*m/i) ||
-    source.match(/prof\.?\s*(\d+[\.,]?\d*)\s*m/i);
+    depthText.match(/profundidade\s*(?:de|do|da)?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m\b/i) ||
+    depthText.match(/prof\.?\s*(\d+(?:[\.,]\d+)?)\s*m\b/i) ||
+    depthText.match(/\b(\d+(?:[\.,]\d+)?)\s*m\b/i);
+
   if (depthMatch) {
-    depth = parseImportedDecimal(depthMatch[1]);
+    depth = parseImportedMetricNumber(depthMatch[1]);
   }
+
   const capacityMatch =
-    source.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
-    source.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)\b/i);
+    capacityText.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de)?\s*[:\-]?\s*(\d{1,3}(?:\.\d{3})+|\d+(?:[\.,]\d+)?)\s*(?:l|litros?)?/i) ||
+    capacityText.match(/\b(\d{1,3}(?:\.\d{3})+|\d+(?:[\.,]\d+)?)\s*(?:l|litros?)\b/i);
+
   if (capacityMatch) {
-    capacity = parseImportedDecimal(capacityMatch[1]);
+    capacity = parseImportedLargeNumber(capacityMatch[1]);
   }
+
   const priceMatch =
-    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
+    priceText.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:[\.,]\d+)?)/i) ||
+    priceText.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:[\.,]\d+)?)/i);
+
   if (priceMatch) {
-    price = parseImportedDecimal(priceMatch[1]);
+    price = parseImportedLargeNumber(priceMatch[1]);
   }
-  let material = "fibra";
-  if (lowered.includes("vinil")) material = "vinil";
-  else if (lowered.includes("alvenaria")) material = "alvenaria";
-  else if (lowered.includes("pastilha")) material = "pastilha";
-  else if (lowered.includes("fibra")) material = "fibra";
-  let shape = "retangular";
-  if (lowered.includes("diâm") || lowered.includes("diam") || lowered.includes("redonda")) {
-    shape = "redonda";
-  } else if (lowered.includes("oval")) {
-    shape = "oval";
-  } else if (lowered.includes("raia")) {
-    shape = "raia";
-  } else if (lowered.includes("retangular")) {
+
+  let material = extractMetadataValue(item, ["material"]).toLowerCase().trim();
+  if (!material) {
+    if (lowered.includes("vinil")) material = "vinil";
+    else if (lowered.includes("alvenaria")) material = "alvenaria";
+    else if (lowered.includes("pastilha")) material = "pastilha";
+    else if (lowered.includes("fibra")) material = "fibra";
+    else if (lowered.includes("spa")) material = "spa";
+    else if (lowered.includes("prainha")) material = "prainha";
+    else material = "não informado";
+  }
+
+  let shape = extractMetadataValue(item, ["formato", "shape"]).toLowerCase().trim();
+  if (!shape) {
     shape = "retangular";
+    if (lowered.includes("diâm") || lowered.includes("diam") || lowered.includes("redonda")) {
+      shape = "redonda";
+    } else if (lowered.includes("oval")) {
+      shape = "oval";
+    } else if (lowered.includes("raia")) {
+      shape = "raia";
+    } else if (lowered.includes("retangular")) {
+      shape = "retangular";
+    }
   }
+
   return {
     width_m: width,
     length_m: length,
@@ -725,7 +763,7 @@ function extractImportedCatalogPriceCents(
     source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
     source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
   if (!priceMatch) return null;
-  const parsed = parseImportedDecimal(priceMatch[1]);
+  const parsed = parseImportedLargeNumber(priceMatch[1]);
   if (parsed == null) return null;
   return Math.round(parsed * 100);
 }
@@ -897,6 +935,9 @@ function buildImportedPoolName(
     .replace(/^Nome do item\s*:\s*/i, "")
     .trim()
     .slice(0, 160);
+}
+function buildImportedUniqueNameKey(name: string) {
+  return normalizeImportedLoose(name);
 }
 function buildImportedPoolDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -1693,6 +1734,8 @@ function OnboardingContent() {
       let savedOutros = 0;
       let imageCursor = 0;
 
+      const seenPoolNames = new Set<string>();
+      const seenCatalogNames = new Set<string>();
       const itemErrors: string[] = [];
 
       for (const item of sourceItems) {
@@ -1720,6 +1763,25 @@ function OnboardingContent() {
             const poolName = buildImportedPoolName(item);
 
             if (!poolName || isGenericImportedTitle(poolName)) {
+              continue;
+            }
+
+            const poolNameKey = buildImportedUniqueNameKey(poolName);
+            if (seenPoolNames.has(poolNameKey)) {
+              continue;
+            }
+
+            const { data: existingPoolByName, error: existingPoolLookupError } = await supabase
+              .from("pools")
+              .select("id")
+              .eq("organization_id", organizationId)
+              .eq("store_id", activeStore.id)
+              .eq("name", poolName)
+              .maybeSingle();
+
+            if (existingPoolLookupError) throw existingPoolLookupError;
+            if (existingPoolByName?.id) {
+              seenPoolNames.add(poolNameKey);
               continue;
             }
 
@@ -1761,6 +1823,7 @@ ${fallbackNote}`
 
             if (error) throw error;
 
+            seenPoolNames.add(poolNameKey);
             if (!firstPoolId) firstPoolId = createdPool.id;
             savedPools += 1;
 
@@ -1811,6 +1874,25 @@ ${fallbackNote}`
             continue;
           }
 
+          const itemNameKey = buildImportedUniqueNameKey(itemName);
+          if (seenCatalogNames.has(itemNameKey)) {
+            continue;
+          }
+
+          const { data: existingCatalogItemByName, error: existingCatalogLookupError } = await supabase
+            .from("store_catalog_items")
+            .select("id")
+            .eq("organization_id", organizationId)
+            .eq("store_id", activeStore.id)
+            .eq("name", itemName)
+            .maybeSingle();
+
+          if (existingCatalogLookupError) throw existingCatalogLookupError;
+          if (existingCatalogItemByName?.id) {
+            seenCatalogNames.add(itemNameKey);
+            continue;
+          }
+
           const { data: createdItem, error } = await supabase
             .from("store_catalog_items")
             .insert({
@@ -1831,6 +1913,7 @@ ${fallbackNote}`
 
           if (error) throw error;
 
+          seenCatalogNames.add(itemNameKey);
           if (!firstCatalogCategory) firstCatalogCategory = category;
 
           if (category === "quimicos") savedQuimicos += 1;
