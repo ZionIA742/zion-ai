@@ -434,9 +434,6 @@ function buildLightPersistedIntelligentImportState(params: {
     errorMessage: params.errorMessage,
   };
 }
-const INTELLIGENT_IMPORT_PREVIEW_LIMIT = 12;
-const INTELLIGENT_IMPORT_IMAGE_PREVIEW_LIMIT = 12;
-
 function decorateIntelligentImportResultWithImageFallback(
   result: IntelligentImportResponse,
   selectedFiles: IntelligentImportSelectedFilePreview[]
@@ -774,41 +771,6 @@ function canPersistAsPool(metrics: {
     metrics.depth_m != null ||
     metrics.max_capacity_l != null
   );
-}
-
-function buildImportedPoolPersistenceData(
-  metrics: {
-    width_m: number | null;
-    length_m: number | null;
-    depth_m: number | null;
-    max_capacity_l: number | null;
-    material: string;
-    shape: string;
-    price: number | null;
-  },
-  description: string | null
-) {
-  const fallbackDepth = 1.4;
-  const depthWasEstimated = metrics.depth_m == null;
-  const finalDepth = metrics.depth_m ?? fallbackDepth;
-
-  const depthNote = depthWasEstimated
-    ? "Importação automática: a profundidade não foi identificada com segurança no arquivo. Foi usado 1,40 m de forma provisória para permitir o cadastro. Revise este item depois."
-    : null;
-
-  const finalDescription = [description, depthNote].filter(Boolean).join("\n\n").trim() || null;
-
-  return {
-    width_m: metrics.width_m,
-    length_m: metrics.length_m,
-    depth_m: finalDepth,
-    max_capacity_l: metrics.max_capacity_l,
-    material: metrics.material,
-    shape: metrics.shape,
-    price: metrics.price,
-    description: finalDescription,
-    depthWasEstimated,
-  };
 }
 function normalizeImportedLoose(value: string | null | undefined) {
   return String(value || "")
@@ -1661,6 +1623,7 @@ function OnboardingContent() {
       setFormError("Não foi possível identificar a organização e a loja ativa.");
       return;
     }
+
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       setFormError("Faça a importação inteligente antes de salvar no sistema.");
       return;
@@ -1694,16 +1657,32 @@ function OnboardingContent() {
         Array<{ fileName: string; mimeType: string; dataUrl: string }>
       >();
 
-      for (const image of safeExtractedImagePreview) {
-        const bucketKey = String(image.sourceFileName || "").trim().toLowerCase();
+      const extractedImageSequence = safeExtractedImagePreview.map((image) => ({
+        fileName: image.fileName || "imagem-extraida.jpg",
+        mimeType: image.mimeType || "image/jpeg",
+        dataUrl: image.dataUrl,
+        sourceFileName: String(image.sourceFileName || "").trim().toLowerCase(),
+      }));
+
+      for (const image of extractedImageSequence) {
+        const bucketKey = image.sourceFileName;
         const currentBucket = extractedImageBuckets.get(bucketKey) ?? [];
         currentBucket.push({
-          fileName: image.fileName || "imagem-extraida.jpg",
-          mimeType: image.mimeType || "image/jpeg",
+          fileName: image.fileName,
+          mimeType: image.mimeType,
           dataUrl: image.dataUrl,
         });
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
+
+      const uniqueSourceFiles = new Set(
+        sourceItems.map((item) => String(item.sourceFileName || "").trim().toLowerCase()).filter(Boolean)
+      );
+
+      const shouldAssignSequentialExtractedImages =
+        uniqueSourceFiles.size === 1 &&
+        extractedImageSequence.length >= sourceItems.length &&
+        sourceItems.length > 1;
 
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
@@ -1714,31 +1693,49 @@ function OnboardingContent() {
       let savedOutros = 0;
       let imageCursor = 0;
 
-      const saveErrors: string[] = [];
+      const itemErrors: string[] = [];
 
       for (const item of sourceItems) {
         try {
           const destination = resolveImportedDestination(item);
-          const relatedExtractedImages = pickRelatedExtractedImages(
-            item,
-            extractedImageBuckets,
-            sourceItems.length
-          );
+
+          const relatedExtractedImages = shouldAssignSequentialExtractedImages
+            ? extractedImageSequence.length > 0
+              ? [
+                  {
+                    fileName: extractedImageSequence[0].fileName,
+                    mimeType: extractedImageSequence[0].mimeType,
+                    dataUrl: extractedImageSequence[0].dataUrl,
+                  },
+                ]
+              : []
+            : pickRelatedExtractedImages(item, extractedImageBuckets, sourceItems.length);
+
+          if (shouldAssignSequentialExtractedImages && extractedImageSequence.length > 0) {
+            extractedImageSequence.shift();
+          }
 
           if (destination === "pool") {
             const metrics = extractImportedPoolMetrics(item);
             const poolName = buildImportedPoolName(item);
-            const poolDescription = buildImportedPoolDescription(item);
 
             if (!poolName || isGenericImportedTitle(poolName)) {
               continue;
             }
 
-            if (!canPersistAsPool(metrics)) {
-              throw new Error("Não foi possível identificar medidas mínimas para salvar esta piscina.");
-            }
+            let poolDescription = buildImportedPoolDescription(item);
+            let safeDepth = metrics.depth_m;
 
-            const poolPersistence = buildImportedPoolPersistenceData(metrics, poolDescription);
+            if (safeDepth == null) {
+              safeDepth = 1.4;
+              const fallbackNote =
+                "Importação automática: a profundidade não foi identificada com segurança no arquivo. Foi usado 1,40 m de forma provisória para permitir o cadastro. Revise este item depois.";
+
+              poolDescription = poolDescription
+                ? `${poolDescription}
+${fallbackNote}`
+                : fallbackNote;
+            }
 
             const { data: createdPool, error } = await supabase
               .from("pools")
@@ -1746,15 +1743,15 @@ function OnboardingContent() {
                 organization_id: organizationId,
                 store_id: activeStore.id,
                 name: poolName,
-                width_m: poolPersistence.width_m,
-                length_m: poolPersistence.length_m,
-                depth_m: poolPersistence.depth_m,
-                shape: poolPersistence.shape,
-                material: poolPersistence.material,
-                max_capacity_l: poolPersistence.max_capacity_l,
+                width_m: metrics.width_m,
+                length_m: metrics.length_m,
+                depth_m: safeDepth,
+                shape: metrics.shape,
+                material: metrics.material,
+                max_capacity_l: metrics.max_capacity_l,
                 weight_kg: null,
-                price: poolPersistence.price,
-                description: poolPersistence.description,
+                price: metrics.price,
+                description: poolDescription,
                 is_active: true,
                 track_stock: false,
                 stock_quantity: null,
@@ -1768,14 +1765,23 @@ function OnboardingContent() {
             savedPools += 1;
 
             if (relatedExtractedImages.length > 0) {
-              for (let index = 0; index < relatedExtractedImages.length; index += 1) {
-                await uploadExtractedImageToPool(
-                  organizationId,
-                  activeStore.id,
-                  createdPool.id,
-                  relatedExtractedImages[index],
-                  index
-                );
+              const limitedPoolImages = relatedExtractedImages.slice(0, 1);
+
+              for (let index = 0; index < limitedPoolImages.length; index += 1) {
+                try {
+                  await uploadExtractedImageToPool(
+                    organizationId,
+                    activeStore.id,
+                    createdPool.id,
+                    limitedPoolImages[index],
+                    index
+                  );
+                } catch (uploadError) {
+                  console.error("[OnboardingPage] uploadExtractedImageToPool error:", uploadError);
+                  itemErrors.push(
+                    `${poolName}: falha ao salvar foto extraída (${uploadError instanceof Error ? uploadError.message : "erro desconhecido"}).`
+                  );
+                }
               }
             } else if (selectedImageFiles[imageCursor]) {
               try {
@@ -1783,6 +1789,9 @@ function OnboardingContent() {
                 imageCursor += 1;
               } catch (uploadError) {
                 console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
+                itemErrors.push(
+                  `${poolName}: falha ao salvar foto enviada (${uploadError instanceof Error ? uploadError.message : "erro desconhecido"}).`
+                );
               }
             }
 
@@ -1797,6 +1806,7 @@ function OnboardingContent() {
                 );
 
           const itemName = buildImportedCatalogName(item);
+
           if (!itemName || isGenericImportedTitle(itemName)) {
             continue;
           }
@@ -1828,14 +1838,23 @@ function OnboardingContent() {
           else savedOutros += 1;
 
           if (relatedExtractedImages.length > 0) {
-            for (let index = 0; index < relatedExtractedImages.length; index += 1) {
-              await uploadExtractedImageToCatalog(
-                organizationId,
-                activeStore.id,
-                createdItem.id,
-                relatedExtractedImages[index],
-                index
-              );
+            const limitedCatalogImages = relatedExtractedImages.slice(0, 1);
+
+            for (let index = 0; index < limitedCatalogImages.length; index += 1) {
+              try {
+                await uploadExtractedImageToCatalog(
+                  organizationId,
+                  activeStore.id,
+                  createdItem.id,
+                  limitedCatalogImages[index],
+                  index
+                );
+              } catch (uploadError) {
+                console.error("[OnboardingPage] uploadExtractedImageToCatalog error:", uploadError);
+                itemErrors.push(
+                  `${itemName}: falha ao salvar foto extraída (${uploadError instanceof Error ? uploadError.message : "erro desconhecido"}).`
+                );
+              }
             }
           } else if (selectedImageFiles[imageCursor]) {
             try {
@@ -1843,14 +1862,16 @@ function OnboardingContent() {
               imageCursor += 1;
             } catch (uploadError) {
               console.error("[OnboardingPage] uploadImportedImageToCatalog error:", uploadError);
+              itemErrors.push(
+                `${itemName}: falha ao salvar foto enviada (${uploadError instanceof Error ? uploadError.message : "erro desconhecido"}).`
+              );
             }
           }
         } catch (itemError) {
           console.error("[OnboardingPage] handleSaveImportedItemsToCatalog item error:", itemError);
-          const itemLabel = buildImportedCatalogName(item);
-          const itemMessage =
-            itemError instanceof Error ? itemError.message : "Erro inesperado ao salvar item.";
-          saveErrors.push(`${itemLabel}: ${itemMessage}`);
+          itemErrors.push(
+            `${buildImportedCatalogName(item)}: ${itemError instanceof Error ? itemError.message : "erro ao salvar item"}`
+          );
         }
       }
 
@@ -1858,8 +1879,8 @@ function OnboardingContent() {
 
       if (totalCreated === 0) {
         setFormError(
-          saveErrors.length > 0
-            ? `Nenhum item foi salvo. Primeiros erros: ${saveErrors.slice(0, 3).join(" | ")}`
+          itemErrors.length > 0
+            ? `Nenhum item foi salvo. Primeiros erros: ${itemErrors.slice(0, 3).join(" | ")}`
             : "A análise foi concluída, mas nenhum item válido ficou pronto para salvar. Revise o arquivo e teste novamente."
         );
         return;
@@ -1867,12 +1888,9 @@ function OnboardingContent() {
 
       const baseSuccessMessage = `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}.`;
 
-      if (saveErrors.length > 0) {
-        setSuccessMessage(
-          `${baseSuccessMessage} Alguns itens precisaram ser ignorados. Primeiros erros: ${saveErrors
-            .slice(0, 3)
-            .join(" | ")}`
-        );
+      if (itemErrors.length > 0) {
+        setSuccessMessage(baseSuccessMessage);
+        setFormError(`Alguns itens não foram salvos. Primeiros erros: ${itemErrors.slice(0, 3).join(" | ")}`);
       } else {
         setSuccessMessage(baseSuccessMessage);
       }
@@ -3249,7 +3267,7 @@ async function upsertAnswers(
                         Pré-visualização das fotos selecionadas ({selectedImagePreviews.length})
                       </p>
                       <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                        {selectedImagePreviews.slice(0, INTELLIGENT_IMPORT_IMAGE_PREVIEW_LIMIT).map((preview) => (
+                        {selectedImagePreviews.slice(0, 12).map((preview) => (
                           <div
                             key={preview.name}
                             className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3342,18 +3360,13 @@ async function upsertAnswers(
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
-                        {safeExtractedPreview.length > INTELLIGENT_IMPORT_PREVIEW_LIMIT ? (
-                          <p className="mt-1 text-xs text-gray-500">
-                            Mostrando apenas {INTELLIGENT_IMPORT_PREVIEW_LIMIT} de {safeExtractedPreview.length} blocos extraídos.
-                          </p>
-                        ) : null}
                         {safeExtractedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum texto foi extraído nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeExtractedPreview.slice(0, INTELLIGENT_IMPORT_PREVIEW_LIMIT).map((item, index) => (
+                            {safeExtractedPreview.slice(0, 10).map((item, index) => (
                               <div
                                 key={`${item.fileName}-${item.extension}`}
                                 className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}
@@ -3376,18 +3389,13 @@ async function upsertAnswers(
                         <p className="text-sm font-semibold text-gray-900">
                           Fotos encontradas nos arquivos
                         </p>
-                        {safeExtractedImagePreview.length > INTELLIGENT_IMPORT_IMAGE_PREVIEW_LIMIT ? (
-                          <p className="mt-1 text-xs text-gray-500">
-                            Mostrando apenas {INTELLIGENT_IMPORT_IMAGE_PREVIEW_LIMIT} de {safeExtractedImagePreview.length} fotos extraídas para a tela ficar leve.
-                          </p>
-                        ) : null}
                         {safeExtractedImagePreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhuma foto embutida foi encontrada nos arquivos desta análise.
                           </p>
                         ) : (
                           <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                            {safeExtractedImagePreview.slice(0, INTELLIGENT_IMPORT_IMAGE_PREVIEW_LIMIT).map((image, index) => (
+                            {safeExtractedImagePreview.slice(0, 12).map((image, index) => (
                               <div
                                 key={`${image.sourceFileName}-${image.fileName}-${index}`}
                                 className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3414,11 +3422,6 @@ async function upsertAnswers(
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
-                        {safeNormalizedPreview.length > INTELLIGENT_IMPORT_PREVIEW_LIMIT ? (
-                          <p className="mt-1 text-xs text-gray-500">
-                            Mostrando apenas {INTELLIGENT_IMPORT_PREVIEW_LIMIT} de {safeNormalizedPreview.length} itens classificados.
-                          </p>
-                        ) : null}
                         {safeNormalizedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum bloco foi classificado nesta tentativa.
@@ -3448,11 +3451,6 @@ async function upsertAnswers(
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
-                        {safeDedupedPreview.length > INTELLIGENT_IMPORT_PREVIEW_LIMIT ? (
-                          <p className="mt-1 text-xs text-gray-500">
-                            Mostrando apenas {INTELLIGENT_IMPORT_PREVIEW_LIMIT} de {safeDedupedPreview.length} itens deduplicados.
-                          </p>
-                        ) : null}
                         {safeDedupedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum item foi analisado na deduplicação.
