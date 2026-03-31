@@ -1,3 +1,4 @@
+
 "use client";
 import {
   useEffect,
@@ -148,6 +149,7 @@ type IntelligentImportSelectedFilePreview = {
 };
 type PersistedIntelligentImportState = {
   selectedFiles: IntelligentImportSelectedFilePreview[];
+  result: IntelligentImportResponse | null;
   successMessage: string | null;
   errorMessage: string | null;
 };
@@ -392,15 +394,45 @@ async function createImagePreviewDataUrl(file: File, maxSide = 240) {
   }
 }
 async function buildSelectedFilePreviews(files: File[]) {
-  const previews = await Promise.all(
-    files.map(async (file) => ({
-      name: file.name,
-      type: file.type || "tipo não informado",
-      size: file.size,
-      lastModified: file.lastModified,
-    }))
-  );
-  return previews;
+  return files.map((file) => ({
+    name: file.name,
+    type: file.type || "tipo não informado",
+    size: file.size,
+    lastModified: file.lastModified,
+  }));
+}
+
+function persistToLocalStorageSafe(key: string, value: string) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (error) {
+    console.error("[OnboardingPage] localStorage setItem error:", error);
+  }
+}
+
+function removeFromLocalStorageSafe(key: string) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.removeItem(key);
+  } catch (error) {
+    console.error("[OnboardingPage] localStorage removeItem error:", error);
+  }
+}
+
+function buildLightPersistedIntelligentImportState(params: {
+  selectedFiles: IntelligentImportSelectedFilePreview[];
+  successMessage: string | null;
+  errorMessage: string | null;
+}): PersistedIntelligentImportState {
+  return {
+    selectedFiles: params.selectedFiles,
+    result: null,
+    successMessage: params.successMessage,
+    errorMessage: params.errorMessage,
+  };
 }
 function decorateIntelligentImportResultWithImageFallback(
   result: IntelligentImportResponse,
@@ -1294,7 +1326,7 @@ function OnboardingContent() {
   const ignoreNextStepScrollRef = useRef(false);
   const savePageScroll = useCallback(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
-    window.localStorage.setItem(pageScrollStorageKey, String(window.scrollY || 0));
+    persistToLocalStorageSafe(pageScrollStorageKey, String(window.scrollY || 0));
   }, [pageScrollStorageKey]);
   const restorePageScroll = useCallback((delay = 0) => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
@@ -1472,7 +1504,7 @@ function OnboardingContent() {
     setIntelligentImportResult(null);
     setIntelligentImportRecovered(false);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
-      window.localStorage.removeItem(intelligentImportStorageKey);
+      removeFromLocalStorageSafe(intelligentImportStorageKey);
     }
   }
   function navigateWithFallback(path: string) {
@@ -1829,7 +1861,7 @@ async function upsertAnswers(
   }, [currentStepStorageKey, searchParams]);
   useEffect(() => {
     if (!currentStepStorageKey || typeof window === "undefined") return;
-    window.localStorage.setItem(currentStepStorageKey, String(currentStep));
+    persistToLocalStorageSafe(currentStepStorageKey, String(currentStep));
   }, [currentStep, currentStepStorageKey]);
   useEffect(() => {
     if (!intelligentImportStorageKey || typeof window === "undefined") return;
@@ -1840,16 +1872,16 @@ async function upsertAnswers(
     }
     try {
       const parsed = JSON.parse(raw) as PersistedIntelligentImportState;
-      setIntelligentImportSelectedFilesPreview(Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : []);
+      setIntelligentImportSelectedFilesPreview(
+        Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : []
+      );
       setIntelligentImportResult(null);
       setIntelligentImportSuccess(parsed.successMessage ?? null);
       setIntelligentImportError(parsed.errorMessage ?? null);
-      setIntelligentImportRecovered(
-        Boolean((parsed.selectedFiles?.length ?? 0) > 0 || parsed.successMessage || parsed.errorMessage)
-      );
+      setIntelligentImportRecovered(Boolean((parsed.selectedFiles?.length ?? 0) > 0));
     } catch (error) {
       console.error("[OnboardingPage] intelligent import restore error:", error);
-      window.localStorage.removeItem(intelligentImportStorageKey);
+      removeFromLocalStorageSafe(intelligentImportStorageKey);
       setIntelligentImportRecovered(false);
     }
   }, [intelligentImportStorageKey]);
@@ -1860,20 +1892,15 @@ async function upsertAnswers(
       Boolean(intelligentImportSuccess) ||
       Boolean(intelligentImportError);
     if (!hasPersistedContent) {
-      window.localStorage.removeItem(intelligentImportStorageKey);
+      removeFromLocalStorageSafe(intelligentImportStorageKey);
       return;
     }
-    const payload: PersistedIntelligentImportState = {
+    const payload = buildLightPersistedIntelligentImportState({
       selectedFiles: visibleIntelligentImportFiles,
       successMessage: intelligentImportSuccess,
       errorMessage: intelligentImportError,
-    };
-    try {
-      window.localStorage.setItem(intelligentImportStorageKey, JSON.stringify(payload));
-    } catch (error) {
-      console.error("[OnboardingPage] intelligent import persist error:", error);
-      window.localStorage.removeItem(intelligentImportStorageKey);
-    }
+    });
+    persistToLocalStorageSafe(intelligentImportStorageKey, JSON.stringify(payload));
   }, [
     intelligentImportStorageKey,
     visibleIntelligentImportFiles,
@@ -1973,23 +2000,23 @@ async function upsertAnswers(
   }, [step5DraftStorageKey]);
   useEffect(() => {
     if (!step1DraftStorageKey || typeof window === "undefined") return;
-    window.localStorage.setItem(step1DraftStorageKey, JSON.stringify(step1Form));
+    persistToLocalStorageSafe(step1DraftStorageKey, JSON.stringify(step1Form));
   }, [step1Form, step1DraftStorageKey]);
   useEffect(() => {
     if (!step2DraftStorageKey || typeof window === "undefined") return;
-    window.localStorage.setItem(step2DraftStorageKey, JSON.stringify(step2Form));
+    persistToLocalStorageSafe(step2DraftStorageKey, JSON.stringify(step2Form));
   }, [step2Form, step2DraftStorageKey]);
   useEffect(() => {
     if (!step3DraftStorageKey || typeof window === "undefined") return;
-    window.localStorage.setItem(step3DraftStorageKey, JSON.stringify(step3Form));
+    persistToLocalStorageSafe(step3DraftStorageKey, JSON.stringify(step3Form));
   }, [step3Form, step3DraftStorageKey]);
   useEffect(() => {
     if (!step4DraftStorageKey || typeof window === "undefined") return;
-    window.localStorage.setItem(step4DraftStorageKey, JSON.stringify(step4Form));
+    persistToLocalStorageSafe(step4DraftStorageKey, JSON.stringify(step4Form));
   }, [step4Form, step4DraftStorageKey]);
   useEffect(() => {
     if (!step5DraftStorageKey || typeof window === "undefined") return;
-    window.localStorage.setItem(step5DraftStorageKey, JSON.stringify(step5Form));
+    persistToLocalStorageSafe(step5DraftStorageKey, JSON.stringify(step5Form));
   }, [step5Form, step5DraftStorageKey]);
   useEffect(() => {
     const loadAnswers = async () => {
@@ -3081,7 +3108,6 @@ async function upsertAnswers(
                     onChange={async (e) => {
                       const input = e.currentTarget;
                       const selectedFiles = Array.from(input.files ?? []);
-                      input.value = "";
                       setIntelligentImportFiles(selectedFiles);
                       setIntelligentImportSelectedFilesPreview(
                         await buildSelectedFilePreviews(selectedFiles)
@@ -3090,6 +3116,9 @@ async function upsertAnswers(
                       setIntelligentImportError(null);
                       setIntelligentImportSuccess(null);
                       setIntelligentImportResult(null);
+                      if (input) {
+                        input.value = "";
+                      }
                     }}
                     className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />
