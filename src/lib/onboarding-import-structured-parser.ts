@@ -71,6 +71,100 @@ function titleCaseLabel(label: string) {
     .toLowerCase();
 }
 
+function extractLoosePrice(text: string) {
+  const directMatch =
+    text.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
+    text.match(/pre[cç]o(?:\s+sugerido|\s+estimado|\s+aproximado)?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
+    text.match(/faixa de pre[cç]o\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
+
+  return directMatch?.[1] ?? "";
+}
+
+function extractLooseDimensions(text: string) {
+  const rectMatch = text.match(/\b(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m\b/i);
+  if (rectMatch) {
+    return `${rectMatch[1]} x ${rectMatch[2]} m`;
+  }
+
+  const diamMatch = text.match(/\b(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
+  if (diamMatch) {
+    return `${diamMatch[1]} m diâm`;
+  }
+
+  return "";
+}
+
+function extractLooseDepth(text: string) {
+  const match =
+    text.match(/profundidade\s*(?:de|do|da)?\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m/i) ||
+    text.match(/\bprof\.?\s*(\d+[\.,]?\d*)\s*m\b/i);
+
+  return match ? `${match[1]} m` : "";
+}
+
+function extractLooseCapacity(text: string) {
+  const match =
+    text.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de|do|da)?\s*[:\-]?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
+    text.match(/\b(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)\b/i);
+
+  return match ? `${match[1]} L` : "";
+}
+
+function extractLooseMaterial(text: string) {
+  const normalized = normalizeLoose(text);
+  if (normalized.includes("vinil")) return "vinil";
+  if (normalized.includes("alvenaria")) return "alvenaria";
+  if (normalized.includes("pastilha")) return "pastilha";
+  if (normalized.includes("fibra")) return "fibra";
+  return "";
+}
+
+function extractLooseShape(text: string) {
+  const normalized = normalizeLoose(text);
+  if (normalized.includes("redonda") || normalized.includes("diam")) return "redonda";
+  if (normalized.includes("oval")) return "oval";
+  if (normalized.includes("raia")) return "raia";
+  if (normalized.includes("retangular")) return "retangular";
+  return "";
+}
+
+function extractLooseBrand(text: string) {
+  const match =
+    text.match(/marca\s*[:\-]?\s*(.+)/i) ||
+    text.match(/\b(cris água|cris agua|brustec|sodramar|nautilus|veico|genco)\b/i);
+
+  return cleanText(match?.[1] || "");
+}
+
+function extractLooseSku(text: string) {
+  const match =
+    text.match(/\bsku\s*[:\-]?\s*([a-z0-9\-_./]+)/i) ||
+    text.match(/\bc[oó]digo\s*[:\-]?\s*([a-z0-9\-_./]+)/i);
+
+  return cleanText(match?.[1] || "");
+}
+
+function extractLooseWeight(text: string) {
+  const match =
+    text.match(/\bpeso\s*[:\-]?\s*(\d+[\.,]?\d*)\s*(kg|g)\b/i) ||
+    text.match(/\b(\d+[\.,]?\d*)\s*(kg|g)\b/i);
+
+  return match ? `${match[1]} ${match[2]}` : "";
+}
+
+function extractLooseDosage(text: string) {
+  const match = text.match(/\bdosagem\s*[:\-]?\s*(.+)/i);
+  return cleanText(match?.[1] || "");
+}
+
+function extractLooseColor(text: string) {
+  const match =
+    text.match(/\bcor\s*[:\-]?\s*(.+)/i) ||
+    text.match(/\b(azul cristal|azul|branco|cinza|preto|verde)\b/i);
+
+  return cleanText(match?.[1] || "");
+}
+
 function inferDestination(text: string): StructuredImportDestination {
   const source = normalizeLoose(text);
 
@@ -103,6 +197,7 @@ function inferDestination(text: string): StructuredImportDestination {
     (source.includes("spa") ? 2 : 0) +
     (source.includes("profundidade") ? 2 : 0) +
     (source.includes("capacidade") ? 2 : 0) +
+    (source.includes("litros") ? 2 : 0) +
     (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 4 : 0) +
     (/\b\d+[\.,]?\d*\s*m\s*diam/i.test(source) ? 4 : 0);
 
@@ -142,6 +237,49 @@ function splitNumberedBlocks(text: string) {
   return parts.filter((block) => /^\d{1,4}[\)\.\-]\s+/.test(block));
 }
 
+function splitRepeatedFieldBlocks(text: string) {
+  const normalized = normalizeBlock(text);
+  const lines = normalized
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+
+  if (lines.length === 0) return [];
+
+  const blocks: string[] = [];
+  let current: string[] = [];
+
+  function pushCurrent() {
+    const joined = normalizeBlock(current.join("\n"));
+    if (joined) blocks.push(joined);
+    current = [];
+  }
+
+  for (const line of lines) {
+    const normalizedLine = normalizeLoose(line);
+
+    const startsNewBlock =
+      normalizedLine.startsWith("nome do item") ||
+      normalizedLine.startsWith("nome:") ||
+      normalizedLine.startsWith("produto:") ||
+      normalizedLine.startsWith("item:") ||
+      normalizedLine.startsWith("modelo:") ||
+      normalizedLine.startsWith("piscina ");
+
+    if (startsNewBlock && current.length > 0) {
+      pushCurrent();
+    }
+
+    current.push(line);
+  }
+
+  if (current.length > 0) {
+    pushCurrent();
+  }
+
+  return blocks.filter((block) => block.split("\n").length >= 2);
+}
+
 function splitParagraphBlocks(text: string) {
   return normalizeBlock(text)
     .split(/\n\s*\n/)
@@ -152,6 +290,9 @@ function splitParagraphBlocks(text: string) {
 function chooseBlocks(extracted: ExtractedFileContent) {
   const delimited = splitDelimitedBlocks(extracted.text);
   if (delimited.length > 0) return delimited;
+
+  const repeatedFieldBlocks = splitRepeatedFieldBlocks(extracted.text);
+  if (repeatedFieldBlocks.length > 1) return repeatedFieldBlocks;
 
   const numbered = splitNumberedBlocks(extracted.text);
   if (numbered.length > 1) return numbered;
@@ -174,7 +315,7 @@ function parseFieldLines(block: string) {
   const plainLines: string[] = [];
 
   for (const line of lines) {
-    const match = line.match(/^([^:]{2,80}):\s*(.+)$/);
+    const match = line.match(/^([^:]{2,120}):\s*(.+)$/);
     if (match) {
       const key = titleCaseLabel(match[1]);
       const value = cleanText(match[2]);
@@ -238,6 +379,8 @@ function chooseDescription(
     "notes",
     "indicacao",
     "indicação",
+    "descrição comercial",
+    "descricao comercial",
   ];
 
   const picked = candidateKeys
@@ -256,6 +399,66 @@ function chooseDescription(
   return combined;
 }
 
+function enrichFieldMapWithLooseExtraction(
+  fieldMap: Record<string, string>,
+  sourceText: string
+) {
+  if (!fieldMap["preco"] && !fieldMap["preço"]) {
+    const loosePrice = extractLoosePrice(sourceText);
+    if (loosePrice) fieldMap["preço"] = loosePrice;
+  }
+
+  if (!fieldMap["medidas"] && !fieldMap["dimensoes"] && !fieldMap["dimensões"]) {
+    const looseDimensions = extractLooseDimensions(sourceText);
+    if (looseDimensions) fieldMap["medidas"] = looseDimensions;
+  }
+
+  if (!fieldMap["profundidade"]) {
+    const looseDepth = extractLooseDepth(sourceText);
+    if (looseDepth) fieldMap["profundidade"] = looseDepth;
+  }
+
+  if (!fieldMap["capacidade"]) {
+    const looseCapacity = extractLooseCapacity(sourceText);
+    if (looseCapacity) fieldMap["capacidade"] = looseCapacity;
+  }
+
+  if (!fieldMap["material"]) {
+    const looseMaterial = extractLooseMaterial(sourceText);
+    if (looseMaterial) fieldMap["material"] = looseMaterial;
+  }
+
+  if (!fieldMap["formato"]) {
+    const looseShape = extractLooseShape(sourceText);
+    if (looseShape) fieldMap["formato"] = looseShape;
+  }
+
+  if (!fieldMap["marca"]) {
+    const looseBrand = extractLooseBrand(sourceText);
+    if (looseBrand) fieldMap["marca"] = looseBrand;
+  }
+
+  if (!fieldMap["sku"] && !fieldMap["codigo"] && !fieldMap["código"]) {
+    const looseSku = extractLooseSku(sourceText);
+    if (looseSku) fieldMap["sku"] = looseSku;
+  }
+
+  if (!fieldMap["peso"]) {
+    const looseWeight = extractLooseWeight(sourceText);
+    if (looseWeight) fieldMap["peso"] = looseWeight;
+  }
+
+  if (!fieldMap["dosagem"]) {
+    const looseDosage = extractLooseDosage(sourceText);
+    if (looseDosage) fieldMap["dosagem"] = looseDosage;
+  }
+
+  if (!fieldMap["cor"]) {
+    const looseColor = extractLooseColor(sourceText);
+    if (looseColor) fieldMap["cor"] = looseColor;
+  }
+}
+
 function parseSingleBlock(
   block: string,
   fileName: string,
@@ -265,6 +468,9 @@ function parseSingleBlock(
   if (!normalizedBlock) return null;
 
   const { fieldMap, plainLines } = parseFieldLines(normalizedBlock);
+
+  enrichFieldMapWithLooseExtraction(fieldMap, normalizedBlock);
+
   const title = chooseTitle(fieldMap, plainLines, fileName, index);
   const description = chooseDescription(fieldMap, plainLines, title);
   const sourceText = [title, description, normalizedBlock].filter(Boolean).join("\n");
@@ -339,6 +545,34 @@ function isProbablyGenericTitle(title: string) {
   );
 }
 
+function looksLikeMultiItemSource(extractedText: string, blockCount: number) {
+  const normalized = normalizeLoose(extractedText);
+
+  if (blockCount > 1) return true;
+  if (normalizeBlock(extractedText).includes("=== ITEM")) return true;
+  if (/^\d+[\).\-]\s+/m.test(normalizeBlock(extractedText))) return true;
+
+  const repeatedHints = [
+    "nome do item",
+    "preço",
+    "preco",
+    "medidas",
+    "profundidade",
+    "capacidade",
+    "descrição detalhada",
+    "descricao detalhada",
+  ];
+
+  let hintCount = 0;
+  for (const hint of repeatedHints) {
+    const regex = new RegExp(normalizeLoose(hint), "g");
+    const matches = normalized.match(regex);
+    hintCount += matches ? matches.length : 0;
+  }
+
+  return hintCount >= 6;
+}
+
 export function parseStructuredImportItems(extracted: ExtractedFileContent): StructuredImportItem[] {
   const blocks = chooseBlocks(extracted);
   const items: StructuredImportItem[] = [];
@@ -365,8 +599,7 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
   });
 
   const sourceLooksSingleItem =
-    !/^\d+[\).\-]\s+/m.test(normalizeBlock(extracted.text)) &&
-    !normalizeBlock(extracted.text).includes("=== ITEM") &&
+    !looksLikeMultiItemSource(extracted.text, items.length) &&
     (items.length === 1 ||
       normalizeLoose(extracted.text).includes("nome do item") ||
       normalizeLoose(extracted.text).includes("descricao detalhada") ||
@@ -379,6 +612,14 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
 
   return qualitySorted.filter((item, index) => {
     if (index === 0) return true;
-    return !isProbablyGenericTitle(item.title) && item.description.length >= 10;
+
+    const hasUsefulContent =
+      item.description.length >= 10 ||
+      Boolean(item.price) ||
+      Boolean(item.dimensions) ||
+      Boolean(item.capacity) ||
+      Boolean(item.material);
+
+    return !isProbablyGenericTitle(item.title) && hasUsefulContent;
   });
 }
