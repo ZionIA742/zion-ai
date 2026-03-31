@@ -1401,6 +1401,31 @@ function OnboardingContent() {
     const candidate = intelligentImportResult.extractedImagePreview;
     return Array.isArray(candidate) ? candidate : [];
   }, [intelligentImportResult]);
+
+  const limitedSelectedImagePreviews = useMemo(
+    () => selectedImagePreviews.slice(0, 12),
+    [selectedImagePreviews]
+  );
+
+  const limitedExtractedPreview = useMemo(
+    () => safeExtractedPreview.slice(0, 6),
+    [safeExtractedPreview]
+  );
+
+  const limitedExtractedImagePreview = useMemo(
+    () => safeExtractedImagePreview.slice(0, 12),
+    [safeExtractedImagePreview]
+  );
+
+  const limitedNormalizedPreview = useMemo(
+    () => safeNormalizedPreview.slice(0, 12),
+    [safeNormalizedPreview]
+  );
+
+  const limitedDedupedPreview = useMemo(
+    () => safeDedupedPreview.slice(0, 12),
+    [safeDedupedPreview]
+  );
   useEffect(() => {
     return () => {
       for (const preview of selectedImagePreviews) {
@@ -3153,8 +3178,13 @@ async function upsertAnswers(
                       <p className="text-sm font-semibold text-gray-900">
                         Pré-visualização das fotos selecionadas ({selectedImagePreviews.length})
                       </p>
+                      {selectedImagePreviews.length > limitedSelectedImagePreviews.length ? (
+                        <p className="mt-1 text-xs text-gray-500">
+                          Mostrando apenas as primeiras {limitedSelectedImagePreviews.length} fotos para a tela não ficar pesada.
+                        </p>
+                      ) : null}
                       <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                        {selectedImagePreviews.map((preview) => (
+                        {limitedSelectedImagePreviews.map((preview) => (
                           <div
                             key={preview.name}
                             className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3247,13 +3277,18 @@ async function upsertAnswers(
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
+                        {safeExtractedPreview.length > limitedExtractedPreview.length ? (
+                          <p className="mt-1 text-xs text-gray-500">
+                            Mostrando apenas os primeiros {limitedExtractedPreview.length} arquivos extraídos nesta tela.
+                          </p>
+                        ) : null}
                         {safeExtractedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum texto foi extraído nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeExtractedPreview.map((item, index) => (
+                            {limitedExtractedPreview.map((item, index) => (
                               <div
                                 key={`${item.fileName}-${item.extension}`}
                                 className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}
@@ -3276,13 +3311,18 @@ async function upsertAnswers(
                         <p className="text-sm font-semibold text-gray-900">
                           Fotos encontradas nos arquivos
                         </p>
+                        {safeExtractedImagePreview.length > limitedExtractedImagePreview.length ? (
+                          <p className="mt-1 text-xs text-gray-500">
+                            Mostrando apenas as primeiras {limitedExtractedImagePreview.length} fotos nesta tela. Todas continuam sendo usadas no salvamento.
+                          </p>
+                        ) : null}
                         {safeExtractedImagePreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhuma foto embutida foi encontrada nos arquivos desta análise.
                           </p>
                         ) : (
                           <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                            {safeExtractedImagePreview.map((image, index) => (
+                            {limitedExtractedImagePreview.map((image, index) => (
                               <div
                                 key={`${image.sourceFileName}-${image.fileName}-${index}`}
                                 className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3309,13 +3349,18 @@ async function upsertAnswers(
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
+                        {safeNormalizedPreview.length > limitedNormalizedPreview.length ? (
+                          <p className="mt-1 text-xs text-gray-500">
+                            Mostrando apenas os primeiros {limitedNormalizedPreview.length} blocos classificados nesta tela.
+                          </p>
+                        ) : null}
                         {safeNormalizedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum bloco foi classificado nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeNormalizedPreview.slice(0, 12).map((item, index) => (
+                            {limitedNormalizedPreview.map((item, index) => (
                               <div key={`${item.sourceFileName}-${item.title}-${index}`} className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}>
                                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-3">
                                   <div className="min-w-0">
@@ -3338,13 +3383,18 @@ async function upsertAnswers(
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
+                        {safeDedupedPreview.length > limitedDedupedPreview.length ? (
+                          <p className="mt-1 text-xs text-gray-500">
+                            Mostrando apenas os primeiros {limitedDedupedPreview.length} itens deduplicados nesta tela.
+                          </p>
+                        ) : null}
                         {safeDedupedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum item foi analisado na deduplicação.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeDedupedPreview.slice(0, 12).map((item, index) => (
+                            {limitedDedupedPreview.map((item, index) => (
                               <div
                                 key={`${item.dedupKey}-${index}`}
                                 className={cx(
