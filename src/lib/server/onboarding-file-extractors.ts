@@ -1,16 +1,6 @@
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
-import sharp from "sharp";
-import { XMLParser } from "fast-xml-parser";
-import { createHash } from "crypto";
-import {
-  createCanvas,
-  DOMMatrix as NapiDOMMatrix,
-  ImageData as NapiImageData,
-  Path2D as NapiPath2D,
-} from "@napi-rs/canvas";
-import * as PdfJsWorkerModule from "pdfjs-dist/legacy/build/pdf.worker.mjs";
 
 export type ExtractedImageAsset = {
   fileName: string;
@@ -49,769 +39,223 @@ function bufferToDataUrl(buffer: Buffer, mimeType: string) {
   return `data:${mimeType};base64,${buffer.toString("base64")}`;
 }
 
-function normalizeInlineText(value: string) {
-  return value
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeExtractedText(value: string) {
-  return value
+function cleanInlineText(value: string) {
+  return String(value || "")
     .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
-function isPoolCardStart(line: string) {
-  return /^piscina\b/i.test(line.trim());
-}
-
-function isPoolFieldLine(line: string) {
-  return /^(tipo|formato|medidas|profundidade|capacidade|prazo estimado|faixa de preço|faixa de preco|acabamento|observações|observacoes)\b\s*[:|]/iu.test(
-    line.trim()
-  );
-}
-
-function pushCurrentSection(sections: string[], currentLines: string[]) {
-  const normalized = currentLines
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-
-  if (normalized) {
-    sections.push(normalized);
-  }
-
-  currentLines.length = 0;
-}
-
-function getDataUrlPayload(dataUrl: string) {
-  const commaIndex = dataUrl.indexOf(",");
-  if (commaIndex === -1) return dataUrl;
-  return dataUrl.slice(commaIndex + 1);
-}
-
-function hashDataUrl(dataUrl: string) {
-  return createHash("sha1").update(getDataUrlPayload(dataUrl)).digest("hex");
-}
-
-function dedupeExtractedImages(images: ExtractedImageAsset[]) {
-  const seen = new Set<string>();
-  const deduped: ExtractedImageAsset[] = [];
-
-  for (const image of images) {
-    if (!image?.dataUrl) continue;
-
-    const key = `${image.mimeType}:${hashDataUrl(image.dataUrl)}`;
-    if (seen.has(key)) continue;
-
-    seen.add(key);
-    deduped.push(image);
-  }
-
-  return deduped;
-}
-
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message}`;
-  }
-
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-}
-
-function logPdfDebug(step: string, details?: Record<string, unknown>) {
-  if (details) {
-    console.log(`[onboarding-pdf] ${step}`, details);
-    return;
-  }
-
-  console.log(`[onboarding-pdf] ${step}`);
-}
-
-function logPdfError(
-  step: string,
-  error: unknown,
-  details?: Record<string, unknown>
-) {
-  console.error(`[onboarding-pdf] ${step}`, {
-    ...(details || {}),
-    error: getErrorMessage(error),
-  });
-}
-
-function ensurePdfJsWorkerGlobals() {
-  if (!(globalThis as any).pdfjsWorker) {
-    (globalThis as any).pdfjsWorker = PdfJsWorkerModule;
-  }
-}
-
-function ensurePdfNodeCanvasGlobals() {
-  if (!(globalThis as any).DOMMatrix) {
-    (globalThis as any).DOMMatrix = NapiDOMMatrix;
-  }
-
-  if (!(globalThis as any).ImageData) {
-    (globalThis as any).ImageData = NapiImageData;
-  }
-
-  if (!(globalThis as any).Path2D) {
-    (globalThis as any).Path2D = NapiPath2D;
-  }
-
-  ensurePdfJsWorkerGlobals();
 }
 
 async function extractImagesFromZip(params: {
   buffer: Buffer;
   mediaPrefix: string;
-  source: "docx" | "xlsx" | "pptx";
-}): Promise<ExtractedImageAsset[]> {
-  const { buffer, mediaPrefix, source } = params;
+  source: ExtractedImageAsset["source"];
+}) {
+  const zip = await JSZip.loadAsync(params.buffer);
+  const assets: ExtractedImageAsset[] = [];
 
-  const zip = await JSZip.loadAsync(buffer);
+  for (const [path, zipEntry] of Object.entries(zip.files)) {
+    if (zipEntry.dir) continue;
+    if (!path.startsWith(params.mediaPrefix)) continue;
 
-  const mediaFiles = Object.keys(zip.files)
-    .filter((name) => name.startsWith(mediaPrefix))
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
-  const images: ExtractedImageAsset[] = [];
-
-  for (const mediaPath of mediaFiles) {
-    const file = zip.files[mediaPath];
-    if (!file || file.dir) continue;
-
-    const fileName = mediaPath.split("/").pop() || mediaPath;
+    const buffer = await zipEntry.async("nodebuffer");
+    const fileName = path.split("/").pop() || "image";
     const mimeType = getImageMimeTypeFromExtension(fileName);
 
-    if (!mimeType.startsWith("image/")) continue;
-
-    const content = await file.async("nodebuffer");
-
-    images.push({
+    assets.push({
       fileName,
-      source,
+      source: params.source,
       mimeType,
-      dataUrl: bufferToDataUrl(content, mimeType),
+      dataUrl: bufferToDataUrl(buffer, mimeType),
     });
   }
 
-  return images;
-}
-
-async function extractTextFromPdfWithPdfParse(buffer: Buffer) {
-  try {
-    ensurePdfNodeCanvasGlobals();
-
-    const imported: any = await import("pdf-parse");
-    const pdfParse =
-      typeof imported?.default === "function"
-        ? imported.default
-        : typeof imported === "function"
-          ? imported
-          : null;
-
-    if (!pdfParse) return "";
-
-    const result = await pdfParse(buffer);
-    return normalizeExtractedText(result?.text || "");
-  } catch (error) {
-    logPdfError("extractTextFromPdfWithPdfParse failed", error);
-    return "";
-  }
-}
-
-async function extractTextFromPdfWithPdfJs(buffer: Buffer) {
-  try {
-    ensurePdfNodeCanvasGlobals();
-
-    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const loadingTask = pdfjs.getDocument({
-      data: new Uint8Array(buffer),
-      useWorkerFetch: false,
-      isEvalSupported: false,
-      useSystemFonts: true,
-      disableFontFace: true,
-      standardFontDataUrl: undefined,
-    });
-
-    const pdf = await loadingTask.promise;
-    const pages: string[] = [];
-
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-      const page = await pdf.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-
-      const items = Array.isArray(textContent?.items)
-        ? (textContent.items as Array<any>)
-        : [];
-
-      const pageText = items
-        .map((item) => String(item?.str || "").trim())
-        .filter(Boolean)
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      if (pageText) {
-        pages.push(pageText);
-      }
-    }
-
-    return normalizeExtractedText(pages.join("\n\n"));
-  } catch (error) {
-    logPdfError("extractTextFromPdfWithPdfJs failed", error);
-    return "";
-  }
-}
-
-async function extractTextFromPdfWithPdf2Json(buffer: Buffer) {
-  try {
-    const imported: any = await import("pdf2json");
-    const PDFParserClass = imported?.default || imported;
-    const parser = new PDFParserClass(undefined, true);
-
-    const text = await new Promise<string>((resolve) => {
-      parser.on("pdfParser_dataError", (parserError: unknown) => {
-        logPdfError("extractTextFromPdfWithPdf2Json parser error", parserError);
-        resolve("");
-      });
-
-      parser.on("pdfParser_dataReady", (pdfData: any) => {
-        try {
-          const pages = Array.isArray(pdfData?.Pages) ? pdfData.Pages : [];
-          const chunks: string[] = [];
-
-          for (const page of pages) {
-            const texts = Array.isArray(page?.Texts) ? page.Texts : [];
-
-            for (const textItem of texts) {
-              const runs = Array.isArray(textItem?.R) ? textItem.R : [];
-              const line = runs
-                .map((run: any) => decodeURIComponent(String(run?.T || "")))
-                .join(" ")
-                .replace(/\s+/g, " ")
-                .trim();
-
-              if (line) {
-                chunks.push(line);
-              }
-            }
-
-            chunks.push("");
-          }
-
-          resolve(normalizeExtractedText(chunks.join("\n")));
-        } catch (error) {
-          logPdfError(
-            "extractTextFromPdfWithPdf2Json read ready data failed",
-            error
-          );
-          resolve("");
-        }
-      });
-
-      parser.parseBuffer(buffer);
-    });
-
-    return text;
-  } catch (error) {
-    logPdfError("extractTextFromPdfWithPdf2Json failed", error);
-    return "";
-  }
-}
-
-function extractReadableStringsFromPdfBinary(buffer: Buffer) {
-  try {
-    const raw = buffer.toString("latin1");
-    const matches = raw.match(/[\x20-\x7EÀ-ÿ]{8,}/g) || [];
-
-    const cleaned = matches
-      .map((item) => item.replace(/\s+/g, " ").trim())
-      .filter((item) => {
-        const lower = item.toLowerCase();
-        return (
-          item.length >= 8 &&
-          !lower.includes("obj") &&
-          !lower.includes("endobj") &&
-          !lower.includes("/type") &&
-          !lower.includes("/page") &&
-          !lower.includes("/font") &&
-          !lower.includes("stream") &&
-          !lower.includes("endstream")
-        );
-      })
-      .join("\n");
-
-    return normalizeExtractedText(cleaned);
-  } catch (error) {
-    logPdfError("extractReadableStringsFromPdfBinary failed", error);
-    return "";
-  }
-}
-
-async function extractTextFromPdf(buffer: Buffer) {
-  const attempts = [
-    await extractTextFromPdfWithPdfParse(buffer),
-    await extractTextFromPdfWithPdfJs(buffer),
-    await extractTextFromPdfWithPdf2Json(buffer),
-    extractReadableStringsFromPdfBinary(buffer),
-  ];
-
-  const ranked = attempts
-    .map((text) => normalizeExtractedText(text))
-    .sort((a, b) => b.length - a.length);
-
-  const best = ranked[0] || "";
-
-  logPdfDebug("extractTextFromPdf summary", {
-    candidates: ranked.map((text, index) => ({
-      index,
-      length: text.length,
-    })),
-    selectedLength: best.length,
-  });
-
-  return best;
-}
-
-function inferRawChannels(dataLength: number, width: number, height: number) {
-  const pixels = width * height;
-
-  if (pixels <= 0) return 0;
-  if (dataLength === pixels * 4) return 4;
-  if (dataLength === pixels * 3) return 3;
-  if (dataLength === pixels) return 1;
-
-  return 0;
-}
-
-async function rawPdfImageToDataUrl(imageData: any) {
-  try {
-    const width = Number(imageData?.width || imageData?.w || 0);
-    const height = Number(imageData?.height || imageData?.h || 0);
-
-    if (!width || !height) return null;
-
-    const data = imageData?.data;
-    if (!data) return null;
-
-    const rawBuffer = Buffer.isBuffer(data)
-      ? data
-      : data instanceof Uint8Array || data instanceof Uint8ClampedArray
-        ? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
-        : Array.isArray(data)
-          ? Buffer.from(data)
-          : null;
-
-    if (!rawBuffer) return null;
-
-    const channels = inferRawChannels(rawBuffer.length, width, height);
-    if (!channels) return null;
-
-    const png = await sharp(rawBuffer, {
-      raw: {
-        width,
-        height,
-        channels,
-      },
-    })
-      .png()
-      .toBuffer();
-
-    return bufferToDataUrl(png, "image/png");
-  } catch (error) {
-    logPdfError("rawPdfImageToDataUrl failed", error);
-    return null;
-  }
-}
-
-async function resolvePdfJsObject(store: any, key: string) {
-  if (!store || !key) return null;
-
-  try {
-    const syncValue = store.get(key);
-    if (syncValue) return syncValue;
-  } catch {}
-
-  return await new Promise<any>((resolve) => {
-    let resolved = false;
-
-    try {
-      store.get(key, (value: any) => {
-        if (resolved) return;
-        resolved = true;
-        resolve(value || null);
-      });
-    } catch {
-      resolve(null);
-      return;
-    }
-
-    setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      resolve(null);
-    }, 300);
-  });
-}
-
-async function extractEmbeddedImagesFromPdf(
-  buffer: Buffer
-): Promise<ExtractedImageAsset[]> {
-  try {
-    ensurePdfNodeCanvasGlobals();
-
-    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const OPS = pdfjs.OPS || {};
-    const loadingTask = pdfjs.getDocument({
-      data: new Uint8Array(buffer),
-      useWorkerFetch: false,
-      isEvalSupported: false,
-      useSystemFonts: true,
-      disableFontFace: true,
-      standardFontDataUrl: undefined,
-    });
-
-    const pdf = await loadingTask.promise;
-    const images: ExtractedImageAsset[] = [];
-    const seen = new Set<string>();
-    let imageIndex = 0;
-
-    logPdfDebug("extractEmbeddedImagesFromPdf started", {
-      numPages: pdf.numPages,
-    });
-
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-      const page = await pdf.getPage(pageNumber);
-      const operatorList = await page.getOperatorList();
-
-      const fnArray: number[] = Array.isArray(operatorList?.fnArray)
-        ? operatorList.fnArray
-        : [];
-      const argsArray: any[] = Array.isArray(operatorList?.argsArray)
-        ? operatorList.argsArray
-        : [];
-
-      let pageHits = 0;
-
-      for (let i = 0; i < fnArray.length; i++) {
-        const fn = fnArray[i];
-        const args = argsArray[i];
-
-        if (fn === OPS.paintInlineImageXObject && args?.data) {
-          const dataUrl = await rawPdfImageToDataUrl(args);
-
-          if (dataUrl) {
-            imageIndex += 1;
-            pageHits += 1;
-            images.push({
-              fileName: `pdf-inline-page-${pageNumber}-image-${imageIndex}.png`,
-              source: "pdf",
-              mimeType: "image/png",
-              dataUrl,
-            });
-          }
-
-          continue;
-        }
-
-        if (
-          fn === OPS.paintImageXObject ||
-          fn === OPS.paintJpegXObject ||
-          fn === OPS.paintImageXObjectRepeat
-        ) {
-          const objectKey = Array.isArray(args)
-            ? String(args[0] || "")
-            : String(args || "");
-
-          if (!objectKey) continue;
-
-          const seenKey = `${pageNumber}:${objectKey}`;
-          if (seen.has(seenKey)) continue;
-          seen.add(seenKey);
-
-          const pdfImage =
-            (await resolvePdfJsObject(page.objs, objectKey)) ||
-            (await resolvePdfJsObject(page.commonObjs, objectKey));
-
-          const dataUrl = await rawPdfImageToDataUrl(pdfImage);
-
-          if (dataUrl) {
-            imageIndex += 1;
-            pageHits += 1;
-            images.push({
-              fileName: `pdf-page-${pageNumber}-embedded-${imageIndex}.png`,
-              source: "pdf",
-              mimeType: "image/png",
-              dataUrl,
-            });
-          }
-        }
-      }
-
-      logPdfDebug("extractEmbeddedImagesFromPdf page processed", {
-        pageNumber,
-        pageHits,
-      });
-    }
-
-    logPdfDebug("extractEmbeddedImagesFromPdf finished", {
-      totalEmbeddedImages: images.length,
-    });
-
-    return images;
-  } catch (error) {
-    logPdfError("extractEmbeddedImagesFromPdf failed", error);
-    return [];
-  }
-}
-
-type RuntimeCanvasModule = {
-  createCanvas: typeof createCanvas;
-};
-
-function getRuntimeCanvasModule(): RuntimeCanvasModule | null {
-  try {
-    ensurePdfNodeCanvasGlobals();
-
-    logPdfDebug("getRuntimeCanvasModule success", {
-      available: true,
-    });
-
-    return {
-      createCanvas,
-    };
-  } catch (error) {
-    logPdfError("getRuntimeCanvasModule failed", error, {
-      available: false,
-    });
-    return null;
-  }
-}
-
-async function renderPdfPagesAsImages(
-  buffer: Buffer
-): Promise<ExtractedImageAsset[]> {
-  try {
-    ensurePdfNodeCanvasGlobals();
-
-    const canvasModule = getRuntimeCanvasModule();
-
-    if (!canvasModule) {
-      logPdfDebug("renderPdfPagesAsImages aborted", {
-        reason: "canvas_module_unavailable",
-      });
-      return [];
-    }
-
-    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const loadingTask = pdfjs.getDocument({
-      data: new Uint8Array(buffer),
-      useWorkerFetch: false,
-      isEvalSupported: false,
-      useSystemFonts: true,
-      disableFontFace: true,
-      standardFontDataUrl: undefined,
-    });
-
-    const pdf = await loadingTask.promise;
-    const images: ExtractedImageAsset[] = [];
-
-    logPdfDebug("renderPdfPagesAsImages started", {
-      numPages: pdf.numPages,
-    });
-
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-      const page = await pdf.getPage(pageNumber);
-
-      const baseViewport = page.getViewport({ scale: 1 });
-      const maxWidth = 1400;
-      const scale = Math.min(2, Math.max(1.15, maxWidth / baseViewport.width));
-      const viewport = page.getViewport({ scale });
-
-      logPdfDebug("renderPdfPagesAsImages page start", {
-        pageNumber,
-        width: Math.ceil(viewport.width),
-        height: Math.ceil(viewport.height),
-        scale,
-      });
-
-      const canvas = canvasModule.createCanvas(
-        Math.max(1, Math.ceil(viewport.width)),
-        Math.max(1, Math.ceil(viewport.height))
-      );
-
-      const context = canvas.getContext("2d");
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-
-      await page.render({
-        canvasContext: context,
-        viewport,
-      }).promise;
-
-      const imageBuffer = canvas.toBuffer("image/jpeg", 88);
-
-      images.push({
-        fileName: `pdf-render-page-${pageNumber}.jpg`,
-        source: "pdf",
-        mimeType: "image/jpeg",
-        dataUrl: bufferToDataUrl(imageBuffer, "image/jpeg"),
-      });
-
-      logPdfDebug("renderPdfPagesAsImages page success", {
-        pageNumber,
-        imageBytes: imageBuffer.length,
-      });
-    }
-
-    logPdfDebug("renderPdfPagesAsImages finished", {
-      totalRenderedPages: images.length,
-    });
-
-    return images;
-  } catch (error) {
-    logPdfError("renderPdfPagesAsImages failed", error);
-    return [];
-  }
-}
-
-async function extractImagesFromPdf(
-  buffer: Buffer
-): Promise<ExtractedImageAsset[]> {
-  try {
-    logPdfDebug("extractImagesFromPdf started", {
-      pdfBytes: buffer.length,
-    });
-
-    const renderedPages = await renderPdfPagesAsImages(buffer);
-    const embeddedImages = await extractEmbeddedImagesFromPdf(buffer);
-
-    const combined = dedupeExtractedImages([
-      ...renderedPages,
-      ...embeddedImages,
-    ]);
-
-    logPdfDebug("extractImagesFromPdf summary", {
-      renderedPages: renderedPages.length,
-      embeddedImages: embeddedImages.length,
-      combinedImages: combined.length,
-    });
-
-    return combined;
-  } catch (error) {
-    logPdfError("extractImagesFromPdf failed", error);
-    return [];
-  }
+  return assets;
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
-  const htmlResult = await mammoth.convertToHtml({ buffer });
-  const html = htmlResult.value || "";
+  const result = await mammoth.extractRawText({ buffer });
+  return cleanInlineText(result.value || "");
+}
 
-  const blockMatches = Array.from(
-    html.matchAll(/<(p|h1|h2|h3|li)[^>]*>([\s\S]*?)<\/(p|h1|h2|h3|li)>/gi)
-  );
+async function extractTextFromTxt(buffer: Buffer) {
+  return cleanInlineText(buffer.toString("utf-8"));
+}
 
-  const sections: string[] = [];
-  const currentSection: string[] = [];
+function normalizeHeaderLabel(value: unknown, index: number) {
+  const label = String(value ?? "")
+    .replace(/\r/g, "")
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  for (const match of blockMatches) {
-    const tag = (match[1] || "").toLowerCase();
-    const inner = normalizeInlineText(match[2] || "");
+  return label || `campo_${index + 1}`;
+}
 
-    if (!inner) continue;
+function isUsefulRow(row: unknown[]) {
+  return row.some((cell) => String(cell ?? "").trim() !== "");
+}
 
-    if (isPoolCardStart(inner)) {
-      pushCurrentSection(sections, currentSection);
-      currentSection.push(inner);
-      continue;
-    }
+function chooseHeaderRow(rows: unknown[][]) {
+  const firstRows = rows.slice(0, Math.min(10, rows.length));
 
-    if (isPoolFieldLine(inner)) {
-      currentSection.push(inner);
-      continue;
-    }
+  let bestIndex = 0;
+  let bestScore = -1;
 
-    if (tag === "h1" || tag === "h2" || tag === "h3") {
-      pushCurrentSection(sections, currentSection);
-      currentSection.push(inner);
-      continue;
-    }
+  for (let index = 0; index < firstRows.length; index += 1) {
+    const row = firstRows[index];
+    const nonEmpty = row.filter((cell) => String(cell ?? "").trim() !== "").length;
+    if (nonEmpty === 0) continue;
 
-    currentSection.push(inner);
-  }
+    const score =
+      nonEmpty * 3 +
+      row.filter((cell) => {
+        const value = String(cell ?? "").trim();
+        return value.length > 2 && !/^\d+([.,]\d+)?$/.test(value);
+      }).length * 2;
 
-  pushCurrentSection(sections, currentSection);
-
-  const tableRows = Array.from(
-    html.matchAll(/<tr[\s\S]*?>([\s\S]*?)<\/tr>/gi)
-  ).map((match) => match[1]);
-
-  const normalizedRows: string[] = [];
-
-  for (const rowHtml of tableRows) {
-    const cells = Array.from(
-      rowHtml.matchAll(/<(td|th)[^>]*>([\s\S]*?)<\/(td|th)>/gi)
-    ).map((match) => normalizeInlineText(match[2] || ""));
-
-    const filtered = cells.filter(Boolean);
-
-    if (filtered.length) {
-      normalizedRows.push(filtered.join(" | "));
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
     }
   }
 
-  const raw = await mammoth.extractRawText({ buffer });
-  const baseText = normalizeExtractedText(raw.value || "");
+  return bestIndex;
+}
 
-  const strongPoolSections = sections.filter((section) => {
-    const lower = section.toLowerCase();
+function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
+  const usefulRows = rows.filter(isUsefulRow);
+  if (usefulRows.length === 0) return [];
 
-    return (
-      /^piscina\b/i.test(section) &&
-      (lower.includes("tipo:") || lower.includes("tipo|")) &&
-      (lower.includes("medidas:") || lower.includes("medidas|")) &&
-      (lower.includes("profundidade:") || lower.includes("profundidade|"))
+  const headerIndex = chooseHeaderRow(usefulRows);
+  const headerRow = usefulRows[headerIndex] || [];
+  const headers = headerRow.map((cell, index) => normalizeHeaderLabel(cell, index));
+  const dataRows = usefulRows.slice(headerIndex + 1);
+
+  const blocks: string[] = [];
+
+  dataRows.forEach((row, index) => {
+    const pairs: string[] = [];
+
+    headers.forEach((header, columnIndex) => {
+      const value = String(row[columnIndex] ?? "")
+        .replace(/\r/g, "")
+        .replace(/\n+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (!value) return;
+      pairs.push(`${header}: ${value}`);
+    });
+
+    if (pairs.length === 0) return;
+
+    blocks.push(
+      [
+        `=== ITEM ${index + 1} | PLANILHA: ${sheetName} ===`,
+        ...pairs,
+      ].join("\n")
     );
   });
 
-  if (strongPoolSections.length >= 5) {
-    return normalizeExtractedText(strongPoolSections.join("\n\n"));
-  }
+  return blocks;
+}
 
-  if (sections.length > 0 && normalizedRows.length === 0) {
-    return normalizeExtractedText(sections.join("\n\n"));
-  }
+async function extractTextFromXlsx(buffer: Buffer) {
+  const workbook = XLSX.read(buffer, {
+    type: "buffer",
+    cellDates: false,
+    raw: false,
+    dense: false,
+  });
 
-  if (normalizedRows.length > 0 && sections.length === 0) {
-    return normalizeExtractedText(normalizedRows.join("\n"));
-  }
+  const parts: string[] = [];
 
-  if (sections.length > 0 && normalizedRows.length > 0) {
-    const tableText = normalizeExtractedText(normalizedRows.join("\n"));
-    const sectionText = normalizeExtractedText(sections.join("\n\n"));
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
 
-    if (sectionText.length >= tableText.length) {
-      return sectionText;
+    const rows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      raw: false,
+      defval: "",
+      blankrows: false,
+    }) as unknown[][];
+
+    const itemBlocks = buildItemBlocksFromSheet(sheetName, rows);
+
+    parts.push(`PLANILHA: ${sheetName}`);
+
+    if (itemBlocks.length > 0) {
+      parts.push(...itemBlocks);
+    } else {
+      const fallback = rows
+        .filter(isUsefulRow)
+        .map((row) =>
+          row
+            .map((cell) => String(cell ?? "").trim())
+            .filter(Boolean)
+            .join(" | ")
+        )
+        .filter(Boolean);
+
+      parts.push(...fallback);
     }
 
-    return tableText;
+    parts.push("");
   }
 
-  return baseText;
+  return cleanInlineText(parts.join("\n"));
+}
+
+async function extractTextFromPptx(buffer: Buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const slides = Object.keys(zip.files)
+    .filter((path) => /^ppt\/slides\/slide\d+\.xml$/i.test(path))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  const parts: string[] = [];
+
+  for (const slidePath of slides) {
+    const file = zip.files[slidePath];
+    if (!file) continue;
+
+    const xml = await file.async("text");
+    const texts = Array.from(xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)).map((match) =>
+      match[1]
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .trim()
+    );
+
+    const slideNumberMatch = slidePath.match(/slide(\d+)\.xml/i);
+    const slideNumber = slideNumberMatch ? slideNumberMatch[1] : "?";
+
+    parts.push(`SLIDE: ${slideNumber}`);
+
+    const slideText = texts.filter(Boolean).join("\n").trim();
+    if (slideText) {
+      parts.push(slideText);
+    }
+
+    parts.push("");
+  }
+
+  return cleanInlineText(parts.join("\n"));
+}
+
+async function extractTextFromPdf(buffer: Buffer) {
+  try {
+    const pdfParseModule = await import("pdf-parse");
+    const pdfParseFn: any = (pdfParseModule as any).default ?? (pdfParseModule as any);
+    const result = await pdfParseFn(buffer);
+    return cleanInlineText(result?.text || "");
+  } catch {
+    return "";
+  }
 }
 
 async function extractImagesFromDocx(buffer: Buffer) {
@@ -822,43 +266,6 @@ async function extractImagesFromDocx(buffer: Buffer) {
   });
 }
 
-async function extractTextFromTxt(buffer: Buffer) {
-  return buffer.toString("utf-8").trim();
-}
-
-async function extractTextFromXlsx(buffer: Buffer) {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
-  const parts: string[] = [];
-
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-
-    const rows = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,
-      defval: "",
-      raw: false,
-    }) as Array<Array<string | number | boolean | null>>;
-
-    parts.push(`PLANILHA: ${sheetName}`);
-
-    for (const row of rows) {
-      const line = row
-        .map((cell) => String(cell ?? "").trim())
-        .filter(Boolean)
-        .join(" | ")
-        .trim();
-
-      if (line) {
-        parts.push(line);
-      }
-    }
-
-    parts.push("");
-  }
-
-  return parts.join("\n").trim();
-}
-
 async function extractImagesFromXlsx(buffer: Buffer) {
   return extractImagesFromZip({
     buffer,
@@ -867,76 +274,16 @@ async function extractImagesFromXlsx(buffer: Buffer) {
   });
 }
 
-async function extractTextFromPptx(buffer: Buffer) {
-  const zip = await JSZip.loadAsync(buffer);
-  const parser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: "@_",
-  });
-
-  const slideFiles = Object.keys(zip.files)
-    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
-  const parts: string[] = [];
-
-  for (const slidePath of slideFiles) {
-    const slideFile = zip.files[slidePath];
-    if (!slideFile || slideFile.dir) continue;
-
-    const xml = await slideFile.async("string");
-    const parsed = parser.parse(xml);
-
-    const texts: string[] = [];
-
-    function walk(node: any): void {
-      if (!node) return;
-
-      if (Array.isArray(node)) {
-        for (const item of node) walk(item);
-        return;
-      }
-
-      if (typeof node === "object") {
-        for (const [key, value] of Object.entries(node)) {
-          if (key === "a:t" && typeof value === "string") {
-            texts.push(value);
-          } else {
-            walk(value);
-          }
-        }
-      }
-    }
-
-    walk(parsed);
-
-    const slideNumberMatch = slidePath.match(/slide(\d+)\.xml$/);
-    const slideNumber = slideNumberMatch ? slideNumberMatch[1] : "?";
-
-    parts.push(`SLIDE: ${slideNumber}`);
-
-    const slideText = texts
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-
-    if (slideText) {
-      parts.push(slideText);
-    }
-
-    parts.push("");
-  }
-
-  return parts.join("\n").trim();
-}
-
 async function extractImagesFromPptx(buffer: Buffer) {
   return extractImagesFromZip({
     buffer,
     mediaPrefix: "ppt/media/",
     source: "pptx",
   });
+}
+
+async function extractImagesFromPdf(_buffer: Buffer) {
+  return [] as ExtractedImageAsset[];
 }
 
 async function extractTextFromImage(_buffer: Buffer) {
@@ -967,22 +314,9 @@ export async function extractTextFromFile(params: {
   let text = "";
   let extractedImages: ExtractedImageAsset[] = [];
 
-  logPdfDebug("extractTextFromFile started", {
-    fileName,
-    mimeType,
-    extension,
-    bufferBytes: buffer.length,
-  });
-
   if (extension === "pdf") {
     text = await extractTextFromPdf(buffer);
     extractedImages = await extractImagesFromPdf(buffer);
-
-    logPdfDebug("extractTextFromFile pdf result", {
-      fileName,
-      textLength: text.length,
-      extractedImages: extractedImages.length,
-    });
   } else if (extension === "docx") {
     text = await extractTextFromDocx(buffer);
     extractedImages = await extractImagesFromDocx(buffer);

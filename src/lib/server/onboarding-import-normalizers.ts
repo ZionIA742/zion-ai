@@ -37,64 +37,36 @@ function isGenericTitle(value: string) {
 
   const blocked = [
     "catalogo de teste",
-    "descricao detalhada",
-    "descrição detalhada",
-    "piscina",
-    "item importado",
-    "regra comercial",
+    "catálogo de teste",
     "arquivo de teste",
     "nome do item",
+    "item importado",
+    "descricao detalhada",
+    "descrição detalhada",
   ];
 
-  return blocked.some((item) => normalized === item || normalized.startsWith(item));
+  return blocked.some(
+    (item) => normalized === normalizeLoose(item) || normalized.startsWith(normalizeLoose(item))
+  );
 }
 
-function buildCleanNarrative(item: StructuredImportItem) {
-  const cleanedDescription = String(item.description || "").trim();
-  if (cleanedDescription) {
-    return cleanedDescription.slice(0, 4000);
+function resolveNormalizedType(item: StructuredImportItem): NormalizedImportItemType {
+  if (item.destination === "pool") return "pool";
+  if (
+    item.destination === "quimicos" ||
+    item.destination === "acessorios" ||
+    item.destination === "outros"
+  ) {
+    return "catalog_item";
   }
-
-  const fragments = [
-    item.usage,
-    item.notes,
-    item.material ? `Material ${item.material}` : "",
-    item.color ? `Cor ${item.color}` : "",
-    item.brand ? `Marca ${item.brand}` : "",
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-
-  return fragments.join(". ").slice(0, 4000);
+  return "unknown";
 }
 
-function descriptionToRawText(item: StructuredImportItem) {
-  const parts = [
-    item.title,
-    buildCleanNarrative(item),
-    item.price ? `Preço ${item.price}` : "",
-    item.dimensions ? `Medidas ${item.dimensions}` : "",
-    item.depth ? `Profundidade ${item.depth}` : "",
-    item.capacity ? `Capacidade ${item.capacity}` : "",
-    item.material ? `Material ${item.material}` : "",
-    item.shape ? `Formato ${item.shape}` : "",
-    item.usage ? `Uso ${item.usage}` : "",
-    item.notes ? `Observação ${item.notes}` : "",
-  ].filter(Boolean);
-
-  return parts.join("\n").trim().slice(0, 4000);
-}
-
-function buildMetadata(item: StructuredImportItem) {
-  const cleanDescription = buildCleanNarrative(item);
-
+function buildMetadata(item: StructuredImportItem): Record<string, string> {
   return {
+    categoria: item.destination === "pool" ? "pool" : item.destination,
     destination: item.destination,
-    categoria: item.destination === "pool" ? "piscinas" : item.destination,
-    categoryHint: item.categoryHint || "",
-    clean_description: cleanDescription,
-    description: cleanDescription,
-    title: item.title || "",
+    clean_description: item.description || "",
     price: item.price || "",
     dimensions: item.dimensions || "",
     depth: item.depth || "",
@@ -108,28 +80,35 @@ function buildMetadata(item: StructuredImportItem) {
     color: item.color || "",
     usage: item.usage || "",
     notes: item.notes || "",
-    item_index: String(item.itemIndex),
-    original_source_file_name: item.sourceFileName,
+    indication: item.indication || "",
+    composition: item.composition || "",
+    embalagem: item.embalagem || "",
+    packaging: item.packaging || "",
+    model: item.model || "",
+    size: item.size || "",
+    compatibility: item.compatibility || "",
+    function: item.function || "",
+    environment: item.environment || "",
+    diferencial: item.diferencial || "",
+    application: item.application || "",
     source_file_name: item.sourceFileName,
   };
 }
 
 function toNormalizedItem(item: StructuredImportItem): NormalizedImportItem | null {
-  if (!item.title || isGenericTitle(item.title)) return null;
+  const title = String(item.title || "").trim();
+  if (!title || isGenericTitle(title)) {
+    return null;
+  }
 
-  const type: NormalizedImportItemType =
-    item.destination === "pool" ? "pool" : "catalog_item";
-  const rawText = descriptionToRawText(item);
-  if (!rawText) return null;
-
-  const confidence = item.destination === "pool" ? 0.97 : 0.95;
+  const rawText = String(item.rawBlock || item.description || item.title || "").trim();
 
   return {
-    type,
+    type: resolveNormalizedType(item),
     sourceFileName: item.sourceFileName,
-    title: item.title,
+    title,
     rawText,
-    confidence,
+    confidence: item.confidence,
     metadata: buildMetadata(item),
   };
 }

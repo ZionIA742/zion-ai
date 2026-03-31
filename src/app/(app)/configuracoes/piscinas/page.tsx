@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
@@ -46,10 +46,14 @@ type EditPoolForm = {
   stock_quantity: string;
 };
 
+type CharacteristicRow = {
+  label: string;
+  value: string;
+};
+
 const STORAGE_BUCKET = "pool-photos";
 const MAX_POOL_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
-const ACTIVE_EDITING_POOL_KEY_PREFIX = "zion:piscinas:active-editing-pool-id";
 
 function moneyBRL(value: number | null) {
   if (value == null) return "Sem preço";
@@ -73,560 +77,279 @@ function formatPriceInput(value: string) {
   const integerPart = integerPartRaw || (parts[0] ? "0" : "");
   const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 
-  if (parts.length === 1) {
-    return formattedInteger;
-  }
+  if (parts.length === 1) return formattedInteger;
 
   const decimalPart = parts.slice(1).join("").slice(0, 2);
   return `${formattedInteger},${decimalPart}`;
 }
 
-function toNullableNumber(value: string) {
-  const cleaned = value.replace(/\./g, "").replace(",", ".").trim();
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  return Number.isNaN(parsed) ? null : parsed;
+function priceInputToNumber(value: string) {
+  const normalized = value.replace(/\./g, "").replace(",", ".").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-function formatIntegerInput(value: string) {
-  return value.replace(/[^\d]/g, "");
+function formatFileSize(size: number | null) {
+  if (!Number.isFinite(size) || !size || size <= 0) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function toNullableInteger(value: string) {
-  const cleaned = value.replace(/[^\d-]/g, "").trim();
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  if (Number.isNaN(parsed)) return null;
-  return Math.trunc(parsed);
+function cleanLooseText(value: string | null | undefined) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
-function formatFileSize(bytes: number | null) {
-  if (bytes == null) return "-";
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
-  return `${bytes} B`;
+function normalizeLoose(value: string | null | undefined) {
+  return cleanLooseText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function getPoolAvailability(pool: Pick<PoolRow, "is_active" | "track_stock" | "stock_quantity">) {
-  if (!pool.is_active) {
-    return {
-      label: "Indisponível para oferta",
-      detail: "Piscina inativa",
-    };
+function isJunkDescriptionLine(value: string) {
+  const normalized = normalizeLoose(value);
+  if (!normalized) return true;
+
+  return (
+    normalized === "descricao detalhada" ||
+    normalized === "descrição detalhada" ||
+    normalized.startsWith("arquivo de teste") ||
+    normalized.startsWith("campo") ||
+    normalized.startsWith("valor") ||
+    normalized.startsWith("categoria") ||
+    normalized.startsWith("modelo") ||
+    normalized.startsWith("tipo") ||
+    normalized.startsWith("medidas") ||
+    normalized.startsWith("profundidade") ||
+    normalized.startsWith("capacidade") ||
+    normalized.startsWith("material") ||
+    normalized.startsWith("preco") ||
+    normalized.startsWith("preço") ||
+    normalized.startsWith("prazo")
+  );
+}
+
+function pushCharacteristic(rows: CharacteristicRow[], label: string, value: string | null | undefined) {
+  const safeValue = cleanLooseText(value);
+  if (!safeValue) return;
+  if (rows.some((row) => row.label === label && row.value === safeValue)) return;
+  rows.push({ label, value: safeValue });
+}
+
+function buildPoolCharacteristics(pool: PoolRow): CharacteristicRow[] {
+  const rows: CharacteristicRow[] = [];
+  pushCharacteristic(rows, "Nome", pool.name || "");
+  if (pool.price != null) pushCharacteristic(rows, "Preço", moneyBRL(pool.price));
+  pushCharacteristic(rows, "Formato", pool.shape);
+  pushCharacteristic(rows, "Material", pool.material);
+  if (pool.width_m != null) pushCharacteristic(rows, "Largura", `${pool.width_m} m`);
+  if (pool.length_m != null) pushCharacteristic(rows, "Comprimento", `${pool.length_m} m`);
+  if (pool.depth_m != null) pushCharacteristic(rows, "Profundidade", `${pool.depth_m} m`);
+  if (pool.max_capacity_l != null) {
+    pushCharacteristic(rows, "Capacidade", `${pool.max_capacity_l.toLocaleString("pt-BR")} L`);
+  }
+  if (pool.weight_kg != null) pushCharacteristic(rows, "Peso", `${pool.weight_kg} kg`);
+  return rows;
+}
+
+function buildComplementaryDescription(pool: PoolRow, characteristics: CharacteristicRow[]) {
+  const sourceText = cleanLooseText(pool.description || "");
+  if (!sourceText) return "";
+
+  const characteristicValues = characteristics
+    .map((row) => normalizeLoose(row.value))
+    .filter(Boolean);
+
+  const lines = sourceText
+    .split(/\n+/)
+    .map((line) => cleanLooseText(line))
+    .filter(Boolean)
+    .filter((line) => !isJunkDescriptionLine(line))
+    .filter((line) => {
+      const normalized = normalizeLoose(line);
+      if (!normalized) return false;
+      if (characteristicValues.includes(normalized)) return false;
+      return !characteristicValues.some(
+        (value) => value.length >= 8 && normalized === value
+      );
+    });
+
+  const unique: string[] = [];
+  for (const line of lines) {
+    if (!unique.some((existing) => normalizeLoose(existing) === normalizeLoose(line))) {
+      unique.push(line);
+    }
   }
 
-  if (!pool.track_stock) {
-    return {
-      label: "Disponível para oferta",
-      detail: "Sem controle de estoque",
-    };
-  }
-
-  if ((pool.stock_quantity ?? 0) > 0) {
-    return {
-      label: "Disponível para oferta",
-      detail: `Estoque: ${pool.stock_quantity ?? 0}`,
-    };
-  }
-
-  return {
-    label: "Indisponível para oferta",
-    detail: "Sem estoque",
-  };
+  return unique.join("\n").trim();
 }
 
 function buildEditForm(pool: PoolRow): EditPoolForm {
   return {
-    name: pool.name ?? "",
-    description: pool.description ?? "",
-    price: pool.price == null ? "" : formatPriceInput(String(pool.price).replace(".", ",")),
-    is_active: Boolean(pool.is_active),
-    track_stock: Boolean(pool.track_stock),
-    stock_quantity:
-      pool.track_stock && pool.stock_quantity != null ? String(pool.stock_quantity) : "",
+    name: pool.name || "",
+    description: pool.description || "",
+    price:
+      pool.price == null
+        ? ""
+        : formatPriceInput(String(pool.price.toFixed(2).replace(".", ","))),
+    is_active: pool.is_active,
+    track_stock: pool.track_stock,
+    stock_quantity: pool.stock_quantity == null ? "" : String(pool.stock_quantity),
   };
 }
 
-function getPoolDraftKey(params: { organizationId: string; storeId: string; poolId: string }) {
-  return `zion:pool-edit-draft:${params.organizationId}:${params.storeId}:${params.poolId}`;
+function DetailChip({ value }: { value: string }) {
+  return (
+    <span className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700">
+      {value}
+    </span>
+  );
 }
 
-function getActiveEditingPoolKey(params: { organizationId: string; storeId: string }) {
-  return `${ACTIVE_EDITING_POOL_KEY_PREFIX}:${params.organizationId}:${params.storeId}`;
+function SectionCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-3">
+      <h3 className="mb-2 text-sm font-semibold text-gray-900">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function CharacteristicsTable({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: CharacteristicRow[];
+}) {
+  if (rows.length === 0) return null;
+
+  return (
+    <SectionCard title={title}>
+      <div className="overflow-hidden rounded-lg border border-gray-200">
+        {rows.map((row, index) => (
+          <div
+            key={`${row.label}-${index}`}
+            className={`grid gap-1 px-3 py-2 text-sm sm:grid-cols-[150px_minmax(0,1fr)] ${
+              index % 2 === 0 ? "bg-gray-50" : "bg-white"
+            } ${index > 0 ? "border-t border-gray-200" : ""}`}
+          >
+            <div className="font-medium text-gray-600">{row.label}</div>
+            <div className="break-words text-gray-900">{row.value}</div>
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
 }
 
 export default function PiscinasPage() {
-  const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
+  const { organizationId, activeStoreId } = useStoreContext();
 
-  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
-  const ORGANIZATION_ID = organizationId ?? "";
-  const STORE_ID = activeStoreId ?? "";
-
+  const [pools, setPools] = useState<PoolRow[]>([]);
+  const [photosByPoolId, setPhotosByPoolId] = useState<Record<string, PoolPhotoRow[]>>({});
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [successText, setSuccessText] = useState<string | null>(null);
-  const [pools, setPools] = useState<PoolRow[]>([]);
-  const [photos, setPhotos] = useState<PoolPhotoRow[]>([]);
-
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
   const [editPoolForm, setEditPoolForm] = useState<EditPoolForm | null>(null);
   const [savingPoolId, setSavingPoolId] = useState<string | null>(null);
   const [deletingPoolId, setDeletingPoolId] = useState<string | null>(null);
-
-  const [selectedPoolFilesByPoolId, setSelectedPoolFilesByPoolId] = useState<Record<string, File[]>>(
-    {}
-  );
-  const [uploadingPoolPhotosId, setUploadingPoolPhotosId] = useState<string | null>(null);
   const [deletingPoolPhotoId, setDeletingPoolPhotoId] = useState<string | null>(null);
+  const [selectedPoolFilesByPoolId, setSelectedPoolFilesByPoolId] = useState<Record<string, File[]>>({});
+  const [uploadingPoolPhotosId, setUploadingPoolPhotosId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (storeLoading) return;
-
-    if (!hasValidStoreContext) {
-      setLoading(false);
-      setErrorText("Nenhuma loja ativa foi encontrada para carregar as piscinas.");
-      return;
-    }
-
-    void fetchData();
-  }, [storeLoading, hasValidStoreContext, ORGANIZATION_ID, STORE_ID]);
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
 
   async function fetchData() {
-    if (!hasValidStoreContext) return;
+    if (!organizationId || !activeStoreId) {
+      setPools([]);
+      setPhotosByPoolId({});
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
     setErrorText(null);
 
-    const [poolsResult, photosResult] = await Promise.all([
-      supabase
+    try {
+      const { data: poolRows, error } = await supabase
         .from("pools")
-        .select(
-          "id,organization_id,store_id,name,width_m,length_m,depth_m,shape,material,max_capacity_l,weight_kg,price,description,is_active,track_stock,stock_quantity,created_at"
-        )
-        .eq("organization_id", ORGANIZATION_ID)
-        .eq("store_id", STORE_ID)
-        .order("created_at", { ascending: false }),
-      supabase
+        .select("*")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      const nextPools = (poolRows || []) as PoolRow[];
+      setPools(nextPools);
+
+      if (nextPools.length === 0) {
+        setPhotosByPoolId({});
+        return;
+      }
+
+      const poolIds = nextPools.map((pool) => pool.id);
+      const { data: photoRows, error: photosError } = await supabase
         .from("pool_photos")
-        .select(
-          "id,pool_id,organization_id,store_id,storage_path,file_name,file_size_bytes,sort_order,created_at"
-        )
-        .eq("organization_id", ORGANIZATION_ID)
-        .eq("store_id", STORE_ID)
-        .order("sort_order", { ascending: true }),
-    ]);
+        .select("*")
+        .in("pool_id", poolIds)
+        .order("sort_order", { ascending: true });
 
-    if (poolsResult.error) {
-      setErrorText(poolsResult.error.message ?? "Erro ao carregar piscinas.");
+      if (photosError) throw photosError;
+
+      const grouped: Record<string, PoolPhotoRow[]> = {};
+      for (const photo of (photoRows || []) as PoolPhotoRow[]) {
+        if (!grouped[photo.pool_id]) grouped[photo.pool_id] = [];
+        grouped[photo.pool_id].push(photo);
+      }
+      setPhotosByPoolId(grouped);
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao carregar piscinas.");
+    } finally {
       setLoading(false);
-      return;
     }
-
-    if (photosResult.error) {
-      setErrorText(photosResult.error.message ?? "Erro ao carregar fotos.");
-      setLoading(false);
-      return;
-    }
-
-    setPools((poolsResult.data || []) as PoolRow[]);
-    setPhotos((photosResult.data || []) as PoolPhotoRow[]);
-    setLoading(false);
   }
 
-  const photosByPoolId = useMemo(() => {
-    const grouped: Record<string, PoolPhotoRow[]> = {};
-
-    for (const photo of photos) {
-      if (!grouped[photo.pool_id]) {
-        grouped[photo.pool_id] = [];
-      }
-      grouped[photo.pool_id].push(photo);
-    }
-
-    for (const poolId of Object.keys(grouped)) {
-      grouped[poolId] = grouped[poolId].sort(
-        (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
-      );
-    }
-
-    return grouped;
-  }, [photos]);
-
   useEffect(() => {
-    if (!editingPoolId || !editPoolForm || typeof window === "undefined" || !hasValidStoreContext) {
-      return;
-    }
-
-    window.localStorage.setItem(
-      getPoolDraftKey({
-        organizationId: ORGANIZATION_ID,
-        storeId: STORE_ID,
-        poolId: editingPoolId,
-      }),
-      JSON.stringify(editPoolForm)
-    );
-
-    window.localStorage.setItem(
-      getActiveEditingPoolKey({
-        organizationId: ORGANIZATION_ID,
-        storeId: STORE_ID,
-      }),
-      editingPoolId
-    );
-  }, [editingPoolId, editPoolForm, hasValidStoreContext, ORGANIZATION_ID, STORE_ID]);
-
-  useEffect(() => {
-    if (
-      loading ||
-      pools.length === 0 ||
-      typeof window === "undefined" ||
-      !hasValidStoreContext ||
-      editingPoolId
-    ) {
-      return;
-    }
-
-    const savedEditingPoolId = window.localStorage.getItem(
-      getActiveEditingPoolKey({
-        organizationId: ORGANIZATION_ID,
-        storeId: STORE_ID,
-      })
-    );
-
-    if (!savedEditingPoolId) return;
-
-    const pool = pools.find((item) => item.id === savedEditingPoolId);
-    if (!pool) {
-      window.localStorage.removeItem(
-        getActiveEditingPoolKey({
-          organizationId: ORGANIZATION_ID,
-          storeId: STORE_ID,
-        })
-      );
-      window.localStorage.removeItem(
-        getPoolDraftKey({
-          organizationId: ORGANIZATION_ID,
-          storeId: STORE_ID,
-          poolId: savedEditingPoolId,
-        })
-      );
-      return;
-    }
-
-    const fallbackForm = buildEditForm(pool);
-    const savedDraft = window.localStorage.getItem(
-      getPoolDraftKey({
-        organizationId: ORGANIZATION_ID,
-        storeId: STORE_ID,
-        poolId: pool.id,
-      })
-    );
-
-    setEditingPoolId(pool.id);
-
-    if (!savedDraft) {
-      setEditPoolForm(fallbackForm);
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(savedDraft) as EditPoolForm;
-      setEditPoolForm({
-        name: parsed?.name ?? fallbackForm.name,
-        description: parsed?.description ?? fallbackForm.description,
-        price: parsed?.price ?? fallbackForm.price,
-        is_active:
-          typeof parsed?.is_active === "boolean"
-            ? parsed.is_active
-            : fallbackForm.is_active,
-        track_stock:
-          typeof parsed?.track_stock === "boolean"
-            ? parsed.track_stock
-            : fallbackForm.track_stock,
-        stock_quantity: parsed?.stock_quantity ?? fallbackForm.stock_quantity,
-      });
-    } catch {
-      setEditPoolForm(fallbackForm);
-    }
-  }, [loading, pools, editingPoolId, hasValidStoreContext, ORGANIZATION_ID, STORE_ID]);
+    void fetchData();
+  }, [organizationId, activeStoreId]);
 
   function startEditing(pool: PoolRow) {
+    setEditingPoolId(pool.id);
+    setEditPoolForm(buildEditForm(pool));
     setErrorText(null);
     setSuccessText(null);
-    setEditingPoolId(pool.id);
-
-    if (typeof window !== "undefined" && hasValidStoreContext) {
-      window.localStorage.setItem(
-        getActiveEditingPoolKey({
-          organizationId: ORGANIZATION_ID,
-          storeId: STORE_ID,
-        }),
-        pool.id
-      );
-    }
-
-    const fallbackForm = buildEditForm(pool);
-
-    if (typeof window === "undefined" || !hasValidStoreContext) {
-      setEditPoolForm(fallbackForm);
-      return;
-    }
-
-    const savedDraft = window.localStorage.getItem(
-      getPoolDraftKey({
-        organizationId: ORGANIZATION_ID,
-        storeId: STORE_ID,
-        poolId: pool.id,
-      })
-    );
-
-    if (!savedDraft) {
-      setEditPoolForm(fallbackForm);
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(savedDraft) as EditPoolForm;
-      setEditPoolForm({
-        name: parsed?.name ?? fallbackForm.name,
-        description: parsed?.description ?? fallbackForm.description,
-        price: parsed?.price ?? fallbackForm.price,
-        is_active:
-          typeof parsed?.is_active === "boolean"
-            ? parsed.is_active
-            : fallbackForm.is_active,
-        track_stock:
-          typeof parsed?.track_stock === "boolean"
-            ? parsed.track_stock
-            : fallbackForm.track_stock,
-        stock_quantity: parsed?.stock_quantity ?? fallbackForm.stock_quantity,
-      });
-    } catch {
-      setEditPoolForm(fallbackForm);
-    }
   }
 
   function cancelEditing() {
-    const currentEditingPoolId = editingPoolId;
-
     setEditingPoolId(null);
     setEditPoolForm(null);
-
-    setSelectedPoolFilesByPoolId((prev) => {
-      const next = { ...prev };
-      if (currentEditingPoolId) delete next[currentEditingPoolId];
-      return next;
-    });
-
-    if (currentEditingPoolId && typeof window !== "undefined" && hasValidStoreContext) {
-      window.localStorage.removeItem(
-        getPoolDraftKey({
-          organizationId: ORGANIZATION_ID,
-          storeId: STORE_ID,
-          poolId: currentEditingPoolId,
-        })
-      );
-      window.localStorage.removeItem(
-        getActiveEditingPoolKey({
-          organizationId: ORGANIZATION_ID,
-          storeId: STORE_ID,
-        })
-      );
-    }
   }
 
-  async function handleSavePool(poolId: string) {
-    if (!editPoolForm || !hasValidStoreContext) return;
-
-    setErrorText(null);
-    setSuccessText(null);
-
-    if (!editPoolForm.name.trim()) {
-      setErrorText("O nome da piscina é obrigatório.");
-      return;
-    }
-
-    const priceValue = toNullableNumber(editPoolForm.price);
-    const stockQuantityValue = toNullableInteger(editPoolForm.stock_quantity);
-
-    if (editPoolForm.price.trim() && priceValue == null) {
-      setErrorText("O preço da piscina está inválido.");
-      return;
-    }
-
-    if (editPoolForm.track_stock) {
-      if (stockQuantityValue == null) {
-        setErrorText(
-          "A quantidade em estoque é obrigatória quando o controle de estoque está ativado."
-        );
-        return;
-      }
-
-      if (stockQuantityValue < 0) {
-        setErrorText("A quantidade em estoque não pode ser negativa.");
-        return;
-      }
-    }
-
-    setSavingPoolId(poolId);
-
-    const { error } = await supabase
-      .from("pools")
-      .update({
-        name: editPoolForm.name.trim(),
-        description: editPoolForm.description.trim() || null,
-        price: editPoolForm.price.trim() ? priceValue : null,
-        is_active: editPoolForm.is_active,
-        track_stock: editPoolForm.track_stock,
-        stock_quantity: editPoolForm.track_stock ? stockQuantityValue : null,
-      })
-      .eq("id", poolId)
-      .eq("organization_id", ORGANIZATION_ID)
-      .eq("store_id", STORE_ID);
-
-    if (error) {
-      setErrorText(error.message ?? "Erro ao salvar piscina.");
-      setSavingPoolId(null);
-      return;
-    }
-
-    const pendingFiles = selectedPoolFilesByPoolId[poolId] || [];
-
-    if (pendingFiles.length > 0) {
-      try {
-        await uploadPoolFiles(poolId, pendingFiles);
-      } catch (uploadError: any) {
-        setErrorText(
-          uploadError?.message ??
-            "Os dados da piscina foram salvos, mas houve erro ao enviar as novas fotos."
-        );
-        setSavingPoolId(null);
-        await fetchData();
-        return;
-      }
-    }
-
-    setSelectedPoolFilesByPoolId((prev) => {
-      const next = { ...prev };
-      delete next[poolId];
-      return next;
-    });
-
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(
-        getPoolDraftKey({
-          organizationId: ORGANIZATION_ID,
-          storeId: STORE_ID,
-          poolId,
-        })
-      );
-      window.localStorage.removeItem(
-        getActiveEditingPoolKey({
-          organizationId: ORGANIZATION_ID,
-          storeId: STORE_ID,
-        })
-      );
-    }
-
-    setSuccessText(
-      pendingFiles.length > 0
-        ? "Piscina e fotos atualizadas com sucesso."
-        : "Piscina atualizada com sucesso."
-    );
-    setSavingPoolId(null);
-    setEditingPoolId(null);
-    setEditPoolForm(null);
-    await fetchData();
-  }
-
-  async function handleDeletePool(poolId: string) {
-    if (!hasValidStoreContext) return;
-
-    const confirmed = window.confirm(
-      "Tem certeza que deseja excluir esta piscina? Essa ação também excluirá as fotos dela."
-    );
-
-    if (!confirmed) return;
-
-    setErrorText(null);
-    setSuccessText(null);
-    setDeletingPoolId(poolId);
-
-    try {
-      const relatedPhotos = photosByPoolId[poolId] || [];
-
-      if (relatedPhotos.length > 0) {
-        const storagePaths = relatedPhotos
-          .map((photo) => photo.storage_path)
-          .filter(Boolean);
-
-        if (storagePaths.length > 0) {
-          const { error: storageError } = await supabase.storage
-            .from(STORAGE_BUCKET)
-            .remove(storagePaths);
-
-          if (storageError) throw storageError;
-        }
-
-        const { error: photosDeleteError } = await supabase
-          .from("pool_photos")
-          .delete()
-          .eq("pool_id", poolId)
-          .eq("organization_id", ORGANIZATION_ID)
-          .eq("store_id", STORE_ID);
-
-        if (photosDeleteError) throw photosDeleteError;
-      }
-
-      const { error: poolDeleteError } = await supabase
-        .from("pools")
-        .delete()
-        .eq("id", poolId)
-        .eq("organization_id", ORGANIZATION_ID)
-        .eq("store_id", STORE_ID);
-
-      if (poolDeleteError) throw poolDeleteError;
-
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem(
-          getPoolDraftKey({
-            organizationId: ORGANIZATION_ID,
-            storeId: STORE_ID,
-            poolId,
-          })
-        );
-
-        window.localStorage.removeItem(
-          getActiveEditingPoolKey({
-            organizationId: ORGANIZATION_ID,
-            storeId: STORE_ID,
-          })
-        );
-      }
-
-      setSelectedPoolFilesByPoolId((prev) => {
-        const next = { ...prev };
-        delete next[poolId];
-        return next;
-      });
-
-      setEditingPoolId(null);
-      setEditPoolForm(null);
-      setSuccessText("Piscina excluída com sucesso.");
-      await fetchData();
-    } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao excluir piscina.");
-    } finally {
-      setDeletingPoolId(null);
-    }
-  }
-
-  function handlePoolFilesChange(poolId: string, event: React.ChangeEvent<HTMLInputElement>) {
+  function handlePoolFilesChange(poolId: string, event: ChangeEvent<HTMLInputElement>) {
     const fileList = Array.from(event.target.files || []);
-    const existingCount = (photosByPoolId[poolId] || []).length;
-    const totalAfterSelection = existingCount + fileList.length;
+    const currentCount = (photosByPoolId[poolId] || []).length;
 
-    if (totalAfterSelection > MAX_POOL_PHOTOS) {
+    if (currentCount + fileList.length > MAX_POOL_PHOTOS) {
       setErrorText(`Essa piscina pode ter no máximo ${MAX_POOL_PHOTOS} fotos no total.`);
       event.target.value = "";
       return;
@@ -647,14 +370,11 @@ export default function PiscinasPage() {
     }
 
     setErrorText(null);
-    setSelectedPoolFilesByPoolId((prev) => ({
-      ...prev,
-      [poolId]: fileList,
-    }));
+    setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: fileList }));
   }
 
   async function uploadPoolFiles(poolId: string, files: File[]) {
-    if (!hasValidStoreContext) throw new Error("Loja ativa não encontrada.");
+    if (!organizationId || !activeStoreId) throw new Error("Loja ativa não encontrada.");
 
     const existingPhotos = photosByPoolId[poolId] || [];
     let nextSortOrder = existingPhotos.length;
@@ -662,7 +382,7 @@ export default function PiscinasPage() {
     for (const file of files) {
       const extension = file.name.split(".").pop() || "jpg";
       const safeFileName = `${crypto.randomUUID()}.${extension}`;
-      const storagePath = `${poolId}/${safeFileName}`;
+      const storagePath = `${organizationId}/${activeStoreId}/${poolId}/${safeFileName}`;
 
       const { error: uploadError } = await supabase.storage
         .from(STORAGE_BUCKET)
@@ -675,8 +395,8 @@ export default function PiscinasPage() {
 
       const { error: metadataError } = await supabase.from("pool_photos").insert({
         pool_id: poolId,
-        organization_id: ORGANIZATION_ID,
-        store_id: STORE_ID,
+        organization_id: organizationId,
+        store_id: activeStoreId,
         storage_path: storagePath,
         file_name: file.name,
         file_size_bytes: file.size,
@@ -690,7 +410,6 @@ export default function PiscinasPage() {
 
   async function handleUploadNewPoolPhotos(poolId: string) {
     const files = selectedPoolFilesByPoolId[poolId] || [];
-
     if (files.length === 0) {
       setErrorText("Selecione uma ou mais fotos para adicionar.");
       return;
@@ -702,10 +421,9 @@ export default function PiscinasPage() {
 
     try {
       await uploadPoolFiles(poolId, files);
-      setSelectedPoolFilesByPoolId((prev) => ({
-        ...prev,
-        [poolId]: [],
-      }));
+      setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: [] }));
+      const input = fileInputRefs.current[poolId];
+      if (input) input.value = "";
       setSuccessText("Fotos adicionadas com sucesso.");
       await fetchData();
     } catch (error: any) {
@@ -716,522 +434,502 @@ export default function PiscinasPage() {
   }
 
   async function handleDeletePoolPhoto(photo: PoolPhotoRow) {
-    if (!hasValidStoreContext) return;
-
     setErrorText(null);
     setSuccessText(null);
     setDeletingPoolPhotoId(photo.id);
 
-    const belongsToActiveStore =
-      photo.organization_id === ORGANIZATION_ID && photo.store_id === STORE_ID;
+    try {
+      const { error: storageError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .remove([photo.storage_path]);
+      if (storageError) throw storageError;
 
-    if (!belongsToActiveStore) {
-      setErrorText("Esta foto não pertence à loja ativa.");
+      const { error: dbError } = await supabase
+        .from("pool_photos")
+        .delete()
+        .eq("id", photo.id);
+
+      if (dbError) throw dbError;
+
+      setSuccessText("Foto excluída com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao excluir foto da piscina.");
+    } finally {
       setDeletingPoolPhotoId(null);
-      return;
     }
-
-    const { error: storageError } = await supabase.storage
-      .from(STORAGE_BUCKET)
-      .remove([photo.storage_path]);
-
-    if (storageError) {
-      setErrorText(storageError.message ?? "Erro ao excluir arquivo da foto.");
-      setDeletingPoolPhotoId(null);
-      return;
-    }
-
-    const { error: dbError } = await supabase
-      .from("pool_photos")
-      .delete()
-      .eq("id", photo.id)
-      .eq("organization_id", ORGANIZATION_ID)
-      .eq("store_id", STORE_ID);
-
-    if (dbError) {
-      setErrorText(dbError.message ?? "Erro ao excluir registro da foto.");
-      setDeletingPoolPhotoId(null);
-      return;
-    }
-
-    setSuccessText("Foto excluída com sucesso.");
-    setDeletingPoolPhotoId(null);
-    await fetchData();
   }
 
-  if (storeLoading) {
-    return (
-      <div className="min-h-screen bg-gray-100">
-        <div className="mx-auto max-w-7xl px-6 py-6">
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-            Carregando loja ativa...
-          </div>
-        </div>
-      </div>
+  async function handleSavePool(poolId: string) {
+    if (!editPoolForm || !organizationId || !activeStoreId) return;
+
+    setSavingPoolId(poolId);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const parsedPrice = priceInputToNumber(editPoolForm.price);
+
+      const { error } = await supabase
+        .from("pools")
+        .update({
+          name: editPoolForm.name.trim() || null,
+          description: editPoolForm.description.trim() || null,
+          price: parsedPrice,
+          is_active: editPoolForm.is_active,
+          track_stock: editPoolForm.track_stock,
+          stock_quantity:
+            editPoolForm.track_stock && editPoolForm.stock_quantity.trim()
+              ? Number(editPoolForm.stock_quantity)
+              : null,
+        })
+        .eq("id", poolId)
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (error) throw error;
+
+      const pendingFiles = selectedPoolFilesByPoolId[poolId] || [];
+      if (pendingFiles.length > 0) {
+        await uploadPoolFiles(poolId, pendingFiles);
+        setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: [] }));
+        const input = fileInputRefs.current[poolId];
+        if (input) input.value = "";
+      }
+
+      setSuccessText("Piscina salva com sucesso.");
+      setEditingPoolId(null);
+      setEditPoolForm(null);
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao salvar piscina.");
+    } finally {
+      setSavingPoolId(null);
+    }
+  }
+
+  async function handleDeletePool(poolId: string) {
+    if (!organizationId || !activeStoreId) return;
+
+    const confirmed = window.confirm(
+      "Tem certeza que deseja excluir esta piscina? Essa ação também apaga as fotos dela."
     );
+    if (!confirmed) return;
+
+    setDeletingPoolId(poolId);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const poolPhotos = photosByPoolId[poolId] || [];
+      const storagePaths = poolPhotos.map((photo) => photo.storage_path).filter(Boolean);
+
+      if (storagePaths.length > 0) {
+        const { error: storageError } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .remove(storagePaths);
+        if (storageError) throw storageError;
+      }
+
+      if (poolPhotos.length > 0) {
+        const { error: photoDeleteError } = await supabase
+          .from("pool_photos")
+          .delete()
+          .eq("pool_id", poolId);
+
+        if (photoDeleteError) throw photoDeleteError;
+      }
+
+      const { error: poolDeleteError } = await supabase
+        .from("pools")
+        .delete()
+        .eq("id", poolId)
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (poolDeleteError) throw poolDeleteError;
+
+      setSuccessText("Piscina excluída com sucesso.");
+      setPools((prev) => prev.filter((pool) => pool.id !== poolId));
+      setPhotosByPoolId((prev) => {
+        const next = { ...prev };
+        delete next[poolId];
+        return next;
+      });
+
+      if (editingPoolId === poolId) {
+        setEditingPoolId(null);
+        setEditPoolForm(null);
+      }
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao excluir piscina.");
+    } finally {
+      setDeletingPoolId(null);
+    }
   }
 
-  if (!hasValidStoreContext) {
-    return (
-      <div className="min-h-screen bg-gray-100">
-        <div className="mx-auto max-w-7xl px-6 py-6">
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-            Nenhuma loja ativa encontrada para carregar as piscinas.
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const totalPools = useMemo(() => pools.length, [pools]);
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-7xl px-6 py-6">
-        <div className="mb-6 flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Piscinas cadastradas</h1>
-            <p className="mt-2 text-gray-600">
-              Visualize e edite todas as piscinas cadastradas.
-            </p>
-          </div>
-
-          <Link
-            href="/configuracoes"
-            className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
-          >
-            Voltar para configurações
-          </Link>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-black tracking-[-0.02em] text-black">
+            Piscinas cadastradas
+          </h1>
+          <p className="mt-1 text-sm text-gray-600">
+            Visualize e edite as piscinas sem ficar preso na rota errada.
+          </p>
+          <p className="mt-1 text-xs text-gray-500">Total de piscinas: {totalPools}</p>
         </div>
 
-        {errorText ? (
-          <div className="mb-5 rounded-2xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
-            <div className="font-semibold">Erro</div>
-            <div className="mt-1 break-words">{errorText}</div>
-          </div>
-        ) : null}
+        <Link
+          href="/configuracoes"
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
+        >
+          Voltar para configurações
+        </Link>
+      </div>
 
-        {successText ? (
-          <div className="mb-5 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
-            <div className="font-semibold">Sucesso</div>
-            <div className="mt-1 break-words">{successText}</div>
-          </div>
-        ) : null}
+      {errorText ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+          {errorText}
+        </div>
+      ) : null}
 
-        {loading ? (
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-            Carregando piscinas...
-          </div>
-        ) : pools.length === 0 ? (
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-            Nenhuma piscina cadastrada.
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {pools.map((pool) => {
-              const poolPhotos = photosByPoolId[pool.id] || [];
-              const availability = getPoolAvailability(pool);
-              const isEditing = editingPoolId === pool.id && editPoolForm;
-              const isSaving = savingPoolId === pool.id;
-              const isDeleting = deletingPoolId === pool.id;
-              const isUploadingPhotos = uploadingPoolPhotosId === pool.id;
-              const selectedNewFiles = selectedPoolFilesByPoolId[pool.id] || [];
+      {successText ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700">
+          {successText}
+        </div>
+      ) : null}
 
-              return (
-                <section
-                  key={pool.id}
-                  className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5"
-                >
-                  <div className="border-b border-black/5 px-6 py-4">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div>
-                        <h2 className="text-xl font-semibold text-gray-900">
-                          {pool.name ?? "Piscina sem nome"}
-                        </h2>
-                        <p className="mt-1 text-sm text-gray-600">
-                          {pool.shape ?? "-"} • {pool.material ?? "-"}
-                        </p>
+      {!hasValidStoreContext ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+          Nenhuma loja ativa encontrada.
+        </div>
+      ) : loading ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
+          Carregando piscinas...
+        </div>
+      ) : pools.length === 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
+          Nenhuma piscina cadastrada.
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {pools.map((pool) => {
+            const poolPhotos = photosByPoolId[pool.id] || [];
+            const isEditing = editingPoolId === pool.id;
+            const characteristics = buildPoolCharacteristics(pool);
+            const complementaryDescription = buildComplementaryDescription(
+              pool,
+              characteristics
+            );
+
+            return (
+              <section
+                key={pool.id}
+                className="overflow-hidden rounded-2xl border border-gray-200 bg-white"
+              >
+                <div className="border-b border-gray-200 px-3 py-3 sm:px-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <h2 className="text-lg font-black leading-tight text-black">
+                        {pool.name || "Piscina sem nome"}
+                      </h2>
+                      <p className="mt-1 text-sm text-gray-600">
+                        {pool.shape && pool.material
+                          ? `${pool.shape} • ${pool.material}`
+                          : "Dados básicos da piscina"}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <DetailChip value={moneyBRL(pool.price)} />
+                      <DetailChip value={pool.is_active ? "Ativa" : "Inativa"} />
+                      <DetailChip
+                        value={
+                          pool.track_stock
+                            ? `Estoque: ${pool.stock_quantity ?? 0}`
+                            : "Sem estoque"
+                        }
+                      />
+                      <button
+                        type="button"
+                        onClick={() => startEditing(pool)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
+                      >
+                        Editar
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 px-3 py-3 sm:px-4">
+                  {isEditing && editPoolForm ? (
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Nome
+                          </label>
+                          <input
+                            value={editPoolForm.name}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current ? { ...current, name: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Preço
+                          </label>
+                          <input
+                            value={editPoolForm.price}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      price: formatPriceInput(event.target.value),
+                                    }
+                                  : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            placeholder="58.900,00"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Quantidade em estoque
+                          </label>
+                          <input
+                            value={editPoolForm.stock_quantity}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current
+                                  ? { ...current, stock_quantity: event.target.value }
+                                  : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            placeholder="0"
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-4 pt-6 text-sm text-gray-800">
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={editPoolForm.is_active}
+                              onChange={(event) =>
+                                setEditPoolForm((current) =>
+                                  current
+                                    ? { ...current, is_active: event.target.checked }
+                                    : current
+                                )
+                              }
+                            />
+                            Piscina ativa
+                          </label>
+
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={editPoolForm.track_stock}
+                              onChange={(event) =>
+                                setEditPoolForm((current) =>
+                                  current
+                                    ? { ...current, track_stock: event.target.checked }
+                                    : current
+                                )
+                              }
+                            />
+                            Controlar estoque
+                          </label>
+                        </div>
+
+                        <div className="lg:col-span-2">
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Descrição
+                          </label>
+                          <textarea
+                            value={editPoolForm.description}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current
+                                  ? { ...current, description: event.target.value }
+                                  : current
+                              )
+                            }
+                            rows={5}
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
-                        {!isEditing ? (
-                          <>
-                            <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                              {moneyBRL(pool.price)}
-                            </span>
-                            <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                              {pool.is_active ? "Ativa" : "Inativa"}
-                            </span>
-                            <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                              {pool.track_stock ? "Controla estoque" : "Sem controle de estoque"}
-                            </span>
-                            <span className="rounded-full bg-gray-50 px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/5">
-                              {availability.label}
-                            </span>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleSavePool(pool.id)}
+                          disabled={savingPoolId === pool.id}
+                          className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {savingPoolId === pool.id ? "Salvando..." : "Salvar"}
+                        </button>
 
-                            <button
-                              type="button"
-                              onClick={() => startEditing(pool)}
-                              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
-                            >
-                              Editar
-                            </button>
-                          </>
+                        <button
+                          type="button"
+                          onClick={cancelEditing}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900"
+                        >
+                          Cancelar
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleDeletePool(pool.id)}
+                          disabled={deletingPoolId === pool.id}
+                          className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deletingPoolId === pool.id ? "Excluindo..." : "Excluir"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <CharacteristicsTable
+                    title="Características da piscina"
+                    rows={characteristics}
+                  />
+
+                  {complementaryDescription ? (
+                    <SectionCard title="Descrição complementar">
+                      <div className="whitespace-pre-wrap text-sm leading-6 text-gray-800">
+                        {complementaryDescription}
+                      </div>
+                    </SectionCard>
+                  ) : null}
+
+                  <SectionCard title="Fotos da piscina">
+                    {isEditing ? (
+                      <div className="space-y-3">
+                        <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                          <input
+                            ref={(element) => {
+                              fileInputRefs.current[pool.id] = element;
+                            }}
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            onChange={(event) => handlePoolFilesChange(pool.id, event)}
+                            className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
+                          />
+                          <p className="mt-2 text-xs text-gray-500">
+                            Até {MAX_POOL_PHOTOS} imagens, máximo de 50 MB por arquivo.
+                          </p>
+                        </div>
+
+                        {(selectedPoolFilesByPoolId[pool.id] || []).length > 0 ? (
+                          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            {(selectedPoolFilesByPoolId[pool.id] || []).map((file) => (
+                              <div
+                                key={`${file.name}-${file.size}`}
+                                className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 py-2 last:border-b-0"
+                              >
+                                <span className="truncate font-medium text-gray-900">
+                                  {file.name}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {formatFileSize(file.size)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <button
+                          type="button"
+                          onClick={() => void handleUploadNewPoolPhotos(pool.id)}
+                          disabled={uploadingPoolPhotosId === pool.id}
+                          className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {uploadingPoolPhotosId === pool.id
+                            ? "Adicionando fotos..."
+                            : "Adicionar fotos"}
+                        </button>
+
+                        {poolPhotos.length === 0 ? (
+                          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
+                            Nenhuma foto cadastrada para esta piscina.
+                          </div>
                         ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => void handleSavePool(pool.id)}
-                              disabled={isSaving || isDeleting}
-                              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {isSaving ? "Salvando..." : "Salvar"}
-                            </button>
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                            {poolPhotos.map((photo) => {
+                              const isDeletingPhoto = deletingPoolPhotoId === photo.id;
 
-                            <button
-                              type="button"
-                              onClick={cancelEditing}
-                              disabled={isSaving || isDeleting}
-                              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              Cancelar
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => void handleDeletePool(pool.id)}
-                              disabled={isSaving || isDeleting}
-                              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {isDeleting ? "Excluindo..." : "Excluir"}
-                            </button>
-                          </>
+                              return (
+                                <div
+                                  key={photo.id}
+                                  className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
+                                >
+                                  <img
+                                    src={getPublicImageUrl(photo.storage_path)}
+                                    alt={photo.file_name || pool.name || "Foto da piscina"}
+                                    className="block h-24 w-full object-cover"
+                                  />
+                                  <div className="space-y-2 p-2.5">
+                                    <div className="truncate text-[11px] text-gray-600">
+                                      {photo.file_name || "Foto"}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleDeletePoolPhoto(photo)}
+                                      disabled={isDeletingPhoto}
+                                      className="w-full rounded-lg border border-red-200 bg-white px-2.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {isDeletingPhoto ? "Excluindo..." : "Excluir foto"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
-                    </div>
-                  </div>
-
-                  <div className="grid gap-6 p-6 lg:grid-cols-[320px,1fr]">
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                            Largura
-                          </div>
-                          <div className="mt-2 text-lg font-semibold text-gray-900">
-                            {pool.width_m ?? "-"} m
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                            Comprimento
-                          </div>
-                          <div className="mt-2 text-lg font-semibold text-gray-900">
-                            {pool.length_m ?? "-"} m
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                            Profundidade
-                          </div>
-                          <div className="mt-2 text-lg font-semibold text-gray-900">
-                            {pool.depth_m ?? "-"} m
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                            Capacidade
-                          </div>
-                          <div className="mt-2 text-lg font-semibold text-gray-900">
-                            {pool.max_capacity_l != null ? `${Number(pool.max_capacity_l).toLocaleString("pt-BR")} L` : "-"}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                            Material
-                          </div>
-                          <div className="mt-2 text-lg font-semibold text-gray-900">
-                            {pool.material ?? "-"}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                            Fotos
-                          </div>
-                          <div className="mt-2 text-lg font-semibold text-gray-900">
-                            {poolPhotos.length}
-                          </div>
-                        </div>
+                    ) : poolPhotos.length === 0 ? (
+                      <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
+                        Nenhuma foto cadastrada para esta piscina.
                       </div>
-
-                      {isEditing ? (
-                        <div className="space-y-4 rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                          <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
-                              Nome
-                            </label>
-                            <input
-                              value={editPoolForm.name}
-                              onChange={(e) =>
-                                setEditPoolForm((prev) =>
-                                  prev ? { ...prev, name: e.target.value } : prev
-                                )
-                              }
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
+                    ) : (
+                      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
+                        {poolPhotos.map((photo) => (
+                          <div
+                            key={photo.id}
+                            className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
+                          >
+                            <img
+                              src={getPublicImageUrl(photo.storage_path)}
+                              alt={photo.file_name || pool.name || "Foto da piscina"}
+                              className="block h-16 w-full object-cover"
                             />
                           </div>
-
-                          <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
-                              Preço
-                            </label>
-                            <input
-                              value={editPoolForm.price}
-                              onChange={(e) =>
-                                setEditPoolForm((prev) =>
-                                  prev
-                                    ? { ...prev, price: formatPriceInput(e.target.value) }
-                                    : prev
-                                )
-                              }
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                              placeholder="Ex.: 12.000,00"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
-                              Descrição
-                            </label>
-                            <textarea
-                              value={editPoolForm.description}
-                              onChange={(e) =>
-                                setEditPoolForm((prev) =>
-                                  prev ? { ...prev, description: e.target.value } : prev
-                                )
-                              }
-                              className="min-h-[120px] w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black"
-                            />
-                          </div>
-
-                          <div className="space-y-3 rounded-2xl bg-white p-4 ring-1 ring-black/5">
-                            <label className="flex items-center gap-3 text-sm text-gray-700">
-                              <input
-                                type="checkbox"
-                                checked={editPoolForm.is_active}
-                                onChange={(e) =>
-                                  setEditPoolForm((prev) =>
-                                    prev ? { ...prev, is_active: e.target.checked } : prev
-                                  )
-                                }
-                              />
-                              Piscina ativa para oferta
-                            </label>
-
-                            <label className="flex items-center gap-3 text-sm text-gray-700">
-                              <input
-                                type="checkbox"
-                                checked={editPoolForm.track_stock}
-                                onChange={(e) =>
-                                  setEditPoolForm((prev) =>
-                                    prev ? { ...prev, track_stock: e.target.checked } : prev
-                                  )
-                                }
-                              />
-                              Controlar estoque desta piscina
-                            </label>
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700">
-                              Quantidade em estoque
-                            </label>
-                            <input
-                              value={editPoolForm.stock_quantity}
-                              onChange={(e) =>
-                                setEditPoolForm((prev) =>
-                                  prev
-                                    ? {
-                                        ...prev,
-                                        stock_quantity: formatIntegerInput(e.target.value),
-                                      }
-                                    : prev
-                                )
-                              }
-                              disabled={!editPoolForm.track_stock}
-                              className="w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
-                              placeholder={
-                                editPoolForm.track_stock
-                                  ? "Ex.: 3"
-                                  : "Desativado porque o controle de estoque está desligado"
-                              }
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <>
-                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                            <div className="text-sm font-semibold text-gray-900">
-                              Disponibilidade comercial
-                            </div>
-                            <div className="mt-2 space-y-1 text-sm text-gray-600">
-                              <div>Status: {pool.is_active ? "Ativa" : "Inativa"}</div>
-                              <div>
-                                Controle de estoque: {pool.track_stock ? "Sim" : "Não"}
-                              </div>
-                              <div>
-                                Quantidade em estoque:{" "}
-                                {pool.track_stock ? pool.stock_quantity ?? 0 : "Não controlado"}
-                              </div>
-                              <div>Situação: {availability.detail}</div>
-                            </div>
-                          </div>
-
-                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                            <div className="text-sm font-semibold text-gray-900">Descrição</div>
-                            <div className="mt-2 text-sm text-gray-600">
-                              {pool.description?.trim() || "Sem descrição."}
-                            </div>
-                          </div>
-                        </>
-                      )}
-
-                      <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                        <div className="text-sm font-semibold text-gray-900">
-                          Informações adicionais
-                        </div>
-                        <div className="mt-2 space-y-1 text-sm text-gray-600">
-                          <div>Capacidade: {pool.max_capacity_l ?? "-"} L</div>
-                          <div>Peso: {pool.weight_kg ?? "-"} kg</div>
-                        </div>
+                        ))}
                       </div>
-                    </div>
-
-                    <div>
-                      <div className="mb-3 flex items-center justify-between gap-3">
-                        <div className="text-sm font-semibold text-gray-900">
-                          Fotos da piscina
-                        </div>
-                        <div className="text-xs text-gray-500">Até 10 fotos por piscina</div>
-                      </div>
-
-                      {isEditing ? (
-                        <div className="space-y-4">
-                          <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                            <div className="mb-3 text-sm font-semibold text-gray-900">
-                              Adicionar novas fotos
-                            </div>
-
-                            <label className="inline-flex cursor-pointer items-center rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90">
-                              Selecionar fotos
-                              <input
-                                type="file"
-                                accept="image/png,image/jpeg,image/jpg,image/webp"
-                                multiple
-                                onChange={(e) => handlePoolFilesChange(pool.id, e)}
-                                className="hidden"
-                              />
-                            </label>
-
-                            {selectedNewFiles.length > 0 ? (
-                              <div className="mt-3 space-y-2 rounded-2xl bg-white p-4 ring-1 ring-black/5">
-                                {selectedNewFiles.map((file, index) => (
-                                  <div
-                                    key={`${file.name}-${index}`}
-                                    className="flex items-center justify-between gap-3 text-sm text-gray-700"
-                                  >
-                                    <span className="truncate">{file.name}</span>
-                                    <span className="shrink-0 text-xs text-gray-500">
-                                      {formatFileSize(file.size)}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="mt-3 text-sm text-gray-600">
-                                Nenhuma nova foto selecionada.
-                              </div>
-                            )}
-
-                            <button
-                              type="button"
-                              onClick={() => void handleUploadNewPoolPhotos(pool.id)}
-                              disabled={isUploadingPhotos || selectedNewFiles.length === 0}
-                              className="mt-4 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {isUploadingPhotos ? "Adicionando fotos..." : "Adicionar fotos"}
-                            </button>
-                          </div>
-
-                          {poolPhotos.length === 0 ? (
-                            <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
-                              Nenhuma foto cadastrada para esta piscina.
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-                              {poolPhotos.map((photo) => {
-                                const isDeletingPhoto = deletingPoolPhotoId === photo.id;
-
-                                return (
-                                  <div
-                                    key={photo.id}
-                                    className="overflow-hidden rounded-xl bg-gray-50 ring-1 ring-black/5"
-                                  >
-                                    <img
-                                      src={getPublicImageUrl(photo.storage_path)}
-                                      alt={photo.file_name || pool.name || "Foto da piscina"}
-                                      className="block h-28 w-full object-cover"
-                                    />
-                                    <div className="space-y-2 p-3">
-                                      <div className="truncate text-xs text-gray-600">
-                                        {photo.file_name || "Foto"}
-                                      </div>
-                                      <button
-                                        type="button"
-                                        onClick={() => void handleDeletePoolPhoto(photo)}
-                                        disabled={isDeletingPhoto}
-                                        className="w-full rounded-lg bg-white px-3 py-2 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                      >
-                                        {isDeletingPhoto ? "Excluindo..." : "Excluir foto"}
-                                      </button>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      ) : poolPhotos.length === 0 ? (
-                        <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
-                          Nenhuma foto cadastrada para esta piscina.
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
-                          {poolPhotos.map((photo) => (
-                            <div
-                              key={photo.id}
-                              className="overflow-hidden rounded-xl bg-gray-50 ring-1 ring-black/5"
-                            >
-                              <img
-                                src={getPublicImageUrl(photo.storage_path)}
-                                alt={photo.file_name || pool.name || "Foto da piscina"}
-                                className="block h-20 w-full object-cover"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </section>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                    )}
+                  </SectionCard>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

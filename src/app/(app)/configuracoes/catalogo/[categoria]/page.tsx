@@ -119,10 +119,17 @@ function toPriceInput(cents: number | null | undefined) {
 }
 
 function priceInputToCents(value: string) {
-  const normalized = value.replace(/\./g, "").replace(",", ".").replace(/[^\d.]/g, "").trim();
+  const normalized = value
+    .replace(/\./g, "")
+    .replace(",", ".")
+    .replace(/[^\d.]/g, "")
+    .trim();
+
   if (!normalized) return null;
+
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed)) return null;
+
   return Math.round(parsed * 100);
 }
 
@@ -150,26 +157,6 @@ function normalizeLoose(value: string | null | undefined) {
     .trim();
 }
 
-function titleCaseLabel(value: string) {
-  const cleaned = String(value || "")
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!cleaned) return "";
-
-  const forced: Record<string, string> = { sku: "SKU" };
-
-  return cleaned
-    .split(" ")
-    .map((part) => {
-      const lower = part.toLowerCase();
-      if (forced[lower]) return forced[lower];
-      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
-    })
-    .join(" ");
-}
-
 function isJunkDescriptionLine(value: string) {
   const normalized = normalizeLoose(value);
   if (!normalized) return true;
@@ -180,12 +167,7 @@ function isJunkDescriptionLine(value: string) {
     "descricao detalhada",
     "descrição detalhada",
     "nome do item",
-    "nome comercial",
     "categoria",
-    "arquivo de origem",
-    "objetivo",
-    "informacao",
-    "informação",
     "preco",
     "preço",
     "marca",
@@ -225,20 +207,15 @@ function isJunkDescriptionLine(value: string) {
     normalized.startsWith("categoria esperada") ||
     normalized.startsWith("objetivo validar") ||
     normalized.startsWith("salvar em configuracoes") ||
-    normalized.startsWith("salvar em configurações") ||
-    normalized.startsWith("imagem ilustrativa de alta qualidade para teste") ||
-    normalized.startsWith("validar classificacao") ||
-    normalized.startsWith("validar classificação") ||
-    normalized.startsWith("leitura de imagem") ||
-    normalized.startsWith("salvamento automatico") ||
-    normalized.startsWith("salvamento automático")
+    normalized.startsWith("salvar em configurações")
   );
 }
 
 function characteristicValue(raw: unknown) {
-  const value = cleanLooseText(typeof raw === "string" || typeof raw === "number" ? String(raw) : "");
-  if (!value) return "";
-  return value;
+  const value = cleanLooseText(
+    typeof raw === "string" || typeof raw === "number" ? String(raw) : ""
+  );
+  return value || "";
 }
 
 function pushCharacteristic(rows: CharacteristicRow[], label: string, value: unknown) {
@@ -253,7 +230,6 @@ function buildCatalogCharacteristics(item: CatalogItemRow, category: string): Ch
   const rows: CharacteristicRow[] = [];
 
   pushCharacteristic(rows, "Nome", item.name);
-  pushCharacteristic(rows, "Categoria", categoryLabel(category));
   if (typeof item.price_cents === "number") pushCharacteristic(rows, "Preço", formatMoney(item.price_cents));
   pushCharacteristic(rows, "SKU", item.sku || metadata.sku);
 
@@ -288,7 +264,6 @@ function buildCatalogCharacteristics(item: CatalogItemRow, category: string): Ch
     pushCharacteristic(rows, "Tamanho", metadata.size || metadata.dimensions);
   }
 
-  pushCharacteristic(rows, "Arquivo de origem", metadata.source_file_name);
   return rows;
 }
 
@@ -297,7 +272,10 @@ function buildComplementaryDescription(item: CatalogItemRow, characteristics: Ch
   const sourceText = cleanLooseText(String(metadata.clean_description || item.description || ""));
   if (!sourceText) return "";
 
-  const characteristicValues = characteristics.map((row) => normalizeLoose(row.value)).filter(Boolean);
+  const characteristicValues = characteristics
+    .map((row) => normalizeLoose(row.value))
+    .filter(Boolean);
+
   const lines = sourceText
     .split(/\n+/)
     .map((line) => cleanLooseText(line))
@@ -307,7 +285,9 @@ function buildComplementaryDescription(item: CatalogItemRow, characteristics: Ch
       const normalized = normalizeLoose(line);
       if (!normalized) return false;
       if (characteristicValues.includes(normalized)) return false;
-      return !characteristicValues.some((value) => value.length >= 10 && normalized === value);
+      return !characteristicValues.some(
+        (value) => value.length >= 10 && normalized === value
+      );
     });
 
   const unique: string[] = [];
@@ -334,7 +314,7 @@ function buildEditForm(item: CatalogItemRow): EditCatalogForm {
 
 function DetailChip({ value }: { value: string }) {
   return (
-    <span className="inline-flex rounded-full bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10">
+    <span className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700">
       {value}
     </span>
   );
@@ -348,8 +328,8 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-[24px] bg-white p-5 ring-1 ring-black/5">
-      <h3 className="mb-3 text-xl font-bold text-gray-900">{title}</h3>
+    <div className="rounded-xl border border-gray-200 bg-white p-3">
+      <h3 className="mb-2 text-sm font-semibold text-gray-900">{title}</h3>
       {children}
     </div>
   );
@@ -366,16 +346,16 @@ function CharacteristicsTable({
 
   return (
     <SectionCard title={title}>
-      <div className="overflow-hidden rounded-2xl ring-1 ring-black/5">
+      <div className="overflow-hidden rounded-lg border border-gray-200">
         {rows.map((row, index) => (
           <div
             key={`${row.label}-${index}`}
-            className={`grid gap-2 px-4 py-3 text-sm sm:grid-cols-[220px_minmax(0,1fr)] sm:items-start ${
+            className={`grid gap-1 px-3 py-2 text-sm sm:grid-cols-[150px_minmax(0,1fr)] ${
               index % 2 === 0 ? "bg-gray-50" : "bg-white"
             } ${index > 0 ? "border-t border-gray-200" : ""}`}
           >
-            <div className="font-semibold text-gray-700">{row.label}</div>
-            <div className="text-gray-900 break-words">{row.value}</div>
+            <div className="font-medium text-gray-600">{row.label}</div>
+            <div className="break-words text-gray-900">{row.value}</div>
           </div>
         ))}
       </div>
@@ -385,7 +365,10 @@ function CharacteristicsTable({
 
 export default function CatalogCategoryPage() {
   const params = useParams<{ categoria?: string }>();
-  const category = normalizeCategory(Array.isArray(params?.categoria) ? params?.categoria[0] : params?.categoria);
+  const category = normalizeCategory(
+    Array.isArray(params?.categoria) ? params?.categoria[0] : params?.categoria
+  );
+
   const { organizationId, activeStoreId } = useStoreContext();
 
   const [items, setItems] = useState<CatalogItemRow[]>([]);
@@ -450,6 +433,7 @@ export default function CatalogCategoryPage() {
         if (!grouped[photo.catalog_item_id]) grouped[photo.catalog_item_id] = [];
         grouped[photo.catalog_item_id].push(photo);
       }
+
       setPhotosByItemId(grouped);
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao carregar itens do catálogo.");
@@ -476,9 +460,10 @@ export default function CatalogCategoryPage() {
 
   function handleCatalogFilesChange(itemId: string, event: ChangeEvent<HTMLInputElement>) {
     const fileList = Array.from(event.target.files || []);
+    const currentCount = (photosByItemId[itemId] || []).length;
 
-    if (fileList.length > MAX_CATALOG_PHOTOS) {
-      setErrorText(`Você pode selecionar no máximo ${MAX_CATALOG_PHOTOS} fotos por item.`);
+    if (currentCount + fileList.length > MAX_CATALOG_PHOTOS) {
+      setErrorText(`Esse item pode ter no máximo ${MAX_CATALOG_PHOTOS} fotos no total.`);
       event.target.value = "";
       return;
     }
@@ -498,10 +483,7 @@ export default function CatalogCategoryPage() {
     }
 
     setErrorText(null);
-    setSelectedCatalogFilesByItemId((prev) => ({
-      ...prev,
-      [itemId]: fileList,
-    }));
+    setSelectedCatalogFilesByItemId((prev) => ({ ...prev, [itemId]: fileList }));
   }
 
   async function uploadCatalogFiles(itemId: string, files: File[]) {
@@ -539,7 +521,6 @@ export default function CatalogCategoryPage() {
 
   async function handleUploadNewPhotos(itemId: string) {
     const files = selectedCatalogFilesByItemId[itemId] || [];
-
     if (files.length === 0) {
       setErrorText("Selecione uma ou mais fotos para adicionar.");
       return;
@@ -569,10 +550,16 @@ export default function CatalogCategoryPage() {
     setDeletingPhotoId(photo.id);
 
     try {
-      const { error: storageError } = await supabase.storage.from(STORAGE_BUCKET).remove([photo.storage_path]);
+      const { error: storageError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .remove([photo.storage_path]);
       if (storageError) throw storageError;
 
-      const { error: dbError } = await supabase.from("store_catalog_item_photos").delete().eq("id", photo.id);
+      const { error: dbError } = await supabase
+        .from("store_catalog_item_photos")
+        .delete()
+        .eq("id", photo.id);
+
       if (dbError) throw dbError;
 
       setSuccessText("Foto excluída com sucesso.");
@@ -586,6 +573,7 @@ export default function CatalogCategoryPage() {
 
   async function handleSaveItem(itemId: string) {
     if (!editForm || !organizationId || !activeStoreId) return;
+
     setSavingItemId(itemId);
     setErrorText(null);
     setSuccessText(null);
@@ -599,7 +587,9 @@ export default function CatalogCategoryPage() {
         is_active: editForm.is_active,
         track_stock: editForm.track_stock,
         stock_quantity:
-          editForm.track_stock && editForm.stock_quantity.trim() ? Number(editForm.stock_quantity) : null,
+          editForm.track_stock && editForm.stock_quantity.trim()
+            ? Number(editForm.stock_quantity)
+            : null,
       };
 
       const { error } = await supabase
@@ -633,7 +623,9 @@ export default function CatalogCategoryPage() {
   async function handleDeleteItem(itemId: string) {
     if (!organizationId || !activeStoreId) return;
 
-    const confirmed = window.confirm("Tem certeza que deseja excluir este item? Essa ação também apaga as fotos dele.");
+    const confirmed = window.confirm(
+      "Tem certeza que deseja excluir este item? Essa ação também apaga as fotos dele."
+    );
     if (!confirmed) return;
 
     setDeletingItemId(itemId);
@@ -645,7 +637,9 @@ export default function CatalogCategoryPage() {
       const storagePaths = itemPhotos.map((photo) => photo.storage_path).filter(Boolean);
 
       if (storagePaths.length > 0) {
-        const { error: storageError } = await supabase.storage.from(STORAGE_BUCKET).remove(storagePaths);
+        const { error: storageError } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .remove(storagePaths);
         if (storageError) throw storageError;
       }
 
@@ -654,6 +648,7 @@ export default function CatalogCategoryPage() {
           .from("store_catalog_item_photos")
           .delete()
           .eq("catalog_item_id", itemId);
+
         if (photoDeleteError) throw photoDeleteError;
       }
 
@@ -663,19 +658,21 @@ export default function CatalogCategoryPage() {
         .eq("id", itemId)
         .eq("organization_id", organizationId)
         .eq("store_id", activeStoreId);
+
       if (itemDeleteError) throw itemDeleteError;
 
+      setSuccessText("Item excluído com sucesso.");
       setItems((prev) => prev.filter((item) => item.id !== itemId));
       setPhotosByItemId((prev) => {
         const next = { ...prev };
         delete next[itemId];
         return next;
       });
+
       if (editingItemId === itemId) {
         setEditingItemId(null);
         setEditForm(null);
       }
-      setSuccessText("Item excluído com sucesso.");
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao excluir item.");
     } finally {
@@ -686,60 +683,90 @@ export default function CatalogCategoryPage() {
   const pageTitle = useMemo(() => categoryLabel(category), [category]);
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-[42px] font-black tracking-[-0.03em] text-black">{pageTitle}</h1>
-          <p className="mt-2 text-lg text-gray-700">Visualize e edite todos os itens cadastrados desta categoria.</p>
+          <h1 className="text-2xl font-black tracking-[-0.02em] text-black">
+            {pageTitle}
+          </h1>
+          <p className="mt-1 text-sm text-gray-600">
+            Visualize e edite os itens desta categoria em um layout mais compacto.
+          </p>
         </div>
+
         <Link
           href="/configuracoes"
-          className="rounded-2xl bg-white px-6 py-3 text-base font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50"
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
         >
           Voltar para configurações
         </Link>
       </div>
 
       {errorText ? (
-        <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-200">{errorText}</div>
-      ) : null}
-      {successText ? (
-        <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 ring-1 ring-emerald-200">{successText}</div>
+        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+          {errorText}
+        </div>
       ) : null}
 
-      {loading ? (
-        <div className="rounded-[28px] bg-white p-10 text-sm text-gray-600 ring-1 ring-black/5">Carregando itens...</div>
+      {successText ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700">
+          {successText}
+        </div>
+      ) : null}
+
+      {!hasValidStoreContext ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+          Nenhuma loja ativa encontrada.
+        </div>
+      ) : loading ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
+          Carregando itens...
+        </div>
       ) : items.length === 0 ? (
-        <div className="rounded-[28px] bg-white p-10 text-sm text-gray-600 ring-1 ring-black/5">Nenhum item cadastrado nesta categoria.</div>
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
+          Nenhum item cadastrado nesta categoria.
+        </div>
       ) : (
-        <div className="space-y-5">
+        <div className="space-y-4">
           {items.map((item) => {
             const itemPhotos = photosByItemId[item.id] || [];
             const isEditing = editingItemId === item.id;
             const characteristics = buildCatalogCharacteristics(item, category);
-            const complementaryDescription = buildComplementaryDescription(item, characteristics);
-            const characteristicsTitle = category === "quimicos" ? "Características do produto" : "Características do item";
+            const complementaryDescription = buildComplementaryDescription(
+              item,
+              characteristics
+            );
 
             return (
-              <section key={item.id} className="overflow-hidden rounded-[28px] bg-white ring-1 ring-black/5">
-                <div className="border-b border-gray-200 px-4 py-4 sm:px-6">
-                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+              <section
+                key={item.id}
+                className="overflow-hidden rounded-2xl border border-gray-200 bg-white"
+              >
+                <div className="border-b border-gray-200 px-3 py-3 sm:px-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0">
-                      <h2 className="max-w-4xl text-[22px] font-black leading-tight tracking-[-0.02em] text-black">
+                      <h2 className="text-lg font-black leading-tight text-black">
                         {item.name}
                       </h2>
-                      <p className="mt-2 text-base text-gray-600">{item.sku ? `SKU: ${item.sku}` : "Sem código do produto"}</p>
+                      <p className="mt-1 text-sm text-gray-600">
+                        {item.sku ? `SKU: ${item.sku}` : "Sem SKU"}
+                      </p>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                    <div className="flex flex-wrap items-center gap-2">
                       <DetailChip value={formatMoney(item.price_cents)} />
                       <DetailChip value={item.is_active ? "Ativo" : "Inativo"} />
-                      <DetailChip value={item.track_stock ? `Estoque: ${item.stock_quantity ?? 0}` : "Sem controle de estoque"} />
-                      <DetailChip value={item.is_active && (!item.track_stock || (item.stock_quantity ?? 0) > 0) ? "Disponível para oferta" : "Indisponível"} />
+                      <DetailChip
+                        value={
+                          item.track_stock
+                            ? `Estoque: ${item.stock_quantity ?? 0}`
+                            : "Sem estoque"
+                        }
+                      />
                       <button
                         type="button"
                         onClick={() => startEditing(item)}
-                        className="rounded-2xl bg-white px-5 py-3 text-base font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50"
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
                       >
                         Editar
                       </button>
@@ -747,95 +774,148 @@ export default function CatalogCategoryPage() {
                   </div>
                 </div>
 
-                <div className="space-y-4 px-4 py-4 sm:px-6 sm:py-5">
+                <div className="space-y-3 px-3 py-3 sm:px-4">
                   {isEditing && editForm ? (
-                    <div className="rounded-[24px] bg-gray-50 p-4 ring-1 ring-black/5">
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                       <div className="grid gap-3 lg:grid-cols-2">
                         <div>
-                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome</label>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Nome
+                          </label>
                           <input
                             value={editForm.name}
-                            onChange={(event) => setEditForm((current) => (current ? { ...current, name: event.target.value } : current))}
-                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, name: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
                           />
                         </div>
+
                         <div>
-                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">SKU</label>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            SKU
+                          </label>
                           <input
                             value={editForm.sku}
-                            onChange={(event) => setEditForm((current) => (current ? { ...current, sku: event.target.value } : current))}
-                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, sku: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
                           />
                         </div>
+
                         <div>
-                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</label>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Preço
+                          </label>
                           <input
                             value={editForm.price}
-                            onChange={(event) => setEditForm((current) => (current ? { ...current, price: event.target.value } : current))}
-                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, price: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="129,90"
                           />
                         </div>
+
                         <div>
-                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quantidade em estoque</label>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Quantidade em estoque
+                          </label>
                           <input
                             value={editForm.stock_quantity}
-                            onChange={(event) => setEditForm((current) => (current ? { ...current, stock_quantity: event.target.value } : current))}
-                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current
+                                  ? { ...current, stock_quantity: event.target.value }
+                                  : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
                             placeholder="0"
                           />
                         </div>
+
+                        <div className="flex flex-wrap items-center gap-4 pt-6 text-sm text-gray-800">
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={editForm.is_active}
+                              onChange={(event) =>
+                                setEditForm((current) =>
+                                  current
+                                    ? { ...current, is_active: event.target.checked }
+                                    : current
+                                )
+                              }
+                            />
+                            Item ativo
+                          </label>
+
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={editForm.track_stock}
+                              onChange={(event) =>
+                                setEditForm((current) =>
+                                  current
+                                    ? { ...current, track_stock: event.target.checked }
+                                    : current
+                                )
+                              }
+                            />
+                            Controlar estoque
+                          </label>
+                        </div>
+
                         <div className="lg:col-span-2">
-                          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição</label>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Descrição
+                          </label>
                           <textarea
                             value={editForm.description}
-                            onChange={(event) => setEditForm((current) => (current ? { ...current, description: event.target.value } : current))}
-                            rows={6}
-                            className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm outline-none focus:border-black"
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current
+                                  ? { ...current, description: event.target.value }
+                                  : current
+                              )
+                            }
+                            rows={5}
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
                           />
                         </div>
                       </div>
 
-                      <div className="mt-4 flex flex-wrap gap-4 text-sm text-gray-800">
-                        <label className="inline-flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={editForm.is_active}
-                            onChange={(event) => setEditForm((current) => (current ? { ...current, is_active: event.target.checked } : current))}
-                          />
-                          Item ativo
-                        </label>
-                        <label className="inline-flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={editForm.track_stock}
-                            onChange={(event) => setEditForm((current) => (current ? { ...current, track_stock: event.target.checked } : current))}
-                          />
-                          Controlar estoque
-                        </label>
-                      </div>
-
-                      <div className="mt-4 flex flex-wrap gap-2">
+                      <div className="mt-3 flex flex-wrap gap-2">
                         <button
                           type="button"
                           onClick={() => void handleSaveItem(item.id)}
                           disabled={savingItemId === item.id}
-                          className="rounded-2xl bg-black px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {savingItemId === item.id ? "Salvando..." : "Salvar"}
                         </button>
+
                         <button
                           type="button"
                           onClick={cancelEditing}
-                          className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-gray-900 ring-1 ring-black/10"
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900"
                         >
                           Cancelar
                         </button>
+
                         <button
                           type="button"
                           onClick={() => void handleDeleteItem(item.id)}
                           disabled={deletingItemId === item.id}
-                          className="rounded-2xl bg-red-600 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {deletingItemId === item.id ? "Excluindo..." : "Excluir"}
                         </button>
@@ -843,18 +923,23 @@ export default function CatalogCategoryPage() {
                     </div>
                   ) : null}
 
-                  <CharacteristicsTable title={characteristicsTitle} rows={characteristics} />
+                  <CharacteristicsTable
+                    title={category === "quimicos" ? "Características do produto" : "Características do item"}
+                    rows={characteristics}
+                  />
 
                   {complementaryDescription ? (
                     <SectionCard title="Descrição complementar">
-                      <div className="whitespace-pre-wrap text-[15px] leading-7 text-gray-800">{complementaryDescription}</div>
+                      <div className="whitespace-pre-wrap text-sm leading-6 text-gray-800">
+                        {complementaryDescription}
+                      </div>
                     </SectionCard>
                   ) : null}
 
                   <SectionCard title="Fotos do item">
                     {isEditing ? (
-                      <div className="space-y-4">
-                        <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-4">
+                      <div className="space-y-3">
+                        <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                           <input
                             ref={(element) => {
                               fileInputRefs.current[item.id] = element;
@@ -863,17 +948,26 @@ export default function CatalogCategoryPage() {
                             multiple
                             accept="image/*"
                             onChange={(event) => handleCatalogFilesChange(item.id, event)}
-                            className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
+                            className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                           />
-                          <p className="mt-2 text-xs text-gray-500">Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.</p>
+                          <p className="mt-2 text-xs text-gray-500">
+                            Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.
+                          </p>
                         </div>
 
                         {(selectedCatalogFilesByItemId[item.id] || []).length > 0 ? (
-                          <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
                             {(selectedCatalogFilesByItemId[item.id] || []).map((file) => (
-                              <div key={`${file.name}-${file.size}`} className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 py-2 last:border-b-0">
-                                <span className="truncate font-medium text-gray-900">{file.name}</span>
-                                <span className="text-xs text-gray-500">{formatFileSize(file.size)}</span>
+                              <div
+                                key={`${file.name}-${file.size}`}
+                                className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 py-2 last:border-b-0"
+                              >
+                                <span className="truncate font-medium text-gray-900">
+                                  {file.name}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {formatFileSize(file.size)}
+                                </span>
                               </div>
                             ))}
                           </div>
@@ -883,27 +977,41 @@ export default function CatalogCategoryPage() {
                           type="button"
                           onClick={() => void handleUploadNewPhotos(item.id)}
                           disabled={uploadingPhotosItemId === item.id}
-                          className="rounded-2xl bg-black px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {uploadingPhotosItemId === item.id ? "Adicionando fotos..." : "Adicionar fotos"}
+                          {uploadingPhotosItemId === item.id
+                            ? "Adicionando fotos..."
+                            : "Adicionar fotos"}
                         </button>
 
                         {itemPhotos.length === 0 ? (
-                          <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">Nenhuma foto cadastrada para este item.</div>
+                          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
+                            Nenhuma foto cadastrada para este item.
+                          </div>
                         ) : (
-                          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
                             {itemPhotos.map((photo) => {
                               const isDeletingPhoto = deletingPhotoId === photo.id;
+
                               return (
-                                <div key={photo.id} className="overflow-hidden rounded-2xl bg-gray-50 ring-1 ring-black/5">
-                                  <img src={getPublicImageUrl(photo.storage_path)} alt={photo.file_name || item.name} className="block h-28 w-full object-cover" />
-                                  <div className="space-y-2 p-3">
-                                    <div className="truncate text-xs text-gray-600">{photo.file_name || "Foto"}</div>
+                                <div
+                                  key={photo.id}
+                                  className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
+                                >
+                                  <img
+                                    src={getPublicImageUrl(photo.storage_path)}
+                                    alt={photo.file_name || item.name}
+                                    className="block h-24 w-full object-cover"
+                                  />
+                                  <div className="space-y-2 p-2.5">
+                                    <div className="truncate text-[11px] text-gray-600">
+                                      {photo.file_name || "Foto"}
+                                    </div>
                                     <button
                                       type="button"
                                       onClick={() => void handleDeletePhoto(photo)}
                                       disabled={isDeletingPhoto}
-                                      className="w-full rounded-xl bg-white px-3 py-2 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                      className="w-full rounded-lg border border-red-200 bg-white px-2.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                       {isDeletingPhoto ? "Excluindo..." : "Excluir foto"}
                                     </button>
@@ -915,12 +1023,21 @@ export default function CatalogCategoryPage() {
                         )}
                       </div>
                     ) : itemPhotos.length === 0 ? (
-                      <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">Nenhuma foto cadastrada para este item.</div>
+                      <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
+                        Nenhuma foto cadastrada para este item.
+                      </div>
                     ) : (
                       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
                         {itemPhotos.map((photo) => (
-                          <div key={photo.id} className="overflow-hidden rounded-xl bg-gray-50 ring-1 ring-black/5">
-                            <img src={getPublicImageUrl(photo.storage_path)} alt={photo.file_name || item.name} className="block h-20 w-full object-cover" />
+                          <div
+                            key={photo.id}
+                            className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
+                          >
+                            <img
+                              src={getPublicImageUrl(photo.storage_path)}
+                              alt={photo.file_name || item.name}
+                              className="block h-16 w-full object-cover"
+                            />
                           </div>
                         ))}
                       </div>

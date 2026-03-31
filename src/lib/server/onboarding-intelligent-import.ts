@@ -106,59 +106,29 @@ function attachPerItemAliases(
     dataUrl: string;
   }>
 ) {
-  const groupedItems = new Map<string, NormalizedImportItem[]>();
+  const groupedBySourceFile = new Map<string, NormalizedImportItem[]>();
 
   for (const item of items) {
-    const key = item.metadata?.original_source_file_name || item.sourceFileName;
-    const current = groupedItems.get(key) || [];
+    const key = String(item.sourceFileName || "").trim().toLowerCase();
+    const current = groupedBySourceFile.get(key) ?? [];
     current.push(item);
-    groupedItems.set(key, current);
+    groupedBySourceFile.set(key, current);
   }
 
-  const groupedImages = new Map<string, typeof extractedImages>();
+  const normalizedPreview = items.map((item) => ({ ...item }));
 
-  for (const image of extractedImages) {
-    const key = image.sourceFileName;
-    const current = groupedImages.get(key) || [];
-    current.push(image);
-    groupedImages.set(key, current);
-  }
-
-  const normalizedPreview: NormalizedImportItem[] = [];
-  const imagePreview: typeof extractedImages = [];
-
-  for (const [sourceFileName, fileItems] of groupedItems.entries()) {
-    const fileImages = groupedImages.get(sourceFileName) || [];
-
-    if (fileItems.length <= 1) {
-      normalizedPreview.push(...fileItems);
-      imagePreview.push(...fileImages);
-      continue;
+  const imagePreview = extractedImages.flatMap((image) => {
+    const key = String(image.sourceFileName || "").trim().toLowerCase();
+    const relatedItems = groupedBySourceFile.get(key) ?? [];
+    if (relatedItems.length <= 1) {
+      return [image];
     }
 
-    fileItems.forEach((item, index) => {
-      const alias = buildFileItemAlias(sourceFileName, index);
-
-      normalizedPreview.push({
-        ...item,
-        sourceFileName: alias,
-        metadata: {
-          ...item.metadata,
-          original_source_file_name: sourceFileName,
-          source_file_name: sourceFileName,
-          item_index: String(index),
-        },
-      });
-
-      const assignedImage = fileImages[index];
-      if (assignedImage) {
-        imagePreview.push({
-          ...assignedImage,
-          sourceFileName: alias,
-        });
-      }
-    });
-  }
+    return relatedItems.map((item, index) => ({
+      ...image,
+      sourceFileName: buildFileItemAlias(item.sourceFileName, index),
+    }));
+  });
 
   return {
     normalizedPreview,
@@ -168,9 +138,8 @@ function attachPerItemAliases(
 
 function filterUsefulItems(items: DedupedImportItem[]) {
   return items.filter((item) => {
-    const normalizedTitle = normalizeLoose(item.title);
-    if (!normalizedTitle) return false;
     if (isGenericTitle(item.title)) return false;
+    if (item.type === "unknown" && item.confidence < 0.55) return false;
     return true;
   });
 }
@@ -178,32 +147,14 @@ function filterUsefulItems(items: DedupedImportItem[]) {
 export async function runOnboardingIntelligentImport(
   params: IntelligentImportParams
 ): Promise<IntelligentImportResult> {
+  const { files } = params;
+
   try {
-    const organizationId = String(params.organizationId || "").trim();
-    const storeId = String(params.storeId || "").trim();
-    const files = Array.isArray(params.files) ? params.files : [];
-
-    if (!organizationId) {
-      return {
-        ok: false,
-        error: "MISSING_ORGANIZATION_ID",
-        message: "organizationId é obrigatório.",
-      };
-    }
-
-    if (!storeId) {
-      return {
-        ok: false,
-        error: "MISSING_STORE_ID",
-        message: "storeId é obrigatório.",
-      };
-    }
-
     if (!files.length) {
       return {
         ok: false,
         error: "NO_FILES",
-        message: "Nenhum arquivo foi enviado para importação.",
+        message: "Nenhum arquivo foi enviado para a importação inteligente.",
       };
     }
 
@@ -230,11 +181,7 @@ export async function runOnboardingIntelligentImport(
     );
 
     const aliased = attachPerItemAliases(normalizedItems, extractedImagePreviewRaw);
-
-    const dedupedItems = filterUsefulItems(
-      dedupNormalizedItems(aliased.normalizedPreview)
-    );
-
+    const dedupedItems = filterUsefulItems(dedupNormalizedItems(aliased.normalizedPreview));
     const duplicateItems = dedupedItems.filter((item) => item.isDuplicate).length;
 
     return {
