@@ -443,7 +443,7 @@ function decorateIntelligentImportResultWithImageFallback(
   if (hasStructuredItems) return result;
   const visualSources = selectedFiles.filter((file) => isImageLikeFileType(file.type));
   if (visualSources.length === 0) return result;
-  const fallbackItems = visualSources.slice(0, 12).map((file, index) => ({
+  const fallbackItems = visualSources.slice(0, 10).map((file, index) => ({
     type: "image_reference",
     sourceFileName: file.name,
     title: buildImageFallbackTitle(file.name),
@@ -650,27 +650,6 @@ function parseImportedDecimal(value: string | null | undefined) {
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
-function parseImportedMetricDecimal(value: string | null | undefined) {
-  if (!value) return null;
-  const normalized = String(value).trim().replace(",", ".");
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-function buildImportedPoolTypeLabel(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
-    .map((value) => String(value ?? "").toLowerCase())
-    .join(" ");
-
-  if (source.includes("spa")) return "spa";
-  if (source.includes("vinil")) return "vinil";
-  if (source.includes("alvenaria")) return "alvenaria";
-  if (source.includes("pastilha")) return "pastilha";
-  if (source.includes("fibra")) return "fibra";
-
-  return "fibra";
-}
 function extractImportedPoolMetrics(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -683,54 +662,39 @@ function extractImportedPoolMetrics(
   let depth: number | null = null;
   let capacity: number | null = null;
   let price: number | null = null;
-
-  const rectMatch =
-    source.match(/(?:medidas?|tamanho|dimens(?:o|õ)es?)\s*[:\-]?\s*(\d+[\.,]\d+|\d+)\s*x\s*(\d+[\.,]\d+|\d+)\s*m/i) ||
-    source.match(/\b(\d+[\.,]\d+|\d+)\s*x\s*(\d+[\.,]\d+|\d+)\s*m\b/i);
-
+  const rectMatch = source.match(/(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i);
   if (rectMatch) {
-    width = parseImportedMetricDecimal(rectMatch[1]);
-    length = parseImportedMetricDecimal(rectMatch[2]);
+    width = parseImportedDecimal(rectMatch[1]);
+    length = parseImportedDecimal(rectMatch[2]);
   }
-
-  const diamMatch =
-    source.match(/(?:di[aâ]metro|di[aâ]m\.?|redonda)\s*[:\-]?\s*(\d+[\.,]\d+|\d+)\s*m/i) ||
-    source.match(/\b(\d+[\.,]\d+|\d+)\s*m\s*di[âa]m/i);
-
+  const diamMatch = source.match(/(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
   if (diamMatch) {
-    width = parseImportedMetricDecimal(diamMatch[1]);
-    length = parseImportedMetricDecimal(diamMatch[1]);
+    width = parseImportedDecimal(diamMatch[1]);
+    length = parseImportedDecimal(diamMatch[1]);
   }
-
   const depthMatch =
-    source.match(/profundidade\s*(?:de|do|da)?\s*[:\-]?\s*(\d+[\.,]\d+|\d+)\s*m/i) ||
-    source.match(/prof\.?\s*[:\-]?\s*(\d+[\.,]\d+|\d+)\s*m/i);
-
+    source.match(/profundidade\s*(?:de|do|da)?\s*(\d+[\.,]?\d*)\s*m/i) ||
+    source.match(/prof\.?\s*(\d+[\.,]?\d*)\s*m/i);
   if (depthMatch) {
-    depth = parseImportedMetricDecimal(depthMatch[1]);
+    depth = parseImportedDecimal(depthMatch[1]);
   }
-
   const capacityMatch =
     source.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
     source.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)\b/i);
   if (capacityMatch) {
     capacity = parseImportedDecimal(capacityMatch[1]);
   }
-
   const priceMatch =
     source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
     source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
   if (priceMatch) {
     price = parseImportedDecimal(priceMatch[1]);
   }
-
-  let material = buildImportedPoolTypeLabel(item);
+  let material = "fibra";
   if (lowered.includes("vinil")) material = "vinil";
   else if (lowered.includes("alvenaria")) material = "alvenaria";
   else if (lowered.includes("pastilha")) material = "pastilha";
   else if (lowered.includes("fibra")) material = "fibra";
-  else if (lowered.includes("spa")) material = "spa";
-
   let shape = "retangular";
   if (lowered.includes("diâm") || lowered.includes("diam") || lowered.includes("redonda")) {
     shape = "redonda";
@@ -1695,32 +1659,6 @@ function OnboardingContent() {
         });
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
-
-      const existingPoolNames = new Set<string>();
-      const existingCatalogNames = new Set<string>();
-
-      const { data: existingPoolsData, error: existingPoolsError } = await supabase
-        .from("pools")
-        .select("name")
-        .eq("organization_id", organizationId)
-        .eq("store_id", activeStore.id);
-      if (existingPoolsError) throw existingPoolsError;
-      for (const row of existingPoolsData ?? []) {
-        const normalizedName = normalizeImportedLoose((row as { name?: string | null }).name);
-        if (normalizedName) existingPoolNames.add(normalizedName);
-      }
-
-      const { data: existingCatalogData, error: existingCatalogError } = await supabase
-        .from("store_catalog_items")
-        .select("name")
-        .eq("organization_id", organizationId)
-        .eq("store_id", activeStore.id);
-      if (existingCatalogError) throw existingCatalogError;
-      for (const row of existingCatalogData ?? []) {
-        const normalizedName = normalizeImportedLoose((row as { name?: string | null }).name);
-        if (normalizedName) existingCatalogNames.add(normalizedName);
-      }
-
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
       let savedPools = 0;
@@ -1738,12 +1676,8 @@ function OnboardingContent() {
         if (destination === "pool") {
           const metrics = extractImportedPoolMetrics(item);
           const poolName = buildImportedPoolName(item);
-          const normalizedPoolName = normalizeImportedLoose(poolName);
           const poolDescription = buildImportedPoolDescription(item);
           if (!poolName || isGenericImportedTitle(poolName)) {
-            continue;
-          }
-          if (normalizedPoolName && existingPoolNames.has(normalizedPoolName)) {
             continue;
           }
           const { data: createdPool, error } = await supabase
@@ -1762,25 +1696,21 @@ function OnboardingContent() {
               price: metrics.price,
               description: poolDescription,
               is_active: true,
-              track_stock: true,
-              stock_quantity: 0,
+              track_stock: false,
+              stock_quantity: null,
             })
             .select("id")
             .single();
           if (error) throw error;
-          if (normalizedPoolName) {
-            existingPoolNames.add(normalizedPoolName);
-          }
           if (!firstPoolId) firstPoolId = createdPool.id;
           savedPools += 1;
           if (relatedExtractedImages.length > 0) {
-            const limitedPoolImages = relatedExtractedImages.slice(0, 1);
-            for (let index = 0; index < limitedPoolImages.length; index += 1) {
+            for (let index = 0; index < relatedExtractedImages.length; index += 1) {
               await uploadExtractedImageToPool(
                 organizationId,
                 activeStore.id,
                 createdPool.id,
-                limitedPoolImages[index],
+                relatedExtractedImages[index],
                 index
               );
             }
@@ -1801,11 +1731,7 @@ function OnboardingContent() {
                 [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
               );
         const itemName = buildImportedCatalogName(item);
-        const normalizedCatalogName = normalizeImportedLoose(itemName);
         if (!itemName || isGenericImportedTitle(itemName)) {
-          continue;
-        }
-        if (normalizedCatalogName && existingCatalogNames.has(normalizedCatalogName)) {
           continue;
         }
         const { data: createdItem, error } = await supabase
@@ -1819,28 +1745,24 @@ function OnboardingContent() {
             price_cents: extractImportedCatalogPriceCents(item),
             currency: "BRL",
             is_active: true,
-            track_stock: true,
-            stock_quantity: 0,
+            track_stock: false,
+            stock_quantity: null,
             metadata: buildImportedCatalogMetadata(item, category),
           })
           .select("id")
           .single();
         if (error) throw error;
-        if (normalizedCatalogName) {
-          existingCatalogNames.add(normalizedCatalogName);
-        }
         if (!firstCatalogCategory) firstCatalogCategory = category;
         if (category === "quimicos") savedQuimicos += 1;
         else if (category === "acessorios") savedAcessorios += 1;
         else savedOutros += 1;
         if (relatedExtractedImages.length > 0) {
-          const limitedCatalogImages = relatedExtractedImages.slice(0, 1);
-          for (let index = 0; index < limitedCatalogImages.length; index += 1) {
+          for (let index = 0; index < relatedExtractedImages.length; index += 1) {
             await uploadExtractedImageToCatalog(
               organizationId,
               activeStore.id,
               createdItem.id,
-              limitedCatalogImages[index],
+              relatedExtractedImages[index],
               index
             );
           }
@@ -3229,10 +3151,10 @@ async function upsertAnswers(
                   {selectedImagePreviews.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
-                        Pré-visualização das fotos selecionadas ({selectedImagePreviews.length})
+                        Pré-visualização das fotos selecionadas (mostrando no máximo 10 de {selectedImagePreviews.length})
                       </p>
                       <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                        {selectedImagePreviews.map((preview) => (
+                        {selectedImagePreviews.slice(0, 10).map((preview) => (
                           <div
                             key={preview.name}
                             className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3324,14 +3246,14 @@ async function upsertAnswers(
                         </div>
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
-                        <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
+                        <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos (mostrando no máximo 10)</p>
                         {safeExtractedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum texto foi extraído nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeExtractedPreview.map((item, index) => (
+                            {safeExtractedPreview.slice(0, 10).map((item, index) => (
                               <div
                                 key={`${item.fileName}-${item.extension}`}
                                 className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}
@@ -3352,7 +3274,7 @@ async function upsertAnswers(
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">
-                          Fotos encontradas nos arquivos
+                          Fotos encontradas nos arquivos (mostrando no máximo 10)
                         </p>
                         {safeExtractedImagePreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
@@ -3360,7 +3282,7 @@ async function upsertAnswers(
                           </p>
                         ) : (
                           <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                            {safeExtractedImagePreview.map((image, index) => (
+                            {safeExtractedImagePreview.slice(0, 10).map((image, index) => (
                               <div
                                 key={`${image.sourceFileName}-${image.fileName}-${index}`}
                                 className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3386,14 +3308,14 @@ async function upsertAnswers(
                         )}
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
-                        <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
+                        <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados (mostrando no máximo 10)</p>
                         {safeNormalizedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum bloco foi classificado nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeNormalizedPreview.slice(0, 12).map((item, index) => (
+                            {safeNormalizedPreview.slice(0, 10).map((item, index) => (
                               <div key={`${item.sourceFileName}-${item.title}-${index}`} className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}>
                                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-3">
                                   <div className="min-w-0">
@@ -3415,14 +3337,14 @@ async function upsertAnswers(
                         )}
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
-                        <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
+                        <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação (mostrando no máximo 10)</p>
                         {safeDedupedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum item foi analisado na deduplicação.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeDedupedPreview.slice(0, 12).map((item, index) => (
+                            {safeDedupedPreview.slice(0, 10).map((item, index) => (
                               <div
                                 key={`${item.dedupKey}-${index}`}
                                 className={cx(
