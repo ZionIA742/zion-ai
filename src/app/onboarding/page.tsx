@@ -594,16 +594,22 @@ function extractImportedLabeledValue(
   return "";
 }
 
-function extractImportedFirstCurrencyValue(value: string | null | undefined) {
-  const source = String(value || "");
+function extractImportedFirstCurrencyValue(value: string | number | null | undefined) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const source = String(value || "").trim();
   if (!source) return null;
 
-  const match =
-    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    source.match(/(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/);
+  const normalizedCurrency = source.replace(/\s+/g, " ");
+  const currencyMatch =
+    normalizedCurrency.match(/r\$\s*(-?\d{1,3}(?:[\.,]\d{3})*(?:[\.,]\d{2})|-?\d+(?:[\.,]\d{2})?)/i) ||
+    normalizedCurrency.match(/(-?\d{1,3}(?:[\.,]\d{3})*(?:[\.,]\d{2})|-?\d+(?:[\.,]\d{2})?)/);
 
-  if (!match) return null;
-  return parseImportedDecimal(match[1]);
+  if (!currencyMatch) return null;
+
+  return parseImportedDecimal(currencyMatch[1]);
 }
 
 function extractImportedExcelLikeName(
@@ -686,31 +692,54 @@ function sanitizeImportedDescriptionText(
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+
+  const blockedStarts = [
+    "preco ",
+    "preço ",
+    "preco venda",
+    "preço venda",
+    "preco custo",
+    "preço custo",
+    "medidas ",
+    "profundidade ",
+    "capacidade ",
+    "material ",
+    "formato ",
+    "marca ",
+    "sku ",
+    "peso ",
+    "peso volume",
+    "volume ",
+    "conteudo ",
+    "conteúdo ",
+    "dosagem ",
+    "cor ",
+    "uso ",
+    "observacao ",
+    "observação ",
+    "codigo de barras",
+    "código de barras",
+    "barcode ",
+    "nome do produto",
+    "controlar estoque",
+    "estoque inicial",
+    "fonte ",
+    "margem ",
+  ];
+
   const filtered = rawLines.filter((line) => {
     const normalized = normalizeImportedLoose(line);
     if (!normalized) return false;
     if (normalized === titleLoose) return false;
-    if (normalized.startsWith("preco ")) return false;
-    if (normalized.startsWith("preço ")) return false;
-    if (normalized.startsWith("medidas ")) return false;
-    if (normalized.startsWith("profundidade ")) return false;
-    if (normalized.startsWith("capacidade ")) return false;
-    if (normalized.startsWith("material ")) return false;
-    if (normalized.startsWith("formato ")) return false;
-    if (normalized.startsWith("marca ")) return false;
-    if (normalized.startsWith("sku ")) return false;
-    if (normalized.startsWith("peso ")) return false;
-    if (normalized.startsWith("dosagem ")) return false;
-    if (normalized.startsWith("cor ")) return false;
-    if (normalized.startsWith("uso ")) return false;
-    if (normalized.startsWith("observacao ")) return false;
-    if (normalized.startsWith("observação ")) return false;
+    if (blockedStarts.some((prefix) => normalized.startsWith(prefix))) return false;
     if (normalized.includes("arquivo de teste")) return false;
     if (normalized.includes("validar upload inteligente")) return false;
     if (normalized.includes("categoria esperada no sistema")) return false;
     if (normalized.includes("salvar em configuracoes")) return false;
+    if (normalized.includes("catalogo ficticio criado para teste interno")) return false;
     return true;
   });
+
   const joined = dedupeDescriptionLines(filtered).join("\n").trim();
   return joined ? joined.slice(0, 4000) : null;
 }
@@ -1003,16 +1032,17 @@ function extractImportedCatalogPriceCents(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
-  const explicitPrice =
+  const explicitCandidates: Array<string | number> = [
     extractMetadataValue(item, [
       "preco_venda",
       "preço_venda",
       "preço venda",
       "preco venda",
+      "valor_venda",
+      "valor venda",
       "price",
-      "price_cents",
       "valor",
-    ]) ||
+    ]),
     extractImportedLabeledValue(source, [
       "Preço venda (R$)",
       "Preço venda",
@@ -1021,27 +1051,29 @@ function extractImportedCatalogPriceCents(
       "Preço",
       "Preco",
       "Valor",
-    ]);
+    ]),
+  ].filter((candidate) => candidate !== "");
 
-  const parsedExplicit = extractImportedFirstCurrencyValue(explicitPrice);
-  if (parsedExplicit != null) return Math.round(parsedExplicit * 100);
+  for (const candidate of explicitCandidates) {
+    const parsedCandidate = extractImportedFirstCurrencyValue(candidate);
+    if (parsedCandidate != null) return Math.round(parsedCandidate * 100);
+  }
+
+  const explicitPriceCents = parseImportedDecimal(
+    extractMetadataValue(item, ["price_cents", "preco_centavos", "preço centavos"])
+  );
+  if (explicitPriceCents != null && explicitPriceCents > 0) {
+    return Math.round(explicitPriceCents);
+  }
 
   const fullSource = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
 
-  const priceMatch =
-    fullSource.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    fullSource.match(
-      /pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
-    );
+  const fallbackParsed = extractImportedFirstCurrencyValue(fullSource);
+  if (fallbackParsed == null) return null;
 
-  if (!priceMatch) return null;
-
-  const parsed = parseImportedDecimal(priceMatch[1]);
-  if (parsed == null) return null;
-
-  return Math.round(parsed * 100);
+  return Math.round(fallbackParsed * 100);
 }
 
 function pickRelatedExtractedImages(
@@ -1096,6 +1128,50 @@ function normalizeImportedLoose(value: string | null | undefined) {
     .replace(/\s+/g, " ")
     .trim();
 }
+function extractImportedStableOrderToken(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const sku = extractImportedCatalogSku(item);
+  const source = [sku, item.title, item.rawText].map((value) => String(value || "")).join(" ");
+  const skuMatch = source.match(/\b(?:[a-z]{2,10}[-_ ]?)?(\d{1,5})\b/i);
+  if (skuMatch) return Number(skuMatch[1]);
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function extractImportedImageOrderToken(fileName: string) {
+  const normalized = String(fileName || "");
+  const match = normalized.match(/(\d+)(?!.*\d)/);
+  if (match) return Number(match[1]);
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function sortImportedItemsForStableSave(
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
+) {
+  return [...items].sort((left, right) => {
+    const leftOrder = extractImportedStableOrderToken(left);
+    const rightOrder = extractImportedStableOrderToken(right);
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+
+    const leftSku = extractImportedCatalogSku(left);
+    const rightSku = extractImportedCatalogSku(right);
+    if (leftSku !== rightSku) return leftSku.localeCompare(rightSku, "pt-BR");
+
+    return buildImportedCatalogName(left).localeCompare(buildImportedCatalogName(right), "pt-BR");
+  });
+}
+
+function sortExtractedImagesForStableSave<
+  T extends { fileName: string }
+>(images: T[]) {
+  return [...images].sort((left, right) => {
+    const leftOrder = extractImportedImageOrderToken(left.fileName);
+    const rightOrder = extractImportedImageOrderToken(right.fileName);
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return String(left.fileName || "").localeCompare(String(right.fileName || ""), "pt-BR");
+  });
+}
+
 function extractMetadataValue(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   keys: string[]
@@ -1994,7 +2070,9 @@ async function handleSaveImportedItemsToCatalog() {
         ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
         : intelligentImportResult.normalizedPreview;
 
-    const sourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
+    const sourceItems = sortImportedItemsForStableSave(
+      rawSourceItems.filter((item) => !shouldSkipImportedItem(item))
+    );
 
     const orderedSourceItems = [...sourceItems].sort((left, right) => {
       const leftOrder = extractImportedOrderIndex(left);
