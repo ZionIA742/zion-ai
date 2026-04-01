@@ -1062,6 +1062,49 @@ function buildImportedPoolDescription(
   return buildImportedCleanDescription(item);
 }
 
+function extractImportedWeightOrVolume(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = String(item.rawText || "");
+  const explicit =
+    extractMetadataValue(item, [
+      "peso_volume",
+      "peso volume",
+      "weight_or_volume",
+      "weightOrVolume",
+      "conteudo",
+      "conteúdo",
+      "volume",
+      "peso",
+    ]) ||
+    extractImportedLabeledValue(source, [
+      "Peso/Volume",
+      "Peso / Volume",
+      "Conteúdo",
+      "Conteudo",
+      "Volume",
+      "Peso",
+      "Conteúdo líquido",
+      "Conteudo liquido",
+    ]);
+
+  if (explicit) {
+    return String(explicit).trim().slice(0, 160);
+  }
+
+  const combinedSource = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  const match = combinedSource.match(
+    /(\d+[\.,]?\d*\s*(?:kg|g|mg|l|ml|litros?|gramas?))/i
+  );
+
+  if (!match) return "";
+
+  return match[1].trim().slice(0, 160);
+}
+
 function buildImportedCatalogMetadata(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   category: ImportedCatalogCategory
