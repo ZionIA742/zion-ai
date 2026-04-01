@@ -564,61 +564,31 @@ function inferImportedDestination(
   const category = normalizeImportedCatalogCategory(source);
   return category;
 }
-function splitImportedStructuredSegments(source: string) {
-  return String(source || "")
-    .replace(/\r/g, "")
-    .split(/\n|\s\|\s/g)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-}
-function extractImportedStructuredField(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
-  keys: string[]
-) {
-  const source = [item.rawText, ...Object.values(item.metadata ?? {})]
-    .map((value) => String(value ?? ""))
-    .join("\n");
-  const segments = splitImportedStructuredSegments(source);
-  const normalizedKeys = keys.map((key) => normalizeImportedLoose(key));
-  for (const segment of segments) {
-    const match = segment.match(/^([^:]+):\s*(.+)$/);
-    if (!match) continue;
-    const rawKey = normalizeImportedLoose(match[1]);
-    const rawValue = String(match[2] || "").trim();
-    if (!rawValue) continue;
-    if (normalizedKeys.includes(rawKey)) return rawValue;
-  }
-  return "";
-}
-function extractImportedFirstCurrencyValue(source: string) {
-  const match = String(source || "").match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
-  if (!match) return null;
-  return parseImportedDecimal(match[1]);
-}
-function extractImportedStockQuantity(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const explicit =
-    extractMetadataValue(item, ["stock_quantity", "stock", "estoque_inicial", "estoque inicial"]) ||
-    extractImportedStructuredField(item, ["estoque inicial", "estoque", "stock", "stock quantity"]);
-  if (!explicit) return 0;
-  const match = String(explicit).match(/-?\d+/);
-  const parsed = match ? Number(match[0]) : Number(explicit);
-  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0;
-}
 function buildImportedCatalogName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const structuredName =
-    extractMetadataValue(item, ["nome_do_produto", "nome produto", "product_name", "name"]) ||
-    extractImportedStructuredField(item, ["nome do produto", "produto", "nome"]);
-  if (structuredName) return structuredName.trim().slice(0, 160);
+  const structured = extractImportedStructuredCatalogData(item);
+  if (structured.nomeProduto) return structured.nomeProduto.slice(0, 160);
+
+  const explicitTitle = extractMetadataValue(item, [
+    "title",
+    "titulo",
+    "nome",
+    "name",
+    "product_name",
+    "productName",
+  ]);
+  if (explicitTitle && !isGenericImportedTitle(explicitTitle)) {
+    return explicitTitle.slice(0, 160);
+  }
+
   const title = String(item.title ?? "").trim();
   if (title && !isGenericImportedTitle(title)) return title.slice(0, 160);
+
   const raw = String(item.rawText ?? "").trim();
   if (!raw) return "Item importado";
-  const firstSegment = splitImportedStructuredSegments(raw)[0] || raw;
-  return firstSegment.slice(0, 160);
+
+  return raw.slice(0, 160);
 }
 function dedupeDescriptionLines(lines: string[]) {
   const seen = new Set<string>();
@@ -689,69 +659,31 @@ function buildImportedCleanDescription(
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const baseDescription = buildImportedCleanDescription(item) || "";
-  const categoryValue =
-    extractMetadataValue(item, ["categoria", "category"]) ||
-    extractImportedStructuredField(item, ["categoria", "category"]);
-  const lineValue =
-    extractMetadataValue(item, ["linha", "line"]) ||
-    extractImportedStructuredField(item, ["linha", "line"]);
-  const applicationValue =
-    extractMetadataValue(item, ["aplicacao", "aplicação", "application", "uso"]) ||
-    extractImportedStructuredField(item, ["aplicação", "aplicacao", "application", "uso"]);
-  const packageValue =
-    extractMetadataValue(item, ["embalagem", "package", "packaging"]) ||
-    extractImportedStructuredField(item, ["embalagem", "package", "packaging"]);
-  const shortDescriptionValue =
-    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
-    extractImportedStructuredField(item, ["descrição curta", "descricao curta", "short description"]);
-  const weightOrVolumeValue =
-    extractMetadataValue(item, ["peso_volume", "peso", "volume", "conteudo", "conteúdo"]) ||
-    extractImportedStructuredField(item, ["peso/volume", "peso", "volume", "conteúdo", "conteudo"]) ||
-    extractImportedWeightOrVolume(item);
-  const dosageValue =
-    extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
-    extractImportedStructuredField(item, ["dosagem", "dose", "diluição", "diluicao"]);
-  const barcodeValue =
-    extractMetadataValue(item, ["codigo_barras", "código de barras", "barcode"]) ||
-    extractImportedStructuredField(item, ["código de barras", "codigo de barras", "barcode"]);
-  const notes = [baseDescription];
-  if (categoryValue && !baseDescription.toLowerCase().includes(String(categoryValue).toLowerCase())) notes.push(`Categoria: ${categoryValue}`);
-  if (lineValue && !baseDescription.toLowerCase().includes(String(lineValue).toLowerCase())) notes.push(`Linha: ${lineValue}`);
-  if (applicationValue && !baseDescription.toLowerCase().includes(String(applicationValue).toLowerCase())) notes.push(`Aplicação: ${applicationValue}`);
-  if (packageValue && !baseDescription.toLowerCase().includes(String(packageValue).toLowerCase())) notes.push(`Embalagem: ${packageValue}`);
-  if (weightOrVolumeValue && !baseDescription.toLowerCase().includes(String(weightOrVolumeValue).toLowerCase())) notes.push(`Peso/Volume: ${weightOrVolumeValue}`);
-  if (shortDescriptionValue && !baseDescription.toLowerCase().includes(String(shortDescriptionValue).toLowerCase())) notes.push(`Descrição curta: ${shortDescriptionValue}`);
-  if (dosageValue && !baseDescription.toLowerCase().includes(String(dosageValue).toLowerCase())) notes.push(`Dosagem: ${dosageValue}`);
-  if (barcodeValue && !baseDescription.toLowerCase().includes(String(barcodeValue).toLowerCase())) notes.push(`Código de barras: ${barcodeValue}`);
-  return dedupeDescriptionLines(notes.filter(Boolean)).join("
-").trim() || null;
+  const structured = extractImportedStructuredCatalogData(item);
+  const lines: string[] = [];
+
+  if (structured.categoria) lines.push(`Categoria: ${structured.categoria}`);
+  if (structured.nomeProduto) lines.push(`Nome do produto: ${structured.nomeProduto}`);
+  if (structured.linha) lines.push(`Linha: ${structured.linha}`);
+  if (structured.aplicacao) lines.push(`Aplicação: ${structured.aplicacao}`);
+  if (structured.embalagem) lines.push(`Embalagem: ${structured.embalagem}`);
+  if (structured.descricaoCurta) lines.push(`Descrição curta: ${structured.descricaoCurta}`);
+  if (structured.controlarEstoque) lines.push(`Controlar estoque: ${structured.controlarEstoque}`);
+  if (structured.estoqueInicial) lines.push(`Estoque inicial: ${structured.estoqueInicial}`);
+  if (structured.codigoBarras) lines.push(`Código de barras: ${structured.codigoBarras}`);
+  if (structured.observacoes) lines.push(`Observações: ${structured.observacoes}`);
+  if (structured.fonte) lines.push(`Fonte: ${structured.fonte}`);
+
+  const structuredDescription = dedupeDescriptionLines(lines).join("\n").trim();
+  if (structuredDescription) return structuredDescription;
+
+  return buildImportedCleanDescription(item);
 }
 function parseImportedDecimal(value: string | null | undefined) {
   if (!value) return null;
   const normalized = String(value).replace(/\./g, "").replace(",", ".").trim();
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
-}
-function parseImportedMeasureDecimal(value: string | null | undefined) {
-  if (!value) return null;
-  const normalized = String(value).trim().replace(",", ".");
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-function extractImportedWeightOrVolume(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
-    .map((value) => String(value ?? ""))
-    .join(" ");
-  const match =
-    source.match(/(\d+[\.,]?\d*)\s*(kg|g|l|lt|litros?|ml)\b/i) ||
-    source.match(/(?:frasco|gal[aã]o|galão|bombona|pote|pacote|saco)\s*(\d+[\.,]?\d*)\s*(kg|g|l|lt|litros?|ml)\b/i);
-  if (!match) return "";
-  const amount = String(match[1] || "").replace(".", ",");
-  const unit = String(match[2] || "").toUpperCase().replace("LITROS", "L").replace("LITRO", "L");
-  return `${amount} ${unit}`;
 }
 function extractImportedPoolMetrics(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -767,19 +699,19 @@ function extractImportedPoolMetrics(
   let price: number | null = null;
   const rectMatch = source.match(/(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i);
   if (rectMatch) {
-    width = parseImportedMeasureDecimal(rectMatch[1]);
-    length = parseImportedMeasureDecimal(rectMatch[2]);
+    width = parseImportedDecimal(rectMatch[1]);
+    length = parseImportedDecimal(rectMatch[2]);
   }
   const diamMatch = source.match(/(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
   if (diamMatch) {
-    width = parseImportedMeasureDecimal(diamMatch[1]);
-    length = parseImportedMeasureDecimal(diamMatch[1]);
+    width = parseImportedDecimal(diamMatch[1]);
+    length = parseImportedDecimal(diamMatch[1]);
   }
   const depthMatch =
     source.match(/profundidade\s*(?:de|do|da)?\s*(\d+[\.,]?\d*)\s*m/i) ||
     source.match(/prof\.?\s*(\d+[\.,]?\d*)\s*m/i);
   if (depthMatch) {
-    depth = parseImportedMeasureDecimal(depthMatch[1]);
+    depth = parseImportedDecimal(depthMatch[1]);
   }
   const capacityMatch =
     source.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
@@ -794,8 +726,7 @@ function extractImportedPoolMetrics(
     price = parseImportedDecimal(priceMatch[1]);
   }
   let material = "fibra";
-  if (lowered.includes("spa")) material = "spa";
-  else if (lowered.includes("vinil")) material = "vinil";
+  if (lowered.includes("vinil")) material = "vinil";
   else if (lowered.includes("alvenaria")) material = "alvenaria";
   else if (lowered.includes("pastilha")) material = "pastilha";
   else if (lowered.includes("fibra")) material = "fibra";
@@ -822,54 +753,103 @@ function extractImportedPoolMetrics(
 function extractImportedCatalogPriceCents(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const structured = extractImportedStructuredCatalogData(item);
   const explicitPrice =
-    extractMetadataValue(item, ["price", "preco", "preço", "faixa_preco", "faixa de preço"]) ||
-    extractImportedStructuredField(item, ["preço", "preco", "faixa de preço", "faixa de preco"]);
-  const parsedExplicit = extractImportedFirstCurrencyValue(explicitPrice);
+    structured.precoVenda ||
+    extractMetadataValue(item, ["price_cents", "price", "preco", "preço"]);
+
+  const parsedExplicit = parseImportedDecimal(explicitPrice);
   if (parsedExplicit != null) return Math.round(parsedExplicit * 100);
+
   const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
+
   const priceMatch =
     source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
+    source.match(
+      /pre[cç]o\s*(?:estimado|aproximado|venda)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
+    );
+
   if (!priceMatch) return null;
+
   const parsed = parseImportedDecimal(priceMatch[1]);
   if (parsed == null) return null;
+
   return Math.round(parsed * 100);
 }
 function pickRelatedExtractedImages(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   extractedImageBuckets: Map<string, Array<{ fileName: string; mimeType: string; dataUrl: string }>>,
-  totalSourceItems: number,
-  sourceItemCountMap: Map<string, number>,
-  sourceImageCursorMap: Map<string, number>
+  extractedImageBucketCursors: Map<string, number>,
+  totalSourceItems: number
 ) {
   const sourceKey = String(item.sourceFileName || "").trim().toLowerCase();
-  const sourceItemCount = sourceItemCountMap.get(sourceKey) ?? totalSourceItems;
-  const getSequentialImages = (bucketKey: string, images: Array<{ fileName: string; mimeType: string; dataUrl: string }>) => {
-    if (!images || images.length === 0) return [];
-    if (sourceItemCount <= 1) {
-      extractedImageBuckets.delete(bucketKey);
-      return images.slice(0, 1);
+  const normalizedSourceKey = sourceKey.replace(/\.[^.]+$/, "");
+
+  let matchedKey = "";
+  if (extractedImageBuckets.has(sourceKey)) {
+    matchedKey = sourceKey;
+  } else {
+    for (const key of extractedImageBuckets.keys()) {
+      const normalizedKey = key.replace(/\.[^.]+$/, "");
+      if (
+        normalizedKey === normalizedSourceKey ||
+        normalizedKey.includes(normalizedSourceKey) ||
+        normalizedSourceKey.includes(normalizedKey)
+      ) {
+        matchedKey = key;
+        break;
+      }
     }
-    const currentCursor = sourceImageCursorMap.get(bucketKey) ?? 0;
-    const pickedImage = images[currentCursor] ?? images[images.length - 1];
-    sourceImageCursorMap.set(bucketKey, Math.min(currentCursor + 1, images.length));
-    return pickedImage ? [pickedImage] : [];
-  };
+  }
+
+  if (!matchedKey && totalSourceItems > 0 && extractedImageBuckets.size > 0) {
+    matchedKey = Array.from(extractedImageBuckets.keys())[0];
+  }
+
+  if (!matchedKey) return [];
+
+  const images = extractedImageBuckets.get(matchedKey) ?? [];
+  if (images.length === 0) return [];
+
+  const cursor = extractedImageBucketCursors.get(matchedKey) ?? 0;
+
+  if (totalSourceItems <= 1) {
+    extractedImageBucketCursors.set(matchedKey, Math.min(images.length, 1));
+    return images.slice(0, 1);
+  }
+
+  const image = images[cursor];
+  if (!image) return [];
+
+  extractedImageBucketCursors.set(matchedKey, cursor + 1);
+  return [image];
+}>>,
+  totalSourceItems: number
+) {
+  const sourceKey = String(item.sourceFileName || "").trim().toLowerCase();
   const direct = extractedImageBuckets.get(sourceKey);
-  if (direct && direct.length > 0) return getSequentialImages(sourceKey, direct);
+  if (direct && direct.length > 0) {
+    extractedImageBuckets.delete(sourceKey);
+    return direct;
+  }
   const normalizedSourceKey = sourceKey.replace(/\.[^.]+$/, "");
   for (const [key, images] of extractedImageBuckets.entries()) {
     const normalizedKey = key.replace(/\.[^.]+$/, "");
-    if (normalizedKey === normalizedSourceKey || normalizedKey.includes(normalizedSourceKey) || normalizedSourceKey.includes(normalizedKey)) {
-      return getSequentialImages(key, images);
+    if (
+      normalizedKey === normalizedSourceKey ||
+      normalizedKey.includes(normalizedSourceKey) ||
+      normalizedSourceKey.includes(normalizedKey)
+    ) {
+      extractedImageBuckets.delete(key);
+      return images;
     }
   }
   if (totalSourceItems === 1 && extractedImageBuckets.size > 0) {
     const [firstKey, firstImages] = Array.from(extractedImageBuckets.entries())[0];
-    return getSequentialImages(firstKey, firstImages);
+    extractedImageBuckets.delete(firstKey);
+    return firstImages;
   }
   return [];
 }
@@ -918,6 +898,166 @@ function extractMetadataValue(
   }
   return "";
 }
+
+function extractImportedFirstLabeledValue(source: string, labels: string[]) {
+  const allLabelsPattern = [
+    "SKU",
+    "Categoria",
+    "Nome do produto",
+    "Linha",
+    "Aplicação",
+    "Aplicacao",
+    "Embalagem",
+    "Peso/Volume",
+    "Peso Volume",
+    "Dosagem",
+    "Preço custo \\(R\\$\\)",
+    "Preco custo \\(R\\$\\)",
+    "Preço venda \\(R\\$\\)",
+    "Preco venda \\(R\\$\\)",
+    "Preço \\(R\\$\\)",
+    "Preco \\(R\\$\\)",
+    "Margem %",
+    "Descrição curta",
+    "Descricao curta",
+    "Foto",
+    "Controlar estoque",
+    "Estoque inicial",
+    "Código de barras",
+    "Codigo de barras",
+    "Observações",
+    "Observacoes",
+    "Fonte",
+  ].join("|");
+
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(
+      `${escaped}\\s*:\\s*([\\s\\S]*?)(?=(?:${allLabelsPattern})\\s*:|$)`,
+      "i"
+    );
+    const match = source.match(regex);
+    if (match?.[1]?.trim()) {
+      return match[1].trim().replace(/\s*\|\s*$/g, "").trim();
+    }
+  }
+
+  return "";
+}
+
+function extractImportedStructuredCatalogData(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = [item.rawText, ...Object.values(item.metadata ?? {})]
+    .map((value) => String(value ?? ""))
+    .join("\n");
+
+  const sku =
+    extractMetadataValue(item, ["sku", "SKU"]) ||
+    extractImportedFirstLabeledValue(source, ["SKU"]);
+
+  const categoria =
+    extractMetadataValue(item, ["categoria", "category", "Categoria"]) ||
+    extractImportedFirstLabeledValue(source, ["Categoria"]);
+
+  const nomeProduto =
+    extractMetadataValue(item, [
+      "nome_do_produto",
+      "nome do produto",
+      "product_name",
+      "productName",
+      "name",
+      "nome",
+    ]) ||
+    extractImportedFirstLabeledValue(source, ["Nome do produto"]);
+
+  const linha =
+    extractMetadataValue(item, ["linha", "line", "Linha"]) ||
+    extractImportedFirstLabeledValue(source, ["Linha"]);
+
+  const aplicacao =
+    extractMetadataValue(item, ["aplicacao", "aplicação", "application", "Aplicação"]) ||
+    extractImportedFirstLabeledValue(source, ["Aplicação", "Aplicacao"]);
+
+  const embalagem =
+    extractMetadataValue(item, ["embalagem", "package", "packaging", "Embalagem"]) ||
+    extractImportedFirstLabeledValue(source, ["Embalagem"]);
+
+  const pesoVolume =
+    extractMetadataValue(
+      item,
+      ["peso_volume", "peso volume", "peso", "volume", "conteudo", "conteúdo", "Peso/Volume"]
+    ) ||
+    extractImportedFirstLabeledValue(source, ["Peso/Volume", "Peso Volume"]);
+
+  const dosagem =
+    extractMetadataValue(item, ["dosagem", "dose", "diluicao", "diluição", "Dosagem"]) ||
+    extractImportedFirstLabeledValue(source, ["Dosagem"]);
+
+  const precoVenda =
+    extractMetadataValue(item, ["preco_venda", "preço venda", "preco", "price", "Preço venda (R$)"]) ||
+    extractImportedFirstLabeledValue(source, ["Preço venda (R$)", "Preco venda (R$)", "Preço (R$)", "Preco (R$)"]);
+
+  const precoCusto =
+    extractMetadataValue(item, ["preco_custo", "preço custo", "Preço custo (R$)"]) ||
+    extractImportedFirstLabeledValue(source, ["Preço custo (R$)", "Preco custo (R$)"]);
+
+  const descricaoCurta =
+    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description", "Descrição curta"]) ||
+    extractImportedFirstLabeledValue(source, ["Descrição curta", "Descricao curta"]);
+
+  const controlarEstoque =
+    extractMetadataValue(item, ["controlar_estoque", "Controlar estoque"]) ||
+    extractImportedFirstLabeledValue(source, ["Controlar estoque"]);
+
+  const estoqueInicial =
+    extractMetadataValue(item, ["estoque_inicial", "initial_stock", "Estoque inicial"]) ||
+    extractImportedFirstLabeledValue(source, ["Estoque inicial"]);
+
+  const codigoBarras =
+    extractMetadataValue(item, ["codigo_barras", "código de barras", "barcode", "Código de barras"]) ||
+    extractImportedFirstLabeledValue(source, ["Código de barras", "Codigo de barras"]);
+
+  const observacoes =
+    extractMetadataValue(item, ["observacoes", "observações", "notes", "Observações"]) ||
+    extractImportedFirstLabeledValue(source, ["Observações", "Observacoes"]);
+
+  const fonte =
+    extractMetadataValue(item, ["fonte", "source", "Fonte"]) ||
+    extractImportedFirstLabeledValue(source, ["Fonte"]);
+
+  return {
+    sku: sku.trim(),
+    categoria: categoria.trim(),
+    nomeProduto: nomeProduto.trim(),
+    linha: linha.trim(),
+    aplicacao: aplicacao.trim(),
+    embalagem: embalagem.trim(),
+    pesoVolume: pesoVolume.trim(),
+    dosagem: dosagem.trim(),
+    precoVenda: precoVenda.trim(),
+    precoCusto: precoCusto.trim(),
+    descricaoCurta: descricaoCurta.trim(),
+    controlarEstoque: controlarEstoque.trim(),
+    estoqueInicial: estoqueInicial.trim(),
+    codigoBarras: codigoBarras.trim(),
+    observacoes: observacoes.trim(),
+    fonte: fonte.trim(),
+  };
+}
+
+function extractImportedCatalogStockQuantity(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const structured = extractImportedStructuredCatalogData(item);
+  const explicit = structured.estoqueInicial || extractMetadataValue(item, ["stock_quantity", "estoque"]);
+  const numeric = String(explicit || "").match(/-?\d+/);
+  if (!numeric) return 0;
+  const parsed = Number(numeric[0]);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.trunc(parsed));
+}
+
 function isGenericImportedTitle(title: string) {
   const normalized = normalizeImportedLoose(title);
   if (!normalized) return true;
@@ -1021,6 +1161,7 @@ function buildImportedCatalogMetadata(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   category: ImportedCatalogCategory
 ) {
+  const structured = extractImportedStructuredCatalogData(item);
   return {
     categoria: category,
     source: "onboarding_intelligent_import",
@@ -1029,43 +1170,26 @@ function buildImportedCatalogMetadata(
     confidence: item.confidence,
     dedup_key: "dedupKey" in item ? item.dedupKey : null,
     imported_title: buildImportedCatalogName(item),
-    imported_dimensions:
-      extractMetadataValue(item, ["medidas", "dimensions"]) ||
-      extractImportedStructuredField(item, ["medidas", "dimensions"]),
-    imported_depth:
-      extractMetadataValue(item, ["profundidade", "depth"]) ||
-      extractImportedStructuredField(item, ["profundidade", "depth"]),
-    imported_capacity:
-      extractMetadataValue(item, ["capacidade", "capacity"]) ||
-      extractImportedStructuredField(item, ["capacidade", "capacity"]),
-    imported_material:
-      extractMetadataValue(item, ["material"]) || extractImportedStructuredField(item, ["material"]),
-    imported_shape:
-      extractMetadataValue(item, ["formato", "shape"]) ||
-      extractImportedStructuredField(item, ["formato", "shape"]),
-    imported_package:
-      extractMetadataValue(item, ["embalagem", "package", "packaging"]) ||
-      extractImportedStructuredField(item, ["embalagem", "package", "packaging"]),
+    imported_dimensions: extractMetadataValue(item, ["medidas", "dimensions"]),
+    imported_depth: extractMetadataValue(item, ["profundidade", "depth"]),
+    imported_capacity: extractMetadataValue(item, ["capacidade", "capacity"]),
+    imported_material: extractMetadataValue(item, ["material"]),
+    imported_shape: extractMetadataValue(item, ["formato", "shape"]),
+    imported_package: structured.embalagem || extractMetadataValue(item, ["embalagem", "package", "packaging"]),
     imported_weight_or_volume:
+      structured.pesoVolume ||
       extractMetadataValue(item, ["peso_volume", "peso", "volume", "conteudo", "conteúdo"]) ||
-      extractImportedStructuredField(item, ["peso/volume", "peso", "volume", "conteudo", "conteúdo"]) ||
       extractImportedWeightOrVolume(item),
     imported_dosage:
-      extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
-      extractImportedStructuredField(item, ["dosagem", "dose", "diluição", "diluicao"]),
+      structured.dosagem || extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]),
     imported_barcode:
-      extractMetadataValue(item, ["codigo_barras", "código de barras", "barcode"]) ||
-      extractImportedStructuredField(item, ["código de barras", "codigo de barras", "barcode"]),
-    imported_category_label:
-      extractMetadataValue(item, ["categoria", "category"]) ||
-      extractImportedStructuredField(item, ["categoria", "category"]),
-    imported_line:
-      extractMetadataValue(item, ["linha", "line"]) ||
-      extractImportedStructuredField(item, ["linha", "line"]),
-    imported_application:
-      extractMetadataValue(item, ["aplicação", "aplicacao", "application", "uso"]) ||
-      extractImportedStructuredField(item, ["aplicação", "aplicacao", "application", "uso"]),
-    imported_stock_quantity: extractImportedStockQuantity(item),
+      structured.codigoBarras ||
+      extractMetadataValue(item, ["codigo_barras", "código de barras", "barcode"]),
+    imported_sku: structured.sku || null,
+    imported_line: structured.linha || null,
+    imported_application: structured.aplicacao || null,
+    imported_category_label: structured.categoria || null,
+    imported_stock_initial: structured.estoqueInicial || null,
     clean_description: buildImportedCatalogDescription(item) || "",
   };
 }
@@ -1795,6 +1919,7 @@ function OnboardingContent() {
         string,
         Array<{ fileName: string; mimeType: string; dataUrl: string }>
       >();
+      const extractedImageBucketCursors = new Map<string, number>();
       for (const image of safeExtractedImagePreview) {
         const bucketKey = String(image.sourceFileName || "").trim().toLowerCase();
         const currentBucket = extractedImageBuckets.get(bucketKey) ?? [];
@@ -1805,12 +1930,6 @@ function OnboardingContent() {
         });
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
-      const sourceItemCountMap = new Map<string, number>();
-      for (const sourceItem of sourceItems) {
-        const key = String(sourceItem.sourceFileName || "").trim().toLowerCase();
-        sourceItemCountMap.set(key, (sourceItemCountMap.get(key) ?? 0) + 1);
-      }
-      const sourceImageCursorMap = new Map<string, number>();
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
       let savedPools = 0;
@@ -1823,9 +1942,8 @@ function OnboardingContent() {
         const relatedExtractedImages = pickRelatedExtractedImages(
           item,
           extractedImageBuckets,
-          sourceItems.length,
-          sourceItemCountMap,
-          sourceImageCursorMap
+          extractedImageBucketCursors,
+          sourceItems.length
         );
         if (destination === "pool") {
           const metrics = extractImportedPoolMetrics(item);
@@ -1859,13 +1977,15 @@ function OnboardingContent() {
           if (!firstPoolId) firstPoolId = createdPool.id;
           savedPools += 1;
           if (relatedExtractedImages.length > 0) {
-            await uploadExtractedImageToPool(
-              organizationId,
-              activeStore.id,
-              createdPool.id,
-              relatedExtractedImages[0],
-              0
-            );
+            for (let index = 0; index < relatedExtractedImages.length; index += 1) {
+              await uploadExtractedImageToPool(
+                organizationId,
+                activeStore.id,
+                createdPool.id,
+                relatedExtractedImages[index],
+                index
+              );
+            }
           } else if (selectedImageFiles[imageCursor]) {
             try {
               await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor], 0);
@@ -1891,14 +2011,14 @@ function OnboardingContent() {
           .insert({
             organization_id: organizationId,
             store_id: activeStore.id,
-            sku: null,
+            sku: extractImportedStructuredCatalogData(item).sku || null,
             name: itemName,
             description: buildImportedCatalogDescription(item),
             price_cents: extractImportedCatalogPriceCents(item),
             currency: "BRL",
             is_active: true,
             track_stock: true,
-            stock_quantity: extractImportedStockQuantity(item),
+            stock_quantity: extractImportedCatalogStockQuantity(item),
             metadata: buildImportedCatalogMetadata(item, category),
           })
           .select("id")
@@ -1909,13 +2029,15 @@ function OnboardingContent() {
         else if (category === "acessorios") savedAcessorios += 1;
         else savedOutros += 1;
         if (relatedExtractedImages.length > 0) {
-          await uploadExtractedImageToCatalog(
-            organizationId,
-            activeStore.id,
-            createdItem.id,
-            relatedExtractedImages[0],
-            0
-          );
+          for (let index = 0; index < relatedExtractedImages.length; index += 1) {
+            await uploadExtractedImageToCatalog(
+              organizationId,
+              activeStore.id,
+              createdItem.id,
+              relatedExtractedImages[index],
+              index
+            );
+          }
         } else if (selectedImageFiles[imageCursor]) {
           try {
             await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor], 0);
@@ -3278,11 +3400,10 @@ async function upsertAnswers(
                   {visibleIntelligentImportFiles.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
-                        Arquivos selecionados ou restaurados (mostrando até 10 de{" "}
-                        {visibleIntelligentImportFiles.length})
+                        Arquivos selecionados ou restaurados ({visibleIntelligentImportFiles.length})
                       </p>
                       <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                        {visibleIntelligentImportFiles.slice(0, 10).map((file, index) => (
+                        {visibleIntelligentImportFiles.map((file, index) => (
                           <div
                             key={`${file.name}-${file.size}-${file.lastModified}`}
                             className={cx(
@@ -3302,11 +3423,10 @@ async function upsertAnswers(
                   {selectedImagePreviews.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
-                        Pré-visualização das fotos selecionadas (mostrando até 10 de{" "}
-                        {selectedImagePreviews.length})
+                        Pré-visualização das fotos selecionadas ({selectedImagePreviews.length})
                       </p>
                       <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                        {selectedImagePreviews.slice(0, 10).map((preview) => (
+                        {selectedImagePreviews.map((preview) => (
                           <div
                             key={preview.name}
                             className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3398,14 +3518,14 @@ async function upsertAnswers(
                         </div>
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
-                        <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos (mostrando até 10)</p>
+                        <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
                         {safeExtractedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum texto foi extraído nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeExtractedPreview.slice(0, 10).map((item, index) => (
+                            {safeExtractedPreview.map((item, index) => (
                               <div
                                 key={`${item.fileName}-${item.extension}`}
                                 className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}
@@ -3426,7 +3546,7 @@ async function upsertAnswers(
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">
-                          Fotos encontradas nos arquivos (mostrando até 10)
+                          Fotos encontradas nos arquivos
                         </p>
                         {safeExtractedImagePreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
@@ -3434,7 +3554,7 @@ async function upsertAnswers(
                           </p>
                         ) : (
                           <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                            {safeExtractedImagePreview.slice(0, 10).map((image, index) => (
+                            {safeExtractedImagePreview.map((image, index) => (
                               <div
                                 key={`${image.sourceFileName}-${image.fileName}-${index}`}
                                 className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3460,14 +3580,14 @@ async function upsertAnswers(
                         )}
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
-                        <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados (mostrando até 10)</p>
+                        <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
                         {safeNormalizedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum bloco foi classificado nesta tentativa.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeNormalizedPreview.slice(0, 10).map((item, index) => (
+                            {safeNormalizedPreview.slice(0, 12).map((item, index) => (
                               <div key={`${item.sourceFileName}-${item.title}-${index}`} className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}>
                                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-3">
                                   <div className="min-w-0">
@@ -3489,14 +3609,14 @@ async function upsertAnswers(
                         )}
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
-                        <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação (mostrando até 10)</p>
+                        <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
                         {safeDedupedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum item foi analisado na deduplicação.
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeDedupedPreview.slice(0, 10).map((item, index) => (
+                            {safeDedupedPreview.slice(0, 12).map((item, index) => (
                               <div
                                 key={`${item.dedupKey}-${index}`}
                                 className={cx(
