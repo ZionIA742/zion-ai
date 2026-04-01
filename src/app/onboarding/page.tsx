@@ -564,32 +564,106 @@ function inferImportedDestination(
   const category = normalizeImportedCatalogCategory(source);
   return category;
 }
+
+function extractImportedLabeledValue(
+  source: string,
+  labels: string[]
+) {
+  const lines = String(source || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const label of labels) {
+    const normalizedLabel = normalizeImportedLoose(label);
+    for (const line of lines) {
+      const normalizedLine = normalizeImportedLoose(line);
+      if (!normalizedLine) continue;
+      if (
+        normalizedLine.startsWith(`${normalizedLabel} `) ||
+        normalizedLine.startsWith(`${normalizedLabel}:`) ||
+        normalizedLine.startsWith(`${normalizedLabel} -`)
+      ) {
+        const value = line.replace(/^\s*[^:–-]+\s*[:–-]\s*/u, "").trim();
+        if (value) return value;
+      }
+    }
+  }
+
+  return "";
+}
+
+function extractImportedFirstCurrencyValue(value: string | null | undefined) {
+  const source = String(value || "");
+  if (!source) return null;
+
+  const match =
+    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
+    source.match(/(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/);
+
+  if (!match) return null;
+  return parseImportedDecimal(match[1]);
+}
+
+function extractImportedExcelLikeName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const explicit = [
+    extractMetadataValue(item, ["nome_do_produto", "nome do produto", "product_name", "productName", "name", "nome", "title", "titulo"]),
+    extractImportedLabeledValue(String(item.rawText || ""), ["Nome do produto", "Produto", "Nome"]),
+  ]
+    .map((value) => String(value || "").trim())
+    .find(Boolean);
+
+  if (explicit) return explicit.slice(0, 160);
+  return "";
+}
+
+function extractImportedCatalogSku(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = String(item.rawText || "");
+  return (
+    extractMetadataValue(item, ["sku", "codigo", "código"]) ||
+    extractImportedLabeledValue(source, ["SKU", "Código", "Codigo"]) ||
+    ""
+  ).slice(0, 120);
+}
+
+function extractImportedCatalogStockQuantity(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = String(item.rawText || "");
+  const explicit =
+    extractMetadataValue(item, ["estoque_inicial", "estoque inicial", "stock_quantity", "stock", "estoque"]) ||
+    extractImportedLabeledValue(source, ["Estoque inicial", "Estoque", "Stock inicial", "Stock"]);
+  const parsed = parseImportedDecimal(explicit);
+  if (parsed == null) return 0;
+  return Math.max(0, Math.round(parsed));
+}
+
+
 function buildImportedCatalogName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const explicitName =
-    extractMetadataValue(item, ["product_name", "productName", "nome_produto", "nome", "title"]) ||
-    extractImportedValueByLabels(item, [
-      "Nome do produto",
-      "Nome comercial",
-      "Nome",
-      "Produto",
-      "Item",
-    ]);
-
-  if (explicitName && !isGenericImportedTitle(explicitName)) {
-    return explicitName.slice(0, 160);
-  }
+  const excelLikeName = extractImportedExcelLikeName(item);
+  if (excelLikeName) return excelLikeName;
 
   const title = String(item.title ?? "").trim();
-  if (title && !isGenericImportedTitle(title) && !/\.xlsx\s*•\s*item/i.test(title)) {
+  if (title && !/\.xlsx?\s*[•·-]\s*item\s*\d+/i.test(title)) {
     return title.slice(0, 160);
   }
 
   const raw = String(item.rawText ?? "").trim();
   if (!raw) return "Item importado";
+
+  const fromRaw = extractImportedLabeledValue(raw, ["Nome do produto", "Produto", "Nome"]);
+  if (fromRaw) return fromRaw.slice(0, 160);
+
   return raw.slice(0, 160);
 }
+
 function dedupeDescriptionLines(lines: string[]) {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -656,35 +730,37 @@ function buildImportedCleanDescription(
   }
   return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
 }
+
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const parts = [
-    extractImportedValueByLabels(item, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]),
-    extractImportedValueByLabels(item, ["Linha"]),
-    extractImportedValueByLabels(item, ["Aplicação", "Aplicacao"]),
-    extractImportedValueByLabels(item, ["Embalagem"]),
-    extractImportedValueByLabels(item, ["Dosagem"]),
-    extractImportedValueByLabels(item, ["Observações", "Observacoes"]),
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
+  const source = String(item.rawText || "");
+  const baseDescription = buildImportedCleanDescription(item) || "";
+  const category = extractMetadataValue(item, ["categoria", "category"]) || extractImportedLabeledValue(source, ["Categoria"]);
+  const line = extractMetadataValue(item, ["linha", "line"]) || extractImportedLabeledValue(source, ["Linha"]);
+  const application = extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) || extractImportedLabeledValue(source, ["Aplicação", "Aplicacao"]);
+  const packageValue = extractMetadataValue(item, ["embalagem", "package", "packaging"]) || extractImportedLabeledValue(source, ["Embalagem"]);
+  const dosageValue = extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) || extractImportedLabeledValue(source, ["Dosagem", "Dose"]);
+  const shortDescription =
+    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
+    extractImportedLabeledValue(source, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]);
+  const notesValue =
+    extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
+    extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
 
-  const uniqueParts: string[] = [];
-  const seen = new Set<string>();
-  for (const part of parts) {
-    const key = normalizeImportedLoose(part);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    uniqueParts.push(part);
-  }
+  const lines = [
+    category ? `Categoria: ${category}` : "",
+    line ? `Linha: ${line}` : "",
+    application ? `Aplicação: ${application}` : "",
+    packageValue ? `Embalagem: ${packageValue}` : "",
+    shortDescription || baseDescription,
+    dosageValue ? `Dosagem: ${dosageValue}` : "",
+    notesValue ? `Observações: ${notesValue}` : "",
+  ].filter(Boolean);
 
-  if (uniqueParts.length > 0) {
-    return uniqueParts.join("\n").slice(0, 4000);
-  }
-
-  return buildImportedCleanDescription(item);
+  return dedupeDescriptionLines(lines).join("\n").trim() || null;
 }
+
 function parseImportedDecimal(value: string | null | undefined) {
   if (!value) return null;
   const normalized = String(value).replace(/\./g, "").replace(",", ".").trim();
@@ -756,71 +832,81 @@ function extractImportedPoolMetrics(
     price,
   };
 }
+
 function extractImportedCatalogPriceCents(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const source = String(item.rawText || "");
   const explicitPrice =
-    extractMetadataValue(item, ["preco_venda", "price_cents", "price"]) ||
-    extractImportedValueByLabels(item, ["Preço venda (R$)", "Preço venda", "Preço", "Preco"]);
+    extractMetadataValue(item, [
+      "preco_venda",
+      "preço_venda",
+      "preço venda",
+      "preco venda",
+      "price",
+      "price_cents",
+      "valor",
+    ]) ||
+    extractImportedLabeledValue(source, [
+      "Preço venda (R$)",
+      "Preço venda",
+      "Preco venda (R$)",
+      "Preco venda",
+      "Preço",
+      "Preco",
+      "Valor",
+    ]);
 
   const parsedExplicit = extractImportedFirstCurrencyValue(explicitPrice);
   if (parsedExplicit != null) return Math.round(parsedExplicit * 100);
 
-  const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
+  const fullSource = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
+
   const priceMatch =
-    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    source.match(/pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
+    fullSource.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
+    fullSource.match(
+      /pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
+    );
+
   if (!priceMatch) return null;
+
   const parsed = parseImportedDecimal(priceMatch[1]);
   if (parsed == null) return null;
+
   return Math.round(parsed * 100);
 }
+
 function pickRelatedExtractedImages(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   extractedImageBuckets: Map<string, Array<{ fileName: string; mimeType: string; dataUrl: string }>>,
-  extractedImageBucketCursors: Map<string, number>,
   totalSourceItems: number
 ) {
   const sourceKey = String(item.sourceFileName || "").trim().toLowerCase();
+  const direct = extractedImageBuckets.get(sourceKey);
+  if (direct && direct.length > 0) {
+    extractedImageBuckets.delete(sourceKey);
+    return direct;
+  }
   const normalizedSourceKey = sourceKey.replace(/\.[^.]+$/, "");
-
-  let matchedKey = "";
-  let bucket: Array<{ fileName: string; mimeType: string; dataUrl: string }> | undefined =
-    extractedImageBuckets.get(sourceKey);
-
-  if (bucket?.length) {
-    matchedKey = sourceKey;
-  } else {
-    for (const [key, images] of extractedImageBuckets.entries()) {
-      const normalizedKey = key.replace(/\.[^.]+$/, "");
-      if (
-        normalizedKey === normalizedSourceKey ||
-        normalizedKey.includes(normalizedSourceKey) ||
-        normalizedSourceKey.includes(normalizedKey)
-      ) {
-        matchedKey = key;
-        bucket = images;
-        break;
-      }
+  for (const [key, images] of extractedImageBuckets.entries()) {
+    const normalizedKey = key.replace(/\.[^.]+$/, "");
+    if (
+      normalizedKey === normalizedSourceKey ||
+      normalizedKey.includes(normalizedSourceKey) ||
+      normalizedSourceKey.includes(normalizedKey)
+    ) {
+      extractedImageBuckets.delete(key);
+      return images;
     }
   }
-
-  if ((!bucket || bucket.length === 0) && totalSourceItems === 1 && extractedImageBuckets.size > 0) {
-    const firstEntry = Array.from(extractedImageBuckets.entries())[0];
-    matchedKey = firstEntry[0];
-    bucket = firstEntry[1];
+  if (totalSourceItems === 1 && extractedImageBuckets.size > 0) {
+    const [firstKey, firstImages] = Array.from(extractedImageBuckets.entries())[0];
+    extractedImageBuckets.delete(firstKey);
+    return firstImages;
   }
-
-  if (!bucket || bucket.length === 0 || !matchedKey) return [];
-
-  const cursor = extractedImageBucketCursors.get(matchedKey) ?? 0;
-  const image = bucket[cursor];
-  if (!image) return [];
-
-  extractedImageBucketCursors.set(matchedKey, cursor + 1);
-  return [image];
+  return [];
 }
 function canPersistAsPool(metrics: {
   width_m: number | null;
@@ -843,77 +929,6 @@ function normalizeImportedLoose(value: string | null | undefined) {
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function extractImportedValueByLabels(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
-  labels: string[]
-) {
-  const metadataKeys = labels
-    .map((label) =>
-      normalizeImportedLoose(label)
-        .replace(/\s+/g, "_")
-        .replace(/[^a-z0-9_]/g, "")
-    )
-    .filter(Boolean);
-
-  for (const key of metadataKeys) {
-    const found = extractMetadataValue(item, [key]);
-    if (found) return found;
-  }
-
-  const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
-    .map((value) => String(value ?? ""))
-    .join("\n");
-
-  for (const label of labels) {
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`${escaped}\s*[:=-]\s*(.+)`, "i");
-    const match = source.match(regex);
-    if (match?.[1]) {
-      return String(match[1]).trim();
-    }
-  }
-
-  return "";
-}
-
-function extractImportedFirstCurrencyValue(value: string | null | undefined) {
-  if (!value) return null;
-  const match = String(value).match(/(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/);
-  if (!match?.[1]) return null;
-  return parseImportedDecimal(match[1]);
-}
-
-function extractImportedCatalogSku(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const explicitSku =
-    extractMetadataValue(item, ["sku", "codigo", "code"]) ||
-    extractImportedValueByLabels(item, ["SKU", "Código", "Codigo"]);
-  return explicitSku ? explicitSku.slice(0, 120) : null;
-}
-
-function extractImportedCatalogStockQuantity(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const explicitStock =
-    extractMetadataValue(item, ["estoque_inicial", "stock_quantity", "stock"]) ||
-    extractImportedValueByLabels(item, ["Estoque inicial", "Estoque", "Quantidade em estoque"]);
-  if (!explicitStock) return 0;
-  const match = String(explicitStock).match(/-?\d+/);
-  if (!match?.[0]) return 0;
-  const parsed = Number(match[0]);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function isImportedStockWorksheetRow(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const source = normalizeImportedLoose(
-    [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
-  );
-  return source.includes("planilha estoque");
 }
 function extractMetadataValue(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
@@ -986,6 +1001,15 @@ function shouldSkipImportedItem(
   ) {
     return true;
   }
+
+if (
+  normalizedRaw.includes("planilha estoque") ||
+  normalizedRaw.includes("aba estoque") ||
+  normalizedRaw.includes("sheet estoque")
+) {
+  return true;
+}
+
   return false;
 }
 function resolveImportedDestination(
@@ -1037,36 +1061,31 @@ function buildImportedPoolDescription(
 ) {
   return buildImportedCleanDescription(item);
 }
+
 function buildImportedCatalogMetadata(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   category: ImportedCatalogCategory
 ) {
-  const productName = buildImportedCatalogName(item);
-  const sku = extractImportedCatalogSku(item) || "";
-  const stockQuantity = extractImportedCatalogStockQuantity(item);
-  const barcode =
-    extractMetadataValue(item, ["codigo_barras", "código de barras", "barcode"]) ||
-    extractImportedValueByLabels(item, ["Código de barras", "Codigo de barras", "Barcode"]);
-
+  const source = String(item.rawText || "");
+  const sku =
+    extractImportedCatalogSku(item) ||
+    extractMetadataValue(item, ["sku", "codigo", "código"]);
   const line =
     extractMetadataValue(item, ["linha", "line"]) ||
-    extractImportedValueByLabels(item, ["Linha"]);
-
+    extractImportedLabeledValue(source, ["Linha"]);
   const application =
     extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) ||
-    extractImportedValueByLabels(item, ["Aplicação", "Aplicacao"]);
-
+    extractImportedLabeledValue(source, ["Aplicação", "Aplicacao"]);
   const packaging =
     extractMetadataValue(item, ["embalagem", "package", "packaging"]) ||
-    extractImportedValueByLabels(item, ["Embalagem"]);
-
+    extractImportedLabeledValue(source, ["Embalagem"]);
   const dosage =
-    extractMetadataValue(item, ["dosagem", "dose", "diluicao", "diluição"]) ||
-    extractImportedValueByLabels(item, ["Dosagem"]);
-
-  const notes =
-    extractMetadataValue(item, ["notes", "observacao", "observação"]) ||
-    extractImportedValueByLabels(item, ["Observações", "Observacoes"]);
+    extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
+    extractImportedLabeledValue(source, ["Dosagem", "Dose"]);
+  const barcode =
+    extractMetadataValue(item, ["codigo_barras", "código de barras", "barcode"]) ||
+    extractImportedLabeledValue(source, ["Código de barras", "Codigo de barras", "Barcode"]);
+  const stockInitial = extractImportedCatalogStockQuantity(item);
 
   return {
     categoria: category,
@@ -1075,7 +1094,7 @@ function buildImportedCatalogMetadata(
     source_type: item.type,
     confidence: item.confidence,
     dedup_key: "dedupKey" in item ? item.dedupKey : null,
-    imported_title: productName,
+    imported_title: buildImportedCatalogName(item),
     imported_dimensions: extractMetadataValue(item, ["medidas", "dimensions"]),
     imported_depth: extractMetadataValue(item, ["profundidade", "depth"]),
     imported_capacity: extractMetadataValue(item, ["capacidade", "capacity"]),
@@ -1087,16 +1106,17 @@ function buildImportedCatalogMetadata(
       extractImportedWeightOrVolume(item),
     imported_dosage: dosage,
     imported_barcode: barcode,
+    clean_description: buildImportedCatalogDescription(item) || "",
     sku,
     line,
     application,
     embalagem: packaging,
     dosage,
-    notes,
-    stock_quantity: stockQuantity,
-    clean_description: buildImportedCatalogDescription(item) || "",
+    barcode,
+    stock_initial: stockInitial,
   };
 }
+
 function dataUrlToBlob(dataUrl: string) {
   const [header, data] = String(dataUrl || "").split(",");
   if (!header || !data) {
@@ -1792,7 +1812,8 @@ function OnboardingContent() {
     });
     if (metadataError) throw metadataError;
   }
-  async function handleSaveImportedItemsToCatalog() {
+  
+async function handleSaveImportedItemsToCatalog() {
     if (!organizationId || !activeStore?.id) {
       setFormError("Não foi possível identificar a organização e a loja ativa.");
       return;
@@ -1801,177 +1822,290 @@ function OnboardingContent() {
       setFormError("Faça a importação inteligente antes de salvar no sistema.");
       return;
     }
+
     const rawSourceItems =
       intelligentImportResult.dedupedPreview.length > 0
         ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
         : intelligentImportResult.normalizedPreview;
-    const sourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item) && !isImportedStockWorksheetRow(item));
+
+    const sourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
+
     if (sourceItems.length === 0) {
       setFormError(
         "A análise não encontrou itens prontos para salvar. Tente um arquivo mais direto ou revise a importação."
       );
       return;
     }
+
     setSavingImportedCatalog(true);
     setFormError(null);
     setSuccessMessage(null);
+
     try {
       const selectedImageFiles = intelligentImportFiles.filter((file) =>
         String(file.type || "").startsWith("image/")
       );
+
       const extractedImageBuckets = new Map<
         string,
         Array<{ fileName: string; mimeType: string; dataUrl: string }>
       >();
-      const extractedImageBucketCursors = new Map<string, number>();
-      for (const image of safeExtractedImagePreview) {
-        const bucketKey = String(image.sourceFileName || "").trim().toLowerCase();
+
+      const extractedImageSequence = safeExtractedImagePreview.map((image) => ({
+        fileName: image.fileName || "imagem-extraida.jpg",
+        mimeType: image.mimeType || "image/jpeg",
+        dataUrl: image.dataUrl,
+        sourceFileName: String(image.sourceFileName || "").trim().toLowerCase(),
+      }));
+
+      for (const image of extractedImageSequence) {
+        const bucketKey = image.sourceFileName;
         const currentBucket = extractedImageBuckets.get(bucketKey) ?? [];
         currentBucket.push({
-          fileName: image.fileName || "imagem-extraida.jpg",
-          mimeType: image.mimeType || "image/jpeg",
+          fileName: image.fileName,
+          mimeType: image.mimeType,
           dataUrl: image.dataUrl,
         });
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
+
+      const uniqueSourceFiles = new Set(
+        sourceItems
+          .map((item) => String(item.sourceFileName || "").trim().toLowerCase())
+          .filter(Boolean)
+      );
+
+      const shouldAssignSequentialExtractedImages =
+        uniqueSourceFiles.size === 1 &&
+        extractedImageSequence.length >= sourceItems.length &&
+        sourceItems.length > 1;
+
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
+
       let savedPools = 0;
       let savedAcessorios = 0;
       let savedQuimicos = 0;
       let savedOutros = 0;
       let imageCursor = 0;
+
+      const itemErrors: string[] = [];
+
       for (const item of sourceItems) {
-        const destination = resolveImportedDestination(item);
-        const relatedExtractedImages = pickRelatedExtractedImages(
-          item,
-          extractedImageBuckets,
-          extractedImageBucketCursors,
-          sourceItems.length
-        );
-        if (destination === "pool") {
-          const metrics = extractImportedPoolMetrics(item);
-          const poolName = buildImportedPoolName(item);
-          const poolDescription = buildImportedPoolDescription(item);
-          if (!poolName || isGenericImportedTitle(poolName)) {
+        try {
+          const destination = resolveImportedDestination(item);
+
+          const relatedExtractedImages = shouldAssignSequentialExtractedImages
+            ? extractedImageSequence.length > 0
+              ? [
+                  {
+                    fileName: extractedImageSequence[0].fileName,
+                    mimeType: extractedImageSequence[0].mimeType,
+                    dataUrl: extractedImageSequence[0].dataUrl,
+                  },
+                ]
+              : []
+            : pickRelatedExtractedImages(item, extractedImageBuckets, sourceItems.length);
+
+          if (shouldAssignSequentialExtractedImages && extractedImageSequence.length > 0) {
+            extractedImageSequence.shift();
+          }
+
+          if (destination === "pool") {
+            const metrics = extractImportedPoolMetrics(item);
+            const poolName = buildImportedPoolName(item);
+
+            if (!poolName || isGenericImportedTitle(poolName)) {
+              continue;
+            }
+
+            let poolDescription = buildImportedPoolDescription(item);
+            let safeDepth = metrics.depth_m;
+
+            if (safeDepth == null) {
+              safeDepth = 1.4;
+              poolDescription = [
+                poolDescription || "",
+                "Importação automática: a profundidade não foi identificada com segurança no arquivo. Foi usado 1,40 m de forma provisória para permitir o cadastro. Revise este item depois.",
+              ]
+                .filter(Boolean)
+                .join("\n");
+            }
+
+            const { data: existingPool } = await supabase
+              .from("pools")
+              .select("id")
+              .eq("organization_id", organizationId)
+              .eq("store_id", activeStore.id)
+              .eq("name", poolName)
+              .maybeSingle();
+
+            if (existingPool?.id) {
+              continue;
+            }
+
+            const { data: createdPool, error } = await supabase
+              .from("pools")
+              .insert({
+                organization_id: organizationId,
+                store_id: activeStore.id,
+                name: poolName,
+                width_m: metrics.width_m,
+                length_m: metrics.length_m,
+                depth_m: safeDepth,
+                shape: metrics.shape,
+                material: metrics.material,
+                max_capacity_l: metrics.max_capacity_l,
+                weight_kg: null,
+                price: metrics.price,
+                description: poolDescription,
+                is_active: true,
+                track_stock: true,
+                stock_quantity: 0,
+              })
+              .select("id")
+              .single();
+
+            if (error) throw error;
+
+            if (!firstPoolId) firstPoolId = createdPool.id;
+            savedPools += 1;
+
+            const poolImages = relatedExtractedImages.slice(0, 1);
+            if (poolImages.length > 0) {
+              for (let index = 0; index < poolImages.length; index += 1) {
+                await uploadExtractedImageToPool(
+                  organizationId,
+                  activeStore.id,
+                  createdPool.id,
+                  poolImages[index],
+                  index
+                );
+              }
+            } else if (selectedImageFiles[imageCursor]) {
+              try {
+                await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor], 0);
+                imageCursor += 1;
+              } catch (uploadError) {
+                console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
+              }
+            }
+
             continue;
           }
-          const { data: createdPool, error } = await supabase
-            .from("pools")
+
+          const category =
+            destination === "quimicos" || destination === "acessorios" || destination === "outros"
+              ? destination
+              : normalizeImportedCatalogCategory(
+                  [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
+                );
+
+          const itemName = buildImportedCatalogName(item);
+          if (!itemName || isGenericImportedTitle(itemName)) {
+            continue;
+          }
+
+          const sku = extractImportedCatalogSku(item) || null;
+          const priceCents = extractImportedCatalogPriceCents(item);
+          const stockQuantity = extractImportedCatalogStockQuantity(item);
+          const metadata = buildImportedCatalogMetadata(item, category);
+
+          const { data: existingCatalogItem } = await supabase
+            .from("store_catalog_items")
+            .select("id")
+            .eq("organization_id", organizationId)
+            .eq("store_id", activeStore.id)
+            .eq("name", itemName)
+            .maybeSingle();
+
+          if (existingCatalogItem?.id) {
+            continue;
+          }
+
+          const { data: createdItem, error } = await supabase
+            .from("store_catalog_items")
             .insert({
               organization_id: organizationId,
               store_id: activeStore.id,
-              name: poolName,
-              width_m: metrics.width_m,
-              length_m: metrics.length_m,
-              depth_m: metrics.depth_m,
-              shape: metrics.shape,
-              material: metrics.material,
-              max_capacity_l: metrics.max_capacity_l,
-              weight_kg: null,
-              price: metrics.price,
-              description: poolDescription,
+              sku,
+              name: itemName,
+              description: buildImportedCatalogDescription(item),
+              price_cents: priceCents,
+              currency: "BRL",
               is_active: true,
-              track_stock: false,
-              stock_quantity: null,
+              track_stock: true,
+              stock_quantity: stockQuantity,
+              metadata,
             })
             .select("id")
             .single();
+
           if (error) throw error;
-          if (!firstPoolId) firstPoolId = createdPool.id;
-          savedPools += 1;
-          if (relatedExtractedImages.length > 0) {
-            const limitedPoolImages = relatedExtractedImages.slice(0, 1);
-            for (let index = 0; index < limitedPoolImages.length; index += 1) {
-              await uploadExtractedImageToPool(
+
+          if (!firstCatalogCategory) firstCatalogCategory = category;
+          if (category === "quimicos") savedQuimicos += 1;
+          else if (category === "acessorios") savedAcessorios += 1;
+          else savedOutros += 1;
+
+          const catalogImages = relatedExtractedImages.slice(0, 1);
+          if (catalogImages.length > 0) {
+            for (let index = 0; index < catalogImages.length; index += 1) {
+              await uploadExtractedImageToCatalog(
                 organizationId,
                 activeStore.id,
-                createdPool.id,
-                limitedPoolImages[index],
+                createdItem.id,
+                catalogImages[index],
                 index
               );
             }
           } else if (selectedImageFiles[imageCursor]) {
             try {
-              await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor], 0);
+              await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor], 0);
               imageCursor += 1;
             } catch (uploadError) {
-              console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
+              console.error("[OnboardingPage] uploadImportedImageToCatalog error:", uploadError);
             }
           }
-          continue;
-        }
-        const category =
-          destination === "quimicos" || destination === "acessorios" || destination === "outros"
-            ? destination
-            : normalizeImportedCatalogCategory(
-                [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
-              );
-        const itemName = buildImportedCatalogName(item);
-        if (!itemName || isGenericImportedTitle(itemName)) {
-          continue;
-        }
-        const { data: createdItem, error } = await supabase
-          .from("store_catalog_items")
-          .insert({
-            organization_id: organizationId,
-            store_id: activeStore.id,
-            sku: extractImportedCatalogSku(item),
-            name: itemName,
-            description: buildImportedCatalogDescription(item),
-            price_cents: extractImportedCatalogPriceCents(item),
-            currency: "BRL",
-            is_active: true,
-            track_stock: false,
-            stock_quantity: null,
-            metadata: buildImportedCatalogMetadata(item, category),
-          })
-          .select("id")
-          .single();
-        if (error) throw error;
-        if (!firstCatalogCategory) firstCatalogCategory = category;
-        if (category === "quimicos") savedQuimicos += 1;
-        else if (category === "acessorios") savedAcessorios += 1;
-        else savedOutros += 1;
-        if (relatedExtractedImages.length > 0) {
-          const limitedCatalogImages = relatedExtractedImages.slice(0, 1);
-          for (let index = 0; index < limitedCatalogImages.length; index += 1) {
-            await uploadExtractedImageToCatalog(
-              organizationId,
-              activeStore.id,
-              createdItem.id,
-              limitedCatalogImages[index],
-              index
-            );
-          }
-        } else if (selectedImageFiles[imageCursor]) {
-          try {
-            await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor], 0);
-            imageCursor += 1;
-          } catch (uploadError) {
-            console.error("[OnboardingPage] uploadImportedImageToCatalog error:", uploadError);
-          }
+        } catch (itemError) {
+          console.error("[OnboardingPage] handleSaveImportedItemsToCatalog item error:", itemError);
+          itemErrors.push(
+            itemError instanceof Error
+              ? itemError.message
+              : "Erro inesperado ao salvar um item importado."
+          );
         }
       }
+
       const totalCreated = savedPools + savedAcessorios + savedQuimicos + savedOutros;
+
       if (totalCreated === 0) {
-        setFormError(
-          "A análise foi concluída, mas nenhum item válido ficou pronto para salvar. Revise o arquivo e teste novamente."
-        );
+        if (itemErrors.length > 0) {
+          setFormError(`Nenhum item foi salvo. Primeiros erros: ${itemErrors.slice(0, 3).join(" | ")}`);
+        } else {
+          setFormError(
+            "A análise foi concluída, mas nenhum item válido ficou pronto para salvar. Revise o arquivo e teste novamente."
+          );
+        }
         return;
       }
+
       setSuccessMessage(
         `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}.`
       );
+
       clearIntelligentImportState();
+
       if (savedPools > 0 && firstPoolId) {
         navigateWithFallback("/configuracoes/piscinas");
         return;
       }
+
       if (firstCatalogCategory) {
         navigateWithFallback(`/configuracoes/catalogo/${firstCatalogCategory}`);
         return;
       }
+
       navigateWithFallback("/configuracoes");
     } catch (error) {
       console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
@@ -3306,10 +3440,10 @@ async function upsertAnswers(
                   {visibleIntelligentImportFiles.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
-                        Arquivos selecionados ou restaurados ({visibleIntelligentImportFiles.length})
+                        Arquivos selecionados ou restaurados (mostrando até 10 de {visibleIntelligentImportFiles.length})
                       </p>
                       <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                        {visibleIntelligentImportFiles.map((file, index) => (
+                        {visibleIntelligentImportFiles.slice(0, 10).map((file, index) => (
                           <div
                             key={`${file.name}-${file.size}-${file.lastModified}`}
                             className={cx(
@@ -3329,10 +3463,10 @@ async function upsertAnswers(
                   {selectedImagePreviews.length > 0 ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3">
                       <p className="text-sm font-semibold text-gray-900">
-                        Pré-visualização das fotos selecionadas ({selectedImagePreviews.length})
+                        Pré-visualização das fotos selecionadas (mostrando até 10 de {selectedImagePreviews.length})
                       </p>
                       <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                        {selectedImagePreviews.map((preview) => (
+                        {selectedImagePreviews.slice(0, 10).map((preview) => (
                           <div
                             key={preview.name}
                             className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
@@ -3431,7 +3565,7 @@ async function upsertAnswers(
                           </p>
                         ) : (
                           <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                            {safeExtractedPreview.map((item, index) => (
+                            {safeExtractedPreview.slice(0, 10).map((item, index) => (
                               <div
                                 key={`${item.fileName}-${item.extension}`}
                                 className={cx("px-3 py-2.5", index > 0 ? "border-t border-gray-200" : "")}
@@ -3460,7 +3594,7 @@ async function upsertAnswers(
                           </p>
                         ) : (
                           <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                            {safeExtractedImagePreview.map((image, index) => (
+                            {safeExtractedImagePreview.slice(0, 10).map((image, index) => (
                               <div
                                 key={`${image.sourceFileName}-${image.fileName}-${index}`}
                                 className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
