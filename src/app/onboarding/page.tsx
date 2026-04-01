@@ -471,7 +471,7 @@ function decorateIntelligentImportResultWithImageFallback(
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
 type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
 function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = normalizeImportedLoose(String(value || ""));
   if (
     normalized.includes("quim") ||
     normalized.includes("cloro") ||
@@ -480,7 +480,15 @@ function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategor
     normalized.includes("elevador") ||
     normalized.includes("redutor") ||
     normalized.includes("clarificante") ||
-    normalized.includes("sulfato")
+    normalized.includes("sulfato") ||
+    normalized.includes("sanitizante") ||
+    normalized.includes("oxidante") ||
+    normalized.includes("oxigenio ativo") ||
+    normalized.includes("balanceador") ||
+    normalized.includes("eliminador") ||
+    normalized.includes("oleosidade") ||
+    normalized.includes("limpa bordas") ||
+    normalized.includes("limpeza")
   ) {
     return "quimicos";
   }
@@ -522,7 +530,15 @@ function inferImportedDestination(
     (source.includes("sulfato") ? 4 : 0) +
     (source.includes("elevador de ph") ? 4 : 0) +
     (source.includes("redutor de ph") ? 4 : 0) +
-    (source.includes("ph") ? 2 : 0);
+    (source.includes("ph") ? 2 : 0) +
+    (source.includes("sanitizante") ? 4 : 0) +
+    (source.includes("oxidante") ? 4 : 0) +
+    (source.includes("oxigenio ativo") ? 4 : 0) +
+    (source.includes("balanceador") ? 4 : 0) +
+    (source.includes("eliminador") ? 3 : 0) +
+    (source.includes("oleosidade") ? 3 : 0) +
+    (source.includes("limpa bordas") ? 3 : 0) +
+    (source.includes("limpeza") ? 2 : 0);
   const accessoryScore =
     (source.includes("acessor") ? 4 : 0) +
     (source.includes("peneira") ? 4 : 0) +
@@ -594,22 +610,16 @@ function extractImportedLabeledValue(
   return "";
 }
 
-function extractImportedFirstCurrencyValue(value: string | number | null | undefined) {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
-  }
-
-  const source = String(value || "").trim();
+function extractImportedFirstCurrencyValue(value: string | null | undefined) {
+  const source = String(value || "");
   if (!source) return null;
 
-  const normalizedCurrency = source.replace(/\s+/g, " ");
-  const currencyMatch =
-    normalizedCurrency.match(/r\$\s*(-?\d{1,3}(?:[\.,]\d{3})*(?:[\.,]\d{2})|-?\d+(?:[\.,]\d{2})?)/i) ||
-    normalizedCurrency.match(/(-?\d{1,3}(?:[\.,]\d{3})*(?:[\.,]\d{2})|-?\d+(?:[\.,]\d{2})?)/);
+  const match =
+    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
+    source.match(/(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/);
 
-  if (!currencyMatch) return null;
-
-  return parseImportedDecimal(currencyMatch[1]);
+  if (!match) return null;
+  return parseImportedDecimal(match[1]);
 }
 
 function extractImportedExcelLikeName(
@@ -693,50 +703,39 @@ function sanitizeImportedDescriptionText(
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const blockedStarts = [
-    "preco ",
-    "preço ",
-    "preco venda",
-    "preço venda",
-    "preco custo",
-    "preço custo",
-    "medidas ",
-    "profundidade ",
-    "capacidade ",
-    "material ",
-    "formato ",
-    "marca ",
-    "sku ",
-    "peso ",
-    "peso volume",
-    "volume ",
-    "conteudo ",
-    "conteúdo ",
-    "dosagem ",
-    "cor ",
-    "uso ",
-    "observacao ",
-    "observação ",
-    "codigo de barras",
-    "código de barras",
-    "barcode ",
-    "nome do produto",
-    "controlar estoque",
-    "estoque inicial",
-    "fonte ",
-    "margem ",
-  ];
-
   const filtered = rawLines.filter((line) => {
     const normalized = normalizeImportedLoose(line);
     if (!normalized) return false;
     if (normalized === titleLoose) return false;
-    if (blockedStarts.some((prefix) => normalized.startsWith(prefix))) return false;
+    if (normalized.startsWith("preco ")) return false;
+    if (normalized.startsWith("preço ")) return false;
+    if (normalized.startsWith("medidas ")) return false;
+    if (normalized.startsWith("profundidade ")) return false;
+    if (normalized.startsWith("capacidade ")) return false;
+    if (normalized.startsWith("material ")) return false;
+    if (normalized.startsWith("formato ")) return false;
+    if (normalized.startsWith("marca ")) return false;
+    if (normalized.startsWith("sku ")) return false;
+    if (normalized.startsWith("peso ")) return false;
+    if (normalized.startsWith("codigo de barras")) return false;
+    if (normalized.startsWith("código de barras")) return false;
+    if (normalized.startsWith("controlar estoque")) return false;
+    if (normalized.startsWith("estoque inicial")) return false;
+    if (normalized.startsWith("fonte ")) return false;
+    if (normalized.startsWith("nome do produto")) return false;
+    if (normalized.startsWith("categoria ")) return false;
+    if (normalized.startsWith("linha ")) return false;
+    if (normalized.startsWith("aplicacao ")) return false;
+    if (normalized.startsWith("aplicação ")) return false;
+    if (normalized.startsWith("embalagem ")) return false;
+    if (normalized.startsWith("dosagem ")) return false;
+    if (normalized.startsWith("cor ")) return false;
+    if (normalized.startsWith("uso ")) return false;
     if (normalized.includes("arquivo de teste")) return false;
     if (normalized.includes("validar upload inteligente")) return false;
     if (normalized.includes("categoria esperada no sistema")) return false;
     if (normalized.includes("salvar em configuracoes")) return false;
-    if (normalized.includes("catalogo ficticio criado para teste interno")) return false;
+    if (normalized.includes("catalogo ficticio criado para teste interno de upload inteligente")) return false;
     return true;
   });
 
@@ -763,20 +762,38 @@ function buildImportedCleanDescription(
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const fragments = buildImportedDescriptionFragments(item);
-  return fragments.join("\n").trim() || null;
+  const source = String(item.rawText || "");
+  const category = extractMetadataValue(item, ["categoria", "category"]) || extractImportedLabeledValue(source, ["Categoria"]);
+  const line = extractMetadataValue(item, ["linha", "line"]) || extractImportedLabeledValue(source, ["Linha"]);
+  const application = extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) || extractImportedLabeledValue(source, ["Aplicação", "Aplicacao"]);
+  const packageValue = extractMetadataValue(item, ["embalagem", "package", "packaging"]) || extractImportedLabeledValue(source, ["Embalagem"]);
+  const dosageValue = extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) || extractImportedLabeledValue(source, ["Dosagem", "Dose"]);
+  const shortDescription =
+    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
+    extractImportedLabeledValue(source, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]);
+  const notesValue =
+    extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
+    extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
+  const baseDescription = buildImportedCleanDescription(item) || "";
+
+  const lines = [
+    category ? `Categoria: ${category}` : "",
+    line ? `Linha: ${line}` : "",
+    application ? `Aplicação: ${application}` : "",
+    packageValue ? `Embalagem: ${packageValue}` : "",
+    shortDescription || baseDescription,
+    notesValue ? `Observações: ${notesValue}` : "",
+  ].filter(Boolean);
+
+  return dedupeDescriptionLines(lines).join("\n").trim() || null;
 }
 
-function parseImportedDecimal(value: string | number | null | undefined) {
+function parseImportedDecimal(value: string | null | undefined) {
   if (value == null) return null;
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
-  }
-
   const source = String(value).trim();
   if (!source) return null;
 
-  const sanitized = source.replace(/[^\d,.-]/g, "").trim();
+  const sanitized = source.replace(/[^\d,.-]/g, "");
   if (!sanitized) return null;
 
   const hasComma = sanitized.includes(",");
@@ -793,175 +810,15 @@ function parseImportedDecimal(value: string | number | null | undefined) {
       normalized = sanitized.replace(/,/g, "");
     }
   } else if (hasComma) {
-    const commaMatches = sanitized.match(/,/g) ?? [];
-    if (commaMatches.length > 1) {
-      normalized = sanitized.replace(/,/g, "");
-    } else {
-      const decimalDigits = sanitized.length - sanitized.lastIndexOf(",") - 1;
-      normalized =
-        decimalDigits === 3
-          ? sanitized.replace(/,/g, "")
-          : sanitized.replace(",", ".");
-    }
+    normalized = sanitized.replace(/\./g, "").replace(",", ".");
   } else if (hasDot) {
-    const dotMatches = sanitized.match(/\./g) ?? [];
-    if (dotMatches.length > 1) {
-      normalized = sanitized.replace(/\./g, "");
-    } else {
-      const decimalDigits = sanitized.length - sanitized.lastIndexOf(".") - 1;
-      normalized =
-        decimalDigits === 3
-          ? sanitized.replace(/\./g, "")
-          : sanitized;
-    }
+    const decimalPart = sanitized.split(".").pop() || "";
+    normalized = decimalPart.length === 2 ? sanitized : sanitized.replace(/\./g, "");
   }
 
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
-function extractImportedWeightOrVolume(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const source = String(item.rawText || "");
-
-  const explicit =
-    extractMetadataValue(item, [
-      "peso_volume",
-      "peso volume",
-      "peso/volume",
-      "weight_or_volume",
-      "weight",
-      "volume",
-      "conteudo",
-      "conteúdo",
-      "content",
-    ]) ||
-    extractImportedLabeledValue(source, [
-      "Peso/Volume",
-      "Peso volume",
-      "Peso",
-      "Volume",
-      "Conteúdo",
-      "Conteudo",
-      "Conteúdo líquido",
-      "Conteudo liquido",
-    ]);
-
-  if (explicit) return explicit.trim().slice(0, 120);
-
-  const joined = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
-    .map((value) => String(value ?? ""))
-    .join(" ");
-
-  const match =
-    joined.match(/\b(\d+[\.,]?\d*\s*(?:kg|g|l|ml|litros?))\b/i) ||
-    joined.match(/\b(?:pote|frasco|gal[aã]o|balde|saco)\s*(\d+[\.,]?\d*\s*(?:kg|g|l|ml))\b/i);
-
-  return match?.[1]?.trim() || "";
-}
-
-function extractImportedOrderIndex(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const numericMetadataKeys = [
-    "row_index",
-    "rowIndex",
-    "sheet_row",
-    "sheetRow",
-    "source_row",
-    "sourceRow",
-    "line_index",
-    "lineIndex",
-    "item_index",
-    "itemIndex",
-    "sequence",
-    "index",
-    "order",
-    "linha_numero",
-    "numero_linha",
-  ];
-
-  for (const key of numericMetadataKeys) {
-    const parsed = parseImportedDecimal(extractMetadataValue(item, [key]));
-    if (parsed != null) return Math.max(0, Math.round(parsed));
-  }
-
-  const lineValue =
-    extractMetadataValue(item, ["linha", "line"]) ||
-    extractImportedLabeledValue(String(item.rawText || ""), ["Linha"]);
-  const lineNumber = parseImportedDecimal(lineValue);
-  if (lineNumber != null && /^\d+$/.test(String(lineValue).trim())) {
-    return Math.max(0, Math.round(lineNumber));
-  }
-
-  const skuSource = extractImportedCatalogSku(item) || String(item.title || "");
-  const skuMatch = skuSource.match(/(?:^|\D)(\d{1,6})(?:\D|$)/);
-  if (skuMatch) {
-    return Number(skuMatch[1]);
-  }
-
-  const titleMatch = String(item.title || "").match(/item\s*(\d{1,6})/i);
-  if (titleMatch) {
-    return Number(titleMatch[1]);
-  }
-
-  return Number.MAX_SAFE_INTEGER;
-}
-
-function buildImportedDescriptionFragments(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const source = String(item.rawText || "");
-  const category =
-    extractMetadataValue(item, ["categoria", "category"]) ||
-    extractImportedLabeledValue(source, ["Categoria"]);
-  const line =
-    extractMetadataValue(item, ["linha", "line"]) ||
-    extractImportedLabeledValue(source, ["Linha"]);
-  const application =
-    extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) ||
-    extractImportedLabeledValue(source, ["Aplicação", "Aplicacao"]);
-  const packageValue =
-    extractMetadataValue(item, ["embalagem", "package", "packaging"]) ||
-    extractImportedLabeledValue(source, ["Embalagem"]);
-  const dosageValue =
-    extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
-    extractImportedLabeledValue(source, ["Dosagem", "Dose"]);
-  const shortDescription =
-    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
-    extractImportedLabeledValue(source, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]);
-  const notesValue =
-    extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
-    extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
-
-  const notesNormalized = normalizeImportedLoose(notesValue);
-  const safeNotes =
-    notesNormalized.includes("upload inteligente") ||
-    notesNormalized.includes("teste interno") ||
-    notesNormalized.includes("validar leitura")
-      ? ""
-      : notesValue;
-
-  const baseDescription = buildImportedCleanDescription(item) || "";
-  const fragments = [
-    category ? `Categoria: ${category}` : "",
-    line ? `Linha: ${line}` : "",
-    application ? `Aplicação: ${application}` : "",
-    packageValue ? `Embalagem: ${packageValue}` : "",
-    baseDescription,
-    dosageValue ? `Dosagem: ${dosageValue}` : "",
-    safeNotes ? `Observações: ${safeNotes}` : "",
-  ].filter(Boolean);
-
-  return dedupeDescriptionLines(
-    fragments.filter((fragment, index, arr) => {
-      const normalizedFragment = normalizeImportedLoose(fragment);
-      if (!normalizedFragment) return false;
-      return arr.findIndex((candidate) => normalizeImportedLoose(candidate) === normalizedFragment) === index;
-    })
-  );
-}
-
 function extractImportedPoolMetrics(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -1032,17 +889,16 @@ function extractImportedCatalogPriceCents(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
-  const explicitCandidates: Array<string | number> = [
+  const explicitPrice =
     extractMetadataValue(item, [
       "preco_venda",
       "preço_venda",
       "preço venda",
       "preco venda",
-      "valor_venda",
-      "valor venda",
       "price",
+      "price_cents",
       "valor",
-    ]),
+    ]) ||
     extractImportedLabeledValue(source, [
       "Preço venda (R$)",
       "Preço venda",
@@ -1051,29 +907,124 @@ function extractImportedCatalogPriceCents(
       "Preço",
       "Preco",
       "Valor",
-    ]),
-  ].filter((candidate) => candidate !== "");
+    ]);
 
-  for (const candidate of explicitCandidates) {
-    const parsedCandidate = extractImportedFirstCurrencyValue(candidate);
-    if (parsedCandidate != null) return Math.round(parsedCandidate * 100);
-  }
-
-  const explicitPriceCents = parseImportedDecimal(
-    extractMetadataValue(item, ["price_cents", "preco_centavos", "preço centavos"])
-  );
-  if (explicitPriceCents != null && explicitPriceCents > 0) {
-    return Math.round(explicitPriceCents);
-  }
+  const parsedExplicit = extractImportedFirstCurrencyValue(explicitPrice);
+  if (parsedExplicit != null) return Math.round(parsedExplicit * 100);
 
   const fullSource = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
 
-  const fallbackParsed = extractImportedFirstCurrencyValue(fullSource);
-  if (fallbackParsed == null) return null;
+  const priceMatch =
+    fullSource.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
+    fullSource.match(
+      /pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
+    );
 
-  return Math.round(fallbackParsed * 100);
+  if (!priceMatch) return null;
+
+  const parsed = parseImportedDecimal(priceMatch[1]);
+  if (parsed == null) return null;
+
+  return Math.round(parsed * 100);
+}
+
+function extractImportedWeightOrVolume(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = String(item.rawText || "");
+
+  const explicit =
+    extractMetadataValue(item, [
+      "peso_volume",
+      "peso volume",
+      "peso/volume",
+      "weight_or_volume",
+      "weight",
+      "volume",
+      "conteudo",
+      "conteúdo",
+      "content",
+    ]) ||
+    extractImportedLabeledValue(source, [
+      "Peso/Volume",
+      "Peso volume",
+      "Peso",
+      "Volume",
+      "Conteúdo",
+      "Conteudo",
+      "Conteúdo líquido",
+      "Conteudo liquido",
+    ]);
+
+  if (explicit) return explicit.trim().slice(0, 120);
+
+  const joined = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
+    .map((value) => String(value ?? ""))
+    .join(" ");
+
+  const match =
+    joined.match(/(\d+[\.,]?\d*\s*(?:kg|g|l|ml|litros?))/i) ||
+    joined.match(/(?:pote|frasco|gal[aã]o|balde|saco)\s*(\d+[\.,]?\d*\s*(?:kg|g|l|ml))/i);
+
+  return match?.[1]?.trim() || "";
+}
+
+function extractImportedOrderIndex(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const candidates = [
+    extractMetadataValue(item, ["row_index", "rowIndex", "item_index", "itemIndex", "order_index", "orderIndex"]),
+    extractImportedLabeledValue(String(item.rawText || ""), ["Item", "Linha", "Row"]),
+    String(item.title || "").match(/\b(?:item|linha|row)\s*(\d+)\b/i)?.[1] || "",
+  ];
+
+  for (const candidate of candidates) {
+    const match = String(candidate || "").match(/\d+/);
+    if (!match) continue;
+    const parsed = Number(match[0]);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function mergeImportedItemsForSave(params: {
+  normalizedItems: IntelligentImportNormalizedPreview[];
+  dedupedItems: IntelligentImportDedupedPreview[];
+}) {
+  const result: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview> = [];
+  const seenKeys = new Set<string>();
+
+  const buildKey = (
+    item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+  ) => {
+    const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
+    const name = normalizeImportedLoose(buildImportedCatalogName(item));
+    const sourceFile = normalizeImportedLoose(item.sourceFileName || "");
+    const orderIndex = extractImportedOrderIndex(item);
+    if (sku) return `sku:${sku}`;
+    if (name && name !== "item importado") return `name:${name}`;
+    return `fallback:${sourceFile}:${orderIndex}:${normalizeImportedLoose(item.title || item.rawText || "")}`;
+  };
+
+  for (const item of params.dedupedItems) {
+    if (item.isDuplicate) continue;
+    const key = buildKey(item);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    result.push(item);
+  }
+
+  for (const item of params.normalizedItems) {
+    const key = buildKey(item);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    result.push(item);
+  }
+
+  return result;
 }
 
 function pickRelatedExtractedImages(
@@ -1128,50 +1079,6 @@ function normalizeImportedLoose(value: string | null | undefined) {
     .replace(/\s+/g, " ")
     .trim();
 }
-function extractImportedStableOrderToken(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const sku = extractImportedCatalogSku(item);
-  const source = [sku, item.title, item.rawText].map((value) => String(value || "")).join(" ");
-  const skuMatch = source.match(/\b(?:[a-z]{2,10}[-_ ]?)?(\d{1,5})\b/i);
-  if (skuMatch) return Number(skuMatch[1]);
-  return Number.MAX_SAFE_INTEGER;
-}
-
-function extractImportedImageOrderToken(fileName: string) {
-  const normalized = String(fileName || "");
-  const match = normalized.match(/(\d+)(?!.*\d)/);
-  if (match) return Number(match[1]);
-  return Number.MAX_SAFE_INTEGER;
-}
-
-function sortImportedItemsForStableSave(
-  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
-) {
-  return [...items].sort((left, right) => {
-    const leftOrder = extractImportedStableOrderToken(left);
-    const rightOrder = extractImportedStableOrderToken(right);
-    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-
-    const leftSku = extractImportedCatalogSku(left);
-    const rightSku = extractImportedCatalogSku(right);
-    if (leftSku !== rightSku) return leftSku.localeCompare(rightSku, "pt-BR");
-
-    return buildImportedCatalogName(left).localeCompare(buildImportedCatalogName(right), "pt-BR");
-  });
-}
-
-function sortExtractedImagesForStableSave<
-  T extends { fileName: string }
->(images: T[]) {
-  return [...images].sort((left, right) => {
-    const leftOrder = extractImportedImageOrderToken(left.fileName);
-    const rightOrder = extractImportedImageOrderToken(right.fileName);
-    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-    return String(left.fileName || "").localeCompare(String(right.fileName || ""), "pt-BR");
-  });
-}
-
 function extractMetadataValue(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   keys: string[]
@@ -2065,23 +1972,17 @@ async function handleSaveImportedItemsToCatalog() {
       return;
     }
 
-    const rawSourceItems =
+    const nonDuplicateDedupedItems =
       intelligentImportResult.dedupedPreview.length > 0
         ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
-        : intelligentImportResult.normalizedPreview;
+        : [];
 
-    const sourceItems = sortImportedItemsForStableSave(
-      rawSourceItems.filter((item) => !shouldSkipImportedItem(item))
-    );
+    const sourceItems = mergeImportedItemsForSave({
+      normalizedItems: intelligentImportResult.normalizedPreview,
+      dedupedItems: nonDuplicateDedupedItems,
+    }).filter((item) => !shouldSkipImportedItem(item));
 
-    const orderedSourceItems = [...sourceItems].sort((left, right) => {
-      const leftOrder = extractImportedOrderIndex(left);
-      const rightOrder = extractImportedOrderIndex(right);
-      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-      return String(left.title || "").localeCompare(String(right.title || ""), "pt-BR");
-    });
-
-    if (orderedSourceItems.length === 0) {
+    if (sourceItems.length === 0) {
       setFormError(
         "A análise não encontrou itens prontos para salvar. Tente um arquivo mais direto ou revise a importação."
       );
@@ -2110,12 +2011,23 @@ async function handleSaveImportedItemsToCatalog() {
           sourceFileName: String(image.sourceFileName || "").trim().toLowerCase(),
         }))
         .sort((left, right) => {
-          const leftMatch = String(left.fileName || "").match(/(\d+)(?!.*\d)/);
-          const rightMatch = String(right.fileName || "").match(/(\d+)(?!.*\d)/);
-          const leftIndex = leftMatch ? Number(leftMatch[1]) : Number.MAX_SAFE_INTEGER;
-          const rightIndex = rightMatch ? Number(rightMatch[1]) : Number.MAX_SAFE_INTEGER;
-          if (leftIndex !== rightIndex) return leftIndex - rightIndex;
-          return String(left.fileName || "").localeCompare(String(right.fileName || ""), "pt-BR");
+          const leftOrder = extractImportedOrderIndex({
+            type: "image_reference",
+            sourceFileName: left.sourceFileName,
+            title: left.fileName,
+            rawText: left.fileName,
+            confidence: 1,
+            metadata: {},
+          });
+          const rightOrder = extractImportedOrderIndex({
+            type: "image_reference",
+            sourceFileName: right.sourceFileName,
+            title: right.fileName,
+            rawText: right.fileName,
+            confidence: 1,
+            metadata: {},
+          });
+          return leftOrder - rightOrder;
         });
 
       for (const image of extractedImageSequence) {
@@ -2129,9 +2041,23 @@ async function handleSaveImportedItemsToCatalog() {
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
 
+      const orderedSourceItems = [...sourceItems].sort((left, right) => {
+        const leftOrder = extractImportedOrderIndex(left);
+        const rightOrder = extractImportedOrderIndex(right);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+
+        const leftName = buildImportedCatalogName(left);
+        const rightName = buildImportedCatalogName(right);
+        return leftName.localeCompare(rightName, "pt-BR");
+      });
+
       const uniqueSourceFiles = new Set(
-        sourceItems
-          .map((item) => String(item.sourceFileName || "").trim().toLowerCase())
+        orderedSourceItems
+          .map(
+            (
+              item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+            ) => String(item.sourceFileName || "").trim().toLowerCase()
+          )
           .filter(Boolean)
       );
 
