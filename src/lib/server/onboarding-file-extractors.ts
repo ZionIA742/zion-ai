@@ -16,6 +16,13 @@ export type ExtractedImageAsset = {
   source: "docx" | "xlsx" | "pptx" | "pdf" | "image_file";
   mimeType: string;
   dataUrl: string;
+  sheetName?: string;
+  rowIndex?: number;
+  columnIndex?: number;
+  anchorCell?: string;
+  drawingName?: string;
+  imageRelationshipId?: string;
+  imageOrder?: number;
 };
 
 export type ExtractedFileContent = {
@@ -337,12 +344,217 @@ async function extractImagesFromDocx(buffer: Buffer) {
   });
 }
 
+function columnNumberToLetters(columnNumberZeroBased: number) {
+  let n = columnNumberZeroBased + 1;
+  let result = "";
+  while (n > 0) {
+    const remainder = (n - 1) % 26;
+    result = String.fromCharCode(65 + remainder) + result;
+    n = Math.floor((n - 1) / 26);
+  }
+  return result;
+}
+
+function buildAnchorCell(columnIndexZeroBased: number, rowIndexZeroBased: number) {
+  return `${columnNumberToLetters(columnIndexZeroBased)}${rowIndexZeroBased + 1}`;
+}
+
+function xmlDecode(value: string) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+type XlsxDrawingAnchor = {
+  relationshipId: string;
+  drawingName?: string;
+  rowIndex?: number;
+  columnIndex?: number;
+  anchorCell?: string;
+  imageOrder: number;
+};
+
 async function extractImagesFromXlsx(buffer: Buffer) {
-  return extractImagesFromZip({
-    buffer,
-    mediaPrefix: "xl/media/",
-    source: "xlsx",
+  const zip = await JSZip.loadAsync(buffer);
+  const workbook = XLSX.read(buffer, {
+    type: "buffer",
+    cellDates: false,
+    raw: false,
+    dense: false,
   });
+
+  const workbookRelsPath = "xl/_rels/workbook.xml.rels";
+  const workbookRelsXml = zip.files[workbookRelsPath]
+    ? await zip.files[workbookRelsPath].async("text")
+    : "";
+
+  const workbookRelMap = new Map<string, string>();
+  for (const match of workbookRelsXml.matchAll(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/gi)) {
+    workbookRelMap.set(match[1], match[2]);
+  }
+
+  const sheetPathToName = new Map<string, string>();
+  workbook.SheetNames.forEach((sheetName) => {
+    const sheet = workbook.Sheets[sheetName] as any;
+    const relId = sheet?.["!id"] || sheet?.["id"];
+    if (!relId) return;
+    const target = workbookRelMap.get(relId);
+    if (!target) return;
+    const normalized = target.replace(/^\//, "").replace(/^xl\//, "");
+    sheetPathToName.set(`xl/${normalized}`, sheetName);
+  });
+
+  const mediaBuffers = new Map<string, { buffer: Buffer; fileName: string; mimeType: string }>();
+  for (const [path, zipEntry] of Object.entries(zip.files)) {
+    if (zipEntry.dir) continue;
+    if (!path.startsWith("xl/media/")) continue;
+    const fileName = path.split("/").pop() || "image";
+    const mimeType = getImageMimeTypeFromExtension(fileName);
+    const fileBuffer = await zipEntry.async("nodebuffer");
+    mediaBuffers.set(path, { buffer: fileBuffer, fileName, mimeType });
+  }
+
+  const drawingMediaMap = new Map<string, { fileName: string; mimeType: string; dataUrl: string }>();
+  for (const [path, zipEntry] of Object.entries(zip.files)) {
+    if (zipEntry.dir) continue;
+    if (!/^xl\/drawings\/_rels\/drawing\d+\.xml\.rels$/i.test(path)) continue;
+
+    const xml = await zipEntry.async("text");
+    const drawingBasePath = path.replace(/^xl\/drawings\/_rels\//, "xl/drawings/").replace(/\.rels$/i, "");
+
+    for (const match of xml.matchAll(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/gi)) {
+      const relId = match[1];
+      const target = match[2];
+      const absoluteMediaPath = target.startsWith("/")
+        ? target.replace(/^\//, "")
+        : `${drawingBasePath.substring(0, drawingBasePath.lastIndexOf("/") + 1)}${target}`
+            .replace(/\/\.{2}\//g, "/")
+            .replace(/\/\.{2}\//g, "/");
+
+      const normalizedMediaPath = absoluteMediaPath
+        .replace(/\/\//g, "/")
+        .replace(/(^|\/)\.\//g, "$1")
+        .replace(/xl\/drawings\/xl\//g, "xl/");
+
+      const media = mediaBuffers.get(normalizedMediaPath);
+      if (!media) continue;
+
+      drawingMediaMap.set(`${drawingBasePath}::${relId}`, {
+        fileName: media.fileName,
+        mimeType: media.mimeType,
+        dataUrl: bufferToDataUrl(media.buffer, media.mimeType),
+      });
+    }
+  }
+
+  const sheetDrawingAnchors = new Map<string, XlsxDrawingAnchor[]>();
+
+  for (const [path, zipEntry] of Object.entries(zip.files)) {
+    if (zipEntry.dir) continue;
+    if (!/^xl\/worksheets\/sheet\d+\.xml$/i.test(path)) continue;
+
+    const sheetName = sheetPathToName.get(path);
+    if (!sheetName) continue;
+
+    const relsPath = path.replace(/^xl\/worksheets\//, "xl/worksheets/_rels/") + ".rels";
+    const relsXml = zip.files[relsPath] ? await zip.files[relsPath].async("text") : "";
+    const drawingRelMatch = relsXml.match(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^\"]*drawing\d+\.xml)"/i);
+    if (!drawingRelMatch) continue;
+
+    const drawingTarget = drawingRelMatch[2];
+    const drawingPath = drawingTarget.startsWith("/")
+      ? drawingTarget.replace(/^\//, "")
+      : `${path.substring(0, path.lastIndexOf("/") + 1)}${drawingTarget}`
+          .replace(/\/\.{2}\//g, "/")
+          .replace(/\/\.{2}\//g, "/")
+          .replace(/xl\/worksheets\/xl\//g, "xl/");
+
+    const drawingXmlEntry = zip.files[drawingPath];
+    if (!drawingXmlEntry) continue;
+    const drawingXml = await drawingXmlEntry.async("text");
+
+    const anchors: XlsxDrawingAnchor[] = [];
+    const anchorRegex = /<(?:xdr:)?(?:twoCellAnchor|oneCellAnchor)[^>]*>([\s\S]*?)<\/(?:xdr:)?(?:twoCellAnchor|oneCellAnchor)>/gi;
+    let anchorIndex = 0;
+    for (const anchorMatch of drawingXml.matchAll(anchorRegex)) {
+      const anchorXml = anchorMatch[1] || "";
+      const rowMatch = anchorXml.match(/<(?:xdr:)?row>(\d+)<\/(?:xdr:)?row>/i);
+      const colMatch = anchorXml.match(/<(?:xdr:)?col>(\d+)<\/(?:xdr:)?col>/i);
+      const blipMatch = anchorXml.match(/<(?:a:)?blip[^>]*(?:r:embed|embed)="([^"]+)"/i);
+      const nameMatch = anchorXml.match(/<xdr:cNvPr[^>]*name="([^"]+)"/i);
+      if (!blipMatch) continue;
+
+      const rowIndex = rowMatch ? Number(rowMatch[1]) : undefined;
+      const columnIndex = colMatch ? Number(colMatch[1]) : undefined;
+      anchors.push({
+        relationshipId: blipMatch[1],
+        drawingName: nameMatch ? xmlDecode(nameMatch[1]) : undefined,
+        rowIndex,
+        columnIndex,
+        anchorCell:
+          typeof rowIndex === "number" && typeof columnIndex === "number"
+            ? buildAnchorCell(columnIndex, rowIndex)
+            : undefined,
+        imageOrder: anchorIndex,
+      });
+      anchorIndex += 1;
+    }
+
+    anchors.sort((a, b) => {
+      const rowA = a.rowIndex ?? Number.MAX_SAFE_INTEGER;
+      const rowB = b.rowIndex ?? Number.MAX_SAFE_INTEGER;
+      if (rowA !== rowB) return rowA - rowB;
+      const colA = a.columnIndex ?? Number.MAX_SAFE_INTEGER;
+      const colB = b.columnIndex ?? Number.MAX_SAFE_INTEGER;
+      if (colA !== colB) return colA - colB;
+      return a.imageOrder - b.imageOrder;
+    });
+
+    sheetDrawingAnchors.set(`${sheetName}::${drawingPath}`, anchors);
+  }
+
+  const assets: ExtractedImageAsset[] = [];
+
+  for (const [sheetDrawingKey, anchors] of sheetDrawingAnchors.entries()) {
+    const [sheetName, drawingPath] = sheetDrawingKey.split("::");
+
+    for (const anchor of anchors) {
+      const mapped = drawingMediaMap.get(`${drawingPath}::${anchor.relationshipId}`);
+      if (!mapped) continue;
+
+      assets.push({
+        fileName: mapped.fileName,
+        source: "xlsx",
+        mimeType: mapped.mimeType,
+        dataUrl: mapped.dataUrl,
+        sheetName,
+        rowIndex: anchor.rowIndex,
+        columnIndex: anchor.columnIndex,
+        anchorCell: anchor.anchorCell,
+        drawingName: anchor.drawingName,
+        imageRelationshipId: anchor.relationshipId,
+        imageOrder: anchor.imageOrder,
+      });
+    }
+  }
+
+  debugIntelligentImport("extractImagesFromXlsx", {
+    count: assets.length,
+    preview: assets.slice(0, 20).map((asset) => ({
+      fileName: asset.fileName,
+      sheetName: asset.sheetName,
+      rowIndex: asset.rowIndex,
+      columnIndex: asset.columnIndex,
+      anchorCell: asset.anchorCell,
+      drawingName: asset.drawingName,
+      imageOrder: asset.imageOrder,
+    })),
+  });
+
+  return assets;
 }
 
 async function extractImagesFromPptx(buffer: Buffer) {
@@ -431,7 +643,13 @@ export async function extractTextFromFile(params: {
     extension,
     textLength: text.trim().length,
     extractedImages: extractedImages.length,
-    imageNamesPreview: extractedImages.slice(0, 12).map((image) => image.fileName),
+    imagePreview: extractedImages.slice(0, 12).map((image) => ({
+      fileName: image.fileName,
+      sheetName: image.sheetName,
+      rowIndex: image.rowIndex,
+      columnIndex: image.columnIndex,
+      anchorCell: image.anchorCell,
+    })),
   });
 
   return {
