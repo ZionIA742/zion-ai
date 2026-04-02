@@ -2,6 +2,15 @@ import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 
+const DEBUG_INTELLIGENT_IMPORT =
+  process.env.NODE_ENV !== "production" ||
+  process.env.DEBUG_INTELLIGENT_IMPORT === "1";
+
+function debugIntelligentImport(...args: unknown[]) {
+  if (!DEBUG_INTELLIGENT_IMPORT) return;
+  console.log("[ZION][intelligent-import][extractors]", ...args);
+}
+
 export type ExtractedImageAsset = {
   fileName: string;
   source: "docx" | "xlsx" | "pptx" | "pdf" | "image_file";
@@ -72,16 +81,33 @@ async function extractImagesFromZip(params: {
     });
   }
 
+  debugIntelligentImport("extractImagesFromZip", {
+    source: params.source,
+    mediaPrefix: params.mediaPrefix,
+    count: assets.length,
+    fileNamesPreview: assets.slice(0, 12).map((asset) => asset.fileName),
+  });
+
   return assets;
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
   const result = await mammoth.extractRawText({ buffer });
-  return cleanInlineText(result.value || "");
+  const text = cleanInlineText(result.value || "");
+  debugIntelligentImport("extractTextFromDocx", {
+    textLength: text.length,
+    preview: text.slice(0, 300),
+  });
+  return text;
 }
 
 async function extractTextFromTxt(buffer: Buffer) {
-  return cleanInlineText(buffer.toString("utf-8"));
+  const text = cleanInlineText(buffer.toString("utf-8"));
+  debugIntelligentImport("extractTextFromTxt", {
+    textLength: text.length,
+    preview: text.slice(0, 300),
+  });
+  return text;
 }
 
 function normalizeHeaderLabel(value: unknown, index: number) {
@@ -160,6 +186,17 @@ function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
     );
   });
 
+  debugIntelligentImport("buildItemBlocksFromSheet", {
+    sheetName,
+    usefulRows: usefulRows.length,
+    headerIndex,
+    headerPreview: headers.slice(0, 20),
+    dataRows: dataRows.length,
+    blocks: blocks.length,
+    firstBlockPreview: blocks[0]?.slice(0, 300) ?? "",
+    lastBlockPreview: blocks[blocks.length - 1]?.slice(0, 300) ?? "",
+  });
+
   return blocks;
 }
 
@@ -172,6 +209,10 @@ async function extractTextFromXlsx(buffer: Buffer) {
   });
 
   const parts: string[] = [];
+
+  debugIntelligentImport("extractTextFromXlsx:start", {
+    sheetNames: workbook.SheetNames,
+  });
 
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
@@ -201,13 +242,29 @@ async function extractTextFromXlsx(buffer: Buffer) {
         )
         .filter(Boolean);
 
+      debugIntelligentImport("extractTextFromXlsx:fallbackSheet", {
+        sheetName,
+        rows: rows.length,
+        fallbackRows: fallback.length,
+        firstFallbackPreview: fallback[0]?.slice(0, 300) ?? "",
+      });
+
       parts.push(...fallback);
     }
 
     parts.push("");
   }
 
-  return cleanInlineText(parts.join("\n"));
+  const text = cleanInlineText(parts.join("\n"));
+
+  debugIntelligentImport("extractTextFromXlsx:done", {
+    sheetNames: workbook.SheetNames,
+    textLength: text.length,
+    itemMarkers: (text.match(/=== ITEM/gi) || []).length,
+    preview: text.slice(0, 500),
+  });
+
+  return text;
 }
 
 async function extractTextFromPptx(buffer: Buffer) {
@@ -244,7 +301,13 @@ async function extractTextFromPptx(buffer: Buffer) {
     parts.push("");
   }
 
-  return cleanInlineText(parts.join("\n"));
+  const text = cleanInlineText(parts.join("\n"));
+  debugIntelligentImport("extractTextFromPptx", {
+    slides: slides.length,
+    textLength: text.length,
+    preview: text.slice(0, 300),
+  });
+  return text;
 }
 
 async function extractTextFromPdf(buffer: Buffer) {
@@ -252,8 +315,16 @@ async function extractTextFromPdf(buffer: Buffer) {
     const pdfParseModule = await import("pdf-parse");
     const pdfParseFn: any = (pdfParseModule as any).default ?? (pdfParseModule as any);
     const result = await pdfParseFn(buffer);
-    return cleanInlineText(result?.text || "");
-  } catch {
+    const text = cleanInlineText(result?.text || "");
+    debugIntelligentImport("extractTextFromPdf", {
+      textLength: text.length,
+      preview: text.slice(0, 300),
+    });
+    return text;
+  } catch (error) {
+    debugIntelligentImport("extractTextFromPdf:error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return "";
   }
 }
@@ -283,17 +354,19 @@ async function extractImagesFromPptx(buffer: Buffer) {
 }
 
 async function extractImagesFromPdf(_buffer: Buffer) {
+  debugIntelligentImport("extractImagesFromPdf", { count: 0 });
   return [] as ExtractedImageAsset[];
 }
 
 async function extractTextFromImage(_buffer: Buffer) {
+  debugIntelligentImport("extractTextFromImage", { textLength: 0 });
   return "";
 }
 
 async function extractImageFile(buffer: Buffer, fileName: string) {
   const mimeType = getImageMimeTypeFromExtension(fileName);
 
-  return [
+  const assets = [
     {
       fileName,
       source: "image_file" as const,
@@ -301,6 +374,14 @@ async function extractImageFile(buffer: Buffer, fileName: string) {
       dataUrl: bufferToDataUrl(buffer, mimeType),
     },
   ];
+
+  debugIntelligentImport("extractImageFile", {
+    fileName,
+    mimeType,
+    count: assets.length,
+  });
+
+  return assets;
 }
 
 export async function extractTextFromFile(params: {
@@ -313,6 +394,13 @@ export async function extractTextFromFile(params: {
 
   let text = "";
   let extractedImages: ExtractedImageAsset[] = [];
+
+  debugIntelligentImport("extractTextFromFile:start", {
+    fileName,
+    mimeType,
+    extension,
+    bufferBytes: buffer.length,
+  });
 
   if (extension === "pdf") {
     text = await extractTextFromPdf(buffer);
@@ -337,6 +425,14 @@ export async function extractTextFromFile(params: {
   } else {
     throw new Error(`Tipo de arquivo não suportado: ${fileName}`);
   }
+
+  debugIntelligentImport("extractTextFromFile:done", {
+    fileName,
+    extension,
+    textLength: text.trim().length,
+    extractedImages: extractedImages.length,
+    imageNamesPreview: extractedImages.slice(0, 12).map((image) => image.fileName),
+  });
 
   return {
     fileName,

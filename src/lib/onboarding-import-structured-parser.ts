@@ -36,6 +36,15 @@ export type StructuredImportItem = {
   application?: string;
 };
 
+const DEBUG_INTELLIGENT_IMPORT =
+  process.env.NODE_ENV !== "production" ||
+  process.env.DEBUG_INTELLIGENT_IMPORT === "1";
+
+function debugIntelligentImport(...args: unknown[]) {
+  if (!DEBUG_INTELLIGENT_IMPORT) return;
+  console.log("[ZION][structured-parser]", ...args);
+}
+
 function cleanText(value: string | null | undefined) {
   return String(value || "")
     .replace(/\r/g, "")
@@ -575,16 +584,49 @@ function looksLikeMultiItemSource(extractedText: string, blockCount: number) {
 
 export function parseStructuredImportItems(extracted: ExtractedFileContent): StructuredImportItem[] {
   const blocks = chooseBlocks(extracted);
+  debugIntelligentImport("choose-blocks", {
+    fileName: extracted.fileName,
+    blockCount: blocks.length,
+    blockPreview: blocks.slice(0, 5).map((block, index) => ({
+      index,
+      preview: block.slice(0, 180),
+    })),
+  });
+
   const items: StructuredImportItem[] = [];
 
   blocks.forEach((block, index) => {
     const parsed = parseSingleBlock(block, extracted.fileName, index);
     if (parsed) {
       items.push(parsed);
+      debugIntelligentImport("parsed-item", {
+        fileName: extracted.fileName,
+        index,
+        title: parsed.title,
+        sku: parsed.sku || "",
+        destination: parsed.destination,
+        confidence: parsed.confidence,
+        hasUsefulContent:
+          parsed.description.length >= 10 ||
+          Boolean(parsed.price) ||
+          Boolean(parsed.dimensions) ||
+          Boolean(parsed.capacity) ||
+          Boolean(parsed.material),
+      });
+      return;
     }
+
+    debugIntelligentImport("parsed-item-null", {
+      fileName: extracted.fileName,
+      index,
+      blockPreview: block.slice(0, 180),
+    });
   });
 
-  if (items.length === 0) return [];
+  if (items.length === 0) {
+    debugIntelligentImport("parse-result-empty", { fileName: extracted.fileName });
+    return [];
+  }
 
   const qualitySorted = [...items].sort((a, b) => {
     const score = (item: StructuredImportItem) =>
@@ -598,6 +640,21 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
     return score(b) - score(a);
   });
 
+  debugIntelligentImport("quality-sorted", {
+    fileName: extracted.fileName,
+    count: qualitySorted.length,
+    items: qualitySorted.slice(0, 12).map((item) => ({
+      title: item.title,
+      sku: item.sku || "",
+      destination: item.destination,
+      descriptionLength: item.description.length,
+      hasPrice: Boolean(item.price),
+      hasDimensions: Boolean(item.dimensions),
+      hasCapacity: Boolean(item.capacity),
+      hasMaterial: Boolean(item.material),
+    })),
+  });
+
   const sourceLooksSingleItem =
     !looksLikeMultiItemSource(extracted.text, items.length) &&
     (items.length === 1 ||
@@ -606,11 +663,22 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       normalizeLoose(extracted.text).includes("preco sugerido") ||
       normalizeLoose(extracted.text).includes("preço sugerido"));
 
+  debugIntelligentImport("source-shape", {
+    fileName: extracted.fileName,
+    sourceLooksSingleItem,
+    itemsLength: items.length,
+  });
+
   if (sourceLooksSingleItem) {
+    debugIntelligentImport("single-item-return", {
+      fileName: extracted.fileName,
+      title: qualitySorted[0]?.title,
+      sku: qualitySorted[0]?.sku || "",
+    });
     return [qualitySorted[0]];
   }
 
-  return qualitySorted.filter((item, index) => {
+  const filtered = qualitySorted.filter((item, index) => {
     if (index === 0) return true;
 
     const hasUsefulContent =
@@ -620,6 +688,34 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       Boolean(item.capacity) ||
       Boolean(item.material);
 
-    return !isProbablyGenericTitle(item.title) && hasUsefulContent;
+    const keep = !isProbablyGenericTitle(item.title) && hasUsefulContent;
+
+    if (!keep) {
+      debugIntelligentImport("filtered-out-item", {
+        fileName: extracted.fileName,
+        index,
+        title: item.title,
+        sku: item.sku || "",
+        isGeneric: isProbablyGenericTitle(item.title),
+        hasUsefulContent,
+        descriptionLength: item.description.length,
+        hasPrice: Boolean(item.price),
+        hasDimensions: Boolean(item.dimensions),
+        hasCapacity: Boolean(item.capacity),
+        hasMaterial: Boolean(item.material),
+      });
+    }
+
+    return keep;
   });
+
+  debugIntelligentImport("parse-result-final", {
+    fileName: extracted.fileName,
+    beforeFilter: qualitySorted.length,
+    afterFilter: filtered.length,
+    skus: filtered.map((item) => item.sku || ""),
+    titles: filtered.map((item) => item.title),
+  });
+
+  return filtered;
 }

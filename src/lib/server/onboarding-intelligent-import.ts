@@ -56,6 +56,16 @@ export type IntelligentImportResult =
       message: string;
     };
 
+const DEBUG_INTELLIGENT_IMPORT =
+  process.env.NODE_ENV !== "production" ||
+  process.env.DEBUG_INTELLIGENT_IMPORT === "1" ||
+  process.env.NEXT_PUBLIC_DEBUG_INTELLIGENT_IMPORT === "1";
+
+function debugIntelligentImport(...args: unknown[]) {
+  if (!DEBUG_INTELLIGENT_IMPORT) return;
+  console.log("[ZION][intelligent-import][server]", ...args);
+}
+
 function buildPreview(text: string, max = 300) {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
   if (!normalized) return "";
@@ -120,6 +130,14 @@ function attachPerItemAliases(
   const imagePreview = extractedImages.flatMap((image) => {
     const key = String(image.sourceFileName || "").trim().toLowerCase();
     const relatedItems = groupedBySourceFile.get(key) ?? [];
+
+    debugIntelligentImport("attachPerItemAliases:image-source", {
+      sourceFileName: image.sourceFileName,
+      imageFileName: image.fileName,
+      relatedItemsCount: relatedItems.length,
+      relatedTitles: relatedItems.map((item) => item.title),
+    });
+
     if (relatedItems.length <= 1) {
       return [image];
     }
@@ -130,6 +148,11 @@ function attachPerItemAliases(
     }));
   });
 
+  debugIntelligentImport("attachPerItemAliases:result", {
+    normalizedCount: normalizedPreview.length,
+    imagePreviewCount: imagePreview.length,
+  });
+
   return {
     normalizedPreview,
     imagePreview,
@@ -138,8 +161,28 @@ function attachPerItemAliases(
 
 function filterUsefulItems(items: DedupedImportItem[]) {
   return items.filter((item) => {
-    if (isGenericTitle(item.title)) return false;
-    if (item.type === "unknown" && item.confidence < 0.55) return false;
+    const genericTitle = isGenericTitle(item.title);
+    const lowConfidenceUnknown = item.type === "unknown" && item.confidence < 0.55;
+
+    if (genericTitle || lowConfidenceUnknown) {
+      debugIntelligentImport("filterUsefulItems:discarded", {
+        title: item.title,
+        sourceFileName: item.sourceFileName,
+        type: item.type,
+        confidence: item.confidence,
+        isDuplicate: item.isDuplicate,
+        dedupKey: item.dedupKey,
+        reason: genericTitle ? "generic_title" : "low_confidence_unknown",
+        sku:
+          item.metadata?.sku ||
+          item.metadata?.SKU ||
+          item.metadata?.codigo ||
+          item.metadata?.["código"] ||
+          "",
+      });
+      return false;
+    }
+
     return true;
   });
 }
@@ -158,6 +201,15 @@ export async function runOnboardingIntelligentImport(
       };
     }
 
+    debugIntelligentImport("start", {
+      totalFiles: files.length,
+      files: files.map((file) => ({
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        sizeBytes: file.buffer.length,
+      })),
+    });
+
     const extractedFiles = await Promise.all(
       files.map((file) =>
         extractTextFromFile({
@@ -168,7 +220,33 @@ export async function runOnboardingIntelligentImport(
       )
     );
 
+    debugIntelligentImport("after-extract", {
+      extractedFiles: extractedFiles.length,
+      extracted: extractedFiles.map((file) => ({
+        fileName: file.fileName,
+        extension: file.extension,
+        textLength: String(file.text || "").length,
+        extractedImages: Array.isArray(file.extractedImages) ? file.extractedImages.length : 0,
+      })),
+    });
+
     const normalizedItems = normalizeMultipleExtractedFiles(extractedFiles);
+
+    debugIntelligentImport("after-normalize", {
+      normalizedCount: normalizedItems.length,
+      normalizedItems: normalizedItems.map((item) => ({
+        title: item.title,
+        type: item.type,
+        sourceFileName: item.sourceFileName,
+        confidence: item.confidence,
+        sku:
+          item.metadata?.sku ||
+          item.metadata?.SKU ||
+          item.metadata?.codigo ||
+          item.metadata?.["código"] ||
+          "",
+      })),
+    });
 
     const extractedImagePreviewRaw = extractedFiles.flatMap((file) =>
       (file.extractedImages ?? []).map((image) => ({
@@ -180,9 +258,72 @@ export async function runOnboardingIntelligentImport(
       }))
     );
 
+    debugIntelligentImport("after-image-collect", {
+      extractedImagesRawCount: extractedImagePreviewRaw.length,
+      extractedImagesRaw: extractedImagePreviewRaw.map((image) => ({
+        sourceFileName: image.sourceFileName,
+        fileName: image.fileName,
+        source: image.source,
+        mimeType: image.mimeType,
+      })),
+    });
+
     const aliased = attachPerItemAliases(normalizedItems, extractedImagePreviewRaw);
-    const dedupedItems = filterUsefulItems(dedupNormalizedItems(aliased.normalizedPreview));
+
+    debugIntelligentImport("after-alias", {
+      normalizedCount: aliased.normalizedPreview.length,
+      imagePreviewCount: aliased.imagePreview.length,
+      imagePreview: aliased.imagePreview.map((image) => ({
+        sourceFileName: image.sourceFileName,
+        fileName: image.fileName,
+        source: image.source,
+      })),
+    });
+
+    const dedupedBeforeFilter = dedupNormalizedItems(aliased.normalizedPreview);
+
+    debugIntelligentImport("after-dedup-before-filter", {
+      total: dedupedBeforeFilter.length,
+      duplicates: dedupedBeforeFilter.filter((item) => item.isDuplicate).length,
+      items: dedupedBeforeFilter.map((item) => ({
+        title: item.title,
+        sourceFileName: item.sourceFileName,
+        type: item.type,
+        confidence: item.confidence,
+        isDuplicate: item.isDuplicate,
+        duplicateOf: item.duplicateOf,
+        dedupKey: item.dedupKey,
+        sku:
+          item.metadata?.sku ||
+          item.metadata?.SKU ||
+          item.metadata?.codigo ||
+          item.metadata?.["código"] ||
+          "",
+      })),
+    });
+
+    const dedupedItems = filterUsefulItems(dedupedBeforeFilter);
     const duplicateItems = dedupedItems.filter((item) => item.isDuplicate).length;
+
+    debugIntelligentImport("after-filter-final", {
+      finalCount: dedupedItems.length,
+      duplicateItems,
+      finalItems: dedupedItems.map((item) => ({
+        title: item.title,
+        sourceFileName: item.sourceFileName,
+        type: item.type,
+        confidence: item.confidence,
+        isDuplicate: item.isDuplicate,
+        duplicateOf: item.duplicateOf,
+        dedupKey: item.dedupKey,
+        sku:
+          item.metadata?.sku ||
+          item.metadata?.SKU ||
+          item.metadata?.codigo ||
+          item.metadata?.["código"] ||
+          "",
+      })),
+    });
 
     return {
       ok: true,
@@ -205,6 +346,13 @@ export async function runOnboardingIntelligentImport(
       dedupedPreview: dedupedItems,
     };
   } catch (error: any) {
+    debugIntelligentImport("error", {
+      message:
+        error?.message ||
+        "Erro interno ao processar importação inteligente do onboarding.",
+      stack: error?.stack || null,
+    });
+
     return {
       ok: false,
       error: "ONBOARDING_INTELLIGENT_IMPORT_FAILED",
