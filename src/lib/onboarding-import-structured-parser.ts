@@ -85,13 +85,177 @@ function titleCaseLabel(label: string) {
     .toLowerCase();
 }
 
-function extractLoosePrice(text: string) {
-  const directMatch =
-    text.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    text.match(/pre[cç]o(?:\s+sugerido|\s+estimado|\s+aproximado)?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    text.match(/faixa de pre[cç]o\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i);
+function escapeRegExp(value: string) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-  return directMatch?.[1] ?? "";
+const INLINE_FIELD_DEFINITIONS: Array<{
+  canonicalKey: string;
+  aliases: string[];
+}> = [
+  { canonicalKey: "planilha", aliases: ["planilha", "aba", "sheet"] },
+  { canonicalKey: "sku", aliases: ["sku", "código", "codigo"] },
+  { canonicalKey: "categoria", aliases: ["categoria", "category"] },
+  {
+    canonicalKey: "nome do produto",
+    aliases: ["nome do produto", "nome comercial", "nome", "produto", "item", "título", "titulo"],
+  },
+  { canonicalKey: "linha", aliases: ["linha", "line"] },
+  {
+    canonicalKey: "preço",
+    aliases: [
+      "preço venda (r$)",
+      "preco venda (r$)",
+      "preço venda",
+      "preco venda",
+      "valor venda (r$)",
+      "valor venda",
+      "preço final (r$)",
+      "preco final (r$)",
+      "preço final",
+      "preco final",
+      "valor final (r$)",
+      "valor final",
+      "preço sugerido (r$)",
+      "preco sugerido (r$)",
+      "preço sugerido",
+      "preco sugerido",
+      "preço",
+      "preco",
+      "valor",
+    ],
+  },
+  {
+    canonicalKey: "preço custo",
+    aliases: [
+      "preço custo (r$)",
+      "preco custo (r$)",
+      "preço custo",
+      "preco custo",
+      "valor custo (r$)",
+      "valor custo",
+      "custo",
+    ],
+  },
+  { canonicalKey: "aplicação", aliases: ["aplicação", "aplicacao", "application"] },
+  { canonicalKey: "embalagem", aliases: ["embalagem", "package", "packaging"] },
+  { canonicalKey: "peso", aliases: ["peso/volume", "peso volume", "peso", "volume", "conteúdo", "conteudo"] },
+  { canonicalKey: "dosagem", aliases: ["dosagem", "dose"] },
+  { canonicalKey: "marca", aliases: ["marca", "brand"] },
+  { canonicalKey: "modelo", aliases: ["modelo", "model"] },
+  { canonicalKey: "cor", aliases: ["cor", "color"] },
+  { canonicalKey: "uso", aliases: ["uso", "usage"] },
+  { canonicalKey: "observação", aliases: ["observações", "observacoes", "observação", "observacao", "notas", "notes"] },
+  { canonicalKey: "indicação", aliases: ["indicação", "indicacao", "indicado para"] },
+  { canonicalKey: "composição", aliases: ["composição", "composicao"] },
+  { canonicalKey: "compatibilidade", aliases: ["compatibilidade", "compatibility"] },
+  { canonicalKey: "função", aliases: ["função", "funcao", "finalidade", "function"] },
+  { canonicalKey: "ambiente", aliases: ["ambiente", "ambiente indicado", "environment"] },
+  { canonicalKey: "diferencial", aliases: ["diferencial"] },
+  { canonicalKey: "medidas", aliases: ["medidas", "dimensões", "dimensoes", "tamanho", "size"] },
+  { canonicalKey: "profundidade", aliases: ["profundidade", "prof."] },
+  { canonicalKey: "capacidade", aliases: ["capacidade"] },
+  { canonicalKey: "controlar estoque", aliases: ["controlar estoque", "track stock", "control stock"] },
+  { canonicalKey: "quantidade atual", aliases: ["quantidade atual", "estoque inicial", "quantidade", "stock inicial", "stock quantity"] },
+  { canonicalKey: "estoque mínimo", aliases: ["estoque mínimo", "estoque minimo", "stock mínimo", "stock minimo"] },
+  { canonicalKey: "estoque máximo", aliases: ["estoque máximo", "estoque maximo", "stock máximo", "stock maximo"] },
+];
+
+const INLINE_FIELD_ALIAS_TO_CANONICAL = INLINE_FIELD_DEFINITIONS.reduce<Record<string, string>>(
+  (acc, definition) => {
+    definition.aliases.forEach((alias) => {
+      acc[normalizeLoose(alias)] = definition.canonicalKey;
+    });
+    return acc;
+  },
+  {}
+);
+
+const INLINE_FIELD_PATTERN = INLINE_FIELD_DEFINITIONS.flatMap((definition) => definition.aliases)
+  .sort((left, right) => right.length - left.length)
+  .map((label) => escapeRegExp(label))
+  .join("|");
+
+function extractInlineFieldPairs(block: string) {
+  const normalized = normalizeBlock(block).replace(/\s*\|\s*/g, "\n");
+  const results: Record<string, string> = {};
+
+  if (!INLINE_FIELD_PATTERN) return results;
+
+  const regex = new RegExp(
+    `(?:^|\\n|\\s)(${INLINE_FIELD_PATTERN})\\s*:\\s*([\\s\\S]*?)(?=(?:\\n|\\s)(?:${INLINE_FIELD_PATTERN})\\s*:|$)`,
+    "gi"
+  );
+
+  for (const match of normalized.matchAll(regex)) {
+    const rawLabel = cleanText(match[1]);
+    const canonicalKey = INLINE_FIELD_ALIAS_TO_CANONICAL[normalizeLoose(rawLabel)];
+    const rawValue = cleanText(match[2]);
+
+    if (!canonicalKey || !rawValue) continue;
+
+    if (!results[canonicalKey]) {
+      results[canonicalKey] = rawValue;
+      continue;
+    }
+
+    const currentNormalized = normalizeLoose(results[canonicalKey]);
+    const nextNormalized = normalizeLoose(rawValue);
+    if (!currentNormalized.includes(nextNormalized)) {
+      results[canonicalKey] = `${results[canonicalKey]}\n${rawValue}`;
+    }
+  }
+
+  return results;
+}
+
+function rawBlockLooksLikeStockSummary(rawBlock: string) {
+  const normalized = normalizeLoose(rawBlock);
+  return (
+    normalized.includes("controlar estoque") ||
+    normalized.includes("quantidade atual") ||
+    normalized.includes("estoque minimo") ||
+    normalized.includes("estoque maximo") ||
+    normalized.includes("stock quantity")
+  );
+}
+
+function looksLikeGuideOrNoiseBlock(rawBlock: string) {
+  const normalized = normalizeLoose(rawBlock);
+  return (
+    normalized.includes("guia leitura") ||
+    normalized.includes("guia de leitura") ||
+    normalized.includes("validar leitura do upload inteligente") ||
+    normalized.includes("arquivo de teste") ||
+    normalized.includes("salvar em configuracoes") ||
+    normalized.includes("categoria esperada no sistema")
+  );
+}
+
+function extractLoosePrice(text: string) {
+  const saleMatchers = [
+    /pre[cç]o\s+venda(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i,
+    /valor\s+venda(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i,
+    /pre[cç]o\s+final(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i,
+    /valor\s+final(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i,
+    /pre[cç]o\s+sugerido(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i,
+    /(?:^|[\n|])\s*(?:pre[cç]o|valor)\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i,
+  ];
+
+  for (const matcher of saleMatchers) {
+    const matched = text.match(matcher);
+    if (matched?.[1]) return matched[1];
+  }
+
+  const genericMoneyMatches = Array.from(
+    text.matchAll(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/gi)
+  ).map((match) => cleanText(match[1]));
+
+  if (genericMoneyMatches.length > 0) {
+    return genericMoneyMatches[genericMoneyMatches.length - 1] || "";
+  }
+
+  return "";
 }
 
 function extractLooseDimensions(text: string) {
@@ -245,13 +409,28 @@ function inferDestination(text: string, explicitSku?: string): StructuredImportD
 
 function splitDelimitedBlocks(text: string) {
   const normalized = normalizeBlock(text);
-  if (!normalized.includes("=== ITEM")) return [];
+  if (!/={3}\s*ITEM\b/i.test(normalized)) return [];
 
-  return normalized
-    .split(/\n={3}\s*ITEM\b[^\n]*\n/i)
-    .map((block) => normalizeBlock(block))
-    .filter(Boolean)
-    .filter((block) => !normalizeLoose(block).startsWith("planilha "));
+  const markerRegex = /={3}\s*ITEM\b[^\n|]*?(?:\||\n|$)/gi;
+  const markers = Array.from(normalized.matchAll(markerRegex));
+
+  if (markers.length === 0) return [];
+
+  const blocks: string[] = [];
+
+  for (let index = 0; index < markers.length; index += 1) {
+    const currentMarker = markers[index];
+    const start = (currentMarker.index ?? 0) + currentMarker[0].length;
+    const end = index + 1 < markers.length ? markers[index + 1].index ?? normalized.length : normalized.length;
+    const header = cleanText(currentMarker[0].replace(/[|]/g, " ").replace(/={3}/g, "").trim());
+    const body = normalizeBlock(normalized.slice(start, end));
+    const joined = normalizeBlock([header, body].filter(Boolean).join("\n"));
+    if (!joined) continue;
+    if (normalizeLoose(joined).startsWith("planilha")) continue;
+    blocks.push(joined);
+  }
+
+  return blocks;
 }
 
 function splitNumberedBlocks(text: string) {
@@ -343,6 +522,34 @@ function parseFieldLines(block: string) {
   const plainLines: string[] = [];
 
   for (const line of lines) {
+    const inlinePairs = extractInlineFieldPairs(line);
+
+    if (Object.keys(inlinePairs).length > 0) {
+      for (const [key, value] of Object.entries(inlinePairs)) {
+        if (!fieldMap[key]) {
+          fieldMap[key] = value;
+        } else if (!normalizeLoose(fieldMap[key]).includes(normalizeLoose(value))) {
+          fieldMap[key] = `${fieldMap[key]}\n${value}`;
+        }
+      }
+
+      const residual = normalizeBlock(
+        line.replace(
+          new RegExp(
+            `(?:^|\\s|\\|)(?:${INLINE_FIELD_PATTERN})\\s*:\\s*[\\s\\S]*?(?=(?:\\s|\\||$)(?:${INLINE_FIELD_PATTERN})\\s*:|$)`,
+            "gi"
+          ),
+          " "
+        )
+      );
+
+      if (residual && normalizeLoose(residual).length >= 6) {
+        plainLines.push(residual.replace(/^\d+[\)\.\-]\s+/, "").trim());
+      }
+
+      continue;
+    }
+
     const match = line.match(/^([^:]{2,120}):\s*(.+)$/);
     if (match) {
       const key = titleCaseLabel(match[1]);
@@ -351,13 +558,22 @@ function parseFieldLines(block: string) {
 
       if (!fieldMap[key]) {
         fieldMap[key] = value;
-      } else if (!fieldMap[key].includes(value)) {
+      } else if (!normalizeLoose(fieldMap[key]).includes(normalizeLoose(value))) {
         fieldMap[key] = `${fieldMap[key]}\n${value}`;
       }
       continue;
     }
 
     plainLines.push(line.replace(/^\d+[\)\.\-]\s+/, "").trim());
+  }
+
+  const blockPairs = extractInlineFieldPairs(block);
+  for (const [key, value] of Object.entries(blockPairs)) {
+    if (!fieldMap[key]) {
+      fieldMap[key] = value;
+    } else if (!normalizeLoose(fieldMap[key]).includes(normalizeLoose(value))) {
+      fieldMap[key] = `${fieldMap[key]}\n${value}`;
+    }
   }
 
   return { fieldMap, plainLines };
@@ -411,20 +627,50 @@ function chooseDescription(
     "descricao comercial",
   ];
 
-  const picked = candidateKeys
+  const normalizedTitle = normalizeLoose(title);
+  const blockedDescriptionPrefixes = [
+    "nome",
+    "nome do produto",
+    "produto",
+    "item",
+    "modelo",
+    "sku",
+    "categoria",
+    "quantidade atual",
+    "controlar estoque",
+    "estoque minimo",
+    "estoque máximo",
+    "estoque maximo",
+    "estoque inicial",
+    "preço",
+    "preco",
+    "preço custo",
+    "preco custo",
+  ];
+
+  const dedupeSet = new Set<string>();
+  const lines: string[] = [];
+
+  const tryPush = (value: string) => {
+    const cleaned = cleanText(value);
+    const normalized = normalizeLoose(cleaned);
+    if (!cleaned || !normalized) return;
+    if (normalized === normalizedTitle) return;
+    if (looksLikeGuideOrNoiseBlock(cleaned)) return;
+    if (blockedDescriptionPrefixes.some((prefix) => normalized.startsWith(normalizeLoose(prefix)))) return;
+    if (dedupeSet.has(normalized)) return;
+    dedupeSet.add(normalized);
+    lines.push(cleaned);
+  };
+
+  candidateKeys
     .map((key) => fieldMap[key])
     .filter(Boolean)
-    .join("\n")
-    .trim();
+    .forEach((value) => String(value).split("\n").forEach(tryPush));
 
-  const normalizedTitle = normalizeLoose(title);
+  plainLines.forEach(tryPush);
 
-  const plainDescriptionLines = plainLines.filter(
-    (line) => normalizeLoose(line) !== normalizedTitle
-  );
-
-  const combined = [picked, ...plainDescriptionLines].filter(Boolean).join("\n").trim();
-  return combined;
+  return lines.join("\n").trim();
 }
 
 function enrichFieldMapWithLooseExtraction(
@@ -496,17 +742,15 @@ function parseSingleBlock(
   if (!normalizedBlock) return null;
 
   const { fieldMap, plainLines } = parseFieldLines(normalizedBlock);
-
   enrichFieldMapWithLooseExtraction(fieldMap, normalizedBlock);
 
   const title = chooseTitle(fieldMap, plainLines, fileName, index);
   const description = chooseDescription(fieldMap, plainLines, title);
-
-  const resolvedSku =
-    fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || "";
+  const resolvedSku = fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || "";
 
   const sourceText = [title, description, normalizedBlock, resolvedSku].filter(Boolean).join("\n");
   const destination = inferDestination(sourceText, resolvedSku);
+  const stockLikeBlock = rawBlockLooksLikeStockSummary(normalizedBlock);
 
   const item: StructuredImportItem = {
     sourceFileName: fileName,
@@ -515,19 +759,9 @@ function parseSingleBlock(
     title,
     description,
     rawBlock: normalizedBlock,
-    confidence: destination === "outros" ? 0.62 : 0.86,
-    price:
-      fieldMap["preco"] ||
-      fieldMap["preço"] ||
-      fieldMap["faixa de preco"] ||
-      fieldMap["faixa de preço"] ||
-      "",
-    dimensions:
-      fieldMap["medidas"] ||
-      fieldMap["dimensoes"] ||
-      fieldMap["dimensões"] ||
-      fieldMap["tamanho"] ||
-      "",
+    confidence: destination === "outros" ? (stockLikeBlock ? 0.44 : 0.62) : stockLikeBlock ? 0.58 : 0.88,
+    price: fieldMap["preço"] || fieldMap["preco"] || fieldMap["faixa de preco"] || fieldMap["faixa de preço"] || "",
+    dimensions: fieldMap["medidas"] || fieldMap["dimensoes"] || fieldMap["dimensões"] || fieldMap["tamanho"] || "",
     depth: fieldMap["profundidade"] || "",
     capacity: fieldMap["capacidade"] || "",
     material: fieldMap["material"] || "",
@@ -611,8 +845,140 @@ function hasUsefulContent(item: StructuredImportItem) {
     Boolean(item.price) ||
     Boolean(item.dimensions) ||
     Boolean(item.capacity) ||
-    Boolean(item.material)
+    Boolean(item.material) ||
+    Boolean(item.embalagem) ||
+    Boolean(item.application) ||
+    Boolean(item.dosage)
   );
+}
+
+function itemRichnessScore(item: StructuredImportItem) {
+  return (
+    Math.min(item.description.length, 800) +
+    (item.price ? 140 : 0) +
+    (item.dosage ? 80 : 0) +
+    (item.application ? 70 : 0) +
+    (item.embalagem ? 70 : 0) +
+    (item.weight ? 40 : 0) +
+    (item.capacity ? 40 : 0) +
+    (item.dimensions ? 40 : 0) +
+    (item.material ? 30 : 0) +
+    (item.brand ? 20 : 0) +
+    (rawBlockLooksLikeStockSummary(item.rawBlock) ? -180 : 0) +
+    (looksLikeGuideOrNoiseBlock(item.rawBlock) ? -500 : 0)
+  );
+}
+
+function itemIdentityKey(item: StructuredImportItem) {
+  if (isChemicalSku(item.sku)) {
+    return `sku:${cleanText(item.sku).toUpperCase()}`;
+  }
+
+  const normalizedTitle = normalizeLoose(item.title);
+  if (normalizedTitle) {
+    return `${item.destination}:${normalizedTitle}`;
+  }
+
+  return `${item.sourceFileName}:${normalizeLoose(item.rawBlock).slice(0, 120)}`;
+}
+
+function choosePreferredValue(
+  currentValue: string | undefined,
+  nextValue: string | undefined,
+  currentOwner: StructuredImportItem,
+  nextOwner: StructuredImportItem
+) {
+  const current = cleanText(currentValue || "");
+  const next = cleanText(nextValue || "");
+
+  if (!current) return next;
+  if (!next) return current;
+  if (current === next) return current;
+
+  const currentScore = current.length - (rawBlockLooksLikeStockSummary(currentOwner.rawBlock) ? 40 : 0) - (looksLikeGuideOrNoiseBlock(currentOwner.rawBlock) ? 100 : 0);
+  const nextScore = next.length - (rawBlockLooksLikeStockSummary(nextOwner.rawBlock) ? 40 : 0) - (looksLikeGuideOrNoiseBlock(nextOwner.rawBlock) ? 100 : 0);
+
+  return nextScore > currentScore ? next : current;
+}
+
+function mergeDescriptions(currentItem: StructuredImportItem, nextItem: StructuredImportItem) {
+  const lines = [...String(currentItem.description || "").split("\n"), ...String(nextItem.description || "").split("\n")];
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawLine of lines) {
+    const cleaned = cleanText(rawLine);
+    const normalized = normalizeLoose(cleaned);
+    if (!cleaned || !normalized) continue;
+    if (seen.has(normalized)) continue;
+    if (looksLikeGuideOrNoiseBlock(cleaned)) continue;
+    if (normalized.startsWith("quantidade atual")) continue;
+    if (normalized.startsWith("controlar estoque")) continue;
+    if (normalized.startsWith("estoque minimo")) continue;
+    if (normalized.startsWith("estoque maximo")) continue;
+    seen.add(normalized);
+    deduped.push(cleaned);
+  }
+
+  return deduped.join("\n").trim();
+}
+
+function mergeStructuredImportItems(items: StructuredImportItem[]) {
+  const mergedMap = new Map<string, StructuredImportItem>();
+
+  for (const item of items) {
+    const key = itemIdentityKey(item);
+    const current = mergedMap.get(key);
+
+    if (!current) {
+      mergedMap.set(key, item);
+      continue;
+    }
+
+    const preferredShell = itemRichnessScore(item) > itemRichnessScore(current) ? item : current;
+    const secondary = preferredShell === item ? current : item;
+
+    const merged: StructuredImportItem = {
+      ...preferredShell,
+      title: choosePreferredValue(current.title, item.title, current, item) || preferredShell.title,
+      description: mergeDescriptions(current, item),
+      rawBlock: [current.rawBlock, item.rawBlock]
+        .filter(Boolean)
+        .filter((value, index, array) => array.indexOf(value) === index)
+        .join("\n\n"),
+      confidence: Math.max(current.confidence, item.confidence),
+      categoria: preferredShell.categoria,
+      destination: preferredShell.destination !== "outros" ? preferredShell.destination : secondary.destination,
+      price: choosePreferredValue(current.price, item.price, current, item),
+      dimensions: choosePreferredValue(current.dimensions, item.dimensions, current, item),
+      depth: choosePreferredValue(current.depth, item.depth, current, item),
+      capacity: choosePreferredValue(current.capacity, item.capacity, current, item),
+      material: choosePreferredValue(current.material, item.material, current, item),
+      shape: choosePreferredValue(current.shape, item.shape, current, item),
+      brand: choosePreferredValue(current.brand, item.brand, current, item),
+      sku: choosePreferredValue(current.sku, item.sku, current, item),
+      weight: choosePreferredValue(current.weight, item.weight, current, item),
+      dosage: choosePreferredValue(current.dosage, item.dosage, current, item),
+      color: choosePreferredValue(current.color, item.color, current, item),
+      usage: choosePreferredValue(current.usage, item.usage, current, item),
+      notes: choosePreferredValue(current.notes, item.notes, current, item),
+      indication: choosePreferredValue(current.indication, item.indication, current, item),
+      composition: choosePreferredValue(current.composition, item.composition, current, item),
+      embalagem: choosePreferredValue(current.embalagem, item.embalagem, current, item),
+      packaging: choosePreferredValue(current.packaging, item.packaging, current, item),
+      model: choosePreferredValue(current.model, item.model, current, item),
+      size: choosePreferredValue(current.size, item.size, current, item),
+      compatibility: choosePreferredValue(current.compatibility, item.compatibility, current, item),
+      function: choosePreferredValue(current.function, item.function, current, item),
+      environment: choosePreferredValue(current.environment, item.environment, current, item),
+      diferencial: choosePreferredValue(current.diferencial, item.diferencial, current, item),
+      application: choosePreferredValue(current.application, item.application, current, item),
+    };
+
+    mergedMap.set(key, merged);
+  }
+
+  return Array.from(mergedMap.values());
 }
 
 export function parseStructuredImportItems(extracted: ExtractedFileContent): StructuredImportItem[] {
@@ -629,6 +995,16 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
   const items: StructuredImportItem[] = [];
 
   blocks.forEach((block, index) => {
+    if (looksLikeGuideOrNoiseBlock(block)) {
+      debugIntelligentImport("parser-null-item", {
+        fileName: extracted.fileName,
+        blockIndex: index,
+        reason: "guide-or-noise-block",
+        preview: block.slice(0, 180),
+      });
+      return;
+    }
+
     const parsed = parseSingleBlock(block, extracted.fileName, index);
     if (parsed) {
       items.push(parsed);
@@ -650,17 +1026,8 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
     return [];
   }
 
-  const qualitySorted = [...items].sort((a, b) => {
-    const score = (item: StructuredImportItem) =>
-      (item.description ? Math.min(item.description.length, 600) : 0) +
-      (item.price ? 50 : 0) +
-      (item.dimensions ? 50 : 0) +
-      (item.capacity ? 50 : 0) +
-      (item.material ? 20 : 0) +
-      (item.brand ? 20 : 0);
-
-    return score(b) - score(a);
-  });
+  const mergedItems = mergeStructuredImportItems(items);
+  const qualitySorted = [...mergedItems].sort((a, b) => itemRichnessScore(b) - itemRichnessScore(a));
 
   debugIntelligentImport("parser-quality-sorted", {
     fileName: extracted.fileName,
@@ -669,12 +1036,13 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       title: item.title,
       sku: item.sku,
       destination: item.destination,
+      richness: itemRichnessScore(item),
     })),
   });
 
   const sourceLooksSingleItem =
-    !looksLikeMultiItemSource(extracted.text, items.length) &&
-    (items.length === 1 ||
+    !looksLikeMultiItemSource(extracted.text, mergedItems.length) &&
+    (mergedItems.length === 1 ||
       normalizeLoose(extracted.text).includes("nome do item") ||
       normalizeLoose(extracted.text).includes("descricao detalhada") ||
       normalizeLoose(extracted.text).includes("preco sugerido") ||
@@ -686,6 +1054,7 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       fileName: extracted.fileName,
       sourceLooksSingleItem,
       totalItems: items.length,
+      mergedItems: mergedItems.length,
       keptItems: kept.length,
       kept: kept.map((item) => ({
         title: item.title,
@@ -696,7 +1065,18 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
     return kept;
   }
 
-  const keptItems = items.filter((item) => {
+  const keptItems = mergedItems.filter((item) => {
+    if (looksLikeGuideOrNoiseBlock(item.rawBlock)) {
+      debugIntelligentImport("parser-filtered-out", {
+        reason: "guide-or-noise-block",
+        fileName: extracted.fileName,
+        title: item.title,
+        sku: item.sku,
+        destination: item.destination,
+      });
+      return false;
+    }
+
     if (isChemicalSku(item.sku)) {
       return true;
     }
@@ -730,12 +1110,14 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
     fileName: extracted.fileName,
     sourceLooksSingleItem,
     totalItems: items.length,
+    mergedItems: mergedItems.length,
     keptItems: keptItems.length,
     kept: keptItems.slice(0, 120).map((item, index) => ({
       index,
       title: item.title,
       sku: item.sku,
       destination: item.destination,
+      richness: itemRichnessScore(item),
     })),
   });
 
