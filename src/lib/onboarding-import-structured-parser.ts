@@ -37,17 +37,17 @@ export type StructuredImportItem = {
 };
 
 const DEBUG_INTELLIGENT_IMPORT =
-  process.env.DEBUG_INTELLIGENT_IMPORT === "1" || process.env.NODE_ENV !== "production";
+  process.env.NEXT_PUBLIC_DEBUG_INTELLIGENT_IMPORT === "1" ||
+  process.env.DEBUG_INTELLIGENT_IMPORT === "1" ||
+  process.env.NODE_ENV !== "production";
 
 function debugIntelligentImport(label: string, payload?: unknown) {
   if (!DEBUG_INTELLIGENT_IMPORT) return;
-
   if (typeof payload === "undefined") {
-    console.log(`[ZION][intelligent-import] ${label}`);
+    console.log(`[ZION][intelligent-import][parser] ${label}`);
     return;
   }
-
-  console.log(`[ZION][intelligent-import] ${label}`, payload);
+  console.log(`[ZION][intelligent-import][parser] ${label}`, payload);
 }
 
 function cleanText(value: string | null | undefined) {
@@ -160,8 +160,8 @@ function extractLooseSku(text: string) {
 
 function extractLooseWeight(text: string) {
   const match =
-    text.match(/\bpeso\s*[:\-]?\s*(\d+[\.,]?\d*)\s*(kg|g)\b/i) ||
-    text.match(/\b(\d+[\.,]?\d*)\s*(kg|g)\b/i);
+    text.match(/\bpeso(?:\/volume)?\s*[:\-]?\s*(\d+[\.,]?\d*)\s*(kg|g|l|ml)\b/i) ||
+    text.match(/\b(\d+[\.,]?\d*)\s*(kg|g|l|ml)\b/i);
 
   return match ? `${match[1]} ${match[2]}` : "";
 }
@@ -179,8 +179,21 @@ function extractLooseColor(text: string) {
   return cleanText(match?.[1] || "");
 }
 
-function inferDestination(text: string): StructuredImportDestination {
+function isChemicalSku(value: string | null | undefined) {
+  const sku = cleanText(value || "").toUpperCase();
+  return /^QMC-\d{3,}$/.test(sku);
+}
+
+function inferDestination(text: string, explicitSku?: string): StructuredImportDestination {
+  if (isChemicalSku(explicitSku)) {
+    return "quimicos";
+  }
+
   const source = normalizeLoose(text);
+
+  if (/\bqmc\s*-\s*\d{3,}\b/i.test(source)) {
+    return "quimicos";
+  }
 
   const chemicalScore =
     (source.includes("cloro") ? 4 : 0) +
@@ -237,7 +250,8 @@ function splitDelimitedBlocks(text: string) {
   return normalized
     .split(/\n={3}\s*ITEM\b[^\n]*\n/i)
     .map((block) => normalizeBlock(block))
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((block) => !normalizeLoose(block).startsWith("planilha "));
 }
 
 function splitNumberedBlocks(text: string) {
@@ -487,8 +501,12 @@ function parseSingleBlock(
 
   const title = chooseTitle(fieldMap, plainLines, fileName, index);
   const description = chooseDescription(fieldMap, plainLines, title);
-  const sourceText = [title, description, normalizedBlock].filter(Boolean).join("\n");
-  const destination = inferDestination(sourceText);
+
+  const resolvedSku =
+    fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || "";
+
+  const sourceText = [title, description, normalizedBlock, resolvedSku].filter(Boolean).join("\n");
+  const destination = inferDestination(sourceText, resolvedSku);
 
   const item: StructuredImportItem = {
     sourceFileName: fileName,
@@ -515,7 +533,7 @@ function parseSingleBlock(
     material: fieldMap["material"] || "",
     shape: fieldMap["formato"] || "",
     brand: fieldMap["marca"] || "",
-    sku: fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || "",
+    sku: resolvedSku,
     weight: fieldMap["peso"] || "",
     dosage: fieldMap["dosagem"] || "",
     color: fieldMap["cor"] || "",
@@ -587,54 +605,35 @@ function looksLikeMultiItemSource(extractedText: string, blockCount: number) {
   return hintCount >= 6;
 }
 
-function scoreStructuredItem(item: StructuredImportItem) {
-  return (item.description ? Math.min(item.description.length, 600) : 0) +
-    (item.price ? 50 : 0) +
-    (item.dimensions ? 50 : 0) +
-    (item.capacity ? 50 : 0) +
-    (item.material ? 20 : 0) +
-    (item.brand ? 20 : 0);
-}
-
-function hasEnoughContentForMultiItemSource(item: StructuredImportItem) {
-  if (item.sku) return true;
-  if (!isProbablyGenericTitle(item.title)) {
-    if (item.description.length >= 10) return true;
-    if (item.price) return true;
-    if (item.dimensions) return true;
-    if (item.capacity) return true;
-    if (item.material) return true;
-  }
-  return false;
+function hasUsefulContent(item: StructuredImportItem) {
+  return (
+    item.description.length >= 10 ||
+    Boolean(item.price) ||
+    Boolean(item.dimensions) ||
+    Boolean(item.capacity) ||
+    Boolean(item.material)
+  );
 }
 
 export function parseStructuredImportItems(extracted: ExtractedFileContent): StructuredImportItem[] {
   const blocks = chooseBlocks(extracted);
-  const items: StructuredImportItem[] = [];
-
   debugIntelligentImport("parser-blocks", {
     fileName: extracted.fileName,
     blockCount: blocks.length,
-    preview: blocks.slice(0, 5).map((block, index) => ({
+    firstBlocks: blocks.slice(0, 5).map((block, index) => ({
       index,
       preview: block.slice(0, 180),
     })),
   });
 
+  const items: StructuredImportItem[] = [];
+
   blocks.forEach((block, index) => {
     const parsed = parseSingleBlock(block, extracted.fileName, index);
     if (parsed) {
       items.push(parsed);
-      debugIntelligentImport("parser-block-parsed", {
-        fileName: extracted.fileName,
-        blockIndex: index,
-        title: parsed.title,
-        sku: parsed.sku || null,
-        destination: parsed.destination,
-        confidence: parsed.confidence,
-      });
     } else {
-      debugIntelligentImport("parser-block-null", {
+      debugIntelligentImport("parser-null-item", {
         fileName: extracted.fileName,
         blockIndex: index,
         preview: block.slice(0, 180),
@@ -645,20 +644,31 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
   if (items.length === 0) {
     debugIntelligentImport("parser-summary", {
       fileName: extracted.fileName,
-      resultCount: 0,
-      reason: "no-parsed-items",
+      totalItems: 0,
+      keptItems: 0,
     });
     return [];
   }
 
-  const qualitySorted = [...items].sort((a, b) => scoreStructuredItem(b) - scoreStructuredItem(a));
+  const qualitySorted = [...items].sort((a, b) => {
+    const score = (item: StructuredImportItem) =>
+      (item.description ? Math.min(item.description.length, 600) : 0) +
+      (item.price ? 50 : 0) +
+      (item.dimensions ? 50 : 0) +
+      (item.capacity ? 50 : 0) +
+      (item.material ? 20 : 0) +
+      (item.brand ? 20 : 0);
+
+    return score(b) - score(a);
+  });
 
   debugIntelligentImport("parser-quality-sorted", {
     fileName: extracted.fileName,
-    items: qualitySorted.slice(0, 20).map((item) => ({
+    items: qualitySorted.slice(0, 20).map((item, index) => ({
+      index,
       title: item.title,
-      sku: item.sku || null,
-      score: scoreStructuredItem(item),
+      sku: item.sku,
+      destination: item.destination,
     })),
   });
 
@@ -670,60 +680,64 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       normalizeLoose(extracted.text).includes("preco sugerido") ||
       normalizeLoose(extracted.text).includes("preço sugerido"));
 
-  debugIntelligentImport("parser-source-shape", {
-    fileName: extracted.fileName,
-    itemCount: items.length,
-    sourceLooksSingleItem,
-  });
-
   if (sourceLooksSingleItem) {
+    const kept = qualitySorted[0] ? [qualitySorted[0]] : [];
     debugIntelligentImport("parser-summary", {
       fileName: extracted.fileName,
-      resultCount: 1,
-      keptItems: [
-        {
-          title: qualitySorted[0].title,
-          sku: qualitySorted[0].sku || null,
-          destination: qualitySorted[0].destination,
-        },
-      ],
-      mode: "single-item-best-match",
+      sourceLooksSingleItem,
+      totalItems: items.length,
+      keptItems: kept.length,
+      kept: kept.map((item) => ({
+        title: item.title,
+        sku: item.sku,
+        destination: item.destination,
+      })),
     });
-    return [qualitySorted[0]];
+    return kept;
   }
 
-  const filteredItems = items.filter((item) => {
-    const keep = hasEnoughContentForMultiItemSource(item);
-
-    if (!keep) {
-      debugIntelligentImport("parser-filtered-out", {
-        fileName: extracted.fileName,
-        title: item.title,
-        sku: item.sku || null,
-        destination: item.destination,
-        genericTitle: isProbablyGenericTitle(item.title),
-        descriptionLength: item.description.length,
-        hasPrice: Boolean(item.price),
-        hasDimensions: Boolean(item.dimensions),
-        hasCapacity: Boolean(item.capacity),
-        hasMaterial: Boolean(item.material),
-      });
+  const keptItems = items.filter((item) => {
+    if (isChemicalSku(item.sku)) {
+      return true;
     }
 
-    return keep;
+    if (isProbablyGenericTitle(item.title)) {
+      debugIntelligentImport("parser-filtered-out", {
+        reason: "generic-title",
+        fileName: extracted.fileName,
+        title: item.title,
+        sku: item.sku,
+        destination: item.destination,
+      });
+      return false;
+    }
+
+    if (!hasUsefulContent(item)) {
+      debugIntelligentImport("parser-filtered-out", {
+        reason: "not-useful-enough",
+        fileName: extracted.fileName,
+        title: item.title,
+        sku: item.sku,
+        destination: item.destination,
+      });
+      return false;
+    }
+
+    return true;
   });
 
   debugIntelligentImport("parser-summary", {
     fileName: extracted.fileName,
-    originalItemCount: items.length,
-    filteredItemCount: filteredItems.length,
-    keptItems: filteredItems.slice(0, 120).map((item) => ({
+    sourceLooksSingleItem,
+    totalItems: items.length,
+    keptItems: keptItems.length,
+    kept: keptItems.slice(0, 120).map((item, index) => ({
+      index,
       title: item.title,
-      sku: item.sku || null,
+      sku: item.sku,
       destination: item.destination,
     })),
-    mode: "multi-item-preserve-order",
   });
 
-  return filteredItems;
+  return keptItems;
 }
