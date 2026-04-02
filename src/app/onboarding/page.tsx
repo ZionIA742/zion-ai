@@ -1466,31 +1466,52 @@ function extractImportedCatalogPriceCents(
 function pickRelatedExtractedImages(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   extractedImageBuckets: Map<string, Array<{ fileName: string; mimeType: string; dataUrl: string }>>,
+  extractedImageBucketCursors: Map<string, number>,
   totalSourceItems: number
 ) {
   const sourceKey = String(item.sourceFileName || "").trim().toLowerCase();
-  const direct = extractedImageBuckets.get(sourceKey);
-  if (direct && direct.length > 0) {
-    extractedImageBuckets.delete(sourceKey);
-    return direct;
+
+  const tryConsumeFromBucket = (bucketKey: string) => {
+    const images = extractedImageBuckets.get(bucketKey);
+    if (!images || images.length === 0) return [] as Array<{
+      fileName: string;
+      mimeType: string;
+      dataUrl: string;
+    }>;
+
+    const cursor = extractedImageBucketCursors.get(bucketKey) ?? 0;
+    const image = images[cursor];
+    if (!image) return [];
+
+    extractedImageBucketCursors.set(bucketKey, cursor + 1);
+    return [image];
+  };
+
+  if (sourceKey) {
+    const direct = tryConsumeFromBucket(sourceKey);
+    if (direct.length > 0) return direct;
   }
+
   const normalizedSourceKey = sourceKey.replace(/\.[^.]+$/, "");
-  for (const [key, images] of extractedImageBuckets.entries()) {
-    const normalizedKey = key.replace(/\.[^.]+$/, "");
-    if (
-      normalizedKey === normalizedSourceKey ||
-      normalizedKey.includes(normalizedSourceKey) ||
-      normalizedSourceKey.includes(normalizedKey)
-    ) {
-      extractedImageBuckets.delete(key);
-      return images;
+  if (normalizedSourceKey) {
+    for (const key of extractedImageBuckets.keys()) {
+      const normalizedKey = key.replace(/\.[^.]+$/, "");
+      if (
+        normalizedKey === normalizedSourceKey ||
+        normalizedKey.includes(normalizedSourceKey) ||
+        normalizedSourceKey.includes(normalizedKey)
+      ) {
+        const related = tryConsumeFromBucket(key);
+        if (related.length > 0) return related;
+      }
     }
   }
+
   if (totalSourceItems === 1 && extractedImageBuckets.size > 0) {
-    const [firstKey, firstImages] = Array.from(extractedImageBuckets.entries())[0];
-    extractedImageBuckets.delete(firstKey);
-    return firstImages;
+    const firstKey = Array.from(extractedImageBuckets.keys())[0];
+    return tryConsumeFromBucket(firstKey);
   }
+
   return [];
 }
 function canPersistAsPool(metrics: {
@@ -1806,6 +1827,57 @@ async function uploadExtractedImageToCatalog(
     sort_order: sortOrder,
   });
   if (metadataError) throw metadataError;
+}
+async function clearCatalogItemPhotos(catalogItemId: string) {
+  const { data: existingPhotos, error: existingPhotosError } = await supabase
+    .from("store_catalog_item_photos")
+    .select("id, storage_path")
+    .eq("catalog_item_id", catalogItemId);
+
+  if (existingPhotosError) throw existingPhotosError;
+
+  const storagePaths = (existingPhotos ?? [])
+    .map((photo) => String(photo.storage_path || "").trim())
+    .filter(Boolean);
+
+  if (storagePaths.length > 0) {
+    const { error: removeStorageError } = await supabase.storage
+      .from("store-catalog-photos")
+      .remove(storagePaths);
+
+    if (removeStorageError) {
+      console.error("[OnboardingPage] clearCatalogItemPhotos remove storage error:", removeStorageError);
+    }
+  }
+
+  const { error: deleteMetadataError } = await supabase
+    .from("store_catalog_item_photos")
+    .delete()
+    .eq("catalog_item_id", catalogItemId);
+
+  if (deleteMetadataError) throw deleteMetadataError;
+}
+
+async function replaceCatalogItemPhotos(
+  organizationId: string,
+  storeId: string,
+  catalogItemId: string,
+  images: Array<{ fileName: string; mimeType: string; dataUrl: string }>
+) {
+  const normalizedImages = images.filter((image) => Boolean(image?.dataUrl)).slice(0, 1);
+  if (normalizedImages.length === 0) return;
+
+  await clearCatalogItemPhotos(catalogItemId);
+
+  for (let index = 0; index < normalizedImages.length; index += 1) {
+    await uploadExtractedImageToCatalog(
+      organizationId,
+      storeId,
+      catalogItemId,
+      normalizedImages[index],
+      index
+    );
+  }
 }
 function StepBadge({
   step,
@@ -2468,6 +2540,8 @@ async function handleSaveImportedItemsToCatalog() {
         Array<{ fileName: string; mimeType: string; dataUrl: string }>
       >();
 
+      const extractedImageBucketCursors = new Map<string, number>();
+
       const extractedImageSequence = safeExtractedImagePreview.map((image) => ({
         fileName: image.fileName || "imagem-extraida.jpg",
         mimeType: image.mimeType || "image/jpeg",
@@ -2531,7 +2605,12 @@ async function handleSaveImportedItemsToCatalog() {
                   },
                 ]
               : []
-            : pickRelatedExtractedImages(item, extractedImageBuckets, sourceItems.length);
+            : pickRelatedExtractedImages(
+                item,
+                extractedImageBuckets,
+                extractedImageBucketCursors,
+                sourceItems.length
+              );
 
           if (shouldAssignSequentialExtractedImages && extractedImageSequence.length > 0) {
             extractedImageSequence.shift();
@@ -2749,21 +2828,27 @@ async function handleSaveImportedItemsToCatalog() {
 
           const catalogImages = relatedExtractedImages.slice(0, 1);
           if (catalogImages.length > 0) {
-            for (let index = 0; index < catalogImages.length; index += 1) {
-              await uploadExtractedImageToCatalog(
+            try {
+              await replaceCatalogItemPhotos(
                 organizationId,
                 activeStore.id,
                 persistedCatalogItemId,
-                catalogImages[index],
-                index
+                catalogImages
               );
+            } catch (uploadError) {
+              console.error("[OnboardingPage] replaceCatalogItemPhotos error:", uploadError);
             }
           } else if (selectedImageFiles[imageCursor]) {
             try {
-              await uploadImportedImageToCatalog(persistedCatalogItemId, selectedImageFiles[imageCursor], 0);
+              await clearCatalogItemPhotos(persistedCatalogItemId);
+              await uploadImportedImageToCatalog(
+                persistedCatalogItemId,
+                selectedImageFiles[imageCursor],
+                0
+              );
               imageCursor += 1;
             } catch (uploadError) {
-              console.error("[OnboardingPage] uploadImportedImageToCatalog error:", uploadError);
+              console.error("[OnboardingPage] replaceCatalogItemPhotosFromFiles error:", uploadError);
             }
           }
         } catch (itemError) {
