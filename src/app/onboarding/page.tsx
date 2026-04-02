@@ -476,6 +476,74 @@ function decorateIntelligentImportResultWithImageFallback(
     })),
   };
 }
+
+function buildFrontendNormalizedPreviewFromItems(
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
+): IntelligentImportNormalizedPreview[] {
+  return items.map((item) => ({
+    type: item.type,
+    sourceFileName: item.sourceFileName,
+    title: item.title,
+    rawText: item.rawText,
+    confidence: item.confidence,
+    metadata: item.metadata ?? {},
+  }));
+}
+
+function buildFrontendDedupedPreviewFromItems(
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
+): IntelligentImportDedupedPreview[] {
+  return items.map((item, index) => ({
+    type: item.type,
+    sourceFileName: item.sourceFileName,
+    title: item.title,
+    rawText: item.rawText,
+    confidence: item.confidence,
+    metadata: item.metadata ?? {},
+    dedupKey: `${buildImportedSaveKey(item)}::frontend::${index}`,
+    duplicateOf: undefined,
+    isDuplicate: false,
+  }));
+}
+
+function normalizeIntelligentImportResultForFrontend(
+  result: IntelligentImportResponse
+): IntelligentImportResponse {
+  if (!result.ok) return result;
+
+  const rawSourceItems =
+    result.dedupedPreview.length > 0
+      ? result.dedupedPreview.filter((item) => !item.isDuplicate)
+      : result.normalizedPreview;
+
+  const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
+  const saveReadyItems = dedupeImportedItemsForSave(filteredSourceItems);
+
+  if (saveReadyItems.length === 0) {
+    return result;
+  }
+
+  const discardedItems = Math.max(0, rawSourceItems.length - saveReadyItems.length);
+
+  return {
+    ...result,
+    message:
+      discardedItems > 0
+        ? `${
+            result.message || "Importação inteligente processada com sucesso."
+          } A prévia foi ajustada para mostrar apenas os itens prontos para salvar.`
+        : result.message,
+    summary: {
+      ...result.summary,
+      normalizedItems: saveReadyItems.length,
+      dedupedItems: saveReadyItems.length,
+      duplicateItems: discardedItems,
+    },
+    normalizedPreview: buildFrontendNormalizedPreviewFromItems(saveReadyItems),
+    dedupedPreview: buildFrontendDedupedPreviewFromItems(saveReadyItems),
+  };
+}
+
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
 type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
 function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
@@ -850,116 +918,38 @@ function sanitizeImportedDescriptionText(
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-
   const filtered = rawLines.filter((line) => {
     const normalized = normalizeImportedLoose(line);
     if (!normalized) return false;
     if (normalized === titleLoose) return false;
-
-    const blockedStarts = [
-      "categoria ",
-      "categoria:",
-      "nome ",
-      "nome:",
-      "nome do produto ",
-      "nome do produto:",
-      "linha ",
-      "linha:",
-      "aplicacao ",
-      "aplicacao:",
-      "aplicação ",
-      "aplicação:",
-      "embalagem ",
-      "embalagem:",
-      "preco ",
-      "preco:",
-      "preço ",
-      "preço:",
-      "valor ",
-      "valor:",
-      "medidas ",
-      "medidas:",
-      "profundidade ",
-      "profundidade:",
-      "capacidade ",
-      "capacidade:",
-      "material ",
-      "material:",
-      "formato ",
-      "formato:",
-      "marca ",
-      "marca:",
-      "sku ",
-      "sku:",
-      "peso ",
-      "peso:",
-      "peso volume ",
-      "peso volume:",
-      "peso/volume ",
-      "peso/volume:",
-      "dosagem ",
-      "dosagem:",
-      "cor ",
-      "cor:",
-      "uso ",
-      "uso:",
-      "quantidade atual ",
-      "quantidade atual:",
-      "estoque minimo ",
-      "estoque minimo:",
-      "estoque máximo ",
-      "estoque máximo:",
-      "estoque maximo ",
-      "estoque maximo:",
-      "estoque ",
-      "estoque:",
-      "controlar estoque ",
-      "controlar estoque:",
-      "codigo de barras ",
-      "codigo de barras:",
-      "código de barras ",
-      "código de barras:",
-      "barcode ",
-      "barcode:",
-      "observacao ",
-      "observacao:",
-      "observação ",
-      "observação:",
-    ];
-
-    if (blockedStarts.some((value) => normalized.startsWith(value))) {
-      return false;
-    }
-
-    const blockedIncludes = [
-      "arquivo de teste",
-      "validar upload inteligente",
-      "validar leitura",
-      "upload inteligente",
-      "categoria esperada no sistema",
-      "salvar em configuracoes",
-      "guia leitura",
-      "guia de leitura",
-      "aba guia leitura",
-      "aba guia de leitura",
-      "planilha estoque",
-      "aba estoque",
-      "sheet estoque",
-      "catalogo_quimicos",
-      "catalogo quimicos",
-      "planilha catalogo quimicos",
-      "planilha catalogo_quimicos",
-      "=== item",
-      "controlar estoque ativo",
-    ];
-
-    if (blockedIncludes.some((value) => normalized.includes(value))) {
-      return false;
-    }
-
+    if (normalized.startsWith("preco ")) return false;
+    if (normalized.startsWith("preço ")) return false;
+    if (normalized.startsWith("medidas ")) return false;
+    if (normalized.startsWith("profundidade ")) return false;
+    if (normalized.startsWith("capacidade ")) return false;
+    if (normalized.startsWith("material ")) return false;
+    if (normalized.startsWith("formato ")) return false;
+    if (normalized.startsWith("marca ")) return false;
+    if (normalized.startsWith("sku ")) return false;
+    if (normalized.startsWith("peso ")) return false;
+    if (normalized.startsWith("dosagem ")) return false;
+    if (normalized.startsWith("cor ")) return false;
+    if (normalized.startsWith("uso ")) return false;
+    if (normalized.startsWith("observacao ")) return false;
+    if (normalized.startsWith("observação ")) return false;
+    if (normalized.includes("arquivo de teste")) return false;
+    if (normalized.includes("validar upload inteligente")) return false;
+    if (normalized.includes("categoria esperada no sistema")) return false;
+    if (normalized.includes("salvar em configuracoes")) return false;
+    if (normalized.includes("guia leitura")) return false;
+    if (normalized.includes("guia de leitura")) return false;
+    if (normalized.includes("aba guia leitura")) return false;
+    if (normalized.includes("aba guia de leitura")) return false;
+    if (normalized.includes("planilha estoque")) return false;
+    if (normalized.includes("aba estoque")) return false;
+    if (normalized.includes("sheet estoque")) return false;
     return true;
   });
-
   const joined = dedupeDescriptionLines(filtered).join("\n").trim();
   return joined ? joined.slice(0, 4000) : null;
 }
@@ -978,6 +968,50 @@ function buildImportedCleanDescription(
     if (cleaned) return cleaned;
   }
   return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
+}
+
+
+function escapeImportedRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function cleanupImportedDescriptionLine(value: string) {
+  return String(value || "")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/([,.;:])\1+/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/^[-–:;,\.\s]+/u, "")
+    .replace(/[-–:;,\.\s]+$/u, "")
+    .trim();
+}
+
+function stripImportedRepeatedDetailsFromText(
+  source: string,
+  details: Array<{ label: string; value: string }>
+) {
+  let cleaned = String(source || "");
+
+  for (const detail of details) {
+    const value = String(detail.value || "").trim();
+    if (!value) continue;
+
+    const labelPattern = escapeImportedRegExp(detail.label);
+    const valuePattern = escapeImportedRegExp(value);
+
+    cleaned = cleaned.replace(
+      new RegExp(`(?:^|\\s)${labelPattern}\\s*[:–-]\\s*${valuePattern}(?=$|[\\s,.;])`, "giu"),
+      " "
+    );
+  }
+
+  const cleanedLines = cleaned
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => cleanupImportedDescriptionLine(line))
+    .filter(Boolean);
+
+  return cleanedLines.join("\n").trim();
 }
 
 function buildImportedCatalogDescription(
@@ -1007,127 +1041,36 @@ function buildImportedCatalogDescription(
     extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
     extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
 
-  const narrativeLines = dedupeDescriptionLines(
-    (shortDescription || baseDescription || "")
-      .split("\n")
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .filter((line) => {
-        const normalized = normalizeImportedLoose(line);
-        if (!normalized) return false;
-        if (normalized.startsWith("categoria ") || normalized.startsWith("categoria:")) return false;
-        if (normalized.startsWith("nome ") || normalized.startsWith("nome:")) return false;
-        if (normalized.startsWith("linha ") || normalized.startsWith("linha:")) return false;
-        if (normalized.startsWith("aplicacao ") || normalized.startsWith("aplicacao:")) return false;
-        if (normalized.startsWith("aplicação ") || normalized.startsWith("aplicação:")) return false;
-        if (normalized.startsWith("embalagem ") || normalized.startsWith("embalagem:")) return false;
-        if (normalized.startsWith("dosagem ") || normalized.startsWith("dosagem:")) return false;
-        if (normalized.startsWith("observacoes ") || normalized.startsWith("observacoes:")) return false;
-        if (normalized.startsWith("observações ") || normalized.startsWith("observações:")) return false;
-        if (normalized.includes("upload inteligente")) return false;
-        if (normalized.includes("validar leitura")) return false;
-        return true;
-      })
-  );
-
-  const cleanedNotes = sanitizeImportedDescriptionText(notesValue || "", item);
+  const primaryDescription = shortDescription || baseDescription;
+  const cleanedPrimaryDescription = stripImportedRepeatedDetailsFromText(primaryDescription, [
+    { label: "Categoria", value: category },
+    { label: "Linha", value: line },
+    { label: "Aplicação", value: application },
+    { label: "Aplicacao", value: application },
+    { label: "Embalagem", value: packageValue },
+    { label: "Dosagem", value: dosageValue },
+  ]);
 
   const lines = [
     category ? `Categoria: ${category}` : "",
     line ? `Linha: ${line}` : "",
     application ? `Aplicação: ${application}` : "",
     packageValue ? `Embalagem: ${packageValue}` : "",
-    ...narrativeLines,
+    cleanedPrimaryDescription,
     dosageValue ? `Dosagem: ${dosageValue}` : "",
-    cleanedNotes && !narrativeLines.some((line) => normalizeImportedLoose(line) === normalizeImportedLoose(cleanedNotes))
-      ? `Observações: ${cleanedNotes}`
-      : "",
-  ].filter(Boolean);
+    notesValue ? `Observações: ${notesValue}` : "",
+  ]
+    .map((lineValue) => cleanupImportedDescriptionLine(lineValue))
+    .filter(Boolean);
 
   return dedupeDescriptionLines(lines).join("\n").trim() || null;
 }
 
 function parseImportedDecimal(value: string | null | undefined) {
-  if (value == null) return null;
-
-  const source = String(value)
-    .trim()
-    .replace(/[^\d,.-]/g, "");
-
-  if (!source) return null;
-
-  const lastComma = source.lastIndexOf(",");
-  const lastDot = source.lastIndexOf(".");
-
-  let normalized = source;
-
-  if (lastComma >= 0 && lastDot >= 0) {
-    const decimalSeparator = lastComma > lastDot ? "," : ".";
-    normalized =
-      decimalSeparator === ","
-        ? source.replace(/\./g, "").replace(",", ".")
-        : source.replace(/,/g, "");
-  } else if (lastComma >= 0) {
-    const fractional = source.slice(lastComma + 1).replace(/\D/g, "");
-    normalized =
-      fractional.length > 0 && fractional.length <= 2
-        ? source.replace(/\./g, "").replace(",", ".")
-        : source.replace(/,/g, "");
-  } else if (lastDot >= 0) {
-    const fractional = source.slice(lastDot + 1).replace(/\D/g, "");
-    normalized =
-      fractional.length > 0 && fractional.length <= 2
-        ? source.replace(/,/g, "")
-        : source.replace(/\./g, "");
-  }
-
+  if (!value) return null;
+  const normalized = String(value).replace(/\./g, "").replace(",", ".").trim();
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function extractImportedBestMoneyValue(value: string | null | undefined) {
-  const source = String(value || "").trim();
-  if (!source) return null;
-
-  const currencyMatch = source.match(/r\$\s*([\d.,]+)/i);
-  if (currencyMatch) {
-    const parsedCurrency = parseImportedDecimal(currencyMatch[1]);
-    if (parsedCurrency != null) return parsedCurrency;
-  }
-
-  const decimalMatch = source.match(/(\d+[.,]\d{2})/);
-  if (decimalMatch) {
-    const parsedDecimal = parseImportedDecimal(decimalMatch[1]);
-    if (parsedDecimal != null) return parsedDecimal;
-  }
-
-  const normalized = normalizeImportedLoose(source);
-  const integerTokens = source.match(/\d+/g) ?? [];
-  if (
-    (normalized.includes("preco") ||
-      normalized.includes("valor") ||
-      normalized.includes("price")) &&
-    integerTokens.length >= 2
-  ) {
-    const cents = integerTokens[integerTokens.length - 1];
-    const integer = integerTokens[integerTokens.length - 2];
-
-    if (cents.length === 2) {
-      const reconstructed = parseImportedDecimal(`${integer}.${cents}`);
-      if (reconstructed != null) return reconstructed;
-    }
-  }
-
-  const genericParsed = extractImportedFirstCurrencyValue(source);
-  if (genericParsed != null) return genericParsed;
-
-  const numericMatches = source.match(/\d+(?:[.,]\d+)?/g) ?? [];
-  if (numericMatches.length === 1) {
-    const parsedSingle = parseImportedDecimal(numericMatches[0]);
-    if (parsedSingle != null) return parsedSingle;
-  }
-
-  return null;
 }
 function extractImportedPoolMetrics(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -1199,93 +1142,39 @@ function extractImportedCatalogPriceCents(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
-  const metadataEntries = Object.entries(item.metadata ?? {});
-  const normalizedMetadataEntries = metadataEntries.map(([key, value]) => [
-    normalizeImportedLoose(key),
-    String(value ?? "").trim(),
-  ] as const);
-
-  for (const [normalizedKey, rawValue] of normalizedMetadataEntries) {
-    if (
-      normalizedKey.includes("price cents") ||
-      normalizedKey.includes("price_cents") ||
-      normalizedKey.includes("preco centavos") ||
-      normalizedKey.includes("preco_centavos")
-    ) {
-      const centsValue = Number(String(rawValue).replace(/[^\d-]/g, ""));
-      if (Number.isFinite(centsValue) && centsValue > 0) {
-        return Math.round(centsValue);
-      }
-    }
-  }
 
   const labeledPrice =
     extractImportedLabeledValue(source, [
       "Preço venda (R$)",
-      "Preço de venda (R$)",
       "Preço venda",
-      "Preço de venda",
       "Preco venda (R$)",
-      "Preco de venda (R$)",
       "Preco venda",
-      "Preco de venda",
       "Preço final (R$)",
       "Preço final",
       "Preco final (R$)",
       "Preco final",
-      "Preço unitário (R$)",
-      "Preço unitário",
-      "Preco unitario (R$)",
-      "Preco unitario",
-      "Valor unitário",
-      "Valor unitario",
       "Preço",
       "Preco",
       "Valor",
     ]) ||
     extractMetadataValue(item, [
       "preco_venda",
-      "preco_de_venda",
       "preço_venda",
-      "preço_de_venda",
       "preço venda",
-      "preço de venda",
       "preco venda",
-      "preco de venda",
       "preco_final",
       "preço_final",
       "preço final",
       "preco final",
-      "preco_unitario",
-      "preço_unitário",
-      "preço unitário",
-      "preco unitario",
       "valor_venda",
       "valor venda",
-      "valor_unitario",
-      "valor unitario",
+      "price_cents",
       "price",
       "valor",
     ]);
 
-  const directPrice = extractImportedBestMoneyValue(labeledPrice);
-  if (directPrice != null) return Math.round(directPrice * 100);
-
-  const metadataPriceCandidates = normalizedMetadataEntries
-    .filter(([normalizedKey, rawValue]) => {
-      if (!rawValue) return false;
-      return (
-        normalizedKey.includes("preco") ||
-        normalizedKey.includes("valor") ||
-        normalizedKey.includes("price")
-      );
-    })
-    .map(([, rawValue]) => rawValue);
-
-  for (const candidate of metadataPriceCandidates) {
-    const parsedCandidate = extractImportedBestMoneyValue(candidate);
-    if (parsedCandidate != null) return Math.round(parsedCandidate * 100);
-  }
+  const parsedLabeledPrice = extractImportedFirstCurrencyValue(labeledPrice);
+  if (parsedLabeledPrice != null) return Math.round(parsedLabeledPrice * 100);
 
   const lines = source
     .replace(/\r/g, "")
@@ -1293,31 +1182,23 @@ function extractImportedCatalogPriceCents(
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const priceLines = lines.filter((line) => {
+  for (const line of lines) {
     const normalized = normalizeImportedLoose(line);
-    return (
+    if (
       normalized.startsWith("preco venda") ||
-      normalized.startsWith("preco de venda") ||
       normalized.startsWith("preço venda") ||
-      normalized.startsWith("preço de venda") ||
       normalized.startsWith("preco final") ||
       normalized.startsWith("preço final") ||
-      normalized.startsWith("preco unitario") ||
-      normalized.startsWith("preço unitário") ||
-      normalized.startsWith("valor unitario") ||
       normalized === "preco" ||
       normalized.startsWith("preco ") ||
       normalized === "preço" ||
       normalized.startsWith("preço ") ||
       normalized === "valor" ||
-      normalized.startsWith("valor ") ||
-      line.includes("R$")
-    );
-  });
-
-  for (const line of priceLines) {
-    const parsedLineValue = extractImportedBestMoneyValue(line);
-    if (parsedLineValue != null) return Math.round(parsedLineValue * 100);
+      normalized.startsWith("valor ")
+    ) {
+      const parsedLineValue = extractImportedFirstCurrencyValue(line);
+      if (parsedLineValue != null) return Math.round(parsedLineValue * 100);
+    }
   }
 
   const fullSource = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
@@ -1326,10 +1207,10 @@ function extractImportedCatalogPriceCents(
 
   const salePriceMatch =
     fullSource.match(
-      /pre[cç]o\s+(?:de\s+)?venda(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\d+(?:[.,]\d+)?)/i
+      /pre[cç]o\s+venda(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
     ) ||
     fullSource.match(
-      /valor\s+(?:de\s+)?venda\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\d+(?:[.,]\d+)?)/i
+      /valor\s+venda\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
     );
 
   if (salePriceMatch) {
@@ -1338,9 +1219,9 @@ function extractImportedCatalogPriceCents(
   }
 
   const genericPriceMatch =
-    fullSource.match(/r\$\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\d+(?:[.,]\d+)?)/i) ||
+    fullSource.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
     fullSource.match(
-      /pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\d+(?:[.,]\d+)?)/i
+      /pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
     );
 
   if (!genericPriceMatch) return null;
@@ -2255,9 +2136,10 @@ function OnboardingContent() {
         return;
       }
       const decoratedResult = decorateIntelligentImportResultWithImageFallback(result, selectedFilesPreview);
-      setIntelligentImportResult(decoratedResult);
+      const frontendReadyResult = normalizeIntelligentImportResultForFrontend(decoratedResult);
+      setIntelligentImportResult(frontendReadyResult);
       setIntelligentImportSuccess(
-        decoratedResult.message || "Importação inteligente processada com sucesso."
+        frontendReadyResult.message || "Importação inteligente processada com sucesso."
       );
     } catch (error) {
       console.error("[OnboardingPage] handleRunIntelligentImport error:", error);
@@ -2575,7 +2457,7 @@ async function handleSaveImportedItemsToCatalog() {
 
           const safePriceCents = priceCents ?? existingCatalogItem?.price_cents ?? null;
           const safeStockQuantity =
-            stockQuantity != null ? stockQuantity : existingCatalogItem?.stock_quantity ?? 0;
+            stockQuantity > 0 ? stockQuantity : existingCatalogItem?.stock_quantity ?? 0;
 
           let persistedCatalogItemId: string | null = existingCatalogItem?.id ?? null;
 
