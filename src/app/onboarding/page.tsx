@@ -162,6 +162,14 @@ type DiscountSettingsRow = {
   created_at?: string | null;
   updated_at?: string | null;
 };
+type ExistingCatalogItemRow = {
+  id: string;
+  sku: string | null;
+  price_cents: number | null;
+  stock_quantity: number | null;
+  description: string | null;
+  metadata: Record<string, unknown> | null;
+};
 type Option = {
   value: string;
   label: string;
@@ -635,71 +643,169 @@ function extractImportedCatalogStockQuantity(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
-  const explicit =
-    extractMetadataValue(item, ["estoque_inicial", "estoque inicial", "stock_quantity", "stock", "estoque"]) ||
-    extractImportedLabeledValue(source, ["Estoque inicial", "Estoque", "Stock inicial", "Stock"]);
-  const parsed = parseImportedDecimal(explicit);
-  if (parsed == null) return 0;
-  return Math.max(0, Math.round(parsed));
-}
 
-
-
-
-function extractImportedWeightOrVolume(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const source = String(item.rawText || "");
-  return (
-    extractMetadataValue(item, [
-      "peso_volume",
-      "peso volume",
-      "weight_or_volume",
-      "weight",
-      "volume",
-      "peso",
-      "conteudo",
-      "conteúdo",
-    ]) ||
+  const labeledStock =
     extractImportedLabeledValue(source, [
-      "Peso/volume",
-      "Peso volume",
-      "Peso",
-      "Volume",
-      "Conteúdo",
-      "Conteudo",
-      "Embalagem",
+      "Quantidade atual",
+      "Estoque inicial",
+      "Quantidade",
+      "Stock inicial",
+      "Stock quantity",
     ]) ||
-    ""
-  ).slice(0, 160);
-}
+    extractMetadataValue(item, [
+      "quantidade_atual",
+      "quantidade atual",
+      "estoque_inicial",
+      "estoque inicial",
+      "stock_quantity",
+    ]);
 
-function extractImportedOrderIndex(
-  item:
-    | IntelligentImportDedupedPreview
-    | IntelligentImportNormalizedPreview
-    | { sourceFileName?: string | null; fileName?: string | null }
-) {
-  const candidates = [
-    String(("title" in item && item.title) || ""),
-    String(("rawText" in item && item.rawText) || ""),
-    String(item.sourceFileName || ""),
-    String(("fileName" in item && item.fileName) || ""),
-    String(("metadata" in item && item.metadata?.sku) || ""),
-  ];
-
-  for (const candidate of candidates) {
-    const itemMatch = candidate.match(/\bitem\s*(\d{1,4})\b/i);
-    if (itemMatch) return Number(itemMatch[1]);
-
-    const skuMatch = candidate.match(/\bqmc[-\s]?(\d{1,4})\b/i);
-    if (skuMatch) return Number(skuMatch[1]);
-
-    const trailingMatch = candidate.match(/(?:^|[^\d])(\d{1,4})(?:[^\d]|$)/);
-    if (trailingMatch) return Number(trailingMatch[1]);
+  const parsedLabeledStock = parseImportedDecimal(labeledStock);
+  if (parsedLabeledStock != null) {
+    return Math.max(0, Math.round(parsedLabeledStock));
   }
 
-  return Number.POSITIVE_INFINITY;
+  const fallbackStock =
+    extractImportedLabeledValue(source, ["Estoque", "Stock"]) ||
+    extractMetadataValue(item, ["stock", "estoque"]);
+
+  const parsedFallbackStock = parseImportedDecimal(fallbackStock);
+  if (parsedFallbackStock == null) return 0;
+  return Math.max(0, Math.round(parsedFallbackStock));
+}
+
+function buildImportedSaveKey(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const destination = resolveImportedDestination(item);
+  if (destination === "pool") {
+    return `pool::${normalizeImportedLoose(buildImportedPoolName(item))}`;
+  }
+
+  const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
+  if (sku) {
+    return `catalog::${destination}::sku::${sku}`;
+  }
+
+  return `catalog::${destination}::name::${normalizeImportedLoose(buildImportedCatalogName(item))}`;
+}
+
+function buildImportedRuntimeIdentityKeys(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const destination = resolveImportedDestination(item);
+
+  if (destination === "pool") {
+    const poolName = normalizeImportedLoose(buildImportedPoolName(item));
+    return poolName ? [`pool::${poolName}`] : [];
+  }
+
+  const itemName = normalizeImportedLoose(buildImportedCatalogName(item));
+  const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
+
+  const keys = [
+    sku ? `catalog::${destination}::sku::${sku}` : "",
+    itemName ? `catalog::${destination}::name::${itemName}` : "",
+  ].filter(Boolean);
+
+  return Array.from(new Set(keys));
+}
+
+function scoreImportedItemForSave(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const description = buildImportedCatalogDescription(item) || buildImportedPoolDescription(item) || "";
+  const hasSku = Boolean(extractImportedCatalogSku(item));
+  const hasPrice = extractImportedCatalogPriceCents(item) != null;
+  const stockQuantity = extractImportedCatalogStockQuantity(item);
+  const nonEmptyMetadata = Object.values(item.metadata ?? {}).filter(
+    (value) => typeof value === "string" && value.trim()
+  ).length;
+
+  return (
+    (hasSku ? 120 : 0) +
+    (hasPrice ? 90 : 0) +
+    (stockQuantity != null && stockQuantity > 0 ? 60 : 0) +
+    Math.min(description.length, 600) +
+    nonEmptyMetadata * 4 +
+    (item.confidence ?? 0) * 10
+  );
+}
+
+function dedupeImportedItemsForSave(
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
+) {
+  const bestByKey = new Map<string, {
+    item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+    score: number;
+    index: number;
+  }>();
+
+  items.forEach((item, index) => {
+    const key = buildImportedSaveKey(item);
+    const score = scoreImportedItemForSave(item);
+    const current = bestByKey.get(key);
+    if (!current || score > current.score) {
+      bestByKey.set(key, { item, score, index });
+    }
+  });
+
+  const exactDedupedItems = Array.from(bestByKey.values())
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.item);
+
+  const bestByRuntimeIdentity = new Map<string, {
+    item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+    score: number;
+    index: number;
+  }>();
+
+  exactDedupedItems.forEach((item, index) => {
+    const identityKeys = buildImportedRuntimeIdentityKeys(item);
+    const score = scoreImportedItemForSave(item);
+
+    if (identityKeys.length === 0) {
+      bestByRuntimeIdentity.set(`fallback::${index}`, { item, score, index });
+      return;
+    }
+
+    const currentEntries = identityKeys
+      .map((key) => bestByRuntimeIdentity.get(key))
+      .filter(Boolean) as Array<{
+      item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+      score: number;
+      index: number;
+    }>;
+
+    const bestCurrent = currentEntries.sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return left.index - right.index;
+    })[0];
+
+    if (!bestCurrent || score > bestCurrent.score) {
+      for (const key of identityKeys) {
+        bestByRuntimeIdentity.set(key, { item, score, index });
+      }
+    }
+  });
+
+  const uniqueItems = new Map<string, {
+    item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+    score: number;
+    index: number;
+  }>();
+
+  for (const entry of bestByRuntimeIdentity.values()) {
+    const stableKey = buildImportedSaveKey(entry.item);
+    const current = uniqueItems.get(stableKey);
+    if (!current || entry.score > current.score) {
+      uniqueItems.set(stableKey, entry);
+    }
+  }
+
+  return Array.from(uniqueItems.values())
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.item);
 }
 
 function buildImportedCatalogName(
@@ -767,6 +873,13 @@ function sanitizeImportedDescriptionText(
     if (normalized.includes("validar upload inteligente")) return false;
     if (normalized.includes("categoria esperada no sistema")) return false;
     if (normalized.includes("salvar em configuracoes")) return false;
+    if (normalized.includes("guia leitura")) return false;
+    if (normalized.includes("guia de leitura")) return false;
+    if (normalized.includes("aba guia leitura")) return false;
+    if (normalized.includes("aba guia de leitura")) return false;
+    if (normalized.includes("planilha estoque")) return false;
+    if (normalized.includes("aba estoque")) return false;
+    if (normalized.includes("sheet estoque")) return false;
     return true;
   });
   const joined = dedupeDescriptionLines(filtered).join("\n").trim();
@@ -895,45 +1008,94 @@ function extractImportedCatalogPriceCents(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
-  const explicitPrice =
-    extractMetadataValue(item, [
-      "preco_venda",
-      "preço_venda",
-      "preço venda",
-      "preco venda",
-      "price",
-      "price_cents",
-      "valor",
-    ]) ||
+
+  const labeledPrice =
     extractImportedLabeledValue(source, [
       "Preço venda (R$)",
       "Preço venda",
       "Preco venda (R$)",
       "Preco venda",
+      "Preço final (R$)",
+      "Preço final",
+      "Preco final (R$)",
+      "Preco final",
       "Preço",
       "Preco",
       "Valor",
+    ]) ||
+    extractMetadataValue(item, [
+      "preco_venda",
+      "preço_venda",
+      "preço venda",
+      "preco venda",
+      "preco_final",
+      "preço_final",
+      "preço final",
+      "preco final",
+      "valor_venda",
+      "valor venda",
+      "price_cents",
+      "price",
+      "valor",
     ]);
 
-  const parsedExplicit = extractImportedFirstCurrencyValue(explicitPrice);
-  if (parsedExplicit != null) return Math.round(parsedExplicit * 100);
+  const parsedLabeledPrice = extractImportedFirstCurrencyValue(labeledPrice);
+  if (parsedLabeledPrice != null) return Math.round(parsedLabeledPrice * 100);
+
+  const lines = source
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const normalized = normalizeImportedLoose(line);
+    if (
+      normalized.startsWith("preco venda") ||
+      normalized.startsWith("preço venda") ||
+      normalized.startsWith("preco final") ||
+      normalized.startsWith("preço final") ||
+      normalized === "preco" ||
+      normalized.startsWith("preco ") ||
+      normalized === "preço" ||
+      normalized.startsWith("preço ") ||
+      normalized === "valor" ||
+      normalized.startsWith("valor ")
+    ) {
+      const parsedLineValue = extractImportedFirstCurrencyValue(line);
+      if (parsedLineValue != null) return Math.round(parsedLineValue * 100);
+    }
+  }
 
   const fullSource = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
 
-  const priceMatch =
+  const salePriceMatch =
+    fullSource.match(
+      /pre[cç]o\s+venda(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
+    ) ||
+    fullSource.match(
+      /valor\s+venda\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
+    );
+
+  if (salePriceMatch) {
+    const parsedSale = parseImportedDecimal(salePriceMatch[1]);
+    if (parsedSale != null) return Math.round(parsedSale * 100);
+  }
+
+  const genericPriceMatch =
     fullSource.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
     fullSource.match(
       /pre[cç]o\s*(?:estimado|aproximado)?\s*(?:de)?\s*r\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i
     );
 
-  if (!priceMatch) return null;
+  if (!genericPriceMatch) return null;
 
-  const parsed = parseImportedDecimal(priceMatch[1]);
-  if (parsed == null) return null;
+  const parsedGeneric = parseImportedDecimal(genericPriceMatch[1]);
+  if (parsedGeneric == null) return null;
 
-  return Math.round(parsed * 100);
+  return Math.round(parsedGeneric * 100);
 }
 
 function pickRelatedExtractedImages(
@@ -1118,6 +1280,36 @@ function buildImportedPoolDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   return buildImportedCleanDescription(item);
+}
+
+function extractImportedWeightOrVolume(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = String(item.rawText || "");
+
+  return (
+    extractMetadataValue(item, [
+      "peso_volume",
+      "peso volume",
+      "peso",
+      "volume",
+      "conteudo",
+      "conteúdo",
+      "embalagem",
+      "package",
+      "packaging",
+    ]) ||
+    extractImportedLabeledValue(source, [
+      "Peso/Volume",
+      "Peso / Volume",
+      "Peso",
+      "Volume",
+      "Conteúdo",
+      "Conteudo",
+      "Embalagem",
+    ]) ||
+    ""
+  ).trim();
 }
 
 function buildImportedCatalogMetadata(
@@ -1886,20 +2078,8 @@ async function handleSaveImportedItemsToCatalog() {
         ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
         : intelligentImportResult.normalizedPreview;
 
-    const sourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
-    const orderedSourceItems = [...sourceItems].sort((left, right) => {
-      const leftOrder = extractImportedOrderIndex(left);
-      const rightOrder = extractImportedOrderIndex(right);
-      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-      return buildImportedCatalogName(left).localeCompare(buildImportedCatalogName(right), "pt-BR");
-    });
-
-    console.log("save-source-items", {
-      rawSourceItems: rawSourceItems.length,
-      filteredSourceItems: sourceItems.length,
-      orderedSourceItems: orderedSourceItems.length,
-      sourceSkus: orderedSourceItems.map((item) => extractImportedCatalogSku(item)),
-    });
+    const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
+    const sourceItems = dedupeImportedItemsForSave(filteredSourceItems);
 
     if (sourceItems.length === 0) {
       setFormError(
@@ -1961,10 +2141,19 @@ async function handleSaveImportedItemsToCatalog() {
       let imageCursor = 0;
 
       const itemErrors: string[] = [];
+      const savedRuntimeIdentityKeys = new Set<string>();
 
-      for (const item of orderedSourceItems) {
+      for (const item of sourceItems) {
         try {
           const destination = resolveImportedDestination(item);
+          const runtimeIdentityKeys = buildImportedRuntimeIdentityKeys(item);
+
+          if (
+            runtimeIdentityKeys.length > 0 &&
+            runtimeIdentityKeys.some((key) => savedRuntimeIdentityKeys.has(key))
+          ) {
+            continue;
+          }
 
           const relatedExtractedImages = shouldAssignSequentialExtractedImages
             ? extractedImageSequence.length > 0
@@ -2011,43 +2200,60 @@ async function handleSaveImportedItemsToCatalog() {
               .eq("name", poolName)
               .maybeSingle();
 
+            let persistedPoolId: string | null = existingPool?.id ?? null;
+
             if (existingPool?.id) {
-              continue;
+              const { error: updatePoolError } = await supabase
+                .from("pools")
+                .update({
+                  width_m: metrics.width_m,
+                  length_m: metrics.length_m,
+                  depth_m: safeDepth,
+                  shape: metrics.shape,
+                  material: metrics.material,
+                  max_capacity_l: metrics.max_capacity_l,
+                  price: metrics.price,
+                  description: poolDescription,
+                  is_active: true,
+                  track_stock: true,
+                })
+                .eq("id", existingPool.id);
+
+              if (updatePoolError) throw updatePoolError;
+            } else {
+              const { data: createdPool, error } = await supabase
+                .from("pools")
+                .insert({
+                  organization_id: organizationId,
+                  store_id: activeStore.id,
+                  name: poolName,
+                  width_m: metrics.width_m,
+                  length_m: metrics.length_m,
+                  depth_m: safeDepth,
+                  shape: metrics.shape,
+                  material: metrics.material,
+                  max_capacity_l: metrics.max_capacity_l,
+                  weight_kg: null,
+                  price: metrics.price,
+                  description: poolDescription,
+                  is_active: true,
+                  track_stock: true,
+                  stock_quantity: 0,
+                })
+                .select("id")
+                .single();
+
+              if (error) throw error;
+              persistedPoolId = createdPool.id;
             }
 
-            const { data: createdPool, error } = await supabase
-              .from("pools")
-              .insert({
-                organization_id: organizationId,
-                store_id: activeStore.id,
-                name: poolName,
-                width_m: metrics.width_m,
-                length_m: metrics.length_m,
-                depth_m: safeDepth,
-                shape: metrics.shape,
-                material: metrics.material,
-                max_capacity_l: metrics.max_capacity_l,
-                weight_kg: null,
-                price: metrics.price,
-                description: poolDescription,
-                is_active: true,
-                track_stock: true,
-                stock_quantity: 0,
-              })
-              .select("id")
-              .single();
+            if (!persistedPoolId) {
+              throw new Error("Falha ao persistir a piscina importada.");
+            }
 
-            if (error) throw error;
-
-            console.log("save-insert-pool", {
-              poolId: createdPool.id,
-              poolName,
-              sku: extractImportedCatalogSku(item),
-              sourceFileName: item.sourceFileName,
-            });
-
-            if (!firstPoolId) firstPoolId = createdPool.id;
+            if (!firstPoolId) firstPoolId = persistedPoolId;
             savedPools += 1;
+            runtimeIdentityKeys.forEach((key) => savedRuntimeIdentityKeys.add(key));
 
             const poolImages = relatedExtractedImages.slice(0, 1);
             if (poolImages.length > 0) {
@@ -2055,14 +2261,14 @@ async function handleSaveImportedItemsToCatalog() {
                 await uploadExtractedImageToPool(
                   organizationId,
                   activeStore.id,
-                  createdPool.id,
+                  persistedPoolId,
                   poolImages[index],
                   index
                 );
               }
             } else if (selectedImageFiles[imageCursor]) {
               try {
-                await uploadImportedImageToPool(createdPool.id, selectedImageFiles[imageCursor], 0);
+                await uploadImportedImageToPool(persistedPoolId, selectedImageFiles[imageCursor], 0);
                 imageCursor += 1;
               } catch (uploadError) {
                 console.error("[OnboardingPage] uploadImportedImageToPool error:", uploadError);
@@ -2088,60 +2294,92 @@ async function handleSaveImportedItemsToCatalog() {
           const priceCents = extractImportedCatalogPriceCents(item);
           const stockQuantity = extractImportedCatalogStockQuantity(item);
           const metadata = buildImportedCatalogMetadata(item, category);
+          const description = buildImportedCatalogDescription(item);
 
-          const { data: existingCatalogItem } = await supabase
-            .from("store_catalog_items")
-            .select("id")
-            .eq("organization_id", organizationId)
-            .eq("store_id", activeStore.id)
-            .eq("name", itemName)
-            .maybeSingle();
+          let existingCatalogItem: ExistingCatalogItemRow | null = null;
 
-          if (existingCatalogItem?.id) {
-            console.log("save-skip-existing-catalog-item", {
-              itemName,
-              existingCatalogItemId: existingCatalogItem.id,
-              sku,
-              category,
-              sourceFileName: item.sourceFileName,
-            });
-            continue;
+          if (sku) {
+            const { data } = await supabase
+              .from("store_catalog_items")
+              .select("id, sku, price_cents, stock_quantity, description, metadata")
+              .eq("organization_id", organizationId)
+              .eq("store_id", activeStore.id)
+              .eq("sku", sku)
+              .maybeSingle();
+            existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
           }
 
-          const { data: createdItem, error } = await supabase
-            .from("store_catalog_items")
-            .insert({
-              organization_id: organizationId,
-              store_id: activeStore.id,
-              sku,
-              name: itemName,
-              description: buildImportedCatalogDescription(item),
-              price_cents: priceCents,
-              currency: "BRL",
-              is_active: true,
-              track_stock: true,
-              stock_quantity: stockQuantity,
-              metadata,
-            })
-            .select("id")
-            .single();
+          if (!existingCatalogItem) {
+            const { data } = await supabase
+              .from("store_catalog_items")
+              .select("id, sku, price_cents, stock_quantity, description, metadata")
+              .eq("organization_id", organizationId)
+              .eq("store_id", activeStore.id)
+              .eq("name", itemName)
+              .maybeSingle();
+            existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
+          }
 
-          if (error) throw error;
+          const safePriceCents = priceCents ?? existingCatalogItem?.price_cents ?? null;
+          const safeStockQuantity =
+            stockQuantity > 0 ? stockQuantity : existingCatalogItem?.stock_quantity ?? 0;
 
-          console.log("save-insert-catalog-item", {
-            catalogItemId: createdItem.id,
-            itemName,
-            sku,
-            category,
-            sourceFileName: item.sourceFileName,
-            priceCents,
-            stockQuantity,
-          });
+          let persistedCatalogItemId: string | null = existingCatalogItem?.id ?? null;
+
+          if (existingCatalogItem?.id) {
+            const mergedMetadata = {
+              ...(existingCatalogItem.metadata ?? {}),
+              ...metadata,
+            } as Record<string, unknown>;
+
+            const { error: updateCatalogError } = await supabase
+              .from("store_catalog_items")
+              .update({
+                sku,
+                name: itemName,
+                description: description ?? existingCatalogItem.description ?? null,
+                price_cents: safePriceCents,
+                currency: "BRL",
+                is_active: true,
+                track_stock: true,
+                stock_quantity: safeStockQuantity,
+                metadata: mergedMetadata,
+              })
+              .eq("id", existingCatalogItem.id);
+
+            if (updateCatalogError) throw updateCatalogError;
+          } else {
+            const { data: createdItem, error } = await supabase
+              .from("store_catalog_items")
+              .insert({
+                organization_id: organizationId,
+                store_id: activeStore.id,
+                sku,
+                name: itemName,
+                description,
+                price_cents: safePriceCents,
+                currency: "BRL",
+                is_active: true,
+                track_stock: true,
+                stock_quantity: safeStockQuantity,
+                metadata,
+              })
+              .select("id")
+              .single();
+
+            if (error) throw error;
+            persistedCatalogItemId = createdItem.id;
+          }
+
+          if (!persistedCatalogItemId) {
+            throw new Error("Falha ao persistir o item importado do catálogo.");
+          }
 
           if (!firstCatalogCategory) firstCatalogCategory = category;
           if (category === "quimicos") savedQuimicos += 1;
           else if (category === "acessorios") savedAcessorios += 1;
           else savedOutros += 1;
+          runtimeIdentityKeys.forEach((key) => savedRuntimeIdentityKeys.add(key));
 
           const catalogImages = relatedExtractedImages.slice(0, 1);
           if (catalogImages.length > 0) {
@@ -2149,14 +2387,14 @@ async function handleSaveImportedItemsToCatalog() {
               await uploadExtractedImageToCatalog(
                 organizationId,
                 activeStore.id,
-                createdItem.id,
+                persistedCatalogItemId,
                 catalogImages[index],
                 index
               );
             }
           } else if (selectedImageFiles[imageCursor]) {
             try {
-              await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor], 0);
+              await uploadImportedImageToCatalog(persistedCatalogItemId, selectedImageFiles[imageCursor], 0);
               imageCursor += 1;
             } catch (uploadError) {
               console.error("[OnboardingPage] uploadImportedImageToCatalog error:", uploadError);
@@ -2190,18 +2428,9 @@ async function handleSaveImportedItemsToCatalog() {
       );
 
       clearIntelligentImportState();
-
-      if (savedPools > 0 && firstPoolId) {
-        navigateWithFallback("/configuracoes/piscinas");
-        return;
-      }
-
-      if (firstCatalogCategory) {
-        navigateWithFallback(`/configuracoes/catalogo/${firstCatalogCategory}`);
-        return;
-      }
-
-      navigateWithFallback("/configuracoes");
+      ignoreNextStepScrollRef.current = false;
+      setCurrentStep(2);
+      return;
     } catch (error) {
       console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
       setFormError(
@@ -3514,7 +3743,7 @@ async function upsertAnswers(
                     accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,image/*"
                     onChange={async (e) => {
                       const input = e.currentTarget;
-                      const selectedFiles = Array.from(input.files ?? []);
+                      const selectedFiles = Array.from(input.files ?? []) as File[];
                       setIntelligentImportFiles(selectedFiles);
                       setIntelligentImportSelectedFilesPreview(
                         await buildSelectedFilePreviews(selectedFiles)
