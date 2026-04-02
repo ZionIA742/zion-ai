@@ -37,12 +37,17 @@ export type StructuredImportItem = {
 };
 
 const DEBUG_INTELLIGENT_IMPORT =
-  process.env.NODE_ENV !== "production" ||
-  process.env.DEBUG_INTELLIGENT_IMPORT === "1";
+  process.env.DEBUG_INTELLIGENT_IMPORT === "1" || process.env.NODE_ENV !== "production";
 
-function debugIntelligentImport(...args: unknown[]) {
+function debugIntelligentImport(label: string, payload?: unknown) {
   if (!DEBUG_INTELLIGENT_IMPORT) return;
-  console.log("[ZION][structured-parser]", ...args);
+
+  if (typeof payload === "undefined") {
+    console.log(`[ZION][intelligent-import] ${label}`);
+    return;
+  }
+
+  console.log(`[ZION][intelligent-import] ${label}`, payload);
 }
 
 function cleanText(value: string | null | undefined) {
@@ -582,76 +587,78 @@ function looksLikeMultiItemSource(extractedText: string, blockCount: number) {
   return hintCount >= 6;
 }
 
+function scoreStructuredItem(item: StructuredImportItem) {
+  return (item.description ? Math.min(item.description.length, 600) : 0) +
+    (item.price ? 50 : 0) +
+    (item.dimensions ? 50 : 0) +
+    (item.capacity ? 50 : 0) +
+    (item.material ? 20 : 0) +
+    (item.brand ? 20 : 0);
+}
+
+function hasEnoughContentForMultiItemSource(item: StructuredImportItem) {
+  if (item.sku) return true;
+  if (!isProbablyGenericTitle(item.title)) {
+    if (item.description.length >= 10) return true;
+    if (item.price) return true;
+    if (item.dimensions) return true;
+    if (item.capacity) return true;
+    if (item.material) return true;
+  }
+  return false;
+}
+
 export function parseStructuredImportItems(extracted: ExtractedFileContent): StructuredImportItem[] {
   const blocks = chooseBlocks(extracted);
-  debugIntelligentImport("choose-blocks", {
+  const items: StructuredImportItem[] = [];
+
+  debugIntelligentImport("parser-blocks", {
     fileName: extracted.fileName,
     blockCount: blocks.length,
-    blockPreview: blocks.slice(0, 5).map((block, index) => ({
+    preview: blocks.slice(0, 5).map((block, index) => ({
       index,
       preview: block.slice(0, 180),
     })),
   });
 
-  const items: StructuredImportItem[] = [];
-
   blocks.forEach((block, index) => {
     const parsed = parseSingleBlock(block, extracted.fileName, index);
     if (parsed) {
       items.push(parsed);
-      debugIntelligentImport("parsed-item", {
+      debugIntelligentImport("parser-block-parsed", {
         fileName: extracted.fileName,
-        index,
+        blockIndex: index,
         title: parsed.title,
-        sku: parsed.sku || "",
+        sku: parsed.sku || null,
         destination: parsed.destination,
         confidence: parsed.confidence,
-        hasUsefulContent:
-          parsed.description.length >= 10 ||
-          Boolean(parsed.price) ||
-          Boolean(parsed.dimensions) ||
-          Boolean(parsed.capacity) ||
-          Boolean(parsed.material),
       });
-      return;
+    } else {
+      debugIntelligentImport("parser-block-null", {
+        fileName: extracted.fileName,
+        blockIndex: index,
+        preview: block.slice(0, 180),
+      });
     }
-
-    debugIntelligentImport("parsed-item-null", {
-      fileName: extracted.fileName,
-      index,
-      blockPreview: block.slice(0, 180),
-    });
   });
 
   if (items.length === 0) {
-    debugIntelligentImport("parse-result-empty", { fileName: extracted.fileName });
+    debugIntelligentImport("parser-summary", {
+      fileName: extracted.fileName,
+      resultCount: 0,
+      reason: "no-parsed-items",
+    });
     return [];
   }
 
-  const qualitySorted = [...items].sort((a, b) => {
-    const score = (item: StructuredImportItem) =>
-      (item.description ? Math.min(item.description.length, 600) : 0) +
-      (item.price ? 50 : 0) +
-      (item.dimensions ? 50 : 0) +
-      (item.capacity ? 50 : 0) +
-      (item.material ? 20 : 0) +
-      (item.brand ? 20 : 0);
+  const qualitySorted = [...items].sort((a, b) => scoreStructuredItem(b) - scoreStructuredItem(a));
 
-    return score(b) - score(a);
-  });
-
-  debugIntelligentImport("quality-sorted", {
+  debugIntelligentImport("parser-quality-sorted", {
     fileName: extracted.fileName,
-    count: qualitySorted.length,
-    items: qualitySorted.slice(0, 12).map((item) => ({
+    items: qualitySorted.slice(0, 20).map((item) => ({
       title: item.title,
-      sku: item.sku || "",
-      destination: item.destination,
-      descriptionLength: item.description.length,
-      hasPrice: Boolean(item.price),
-      hasDimensions: Boolean(item.dimensions),
-      hasCapacity: Boolean(item.capacity),
-      hasMaterial: Boolean(item.material),
+      sku: item.sku || null,
+      score: scoreStructuredItem(item),
     })),
   });
 
@@ -663,41 +670,38 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       normalizeLoose(extracted.text).includes("preco sugerido") ||
       normalizeLoose(extracted.text).includes("preço sugerido"));
 
-  debugIntelligentImport("source-shape", {
+  debugIntelligentImport("parser-source-shape", {
     fileName: extracted.fileName,
+    itemCount: items.length,
     sourceLooksSingleItem,
-    itemsLength: items.length,
   });
 
   if (sourceLooksSingleItem) {
-    debugIntelligentImport("single-item-return", {
+    debugIntelligentImport("parser-summary", {
       fileName: extracted.fileName,
-      title: qualitySorted[0]?.title,
-      sku: qualitySorted[0]?.sku || "",
+      resultCount: 1,
+      keptItems: [
+        {
+          title: qualitySorted[0].title,
+          sku: qualitySorted[0].sku || null,
+          destination: qualitySorted[0].destination,
+        },
+      ],
+      mode: "single-item-best-match",
     });
     return [qualitySorted[0]];
   }
 
-  const filtered = qualitySorted.filter((item, index) => {
-    if (index === 0) return true;
-
-    const hasUsefulContent =
-      item.description.length >= 10 ||
-      Boolean(item.price) ||
-      Boolean(item.dimensions) ||
-      Boolean(item.capacity) ||
-      Boolean(item.material);
-
-    const keep = !isProbablyGenericTitle(item.title) && hasUsefulContent;
+  const filteredItems = items.filter((item) => {
+    const keep = hasEnoughContentForMultiItemSource(item);
 
     if (!keep) {
-      debugIntelligentImport("filtered-out-item", {
+      debugIntelligentImport("parser-filtered-out", {
         fileName: extracted.fileName,
-        index,
         title: item.title,
-        sku: item.sku || "",
-        isGeneric: isProbablyGenericTitle(item.title),
-        hasUsefulContent,
+        sku: item.sku || null,
+        destination: item.destination,
+        genericTitle: isProbablyGenericTitle(item.title),
         descriptionLength: item.description.length,
         hasPrice: Boolean(item.price),
         hasDimensions: Boolean(item.dimensions),
@@ -709,13 +713,17 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
     return keep;
   });
 
-  debugIntelligentImport("parse-result-final", {
+  debugIntelligentImport("parser-summary", {
     fileName: extracted.fileName,
-    beforeFilter: qualitySorted.length,
-    afterFilter: filtered.length,
-    skus: filtered.map((item) => item.sku || ""),
-    titles: filtered.map((item) => item.title),
+    originalItemCount: items.length,
+    filteredItemCount: filteredItems.length,
+    keptItems: filteredItems.slice(0, 120).map((item) => ({
+      title: item.title,
+      sku: item.sku || null,
+      destination: item.destination,
+    })),
+    mode: "multi-item-preserve-order",
   });
 
-  return filtered;
+  return filteredItems;
 }
