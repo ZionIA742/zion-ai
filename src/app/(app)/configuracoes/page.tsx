@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
@@ -12,11 +12,32 @@ type CountState = {
   outros: number;
 };
 
+type CatalogItemRow = {
+  id: string;
+  metadata?: {
+    categoria?: string | null;
+  } | null;
+};
+
+type CatalogPhotoRow = {
+  id: string;
+  catalog_item_id: string;
+  storage_path: string | null;
+};
+
 function normalizeCategory(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "quimicos") return "quimicos";
   if (normalized === "acessorios") return "acessorios";
   return "outros";
+}
+
+function chunkArray<T>(items: T[], chunkSize: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
 }
 
 function QuickCard({
@@ -59,6 +80,8 @@ export default function ConfiguracoesPage() {
 
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [successText, setSuccessText] = useState<string | null>(null);
+  const [deletingCatalog, setDeletingCatalog] = useState(false);
   const [counts, setCounts] = useState<CountState>({
     pools: 0,
     quimicos: 0,
@@ -68,66 +91,174 @@ export default function ConfiguracoesPage() {
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
 
-  useEffect(() => {
-    async function fetchCounts() {
-      if (!organizationId || !activeStoreId) {
-        setCounts({
-          pools: 0,
-          quimicos: 0,
-          acessorios: 0,
-          outros: 0,
-        });
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
-      setErrorText(null);
-
-      try {
-        const [poolsResult, catalogResult] = await Promise.all([
-          supabase
-            .from("pools")
-            .select("id", { count: "exact", head: true })
-            .eq("organization_id", organizationId)
-            .eq("store_id", activeStoreId),
-          supabase
-            .from("store_catalog_items")
-            .select("id, metadata")
-            .eq("organization_id", organizationId)
-            .eq("store_id", activeStoreId),
-        ]);
-
-        if (poolsResult.error) throw poolsResult.error;
-        if (catalogResult.error) throw catalogResult.error;
-
-        const nextCounts: CountState = {
-          pools: poolsResult.count ?? 0,
-          quimicos: 0,
-          acessorios: 0,
-          outros: 0,
-        };
-
-        for (const row of catalogResult.data || []) {
-          const category = normalizeCategory((row as any)?.metadata?.categoria);
-          nextCounts[category] += 1;
-        }
-
-        setCounts(nextCounts);
-      } catch (error: any) {
-        setErrorText(error?.message ?? "Erro ao carregar a visão geral das configurações.");
-      } finally {
-        setLoading(false);
-      }
+  const fetchCounts = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setCounts({
+        pools: 0,
+        quimicos: 0,
+        acessorios: 0,
+        outros: 0,
+      });
+      setLoading(false);
+      return;
     }
 
-    void fetchCounts();
+    setLoading(true);
+    setErrorText(null);
+
+    try {
+      const [poolsResult, catalogResult] = await Promise.all([
+        supabase
+          .from("pools")
+          .select("id", { count: "exact", head: true })
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId),
+        supabase
+          .from("store_catalog_items")
+          .select("id, metadata")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId),
+      ]);
+
+      if (poolsResult.error) throw poolsResult.error;
+      if (catalogResult.error) throw catalogResult.error;
+
+      const nextCounts: CountState = {
+        pools: poolsResult.count ?? 0,
+        quimicos: 0,
+        acessorios: 0,
+        outros: 0,
+      };
+
+      for (const row of (catalogResult.data || []) as CatalogItemRow[]) {
+        const category = normalizeCategory(row?.metadata?.categoria);
+        nextCounts[category] += 1;
+      }
+
+      setCounts(nextCounts);
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao carregar a visão geral das configurações.");
+    } finally {
+      setLoading(false);
+    }
   }, [organizationId, activeStoreId]);
+
+  useEffect(() => {
+    void fetchCounts();
+  }, [fetchCounts]);
 
   const totalCatalogo = useMemo(
     () => counts.quimicos + counts.acessorios + counts.outros,
     [counts]
   );
+
+  const handleDeleteAllCatalog = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para apagar o catálogo.");
+      return;
+    }
+
+    if (deletingCatalog) return;
+
+    const hasAnyCatalogItem = totalCatalogo > 0;
+    if (!hasAnyCatalogItem) {
+      setSuccessText("O catálogo geral já está vazio.");
+      setErrorText(null);
+      return;
+    }
+
+    const firstConfirm = window.confirm(
+      "Tem certeza que deseja apagar TODO o catálogo geral desta loja? Isso vai remover químicos, acessórios e outros itens cadastrados."
+    );
+    if (!firstConfirm) return;
+
+    const secondConfirm = window.confirm(
+      "Confirma mais uma vez: apagar todo o catálogo geral agora? Essa ação não apaga as piscinas."
+    );
+    if (!secondConfirm) return;
+
+    setDeletingCatalog(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const { data: catalogItems, error: catalogItemsError } = await supabase
+        .from("store_catalog_items")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (catalogItemsError) throw catalogItemsError;
+
+      const catalogItemIds = ((catalogItems || []) as Array<{ id: string }>).map((item) => item.id);
+
+      if (catalogItemIds.length === 0) {
+        setSuccessText("O catálogo geral já estava vazio.");
+        await fetchCounts();
+        return;
+      }
+
+      const photoRows: CatalogPhotoRow[] = [];
+      const idChunks = chunkArray(catalogItemIds, 200);
+
+      for (const ids of idChunks) {
+        const { data: photoChunk, error: photosError } = await supabase
+          .from("store_catalog_item_photos")
+          .select("id, catalog_item_id, storage_path")
+          .in("catalog_item_id", ids);
+
+        if (photosError) throw photosError;
+        photoRows.push(...((photoChunk || []) as CatalogPhotoRow[]));
+      }
+
+      const storagePaths = photoRows
+        .map((row) => String(row.storage_path || "").trim())
+        .filter(Boolean);
+
+      const storagePathChunks = chunkArray(storagePaths, 100);
+      for (const paths of storagePathChunks) {
+        const { error: storageRemoveError } = await supabase.storage
+          .from("store-catalog-photos")
+          .remove(paths);
+
+        if (storageRemoveError) {
+          throw storageRemoveError;
+        }
+      }
+
+      if (photoRows.length > 0) {
+        const photoIdChunks = chunkArray(
+          photoRows.map((row) => row.id),
+          200
+        );
+
+        for (const ids of photoIdChunks) {
+          const { error: deletePhotosError } = await supabase
+            .from("store_catalog_item_photos")
+            .delete()
+            .in("id", ids);
+
+          if (deletePhotosError) throw deletePhotosError;
+        }
+      }
+
+      for (const ids of idChunks) {
+        const { error: deleteItemsError } = await supabase
+          .from("store_catalog_items")
+          .delete()
+          .in("id", ids);
+
+        if (deleteItemsError) throw deleteItemsError;
+      }
+
+      setSuccessText("Todo o catálogo geral da loja foi apagado com sucesso.");
+      await fetchCounts();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao apagar todo o catálogo geral da loja.");
+    } finally {
+      setDeletingCatalog(false);
+    }
+  }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchCounts]);
 
   return (
     <div className="space-y-5">
@@ -152,17 +283,32 @@ export default function ConfiguracoesPage() {
         </div>
       ) : null}
 
+      {successText ? (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          {successText}
+        </div>
+      ) : null}
+
       <section className="rounded-2xl border border-gray-200 bg-white p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-sm font-semibold text-gray-900">Acessos rápidos</h2>
             <p className="mt-1 text-xs text-gray-500">
               Tudo em um lugar, sem prender na tela errada.
             </p>
           </div>
-          {loading ? (
-            <span className="text-xs text-gray-500">Carregando...</span>
-          ) : null}
+
+          <div className="flex flex-wrap items-center gap-3">
+            {loading ? <span className="text-xs text-gray-500">Carregando...</span> : null}
+            <button
+              type="button"
+              onClick={() => void handleDeleteAllCatalog()}
+              disabled={!hasValidStoreContext || deletingCatalog || totalCatalogo === 0}
+              className="rounded-xl border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {deletingCatalog ? "Apagando catálogo..." : "Apagar todo o catálogo"}
+            </button>
+          </div>
         </div>
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
