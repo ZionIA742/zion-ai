@@ -611,15 +611,20 @@ function extractImportedLabeledValue(
 }
 
 function extractImportedFirstCurrencyValue(value: string | null | undefined) {
-  const source = String(value || "");
+  const source = String(value || "").trim();
   if (!source) return null;
 
-  const match =
-    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    source.match(/(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/);
+  const currencyMatch = source.match(/r\$\s*([\d.,]+)/i);
+  if (currencyMatch?.[1]) {
+    return parseImportedDecimal(currencyMatch[1]);
+  }
 
-  if (!match) return null;
-  return parseImportedDecimal(match[1]);
+  const genericMatch = source.match(/([\d]+(?:[\.,][\d]+)?)/);
+  if (genericMatch?.[1]) {
+    return parseImportedDecimal(genericMatch[1]);
+  }
+
+  return null;
 }
 
 function extractImportedExcelLikeName(
@@ -1126,6 +1131,10 @@ function shouldSkipImportedItem(
   const normalizedTitle = normalizeImportedLoose(item.title);
   const normalizedRaw = normalizeImportedLoose(item.rawText);
   const normalizedType = normalizeImportedLoose(item.type);
+  const resolvedName = normalizeImportedLoose(buildImportedCatalogName(item));
+  const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
+  const hasReliableIdentity = Boolean(sku) || Boolean(resolvedName && resolvedName !== "item importado");
+
   if (normalizedType === "commercial rule" || normalizedType === "commercial_rule") {
     return true;
   }
@@ -1135,10 +1144,10 @@ function shouldSkipImportedItem(
   if (normalizedType === "responsible info" || normalizedType === "responsible_info") {
     return true;
   }
-  if (normalizedType === "unknown" && item.confidence <= 0.35) {
+  if (normalizedType === "unknown" && item.confidence <= 0.35 && !hasReliableIdentity) {
     return true;
   }
-  if (isGenericImportedTitle(item.title) && item.confidence <= 0.75) {
+  if (isGenericImportedTitle(item.title) && item.confidence <= 0.75 && !hasReliableIdentity) {
     return true;
   }
   if (
@@ -1146,24 +1155,28 @@ function shouldSkipImportedItem(
     normalizedRaw.includes("validar upload inteligente") &&
     !normalizedRaw.includes("r$") &&
     !normalizedRaw.includes("capacidade") &&
-    !normalizedRaw.includes("profundidade")
+    !normalizedRaw.includes("profundidade") &&
+    !hasReliableIdentity
   ) {
     return true;
   }
 
-if (
-  normalizedRaw.includes("planilha estoque") ||
-  normalizedRaw.includes("aba estoque") ||
-  normalizedRaw.includes("sheet estoque")
-) {
-  return true;
-}
+  if (
+    normalizedRaw.includes("planilha estoque") ||
+    normalizedRaw.includes("aba estoque") ||
+    normalizedRaw.includes("sheet estoque")
+  ) {
+    return true;
+  }
 
   return false;
 }
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
+  const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
+  if (sku.startsWith("qmc")) return "quimicos";
+
   const explicitDestination = normalizeImportedLoose(
     extractMetadataValue(item, [
       "destination",
@@ -1176,12 +1189,27 @@ function resolveImportedDestination(
     ])
   );
   if (explicitDestination === "pool") return "pool";
-  if (explicitDestination === "quimicos" || explicitDestination === "quimico") return "quimicos";
+  if (
+    explicitDestination === "quimicos" ||
+    explicitDestination === "quimico" ||
+    explicitDestination === "sanitizante" ||
+    explicitDestination === "algicida" ||
+    explicitDestination === "clarificante" ||
+    explicitDestination === "balanceador" ||
+    explicitDestination === "oxidante" ||
+    explicitDestination === "estabilizante" ||
+    explicitDestination === "limpeza" ||
+    explicitDestination === "decantador"
+  ) {
+    return "quimicos";
+  }
   if (explicitDestination === "acessorios" || explicitDestination === "acessorio")
     return "acessorios";
   if (explicitDestination === "outros" || explicitDestination === "outro") return "outros";
+
   const inferred = inferImportedDestination(item);
   if (inferred !== "outros") return inferred;
+
   const raw = normalizeImportedLoose([item.title, item.rawText].join(" "));
   if (
     raw.includes("capacidade") ||
@@ -1191,8 +1219,10 @@ function resolveImportedDestination(
   ) {
     return "pool";
   }
-  return inferred;
+
+  return normalizeImportedCatalogCategory(raw);
 }
+
 function buildImportedPoolName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -2197,57 +2227,80 @@ async function handleSaveImportedItemsToCatalog() {
           const stockQuantity = extractImportedCatalogStockQuantity(item);
           const metadata = buildImportedCatalogMetadata(item, category);
 
-          const { data: existingCatalogItem } = await supabase
+          const existingCatalogQuery = supabase
             .from("store_catalog_items")
             .select("id")
             .eq("organization_id", organizationId)
-            .eq("store_id", activeStore.id)
-            .eq("name", itemName)
-            .maybeSingle();
+            .eq("store_id", activeStore.id);
+
+          const { data: existingCatalogItem } = sku
+            ? await existingCatalogQuery.eq("sku", sku).maybeSingle()
+            : await existingCatalogQuery.eq("name", itemName).maybeSingle();
+
+          const catalogPayload = {
+            organization_id: organizationId,
+            store_id: activeStore.id,
+            sku,
+            name: itemName,
+            description: buildImportedCatalogDescription(item),
+            price_cents: priceCents,
+            currency: "BRL",
+            is_active: true,
+            track_stock: true,
+            stock_quantity: stockQuantity,
+            metadata,
+          };
+
+          let persistedCatalogItemId: string | null = null;
 
           if (existingCatalogItem?.id) {
-            continue;
+            const { data: updatedCatalogItem, error: updateError } = await supabase
+              .from("store_catalog_items")
+              .update(catalogPayload)
+              .eq("id", existingCatalogItem.id)
+              .select("id")
+              .single();
+
+            if (updateError) throw updateError;
+            persistedCatalogItemId = updatedCatalogItem.id;
+          } else {
+            const { data: createdItem, error } = await supabase
+              .from("store_catalog_items")
+              .insert(catalogPayload)
+              .select("id")
+              .single();
+
+            if (error) throw error;
+            persistedCatalogItemId = createdItem.id;
+
+            if (!firstCatalogCategory) firstCatalogCategory = category;
+            if (category === "quimicos") savedQuimicos += 1;
+            else if (category === "acessorios") savedAcessorios += 1;
+            else savedOutros += 1;
           }
 
-          const { data: createdItem, error } = await supabase
-            .from("store_catalog_items")
-            .insert({
-              organization_id: organizationId,
-              store_id: activeStore.id,
-              sku,
-              name: itemName,
-              description: buildImportedCatalogDescription(item),
-              price_cents: priceCents,
-              currency: "BRL",
-              is_active: true,
-              track_stock: true,
-              stock_quantity: stockQuantity,
-              metadata,
-            })
-            .select("id")
-            .single();
-
-          if (error) throw error;
-
-          if (!firstCatalogCategory) firstCatalogCategory = category;
-          if (category === "quimicos") savedQuimicos += 1;
-          else if (category === "acessorios") savedAcessorios += 1;
-          else savedOutros += 1;
-
           const catalogImages = relatedExtractedImages.slice(0, 1);
-          if (catalogImages.length > 0) {
+          if (persistedCatalogItemId && catalogImages.length > 0 && !existingCatalogItem?.id) {
             for (let index = 0; index < catalogImages.length; index += 1) {
               await uploadExtractedImageToCatalog(
                 organizationId,
                 activeStore.id,
-                createdItem.id,
+                persistedCatalogItemId,
                 catalogImages[index],
                 index
               );
             }
-          } else if (selectedImageFiles[imageCursor]) {
+          } else if (
+            persistedCatalogItemId &&
+            selectedImageFiles[imageCursor] &&
+            !existingCatalogItem?.id
+          ) {
             try {
-              await uploadImportedImageToCatalog(createdItem.id, selectedImageFiles[imageCursor], 0);
+              await uploadImportedImageToCatalog(
+                persistedCatalogItemId,
+                selectedImageFiles[imageCursor],
+                0
+              );
               imageCursor += 1;
             } catch (uploadError) {
               console.error("[OnboardingPage] uploadImportedImageToCatalog error:", uploadError);
