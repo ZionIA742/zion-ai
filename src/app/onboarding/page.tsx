@@ -1465,26 +1465,57 @@ function extractImportedCatalogPriceCents(
 
 function pickRelatedExtractedImages(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
-  extractedImageBuckets: Map<string, Array<{ fileName: string; mimeType: string; dataUrl: string }>>,
+  extractedImageBuckets: Map<
+    string,
+    Array<{
+      id: string;
+      fileName: string;
+      mimeType: string;
+      dataUrl: string;
+      sourceFileName: string;
+    }>
+  >,
   extractedImageBucketCursors: Map<string, number>,
+  extractedImageSequence: Array<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    dataUrl: string;
+    sourceFileName: string;
+  }>,
+  consumedExtractedImageIds: Set<string>,
   totalSourceItems: number
 ) {
   const sourceKey = String(item.sourceFileName || "").trim().toLowerCase();
 
   const tryConsumeFromBucket = (bucketKey: string) => {
-    const images = extractedImageBuckets.get(bucketKey);
-    if (!images || images.length === 0) return [] as Array<{
-      fileName: string;
-      mimeType: string;
-      dataUrl: string;
-    }>;
+    const bucket = extractedImageBuckets.get(bucketKey);
+    if (!bucket || bucket.length === 0) {
+      return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+    }
 
-    const cursor = extractedImageBucketCursors.get(bucketKey) ?? 0;
-    const image = images[cursor];
-    if (!image) return [];
+    let cursor = extractedImageBucketCursors.get(bucketKey) ?? 0;
 
-    extractedImageBucketCursors.set(bucketKey, cursor + 1);
-    return [image];
+    while (cursor < bucket.length) {
+      const candidate = bucket[cursor];
+      cursor += 1;
+      extractedImageBucketCursors.set(bucketKey, cursor);
+
+      if (!candidate || consumedExtractedImageIds.has(candidate.id)) {
+        continue;
+      }
+
+      consumedExtractedImageIds.add(candidate.id);
+      return [
+        {
+          fileName: candidate.fileName,
+          mimeType: candidate.mimeType,
+          dataUrl: candidate.dataUrl,
+        },
+      ];
+    }
+
+    return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
   };
 
   if (sourceKey) {
@@ -1507,12 +1538,29 @@ function pickRelatedExtractedImages(
     }
   }
 
-  if (totalSourceItems === 1 && extractedImageBuckets.size > 0) {
-    const firstKey = Array.from(extractedImageBuckets.keys())[0];
-    return tryConsumeFromBucket(firstKey);
+  if (totalSourceItems === 1) {
+    for (const key of extractedImageBuckets.keys()) {
+      const fallback = tryConsumeFromBucket(key);
+      if (fallback.length > 0) return fallback;
+    }
   }
 
-  return [];
+  const globalFallback = extractedImageSequence.find(
+    (candidate) => !consumedExtractedImageIds.has(candidate.id)
+  );
+
+  if (!globalFallback) {
+    return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+  }
+
+  consumedExtractedImageIds.add(globalFallback.id);
+  return [
+    {
+      fileName: globalFallback.fileName,
+      mimeType: globalFallback.mimeType,
+      dataUrl: globalFallback.dataUrl,
+    },
+  ];
 }
 function canPersistAsPool(metrics: {
   width_m: number | null;
@@ -2537,12 +2585,20 @@ async function handleSaveImportedItemsToCatalog() {
 
       const extractedImageBuckets = new Map<
         string,
-        Array<{ fileName: string; mimeType: string; dataUrl: string }>
+        Array<{
+          id: string;
+          fileName: string;
+          mimeType: string;
+          dataUrl: string;
+          sourceFileName: string;
+        }>
       >();
 
       const extractedImageBucketCursors = new Map<string, number>();
+      const consumedExtractedImageIds = new Set<string>();
 
-      const extractedImageSequence = safeExtractedImagePreview.map((image) => ({
+      const extractedImageSequence = safeExtractedImagePreview.map((image, index) => ({
+        id: `${String(image.sourceFileName || "").trim().toLowerCase()}::${image.fileName || "imagem-extraida.jpg"}::${index}`,
         fileName: image.fileName || "imagem-extraida.jpg",
         mimeType: image.mimeType || "image/jpeg",
         dataUrl: image.dataUrl,
@@ -2550,26 +2606,11 @@ async function handleSaveImportedItemsToCatalog() {
       }));
 
       for (const image of extractedImageSequence) {
-        const bucketKey = image.sourceFileName;
+        const bucketKey = image.sourceFileName || "__sem_origem__";
         const currentBucket = extractedImageBuckets.get(bucketKey) ?? [];
-        currentBucket.push({
-          fileName: image.fileName,
-          mimeType: image.mimeType,
-          dataUrl: image.dataUrl,
-        });
+        currentBucket.push(image);
         extractedImageBuckets.set(bucketKey, currentBucket);
       }
-
-      const uniqueSourceFiles = new Set(
-        sourceItems
-          .map((item) => String(item.sourceFileName || "").trim().toLowerCase())
-          .filter(Boolean)
-      );
-
-      const shouldAssignSequentialExtractedImages =
-        uniqueSourceFiles.size === 1 &&
-        extractedImageSequence.length >= sourceItems.length &&
-        sourceItems.length > 1;
 
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
@@ -2595,26 +2636,14 @@ async function handleSaveImportedItemsToCatalog() {
             continue;
           }
 
-          const relatedExtractedImages = shouldAssignSequentialExtractedImages
-            ? extractedImageSequence.length > 0
-              ? [
-                  {
-                    fileName: extractedImageSequence[0].fileName,
-                    mimeType: extractedImageSequence[0].mimeType,
-                    dataUrl: extractedImageSequence[0].dataUrl,
-                  },
-                ]
-              : []
-            : pickRelatedExtractedImages(
-                item,
-                extractedImageBuckets,
-                extractedImageBucketCursors,
-                sourceItems.length
-              );
-
-          if (shouldAssignSequentialExtractedImages && extractedImageSequence.length > 0) {
-            extractedImageSequence.shift();
-          }
+          const relatedExtractedImages = pickRelatedExtractedImages(
+            item,
+            extractedImageBuckets,
+            extractedImageBucketCursors,
+            extractedImageSequence,
+            consumedExtractedImageIds,
+            sourceItems.length
+          );
 
           if (destination === "pool") {
             const metrics = extractImportedPoolMetrics(item);
