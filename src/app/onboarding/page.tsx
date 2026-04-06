@@ -916,201 +916,6 @@ function sanitizeImportedDescriptionText(
   const rawLines = String(source || "")
     .replace(/\r/g, "")
     .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const filtered = rawLines.filter((line) => {
-    const normalized = normalizeImportedLoose(line);
-    if (!normalized) return false;
-    if (normalized === titleLoose) return false;
-
-    const blockedStarts = [
-      "categoria ",
-      "categoria:",
-      "nome ",
-      "nome:",
-      "nome do produto ",
-      "nome do produto:",
-      "linha ",
-      "linha:",
-      "aplicacao ",
-      "aplicacao:",
-      "aplicação ",
-      "aplicação:",
-      "embalagem ",
-      "embalagem:",
-      "preco ",
-      "preco:",
-      "preço ",
-      "preço:",
-      "valor ",
-      "valor:",
-      "medidas ",
-      "medidas:",
-      "profundidade ",
-      "profundidade:",
-      "capacidade ",
-      "capacidade:",
-      "material ",
-      "material:",
-      "formato ",
-      "formato:",
-      "marca ",
-      "marca:",
-      "sku ",
-      "sku:",
-      "peso ",
-      "peso:",
-      "peso volume ",
-      "peso volume:",
-      "peso/volume ",
-      "peso/volume:",
-      "dosagem ",
-      "dosagem:",
-      "cor ",
-      "cor:",
-      "uso ",
-      "uso:",
-      "quantidade atual ",
-      "quantidade atual:",
-      "estoque minimo ",
-      "estoque minimo:",
-      "estoque máximo ",
-      "estoque máximo:",
-      "estoque maximo ",
-      "estoque maximo:",
-      "estoque ",
-      "estoque:",
-      "controlar estoque ",
-      "controlar estoque:",
-      "codigo de barras ",
-      "codigo de barras:",
-      "código de barras ",
-      "código de barras:",
-      "barcode ",
-      "barcode:",
-      "observacao ",
-      "observacao:",
-      "observação ",
-      "observação:",
-    ];
-
-    if (blockedStarts.some((value) => normalized.startsWith(value))) {
-      return false;
-    }
-
-    const blockedIncludes = [
-      "arquivo de teste",
-      "validar upload inteligente",
-      "validar leitura",
-      "upload inteligente",
-      "categoria esperada no sistema",
-      "salvar em configuracoes",
-      "guia leitura",
-      "guia de leitura",
-      "aba guia leitura",
-      "aba guia de leitura",
-      "planilha estoque",
-      "aba estoque",
-      "sheet estoque",
-      "catalogo_quimicos",
-      "catalogo quimicos",
-      "planilha catalogo quimicos",
-      "planilha catalogo_quimicos",
-      "=== item",
-      "controlar estoque ativo",
-    ];
-
-    if (blockedIncludes.some((value) => normalized.includes(value))) {
-      return false;
-    }
-
-    return true;
-  });
-
-  const joined = dedupeDescriptionLines(filtered).join("\n").trim();
-  return joined ? joined.slice(0, 4000) : null;
-}
-function buildImportedCleanDescription(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const metadataCandidates = [
-    extractMetadataValue(item, ["clean_description", "cleanDescription"]),
-    extractMetadataValue(item, ["descricao", "descrição", "description"]),
-    extractMetadataValue(item, ["notes", "observacao", "observação"]),
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-  for (const candidate of metadataCandidates) {
-    const cleaned = sanitizeImportedDescriptionText(candidate, item);
-    if (cleaned) return cleaned;
-  }
-  return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
-}
-
-
-function escapeImportedRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function cleanupImportedDescriptionLine(value: string) {
-  return String(value || "")
-    .replace(/\s*[-–—]+\s*item\s*\d+\b/giu, " ")
-    .replace(/\bitem\s*\d+\b/giu, " ")
-    .replace(/^\s*(descri[cç][aã]o curta|descri[cç][aã]o resumida|descri[cç][aã]o|observa[cç][oõ]es|observa[cç][aã]o|obs\.?|notas?|notes?)\s*[:–-]\s*/giu, "")
-    .replace(/\s+([,.;:])/g, "$1")
-    .replace(/([,.;:])\1+/g, "$1")
-    .replace(/\s{2,}/g, " ")
-    .trim()
-    .replace(/^[-–—:;,\.\s]+/u, "")
-    .replace(/[-–—:;,\.\s]+$/u, "")
-    .trim();
-}
-
-function normalizeImportedNarrativeLine(value: string) {
-  const cleaned = cleanupImportedDescriptionLine(value);
-  if (!cleaned) return "";
-  if (/^item\s*\d+$/iu.test(cleaned)) return "";
-  return cleaned;
-}
-
-function stripImportedRepeatedDetailsFromText(
-  source: string,
-  details: Array<{ label: string; value: string }>
-) {
-  let cleaned = String(source || "");
-
-  for (const detail of details) {
-    const value = String(detail.value || "").trim();
-    if (!value) continue;
-
-    const labelPattern = escapeImportedRegExp(detail.label);
-    const valuePattern = escapeImportedRegExp(value);
-
-    cleaned = cleaned.replace(
-      new RegExp(`(?:^|\\s)${labelPattern}\\s*[:–-]\\s*${valuePattern}(?=$|[\\s,.;])`, "giu"),
-      " "
-    );
-  }
-
-  const cleanedLines = cleaned
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((line) => normalizeImportedNarrativeLine(line))
-    .filter(Boolean);
-
-  return cleanedLines.join("\n").trim();
-}
-
-function sanitizeImportedDescriptionText(
-  source: string,
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const title = buildImportedCatalogName(item);
-  const titleLoose = normalizeImportedLoose(title);
-  const rawLines = String(source || "")
-    .replace(/\r/g, "")
-    .split("\n")
     .map((line) => normalizeImportedNarrativeLine(line))
     .filter(Boolean);
 
@@ -1242,6 +1047,62 @@ function buildImportedCleanDescription(
   }
 
   return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
+}
+
+function escapeImportedRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function cleanupImportedDescriptionLine(value: string) {
+  return String(value || "")
+    .replace(/\s*[-–—]+\s*item\s*\d+\b/giu, " ")
+    .replace(/\bitem\s*\d+\b/giu, " ")
+    .replace(
+      /^\s*(descri[cç][aã]o curta|descri[cç][aã]o resumida|descri[cç][aã]o|observa[cç][oõ]es|observa[cç][aã]o|obs\.?|notas?|notes?)\s*[:–-]\s*/giu,
+      ""
+    )
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/([,.;:])\1+/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/^[-–—:;,\.\s]+/u, "")
+    .replace(/[-–—:;,\.\s]+$/u, "")
+    .trim();
+}
+
+function normalizeImportedNarrativeLine(value: string) {
+  const cleaned = cleanupImportedDescriptionLine(value);
+  if (!cleaned) return "";
+  if (/^item\s*\d+$/iu.test(cleaned)) return "";
+  return cleaned;
+}
+
+function stripImportedRepeatedDetailsFromText(
+  source: string,
+  details: Array<{ label: string; value: string }>
+) {
+  let cleaned = String(source || "");
+
+  for (const detail of details) {
+    const value = String(detail.value || "").trim();
+    if (!value) continue;
+
+    const labelPattern = escapeImportedRegExp(detail.label);
+    const valuePattern = escapeImportedRegExp(value);
+
+    cleaned = cleaned.replace(
+      new RegExp(`(?:^|\\s)${labelPattern}\\s*[:–-]\\s*${valuePattern}(?=$|[\\s,.;])`, "giu"),
+      " "
+    );
+  }
+
+  const cleanedLines = cleaned
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => normalizeImportedNarrativeLine(line))
+    .filter(Boolean);
+
+  return cleanedLines.join("\n").trim();
 }
 
 function buildImportedApplicationSupportLine(application: string) {
