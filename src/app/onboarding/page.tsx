@@ -907,6 +907,146 @@ function dedupeDescriptionLines(lines: string[]) {
   }
   return result;
 }
+function sanitizeImportedDescriptionText(
+  source: string,
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const title = buildImportedCatalogName(item);
+  const titleLoose = normalizeImportedLoose(title);
+  const rawLines = String(source || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const filtered = rawLines.filter((line) => {
+    const normalized = normalizeImportedLoose(line);
+    if (!normalized) return false;
+    if (normalized === titleLoose) return false;
+
+    const blockedStarts = [
+      "categoria ",
+      "categoria:",
+      "nome ",
+      "nome:",
+      "nome do produto ",
+      "nome do produto:",
+      "linha ",
+      "linha:",
+      "aplicacao ",
+      "aplicacao:",
+      "aplicação ",
+      "aplicação:",
+      "embalagem ",
+      "embalagem:",
+      "preco ",
+      "preco:",
+      "preço ",
+      "preço:",
+      "valor ",
+      "valor:",
+      "medidas ",
+      "medidas:",
+      "profundidade ",
+      "profundidade:",
+      "capacidade ",
+      "capacidade:",
+      "material ",
+      "material:",
+      "formato ",
+      "formato:",
+      "marca ",
+      "marca:",
+      "sku ",
+      "sku:",
+      "peso ",
+      "peso:",
+      "peso volume ",
+      "peso volume:",
+      "peso/volume ",
+      "peso/volume:",
+      "dosagem ",
+      "dosagem:",
+      "cor ",
+      "cor:",
+      "uso ",
+      "uso:",
+      "quantidade atual ",
+      "quantidade atual:",
+      "estoque minimo ",
+      "estoque minimo:",
+      "estoque máximo ",
+      "estoque máximo:",
+      "estoque maximo ",
+      "estoque maximo:",
+      "estoque ",
+      "estoque:",
+      "controlar estoque ",
+      "controlar estoque:",
+      "codigo de barras ",
+      "codigo de barras:",
+      "código de barras ",
+      "código de barras:",
+      "barcode ",
+      "barcode:",
+      "observacao ",
+      "observacao:",
+      "observação ",
+      "observação:",
+    ];
+
+    if (blockedStarts.some((value) => normalized.startsWith(value))) {
+      return false;
+    }
+
+    const blockedIncludes = [
+      "arquivo de teste",
+      "validar upload inteligente",
+      "validar leitura",
+      "upload inteligente",
+      "categoria esperada no sistema",
+      "salvar em configuracoes",
+      "guia leitura",
+      "guia de leitura",
+      "aba guia leitura",
+      "aba guia de leitura",
+      "planilha estoque",
+      "aba estoque",
+      "sheet estoque",
+      "catalogo_quimicos",
+      "catalogo quimicos",
+      "planilha catalogo quimicos",
+      "planilha catalogo_quimicos",
+      "=== item",
+      "controlar estoque ativo",
+    ];
+
+    if (blockedIncludes.some((value) => normalized.includes(value))) {
+      return false;
+    }
+
+    return true;
+  });
+
+  const joined = dedupeDescriptionLines(filtered).join("\n").trim();
+  return joined ? joined.slice(0, 4000) : null;
+}
+function buildImportedCleanDescription(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const metadataCandidates = [
+    extractMetadataValue(item, ["clean_description", "cleanDescription"]),
+    extractMetadataValue(item, ["descricao", "descrição", "description"]),
+    extractMetadataValue(item, ["notes", "observacao", "observação"]),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  for (const candidate of metadataCandidates) {
+    const cleaned = sanitizeImportedDescriptionText(candidate, item);
+    if (cleaned) return cleaned;
+  }
+  return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
+}
 
 
 function escapeImportedRegExp(value: string) {
@@ -917,6 +1057,7 @@ function cleanupImportedDescriptionLine(value: string) {
   return String(value || "")
     .replace(/\s*[-–—]+\s*item\s*\d+\b/giu, " ")
     .replace(/\bitem\s*\d+\b/giu, " ")
+    .replace(/^\s*(descri[cç][aã]o curta|descri[cç][aã]o resumida|descri[cç][aã]o|observa[cç][oõ]es|observa[cç][aã]o|obs\.?|notas?|notes?)\s*[:–-]\s*/giu, "")
     .replace(/\s+([,.;:])/g, "$1")
     .replace(/([,.;:])\1+/g, "$1")
     .replace(/\s{2,}/g, " ")
@@ -927,18 +1068,9 @@ function cleanupImportedDescriptionLine(value: string) {
 }
 
 function normalizeImportedNarrativeLine(value: string) {
-  let cleaned = cleanupImportedDescriptionLine(value);
-
-  cleaned = cleaned.replace(
-    /^\s*(descri[cç][aã]o curta|descri[cç][aã]o resumida|descri[cç][aã]o|observa[cç][oõ]es|observa[cç][aã]o|obs\.?|notas?|notes?)\s*[:–-]\s*/iu,
-    ""
-  );
-
-  cleaned = cleanupImportedDescriptionLine(cleaned);
-
+  const cleaned = cleanupImportedDescriptionLine(value);
   if (!cleaned) return "";
   if (/^item\s*\d+$/iu.test(cleaned)) return "";
-
   return cleaned;
 }
 
@@ -1119,10 +1251,7 @@ function buildImportedApplicationSupportLine(application: string) {
   if (normalized.includes("acabamento")) {
     return "Ajuda no acabamento e na manutenção visual da piscina.";
   }
-  if (
-    normalized.includes("tratamento de superficie") ||
-    normalized.includes("tratamento superficie")
-  ) {
+  if (normalized.includes("tratamento de superficie") || normalized.includes("tratamento superficie")) {
     return "Ajuda na remoção de resíduos e no tratamento de superfície.";
   }
   if (normalized.includes("piscinas especiais")) {
@@ -1135,21 +1264,13 @@ function buildImportedApplicationSupportLine(application: string) {
     return "Indicado para correções pontuais na água quando necessário.";
   }
 
-  return application.trim()
-    ? `Indicado para ${application.trim().toLowerCase()}.`
-    : "";
+  return application.trim() ? `Indicado para ${application.trim().toLowerCase()}.` : "";
 }
 
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
-  const category =
-    extractMetadataValue(item, ["categoria", "category"]) ||
-    extractImportedLabeledValue(source, ["Categoria"]);
-  const line =
-    extractMetadataValue(item, ["linha", "line"]) ||
-    extractImportedLabeledValue(source, ["Linha"]);
   const application =
     extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) ||
     extractImportedLabeledValue(source, ["Aplicação", "Aplicacao"]);
@@ -1160,41 +1281,20 @@ function buildImportedCatalogDescription(
     extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
     extractImportedLabeledValue(source, ["Dosagem", "Dose"]);
   const shortDescription =
-    extractMetadataValue(item, [
-      "descricao_curta",
-      "descrição curta",
-      "short_description",
-    ]) ||
-    extractImportedLabeledValue(source, [
-      "Descrição curta",
-      "Descricao curta",
-      "Descrição",
-      "Descricao",
-    ]);
+    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
+    extractImportedLabeledValue(source, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]);
   const notesValue =
-    extractMetadataValue(item, [
-      "observacoes",
-      "observações",
-      "notes",
-      "observacao",
-      "observação",
-    ]) ||
+    extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
     extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
 
   const detailsToStrip = [
-    { label: "Categoria", value: category },
-    { label: "Linha", value: line },
     { label: "Aplicação", value: application },
     { label: "Aplicacao", value: application },
     { label: "Embalagem", value: packageValue },
     { label: "Dosagem", value: dosageValue },
   ];
 
-  const narrativePool = [
-    shortDescription || "",
-    buildImportedCleanDescription(item) || "",
-    notesValue || "",
-  ]
+  const narrativePool = [shortDescription || "", buildImportedCleanDescription(item) || "", notesValue || ""]
     .map((value) => stripImportedRepeatedDetailsFromText(value, detailsToStrip))
     .map((value) => sanitizeImportedDescriptionText(value, item) || "")
     .flatMap((value) => value.split("\n"))
