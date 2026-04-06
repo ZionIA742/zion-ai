@@ -686,23 +686,23 @@ function inferImportedDestination(
   const metrics = extractImportedPoolMetrics(item);
   const hasPoolWords =
     source.includes("piscina") ||
+    source.includes("modelo de piscina") ||
     source.includes("spa") ||
     source.includes("vinil") ||
-    source.includes("fibra") ||
     source.includes("alvenaria") ||
     source.includes("pastilha");
 
   const poolScore =
-    (source.includes("piscina") ? 5 : 0) +
-    (source.includes("profundidade") ? 4 : 0) +
-    (source.includes("capacidade") ? 4 : 0) +
-    (source.includes("litros") ? 3 : 0) +
-    (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 4 : 0) +
-    (/\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ? 4 : 0) +
+    (source.includes("piscina") ? 6 : 0) +
+    (source.includes("profundidade") ? 5 : 0) +
+    (source.includes("capacidade") ? 5 : 0) +
+    (source.includes("litros") ? 4 : 0) +
+    (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 5 : 0) +
+    (/\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ? 5 : 0) +
     (metrics.width_m != null ? 2 : 0) +
     (metrics.length_m != null ? 2 : 0) +
-    (metrics.depth_m != null ? 2 : 0) +
-    (metrics.max_capacity_l != null ? 2 : 0);
+    (metrics.depth_m != null ? 3 : 0) +
+    (metrics.max_capacity_l != null ? 3 : 0);
 
   if (chemicalScore >= 6 && chemicalScore >= accessoryScore && chemicalScore >= poolScore) {
     return "quimicos";
@@ -710,7 +710,13 @@ function inferImportedDestination(
   if (accessoryScore >= 6 && accessoryScore >= chemicalScore && accessoryScore >= poolScore) {
     return "acessorios";
   }
-  if (hasPoolWords && poolScore >= 10 && canPersistAsPool(metrics) && accessoryScore < poolScore) {
+  if (
+    hasPoolWords &&
+    poolScore >= 12 &&
+    canPersistAsPool(metrics) &&
+    accessoryScore < poolScore &&
+    chemicalScore < poolScore
+  ) {
     return "pool";
   }
 
@@ -1618,13 +1624,24 @@ function canPersistAsPool(metrics: {
   depth_m: number | null;
   max_capacity_l: number | null;
 }) {
-  const dimensionsCount =
-    (metrics.width_m != null ? 1 : 0) +
-    (metrics.length_m != null ? 1 : 0) +
-    (metrics.depth_m != null ? 1 : 0) +
-    (metrics.max_capacity_l != null ? 1 : 0);
+  const hasRectangularBody =
+    metrics.width_m != null &&
+    metrics.length_m != null &&
+    metrics.width_m > 1 &&
+    metrics.length_m > 1;
 
-  return dimensionsCount >= 2 || Boolean(metrics.max_capacity_l != null && metrics.depth_m != null);
+  const hasDepthAndCapacity =
+    metrics.depth_m != null &&
+    metrics.depth_m > 0.4 &&
+    metrics.max_capacity_l != null &&
+    metrics.max_capacity_l > 500;
+
+  const hasFullPoolSet =
+    hasRectangularBody &&
+    metrics.depth_m != null &&
+    metrics.depth_m > 0.4;
+
+  return hasFullPoolSet || hasDepthAndCapacity;
 }
 function normalizeImportedLoose(value: string | null | undefined) {
   return String(value || "")
@@ -2847,13 +2864,14 @@ async function handleSaveImportedItemsToCatalog() {
             existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
           }
 
-          if (!existingCatalogItem) {
+          if (!existingCatalogItem && !sku) {
             const { data } = await supabase
               .from("store_catalog_items")
               .select("id, sku, price_cents, stock_quantity, description, metadata")
               .eq("organization_id", organizationId)
               .eq("store_id", activeStore.id)
               .eq("name", itemName)
+              .is("sku", null)
               .maybeSingle();
             existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
           }
