@@ -368,6 +368,40 @@ function xmlDecode(value: string) {
     .replace(/&apos;/g, "'");
 }
 
+
+function normalizeZipPath(path: string) {
+  const input = String(path || "").replace(/\\/g, "/").trim();
+  if (!input) return "";
+
+  const segments: string[] = [];
+  for (const rawSegment of input.split("/")) {
+    const segment = rawSegment.trim();
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length > 0) segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  return segments.join("/");
+}
+
+function resolveZipTargetPath(baseFilePath: string, target: string) {
+  const cleanTarget = String(target || "").trim();
+  if (!cleanTarget) return "";
+
+  if (cleanTarget.startsWith("/")) {
+    return normalizeZipPath(cleanTarget.replace(/^\//, ""));
+  }
+
+  const baseDirectory = String(baseFilePath || "").includes("/")
+    ? String(baseFilePath).slice(0, String(baseFilePath).lastIndexOf("/") + 1)
+    : "";
+
+  return normalizeZipPath(`${baseDirectory}${cleanTarget}`);
+}
+
 type XlsxDrawingAnchor = {
   relationshipId: string;
   drawingName?: string;
@@ -379,12 +413,11 @@ type XlsxDrawingAnchor = {
 
 async function extractImagesFromXlsx(buffer: Buffer) {
   const zip = await JSZip.loadAsync(buffer);
-  const workbook = XLSX.read(buffer, {
-    type: "buffer",
-    cellDates: false,
-    raw: false,
-    dense: false,
-  });
+
+  const workbookXmlPath = "xl/workbook.xml";
+  const workbookXml = zip.files[workbookXmlPath]
+    ? await zip.files[workbookXmlPath].async("text")
+    : "";
 
   const workbookRelsPath = "xl/_rels/workbook.xml.rels";
   const workbookRelsXml = zip.files[workbookRelsPath]
@@ -393,56 +426,49 @@ async function extractImagesFromXlsx(buffer: Buffer) {
 
   const workbookRelMap = new Map<string, string>();
   for (const match of workbookRelsXml.matchAll(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/gi)) {
-    workbookRelMap.set(match[1], match[2]);
+    workbookRelMap.set(match[1], resolveZipTargetPath(workbookXmlPath, match[2]));
   }
 
   const sheetPathToName = new Map<string, string>();
-  workbook.SheetNames.forEach((sheetName) => {
-    const sheet = workbook.Sheets[sheetName] as any;
-    const relId = sheet?.["!id"] || sheet?.["id"];
-    if (!relId) return;
-    const target = workbookRelMap.get(relId);
-    if (!target) return;
-    const normalized = target.replace(/^\//, "").replace(/^xl\//, "");
-    sheetPathToName.set(`xl/${normalized}`, sheetName);
-  });
+  for (const match of workbookXml.matchAll(/<sheet\b[^>]*name="([^"]+)"[^>]*(?:r:id|id)="([^"]+)"/gi)) {
+    const sheetName = xmlDecode(match[1]);
+    const relId = match[2];
+    const targetPath = workbookRelMap.get(relId);
+
+    if (!sheetName || !targetPath) continue;
+    sheetPathToName.set(normalizeZipPath(targetPath), sheetName);
+  }
 
   const mediaBuffers = new Map<string, { buffer: Buffer; fileName: string; mimeType: string }>();
   for (const [path, zipEntry] of Object.entries(zip.files)) {
     if (zipEntry.dir) continue;
-    if (!path.startsWith("xl/media/")) continue;
-    const fileName = path.split("/").pop() || "image";
+
+    const normalizedPath = normalizeZipPath(path);
+    if (!normalizedPath.startsWith("xl/media/")) continue;
+
+    const fileName = normalizedPath.split("/").pop() || "image";
     const mimeType = getImageMimeTypeFromExtension(fileName);
     const fileBuffer = await zipEntry.async("nodebuffer");
-    mediaBuffers.set(path, { buffer: fileBuffer, fileName, mimeType });
+    mediaBuffers.set(normalizedPath, { buffer: fileBuffer, fileName, mimeType });
   }
 
   const drawingMediaMap = new Map<string, { fileName: string; mimeType: string; dataUrl: string }>();
   for (const [path, zipEntry] of Object.entries(zip.files)) {
     if (zipEntry.dir) continue;
-    if (!/^xl\/drawings\/_rels\/drawing\d+\.xml\.rels$/i.test(path)) continue;
+
+    const normalizedPath = normalizeZipPath(path);
+    if (!/^xl\/drawings\/_rels\/drawing\d+\.xml\.rels$/i.test(normalizedPath)) continue;
 
     const xml = await zipEntry.async("text");
-    const drawingBasePath = path.replace(/^xl\/drawings\/_rels\//, "xl/drawings/").replace(/\.rels$/i, "");
+    const drawingXmlPath = normalizedPath.replace(/^xl\/drawings\/_rels\//, "xl/drawings/").replace(/\.rels$/i, "");
 
     for (const match of xml.matchAll(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/gi)) {
       const relId = match[1];
-      const target = match[2];
-      const absoluteMediaPath = target.startsWith("/")
-        ? target.replace(/^\//, "")
-        : `${drawingBasePath.substring(0, drawingBasePath.lastIndexOf("/") + 1)}${target}`
-            .replace(/\/\.{2}\//g, "/")
-            .replace(/\/\.{2}\//g, "/");
-
-      const normalizedMediaPath = absoluteMediaPath
-        .replace(/\/\//g, "/")
-        .replace(/(^|\/)\.\//g, "$1")
-        .replace(/xl\/drawings\/xl\//g, "xl/");
-
-      const media = mediaBuffers.get(normalizedMediaPath);
+      const mediaPath = resolveZipTargetPath(drawingXmlPath, match[2]);
+      const media = mediaBuffers.get(mediaPath);
       if (!media) continue;
 
-      drawingMediaMap.set(`${drawingBasePath}::${relId}`, {
+      drawingMediaMap.set(`${drawingXmlPath}::${relId}`, {
         fileName: media.fileName,
         mimeType: media.mimeType,
         dataUrl: bufferToDataUrl(media.buffer, media.mimeType),
@@ -454,72 +480,89 @@ async function extractImagesFromXlsx(buffer: Buffer) {
 
   for (const [path, zipEntry] of Object.entries(zip.files)) {
     if (zipEntry.dir) continue;
-    if (!/^xl\/worksheets\/sheet\d+\.xml$/i.test(path)) continue;
 
-    const sheetName = sheetPathToName.get(path);
+    const normalizedSheetPath = normalizeZipPath(path);
+    if (!/^xl\/worksheets\/sheet\d+\.xml$/i.test(normalizedSheetPath)) continue;
+
+    const sheetName = sheetPathToName.get(normalizedSheetPath);
     if (!sheetName) continue;
 
-    const relsPath = path.replace(/^xl\/worksheets\//, "xl/worksheets/_rels/") + ".rels";
+    const relsPath = normalizeZipPath(
+      normalizedSheetPath.replace(/^xl\/worksheets\//, "xl/worksheets/_rels/") + ".rels"
+    );
     const relsXml = zip.files[relsPath] ? await zip.files[relsPath].async("text") : "";
-    const drawingRelMatch = relsXml.match(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^\"]*drawing\d+\.xml)"/i);
-    if (!drawingRelMatch) continue;
 
-    const drawingTarget = drawingRelMatch[2];
-    const drawingPath = drawingTarget.startsWith("/")
-      ? drawingTarget.replace(/^\//, "")
-      : `${path.substring(0, path.lastIndexOf("/") + 1)}${drawingTarget}`
-          .replace(/\/\.{2}\//g, "/")
-          .replace(/\/\.{2}\//g, "/")
-          .replace(/xl\/worksheets\/xl\//g, "xl/");
+    const drawingRelationshipMatches = Array.from(
+      relsXml.matchAll(
+        /<Relationship[^>]*Id="([^"]+)"[^>]*Type="[^"]*\/drawing"[^>]*Target="([^"]+)"/gi
+      )
+    );
 
-    const drawingXmlEntry = zip.files[drawingPath];
-    if (!drawingXmlEntry) continue;
-    const drawingXml = await drawingXmlEntry.async("text");
+    if (drawingRelationshipMatches.length === 0) continue;
 
-    const anchors: XlsxDrawingAnchor[] = [];
-    const anchorRegex = /<(?:xdr:)?(?:twoCellAnchor|oneCellAnchor)[^>]*>([\s\S]*?)<\/(?:xdr:)?(?:twoCellAnchor|oneCellAnchor)>/gi;
-    let anchorIndex = 0;
-    for (const anchorMatch of drawingXml.matchAll(anchorRegex)) {
-      const anchorXml = anchorMatch[1] || "";
-      const rowMatch = anchorXml.match(/<(?:xdr:)?row>(\d+)<\/(?:xdr:)?row>/i);
-      const colMatch = anchorXml.match(/<(?:xdr:)?col>(\d+)<\/(?:xdr:)?col>/i);
-      const blipMatch = anchorXml.match(/<(?:a:)?blip[^>]*(?:r:embed|embed)="([^"]+)"/i);
-      const nameMatch = anchorXml.match(/<xdr:cNvPr[^>]*name="([^"]+)"/i);
-      if (!blipMatch) continue;
+    for (const drawingRel of drawingRelationshipMatches) {
+      const drawingPath = resolveZipTargetPath(normalizedSheetPath, drawingRel[2]);
+      const drawingXmlEntry = zip.files[drawingPath];
+      if (!drawingXmlEntry) continue;
 
-      const rowIndex = rowMatch ? Number(rowMatch[1]) : undefined;
-      const columnIndex = colMatch ? Number(colMatch[1]) : undefined;
-      anchors.push({
-        relationshipId: blipMatch[1],
-        drawingName: nameMatch ? xmlDecode(nameMatch[1]) : undefined,
-        rowIndex,
-        columnIndex,
-        anchorCell:
-          typeof rowIndex === "number" && typeof columnIndex === "number"
-            ? buildAnchorCell(columnIndex, rowIndex)
-            : undefined,
-        imageOrder: anchorIndex,
+      const drawingXml = await drawingXmlEntry.async("text");
+      const anchors: XlsxDrawingAnchor[] = [];
+      const anchorRegex =
+        /<(?:xdr:)?(?:twoCellAnchor|oneCellAnchor)[^>]*>([\s\S]*?)<\/(?:xdr:)?(?:twoCellAnchor|oneCellAnchor)>/gi;
+
+      let anchorIndex = 0;
+      for (const anchorMatch of drawingXml.matchAll(anchorRegex)) {
+        const anchorXml = anchorMatch[1] || "";
+        const rowMatch = anchorXml.match(/<(?:xdr:)?row>(\d+)<\/(?:xdr:)?row>/i);
+        const colMatch = anchorXml.match(/<(?:xdr:)?col>(\d+)<\/(?:xdr:)?col>/i);
+        const blipMatch = anchorXml.match(/<(?:a:)?blip[^>]*(?:r:embed|embed)="([^"]+)"/i);
+        const nameMatch =
+          anchorXml.match(/<(?:xdr:)?cNvPr[^>]*name="([^"]+)"/i) ||
+          anchorXml.match(/<xdr:cNvPr[^>]*name="([^"]+)"/i);
+
+        if (!blipMatch) continue;
+
+        const rowIndex = rowMatch ? Number(rowMatch[1]) : undefined;
+        const columnIndex = colMatch ? Number(colMatch[1]) : undefined;
+
+        anchors.push({
+          relationshipId: blipMatch[1],
+          drawingName: nameMatch ? xmlDecode(nameMatch[1]) : undefined,
+          rowIndex,
+          columnIndex,
+          anchorCell:
+            typeof rowIndex === "number" && typeof columnIndex === "number"
+              ? buildAnchorCell(columnIndex, rowIndex)
+              : undefined,
+          imageOrder: anchorIndex,
+        });
+        anchorIndex += 1;
+      }
+
+      anchors.sort((a, b) => {
+        const rowA = a.rowIndex ?? Number.MAX_SAFE_INTEGER;
+        const rowB = b.rowIndex ?? Number.MAX_SAFE_INTEGER;
+        if (rowA !== rowB) return rowA - rowB;
+
+        const colA = a.columnIndex ?? Number.MAX_SAFE_INTEGER;
+        const colB = b.columnIndex ?? Number.MAX_SAFE_INTEGER;
+        if (colA !== colB) return colA - colB;
+
+        return a.imageOrder - b.imageOrder;
       });
-      anchorIndex += 1;
+
+      if (anchors.length > 0) {
+        sheetDrawingAnchors.set(`${sheetName}::${drawingPath}`, anchors);
+      }
     }
-
-    anchors.sort((a, b) => {
-      const rowA = a.rowIndex ?? Number.MAX_SAFE_INTEGER;
-      const rowB = b.rowIndex ?? Number.MAX_SAFE_INTEGER;
-      if (rowA !== rowB) return rowA - rowB;
-      const colA = a.columnIndex ?? Number.MAX_SAFE_INTEGER;
-      const colB = b.columnIndex ?? Number.MAX_SAFE_INTEGER;
-      if (colA !== colB) return colA - colB;
-      return a.imageOrder - b.imageOrder;
-    });
-
-    sheetDrawingAnchors.set(`${sheetName}::${drawingPath}`, anchors);
   }
 
   const assets: ExtractedImageAsset[] = [];
 
   for (const [sheetDrawingKey, anchors] of sheetDrawingAnchors.entries()) {
-    const [sheetName, drawingPath] = sheetDrawingKey.split("::");
+    const separatorIndex = sheetDrawingKey.indexOf("::");
+    const sheetName = separatorIndex >= 0 ? sheetDrawingKey.slice(0, separatorIndex) : sheetDrawingKey;
+    const drawingPath = separatorIndex >= 0 ? sheetDrawingKey.slice(separatorIndex + 2) : "";
 
     for (const anchor of anchors) {
       const mapped = drawingMediaMap.get(`${drawingPath}::${anchor.relationshipId}`);
@@ -542,6 +585,12 @@ async function extractImagesFromXlsx(buffer: Buffer) {
   }
 
   debugIntelligentImport("extractImagesFromXlsx", {
+    workbookSheetsMapped: Array.from(sheetPathToName.entries()).map(([sheetPath, sheetName]) => ({
+      sheetName,
+      sheetPath,
+    })),
+    mediaBuffers: mediaBuffers.size,
+    drawingMediaLinks: drawingMediaMap.size,
     count: assets.length,
     preview: assets.slice(0, 20).map((asset) => ({
       fileName: asset.fileName,
