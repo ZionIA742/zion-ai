@@ -1,6 +1,8 @@
 import {
   extractTextFromFile,
   type ExtractedImageAsset,
+  type ExtractedFileDiagnostics,
+  type XlsxImageExtractionDiagnostics,
 } from "./onboarding-file-extractors";
 import {
   normalizeMultipleExtractedFiles,
@@ -21,6 +23,17 @@ export type IntelligentImportParams = {
   organizationId: string;
   storeId: string;
   files: ImportableFile[];
+};
+
+export type IntelligentImportImageDiagnostics = {
+  totalExtractedImagesRaw: number;
+  totalAliasedImages: number;
+  files: Array<{
+    fileName: string;
+    extension: string;
+    extractedImages: number;
+    xlsxImageDiagnostics?: XlsxImageExtractionDiagnostics;
+  }>;
 };
 
 export type IntelligentImportResult =
@@ -47,6 +60,7 @@ export type IntelligentImportResult =
         mimeType: string;
         dataUrl: string;
       }>;
+      imageDiagnostics: IntelligentImportImageDiagnostics;
       normalizedPreview: NormalizedImportItem[];
       dedupedPreview: DedupedImportItem[];
     }
@@ -187,6 +201,40 @@ function filterUsefulItems(items: DedupedImportItem[]) {
   });
 }
 
+function buildImageDiagnostics(
+  extractedFiles: Array<{
+    fileName: string;
+    extension: string;
+    extractedImages?: ExtractedImageAsset[];
+    diagnostics?: ExtractedFileDiagnostics;
+  }>,
+  extractedImagePreviewRaw: Array<{
+    sourceFileName: string;
+    fileName: string;
+    source: ExtractedImageAsset["source"];
+    mimeType: string;
+    dataUrl: string;
+  }>,
+  aliasedImagePreview: Array<{
+    sourceFileName: string;
+    fileName: string;
+    source: ExtractedImageAsset["source"];
+    mimeType: string;
+    dataUrl: string;
+  }>
+): IntelligentImportImageDiagnostics {
+  return {
+    totalExtractedImagesRaw: extractedImagePreviewRaw.length,
+    totalAliasedImages: aliasedImagePreview.length,
+    files: extractedFiles.map((file) => ({
+      fileName: file.fileName,
+      extension: file.extension,
+      extractedImages: Array.isArray(file.extractedImages) ? file.extractedImages.length : 0,
+      xlsxImageDiagnostics: file.diagnostics?.xlsxImageDiagnostics,
+    })),
+  };
+}
+
 export async function runOnboardingIntelligentImport(
   params: IntelligentImportParams
 ): Promise<IntelligentImportResult> {
@@ -227,6 +275,7 @@ export async function runOnboardingIntelligentImport(
         extension: file.extension,
         textLength: String(file.text || "").length,
         extractedImages: Array.isArray(file.extractedImages) ? file.extractedImages.length : 0,
+        diagnostics: file.diagnostics,
       })),
     });
 
@@ -269,6 +318,11 @@ export async function runOnboardingIntelligentImport(
     });
 
     const aliased = attachPerItemAliases(normalizedItems, extractedImagePreviewRaw);
+    const imageDiagnostics = buildImageDiagnostics(
+      extractedFiles,
+      extractedImagePreviewRaw,
+      aliased.imagePreview
+    );
 
     debugIntelligentImport("after-alias", {
       normalizedCount: aliased.normalizedPreview.length,
@@ -278,6 +332,7 @@ export async function runOnboardingIntelligentImport(
         fileName: image.fileName,
         source: image.source,
       })),
+      imageDiagnostics,
     });
 
     const dedupedBeforeFilter = dedupNormalizedItems(aliased.normalizedPreview);
@@ -342,6 +397,7 @@ export async function runOnboardingIntelligentImport(
         textPreview: buildPreview(file.text),
       })),
       extractedImagePreview: aliased.imagePreview,
+      imageDiagnostics,
       normalizedPreview: aliased.normalizedPreview,
       dedupedPreview: dedupedItems,
     };

@@ -52,6 +52,7 @@ export async function POST(request: Request) {
       summary: result.summary,
       extractedPreview: result.extractedPreview,
       extractedImagePreview: result.extractedImagePreview,
+      imageDiagnostics: result.imageDiagnostics,
       normalizedPreview: result.normalizedPreview,
       dedupedPreview: result.dedupedPreview,
     });
