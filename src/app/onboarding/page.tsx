@@ -132,6 +132,13 @@ type IntelligentImportResponse =
         source: string;
         mimeType: string;
         dataUrl: string;
+        sheetName?: string;
+        rowIndex?: number;
+        columnIndex?: number;
+        anchorCell?: string;
+        drawingName?: string;
+        imageRelationshipId?: string;
+        imageOrder?: number;
       }>;
       normalizedPreview: IntelligentImportNormalizedPreview[];
       dedupedPreview: IntelligentImportDedupedPreview[];
@@ -1463,6 +1470,43 @@ function extractImportedCatalogPriceCents(
   return Math.round(parsedGeneric * 100);
 }
 
+function sortExtractedImagesForSave(
+  images: Array<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    dataUrl: string;
+    sourceFileName: string;
+    sheetName?: string;
+    rowIndex?: number;
+    columnIndex?: number;
+    anchorCell?: string;
+    imageOrder?: number;
+  }>
+) {
+  return [...images].sort((a, b) => {
+    const sourceA = normalizeImportedLoose(a.sourceFileName || "");
+    const sourceB = normalizeImportedLoose(b.sourceFileName || "");
+    if (sourceA !== sourceB) return sourceA.localeCompare(sourceB);
+
+    const rowA = typeof a.rowIndex === "number" ? a.rowIndex : Number.MAX_SAFE_INTEGER;
+    const rowB = typeof b.rowIndex === "number" ? b.rowIndex : Number.MAX_SAFE_INTEGER;
+    if (rowA !== rowB) return rowA - rowB;
+
+    const colA = typeof a.columnIndex === "number" ? a.columnIndex : Number.MAX_SAFE_INTEGER;
+    const colB = typeof b.columnIndex === "number" ? b.columnIndex : Number.MAX_SAFE_INTEGER;
+    if (colA !== colB) return colA - colB;
+
+    const orderA = typeof a.imageOrder === "number" ? a.imageOrder : Number.MAX_SAFE_INTEGER;
+    const orderB = typeof b.imageOrder === "number" ? b.imageOrder : Number.MAX_SAFE_INTEGER;
+    if (orderA !== orderB) return orderA - orderB;
+
+    return String(a.fileName || "").localeCompare(String(b.fileName || ""), undefined, {
+      numeric: true,
+    });
+  });
+}
+
 function pickRelatedExtractedImages(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   extractedImageBuckets: Map<
@@ -1473,6 +1517,11 @@ function pickRelatedExtractedImages(
       mimeType: string;
       dataUrl: string;
       sourceFileName: string;
+      sheetName?: string;
+      rowIndex?: number;
+      columnIndex?: number;
+      anchorCell?: string;
+      imageOrder?: number;
     }>
   >,
   extractedImageBucketCursors: Map<string, number>,
@@ -1482,11 +1531,17 @@ function pickRelatedExtractedImages(
     mimeType: string;
     dataUrl: string;
     sourceFileName: string;
+    sheetName?: string;
+    rowIndex?: number;
+    columnIndex?: number;
+    anchorCell?: string;
+    imageOrder?: number;
   }>,
   consumedExtractedImageIds: Set<string>,
   totalSourceItems: number
 ) {
   const sourceKey = String(item.sourceFileName || "").trim().toLowerCase();
+  const isAliasedPerItem = /[•·-]\s*item\s*\d+$/i.test(sourceKey);
 
   const tryConsumeFromBucket = (bucketKey: string) => {
     const bucket = extractedImageBuckets.get(bucketKey);
@@ -1521,10 +1576,14 @@ function pickRelatedExtractedImages(
   if (sourceKey) {
     const direct = tryConsumeFromBucket(sourceKey);
     if (direct.length > 0) return direct;
+
+    if (isAliasedPerItem) {
+      return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+    }
   }
 
   const normalizedSourceKey = sourceKey.replace(/\.[^.]+$/, "");
-  if (normalizedSourceKey) {
+  if (normalizedSourceKey && !isAliasedPerItem) {
     for (const key of extractedImageBuckets.keys()) {
       const normalizedKey = key.replace(/\.[^.]+$/, "");
       if (
@@ -1543,24 +1602,26 @@ function pickRelatedExtractedImages(
       const fallback = tryConsumeFromBucket(key);
       if (fallback.length > 0) return fallback;
     }
+
+    const globalFallback = extractedImageSequence.find(
+      (candidate) => !consumedExtractedImageIds.has(candidate.id)
+    );
+
+    if (!globalFallback) {
+      return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+    }
+
+    consumedExtractedImageIds.add(globalFallback.id);
+    return [
+      {
+        fileName: globalFallback.fileName,
+        mimeType: globalFallback.mimeType,
+        dataUrl: globalFallback.dataUrl,
+      },
+    ];
   }
 
-  const globalFallback = extractedImageSequence.find(
-    (candidate) => !consumedExtractedImageIds.has(candidate.id)
-  );
-
-  if (!globalFallback) {
-    return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
-  }
-
-  consumedExtractedImageIds.add(globalFallback.id);
-  return [
-    {
-      fileName: globalFallback.fileName,
-      mimeType: globalFallback.mimeType,
-      dataUrl: globalFallback.dataUrl,
-    },
-  ];
+  return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
 }
 function canPersistAsPool(metrics: {
   width_m: number | null;
@@ -2591,19 +2652,31 @@ async function handleSaveImportedItemsToCatalog() {
           mimeType: string;
           dataUrl: string;
           sourceFileName: string;
+          sheetName?: string;
+          rowIndex?: number;
+          columnIndex?: number;
+          anchorCell?: string;
+          imageOrder?: number;
         }>
       >();
 
       const extractedImageBucketCursors = new Map<string, number>();
       const consumedExtractedImageIds = new Set<string>();
 
-      const extractedImageSequence = safeExtractedImagePreview.map((image, index) => ({
-        id: `${String(image.sourceFileName || "").trim().toLowerCase()}::${image.fileName || "imagem-extraida.jpg"}::${index}`,
-        fileName: image.fileName || "imagem-extraida.jpg",
-        mimeType: image.mimeType || "image/jpeg",
-        dataUrl: image.dataUrl,
-        sourceFileName: String(image.sourceFileName || "").trim().toLowerCase(),
-      }));
+      const extractedImageSequence = sortExtractedImagesForSave(
+        safeExtractedImagePreview.map((image, index) => ({
+          id: `${String(image.sourceFileName || "").trim().toLowerCase()}::${image.fileName || "imagem-extraida.jpg"}::${index}`,
+          fileName: image.fileName || "imagem-extraida.jpg",
+          mimeType: image.mimeType || "image/jpeg",
+          dataUrl: image.dataUrl,
+          sourceFileName: String(image.sourceFileName || "").trim().toLowerCase(),
+          sheetName: image.sheetName,
+          rowIndex: image.rowIndex,
+          columnIndex: image.columnIndex,
+          anchorCell: image.anchorCell,
+          imageOrder: image.imageOrder,
+        }))
+      );
 
       for (const image of extractedImageSequence) {
         const bucketKey = image.sourceFileName || "__sem_origem__";

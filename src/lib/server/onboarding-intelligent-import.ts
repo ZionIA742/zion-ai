@@ -129,6 +129,35 @@ function buildFileItemAlias(fileName: string, index: number) {
   return `${fileName} • item ${index + 1}`;
 }
 
+function extractNumericSuffix(value: string) {
+  const match = String(value || "").match(/(\d+)(?!.*\d)/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractItemStableAssignmentOrder(item: NormalizedImportItem, fallbackIndex: number) {
+  const skuCandidate = [
+    item.metadata?.sku,
+    item.metadata?.SKU,
+    item.metadata?.codigo,
+    item.metadata?.["código"],
+  ]
+    .map((value) => String(value || "").trim())
+    .find(Boolean);
+
+  const numericFromSku = skuCandidate ? extractNumericSuffix(skuCandidate) : null;
+  if (numericFromSku != null) return numericFromSku;
+
+  const numericFromTitle = extractNumericSuffix(String(item.title || ""));
+  if (numericFromTitle != null) return numericFromTitle;
+
+  const numericFromRawText = extractNumericSuffix(String(item.rawText || ""));
+  if (numericFromRawText != null) return numericFromRawText;
+
+  return 100000 + fallbackIndex;
+}
+
 function sortImagesForStableAssignment(images: IntelligentImportPreviewImage[]) {
   return [...images].sort((a, b) => {
     const sourceA = normalizeLoose(a.sourceFileName || "");
@@ -175,22 +204,30 @@ function attachPerItemAliases(
   }
 
   const aliasByOriginalIndex = new Map<number, string>();
-  const normalizedPreview = items.map((item, index) => {
-    const key = String(item.sourceFileName || "").trim().toLowerCase();
-    const relatedItems = groupedBySourceFile.get(key) ?? [];
-    const relatedIndex = relatedItems.findIndex((entry) => entry.index === index);
-    const aliasedSourceFileName =
-      relatedItems.length > 1 && relatedIndex >= 0
-        ? buildFileItemAlias(item.sourceFileName, relatedIndex)
-        : item.sourceFileName;
 
-    aliasByOriginalIndex.set(index, aliasedSourceFileName);
+  for (const relatedItems of groupedBySourceFile.values()) {
+    const sortedForAssignment = [...relatedItems].sort((left, right) => {
+      const leftOrder = extractItemStableAssignmentOrder(left.item, left.index);
+      const rightOrder = extractItemStableAssignmentOrder(right.item, right.index);
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      return left.index - right.index;
+    });
 
-    return {
-      ...item,
-      sourceFileName: aliasedSourceFileName,
-    };
-  });
+    sortedForAssignment.forEach((entry, relatedIndex) => {
+      aliasByOriginalIndex.set(
+        entry.index,
+        sortedForAssignment.length > 1
+          ? buildFileItemAlias(entry.item.sourceFileName, relatedIndex)
+          : entry.item.sourceFileName
+      );
+    });
+  }
+
+  const normalizedPreview = items.map((item, index) => ({
+    ...item,
+    sourceFileName:
+      aliasByOriginalIndex.get(index) ?? item.sourceFileName,
+  }));
 
   const imagePreview: IntelligentImportPreviewImage[] = [];
 
@@ -201,11 +238,18 @@ function attachPerItemAliases(
       )
     );
 
-    const aliasedItems = relatedItems.map((entry, relatedIndex) => ({
-      ...entry,
-      aliasSourceFileName:
-        aliasByOriginalIndex.get(entry.index) ?? buildFileItemAlias(entry.item.sourceFileName, relatedIndex),
-    }));
+    const aliasedItems = [...relatedItems]
+      .sort((left, right) => {
+        const leftOrder = extractItemStableAssignmentOrder(left.item, left.index);
+        const rightOrder = extractItemStableAssignmentOrder(right.item, right.index);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return left.index - right.index;
+      })
+      .map((entry) => ({
+        ...entry,
+        aliasSourceFileName:
+          aliasByOriginalIndex.get(entry.index) ?? entry.item.sourceFileName,
+      }));
 
     debugIntelligentImport("attachPerItemAliases:group", {
       sourceFileName: relatedItems[0]?.item.sourceFileName || "",
@@ -214,6 +258,7 @@ function attachPerItemAliases(
       items: aliasedItems.map((entry) => ({
         aliasSourceFileName: entry.aliasSourceFileName,
         title: entry.item.title,
+        assignmentOrder: extractItemStableAssignmentOrder(entry.item, entry.index),
         sku:
           entry.item.metadata?.sku ||
           entry.item.metadata?.SKU ||
