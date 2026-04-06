@@ -907,42 +907,88 @@ function dedupeDescriptionLines(lines: string[]) {
   }
   return result;
 }
-
-function dedupeDescriptionSentences(value: string) {
-  const normalizedSource = String(value || "").replace(/\s+/g, " ").trim();
-  if (!normalizedSource) return "";
-
-  const sentenceMatches = normalizedSource.match(/[^.!?]+[.!?]?/g) ?? [normalizedSource];
-  const cleanedSentences = sentenceMatches
-    .map((sentence) => cleanupImportedDescriptionLine(sentence))
+function buildImportedCleanDescription(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const metadataCandidates = [
+    extractMetadataValue(item, ["clean_description", "cleanDescription"]),
+    extractMetadataValue(item, ["descricao", "descrição", "description"]),
+    extractMetadataValue(item, ["notes", "observacao", "observação"]),
+  ]
+    .map((value) => String(value || "").trim())
     .filter(Boolean);
-
-  const uniqueSentences = dedupeDescriptionLines(cleanedSentences);
-  return uniqueSentences.join(" ").trim();
+  for (const candidate of metadataCandidates) {
+    const cleaned = sanitizeImportedDescriptionText(candidate, item);
+    if (cleaned) return cleaned;
+  }
+  return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
 }
 
-function removeImportedExactDetailLine(
-  line: string,
+
+function escapeImportedRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+
+function cleanupImportedDescriptionLine(value: string) {
+  return String(value || "")
+    .replace(/\s*[-–—]+\s*item\s*\d+\b/giu, " ")
+    .replace(/\bitem\s*\d+\b/giu, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/([,.;:])\1+/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/^[-–—:;,\.\s]+/u, "")
+    .replace(/[-–—:;,\.\s]+$/u, "")
+    .trim();
+}
+
+function normalizeImportedNarrativeLine(value: string) {
+  let cleaned = cleanupImportedDescriptionLine(value);
+
+  cleaned = cleaned.replace(
+    /^\s*(descri[cç][aã]o curta|descri[cç][aã]o resumida|descri[cç][aã]o|observa[cç][oõ]es|observa[cç][aã]o|obs\.?|notas?|notes?)\s*[:–-]\s*/iu,
+    ""
+  );
+
+  cleaned = cleanupImportedDescriptionLine(cleaned);
+
+  if (!cleaned) return "";
+
+  const normalized = normalizeImportedLoose(cleaned);
+  if (!normalized) return "";
+
+  if (/^item\s*\d+$/iu.test(cleaned)) return "";
+
+  return cleaned;
+}
+
+function stripImportedRepeatedDetailsFromText(
+  source: string,
   details: Array<{ label: string; value: string }>
 ) {
-  const normalizedLine = normalizeImportedLoose(line);
-  if (!normalizedLine) return "";
+  let cleaned = String(source || "");
 
   for (const detail of details) {
-    const normalizedValue = normalizeImportedLoose(detail.value);
-    if (!normalizedValue) continue;
+    const value = String(detail.value || "").trim();
+    if (!value) continue;
 
-    if (normalizedLine === normalizedValue) {
-      return "";
-    }
+    const labelPattern = escapeImportedRegExp(detail.label);
+    const valuePattern = escapeImportedRegExp(value);
 
-    const normalizedLabel = normalizeImportedLoose(detail.label);
-    if (normalizedLabel && normalizedLine === `${normalizedLabel} ${normalizedValue}`) {
-      return "";
-    }
+    cleaned = cleaned.replace(
+      new RegExp(`(?:^|\\s)${labelPattern}\\s*[:–-]\\s*${valuePattern}(?=$|[\\s,.;])`, "giu"),
+      " "
+    );
   }
 
-  return line;
+  const cleanedLines = cleaned
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => normalizeImportedNarrativeLine(line))
+    .filter(Boolean);
+
+  return cleanedLines.join("\n").trim();
 }
 
 function sanitizeImportedDescriptionText(
@@ -954,7 +1000,7 @@ function sanitizeImportedDescriptionText(
   const rawLines = String(source || "")
     .replace(/\r/g, "")
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => normalizeImportedNarrativeLine(line))
     .filter(Boolean);
 
   const filtered = rawLines.filter((line) => {
@@ -1027,10 +1073,6 @@ function sanitizeImportedDescriptionText(
       "código de barras:",
       "barcode ",
       "barcode:",
-      "observacao ",
-      "observacao:",
-      "observação ",
-      "observação:",
     ];
 
     if (blockedStarts.some((value) => normalized.startsWith(value))) {
@@ -1044,6 +1086,7 @@ function sanitizeImportedDescriptionText(
       "upload inteligente",
       "categoria esperada no sistema",
       "salvar em configuracoes",
+      "salvar em configurações",
       "guia leitura",
       "guia de leitura",
       "aba guia leitura",
@@ -1053,6 +1096,7 @@ function sanitizeImportedDescriptionText(
       "sheet estoque",
       "catalogo_quimicos",
       "catalogo quimicos",
+      "catálogo químicos",
       "planilha catalogo quimicos",
       "planilha catalogo_quimicos",
       "=== item",
@@ -1070,206 +1114,58 @@ function sanitizeImportedDescriptionText(
   return joined ? joined.slice(0, 4000) : null;
 }
 
-function buildImportedNarrativeDescription(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
-  details: Array<{ label: string; value: string }>
-) {
-  const metadataCandidates = [
-    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]),
-    extractMetadataValue(item, ["clean_description", "cleanDescription"]),
-    extractMetadataValue(item, ["descricao", "descrição", "description"]),
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-
-  const fallbackSource = String(item.rawText || "").trim();
-  const sources = [...metadataCandidates, fallbackSource].filter(Boolean);
-
-  for (const source of sources) {
-    const sanitized = sanitizeImportedDescriptionText(source, item);
-    if (!sanitized) continue;
-
-    const withoutRepeatedDetails = stripImportedRepeatedDetailsFromText(sanitized, details);
-
-    const cleanedLines = withoutRepeatedDetails
-      .replace(/\r/g, "")
-      .split("\n")
-      .map((line) => cleanupImportedDescriptionLine(line))
-      .map((line) => removeImportedExactDetailLine(line, details))
-      .filter(Boolean)
-      .filter((line) => {
-        const normalized = normalizeImportedLoose(line);
-        if (!normalized) return false;
-        if (normalized.includes("upload inteligente")) return false;
-        if (normalized.includes("validar leitura")) return false;
-        return true;
-      });
-
-    const joined = dedupeDescriptionSentences(cleanedLines.join(" "));
-    if (joined) {
-      return joined.slice(0, 4000);
-    }
-  }
-
-  return "";
-}
-
-function buildImportedNotesDescription(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
-  details: Array<{ label: string; value: string }>
-) {
-  const rawNotes =
-    extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
-    extractImportedLabeledValue(String(item.rawText || ""), ["Observações", "Observacoes", "Notas"]);
-
-  const sanitizedNotes = sanitizeImportedDescriptionText(rawNotes || "", item);
-  if (!sanitizedNotes) return "";
-
-  const withoutRepeatedDetails = stripImportedRepeatedDetailsFromText(sanitizedNotes, details);
-  const cleaned = dedupeDescriptionSentences(withoutRepeatedDetails);
-  if (!cleaned) return "";
-
-  const normalizedCleaned = normalizeImportedLoose(cleaned);
-  const duplicatedByDetail = details.some((detail) => {
-    const normalizedValue = normalizeImportedLoose(detail.value);
-    return normalizedValue && normalizedCleaned === normalizedValue;
-  });
-
-  return duplicatedByDetail ? "" : cleaned.slice(0, 1200);
-}
-
-function buildImportedCleanDescription(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const details = [
-    {
-      label: "Categoria",
-      value:
-        extractMetadataValue(item, ["categoria", "category"]) ||
-        extractImportedLabeledValue(String(item.rawText || ""), ["Categoria"]),
-    },
-    {
-      label: "Linha",
-      value:
-        extractMetadataValue(item, ["linha", "line"]) ||
-        extractImportedLabeledValue(String(item.rawText || ""), ["Linha"]),
-    },
-    {
-      label: "Aplicação",
-      value:
-        extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) ||
-        extractImportedLabeledValue(String(item.rawText || ""), ["Aplicação", "Aplicacao"]),
-    },
-    {
-      label: "Embalagem",
-      value:
-        extractMetadataValue(item, ["embalagem", "package", "packaging"]) ||
-        extractImportedLabeledValue(String(item.rawText || ""), ["Embalagem"]),
-    },
-    {
-      label: "Dosagem",
-      value:
-        extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
-        extractImportedLabeledValue(String(item.rawText || ""), ["Dosagem", "Dose"]),
-    },
-  ].filter((detail) => String(detail.value || "").trim());
-
-  const narrative = buildImportedNarrativeDescription(item, details);
-  return narrative || null;
-}
-
-
-function escapeImportedRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function cleanupImportedDescriptionLine(value: string) {
-  return String(value || "")
-    .replace(/\s+([,.;:])/g, "$1")
-    .replace(/([,.;:])\1+/g, "$1")
-    .replace(/\s{2,}/g, " ")
-    .trim()
-    .replace(/^[-–:;,\.\s]+/u, "")
-    .replace(/[-–:;,\.\s]+$/u, "")
-    .trim();
-}
-
-function stripImportedRepeatedDetailsFromText(
-  source: string,
-  details: Array<{ label: string; value: string }>
-) {
-  let cleaned = String(source || "");
-
-  for (const detail of details) {
-    const value = String(detail.value || "").trim();
-    if (!value) continue;
-
-    const labelPattern = escapeImportedRegExp(detail.label);
-    const valuePattern = escapeImportedRegExp(value);
-
-    cleaned = cleaned.replace(
-      new RegExp(`(?:^|\\s)${labelPattern}\\s*[:–-]\\s*${valuePattern}(?=$|[\\s,.;])`, "giu"),
-      " "
-    );
-  }
-
-  const cleanedLines = cleaned
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((line) => cleanupImportedDescriptionLine(line))
-    .filter(Boolean);
-
-  return cleanedLines.join("\n").trim();
-}
-
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
-  const category =
-    extractMetadataValue(item, ["categoria", "category"]) ||
-    extractImportedLabeledValue(source, ["Categoria"]);
-  const line =
-    extractMetadataValue(item, ["linha", "line"]) ||
-    extractImportedLabeledValue(source, ["Linha"]);
-  const application =
-    extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) ||
-    extractImportedLabeledValue(source, ["Aplicação", "Aplicacao"]);
-  const packageValue =
-    extractMetadataValue(item, ["embalagem", "package", "packaging"]) ||
-    extractImportedLabeledValue(source, ["Embalagem"]);
-  const dosageValue =
-    extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
-    extractImportedLabeledValue(source, ["Dosagem", "Dose"]);
+  const baseDescription = buildImportedCleanDescription(item) || "";
+  const shortDescription =
+    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
+    extractImportedLabeledValue(source, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]);
+  const notesValue =
+    extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
+    extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
 
-  const details = [
-    category ? { label: "Categoria", value: category } : null,
-    line ? { label: "Linha", value: line } : null,
-    application ? { label: "Aplicação", value: application } : null,
-    packageValue ? { label: "Embalagem", value: packageValue } : null,
-    dosageValue ? { label: "Dosagem", value: dosageValue } : null,
-  ].filter(Boolean) as Array<{ label: string; value: string }>;
+  const structuredDetails = [
+    { label: "Categoria", value: normalizeImportedCatalogCategory(String(item.type || "")) },
+    { label: "Linha", value: extractMetadataValue(item, ["linha", "line"]) || extractImportedLabeledValue(source, ["Linha"]) },
+    { label: "Aplicação", value: extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) || extractImportedLabeledValue(source, ["Aplicação", "Aplicacao"]) },
+    { label: "Embalagem", value: extractMetadataValue(item, ["embalagem", "package", "packaging"]) || extractImportedLabeledValue(source, ["Embalagem"]) },
+    { label: "Dosagem", value: extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) || extractImportedLabeledValue(source, ["Dosagem", "Dose"]) },
+    { label: "SKU", value: extractImportedCatalogSku(item) },
+    { label: "Nome", value: buildImportedCatalogName(item) },
+  ].filter((detail) => String(detail.value || "").trim());
 
-  const narrative = buildImportedNarrativeDescription(item, details);
-  const cleanedNotes = buildImportedNotesDescription(item, details);
+  const rawNarrative = dedupeDescriptionLines(
+    [
+      ...(sanitizeImportedDescriptionText(shortDescription || "", item)?.split("\n") ?? []),
+      ...(sanitizeImportedDescriptionText(baseDescription || "", item)?.split("\n") ?? []),
+      ...(sanitizeImportedDescriptionText(notesValue || "", item)?.split("\n") ?? []),
+    ]
+      .map((value) => normalizeImportedNarrativeLine(value))
+      .filter(Boolean)
+  ).join("\n");
 
-  const lines = [
-    category ? `Categoria: ${category}` : "",
-    line ? `Linha: ${line}` : "",
-    application ? `Aplicação: ${application}` : "",
-    packageValue ? `Embalagem: ${packageValue}` : "",
-    narrative,
-    dosageValue ? `Dosagem: ${dosageValue}` : "",
-    cleanedNotes &&
-    normalizeImportedLoose(cleanedNotes) !== normalizeImportedLoose(narrative || "")
-      ? `Observações: ${cleanedNotes}`
-      : "",
-  ]
-    .map((line) => cleanupImportedDescriptionLine(line))
-    .filter(Boolean);
+  const strippedNarrative = stripImportedRepeatedDetailsFromText(rawNarrative, structuredDetails);
 
-  return dedupeDescriptionLines(lines).join("\n").trim() || null;
+  const finalLines = dedupeDescriptionLines(
+    strippedNarrative
+      .split("\n")
+      .map((value) => normalizeImportedNarrativeLine(value))
+      .filter(Boolean)
+      .filter((line) => {
+        const normalizedLine = normalizeImportedLoose(line);
+        if (!normalizedLine) return false;
+        if (/^(categoria|linha|aplicacao|aplicação|embalagem|dosagem|descricao curta|descrição curta|sku|nome)\b/i.test(line)) {
+          return false;
+        }
+        return true;
+      })
+  );
+
+  return finalLines.join("\n").trim() || null;
 }
+
 
 function parseImportedDecimal(value: string | null | undefined) {
   if (value == null) return null;
