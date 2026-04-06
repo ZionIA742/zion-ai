@@ -36,6 +36,21 @@ export type IntelligentImportImageDiagnostics = {
   }>;
 };
 
+type IntelligentImportPreviewImage = {
+  sourceFileName: string;
+  fileName: string;
+  source: ExtractedImageAsset["source"];
+  mimeType: string;
+  dataUrl: string;
+  sheetName?: string;
+  rowIndex?: number;
+  columnIndex?: number;
+  anchorCell?: string;
+  drawingName?: string;
+  imageRelationshipId?: string;
+  imageOrder?: number;
+};
+
 export type IntelligentImportResult =
   | {
       ok: true;
@@ -53,13 +68,7 @@ export type IntelligentImportResult =
         extension: string;
         textPreview: string;
       }>;
-      extractedImagePreview: Array<{
-        sourceFileName: string;
-        fileName: string;
-        source: ExtractedImageAsset["source"];
-        mimeType: string;
-        dataUrl: string;
-      }>;
+      extractedImagePreview: IntelligentImportPreviewImage[];
       imageDiagnostics: IntelligentImportImageDiagnostics;
       normalizedPreview: NormalizedImportItem[];
       dedupedPreview: DedupedImportItem[];
@@ -120,51 +129,161 @@ function buildFileItemAlias(fileName: string, index: number) {
   return `${fileName} • item ${index + 1}`;
 }
 
+function sortImagesForStableAssignment(images: IntelligentImportPreviewImage[]) {
+  return [...images].sort((a, b) => {
+    const sourceA = normalizeLoose(a.sourceFileName || "");
+    const sourceB = normalizeLoose(b.sourceFileName || "");
+    if (sourceA !== sourceB) return sourceA.localeCompare(sourceB);
+
+    const sourceTypeA = a.source === "xlsx" ? 0 : 1;
+    const sourceTypeB = b.source === "xlsx" ? 0 : 1;
+    if (sourceTypeA !== sourceTypeB) return sourceTypeA - sourceTypeB;
+
+    const sheetA = normalizeLoose(a.sheetName || "");
+    const sheetB = normalizeLoose(b.sheetName || "");
+    if (sheetA !== sheetB) return sheetA.localeCompare(sheetB, undefined, { numeric: true });
+
+    const rowA = typeof a.rowIndex === "number" ? a.rowIndex : Number.MAX_SAFE_INTEGER;
+    const rowB = typeof b.rowIndex === "number" ? b.rowIndex : Number.MAX_SAFE_INTEGER;
+    if (rowA !== rowB) return rowA - rowB;
+
+    const colA = typeof a.columnIndex === "number" ? a.columnIndex : Number.MAX_SAFE_INTEGER;
+    const colB = typeof b.columnIndex === "number" ? b.columnIndex : Number.MAX_SAFE_INTEGER;
+    if (colA !== colB) return colA - colB;
+
+    const orderA = typeof a.imageOrder === "number" ? a.imageOrder : Number.MAX_SAFE_INTEGER;
+    const orderB = typeof b.imageOrder === "number" ? b.imageOrder : Number.MAX_SAFE_INTEGER;
+    if (orderA !== orderB) return orderA - orderB;
+
+    return String(a.fileName || "").localeCompare(String(b.fileName || ""), undefined, {
+      numeric: true,
+    });
+  });
+}
+
 function attachPerItemAliases(
   items: NormalizedImportItem[],
-  extractedImages: Array<{
-    sourceFileName: string;
-    fileName: string;
-    source: ExtractedImageAsset["source"];
-    mimeType: string;
-    dataUrl: string;
-  }>
+  extractedImages: IntelligentImportPreviewImage[]
 ) {
-  const groupedBySourceFile = new Map<string, NormalizedImportItem[]>();
+  const groupedBySourceFile = new Map<string, Array<{ item: NormalizedImportItem; index: number }>>();
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     const key = String(item.sourceFileName || "").trim().toLowerCase();
     const current = groupedBySourceFile.get(key) ?? [];
-    current.push(item);
+    current.push({ item, index });
     groupedBySourceFile.set(key, current);
   }
 
-  const normalizedPreview = items.map((item) => ({ ...item }));
-
-  const imagePreview = extractedImages.flatMap((image) => {
-    const key = String(image.sourceFileName || "").trim().toLowerCase();
+  const aliasByOriginalIndex = new Map<number, string>();
+  const normalizedPreview = items.map((item, index) => {
+    const key = String(item.sourceFileName || "").trim().toLowerCase();
     const relatedItems = groupedBySourceFile.get(key) ?? [];
+    const relatedIndex = relatedItems.findIndex((entry) => entry.index === index);
+    const aliasedSourceFileName =
+      relatedItems.length > 1 && relatedIndex >= 0
+        ? buildFileItemAlias(item.sourceFileName, relatedIndex)
+        : item.sourceFileName;
 
-    debugIntelligentImport("attachPerItemAliases:image-source", {
-      sourceFileName: image.sourceFileName,
-      imageFileName: image.fileName,
-      relatedItemsCount: relatedItems.length,
-      relatedTitles: relatedItems.map((item) => item.title),
+    aliasByOriginalIndex.set(index, aliasedSourceFileName);
+
+    return {
+      ...item,
+      sourceFileName: aliasedSourceFileName,
+    };
+  });
+
+  const imagePreview: IntelligentImportPreviewImage[] = [];
+
+  for (const [key, relatedItems] of groupedBySourceFile.entries()) {
+    const sourceImages = sortImagesForStableAssignment(
+      extractedImages.filter(
+        (image) => String(image.sourceFileName || "").trim().toLowerCase() === key
+      )
+    );
+
+    const aliasedItems = relatedItems.map((entry, relatedIndex) => ({
+      ...entry,
+      aliasSourceFileName:
+        aliasByOriginalIndex.get(entry.index) ?? buildFileItemAlias(entry.item.sourceFileName, relatedIndex),
+    }));
+
+    debugIntelligentImport("attachPerItemAliases:group", {
+      sourceFileName: relatedItems[0]?.item.sourceFileName || "",
+      itemsCount: aliasedItems.length,
+      imagesCount: sourceImages.length,
+      items: aliasedItems.map((entry) => ({
+        aliasSourceFileName: entry.aliasSourceFileName,
+        title: entry.item.title,
+        sku:
+          entry.item.metadata?.sku ||
+          entry.item.metadata?.SKU ||
+          entry.item.metadata?.codigo ||
+          entry.item.metadata?.["código"] ||
+          "",
+      })),
+      images: sourceImages.map((image) => ({
+        fileName: image.fileName,
+        sheetName: image.sheetName,
+        rowIndex: image.rowIndex,
+        columnIndex: image.columnIndex,
+        anchorCell: image.anchorCell,
+        imageOrder: image.imageOrder,
+      })),
     });
 
-    if (relatedItems.length <= 1) {
-      return [image];
+    if (aliasedItems.length <= 1) {
+      if (sourceImages.length === 0) continue;
+
+      const onlyAlias = aliasedItems[0]?.aliasSourceFileName || relatedItems[0]?.item.sourceFileName || "";
+      for (const image of sourceImages) {
+        imagePreview.push({
+          ...image,
+          sourceFileName: onlyAlias || image.sourceFileName,
+        });
+      }
+      continue;
     }
 
-    return relatedItems.map((item, index) => ({
-      ...image,
-      sourceFileName: buildFileItemAlias(item.sourceFileName, index),
-    }));
-  });
+    if (sourceImages.length === 0) {
+      continue;
+    }
+
+    for (const [imageIndex, image] of sourceImages.entries()) {
+      const targetItem = aliasedItems[Math.min(imageIndex, aliasedItems.length - 1)];
+      if (!targetItem) {
+        imagePreview.push(image);
+        continue;
+      }
+
+      imagePreview.push({
+        ...image,
+        sourceFileName: targetItem.aliasSourceFileName,
+      });
+    }
+  }
 
   debugIntelligentImport("attachPerItemAliases:result", {
     normalizedCount: normalizedPreview.length,
     imagePreviewCount: imagePreview.length,
+    normalizedPreview: normalizedPreview.map((item) => ({
+      title: item.title,
+      sourceFileName: item.sourceFileName,
+      sku:
+        item.metadata?.sku ||
+        item.metadata?.SKU ||
+        item.metadata?.codigo ||
+        item.metadata?.["código"] ||
+        "",
+    })),
+    imagePreview: imagePreview.map((image) => ({
+      sourceFileName: image.sourceFileName,
+      fileName: image.fileName,
+      sheetName: image.sheetName,
+      rowIndex: image.rowIndex,
+      columnIndex: image.columnIndex,
+      anchorCell: image.anchorCell,
+      imageOrder: image.imageOrder,
+    })),
   });
 
   return {
@@ -208,20 +327,8 @@ function buildImageDiagnostics(
     extractedImages?: ExtractedImageAsset[];
     diagnostics?: ExtractedFileDiagnostics;
   }>,
-  extractedImagePreviewRaw: Array<{
-    sourceFileName: string;
-    fileName: string;
-    source: ExtractedImageAsset["source"];
-    mimeType: string;
-    dataUrl: string;
-  }>,
-  aliasedImagePreview: Array<{
-    sourceFileName: string;
-    fileName: string;
-    source: ExtractedImageAsset["source"];
-    mimeType: string;
-    dataUrl: string;
-  }>
+  extractedImagePreviewRaw: IntelligentImportPreviewImage[],
+  aliasedImagePreview: IntelligentImportPreviewImage[]
 ): IntelligentImportImageDiagnostics {
   return {
     totalExtractedImagesRaw: extractedImagePreviewRaw.length,
@@ -297,13 +404,20 @@ export async function runOnboardingIntelligentImport(
       })),
     });
 
-    const extractedImagePreviewRaw = extractedFiles.flatMap((file) =>
+    const extractedImagePreviewRaw: IntelligentImportPreviewImage[] = extractedFiles.flatMap((file) =>
       (file.extractedImages ?? []).map((image) => ({
         sourceFileName: file.fileName,
         fileName: image.fileName,
         source: image.source,
         mimeType: image.mimeType,
         dataUrl: image.dataUrl,
+        sheetName: image.sheetName,
+        rowIndex: image.rowIndex,
+        columnIndex: image.columnIndex,
+        anchorCell: image.anchorCell,
+        drawingName: image.drawingName,
+        imageRelationshipId: image.imageRelationshipId,
+        imageOrder: image.imageOrder,
       }))
     );
 
@@ -314,6 +428,11 @@ export async function runOnboardingIntelligentImport(
         fileName: image.fileName,
         source: image.source,
         mimeType: image.mimeType,
+        sheetName: image.sheetName,
+        rowIndex: image.rowIndex,
+        columnIndex: image.columnIndex,
+        anchorCell: image.anchorCell,
+        imageOrder: image.imageOrder,
       })),
     });
 
@@ -331,6 +450,11 @@ export async function runOnboardingIntelligentImport(
         sourceFileName: image.sourceFileName,
         fileName: image.fileName,
         source: image.source,
+        sheetName: image.sheetName,
+        rowIndex: image.rowIndex,
+        columnIndex: image.columnIndex,
+        anchorCell: image.anchorCell,
+        imageOrder: image.imageOrder,
       })),
       imageDiagnostics,
     });
