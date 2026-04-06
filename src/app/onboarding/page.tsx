@@ -563,161 +563,107 @@ function extractImportedSourceSheetName(
   ).trim();
 }
 
-function buildImportedCategorySignalText(
+function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized.includes("quim") ||
+    normalized.includes("cloro") ||
+    normalized.includes("algicida") ||
+    normalized.includes("ph") ||
+    normalized.includes("elevador") ||
+    normalized.includes("redutor") ||
+    normalized.includes("clarificante") ||
+    normalized.includes("sulfato")
+  ) {
+    return "quimicos";
+  }
+  if (
+    normalized.includes("acessor") ||
+    normalized.includes("aspirador") ||
+    normalized.includes("escova") ||
+    normalized.includes("peneira") ||
+    normalized.includes("dispositivo") ||
+    normalized.includes("led") ||
+    normalized.includes("lumin") ||
+    normalized.includes("mangueira") ||
+    normalized.includes("clorador") ||
+    normalized.includes("hidromassagem") ||
+    normalized.includes("nicho") ||
+    normalized.includes("retorno")
+  ) {
+    return "acessorios";
+  }
+  return "outros";
+}
+function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  return [
+): ImportedDestination {
+  const source = [
     item.type,
     item.title,
+    item.rawText,
     item.sourceFileName,
     extractImportedSourceSheetName(item),
-    extractMetadataValue(item, [
-      "destination",
-      "destino",
-      "categoryhint",
-      "category_hint",
-      "categoria",
-      "source_type",
-      "import_type",
-      "tipo",
-      "tipo_item",
-      "tipo item",
-    ]),
     ...Object.values(item.metadata ?? {}),
-    item.rawText,
   ]
     .map((value) => normalizeImportedLoose(String(value ?? "")))
     .filter(Boolean)
     .join(" ");
-}
 
-function matchImportedCategoryTokens(source: string, tokens: string[]) {
-  const normalized = normalizeImportedLoose(source);
-  if (!normalized) return false;
-  return tokens.some((token) => {
-    const normalizedToken = normalizeImportedLoose(token);
-    if (!normalizedToken) return false;
-    return (
-      normalized === normalizedToken ||
-      normalized.startsWith(`${normalizedToken} `) ||
-      normalized.includes(` ${normalizedToken} `) ||
-      normalized.endsWith(` ${normalizedToken}`)
-    );
-  });
-}
-
-function normalizeImportedCatalogCategory(
-  value: string,
-  item?: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-): ImportedCatalogCategory {
-  const normalizedValue = normalizeImportedLoose(value);
-  const source = item
-    ? `${normalizedValue} ${buildImportedCategorySignalText(item)}`
-    : normalizedValue;
-
-  if (
-    matchImportedCategoryTokens(source, [
-      "quimicos",
-      "quimico",
-      "produtos quimicos",
-      "produto quimico",
-      "tratamento de agua",
-      "tratamento agua",
-    ])
-  ) {
-    return "quimicos";
-  }
-
-  if (
-    matchImportedCategoryTokens(source, [
-      "acessorios",
-      "acessorio",
-      "kit limpeza",
-      "cabo telescopico",
-      "peneira",
-      "escova",
-      "aspirador",
-      "dispositivo",
-      "mangueira",
-      "clorador",
-      "nicho",
-      "retorno",
-      "refletor",
-      "transformador",
-      "ralo",
-    ])
-  ) {
-    return "acessorios";
-  }
-
-  return "outros";
-}
-
-function inferImportedDestination(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-): ImportedDestination {
-  const source = buildImportedCategorySignalText(item);
-
-  const explicitCategory = normalizeImportedCatalogCategory(source, item);
-  if (matchImportedCategoryTokens(source, ["quimicos", "quimico", "produtos quimicos", "produto quimico"])) {
-    return "quimicos";
-  }
-  if (matchImportedCategoryTokens(source, ["acessorios", "acessorio"])) {
-    return "acessorios";
-  }
-  if (matchImportedCategoryTokens(source, ["outros", "outro", "diversos"])) {
-    return "outros";
+  const sheet = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  if (sheet) {
+    if (sheet.includes("quim")) return "quimicos";
+    if (sheet.includes("acessor")) return "acessorios";
+    if (sheet.includes("outros") || sheet.includes("diversos")) return "outros";
+    if (sheet.includes("piscin")) return "pool";
   }
 
   const chemicalScore =
-    (source.includes("cloro") ? 5 : 0) +
-    (source.includes("algicida") ? 5 : 0) +
-    (source.includes("clarificante") ? 5 : 0) +
-    (source.includes("sulfato") ? 5 : 0) +
-    (source.includes("elevador de ph") ? 5 : 0) +
-    (source.includes("redutor de ph") ? 5 : 0) +
-    (source.includes("limpa bordas") ? 5 : 0) +
-    (source.includes("oleosidade") ? 4 : 0) +
-    (source.includes("oxidacao sem cloro") ? 4 : 0) +
-    (source.includes("ph ") || source.endsWith(" ph") ? 2 : 0);
+    (source.includes("quim") ? 5 : 0) +
+    (source.includes("cloro") ? 4 : 0) +
+    (source.includes("algicida") ? 4 : 0) +
+    (source.includes("clarificante") ? 4 : 0) +
+    (source.includes("sulfato") ? 4 : 0) +
+    (source.includes("elevador de ph") ? 4 : 0) +
+    (source.includes("redutor de ph") ? 4 : 0);
 
   const accessoryScore =
-    (source.includes("peneira") ? 5 : 0) +
-    (source.includes("escova") ? 5 : 0) +
-    (source.includes("aspirador") ? 5 : 0) +
-    (source.includes("dispositivo") ? 5 : 0) +
-    (source.includes("cabo telescopico") ? 5 : 0) +
-    (source.includes("mangueira") ? 4 : 0) +
-    (source.includes("clorador") ? 4 : 0) +
-    (source.includes("nicho") ? 4 : 0) +
-    (source.includes("retorno") ? 4 : 0) +
-    (source.includes("ralo") ? 4 : 0) +
-    (source.includes("led") ? 2 : 0) +
-    (source.includes("refletor") ? 2 : 0);
+    (source.includes("acessor") ? 5 : 0) +
+    (source.includes("peneira") ? 4 : 0) +
+    (source.includes("escova") ? 4 : 0) +
+    (source.includes("aspirador") ? 4 : 0) +
+    (source.includes("dispositivo") ? 4 : 0) +
+    (source.includes("led") ? 3 : 0) +
+    (source.includes("mangueira") ? 3 : 0) +
+    (source.includes("clorador") ? 3 : 0) +
+    (source.includes("nicho") ? 3 : 0) +
+    (source.includes("retorno") ? 3 : 0) +
+    (source.includes("transformador") ? 3 : 0) +
+    (source.includes("refletor") ? 3 : 0) +
+    (source.includes("ralo") ? 3 : 0) +
+    (source.includes("cabo telescopico") ? 3 : 0);
 
-  const poolScore =
-    (matchImportedCategoryTokens(source, ["piscinas", "piscina"]) ? 4 : 0) +
-    (source.includes("fibra") ? 2 : 0) +
-    (source.includes("vinil") ? 2 : 0) +
-    (source.includes("alvenaria") ? 2 : 0) +
-    (source.includes("pastilha") ? 2 : 0) +
+  const poolMetrics = extractImportedPoolMetrics(item);
+  const strongPoolSignals =
+    (poolMetrics.width_m != null ? 1 : 0) +
+    (poolMetrics.length_m != null ? 1 : 0) +
+    (poolMetrics.depth_m != null ? 1 : 0) +
+    (poolMetrics.max_capacity_l != null ? 1 : 0);
+  const poolKeywordScore =
+    (source.includes("piscina") ? 3 : 0) +
+    (source.includes("fibra") ? 1 : 0) +
+    (source.includes("vinil") ? 1 : 0) +
+    (source.includes("alvenaria") ? 1 : 0) +
+    (source.includes("pastilha") ? 1 : 0) +
     (source.includes("profundidade") ? 2 : 0) +
     (source.includes("capacidade") ? 2 : 0) +
-    (source.includes("litros") ? 2 : 0) +
-    (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 3 : 0) +
-    (/\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ? 3 : 0);
+    (source.includes("litros") ? 2 : 0);
 
-  if (poolScore >= 7 && poolScore > chemicalScore && poolScore > accessoryScore) {
-    return "pool";
-  }
-  if (chemicalScore >= 5 && chemicalScore >= accessoryScore) {
-    return "quimicos";
-  }
-  if (accessoryScore >= 5 && accessoryScore > chemicalScore) {
-    return "acessorios";
-  }
+  if (chemicalScore >= 4 && chemicalScore > accessoryScore) return "quimicos";
+  if (accessoryScore >= 4 && accessoryScore >= chemicalScore) return "acessorios";
+  if (strongPoolSignals >= 2 && poolKeywordScore >= 4) return "pool";
 
-  return explicitCategory;
+  return normalizeImportedCatalogCategory(source);
 }
 
 function extractImportedLabeledValue(
@@ -740,7 +686,7 @@ function extractImportedLabeledValue(
         normalizedLine.startsWith(`${normalizedLabel}:`) ||
         normalizedLine.startsWith(`${normalizedLabel} -`)
       ) {
-        const value = line.replace(/^\s*[^:–-]+\s*[:–-]\s*/u, "").trim();
+        const value = line.replace(/^\s*[^:]+\s*[:\-]\s*/u, "").trim();
         if (value) return value;
       }
     }
@@ -890,7 +836,6 @@ function dedupeImportedItemsForSave(
     const key = buildImportedSaveKey(item);
     const score = scoreImportedItemForSave(item);
     const current = bestByKey.get(key);
-
     if (!current || score > current.score) {
       bestByKey.set(key, { item, score, index });
     }
@@ -908,7 +853,7 @@ function buildImportedCatalogName(
   if (excelLikeName) return excelLikeName;
 
   const title = String(item.title ?? "").trim();
-  if (title && !/\.xlsx?\s*[•·-]\s*item\s*\d+/i.test(title)) {
+  if (title && !/\.xlsx?\s*(?:-|•|·)\s*item\s*\d+/i.test(title)) {
     return title.slice(0, 160);
   }
 
@@ -932,6 +877,59 @@ function dedupeDescriptionLines(lines: string[]) {
   }
   return result;
 }
+function escapeImportedRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function cleanupImportedDescriptionLine(value: string) {
+  return String(value || "")
+    .replace(/\s*[-–—]+\s*item\s*\d+\b/giu, " ")
+    .replace(/\bitem\s*\d+\b/giu, " ")
+    .replace(/^\s*(descri[cç][aã]o curta|descri[cç][aã]o resumida|descri[cç][aã]o|observa[cç][oõ]es|observa[cç][aã]o|obs\.?|notas?|notes?)\s*[:–-]\s*/giu, "")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/([,.;:])\1+/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/^[-–—:;,\.\s]+/u, "")
+    .replace(/[-–—:;,\.\s]+$/u, "")
+    .trim();
+}
+
+function normalizeImportedNarrativeLine(value: string) {
+  const cleaned = cleanupImportedDescriptionLine(value);
+  if (!cleaned) return "";
+  if (/^item\s*\d+$/iu.test(cleaned)) return "";
+  return cleaned;
+}
+
+function stripImportedRepeatedDetailsFromText(
+  source: string,
+  details: Array<{ label: string; value: string }>
+) {
+  let cleaned = String(source || "");
+
+  for (const detail of details) {
+    const value = String(detail.value || "").trim();
+    if (!value) continue;
+
+    const labelPattern = escapeImportedRegExp(detail.label);
+    const valuePattern = escapeImportedRegExp(value);
+
+    cleaned = cleaned.replace(
+      new RegExp(`(?:^|\\s)${labelPattern}\\s*[:–-]\\s*${valuePattern}(?=$|[\\s,.;])`, "giu"),
+      " "
+    );
+  }
+
+  const cleanedLines = cleaned
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => normalizeImportedNarrativeLine(line))
+    .filter(Boolean);
+
+  return cleanedLines.join("\n").trim();
+}
+
 function sanitizeImportedDescriptionText(
   source: string,
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -1072,62 +1070,6 @@ function buildImportedCleanDescription(
   }
 
   return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
-}
-
-function escapeImportedRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function cleanupImportedDescriptionLine(value: string) {
-  return String(value || "")
-    .replace(/\s*[-–—]+\s*item\s*\d+\b/giu, " ")
-    .replace(/\bitem\s*\d+\b/giu, " ")
-    .replace(
-      /^\s*(descri[cç][aã]o curta|descri[cç][aã]o resumida|descri[cç][aã]o|observa[cç][oõ]es|observa[cç][aã]o|obs\.?|notas?|notes?)\s*[:–-]\s*/giu,
-      ""
-    )
-    .replace(/\s+([,.;:])/g, "$1")
-    .replace(/([,.;:])\1+/g, "$1")
-    .replace(/\s{2,}/g, " ")
-    .trim()
-    .replace(/^[-–—:;,\.\s]+/u, "")
-    .replace(/[-–—:;,\.\s]+$/u, "")
-    .trim();
-}
-
-function normalizeImportedNarrativeLine(value: string) {
-  const cleaned = cleanupImportedDescriptionLine(value);
-  if (!cleaned) return "";
-  if (/^item\s*\d+$/iu.test(cleaned)) return "";
-  return cleaned;
-}
-
-function stripImportedRepeatedDetailsFromText(
-  source: string,
-  details: Array<{ label: string; value: string }>
-) {
-  let cleaned = String(source || "");
-
-  for (const detail of details) {
-    const value = String(detail.value || "").trim();
-    if (!value) continue;
-
-    const labelPattern = escapeImportedRegExp(detail.label);
-    const valuePattern = escapeImportedRegExp(value);
-
-    cleaned = cleaned.replace(
-      new RegExp(`(?:^|\\s)${labelPattern}\\s*[:–-]\\s*${valuePattern}(?=$|[\\s,.;])`, "giu"),
-      " "
-    );
-  }
-
-  const cleanedLines = cleaned
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((line) => normalizeImportedNarrativeLine(line))
-    .filter(Boolean);
-
-  return cleanedLines.join("\n").trim();
 }
 
 function buildImportedApplicationSupportLine(application: string) {
@@ -1625,12 +1567,13 @@ function canPersistAsPool(metrics: {
   depth_m: number | null;
   max_capacity_l: number | null;
 }) {
-  return (
-    metrics.width_m != null ||
-    metrics.length_m != null ||
-    metrics.depth_m != null ||
-    metrics.max_capacity_l != null
-  );
+  const dimensionsCount =
+    (metrics.width_m != null ? 1 : 0) +
+    (metrics.length_m != null ? 1 : 0) +
+    (metrics.depth_m != null ? 1 : 0) +
+    (metrics.max_capacity_l != null ? 1 : 0);
+
+  return dimensionsCount >= 2 || Boolean(metrics.max_capacity_l && metrics.depth_m != null);
 }
 function normalizeImportedLoose(value: string | null | undefined) {
   return String(value || "")
@@ -1738,39 +1681,31 @@ function resolveImportedDestination(
     ])
   );
 
-  if (matchImportedCategoryTokens(explicitDestination, ["pool", "piscinas", "piscina"])) return "pool";
-  if (matchImportedCategoryTokens(explicitDestination, ["quimicos", "quimico", "produtos quimicos"])) {
-    return "quimicos";
+  if (explicitDestination === "pool" || explicitDestination === "piscina" || explicitDestination === "piscinas") {
+    return "pool";
   }
-  if (matchImportedCategoryTokens(explicitDestination, ["acessorios", "acessorio"])) {
-    return "acessorios";
-  }
-  if (matchImportedCategoryTokens(explicitDestination, ["outros", "outro", "diversos"])) {
-    return "outros";
-  }
+  if (explicitDestination === "quimicos" || explicitDestination === "quimico") return "quimicos";
+  if (explicitDestination === "acessorios" || explicitDestination === "acessorio") return "acessorios";
+  if (explicitDestination === "outros" || explicitDestination === "outro") return "outros";
 
-  const explicitSheetCategory = normalizeImportedCatalogCategory(extractImportedSourceSheetName(item), item);
-  if (extractImportedSourceSheetName(item).trim()) {
-    return explicitSheetCategory;
+  const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  if (sheetName) {
+    if (sheetName.includes("quim")) return "quimicos";
+    if (sheetName.includes("acessor")) return "acessorios";
+    if (sheetName.includes("outros") || sheetName.includes("diversos")) return "outros";
+    if (sheetName.includes("piscin")) return "pool";
   }
 
   const inferred = inferImportedDestination(item);
-  if (inferred !== "outros") return inferred;
-
-  const raw = normalizeImportedLoose([item.title, item.rawText].join(" "));
-  if (
-    matchImportedCategoryTokens(raw, ["piscinas", "piscina"]) &&
-    (
-      raw.includes("capacidade") ||
-      raw.includes("profundidade") ||
-      /\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m/i.test(raw) ||
-      /\d+[\.,]?\d*\s*m\s*diam/i.test(raw)
-    )
-  ) {
-    return "pool";
+  if (inferred === "pool") {
+    const metrics = extractImportedPoolMetrics(item);
+    if (canPersistAsPool(metrics)) {
+      return "pool";
+    }
+    return "outros";
   }
 
-  return normalizeImportedCatalogCategory(raw, item);
+  return inferred;
 }
 function buildImportedPoolName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -2760,7 +2695,7 @@ async function handleSaveImportedItemsToCatalog() {
                   depth_m: safeDepth,
                   shape: metrics.shape,
                   material: metrics.material,
-                  max_capacity_l: metrics.max_capacity_l,
+                  max_capacity_l: metrics.max_capacity_l ?? 0,
                   price: metrics.price,
                   description: poolDescription,
                   is_active: true,
@@ -2781,7 +2716,7 @@ async function handleSaveImportedItemsToCatalog() {
                   depth_m: safeDepth,
                   shape: metrics.shape,
                   material: metrics.material,
-                  max_capacity_l: metrics.max_capacity_l,
+                  max_capacity_l: metrics.max_capacity_l ?? 0,
                   weight_kg: null,
                   price: metrics.price,
                   description: poolDescription,
@@ -2858,7 +2793,7 @@ async function handleSaveImportedItemsToCatalog() {
             existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
           }
 
-          if (!existingCatalogItem && !sku) {
+          if (!existingCatalogItem) {
             const { data } = await supabase
               .from("store_catalog_items")
               .select("id, sku, price_cents, stock_quantity, description, metadata")
