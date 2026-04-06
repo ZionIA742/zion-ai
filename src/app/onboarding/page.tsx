@@ -132,13 +132,6 @@ type IntelligentImportResponse =
         source: string;
         mimeType: string;
         dataUrl: string;
-        sheetName?: string;
-        rowIndex?: number;
-        columnIndex?: number;
-        anchorCell?: string;
-        drawingName?: string;
-        imageRelationshipId?: string;
-        imageOrder?: number;
       }>;
       normalizedPreview: IntelligentImportNormalizedPreview[];
       dedupedPreview: IntelligentImportDedupedPreview[];
@@ -914,6 +907,44 @@ function dedupeDescriptionLines(lines: string[]) {
   }
   return result;
 }
+
+function dedupeDescriptionSentences(value: string) {
+  const normalizedSource = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalizedSource) return "";
+
+  const sentenceMatches = normalizedSource.match(/[^.!?]+[.!?]?/g) ?? [normalizedSource];
+  const cleanedSentences = sentenceMatches
+    .map((sentence) => cleanupImportedDescriptionLine(sentence))
+    .filter(Boolean);
+
+  const uniqueSentences = dedupeDescriptionLines(cleanedSentences);
+  return uniqueSentences.join(" ").trim();
+}
+
+function removeImportedExactDetailLine(
+  line: string,
+  details: Array<{ label: string; value: string }>
+) {
+  const normalizedLine = normalizeImportedLoose(line);
+  if (!normalizedLine) return "";
+
+  for (const detail of details) {
+    const normalizedValue = normalizeImportedLoose(detail.value);
+    if (!normalizedValue) continue;
+
+    if (normalizedLine === normalizedValue) {
+      return "";
+    }
+
+    const normalizedLabel = normalizeImportedLoose(detail.label);
+    if (normalizedLabel && normalizedLine === `${normalizedLabel} ${normalizedValue}`) {
+      return "";
+    }
+  }
+
+  return line;
+}
+
 function sanitizeImportedDescriptionText(
   source: string,
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -1038,21 +1069,113 @@ function sanitizeImportedDescriptionText(
   const joined = dedupeDescriptionLines(filtered).join("\n").trim();
   return joined ? joined.slice(0, 4000) : null;
 }
-function buildImportedCleanDescription(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+
+function buildImportedNarrativeDescription(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  details: Array<{ label: string; value: string }>
 ) {
   const metadataCandidates = [
+    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]),
     extractMetadataValue(item, ["clean_description", "cleanDescription"]),
     extractMetadataValue(item, ["descricao", "descrição", "description"]),
-    extractMetadataValue(item, ["notes", "observacao", "observação"]),
   ]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
-  for (const candidate of metadataCandidates) {
-    const cleaned = sanitizeImportedDescriptionText(candidate, item);
-    if (cleaned) return cleaned;
+
+  const fallbackSource = String(item.rawText || "").trim();
+  const sources = [...metadataCandidates, fallbackSource].filter(Boolean);
+
+  for (const source of sources) {
+    const sanitized = sanitizeImportedDescriptionText(source, item);
+    if (!sanitized) continue;
+
+    const withoutRepeatedDetails = stripImportedRepeatedDetailsFromText(sanitized, details);
+
+    const cleanedLines = withoutRepeatedDetails
+      .replace(/\r/g, "")
+      .split("\n")
+      .map((line) => cleanupImportedDescriptionLine(line))
+      .map((line) => removeImportedExactDetailLine(line, details))
+      .filter(Boolean)
+      .filter((line) => {
+        const normalized = normalizeImportedLoose(line);
+        if (!normalized) return false;
+        if (normalized.includes("upload inteligente")) return false;
+        if (normalized.includes("validar leitura")) return false;
+        return true;
+      });
+
+    const joined = dedupeDescriptionSentences(cleanedLines.join(" "));
+    if (joined) {
+      return joined.slice(0, 4000);
+    }
   }
-  return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
+
+  return "";
+}
+
+function buildImportedNotesDescription(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  details: Array<{ label: string; value: string }>
+) {
+  const rawNotes =
+    extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
+    extractImportedLabeledValue(String(item.rawText || ""), ["Observações", "Observacoes", "Notas"]);
+
+  const sanitizedNotes = sanitizeImportedDescriptionText(rawNotes || "", item);
+  if (!sanitizedNotes) return "";
+
+  const withoutRepeatedDetails = stripImportedRepeatedDetailsFromText(sanitizedNotes, details);
+  const cleaned = dedupeDescriptionSentences(withoutRepeatedDetails);
+  if (!cleaned) return "";
+
+  const normalizedCleaned = normalizeImportedLoose(cleaned);
+  const duplicatedByDetail = details.some((detail) => {
+    const normalizedValue = normalizeImportedLoose(detail.value);
+    return normalizedValue && normalizedCleaned === normalizedValue;
+  });
+
+  return duplicatedByDetail ? "" : cleaned.slice(0, 1200);
+}
+
+function buildImportedCleanDescription(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const details = [
+    {
+      label: "Categoria",
+      value:
+        extractMetadataValue(item, ["categoria", "category"]) ||
+        extractImportedLabeledValue(String(item.rawText || ""), ["Categoria"]),
+    },
+    {
+      label: "Linha",
+      value:
+        extractMetadataValue(item, ["linha", "line"]) ||
+        extractImportedLabeledValue(String(item.rawText || ""), ["Linha"]),
+    },
+    {
+      label: "Aplicação",
+      value:
+        extractMetadataValue(item, ["aplicacao", "aplicação", "application"]) ||
+        extractImportedLabeledValue(String(item.rawText || ""), ["Aplicação", "Aplicacao"]),
+    },
+    {
+      label: "Embalagem",
+      value:
+        extractMetadataValue(item, ["embalagem", "package", "packaging"]) ||
+        extractImportedLabeledValue(String(item.rawText || ""), ["Embalagem"]),
+    },
+    {
+      label: "Dosagem",
+      value:
+        extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
+        extractImportedLabeledValue(String(item.rawText || ""), ["Dosagem", "Dose"]),
+    },
+  ].filter((detail) => String(detail.value || "").trim());
+
+  const narrative = buildImportedNarrativeDescription(item, details);
+  return narrative || null;
 }
 
 
@@ -1103,7 +1226,6 @@ function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
-  const baseDescription = buildImportedCleanDescription(item) || "";
   const category =
     extractMetadataValue(item, ["categoria", "category"]) ||
     extractImportedLabeledValue(source, ["Categoria"]);
@@ -1119,49 +1241,32 @@ function buildImportedCatalogDescription(
   const dosageValue =
     extractMetadataValue(item, ["dosagem", "dose", "diluição", "diluicao"]) ||
     extractImportedLabeledValue(source, ["Dosagem", "Dose"]);
-  const shortDescription =
-    extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
-    extractImportedLabeledValue(source, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]);
-  const notesValue =
-    extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
-    extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
 
-  const narrativeLines = dedupeDescriptionLines(
-    (shortDescription || baseDescription || "")
-      .split("\n")
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .filter((line) => {
-        const normalized = normalizeImportedLoose(line);
-        if (!normalized) return false;
-        if (normalized.startsWith("categoria ") || normalized.startsWith("categoria:")) return false;
-        if (normalized.startsWith("nome ") || normalized.startsWith("nome:")) return false;
-        if (normalized.startsWith("linha ") || normalized.startsWith("linha:")) return false;
-        if (normalized.startsWith("aplicacao ") || normalized.startsWith("aplicacao:")) return false;
-        if (normalized.startsWith("aplicação ") || normalized.startsWith("aplicação:")) return false;
-        if (normalized.startsWith("embalagem ") || normalized.startsWith("embalagem:")) return false;
-        if (normalized.startsWith("dosagem ") || normalized.startsWith("dosagem:")) return false;
-        if (normalized.startsWith("observacoes ") || normalized.startsWith("observacoes:")) return false;
-        if (normalized.startsWith("observações ") || normalized.startsWith("observações:")) return false;
-        if (normalized.includes("upload inteligente")) return false;
-        if (normalized.includes("validar leitura")) return false;
-        return true;
-      })
-  );
+  const details = [
+    category ? { label: "Categoria", value: category } : null,
+    line ? { label: "Linha", value: line } : null,
+    application ? { label: "Aplicação", value: application } : null,
+    packageValue ? { label: "Embalagem", value: packageValue } : null,
+    dosageValue ? { label: "Dosagem", value: dosageValue } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
 
-  const cleanedNotes = sanitizeImportedDescriptionText(notesValue || "", item);
+  const narrative = buildImportedNarrativeDescription(item, details);
+  const cleanedNotes = buildImportedNotesDescription(item, details);
 
   const lines = [
     category ? `Categoria: ${category}` : "",
     line ? `Linha: ${line}` : "",
     application ? `Aplicação: ${application}` : "",
     packageValue ? `Embalagem: ${packageValue}` : "",
-    ...narrativeLines,
+    narrative,
     dosageValue ? `Dosagem: ${dosageValue}` : "",
-    cleanedNotes && !narrativeLines.some((line) => normalizeImportedLoose(line) === normalizeImportedLoose(cleanedNotes))
+    cleanedNotes &&
+    normalizeImportedLoose(cleanedNotes) !== normalizeImportedLoose(narrative || "")
       ? `Observações: ${cleanedNotes}`
       : "",
-  ].filter(Boolean);
+  ]
+    .map((line) => cleanupImportedDescriptionLine(line))
+    .filter(Boolean);
 
   return dedupeDescriptionLines(lines).join("\n").trim() || null;
 }
@@ -1470,43 +1575,6 @@ function extractImportedCatalogPriceCents(
   return Math.round(parsedGeneric * 100);
 }
 
-function sortExtractedImagesForSave(
-  images: Array<{
-    id: string;
-    fileName: string;
-    mimeType: string;
-    dataUrl: string;
-    sourceFileName: string;
-    sheetName?: string;
-    rowIndex?: number;
-    columnIndex?: number;
-    anchorCell?: string;
-    imageOrder?: number;
-  }>
-) {
-  return [...images].sort((a, b) => {
-    const sourceA = normalizeImportedLoose(a.sourceFileName || "");
-    const sourceB = normalizeImportedLoose(b.sourceFileName || "");
-    if (sourceA !== sourceB) return sourceA.localeCompare(sourceB);
-
-    const rowA = typeof a.rowIndex === "number" ? a.rowIndex : Number.MAX_SAFE_INTEGER;
-    const rowB = typeof b.rowIndex === "number" ? b.rowIndex : Number.MAX_SAFE_INTEGER;
-    if (rowA !== rowB) return rowA - rowB;
-
-    const colA = typeof a.columnIndex === "number" ? a.columnIndex : Number.MAX_SAFE_INTEGER;
-    const colB = typeof b.columnIndex === "number" ? b.columnIndex : Number.MAX_SAFE_INTEGER;
-    if (colA !== colB) return colA - colB;
-
-    const orderA = typeof a.imageOrder === "number" ? a.imageOrder : Number.MAX_SAFE_INTEGER;
-    const orderB = typeof b.imageOrder === "number" ? b.imageOrder : Number.MAX_SAFE_INTEGER;
-    if (orderA !== orderB) return orderA - orderB;
-
-    return String(a.fileName || "").localeCompare(String(b.fileName || ""), undefined, {
-      numeric: true,
-    });
-  });
-}
-
 function pickRelatedExtractedImages(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   extractedImageBuckets: Map<
@@ -1517,11 +1585,6 @@ function pickRelatedExtractedImages(
       mimeType: string;
       dataUrl: string;
       sourceFileName: string;
-      sheetName?: string;
-      rowIndex?: number;
-      columnIndex?: number;
-      anchorCell?: string;
-      imageOrder?: number;
     }>
   >,
   extractedImageBucketCursors: Map<string, number>,
@@ -1531,17 +1594,11 @@ function pickRelatedExtractedImages(
     mimeType: string;
     dataUrl: string;
     sourceFileName: string;
-    sheetName?: string;
-    rowIndex?: number;
-    columnIndex?: number;
-    anchorCell?: string;
-    imageOrder?: number;
   }>,
   consumedExtractedImageIds: Set<string>,
   totalSourceItems: number
 ) {
   const sourceKey = String(item.sourceFileName || "").trim().toLowerCase();
-  const isAliasedPerItem = /[•·-]\s*item\s*\d+$/i.test(sourceKey);
 
   const tryConsumeFromBucket = (bucketKey: string) => {
     const bucket = extractedImageBuckets.get(bucketKey);
@@ -1576,14 +1633,10 @@ function pickRelatedExtractedImages(
   if (sourceKey) {
     const direct = tryConsumeFromBucket(sourceKey);
     if (direct.length > 0) return direct;
-
-    if (isAliasedPerItem) {
-      return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
-    }
   }
 
   const normalizedSourceKey = sourceKey.replace(/\.[^.]+$/, "");
-  if (normalizedSourceKey && !isAliasedPerItem) {
+  if (normalizedSourceKey) {
     for (const key of extractedImageBuckets.keys()) {
       const normalizedKey = key.replace(/\.[^.]+$/, "");
       if (
@@ -1602,26 +1655,24 @@ function pickRelatedExtractedImages(
       const fallback = tryConsumeFromBucket(key);
       if (fallback.length > 0) return fallback;
     }
-
-    const globalFallback = extractedImageSequence.find(
-      (candidate) => !consumedExtractedImageIds.has(candidate.id)
-    );
-
-    if (!globalFallback) {
-      return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
-    }
-
-    consumedExtractedImageIds.add(globalFallback.id);
-    return [
-      {
-        fileName: globalFallback.fileName,
-        mimeType: globalFallback.mimeType,
-        dataUrl: globalFallback.dataUrl,
-      },
-    ];
   }
 
-  return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+  const globalFallback = extractedImageSequence.find(
+    (candidate) => !consumedExtractedImageIds.has(candidate.id)
+  );
+
+  if (!globalFallback) {
+    return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+  }
+
+  consumedExtractedImageIds.add(globalFallback.id);
+  return [
+    {
+      fileName: globalFallback.fileName,
+      mimeType: globalFallback.mimeType,
+      dataUrl: globalFallback.dataUrl,
+    },
+  ];
 }
 function canPersistAsPool(metrics: {
   width_m: number | null;
@@ -2652,31 +2703,19 @@ async function handleSaveImportedItemsToCatalog() {
           mimeType: string;
           dataUrl: string;
           sourceFileName: string;
-          sheetName?: string;
-          rowIndex?: number;
-          columnIndex?: number;
-          anchorCell?: string;
-          imageOrder?: number;
         }>
       >();
 
       const extractedImageBucketCursors = new Map<string, number>();
       const consumedExtractedImageIds = new Set<string>();
 
-      const extractedImageSequence = sortExtractedImagesForSave(
-        safeExtractedImagePreview.map((image, index) => ({
-          id: `${String(image.sourceFileName || "").trim().toLowerCase()}::${image.fileName || "imagem-extraida.jpg"}::${index}`,
-          fileName: image.fileName || "imagem-extraida.jpg",
-          mimeType: image.mimeType || "image/jpeg",
-          dataUrl: image.dataUrl,
-          sourceFileName: String(image.sourceFileName || "").trim().toLowerCase(),
-          sheetName: image.sheetName,
-          rowIndex: image.rowIndex,
-          columnIndex: image.columnIndex,
-          anchorCell: image.anchorCell,
-          imageOrder: image.imageOrder,
-        }))
-      );
+      const extractedImageSequence = safeExtractedImagePreview.map((image, index) => ({
+        id: `${String(image.sourceFileName || "").trim().toLowerCase()}::${image.fileName || "imagem-extraida.jpg"}::${index}`,
+        fileName: image.fileName || "imagem-extraida.jpg",
+        mimeType: image.mimeType || "image/jpeg",
+        dataUrl: image.dataUrl,
+        sourceFileName: String(image.sourceFileName || "").trim().toLowerCase(),
+      }));
 
       for (const image of extractedImageSequence) {
         const bucketKey = image.sourceFileName || "__sem_origem__";
