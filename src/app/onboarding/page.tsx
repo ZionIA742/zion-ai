@@ -1262,9 +1262,34 @@ function sanitizeImportedDescriptionText(
       "checar compatibilidade",
       "reforcar garantia",
       "reforçar garantia",
+      "repor quando atingir o estoque minimo",
+      "repor quando atingir o estoque mínimo",
+      "versao muito procurada",
+      "versão muito procurada",
+      "pode exigir instalacao tecnica",
+      "pode exigir instalação técnica",
+      "reforcar compatibilidade antes de vender",
+      "reforçar compatibilidade antes de vender",
     ];
 
     if (blockedIncludes.some((value) => normalized.includes(value))) {
+      return false;
+    }
+
+    const blockedPatterns = [
+      /^repor\s+quando\s+atingir\s+o\s+estoque\s+minimo$/iu,
+      /^vers[aã]o\s+muito\s+procurada\b/iu,
+      /^pode\s+exigir\s+instala[cç][aã]o\s+t[eé]cnica$/iu,
+      /^bom\s+item\s+para\s+composi[cç][aã]o\s+de\s+or[cç]amento$/iu,
+      /^priorizar\s+exposi[cç][aã]o\b/iu,
+      /^item\s+de\s+giro\s+constante\b/iu,
+      /^checar\s+compatibilidade\b/iu,
+      /^confirmar\s+medida\b/iu,
+      /^refor[cç]ar\s+compatibilidade\b/iu,
+      /^refor[cç]ar\s+garantia\b/iu,
+    ];
+
+    if (blockedPatterns.some((pattern) => pattern.test(line) || pattern.test(normalized))) {
       return false;
     }
 
