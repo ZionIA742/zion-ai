@@ -1319,6 +1319,171 @@ function buildImportedCleanDescription(
   return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
 }
 
+
+function splitImportedDescriptionIntoSentences(value: string) {
+  const chunks = String(value || "")
+    .replace(/\r/g, "\n")
+    .split(/\n+/)
+    .flatMap((line) =>
+      line
+        .split(/(?<=[.!?])\s+|\s*[;•·]\s*/u)
+        .map((part) => normalizeImportedNarrativeLine(part))
+        .filter(Boolean)
+    );
+
+  return dedupeDescriptionLines(chunks);
+}
+
+function shouldSkipImportedTemplateSentence(value: string) {
+  const normalized = normalizeImportedLoose(value);
+  if (!normalized) return true;
+
+  const blockedIncludes = [
+    "produto da linha",
+    "projetado para complementar a area da piscina",
+    "instalacao e uso praticos",
+    "instalação e uso práticos",
+    "versao muito procurada",
+    "versão muito procurada",
+    "bom item para composicao de orcamento",
+    "bom item para composição de orçamento",
+    "repor quando atingir o estoque minimo",
+    "repor quando atingir o estoque mínimo",
+    "priorizar exposicao",
+    "priorizar exposição",
+    "item de giro constante",
+    "checar compatibilidade",
+    "confirmar medida",
+    "reforcar compatibilidade",
+    "reforçar compatibilidade",
+    "reforcar garantia",
+    "reforçar garantia",
+  ];
+
+  if (blockedIncludes.some((item) => normalized.includes(item))) {
+    return true;
+  }
+
+  const blockedPatterns = [
+    /^produto\s+da\s+linha\b/iu,
+    /^projetado\s+para\b/iu,
+    /^vers[aã]o\s+muito\s+procurada\b/iu,
+    /^bom\s+item\s+para\s+composi[cç][aã]o\s+de\s+or[cç]amento\b/iu,
+    /^repor\s+quando\s+atingir\s+o\s+estoque\s+m[ií]nimo\b/iu,
+  ];
+
+  return blockedPatterns.some((pattern) => pattern.test(value) || pattern.test(normalized));
+}
+
+function ensureImportedSentence(value: string) {
+  const cleaned = cleanupImportedDescriptionLine(value);
+  if (!cleaned) return "";
+
+  const normalized = normalizeImportedLoose(cleaned);
+  if (!normalized) return "";
+
+  const sentenceBase = cleaned.replace(/[.;:,\s]+$/u, "").trim();
+  if (!sentenceBase) return "";
+
+  const firstChar = sentenceBase.charAt(0);
+  const rest = sentenceBase.slice(1);
+  const capitalized = firstChar ? firstChar.toLocaleUpperCase("pt-BR") + rest : sentenceBase;
+
+  return /[.!?]$/u.test(capitalized) ? capitalized : `${capitalized}.`;
+}
+
+function buildImportedApplicationSentence(value: string) {
+  const cleaned = cleanupImportedDescriptionLine(value);
+  if (!cleaned) return "";
+
+  const normalized = normalizeImportedLoose(cleaned);
+  if (!normalized) return "";
+
+  if (
+    normalized.startsWith("indicado para") ||
+    normalized.startsWith("indicada para") ||
+    normalized.startsWith("ideal para") ||
+    normalized.startsWith("recomendado para") ||
+    normalized.startsWith("recomendada para") ||
+    normalized.startsWith("uso em") ||
+    normalized.startsWith("uso com") ||
+    normalized.startsWith("aplicacao em") ||
+    normalized.startsWith("aplicação em")
+  ) {
+    return ensureImportedSentence(cleaned);
+  }
+
+  if (normalized.startsWith("para ")) {
+    return ensureImportedSentence(`Indicado ${cleaned}`);
+  }
+
+  return ensureImportedSentence(cleaned);
+}
+
+function buildImportedMaterialFinishSentence(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = String(item.rawText || "");
+  const composition =
+    extractMetadataValue(item, ["composition", "composicao", "composição"]) ||
+    extractImportedLabeledValue(source, ["Composição", "Composicao"]);
+  const material =
+    extractMetadataValue(item, ["material"]) ||
+    extractImportedLabeledValue(source, ["Material"]);
+  const packaging =
+    extractMetadataValue(item, ["embalagem", "package", "packaging"]) ||
+    extractImportedLabeledValue(source, ["Embalagem"]);
+  const color =
+    extractMetadataValue(item, ["color", "cor"]) ||
+    extractImportedLabeledValue(source, ["Cor"]);
+  const weightOrVolume = extractImportedWeightOrVolume(item);
+
+  const mainDetail = [composition, material, packaging, weightOrVolume]
+    .map((value) => cleanupImportedDescriptionLine(value))
+    .find(Boolean);
+
+  const safeColor = cleanupImportedDescriptionLine(color);
+  if (!mainDetail && !safeColor) return "";
+
+  const normalizedMain = normalizeImportedLoose(mainDetail || "");
+  const normalizedColor = normalizeImportedLoose(safeColor || "");
+
+  let sentence = "";
+  if (mainDetail) {
+    if (
+      normalizedMain.includes("reagente") ||
+      normalizedMain.includes("reagentes") ||
+      normalizedMain.includes("estojo")
+    ) {
+      sentence = `Kit com ${mainDetail}`;
+    } else if (
+      normalizedMain.includes("aluminio") ||
+      normalizedMain.includes("alumínio") ||
+      normalizedMain.includes("abs") ||
+      normalizedMain.includes("plastico") ||
+      normalizedMain.includes("plástico") ||
+      normalizedMain.includes("inox") ||
+      normalizedMain.includes("aco") ||
+      normalizedMain.includes("aço") ||
+      normalizedMain.includes("nylon") ||
+      normalizedMain.includes("fibra") ||
+      normalizedMain.includes("cromado")
+    ) {
+      sentence = `Construção em ${mainDetail}`;
+    } else if (normalizedMain.includes("frasco") || normalizedMain.includes("balde")) {
+      sentence = `Embalagem ${mainDetail}`;
+    } else {
+      sentence = mainDetail;
+    }
+  }
+
+  if (safeColor && normalizedColor && !(sentence && normalizeImportedLoose(sentence).includes(normalizedColor))) {
+    sentence = sentence ? `${sentence}, com acabamento ${safeColor}` : `Acabamento ${safeColor}`;
+  }
+
+  return ensureImportedSentence(sentence);
+}
+
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -1327,18 +1492,30 @@ function buildImportedCatalogDescription(
   const shortDescription =
     extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
     extractImportedLabeledValue(source, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]);
+  const applicationValue =
+    extractMetadataValue(item, ["aplicacao", "aplicação", "application", "usage", "uso"]) ||
+    extractImportedLabeledValue(source, ["Aplicação", "Aplicacao", "Uso"]);
   const notesValue =
     extractMetadataValue(item, ["observacoes", "observações", "notes", "observacao", "observação"]) ||
     extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
 
-  const narrativeLines = compressImportedNarrativeLines([
+  const seedSentences = compressImportedNarrativeLines([
     ...(sanitizeImportedDescriptionText(shortDescription || "", item)?.split("\n") ?? []),
     ...(sanitizeImportedDescriptionText(baseDescription || "", item)?.split("\n") ?? []),
     ...(sanitizeImportedDescriptionText(notesValue || "", item)?.split("\n") ?? []),
-  ]);
+  ])
+    .flatMap((line) => splitImportedDescriptionIntoSentences(line))
+    .filter((sentence) => !shouldSkipImportedTemplateSentence(sentence));
 
-  return narrativeLines.join("\n").trim() || null;
+  const finalSentences = dedupeDescriptionLines([
+    ...seedSentences.slice(0, 2).map((sentence) => ensureImportedSentence(sentence)),
+    buildImportedApplicationSentence(applicationValue || ""),
+    buildImportedMaterialFinishSentence(item),
+  ]).filter(Boolean);
+
+  return finalSentences.join(" ").trim() || null;
 }
+
 
 function parseImportedDecimal(value: string | null | undefined) {
   if (value == null) return null;
