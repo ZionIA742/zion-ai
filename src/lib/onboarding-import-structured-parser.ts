@@ -10,9 +10,6 @@ export type StructuredImportItem = {
   rawBlock: string;
   confidence: number;
   categoria?: string;
-  sheetName?: string;
-  sourceCategory?: string;
-  sourceSubcategory?: string;
   price?: string;
   dimensions?: string;
   depth?: string;
@@ -37,6 +34,9 @@ export type StructuredImportItem = {
   environment?: string;
   diferencial?: string;
   application?: string;
+  sheetName?: string;
+  sourceCategory?: string;
+  sourceSubcategory?: string;
 };
 
 const DEBUG_INTELLIGENT_IMPORT =
@@ -123,6 +123,7 @@ const INLINE_FIELD_LABELS = [
   "estoque máximo",
   "estoque maximo",
   "controlar estoque",
+  "subcategoria",
   "aplicação",
   "aplicacao",
   "observações",
@@ -139,7 +140,6 @@ const INLINE_FIELD_LABELS = [
   "embalagem",
   "packaging",
   "categoria",
-  "subcategoria",
   "material",
   "formato",
   "modelo",
@@ -166,9 +166,25 @@ const INLINE_FIELD_LABELS = [
   "uso",
   "cor",
   "planilha",
-  "sheet",
   "aba",
+  "sheet",
 ].sort((a, b) => b.length - a.length);
+
+const BLOCKED_SKU_VALUES = new Set([
+  "de",
+  "do",
+  "da",
+  "dos",
+  "das",
+  "para",
+  "com",
+  "sem",
+  "max",
+  "home",
+  "slim",
+  "basico",
+  "básico",
+]);
 
 function escapeRegExp(value: string) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -294,6 +310,18 @@ function chooseBestPriceFromFieldMap(fieldMap: Record<string, string>) {
   );
 }
 
+function looksLikeGarbageDescriptionLine(normalizedLine: string) {
+  if (!normalizedLine) return true;
+  if (/^[a-z0-9\s]+\s*=\s*[a-z0-9\s\/()-]+$/i.test(normalizedLine)) return true;
+  if (normalizedLine.includes("metadado estatico")) return true;
+  if (normalizedLine.includes("meta dado estatico")) return true;
+  if (normalizedLine.includes("formula saida")) return true;
+  if (normalizedLine.includes("fórmula saída")) return true;
+  if (normalizedLine.includes("formula/saida")) return true;
+  if (normalizedLine.includes("observacao") && normalizedLine.includes("amarelo")) return true;
+  return false;
+}
+
 function cleanDescriptionLine(line: string, title: string) {
   const cleanedLine = cleanText(line);
   if (!cleanedLine) return "";
@@ -303,8 +331,8 @@ function cleanDescriptionLine(line: string, title: string) {
 
   if (!normalizedLine || normalizedLine === normalizedTitle) return "";
   if (normalizedLine.startsWith("planilha")) return "";
-  if (normalizedLine.startsWith("categoria")) return "";
-  if (normalizedLine.startsWith("subcategoria")) return "";
+  if (normalizedLine.startsWith("aba")) return "";
+  if (normalizedLine.startsWith("sheet")) return "";
   if (normalizedLine.startsWith("sku ")) return "";
   if (normalizedLine.startsWith("sku:")) return "";
   if (normalizedLine.startsWith("preco custo")) return "";
@@ -326,9 +354,10 @@ function cleanDescriptionLine(line: string, title: string) {
   if (normalizedLine.includes("arquivo de teste")) return "";
   if (normalizedLine.includes("aba estoque")) return "";
   if (normalizedLine.includes("sheet estoque")) return "";
+  if (looksLikeGarbageDescriptionLine(normalizedLine)) return "";
 
   const withoutRepeatedInlineFields = cleanedLine
-    .replace(/\s*(Embalagem|Aplica[cç][aã]o|Dosagem|Categoria|Subcategoria|Linha)\s*:\s*.*$/i, "")
+    .replace(/\s*(Embalagem|Aplica[cç][aã]o|Dosagem|Categoria|Linha|Subcategoria|Planilha|Aba)\s*:\s*.*$/i, "")
     .replace(/\s*(Observa[cç][oõ]es?)\s*:\s*(Controlar estoque|Item sazonal|Validar.*)$/i, "")
     .trim();
 
@@ -359,8 +388,6 @@ function scoreStructuredItem(item: StructuredImportItem) {
     (item.application ? 40 : 0) +
     (item.embalagem ? 40 : 0) +
     (item.notes ? 20 : 0) +
-    (item.sourceCategory ? 80 : 0) +
-    (item.sheetName ? 60 : 0) +
     Math.min(item.description.length, 600) +
     (item.destination === "quimicos" ? 20 : 0)
   );
@@ -393,25 +420,8 @@ function pickPreferredPrice(currentValue: string | undefined, candidateValue: st
   return candidate.length >= current.length ? candidate : current;
 }
 
-function pickPreferredDestination(
-  primary: StructuredImportItem,
-  secondary: StructuredImportItem
-): StructuredImportDestination {
-  const primaryExplicit = resolveExplicitDestination(
-    primary.sourceCategory,
-    primary.sourceSubcategory,
-    primary.sheetName
-  );
-  const secondaryExplicit = resolveExplicitDestination(
-    secondary.sourceCategory,
-    secondary.sourceSubcategory,
-    secondary.sheetName
-  );
-
-  if (primaryExplicit) return primaryExplicit;
-  if (secondaryExplicit) return secondaryExplicit;
-  if (primary.destination === secondary.destination) return primary.destination;
-  return primary.destination;
+function isSameNormalizedValue(left?: string, right?: string) {
+  return normalizeLoose(left) === normalizeLoose(right);
 }
 
 function mergeStructuredImportItems(items: StructuredImportItem[]) {
@@ -420,11 +430,12 @@ function mergeStructuredImportItems(items: StructuredImportItem[]) {
   for (const item of items) {
     const normalizedSku = normalizeLoose(item.sku);
     const normalizedTitle = normalizeLoose(item.title);
-    const categoryKey = normalizeLoose(item.sourceCategory || item.destination);
-    const sheetKey = normalizeLoose(item.sheetName || "");
+    const normalizedSheet = normalizeLoose(item.sheetName);
+    const normalizedCategory = normalizeLoose(item.sourceCategory || item.categoria);
+    const normalizedSubcategory = normalizeLoose(item.sourceSubcategory);
     const key = normalizedSku
       ? `sku::${normalizedSku}`
-      : `${categoryKey || item.destination}::${sheetKey}::${normalizedTitle}`;
+      : `${normalizedSheet || "sem-sheet"}::${normalizedCategory || item.destination}::${normalizedSubcategory || "sem-sub"}::${item.destination}::${normalizedTitle}`;
 
     const existing = mergedByKey.get(key);
     if (!existing) {
@@ -434,18 +445,15 @@ function mergeStructuredImportItems(items: StructuredImportItem[]) {
 
     const primary = scoreStructuredItem(existing) >= scoreStructuredItem(item) ? { ...existing } : { ...item };
     const secondary = primary === existing ? item : existing;
-    const mergedDestination = pickPreferredDestination(primary, secondary);
 
     const merged: StructuredImportItem = {
       ...primary,
       sourceFileName: primary.sourceFileName || secondary.sourceFileName,
-      destination: mergedDestination,
-      categoria:
-        cleanText(primary.sourceCategory || secondary.sourceCategory) ||
-        (mergedDestination === "pool" ? "pool" : mergedDestination),
-      sheetName: pickPreferredText(primary.sheetName, secondary.sheetName),
-      sourceCategory: pickPreferredText(primary.sourceCategory, secondary.sourceCategory),
-      sourceSubcategory: pickPreferredText(primary.sourceSubcategory, secondary.sourceSubcategory),
+      destination:
+        primary.destination === secondary.destination
+          ? primary.destination
+          : primary.destination,
+      categoria: primary.categoria || secondary.categoria,
       title: pickPreferredText(primary.title, secondary.title),
       description: mergeDescriptionParts([primary.description, secondary.description]),
       rawBlock: mergeDescriptionParts([primary.rawBlock, secondary.rawBlock]),
@@ -474,7 +482,19 @@ function mergeStructuredImportItems(items: StructuredImportItem[]) {
       environment: pickPreferredText(primary.environment, secondary.environment),
       diferencial: pickPreferredText(primary.diferencial, secondary.diferencial),
       application: pickPreferredText(primary.application, secondary.application),
+      sheetName: pickPreferredText(primary.sheetName, secondary.sheetName),
+      sourceCategory: pickPreferredText(primary.sourceCategory, secondary.sourceCategory),
+      sourceSubcategory: pickPreferredText(primary.sourceSubcategory, secondary.sourceSubcategory),
     };
+
+    if (
+      !isSameNormalizedValue(existing.sheetName, item.sheetName) ||
+      !isSameNormalizedValue(existing.sourceCategory || existing.categoria, item.sourceCategory || item.categoria) ||
+      !isSameNormalizedValue(existing.sourceSubcategory, item.sourceSubcategory)
+    ) {
+      mergedByKey.set(`${key}::${mergedByKey.size + 1}`, { ...item });
+      continue;
+    }
 
     mergedByKey.set(key, merged);
   }
@@ -514,7 +534,9 @@ function extractLoosePrice(text: string) {
 
   for (const pattern of prioritizedPatterns) {
     const match = text.match(pattern);
-    if (match?.[1]) return match[1];
+    if (match?.[1]) {
+      return match[1];
+    }
   }
 
   return "";
@@ -522,10 +544,14 @@ function extractLoosePrice(text: string) {
 
 function extractLooseDimensions(text: string) {
   const rectMatch = text.match(/\b(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m\b/i);
-  if (rectMatch) return `${rectMatch[1]} x ${rectMatch[2]} m`;
+  if (rectMatch) {
+    return `${rectMatch[1]} x ${rectMatch[2]} m`;
+  }
 
   const diamMatch = text.match(/\b(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
-  if (diamMatch) return `${diamMatch[1]} m diâm`;
+  if (diamMatch) {
+    return `${diamMatch[1]} m diâm`;
+  }
 
   return "";
 }
@@ -567,17 +593,41 @@ function extractLooseShape(text: string) {
 function extractLooseBrand(text: string) {
   const match =
     text.match(/marca\s*[:\-]?\s*(.+)/i) ||
-    text.match(/\b(cris água|cris agua|brustec|sodramar|nautilus|veico|genco)\b/i);
+    text.match(/\b(cris água|cris agua|brustec|sodramar|nautilus|veico|genco|hidralux|netuno|aquaplus|cristal pool)\b/i);
 
-  return cleanText(match?.[1] || "");
+  return cleanText(match?.[1] || match?.[0] || "");
+}
+
+function isValidSkuCandidate(value: string | null | undefined) {
+  const raw = cleanText(value || "");
+  const normalized = normalizeLoose(raw);
+  if (!raw || raw.length < 4) return false;
+  if (BLOCKED_SKU_VALUES.has(normalized)) return false;
+  if (/^(sim|nao|não|max|home|slim)$/i.test(raw)) return false;
+  if (!/[a-z]/i.test(raw) || !/\d/.test(raw)) return false;
+  if (!/^[a-z0-9][a-z0-9\-_.\/]{2,}$/i.test(raw)) return false;
+  return true;
+}
+
+function sanitizeSku(value: string | null | undefined) {
+  const cleaned = cleanText(value || "").replace(/[;,]+$/g, "").trim();
+  return isValidSkuCandidate(cleaned) ? cleaned : "";
 }
 
 function extractLooseSku(text: string) {
-  const match =
-    text.match(/\bsku\s*[:\-]?\s*([a-z0-9\-_./]+)/i) ||
-    text.match(/\bc[oó]digo\s*[:\-]?\s*([a-z0-9\-_./]+)/i);
+  const patterns = [
+    /\bsku\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/i,
+    /\bc[oó]digo\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/i,
+    /\b(acc-\d{3,}|out-\d{3,}|qmc-\d{3,})\b/i,
+  ];
 
-  return cleanText(match?.[1] || "");
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const candidate = sanitizeSku(match?.[1] || match?.[0] || "");
+    if (candidate) return candidate;
+  }
+
+  return "";
 }
 
 function extractLooseWeight(text: string) {
@@ -596,9 +646,9 @@ function extractLooseDosage(text: string) {
 function extractLooseColor(text: string) {
   const match =
     text.match(/\bcor\s*[:\-]?\s*(.+)/i) ||
-    text.match(/\b(azul cristal|azul|branco|cinza|preto|verde)\b/i);
+    text.match(/\b(azul cristal|azul|branco|cinza|preto|verde|amarelo)\b/i);
 
-  return cleanText(match?.[1] || "");
+  return cleanText(match?.[1] || match?.[0] || "");
 }
 
 function isChemicalSku(value: string | null | undefined) {
@@ -606,41 +656,29 @@ function isChemicalSku(value: string | null | undefined) {
   return /^QMC-\d{3,}$/.test(sku);
 }
 
-function resolveExplicitDestination(
-  category?: string,
-  subcategory?: string,
-  sheetName?: string
-): StructuredImportDestination | null {
-  const source = normalizeLoose([category, subcategory, sheetName].filter(Boolean).join(" "));
-  if (!source) return null;
-
-  if (/(^|\s)(quimicos|quimico)(\s|$)/.test(source)) return "quimicos";
-  if (/(^|\s)(acessorios|acessorio)(\s|$)/.test(source)) return "acessorios";
-  if (/(^|\s)(outros|outro|diversos)(\s|$)/.test(source)) return "outros";
-  if (/(^|\s)(piscinas|piscina|pool)(\s|$)/.test(source)) return "pool";
-
-  return null;
-}
-
-function inferDestination(
-  text: string,
-  explicitSku?: string,
-  explicitCategory?: string,
-  explicitSubcategory?: string,
-  explicitSheetName?: string
-): StructuredImportDestination {
-  const explicitDestination = resolveExplicitDestination(
-    explicitCategory,
-    explicitSubcategory,
-    explicitSheetName
+function inferDestination(params: {
+  text: string;
+  explicitSku?: string;
+  explicitCategory?: string;
+  explicitSubcategory?: string;
+  explicitSheetName?: string;
+}): StructuredImportDestination {
+  const explicitSource = normalizeLoose(
+    [params.explicitCategory, params.explicitSubcategory, params.explicitSheetName]
+      .filter(Boolean)
+      .join(" ")
   );
-  if (explicitDestination) return explicitDestination;
 
-  if (isChemicalSku(explicitSku)) {
+  if (/(^|\s)(acessorios|acessorio)(\s|$)/.test(explicitSource)) return "acessorios";
+  if (/(^|\s)(outros|outro)(\s|$)/.test(explicitSource)) return "outros";
+  if (/(^|\s)(quimicos|quimico)(\s|$)/.test(explicitSource)) return "quimicos";
+  if (/(^|\s)(pool|piscinas|piscina)(\s|$)/.test(explicitSource)) return "pool";
+
+  if (isChemicalSku(params.explicitSku)) {
     return "quimicos";
   }
 
-  const source = normalizeLoose(text);
+  const source = normalizeLoose(params.text);
 
   if (/\bqmc\s*-\s*\d{3,}\b/i.test(source)) {
     return "quimicos";
@@ -709,11 +747,9 @@ function splitDelimitedBlocks(text: string) {
     const start = markers[index].index ?? 0;
     const end = index + 1 < markers.length ? markers[index + 1].index ?? normalized.length : normalized.length;
     const rawBlock = normalized.slice(start, end);
-    const cleanedBlock = normalizeBlock(
-      rawBlock.replace(/^===\s*ITEM[^\n]*\n?/i, "")
-    );
+    const cleanedBlock = normalizeBlock(rawBlock.replace(/^===\s*ITEM[^\n]*\n?/i, ""));
 
-    if (cleanedBlock && !normalizeLoose(cleanedBlock).startsWith("planilha ")) {
+    if (cleanedBlock) {
       blocks.push(cleanedBlock);
     }
   }
@@ -841,7 +877,6 @@ function chooseTitle(
   const candidateKeys = [
     "nome",
     "nome do item",
-    "título",
     "titulo",
     "título",
     "produto",
@@ -962,46 +997,36 @@ function parseSingleBlock(
   const title = chooseTitle(fieldMap, plainLines, fileName, index);
   const description = chooseDescription(fieldMap, plainLines, title);
 
-  const resolvedSku =
-    fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || "";
-
-  const resolvedSheetName =
-    fieldMap["planilha"] || fieldMap["aba"] || fieldMap["sheet"] || "";
-
-  const resolvedSourceCategory =
-    fieldMap["categoria"] || "";
-
-  const resolvedSourceSubcategory =
-    fieldMap["subcategoria"] || "";
+  const resolvedSku = sanitizeSku(
+    fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || ""
+  );
+  const sheetName = cleanText(fieldMap["planilha"] || fieldMap["aba"] || fieldMap["sheet"] || "");
+  const sourceCategory = cleanText(fieldMap["categoria"] || "");
+  const sourceSubcategory = cleanText(fieldMap["subcategoria"] || "");
 
   const sourceText = [
     title,
     description,
     normalizedBlock,
-    resolvedSheetName,
-    resolvedSourceCategory,
-    resolvedSourceSubcategory,
     resolvedSku,
+    sourceCategory,
+    sourceSubcategory,
+    sheetName,
   ]
     .filter(Boolean)
     .join("\n");
-
-  const destination = inferDestination(
-    sourceText,
-    resolvedSku,
-    resolvedSourceCategory,
-    resolvedSourceSubcategory,
-    resolvedSheetName
-  );
+  const destination = inferDestination({
+    text: sourceText,
+    explicitSku: resolvedSku,
+    explicitCategory: sourceCategory,
+    explicitSubcategory: sourceSubcategory,
+    explicitSheetName: sheetName,
+  });
 
   const item: StructuredImportItem = {
     sourceFileName: fileName,
     destination,
-    categoria:
-      cleanText(resolvedSourceCategory) || (destination === "pool" ? "pool" : destination),
-    sheetName: cleanText(resolvedSheetName),
-    sourceCategory: cleanText(resolvedSourceCategory),
-    sourceSubcategory: cleanText(resolvedSourceSubcategory),
+    categoria: sourceCategory || (destination === "pool" ? "pool" : destination),
     title,
     description,
     rawBlock: normalizedBlock,
@@ -1035,6 +1060,9 @@ function parseSingleBlock(
     environment: fieldMap["ambiente"] || fieldMap["ambiente indicado"] || "",
     diferencial: fieldMap["diferencial"] || "",
     application: fieldMap["aplicação"] || "",
+    sheetName,
+    sourceCategory,
+    sourceSubcategory,
   };
 
   if (!normalizeLoose(item.title)) return null;
@@ -1165,9 +1193,10 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       title: item.title,
       sku: item.sku,
       destination: item.destination,
-      category: item.sourceCategory,
-      sheetName: item.sheetName,
       price: item.price,
+      sheetName: item.sheetName,
+      sourceCategory: item.sourceCategory,
+      sourceSubcategory: item.sourceSubcategory,
     })),
   });
 
@@ -1190,8 +1219,6 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
         title: item.title,
         sku: item.sku,
         destination: item.destination,
-        category: item.sourceCategory,
-        sheetName: item.sheetName,
         price: item.price,
       })),
     });
@@ -1249,9 +1276,10 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       title: item.title,
       sku: item.sku,
       destination: item.destination,
-      category: item.sourceCategory,
-      sheetName: item.sheetName,
       price: item.price,
+      sheetName: item.sheetName,
+      sourceCategory: item.sourceCategory,
+      sourceSubcategory: item.sourceSubcategory,
     })),
   });
 
