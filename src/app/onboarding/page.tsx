@@ -1037,10 +1037,10 @@ function buildImportedCatalogName(
   return raw.slice(0, 160);
 }
 
+
 function dedupeDescriptionLines(lines: string[]) {
   const seen = new Set<string>();
   const result: string[] = [];
-
   for (const line of lines) {
     const cleaned = cleanupImportedDescriptionLine(line);
     const key = normalizeImportedLoose(cleaned);
@@ -1048,20 +1048,19 @@ function dedupeDescriptionLines(lines: string[]) {
     seen.add(key);
     result.push(cleaned);
   }
-
   return result;
 }
 
 function escapeImportedRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\]/g, "\$&");
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function cleanupImportedDescriptionLine(value: string) {
   return String(value || "")
-    .replace(/\s*[-–—]+\s*item\s*\d+/giu, " ")
-    .replace(/item\s*\d+/giu, " ")
+    .replace(/\s*[-–—]+\s*item\s*\d+\b/giu, " ")
+    .replace(/\bitem\s*\d+\b/giu, " ")
     .replace(/\s+([,.;:])/g, "$1")
-    .replace(/([,.;:])+/g, "$1")
+    .replace(/([,.;:])\1+/g, "$1")
     .replace(/\s{2,}/g, " ")
     .trim()
     .replace(/^[-–—:;,\.\s]+/u, "")
@@ -1078,6 +1077,7 @@ function normalizeImportedNarrativeLine(value: string) {
   );
 
   cleaned = cleanupImportedDescriptionLine(cleaned);
+
   if (!cleaned) return "";
 
   const normalized = normalizeImportedLoose(cleaned);
@@ -1087,79 +1087,52 @@ function normalizeImportedNarrativeLine(value: string) {
   return cleaned;
 }
 
-function isOperationalImportedDescriptionLine(value: string) {
-  const normalized = normalizeImportedLoose(value);
-  if (!normalized) return true;
+function stripImportedRepeatedDetailsFromText(
+  source: string,
+  details: Array<{ label: string; value: string }>
+) {
+  let cleaned = String(source || "");
 
-  const blockedStarts = [
-    "bom item ",
-    "boa margem ",
-    "item de giro ",
-    "priorizar exposicao ",
-    "priorizar exposição ",
-    "reforcar ",
-    "reforçar ",
-    "checar ",
-    "confirmar ",
-    "repor ",
-    "reposicao ",
-    "reposição ",
-    "usar foto ",
-    "usar imagens ",
-    "metadado ",
-  ];
+  for (const detail of details) {
+    const value = String(detail.value || "").trim();
+    if (!value) continue;
 
-  if (blockedStarts.some((item) => normalized.startsWith(item))) {
-    return true;
+    const labelPattern = escapeImportedRegExp(detail.label);
+    const valuePattern = escapeImportedRegExp(value);
+
+    cleaned = cleaned.replace(
+      new RegExp(`(?:^|\\s)${labelPattern}\\s*[:–-]\\s*${valuePattern}(?=$|[\\s,.;])`, "giu"),
+      " "
+    );
   }
 
-  const blockedIncludes = [
-    "composicao de orcamento",
-    "composição de orçamento",
-    "margem em projeto",
-    "orientacao de uso na venda",
-    "orientação de uso na venda",
-    "compatibilidade antes de vender",
-    "confirmar medida antes do fechamento",
-    "exposicao proxima a area de limpeza",
-    "exposição próxima à área de limpeza",
-    "item sazonal",
-    "metadado estatico",
-    "metadado estático",
-    "formula saida",
-    "fórmula saída",
-  ];
+  const cleanedLines = cleaned
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => normalizeImportedNarrativeLine(line))
+    .filter(Boolean);
 
-  return blockedIncludes.some((item) => normalized.includes(item));
+  return cleanedLines.join("\n").trim();
 }
 
 function compressImportedNarrativeLines(lines: string[]) {
-  const uniqueLines = dedupeDescriptionLines(lines)
-    .map((line) => normalizeImportedNarrativeLine(line))
-    .filter(Boolean)
-    .filter((line) => !isOperationalImportedDescriptionLine(line));
+  const normalizedLines = dedupeDescriptionLines(
+    lines.map((line) => normalizeImportedNarrativeLine(line)).filter(Boolean)
+  );
 
-  return uniqueLines.filter((line, index) => {
-    const normalizedLine = normalizeImportedLoose(line);
-    if (!normalizedLine) return false;
+  const filtered = normalizedLines.filter((line, index, allLines) => {
+    const current = normalizeImportedLoose(line);
+    if (!current) return false;
 
-    for (let compareIndex = 0; compareIndex < uniqueLines.length; compareIndex += 1) {
-      if (compareIndex === index) continue;
-
-      const other = uniqueLines[compareIndex];
-      const normalizedOther = normalizeImportedLoose(other);
-      if (!normalizedOther || normalizedOther === normalizedLine) continue;
-
-      const otherContainsLine =
-        normalizedOther.includes(normalizedLine) && normalizedOther.length >= normalizedLine.length + 18;
-
-      if (otherContainsLine) {
-        return false;
-      }
-    }
-
-    return true;
+    return !allLines.some((otherLine, otherIndex) => {
+      if (otherIndex === index) return false;
+      const other = normalizeImportedLoose(otherLine);
+      if (!other || other === current) return false;
+      return other.includes(current);
+    });
   });
+
+  return dedupeDescriptionLines(filtered);
 }
 
 function sanitizeImportedDescriptionText(
@@ -1168,11 +1141,10 @@ function sanitizeImportedDescriptionText(
 ) {
   const title = buildImportedCatalogName(item);
   const titleLoose = normalizeImportedLoose(title);
+
   const rawLines = String(source || "")
-    .replace(/
-/g, "")
-    .split("
-")
+    .replace(/\r/g, "")
+    .split("\n")
     .map((line) => normalizeImportedNarrativeLine(line))
     .filter(Boolean);
 
@@ -1180,7 +1152,6 @@ function sanitizeImportedDescriptionText(
     const normalized = normalizeImportedLoose(line);
     if (!normalized) return false;
     if (normalized === titleLoose) return false;
-    if (isOperationalImportedDescriptionLine(line)) return false;
 
     const blockedStarts = [
       "categoria ",
@@ -1247,6 +1218,10 @@ function sanitizeImportedDescriptionText(
       "código de barras:",
       "barcode ",
       "barcode:",
+      "observacao ",
+      "observacao:",
+      "observação ",
+      "observação:",
     ];
 
     if (blockedStarts.some((value) => normalized.startsWith(value))) {
@@ -1275,6 +1250,18 @@ function sanitizeImportedDescriptionText(
       "planilha catalogo_quimicos",
       "=== item",
       "controlar estoque ativo",
+      "bom item para composicao de orcamento",
+      "bom item para composição de orçamento",
+      "priorizar exposicao",
+      "priorizar exposição",
+      "reforcar compatibilidade",
+      "reforçar compatibilidade",
+      "confirmar medida",
+      "item de giro constante no balcao",
+      "item de giro constante no balcão",
+      "checar compatibilidade",
+      "reforcar garantia",
+      "reforçar garantia",
     ];
 
     if (blockedIncludes.some((value) => normalized.includes(value))) {
@@ -1284,8 +1271,7 @@ function sanitizeImportedDescriptionText(
     return true;
   });
 
-  const joined = compressImportedNarrativeLines(filtered).join("
-").trim();
+  const joined = compressImportedNarrativeLines(filtered).join("\n").trim();
   return joined ? joined.slice(0, 4000) : null;
 }
 
@@ -1321,16 +1307,12 @@ function buildImportedCatalogDescription(
     extractImportedLabeledValue(source, ["Observações", "Observacoes", "Notas"]);
 
   const narrativeLines = compressImportedNarrativeLines([
-    ...(sanitizeImportedDescriptionText(shortDescription || "", item)?.split("
-") ?? []),
-    ...(sanitizeImportedDescriptionText(baseDescription || "", item)?.split("
-") ?? []),
-    ...(sanitizeImportedDescriptionText(notesValue || "", item)?.split("
-") ?? []),
+    ...(sanitizeImportedDescriptionText(shortDescription || "", item)?.split("\n") ?? []),
+    ...(sanitizeImportedDescriptionText(baseDescription || "", item)?.split("\n") ?? []),
+    ...(sanitizeImportedDescriptionText(notesValue || "", item)?.split("\n") ?? []),
   ]);
 
-  return narrativeLines.join("
-").trim() || null;
+  return narrativeLines.join("\n").trim() || null;
 }
 
 function parseImportedDecimal(value: string | null | undefined) {
@@ -1746,13 +1728,6 @@ function canPersistAsPool(metrics: {
     metrics.width_m != null &&
     metrics.length_m != null &&
     (metrics.depth_m != null || metrics.max_capacity_l != null)
-  );
-}) {
-  return (
-    metrics.width_m != null ||
-    metrics.length_m != null ||
-    metrics.depth_m != null ||
-    metrics.max_capacity_l != null
   );
 }
 function normalizeImportedLoose(value: string | null | undefined) {
