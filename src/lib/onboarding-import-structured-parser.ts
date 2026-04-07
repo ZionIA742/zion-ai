@@ -364,6 +364,46 @@ function cleanDescriptionLine(line: string, title: string) {
   return cleanText(withoutRepeatedInlineFields);
 }
 
+function filterDescriptionPlainLines(
+  plainLines: string[],
+  title: string,
+  fieldMap: Record<string, string>
+) {
+  const blockedFieldValues = [
+    fieldMap["aplicação"],
+    fieldMap["uso"],
+    fieldMap["indicação"],
+    fieldMap["material"],
+    fieldMap["cor"],
+    fieldMap["marca"],
+    fieldMap["embalagem"],
+    fieldMap["packaging"],
+    fieldMap["dosagem"],
+    fieldMap["preço"],
+    fieldMap["preço venda"],
+    fieldMap["preço sugerido"],
+    fieldMap["sku"],
+    fieldMap["codigo"],
+    fieldMap["código"],
+  ]
+    .flatMap((value) => String(value || "").split("\n"))
+    .map((value) => normalizeLoose(value))
+    .filter(Boolean);
+
+  return plainLines
+    .map((line) => cleanDescriptionLine(line, title))
+    .filter(Boolean)
+    .filter((line) => {
+      const normalized = normalizeLoose(line);
+      if (!normalized) return false;
+      if (blockedFieldValues.includes(normalized)) return false;
+      if (blockedFieldValues.some((value) => value && (normalized === value || normalized.includes(value)))) {
+        return false;
+      }
+      return true;
+    });
+}
+
 function mergeDescriptionParts(parts: string[]) {
   const result: string[] = [];
   const seen = new Set<string>();
@@ -901,25 +941,31 @@ function chooseDescription(
   plainLines: string[],
   title: string
 ) {
-  const candidateKeys = [
-    "descrição",
-    "observações",
-    "indicação",
-    "descrição comercial",
-  ];
+  const primaryDescriptionKeys = ["descrição", "descrição comercial"];
+  const secondaryDescriptionKeys = ["indicação", "observações"];
 
-  const pickedParts = candidateKeys
+  const pickedPrimaryParts = primaryDescriptionKeys
     .map((key) => fieldMap[key])
     .filter(Boolean)
     .flatMap((value) => String(value || "").split("\n"))
     .map((line) => cleanDescriptionLine(line, title))
     .filter(Boolean);
 
-  const plainDescriptionLines = plainLines
+  const pickedSecondaryParts = secondaryDescriptionKeys
+    .map((key) => fieldMap[key])
+    .filter(Boolean)
+    .flatMap((value) => String(value || "").split("\n"))
     .map((line) => cleanDescriptionLine(line, title))
     .filter(Boolean);
 
-  return mergeDescriptionParts([...pickedParts, ...plainDescriptionLines]);
+  const plainDescriptionLines = filterDescriptionPlainLines(plainLines, title, fieldMap);
+
+  const mergedPrimary = mergeDescriptionParts([...pickedPrimaryParts, ...plainDescriptionLines]);
+  if (mergedPrimary) {
+    return mergedPrimary;
+  }
+
+  return mergeDescriptionParts(pickedSecondaryParts);
 }
 
 function enrichFieldMapWithLooseExtraction(
