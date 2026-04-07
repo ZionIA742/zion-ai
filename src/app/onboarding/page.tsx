@@ -135,9 +135,6 @@ type IntelligentImportResponse =
         sheetName?: string;
         rowIndex?: number;
         columnIndex?: number;
-        anchorCell?: string;
-        drawingName?: string;
-        imageRelationshipId?: string;
         imageOrder?: number;
         worksheetRowNumber?: number;
         sheetScopedKey?: string;
@@ -853,6 +850,7 @@ function extractImportedSourceSubcategory(
   ).trim();
 }
 
+
 function extractImportedSourceItemNumber(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -868,6 +866,22 @@ function extractImportedSourceItemNumberValue(
   const rawValue = extractImportedSourceItemNumber(item);
   const parsedValue = Number(rawValue);
   return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function buildImportedSourceLocationKey(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const sourceFile = normalizeImportedLoose(item.sourceFileName);
+  const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const itemNumber = normalizeImportedLoose(extractImportedSourceItemNumber(item));
+
+  if (sourceFile && sheetName && itemNumber) {
+    return `${sourceFile}::${sheetName}::item::${itemNumber}`;
+  }
+  if (sourceFile && itemNumber) {
+    return `${sourceFile}::item::${itemNumber}`;
+  }
+  return "";
 }
 
 function hasSpecificImportedImageIdentity(
@@ -970,23 +984,6 @@ function buildImportedImageBucketKeys(
 
   return Array.from(keys).filter(Boolean);
 }
-
-function buildImportedSourceLocationKey(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const sourceFile = normalizeImportedLoose(item.sourceFileName);
-  const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
-  const itemNumber = normalizeImportedLoose(extractImportedSourceItemNumber(item));
-
-  if (sourceFile && sheetName && itemNumber) {
-    return `${sourceFile}::${sheetName}::item::${itemNumber}`;
-  }
-  if (sourceFile && itemNumber) {
-    return `${sourceFile}::item::${itemNumber}`;
-  }
-  return "";
-}
-
 
 function extractImportedFirstCurrencyValue(value: string | null | undefined) {
   const source = String(value || "");
@@ -1509,125 +1506,9 @@ function buildImportedMaterialSentence(
   return `Acabamento ${color}`;
 }
 
-function isBlockedImportedDescriptionPart(value: string) {
-  const normalized = normalizeImportedLoose(value);
-  if (!normalized) return true;
-
-  const blockedIncludes = [
-    "repor quando atingir o estoque minimo",
-    "repor quando atingir estoque minimo",
-    "versao muito procurada",
-    "versao muito buscada",
-    "muito procurada em piscinas residenciais",
-    "bom item para venda combinada",
-    "venda combinada com quimicos",
-    "venda casada",
-    "confirmar medida antes do fechamento",
-    "confirmar medidas antes do fechamento",
-    "pode exigir instalacao tecnica",
-    "pode necessitar instalacao tecnica",
-    "checar compatibilidade com projeto existente",
-    "consultar disponibilidade antes do fechamento",
-    "consultar disponibilidade",
-    "consultar estoque",
-    "estoque minimo",
-    "estoque maximo",
-    "item com bom giro",
-    "alto giro",
-    "muito procurado",
-    "muito buscado",
-    "otimo para revenda",
-    "ideal para venda combinada",
-    "ideal para venda casada",
-    "produto de boa saida",
-    "cliente costuma levar junto",
-    "ajuda na venda",
-  ];
-
-  if (blockedIncludes.some((part) => normalized.includes(part))) {
-    return true;
-  }
-
-  const blockedPatterns = [
-    /\brepor\b.*\bestoque\b/iu,
-    /\bconfirmar\b.*\bfechamento\b/iu,
-    /\bchecar\b.*\bcompatibilidade\b/iu,
-    /\bconsultar\b.*\bdisponibilidade\b/iu,
-    /\bpode\b.*\binstalacao tecnica\b/iu,
-    /\bitem\b.*\bvenda combinada\b/iu,
-    /\bitem\b.*\bvenda casada\b/iu,
-    /\bversao\b.*\bprocurad\w*\b/iu,
-  ];
-
-  return blockedPatterns.some((pattern) => pattern.test(value));
-}
-
-function isWeakImportedDescriptionPart(value: string) {
-  const normalized = normalizeImportedLoose(value);
-  if (!normalized) return true;
-
-  const weakStarts = [
-    "ideal para",
-    "indicado para",
-    "recomendado para",
-    "excelente para",
-    "perfeito para",
-    "produto para",
-    "item para",
-    "versao para",
-  ];
-
-  if (weakStarts.some((part) => normalized.startsWith(part)) && normalized.split(" ").length <= 4) {
-    return true;
-  }
-
-  const weakExactMatches = [
-    "uso geral",
-    "uso profissional",
-    "uso residencial",
-    "alta durabilidade",
-    "facil instalacao",
-    "facil uso",
-  ];
-
-  if (weakExactMatches.includes(normalized)) {
-    return true;
-  }
-
-  return false;
-}
-
-function isMaterialRichImportedDescriptionPart(value: string) {
-  const normalized = normalizeImportedLoose(value);
-  if (!normalized) return false;
-
-  return [
-    "material",
-    "acabamento",
-    "abs",
-    "pvc",
-    "inox",
-    "fibra",
-    "aluminio",
-    "resina",
-    "cromado",
-    "branco",
-    "preto",
-    "azul",
-    "medida",
-    "medidas",
-    "diametro",
-    "comprimento",
-    "3 m",
-    "5 m",
-  ].some((part) => normalized.includes(part));
-}
-
 function shouldSkipImportedDescriptionPart(candidate: string, chosen: string[]) {
   const normalizedCandidate = normalizeImportedLoose(candidate);
   if (!normalizedCandidate) return true;
-  if (isBlockedImportedDescriptionPart(candidate)) return true;
-  if (isWeakImportedDescriptionPart(candidate)) return true;
 
   return chosen.some((part) => {
     const normalizedPart = normalizeImportedLoose(part);
@@ -1660,10 +1541,6 @@ function finalizeImportedDescriptionParts(parts: string[]) {
     if (!cleaned) continue;
     if (shouldSkipImportedDescriptionPart(cleaned, chosen)) continue;
 
-    if (chosen.length >= 2 && !isMaterialRichImportedDescriptionPart(cleaned)) {
-      continue;
-    }
-
     chosen.push(cleaned);
     if (chosen.length >= 3) break;
   }
@@ -1691,7 +1568,6 @@ function buildImportedCatalogDescription(
     ]
       .map((value) => normalizeImportedNarrativeLine(value))
       .filter(Boolean)
-      .filter((value) => !isBlockedImportedDescriptionPart(value))
   );
 
   const applicationValue =
@@ -1704,17 +1580,13 @@ function buildImportedCatalogDescription(
   const preferredParts: string[] = [];
 
   if (narrativeLines[0]) preferredParts.push(narrativeLines[0]);
-  if (applicationLine && !isBlockedImportedDescriptionPart(applicationLine)) {
-    preferredParts.push(applicationLine);
-  }
+  if (applicationLine) preferredParts.push(applicationLine);
 
   for (const extraLine of narrativeLines.slice(1)) {
     preferredParts.push(extraLine);
   }
 
-  if (materialLine && !isBlockedImportedDescriptionPart(materialLine)) {
-    preferredParts.push(materialLine);
-  }
+  if (materialLine) preferredParts.push(materialLine);
 
   return finalizeImportedDescriptionParts(preferredParts);
 }
@@ -2022,6 +1894,7 @@ function extractImportedCatalogPriceCents(
 
   return Math.round(parsedGeneric * 100);
 }
+
 
 function pickRelatedExtractedImages(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
