@@ -139,6 +139,8 @@ type IntelligentImportResponse =
         drawingName?: string;
         imageRelationshipId?: string;
         imageOrder?: number;
+        worksheetRowNumber?: number;
+        sheetScopedKey?: string;
       }>;
       normalizedPreview: IntelligentImportNormalizedPreview[];
       dedupedPreview: IntelligentImportDedupedPreview[];
@@ -858,6 +860,61 @@ function extractImportedSourceItemNumber(
   const match = rawSource.match(/\bitem\s*(\d{1,6})\b/i);
   if (!match?.[1]) return "";
   return match[1];
+}
+
+function extractImportedSourceItemNumberValue(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const rawValue = extractImportedSourceItemNumber(item);
+  const parsedValue = Number(rawValue);
+  return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function hasSpecificImportedImageIdentity(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const sourceLocationKey = buildImportedSourceLocationKey(item);
+  if (sourceLocationKey) return true;
+
+  const sourceItemNumber = extractImportedSourceItemNumber(item);
+  if (sourceItemNumber) return true;
+
+  const normalizedSourceFileName = normalizeImportedLoose(item.sourceFileName);
+  return /(?:^|\s)item\s*\d{1,6}(?:\s|$)/i.test(normalizedSourceFileName);
+}
+
+function sortImportedItemsForImageAssignment<
+  T extends IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+>(items: T[]) {
+  return [...items].sort((left, right) => {
+    const sourceA = normalizeImportedLoose(left.sourceFileName || "");
+    const sourceB = normalizeImportedLoose(right.sourceFileName || "");
+    if (sourceA !== sourceB) return sourceA.localeCompare(sourceB);
+
+    const sheetA = normalizeImportedLoose(extractImportedSourceSheetName(left));
+    const sheetB = normalizeImportedLoose(extractImportedSourceSheetName(right));
+    if (sheetA !== sheetB) {
+      return sheetA.localeCompare(sheetB, undefined, { numeric: true });
+    }
+
+    const itemNumberA = extractImportedSourceItemNumberValue(left) ?? Number.MAX_SAFE_INTEGER;
+    const itemNumberB = extractImportedSourceItemNumberValue(right) ?? Number.MAX_SAFE_INTEGER;
+    if (itemNumberA !== itemNumberB) return itemNumberA - itemNumberB;
+
+    const skuA = normalizeImportedLoose(extractImportedCatalogSku(left));
+    const skuB = normalizeImportedLoose(extractImportedCatalogSku(right));
+    if (skuA !== skuB) return skuA.localeCompare(skuB, undefined, { numeric: true });
+
+    const titleA = normalizeImportedLoose(left.title || "");
+    const titleB = normalizeImportedLoose(right.title || "");
+    if (titleA !== titleB) return titleA.localeCompare(titleB, undefined, { numeric: true });
+
+    return normalizeImportedLoose(left.rawText || "").localeCompare(
+      normalizeImportedLoose(right.rawText || ""),
+      undefined,
+      { numeric: true }
+    );
+  });
 }
 
 function sortExtractedImagesForSave<T extends {
@@ -1980,6 +2037,8 @@ function pickRelatedExtractedImages(
       rowIndex?: number;
       columnIndex?: number;
       imageOrder?: number;
+      worksheetRowNumber?: number;
+      sheetScopedKey?: string;
     }>
   >,
   extractedImageBucketCursors: Map<string, number>,
@@ -1993,11 +2052,14 @@ function pickRelatedExtractedImages(
     rowIndex?: number;
     columnIndex?: number;
     imageOrder?: number;
+    worksheetRowNumber?: number;
+    sheetScopedKey?: string;
   }>,
   consumedExtractedImageIds: Set<string>,
   totalSourceItems: number
 ) {
   const sourceBucketKeys = buildImportedImageBucketKeys(item);
+  const itemHasSpecificIdentity = hasSpecificImportedImageIdentity(item);
 
   const tryConsumeFromBucket = (bucketKey: string) => {
     const bucket = extractedImageBuckets.get(bucketKey);
@@ -2032,6 +2094,10 @@ function pickRelatedExtractedImages(
   for (const bucketKey of sourceBucketKeys) {
     const direct = tryConsumeFromBucket(bucketKey);
     if (direct.length > 0) return direct;
+  }
+
+  if (itemHasSpecificIdentity) {
+    return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
   }
 
   const normalizedSourceKeys = sourceBucketKeys
@@ -3077,7 +3143,9 @@ async function handleSaveImportedItemsToCatalog() {
         : intelligentImportResult.normalizedPreview;
 
     const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
-    const sourceItems = dedupeImportedItemsForSave(filteredSourceItems);
+    const sourceItems = sortImportedItemsForImageAssignment(
+      dedupeImportedItemsForSave(filteredSourceItems)
+    );
 
     if (sourceItems.length === 0) {
       setFormError(
@@ -3103,6 +3171,12 @@ async function handleSaveImportedItemsToCatalog() {
           mimeType: string;
           dataUrl: string;
           sourceFileName: string;
+          sheetName?: string;
+          rowIndex?: number;
+          columnIndex?: number;
+          imageOrder?: number;
+          worksheetRowNumber?: number;
+          sheetScopedKey?: string;
         }>
       >();
 
@@ -3120,6 +3194,10 @@ async function handleSaveImportedItemsToCatalog() {
           rowIndex: typeof image.rowIndex === "number" ? image.rowIndex : undefined,
           columnIndex: typeof image.columnIndex === "number" ? image.columnIndex : undefined,
           imageOrder: typeof image.imageOrder === "number" ? image.imageOrder : undefined,
+          worksheetRowNumber:
+            typeof image.worksheetRowNumber === "number" ? image.worksheetRowNumber : undefined,
+          sheetScopedKey:
+            typeof image.sheetScopedKey === "string" ? image.sheetScopedKey : undefined,
         }))
       );
 
