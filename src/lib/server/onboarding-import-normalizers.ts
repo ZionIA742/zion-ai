@@ -63,9 +63,25 @@ function resolveNormalizedType(item: StructuredImportItem): NormalizedImportItem
 }
 
 function buildMetadata(item: StructuredImportItem): Record<string, string> {
+  const explicitCategory = String(item.sourceCategory || item.categoria || "").trim();
+  const explicitSubcategory = String(item.sourceSubcategory || "").trim();
+  const explicitSheetName = String(item.sheetName || "").trim();
+  const resolvedCategory = explicitCategory || (item.destination === "pool" ? "pool" : item.destination);
+
   return {
-    categoria: item.destination === "pool" ? "pool" : item.destination,
+    categoria: resolvedCategory,
+    category: resolvedCategory,
+    category_name: resolvedCategory,
     destination: item.destination,
+    __resolved_destination: item.destination,
+    subcategoria: explicitSubcategory,
+    source_subcategory: explicitSubcategory,
+    sub_category: explicitSubcategory,
+    sheet_name: explicitSheetName,
+    planilha: explicitSheetName,
+    aba: explicitSheetName,
+    sheet: explicitSheetName,
+    source_category: resolvedCategory,
     clean_description: item.description || "",
     price: item.price || "",
     dimensions: item.dimensions || "",
