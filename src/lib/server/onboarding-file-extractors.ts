@@ -23,6 +23,8 @@ export type ExtractedImageAsset = {
   drawingName?: string;
   imageRelationshipId?: string;
   imageOrder?: number;
+  worksheetRowNumber?: number;
+  sheetScopedKey?: string;
 };
 
 export type ExtractedFileContent = {
@@ -160,6 +162,16 @@ function normalizeHeaderLabel(value: unknown, index: number) {
 
 function isUsefulRow(row: unknown[]) {
   return row.some((cell) => String(cell ?? "").trim() !== "");
+}
+
+function normalizeLooseKey(value: string) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function chooseHeaderRow(rows: unknown[][]) {
@@ -677,6 +689,13 @@ async function extractImagesFromXlsx(
       const mapped = drawingMediaMap.get(`${drawingPath}::${anchor.relationshipId}`);
       if (!mapped) continue;
 
+      const worksheetRowNumber =
+        typeof anchor.rowIndex === "number" ? anchor.rowIndex + 1 : undefined;
+      const sheetScopedKey =
+        sheetName && typeof worksheetRowNumber === "number"
+          ? `${normalizeLooseKey(sheetName)}::row::${worksheetRowNumber}`
+          : undefined;
+
       assets.push({
         fileName: mapped.fileName,
         source: "xlsx",
@@ -689,6 +708,8 @@ async function extractImagesFromXlsx(
         drawingName: anchor.drawingName,
         imageRelationshipId: anchor.relationshipId,
         imageOrder: anchor.imageOrder,
+        worksheetRowNumber,
+        sheetScopedKey,
       });
     }
   }
@@ -798,7 +819,7 @@ export async function extractTextFromFile(params: {
     extractedImages = await extractImagesFromDocx(buffer);
   } else if (extension === "txt") {
     text = await extractTextFromTxt(buffer);
-  } else if (extension === "xlsx") {
+  } else if (extension === "xlsx" || extension === "xlsm") {
     text = await extractTextFromXlsx(buffer);
     const xlsxExtraction = await extractImagesFromXlsx(buffer);
     extractedImages = xlsxExtraction.assets;
