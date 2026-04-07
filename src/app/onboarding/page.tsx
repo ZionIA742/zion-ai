@@ -546,25 +546,31 @@ function normalizeIntelligentImportResultForFrontend(
 
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
 type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
+
 function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = normalizeImportedLoose(value);
+
   if (
     normalized.includes("quim") ||
     normalized.includes("cloro") ||
     normalized.includes("algicida") ||
-    normalized.includes("ph") ||
-    normalized.includes("elevador") ||
-    normalized.includes("redutor") ||
     normalized.includes("clarificante") ||
-    normalized.includes("sulfato")
+    normalized.includes("sulfato") ||
+    normalized.includes("elevador de ph") ||
+    normalized.includes("redutor de ph") ||
+    normalized.includes("limpa bordas") ||
+    normalized.includes("barrilha") ||
+    normalized.includes("teste ph") ||
+    normalized.includes("teste cloro")
   ) {
     return "quimicos";
   }
+
   if (
     normalized.includes("acessor") ||
-    normalized.includes("aspirador") ||
-    normalized.includes("escova") ||
     normalized.includes("peneira") ||
+    normalized.includes("escova") ||
+    normalized.includes("aspirador") ||
     normalized.includes("dispositivo") ||
     normalized.includes("led") ||
     normalized.includes("lumin") ||
@@ -572,74 +578,220 @@ function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategor
     normalized.includes("clorador") ||
     normalized.includes("hidromassagem") ||
     normalized.includes("nicho") ||
-    normalized.includes("retorno")
+    normalized.includes("retorno") ||
+    normalized.includes("transformador") ||
+    normalized.includes("refletor") ||
+    normalized.includes("ralo") ||
+    normalized.includes("corrimao") ||
+    normalized.includes("corrimão")
   ) {
     return "acessorios";
   }
+
   return "outros";
 }
+
+
+function extractImportedSourceSheetName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const metadataValue =
+    extractMetadataValue(item, [
+      "sheet",
+      "sheet_name",
+      "worksheet",
+      "worksheet_name",
+      "planilha",
+      "aba",
+      "source_sheet",
+      "source_sheet_name",
+      "sheetName",
+      "worksheetName",
+    ]) || "";
+
+  if (metadataValue.trim()) {
+    return metadataValue.trim();
+  }
+
+  const raw = String(item.rawText || "");
+  const planilhaMatch =
+    raw.match(/planilha\s*[:\-]\s*([^\n=|]+)/iu) ||
+    raw.match(/aba\s*[:\-]\s*([^\n=|]+)/iu);
+
+  return planilhaMatch?.[1]?.trim() || "";
+}
+
+function extractImportedCategoryHintText(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const raw = String(item.rawText || "");
+  const values = [
+    extractMetadataValue(item, [
+      "categoria",
+      "category",
+      "subcategoria",
+      "subcategory",
+      "destination",
+      "destino",
+      "category_hint",
+      "categoryhint",
+      "source_type",
+      "import_type",
+    ]),
+    extractImportedLabeledValue(raw, ["Categoria", "Category", "Subcategoria", "Subcategory"]),
+    extractImportedSourceSheetName(item),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return values.join(" | ");
+}
+
+function extractImportedSourceItemIndex(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const fromMetadata =
+    extractMetadataValue(item, [
+      "item_index",
+      "source_index",
+      "index",
+      "row_index",
+      "linha_index",
+      "item",
+      "source_item_index",
+    ]) || "";
+
+  const metadataMatch = String(fromMetadata).match(/\d+/);
+  if (metadataMatch?.[0]) {
+    return metadataMatch[0];
+  }
+
+  const raw = String(item.rawText || "");
+  const rawMatch = raw.match(/\bitem\s*(\d+)\b/iu);
+  return rawMatch?.[1] || "";
+}
+
+function hasImportedStructuredIdentity(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return Boolean(
+    extractImportedCatalogSku(item) ||
+      extractImportedExcelLikeName(item) ||
+      extractImportedSourceSheetName(item) ||
+      extractImportedCategoryHintText(item) ||
+      extractImportedSourceItemIndex(item)
+  );
+}
+
+
+
 function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
-  const source = [
-    item.type,
-    item.title,
-    item.rawText,
-    item.sourceFileName,
-    ...Object.values(item.metadata ?? {}),
-  ]
-    .map((value) => String(value ?? "").toLowerCase())
+  const rawSource = [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})]
+    .map((value) => String(value ?? ""))
     .join(" ");
+
+  const source = normalizeImportedLoose(rawSource);
+  const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const categoryHint = normalizeImportedLoose(extractImportedCategoryHintText(item));
+  const metrics = extractImportedPoolMetrics(item);
+
+  const explicitPool =
+    categoryHint.includes("pool") ||
+    categoryHint.includes("piscina") ||
+    sheetName.includes("pool") ||
+    sheetName.includes("piscina");
+
+  const explicitChemical =
+    categoryHint.includes("quim") ||
+    sheetName.includes("quim") ||
+    categoryHint.includes("tratamento");
+
+  const explicitAccessory =
+    categoryHint.includes("acessor") ||
+    sheetName.includes("acessor");
+
+  const explicitOther =
+    categoryHint.includes("outro") ||
+    sheetName.includes("outro");
+
+  if (explicitChemical) return "quimicos";
+  if (explicitAccessory) return "acessorios";
+  if (explicitOther) return "outros";
+
   const chemicalScore =
-    (source.includes("quim") ? 4 : 0) +
-    (source.includes("cloro") ? 4 : 0) +
-    (source.includes("algicida") ? 4 : 0) +
-    (source.includes("clarificante") ? 4 : 0) +
-    (source.includes("sulfato") ? 4 : 0) +
-    (source.includes("elevador de ph") ? 4 : 0) +
-    (source.includes("redutor de ph") ? 4 : 0) +
-    (source.includes("ph") ? 2 : 0);
+    (source.includes("quim") ? 8 : 0) +
+    (source.includes("cloro") ? 6 : 0) +
+    (source.includes("algicida") ? 6 : 0) +
+    (source.includes("clarificante") ? 6 : 0) +
+    (source.includes("sulfato") ? 6 : 0) +
+    (source.includes("elevador de ph") ? 6 : 0) +
+    (source.includes("redutor de ph") ? 6 : 0) +
+    (source.includes("limpa bordas") ? 5 : 0) +
+    (source.includes("barrilha") ? 5 : 0) +
+    (source.includes("teste ph") ? 4 : 0) +
+    (source.includes("teste cloro") ? 4 : 0);
+
   const accessoryScore =
-    (source.includes("acessor") ? 4 : 0) +
-    (source.includes("peneira") ? 4 : 0) +
-    (source.includes("escova") ? 4 : 0) +
-    (source.includes("aspirador") ? 4 : 0) +
-    (source.includes("dispositivo") ? 4 : 0) +
-    (source.includes("led") ? 3 : 0) +
-    (source.includes("mangueira") ? 3 : 0) +
-    (source.includes("clorador") ? 3 : 0) +
-    (source.includes("nicho") ? 3 : 0) +
-    (source.includes("retorno") ? 3 : 0);
-  const hasPoolKeyword =
-    source.includes("piscina") ||
-    source.includes("spa") ||
-    source.includes("vinil") ||
-    source.includes("fibra") ||
-    source.includes("alvenaria") ||
-    source.includes("pastilha");
+    (source.includes("acessor") ? 8 : 0) +
+    (source.includes("peneira") ? 6 : 0) +
+    (source.includes("escova") ? 6 : 0) +
+    (source.includes("aspirador") ? 6 : 0) +
+    (source.includes("dispositivo") ? 6 : 0) +
+    (source.includes("led") ? 5 : 0) +
+    (source.includes("mangueira") ? 5 : 0) +
+    (source.includes("clorador") ? 5 : 0) +
+    (source.includes("nicho") ? 5 : 0) +
+    (source.includes("retorno") ? 5 : 0) +
+    (source.includes("transformador") ? 5 : 0) +
+    (source.includes("refletor") ? 5 : 0) +
+    (source.includes("ralo") ? 5 : 0) +
+    (source.includes("corrimao") ? 5 : 0) +
+    (source.includes("corrimao") ? 5 : 0) +
+    (source.includes("capa de protecao") ? 4 : 0) +
+    (source.includes("quadro de comando") ? 4 : 0);
+
   const poolScore =
-    (source.includes("piscina") ? 4 : 0) +
-    (source.includes("fibra") ? 2 : 0) +
-    (source.includes("vinil") ? 2 : 0) +
-    (source.includes("alvenaria") ? 2 : 0) +
-    (source.includes("pastilha") ? 2 : 0) +
-    (source.includes("profundidade") ? 2 : 0) +
-    (source.includes("capacidade") ? 2 : 0) +
-    (source.includes("litros") ? 2 : 0) +
-    (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(source) ? 3 : 0) +
-    (/\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(source) ? 3 : 0);
-  if (chemicalScore >= 4 && chemicalScore >= accessoryScore && chemicalScore >= poolScore) {
-    return "quimicos";
-  }
-  if (accessoryScore >= 4 && accessoryScore > chemicalScore && accessoryScore >= poolScore) {
-    return "acessorios";
-  }
-  if (hasPoolKeyword && poolScore >= 6) {
+    (source.includes("piscina") ? 8 : 0) +
+    (source.includes("profundidade") ? 6 : 0) +
+    (source.includes("capacidade") ? 6 : 0) +
+    (source.includes("litros") ? 5 : 0) +
+    (source.includes("fibra") ? 4 : 0) +
+    (source.includes("vinil") ? 4 : 0) +
+    (source.includes("alvenaria") ? 4 : 0) +
+    (source.includes("pastilha") ? 4 : 0) +
+    (/\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(rawSource) ? 6 : 0) +
+    (/\b\d+[\.,]?\d*\s*m\s*di[âa]m/i.test(rawSource) ? 6 : 0) +
+    (metrics.width_m != null ? 3 : 0) +
+    (metrics.length_m != null ? 3 : 0) +
+    (metrics.depth_m != null ? 4 : 0) +
+    (metrics.max_capacity_l != null ? 4 : 0);
+
+  if (explicitPool && canPersistAsPool(metrics)) {
     return "pool";
   }
-  const category = normalizeImportedCatalogCategory(source);
-  return category;
+
+  if (
+    poolScore >= 18 &&
+    canPersistAsPool(metrics) &&
+    poolScore >= chemicalScore + 6 &&
+    poolScore >= accessoryScore + 6
+  ) {
+    return "pool";
+  }
+
+  if (chemicalScore >= accessoryScore + 2 && chemicalScore >= 8) {
+    return "quimicos";
+  }
+
+  if (accessoryScore >= chemicalScore + 2 && accessoryScore >= 8) {
+    return "acessorios";
+  }
+
+  return normalizeImportedCatalogCategory(`${categoryHint} ${sheetName} ${source}`);
 }
+
 
 function extractImportedLabeledValue(
   source: string,
@@ -742,12 +894,16 @@ function extractImportedCatalogStockQuantity(
   return Math.max(0, Math.round(parsedFallbackStock));
 }
 
+
 function buildImportedSaveKey(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const destination = resolveImportedDestination(item);
+
   if (destination === "pool") {
-    return `pool::${normalizeImportedLoose(buildImportedPoolName(item))}`;
+    const poolName = normalizeImportedLoose(buildImportedPoolName(item));
+    const itemIndex = extractImportedSourceItemIndex(item);
+    return itemIndex ? `pool::${poolName}::item::${itemIndex}` : `pool::${poolName}`;
   }
 
   const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
@@ -755,8 +911,19 @@ function buildImportedSaveKey(
     return `catalog::${destination}::sku::${sku}`;
   }
 
-  return `catalog::${destination}::name::${normalizeImportedLoose(buildImportedCatalogName(item))}`;
+  const itemName = normalizeImportedLoose(buildImportedCatalogName(item));
+  const sourceFile = normalizeImportedLoose(item.sourceFileName);
+  const sourceSheet = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const itemIndex = extractImportedSourceItemIndex(item);
+
+  if (itemIndex) {
+    return `catalog::${destination}::file::${sourceFile}::sheet::${sourceSheet}::item::${itemIndex}`;
+  }
+
+  return `catalog::${destination}::name::${itemName}::file::${sourceFile}::sheet::${sourceSheet}`;
 }
+
+
 
 function buildImportedRuntimeIdentityKeys(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -765,7 +932,9 @@ function buildImportedRuntimeIdentityKeys(
 
   if (destination === "pool") {
     const poolName = normalizeImportedLoose(buildImportedPoolName(item));
-    return poolName ? [`pool::${poolName}`] : [];
+    const itemIndex = extractImportedSourceItemIndex(item);
+    if (!poolName) return [];
+    return [itemIndex ? `pool::${poolName}::item::${itemIndex}` : `pool::${poolName}`];
   }
 
   const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
@@ -774,8 +943,19 @@ function buildImportedRuntimeIdentityKeys(
   }
 
   const itemName = normalizeImportedLoose(buildImportedCatalogName(item));
-  return itemName ? [`catalog::${destination}::name::${itemName}`] : [];
+  const sourceFile = normalizeImportedLoose(item.sourceFileName);
+  const sourceSheet = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const itemIndex = extractImportedSourceItemIndex(item);
+
+  if (itemIndex) {
+    return [`catalog::${destination}::file::${sourceFile}::sheet::${sourceSheet}::item::${itemIndex}`];
+  }
+
+  return itemName
+    ? [`catalog::${destination}::name::${itemName}::file::${sourceFile}::sheet::${sourceSheet}`]
+    : [];
 }
+
 
 function scoreImportedItemForSave(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -994,8 +1174,8 @@ function sanitizeImportedDescriptionText(
       "dosagem ", "dosagem:", "cor ", "cor:", "uso ", "uso:", "quantidade atual ", "quantidade atual:",
       "estoque minimo ", "estoque minimo:", "estoque máximo ", "estoque máximo:", "estoque maximo ",
       "estoque maximo:", "estoque ", "estoque:", "controlar estoque ", "controlar estoque:",
-      "codigo de barras ", "codigo de barras:", "código de barras ", "código de barras:", "barcode ", "barcode:",
-      "observacao ", "observacao:", "observação ", "observação:",
+      "codigo de barras ", "codigo de barras:", "código de barras ", "código de barras:", "barcode ",
+      "barcode:", "observacao ", "observacao:", "observação ", "observação:",
     ];
 
     if (blockedStarts.some((value) => normalized.startsWith(value))) {
@@ -1006,8 +1186,8 @@ function sanitizeImportedDescriptionText(
       "arquivo de teste", "validar upload inteligente", "validar leitura", "upload inteligente",
       "categoria esperada no sistema", "salvar em configuracoes", "salvar em configurações",
       "guia leitura", "guia de leitura", "aba guia leitura", "aba guia de leitura", "planilha estoque",
-      "aba estoque", "sheet estoque", "catalogo_quimicos", "catalogo quimicos", "catálogo químicos",
-      "planilha catalogo quimicos", "planilha catalogo_quimicos", "=== item", "controlar estoque ativo",
+      "aba estoque", "sheet estoque", "catalogo quimicos", "catálogo químicos",
+      "planilha catalogo quimicos", "=== item", "controlar estoque ativo",
     ];
 
     if (blockedIncludes.some((value) => normalized.includes(value))) {
@@ -1020,6 +1200,7 @@ function sanitizeImportedDescriptionText(
   const joined = dedupeDescriptionLines(filtered).join("\n").trim();
   return joined ? joined.slice(0, 4000) : null;
 }
+
 
 function buildImportedCleanDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -1092,9 +1273,20 @@ function buildImportedCatalogDescription(
   ];
 
   const blockedAccessoryOrOtherPhrases = [
-    "produto da linha", "marca ", "repor quando atingir o estoque minimo", "repor quando atingir o estoque mínimo",
-    "estoque minimo", "estoque mínimo", "controle interno", "orientacao de venda", "orientação de venda",
-    "giro no estoque", "versao muito procurada", "versão muito procurada", "uso praticos", "uso práticos",
+    "produto da linha",
+    "marca ",
+    "repor quando atingir o estoque minimo",
+    "repor quando atingir o estoque mínimo",
+    "estoque minimo",
+    "estoque mínimo",
+    "controle interno",
+    "orientacao de venda",
+    "orientação de venda",
+    "giro no estoque",
+    "versao muito procurada",
+    "versão muito procurada",
+    "uso praticos",
+    "uso práticos",
   ];
 
   const narrativePool = [shortDescription || "", buildImportedCleanDescription(item) || "", notesValue || ""]
@@ -1620,12 +1812,17 @@ function isGenericImportedTitle(title: string) {
   }
   return false;
 }
+
 function shouldSkipImportedItem(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const normalizedTitle = normalizeImportedLoose(item.title);
   const normalizedRaw = normalizeImportedLoose(item.rawText);
   const normalizedType = normalizeImportedLoose(item.type);
+
+  if (hasImportedStructuredIdentity(item)) {
+    return false;
+  }
+
   if (normalizedType === "commercial rule" || normalizedType === "commercial_rule") {
     return true;
   }
@@ -1635,32 +1832,34 @@ function shouldSkipImportedItem(
   if (normalizedType === "responsible info" || normalizedType === "responsible_info") {
     return true;
   }
-  if (normalizedType === "unknown" && item.confidence <= 0.35) {
+  if (normalizedType === "unknown" && item.confidence <= 0.2) {
     return true;
   }
-  if (isGenericImportedTitle(item.title) && item.confidence <= 0.75) {
+  if (isGenericImportedTitle(item.title) && item.confidence <= 0.45) {
     return true;
   }
   if (
     normalizedRaw.includes("arquivo de teste") &&
     normalizedRaw.includes("validar upload inteligente") &&
-    !normalizedRaw.includes("r$") &&
-    !normalizedRaw.includes("capacidade") &&
-    !normalizedRaw.includes("profundidade")
+    !normalizedRaw.includes("sku") &&
+    !normalizedRaw.includes("categoria") &&
+    !normalizedRaw.includes("nome do item")
+  ) {
+    return true;
+  }
+  if (
+    normalizedRaw.includes("planilha estoque") ||
+    normalizedRaw.includes("aba estoque") ||
+    normalizedRaw.includes("sheet estoque")
   ) {
     return true;
   }
 
-if (
-  normalizedRaw.includes("planilha estoque") ||
-  normalizedRaw.includes("aba estoque") ||
-  normalizedRaw.includes("sheet estoque")
-) {
-  return true;
-}
-
   return false;
 }
+
+
+
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
@@ -1675,24 +1874,24 @@ function resolveImportedDestination(
       "import_type",
     ])
   );
+
   if (explicitDestination === "pool") return "pool";
   if (explicitDestination === "quimicos" || explicitDestination === "quimico") return "quimicos";
-  if (explicitDestination === "acessorios" || explicitDestination === "acessorio")
-    return "acessorios";
+  if (explicitDestination === "acessorios" || explicitDestination === "acessorio") return "acessorios";
   if (explicitDestination === "outros" || explicitDestination === "outro") return "outros";
+
   const inferred = inferImportedDestination(item);
-  if (inferred !== "outros") return inferred;
-  const raw = normalizeImportedLoose([item.title, item.rawText].join(" "));
-  if (
-    raw.includes("capacidade") ||
-    raw.includes("profundidade") ||
-    /\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/i.test(raw) ||
-    /\b\d+[\.,]?\d*\s*m\s*diam/i.test(raw)
-  ) {
-    return "pool";
+  if (inferred === "pool") {
+    const metrics = extractImportedPoolMetrics(item);
+    if (!canPersistAsPool(metrics)) {
+      return normalizeImportedCatalogCategory(extractImportedCategoryHintText(item) || item.rawText);
+    }
   }
+
   return inferred;
 }
+
+
 function buildImportedPoolName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -2482,10 +2681,9 @@ function OnboardingContent() {
         return;
       }
       const decoratedResult = decorateIntelligentImportResultWithImageFallback(result, selectedFilesPreview);
-      const frontendReadyResult = normalizeIntelligentImportResultForFrontend(decoratedResult);
-      setIntelligentImportResult(frontendReadyResult);
+      setIntelligentImportResult(decoratedResult);
       setIntelligentImportSuccess(
-        frontendReadyResult.message || "Importação inteligente processada com sucesso."
+        decoratedResult.message || "Importação inteligente processada com sucesso."
       );
     } catch (error) {
       console.error("[OnboardingPage] handleRunIntelligentImport error:", error);
@@ -2560,7 +2758,7 @@ async function handleSaveImportedItemsToCatalog() {
         : intelligentImportResult.normalizedPreview;
 
     const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
-    const sourceItems = dedupeImportedItemsForSave(filteredSourceItems);
+    const sourceItems = filteredSourceItems;
 
     if (sourceItems.length === 0) {
       setFormError(
@@ -2642,6 +2840,126 @@ async function handleSaveImportedItemsToCatalog() {
 
           if (destination === "pool") {
             const metrics = extractImportedPoolMetrics(item);
+
+            if (!canPersistAsPool(metrics)) {
+              const fallbackCategory = normalizeImportedCatalogCategory(
+                `${extractImportedCategoryHintText(item)} ${item.rawText}`
+              );
+              const reroutedItem = {
+                ...item,
+                metadata: {
+                  ...(item.metadata ?? {}),
+                  destination: fallbackCategory,
+                },
+              };
+              const reroutedDestination = resolveImportedDestination(reroutedItem);
+              if (reroutedDestination !== "pool") {
+                const runtimeKeys = buildImportedRuntimeIdentityKeys(reroutedItem);
+                if (
+                  runtimeKeys.length > 0 &&
+                  runtimeKeys.some((key) => savedRuntimeIdentityKeys.has(key))
+                ) {
+                  continue;
+                }
+                const itemName = buildImportedCatalogName(reroutedItem);
+                if (!itemName || isGenericImportedTitle(itemName)) {
+                  continue;
+                }
+
+                const sku = extractImportedCatalogSku(reroutedItem) || null;
+                const priceCents = extractImportedCatalogPriceCents(reroutedItem);
+                const stockQuantity = extractImportedCatalogStockQuantity(reroutedItem);
+                const metadata = buildImportedCatalogMetadata(reroutedItem, fallbackCategory);
+                const description = buildImportedCatalogDescription(reroutedItem);
+
+                let existingCatalogItem: ExistingCatalogItemRow | null = null;
+
+                if (sku) {
+                  const { data } = await supabase
+                    .from("store_catalog_items")
+                    .select("id, sku, price_cents, stock_quantity, description, metadata")
+                    .eq("organization_id", organizationId)
+                    .eq("store_id", activeStore.id)
+                    .eq("sku", sku)
+                    .maybeSingle();
+                  existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
+                }
+
+                if (!existingCatalogItem && !sku) {
+                  const { data } = await supabase
+                    .from("store_catalog_items")
+                    .select("id, sku, price_cents, stock_quantity, description, metadata")
+                    .eq("organization_id", organizationId)
+                    .eq("store_id", activeStore.id)
+                    .eq("name", itemName)
+                    .maybeSingle();
+                  existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
+                }
+
+                const safePriceCents = priceCents ?? existingCatalogItem?.price_cents ?? null;
+                const safeStockQuantity =
+                  stockQuantity > 0 ? stockQuantity : existingCatalogItem?.stock_quantity ?? 0;
+
+                let persistedCatalogItemId: string | null = existingCatalogItem?.id ?? null;
+
+                if (existingCatalogItem?.id) {
+                  const mergedMetadata = {
+                    ...(existingCatalogItem.metadata ?? {}),
+                    ...metadata,
+                  } as Record<string, unknown>;
+
+                  const { error: updateCatalogError } = await supabase
+                    .from("store_catalog_items")
+                    .update({
+                      sku,
+                      name: itemName,
+                      description: description ?? existingCatalogItem.description ?? null,
+                      price_cents: safePriceCents,
+                      currency: "BRL",
+                      is_active: true,
+                      track_stock: true,
+                      stock_quantity: safeStockQuantity,
+                      metadata: mergedMetadata,
+                    })
+                    .eq("id", existingCatalogItem.id);
+
+                  if (updateCatalogError) throw updateCatalogError;
+                } else {
+                  const { data: createdItem, error } = await supabase
+                    .from("store_catalog_items")
+                    .insert({
+                      organization_id: organizationId,
+                      store_id: activeStore.id,
+                      sku,
+                      name: itemName,
+                      description,
+                      price_cents: safePriceCents,
+                      currency: "BRL",
+                      is_active: true,
+                      track_stock: true,
+                      stock_quantity: safeStockQuantity,
+                      metadata,
+                    })
+                    .select("id")
+                    .single();
+
+                  if (error) throw error;
+                  persistedCatalogItemId = createdItem.id;
+                }
+
+                if (!persistedCatalogItemId) {
+                  throw new Error("Falha ao persistir o item importado do catálogo.");
+                }
+
+                if (!firstCatalogCategory) firstCatalogCategory = fallbackCategory;
+                if (fallbackCategory === "quimicos") savedQuimicos += 1;
+                else if (fallbackCategory === "acessorios") savedAcessorios += 1;
+                else savedOutros += 1;
+                runtimeKeys.forEach((key) => savedRuntimeIdentityKeys.add(key));
+                continue;
+              }
+            }
+
             const poolName = buildImportedPoolName(item);
 
             if (!poolName || isGenericImportedTitle(poolName)) {
@@ -2778,7 +3096,7 @@ async function handleSaveImportedItemsToCatalog() {
             existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
           }
 
-          if (!existingCatalogItem && !sku) {
+          if (!existingCatalogItem) {
             const { data } = await supabase
               .from("store_catalog_items")
               .select("id, sku, price_cents, stock_quantity, description, metadata")
