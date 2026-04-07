@@ -477,33 +477,55 @@ function decorateIntelligentImportResultWithImageFallback(
   };
 }
 
+function enrichImportedItemWithResolvedDestination<T extends IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>(
+  item: T
+): T {
+  const resolvedDestination = resolveImportedDestination(item);
+  return {
+    ...item,
+    metadata: {
+      ...(item.metadata ?? {}),
+      __resolved_destination: resolvedDestination,
+      source_sheet_name: extractImportedSourceSheetName(item) || null,
+      source_category: extractImportedSourceCategory(item) || null,
+      source_subcategory: extractImportedSourceSubcategory(item) || null,
+    },
+  };
+}
+
 function buildFrontendNormalizedPreviewFromItems(
   items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
 ): IntelligentImportNormalizedPreview[] {
-  return items.map((item) => ({
-    type: item.type,
-    sourceFileName: item.sourceFileName,
-    title: item.title,
-    rawText: item.rawText,
-    confidence: item.confidence,
-    metadata: item.metadata ?? {},
-  }));
+  return items.map((rawItem) => {
+    const item = enrichImportedItemWithResolvedDestination(rawItem);
+    return {
+      type: item.type,
+      sourceFileName: item.sourceFileName,
+      title: item.title,
+      rawText: item.rawText,
+      confidence: item.confidence,
+      metadata: item.metadata ?? {},
+    };
+  });
 }
 
 function buildFrontendDedupedPreviewFromItems(
   items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
 ): IntelligentImportDedupedPreview[] {
-  return items.map((item, index) => ({
-    type: item.type,
-    sourceFileName: item.sourceFileName,
-    title: item.title,
-    rawText: item.rawText,
-    confidence: item.confidence,
-    metadata: item.metadata ?? {},
-    dedupKey: `${buildImportedSaveKey(item)}::frontend::${index}`,
-    duplicateOf: undefined,
-    isDuplicate: false,
-  }));
+  return items.map((rawItem, index) => {
+    const item = enrichImportedItemWithResolvedDestination(rawItem);
+    return {
+      type: item.type,
+      sourceFileName: item.sourceFileName,
+      title: item.title,
+      rawText: item.rawText,
+      confidence: item.confidence,
+      metadata: item.metadata ?? {},
+      dedupKey: `${buildImportedSaveKey(item)}::frontend::${index}`,
+      duplicateOf: undefined,
+      isDuplicate: false,
+    };
+  });
 }
 
 function normalizeIntelligentImportResultForFrontend(
@@ -546,12 +568,66 @@ function normalizeIntelligentImportResultForFrontend(
 
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
 type ImportedCatalogCategory = "acessorios" | "quimicos" | "outros";
+
+function matchImportedDestinationLabel(value: string | null | undefined): ImportedDestination | null {
+  const normalized = normalizeImportedLoose(value);
+  if (!normalized) return null;
+
+  if (/(^|\s)(pool|piscinas|piscina)(\s|$)/.test(normalized)) return "pool";
+  if (/(^|\s)(acessorios|acessorio)(\s|$)/.test(normalized)) return "acessorios";
+  if (/(^|\s)(quimicos|quimico)(\s|$)/.test(normalized)) return "quimicos";
+  if (/(^|\s)(outros|outro|diversos)(\s|$)/.test(normalized)) return "outros";
+
+  return null;
+}
+
+function resolveImportedExplicitDestination(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+): ImportedDestination | null {
+  const explicitCandidates = [
+    extractMetadataValue(item, [
+      "__resolved_destination",
+      "destination",
+      "destino",
+      "categoryhint",
+      "category_hint",
+    ]),
+    extractImportedSourceCategory(item),
+    extractImportedSourceSubcategory(item),
+    extractImportedSourceSheetName(item),
+  ];
+
+  for (const candidate of explicitCandidates) {
+    const matched = matchImportedDestinationLabel(candidate);
+    if (matched) return matched;
+  }
+
+  return null;
+}
+
 function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
+  const explicit = matchImportedDestinationLabel(value);
+  if (explicit === "acessorios" || explicit === "quimicos" || explicit === "outros") {
+    return explicit;
+  }
+
   const normalized = normalizeImportedLoose(value);
   if (!normalized) return "outros";
 
   if (
-    /(^|\s)(acessorios|acessorio)(\s|$)/.test(normalized) ||
+    normalized.includes("algicida") ||
+    normalized.includes("clarificante") ||
+    normalized.includes("sulfato") ||
+    normalized.includes("elevador de ph") ||
+    normalized.includes("redutor de ph") ||
+    normalized.includes("cloro granulado") ||
+    normalized.includes("cloro estabilizado") ||
+    normalized.includes("barrilha")
+  ) {
+    return "quimicos";
+  }
+
+  if (
     normalized.includes("peneira") ||
     normalized.includes("escova") ||
     normalized.includes("aspirador") ||
@@ -567,24 +643,6 @@ function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategor
     normalized.includes("transformador")
   ) {
     return "acessorios";
-  }
-
-  if (
-    /(^|\s)(quimicos|quimico)(\s|$)/.test(normalized) ||
-    normalized.includes("algicida") ||
-    normalized.includes("clarificante") ||
-    normalized.includes("sulfato") ||
-    normalized.includes("elevador de ph") ||
-    normalized.includes("redutor de ph") ||
-    normalized.includes("cloro granulado") ||
-    normalized.includes("cloro estabilizado") ||
-    normalized.includes("barrilha")
-  ) {
-    return "quimicos";
-  }
-
-  if (/(^|\s)(outros|outro|diversos)(\s|$)/.test(normalized)) {
-    return "outros";
   }
 
   return "outros";
@@ -742,7 +800,13 @@ function extractImportedSourceSheetName(
 ) {
   const source = String(item.rawText || "");
   return (
-    extractMetadataValue(item, ["sheet_name", "planilha", "sheet", "aba"]) ||
+    extractMetadataValue(item, [
+      "source_sheet_name",
+      "sheet_name",
+      "planilha",
+      "sheet",
+      "aba",
+    ]) ||
     extractImportedLabeledValue(source, ["Planilha", "Sheet", "Aba"]) ||
     ""
   ).trim();
@@ -753,7 +817,12 @@ function extractImportedSourceCategory(
 ) {
   const source = String(item.rawText || "");
   return (
-    extractMetadataValue(item, ["categoria", "category", "category_name"]) ||
+    extractMetadataValue(item, [
+      "source_category",
+      "categoria",
+      "category",
+      "category_name",
+    ]) ||
     extractImportedLabeledValue(source, ["Categoria", "Category"]) ||
     extractImportedSourceSheetName(item)
   ).trim();
@@ -764,7 +833,12 @@ function extractImportedSourceSubcategory(
 ) {
   const source = String(item.rawText || "");
   return (
-    extractMetadataValue(item, ["subcategoria", "subcategory", "sub_category"]) ||
+    extractMetadataValue(item, [
+      "source_subcategory",
+      "subcategoria",
+      "subcategory",
+      "sub_category",
+    ]) ||
     extractImportedLabeledValue(source, ["Subcategoria", "Subcategory"]) ||
     ""
   ).trim();
@@ -1813,30 +1887,8 @@ if (
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
-  const explicitDestination = normalizeImportedLoose(
-    [
-      extractMetadataValue(item, [
-        "destination",
-        "destino",
-        "categoryhint",
-        "category_hint",
-        "categoria",
-        "source_type",
-        "import_type",
-        "__resolved_destination",
-      ]),
-      extractImportedSourceSheetName(item),
-      extractImportedSourceCategory(item),
-      extractImportedSourceSubcategory(item),
-    ]
-      .filter(Boolean)
-      .join(" ")
-  );
-
-  if (/(^|\s)(acessorios|acessorio)(\s|$)/.test(explicitDestination)) return "acessorios";
-  if (/(^|\s)(outros|outro)(\s|$)/.test(explicitDestination)) return "outros";
-  if (/(^|\s)(quimicos|quimico)(\s|$)/.test(explicitDestination)) return "quimicos";
-  if (/(^|\s)(pool|piscinas|piscina)(\s|$)/.test(explicitDestination)) return "pool";
+  const explicitDestination = resolveImportedExplicitDestination(item);
+  if (explicitDestination) return explicitDestination;
 
   const inferred = inferImportedDestination(item);
   if (inferred === "pool") {
