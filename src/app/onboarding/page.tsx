@@ -2038,6 +2038,7 @@ function pickBestRelatedFallbackImage(
     mimeType: string;
     dataUrl: string;
     sourceFileName: string;
+    originalSourceFileName?: string;
     source?: string;
     sheetName?: string;
     rowIndex?: number;
@@ -2118,6 +2119,7 @@ function pickRelatedExtractedImages(
     mimeType: string;
     dataUrl: string;
     sourceFileName: string;
+    originalSourceFileName?: string;
     source?: string;
     sheetName?: string;
     rowIndex?: number;
