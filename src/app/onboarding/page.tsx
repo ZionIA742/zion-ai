@@ -879,33 +879,39 @@ function buildImportedSourceLocationKey(
 function buildImportedImageBucketKeys(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const keys = new Set<string>();
+  const keys: string[] = [];
+  const pushKey = (value: string | null | undefined) => {
+    const normalized = normalizeImportedLoose(value);
+    if (!normalized) return;
+    if (!keys.includes(normalized)) {
+      keys.push(normalized);
+    }
+  };
+
   const sourceFile = normalizeImportedLoose(item.sourceFileName);
   const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
   const itemNumber = normalizeImportedLoose(extractImportedSourceItemNumber(item));
   const sourceLocationKey = buildImportedSourceLocationKey(item);
 
+  pushKey(sourceLocationKey);
+
+  if (sourceFile && sheetName && itemNumber) {
+    pushKey(`${sourceFile}::${sheetName}::item::${itemNumber}`);
+  }
+
+  if (sourceFile && itemNumber) {
+    pushKey(`${sourceFile}::item::${itemNumber}`);
+  }
+
+  if (sourceFile && sheetName) {
+    pushKey(`${sourceFile}::sheet::${sheetName}`);
+  }
+
   if (sourceFile) {
-    keys.add(sourceFile);
-
-    if (sheetName) {
-      keys.add(`${sourceFile}::sheet::${sheetName}`);
-    }
-
-    if (itemNumber) {
-      keys.add(`${sourceFile}::item::${itemNumber}`);
-
-      if (sheetName) {
-        keys.add(`${sourceFile}::${sheetName}::item::${itemNumber}`);
-      }
-    }
+    pushKey(sourceFile);
   }
 
-  if (sourceLocationKey) {
-    keys.add(sourceLocationKey);
-  }
-
-  return Array.from(keys).filter(Boolean);
+  return keys;
 }
 
 
@@ -1962,8 +1968,25 @@ function pickRelatedExtractedImages(
   totalSourceItems: number
 ) {
   const sourceBucketKeys = buildImportedImageBucketKeys(item);
+  const sourceFileName = normalizeImportedLoose(item.sourceFileName);
+  const sourceSheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
 
-  const tryConsumeFromBucket = (bucketKey: string) => {
+  const toPublicImage = (candidate: {
+    fileName: string;
+    mimeType: string;
+    dataUrl: string;
+  }) => [
+    {
+      fileName: candidate.fileName,
+      mimeType: candidate.mimeType,
+      dataUrl: candidate.dataUrl,
+    },
+  ] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+
+  const tryConsumeFromBucket = (
+    bucketKey: string,
+    options?: { requireExactSheet?: boolean }
+  ) => {
     const bucket = extractedImageBuckets.get(bucketKey);
     if (!bucket || bucket.length === 0) {
       return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
@@ -1980,37 +2003,23 @@ function pickRelatedExtractedImages(
         continue;
       }
 
+      if (options?.requireExactSheet && sourceSheetName) {
+        const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
+        if (candidateSheetName && candidateSheetName !== sourceSheetName) {
+          continue;
+        }
+      }
+
       consumedExtractedImageIds.add(candidate.id);
-      return [
-        {
-          fileName: candidate.fileName,
-          mimeType: candidate.mimeType,
-          dataUrl: candidate.dataUrl,
-        },
-      ];
+      return toPublicImage(candidate);
     }
 
     return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
   };
 
   for (const bucketKey of sourceBucketKeys) {
-    const direct = tryConsumeFromBucket(bucketKey);
+    const direct = tryConsumeFromBucket(bucketKey, { requireExactSheet: true });
     if (direct.length > 0) return direct;
-  }
-
-  const sourceFileKey = normalizeImportedLoose(item.sourceFileName).replace(/\.[^.]+$/, "");
-  if (sourceFileKey) {
-    for (const key of extractedImageBuckets.keys()) {
-      const normalizedKey = key.replace(/\.[^.]+$/, "");
-      if (
-        normalizedKey === sourceFileKey ||
-        normalizedKey.includes(sourceFileKey) ||
-        sourceFileKey.includes(normalizedKey)
-      ) {
-        const related = tryConsumeFromBucket(key);
-        if (related.length > 0) return related;
-      }
-    }
   }
 
   const specificRelatedFallback = pickBestRelatedFallbackImage(
@@ -2020,39 +2029,38 @@ function pickRelatedExtractedImages(
   );
   if (specificRelatedFallback) {
     consumedExtractedImageIds.add(specificRelatedFallback.id);
-    return [
-      {
-        fileName: specificRelatedFallback.fileName,
-        mimeType: specificRelatedFallback.mimeType,
-        dataUrl: specificRelatedFallback.dataUrl,
-      },
-    ];
+    return toPublicImage(specificRelatedFallback);
   }
 
-  if (totalSourceItems === 1) {
-    for (const key of extractedImageBuckets.keys()) {
-      const fallback = tryConsumeFromBucket(key);
-      if (fallback.length > 0) return fallback;
+  const remainingSameSourceCandidates = extractedImageSequence.filter((candidate) => {
+    if (!candidate || consumedExtractedImageIds.has(candidate.id)) return false;
+    if (normalizeImportedLoose(candidate.sourceFileName) !== sourceFileName) return false;
+
+    if (sourceSheetName) {
+      const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
+      if (candidateSheetName && candidateSheetName !== sourceSheetName) {
+        return false;
+      }
     }
+
+    return true;
+  });
+
+  if (remainingSameSourceCandidates.length === 1) {
+    const candidate = remainingSameSourceCandidates[0];
+    consumedExtractedImageIds.add(candidate.id);
+    return toPublicImage(candidate);
   }
 
-  const globalFallback = extractedImageSequence.find(
-    (candidate) => !consumedExtractedImageIds.has(candidate.id)
-  );
-
-  if (!globalFallback) {
-    return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+  if (totalSourceItems === 1 && remainingSameSourceCandidates.length > 0) {
+    const candidate = remainingSameSourceCandidates[0];
+    consumedExtractedImageIds.add(candidate.id);
+    return toPublicImage(candidate);
   }
 
-  consumedExtractedImageIds.add(globalFallback.id);
-  return [
-    {
-      fileName: globalFallback.fileName,
-      mimeType: globalFallback.mimeType,
-      dataUrl: globalFallback.dataUrl,
-    },
-  ];
+  return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
 }
+
 function canPersistAsPool(metrics: {
   width_m: number | null;
   length_m: number | null;
