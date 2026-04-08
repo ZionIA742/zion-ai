@@ -876,6 +876,38 @@ function buildImportedSourceLocationKey(
   return "";
 }
 
+function buildImportedImageBucketKeys(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const keys = new Set<string>();
+  const sourceFile = normalizeImportedLoose(item.sourceFileName);
+  const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const itemNumber = normalizeImportedLoose(extractImportedSourceItemNumber(item));
+  const sourceLocationKey = buildImportedSourceLocationKey(item);
+
+  if (sourceFile) {
+    keys.add(sourceFile);
+
+    if (sheetName) {
+      keys.add(`${sourceFile}::sheet::${sheetName}`);
+    }
+
+    if (itemNumber) {
+      keys.add(`${sourceFile}::item::${itemNumber}`);
+
+      if (sheetName) {
+        keys.add(`${sourceFile}::${sheetName}::item::${itemNumber}`);
+      }
+    }
+  }
+
+  if (sourceLocationKey) {
+    keys.add(sourceLocationKey);
+  }
+
+  return Array.from(keys).filter(Boolean);
+}
+
 
 function extractImportedFirstCurrencyValue(value: string | null | undefined) {
   const source = String(value || "");
