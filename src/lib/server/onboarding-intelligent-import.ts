@@ -38,6 +38,7 @@ export type IntelligentImportImageDiagnostics = {
 
 type IntelligentImportPreviewImage = {
   sourceFileName: string;
+  originalSourceFileName?: string;
   fileName: string;
   source: ExtractedImageAsset["source"];
   mimeType: string;
@@ -49,6 +50,8 @@ type IntelligentImportPreviewImage = {
   drawingName?: string;
   imageRelationshipId?: string;
   imageOrder?: number;
+  worksheetRowNumber?: number;
+  sheetScopedKey?: string;
 };
 
 export type IntelligentImportResult =
@@ -131,6 +134,112 @@ function extractItemSheetName(item: NormalizedImportItem) {
     rawText.match(/(?:^|\n)aba\s*:\s*([^\n|]+)/i);
 
   return match?.[1]?.trim() || "";
+}
+
+function extractItemWorksheetRowNumber(item: NormalizedImportItem) {
+  const metadataCandidates = [
+    item.metadata?.source_worksheet_row_number,
+    item.metadata?.worksheet_row_number,
+    item.metadata?.worksheetRowNumber,
+    item.metadata?.source_row_number,
+    item.metadata?.row_number,
+    item.metadata?.sheet_row_number,
+  ]
+    .map((value) => Number(String(value ?? "").replace(/[^\d-]/g, "")))
+    .find((value) => Number.isFinite(value) && value > 0);
+
+  if (metadataCandidates != null) return metadataCandidates;
+
+  const rawText = String(item.rawText || "");
+  const match =
+    rawText.match(/(?:^|\n)linha da planilha\s*:\s*(\d+)/i) ||
+    rawText.match(/===\s*item\s*\d+\s*\|\s*planilha\s*:\s*[^|\n=]+\|\s*linha\s*:\s*(\d+)/i) ||
+    rawText.match(/(?:^|\n)worksheet row number\s*:\s*(\d+)/i);
+
+  if (!match?.[1]) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildSheetScopedKey(sheetName: string, worksheetRowNumber: number | null | undefined) {
+  const normalizedSheetName = normalizeLoose(sheetName);
+  if (!normalizedSheetName || !Number.isFinite(worksheetRowNumber as number) || Number(worksheetRowNumber) <= 0) {
+    return "";
+  }
+  return `${normalizedSheetName}::row::${Number(worksheetRowNumber)}`;
+}
+
+function enrichItemWithImportCoordinates(item: NormalizedImportItem) {
+  const sourceSheetName = extractItemSheetName(item);
+  const worksheetRowNumber = extractItemWorksheetRowNumber(item);
+  const sheetScopedKey = buildSheetScopedKey(sourceSheetName, worksheetRowNumber);
+  const originalSourceFileName = String(item.sourceFileName || "").trim();
+
+  return {
+    ...item,
+    metadata: {
+      ...(item.metadata ?? {}),
+      source_file_name_original:
+        String(item.metadata?.source_file_name_original || item.metadata?.original_source_file_name || "").trim() ||
+        originalSourceFileName,
+      source_sheet_name:
+        String(item.metadata?.source_sheet_name || item.metadata?.sheet_name || item.metadata?.sheetName || "").trim() ||
+        sourceSheetName ||
+        "",
+      source_worksheet_row_number: worksheetRowNumber != null ? String(worksheetRowNumber) : "",
+      source_sheet_scoped_key: sheetScopedKey || "",
+    },
+  };
+}
+
+function scoreImageAgainstItem(
+  item: ReturnType<typeof enrichItemWithImportCoordinates>,
+  image: IntelligentImportPreviewImage,
+  fallbackImageIndex: number
+) {
+  let score = 0;
+
+  const itemOriginalFile = normalizeLoose(String(item.metadata?.source_file_name_original || item.sourceFileName || ""));
+  const imageOriginalFile = normalizeLoose(image.originalSourceFileName || image.sourceFileName || "");
+  if (itemOriginalFile && imageOriginalFile && itemOriginalFile === imageOriginalFile) score += 400;
+
+  const itemSheet = normalizeLoose(String(item.metadata?.source_sheet_name || ""));
+  const imageSheet = normalizeLoose(image.sheetName || "");
+  if (itemSheet && imageSheet) {
+    if (itemSheet === imageSheet) score += 250;
+    else score -= 600;
+  }
+
+  const itemRow = Number(String(item.metadata?.source_worksheet_row_number || "").replace(/[^\d-]/g, ""));
+  const imageRow = typeof image.worksheetRowNumber === "number" ? image.worksheetRowNumber : null;
+  if (Number.isFinite(itemRow) && itemRow > 0 && imageRow != null) {
+    const distance = Math.abs(itemRow - imageRow);
+    if (distance === 0) score += 900;
+    else if (distance === 1) score += 240;
+    else if (distance === 2) score += 120;
+    else if (distance === 3) score += 40;
+    else score -= Math.min(distance * 30, 300);
+  }
+
+  const itemSheetScopedKey = normalizeLoose(String(item.metadata?.source_sheet_scoped_key || ""));
+  const imageSheetScopedKey = normalizeLoose(image.sheetScopedKey || "");
+  if (itemSheetScopedKey && imageSheetScopedKey) {
+    if (itemSheetScopedKey === imageSheetScopedKey) score += 1000;
+    else score -= 120;
+  }
+
+  const itemOrder = extractItemStableAssignmentOrder(item, fallbackImageIndex);
+  const imageOrder = typeof image.worksheetRowNumber === "number"
+    ? image.worksheetRowNumber
+    : (typeof image.rowIndex === "number" ? image.rowIndex + 1 : null);
+  if (imageOrder != null) {
+    const distance = Math.abs(itemOrder - imageOrder);
+    if (distance === 0) score += 120;
+    else if (distance <= 2) score += 40;
+  }
+
+  score -= fallbackImageIndex * 0.01;
+  return score;
 }
 
 function buildFileItemAlias(fileName: string, index: number, sheetName?: string) {
@@ -226,10 +335,11 @@ function attachPerItemAliases(
   items: NormalizedImportItem[],
   extractedImages: IntelligentImportPreviewImage[]
 ) {
-  const groupedBySourceFile = new Map<string, Array<{ item: NormalizedImportItem; index: number }>>();
+  const enrichedItems = items.map((item) => enrichItemWithImportCoordinates(item));
+  const groupedBySourceFile = new Map<string, Array<{ item: (typeof enrichedItems)[number]; index: number }>>();
 
-  for (const [index, item] of items.entries()) {
-    const key = String(item.sourceFileName || "").trim().toLowerCase();
+  for (const [index, item] of enrichedItems.entries()) {
+    const key = normalizeLoose(String(item.metadata?.source_file_name_original || item.sourceFileName || ""));
     const current = groupedBySourceFile.get(key) ?? [];
     current.push({ item, index });
     groupedBySourceFile.set(key, current);
@@ -250,25 +360,22 @@ function attachPerItemAliases(
       aliasByOriginalIndex.set(
         entry.index,
         sortedForAssignment.length > 1
-          ? buildFileItemAlias(entry.item.sourceFileName, relatedIndex, sheetName)
-          : entry.item.sourceFileName
+          ? buildFileItemAlias(String(entry.item.metadata?.source_file_name_original || entry.item.sourceFileName || ""), relatedIndex, sheetName)
+          : String(entry.item.metadata?.source_file_name_original || entry.item.sourceFileName || "")
       );
     });
   }
 
-  const normalizedPreview = items.map((item, index) => ({
+  const normalizedPreview = enrichedItems.map((item, index) => ({
     ...item,
-    sourceFileName:
-      aliasByOriginalIndex.get(index) ?? item.sourceFileName,
+    sourceFileName: aliasByOriginalIndex.get(index) ?? item.sourceFileName,
   }));
 
   const imagePreview: IntelligentImportPreviewImage[] = [];
 
   for (const [key, relatedItems] of groupedBySourceFile.entries()) {
     const sourceImages = sortImagesForStableAssignment(
-      extractedImages.filter(
-        (image) => String(image.sourceFileName || "").trim().toLowerCase() === key
-      )
+      extractedImages.filter((image) => normalizeLoose(image.originalSourceFileName || image.sourceFileName || "") === key)
     );
 
     const aliasedItems = [...relatedItems]
@@ -280,117 +387,41 @@ function attachPerItemAliases(
       })
       .map((entry) => ({
         ...entry,
-        aliasSourceFileName:
-          aliasByOriginalIndex.get(entry.index) ?? entry.item.sourceFileName,
-        sheetName: extractItemSheetName(entry.item),
+        aliasSourceFileName: aliasByOriginalIndex.get(entry.index) ?? entry.item.sourceFileName,
       }));
 
-    debugIntelligentImport("attachPerItemAliases:group", {
-      sourceFileName: relatedItems[0]?.item.sourceFileName || "",
-      itemsCount: aliasedItems.length,
-      imagesCount: sourceImages.length,
-      items: aliasedItems.map((entry) => ({
-        aliasSourceFileName: entry.aliasSourceFileName,
-        title: entry.item.title,
-        sheetName: entry.sheetName,
-        assignmentOrder: extractItemStableAssignmentOrder(entry.item, entry.index),
-        sku:
-          entry.item.metadata?.sku ||
-          entry.item.metadata?.SKU ||
-          entry.item.metadata?.codigo ||
-          entry.item.metadata?.["código"] ||
-          "",
-      })),
-      images: sourceImages.map((image) => ({
-        fileName: image.fileName,
-        sheetName: image.sheetName,
-        rowIndex: image.rowIndex,
-        columnIndex: image.columnIndex,
-        anchorCell: image.anchorCell,
-        imageOrder: image.imageOrder,
-      })),
-    });
-
-    if (aliasedItems.length <= 1) {
-      if (sourceImages.length === 0) continue;
-
-      const onlyAlias = aliasedItems[0]?.aliasSourceFileName || relatedItems[0]?.item.sourceFileName || "";
-      for (const image of sourceImages) {
-        imagePreview.push({
-          ...image,
-          sourceFileName: onlyAlias || image.sourceFileName,
-        });
-      }
-      continue;
-    }
-
-    if (sourceImages.length === 0) {
-      continue;
-    }
-
-    const groupedItemsBySheet = new Map<string, typeof aliasedItems>();
-    for (const itemEntry of aliasedItems) {
-      const sheetKey = normalizeLoose(itemEntry.sheetName || "");
-      const current = groupedItemsBySheet.get(sheetKey) ?? [];
-      current.push(itemEntry);
-      groupedItemsBySheet.set(sheetKey, current);
-    }
-
-    const groupedImagesBySheet = new Map<string, IntelligentImportPreviewImage[]>();
-    for (const image of sourceImages) {
-      const sheetKey = normalizeLoose(image.sheetName || "");
-      const current = groupedImagesBySheet.get(sheetKey) ?? [];
-      current.push(image);
-      groupedImagesBySheet.set(sheetKey, current);
-    }
-
-    const consumedImageIds = new Set<string>();
-    const getImageIdentity = (image: IntelligentImportPreviewImage) =>
-      `${String(image.sheetName || "").trim().toLowerCase()}::${String(image.fileName || "").trim().toLowerCase()}::${image.rowIndex ?? -1}::${image.columnIndex ?? -1}::${image.imageOrder ?? -1}`;
+    const remainingImages = [...sourceImages];
 
     for (const itemEntry of aliasedItems) {
-      const sheetKey = normalizeLoose(itemEntry.sheetName || "");
-      const sameSheetItems = groupedItemsBySheet.get(sheetKey) ?? [];
-      const sameSheetImages = groupedImagesBySheet.get(sheetKey) ?? [];
+      if (remainingImages.length === 0) break;
 
-      if (sameSheetItems.length === 0 || sameSheetImages.length === 0) {
-        continue;
+      let bestIndex = -1;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      for (let imageIndex = 0; imageIndex < remainingImages.length; imageIndex += 1) {
+        const score = scoreImageAgainstItem(itemEntry.item, remainingImages[imageIndex], imageIndex);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = imageIndex;
+        }
       }
 
-      const itemIndexWithinSheet = sameSheetItems.findIndex(
-        (candidate) => candidate.index === itemEntry.index
-      );
-      const targetImage = sameSheetImages[Math.min(Math.max(itemIndexWithinSheet, 0), sameSheetImages.length - 1)];
-      if (!targetImage) {
-        continue;
-      }
+      if (bestIndex < 0) continue;
+      const [selectedImage] = remainingImages.splice(bestIndex, 1);
+      if (!selectedImage) continue;
 
-      const imageIdentity = getImageIdentity(targetImage);
-      if (consumedImageIds.has(imageIdentity)) {
-        continue;
-      }
-
-      consumedImageIds.add(imageIdentity);
       imagePreview.push({
-        ...targetImage,
+        ...selectedImage,
         sourceFileName: itemEntry.aliasSourceFileName,
+        originalSourceFileName: selectedImage.originalSourceFileName || selectedImage.sourceFileName,
       });
     }
 
-    const remainingImages = sourceImages.filter(
-      (image) => !consumedImageIds.has(getImageIdentity(image))
-    );
-
     for (const [imageIndex, image] of remainingImages.entries()) {
       const targetItem = aliasedItems[Math.min(imageIndex, aliasedItems.length - 1)];
-      if (!targetItem) {
-        imagePreview.push(image);
-        continue;
-      }
-
       imagePreview.push({
         ...image,
-        sourceFileName: targetItem.aliasSourceFileName,
+        sourceFileName: targetItem?.aliasSourceFileName || image.sourceFileName,
+        originalSourceFileName: image.originalSourceFileName || image.sourceFileName,
       });
     }
   }
@@ -398,25 +429,6 @@ function attachPerItemAliases(
   debugIntelligentImport("attachPerItemAliases:result", {
     normalizedCount: normalizedPreview.length,
     imagePreviewCount: imagePreview.length,
-    normalizedPreview: normalizedPreview.map((item) => ({
-      title: item.title,
-      sourceFileName: item.sourceFileName,
-      sku:
-        item.metadata?.sku ||
-        item.metadata?.SKU ||
-        item.metadata?.codigo ||
-        item.metadata?.["código"] ||
-        "",
-    })),
-    imagePreview: imagePreview.map((image) => ({
-      sourceFileName: image.sourceFileName,
-      fileName: image.fileName,
-      sheetName: image.sheetName,
-      rowIndex: image.rowIndex,
-      columnIndex: image.columnIndex,
-      anchorCell: image.anchorCell,
-      imageOrder: image.imageOrder,
-    })),
   });
 
   return {
@@ -540,6 +552,7 @@ export async function runOnboardingIntelligentImport(
     const extractedImagePreviewRaw: IntelligentImportPreviewImage[] = extractedFiles.flatMap((file) =>
       (file.extractedImages ?? []).map((image) => ({
         sourceFileName: file.fileName,
+        originalSourceFileName: file.fileName,
         fileName: image.fileName,
         source: image.source,
         mimeType: image.mimeType,
@@ -551,6 +564,8 @@ export async function runOnboardingIntelligentImport(
         drawingName: image.drawingName,
         imageRelationshipId: image.imageRelationshipId,
         imageOrder: image.imageOrder,
+        worksheetRowNumber: image.worksheetRowNumber,
+        sheetScopedKey: image.sheetScopedKey,
       }))
     );
 

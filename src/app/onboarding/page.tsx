@@ -128,6 +128,7 @@ type IntelligentImportResponse =
       extractedPreview: IntelligentImportExtractedPreview[];
       extractedImagePreview?: Array<{
         sourceFileName: string;
+        originalSourceFileName?: string;
         fileName: string;
         source: string;
         mimeType: string;
@@ -860,13 +861,86 @@ function extractImportedSourceItemNumber(
   return match[1];
 }
 
+function extractImportedOriginalSourceFileName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return (
+    extractMetadataValue(item, [
+      "source_file_name_original",
+      "original_source_file_name",
+      "source_original_file_name",
+    ]) || item.sourceFileName
+  ).trim();
+}
+
+function extractImportedWorksheetRowNumber(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const metadataCandidate =
+    extractMetadataValue(item, [
+      "source_worksheet_row_number",
+      "worksheet_row_number",
+      "worksheetRowNumber",
+      "source_row_number",
+      "row_number",
+      "sheet_row_number",
+    ]) ||
+    extractImportedLabeledValue(String(item.rawText || ""), [
+      "Linha da planilha",
+      "Worksheet row number",
+      "Linha",
+    ]);
+
+  const parsedMetadata = Number(String(metadataCandidate || "").replace(/[^\d-]/g, ""));
+  if (Number.isFinite(parsedMetadata) && parsedMetadata > 0) {
+    return parsedMetadata;
+  }
+
+  const rawSource = String(item.rawText || "");
+  const match =
+    rawSource.match(/(?:^|\n)linha da planilha\s*:\s*(\d+)/i) ||
+    rawSource.match(/===\s*item\s*\d+\s*\|\s*planilha\s*:\s*[^|\n=]+\|\s*linha\s*:\s*(\d+)/i) ||
+    rawSource.match(/(?:^|\n)worksheet row number\s*:\s*(\d+)/i);
+
+  if (!match?.[1]) return null;
+  const parsedMatch = Number(match[1]);
+  return Number.isFinite(parsedMatch) ? parsedMatch : null;
+}
+
+function extractImportedSheetScopedKey(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const explicit = extractMetadataValue(item, [
+    "source_sheet_scoped_key",
+    "sheet_scoped_key",
+    "sheetScopedKey",
+  ]);
+  if (explicit) return explicit.trim();
+
+  const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
+
+  if (sheetName && worksheetRowNumber != null && worksheetRowNumber > 0) {
+    return `${sheetName}::row::${worksheetRowNumber}`;
+  }
+
+  return "";
+}
+
 function buildImportedSourceLocationKey(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const sourceFile = normalizeImportedLoose(item.sourceFileName);
+  const sourceFile = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
   const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
   const itemNumber = normalizeImportedLoose(extractImportedSourceItemNumber(item));
 
+  if (sourceFile && sheetName && worksheetRowNumber != null && worksheetRowNumber > 0) {
+    return `${sourceFile}::${sheetName}::row::${worksheetRowNumber}`;
+  }
+  if (sourceFile && worksheetRowNumber != null && worksheetRowNumber > 0) {
+    return `${sourceFile}::row::${worksheetRowNumber}`;
+  }
   if (sourceFile && sheetName && itemNumber) {
     return `${sourceFile}::${sheetName}::item::${itemNumber}`;
   }
@@ -888,12 +962,24 @@ function buildImportedImageBucketKeys(
     }
   };
 
-  const sourceFile = normalizeImportedLoose(item.sourceFileName);
+  const sourceFile = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
+  const aliasedSourceFile = normalizeImportedLoose(item.sourceFileName);
   const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
   const itemNumber = normalizeImportedLoose(extractImportedSourceItemNumber(item));
   const sourceLocationKey = buildImportedSourceLocationKey(item);
+  const sheetScopedKey = extractImportedSheetScopedKey(item);
 
   pushKey(sourceLocationKey);
+  pushKey(sheetScopedKey);
+
+  if (sourceFile && sheetName && worksheetRowNumber != null && worksheetRowNumber > 0) {
+    pushKey(`${sourceFile}::${sheetName}::row::${worksheetRowNumber}`);
+  }
+
+  if (sourceFile && worksheetRowNumber != null && worksheetRowNumber > 0) {
+    pushKey(`${sourceFile}::row::${worksheetRowNumber}`);
+  }
 
   if (sourceFile && sheetName && itemNumber) {
     pushKey(`${sourceFile}::${sheetName}::item::${itemNumber}`);
@@ -911,9 +997,15 @@ function buildImportedImageBucketKeys(
     pushKey(sourceFile);
   }
 
+  if (aliasedSourceFile && aliasedSourceFile !== sourceFile) {
+    pushKey(aliasedSourceFile);
+    if (sheetName) {
+      pushKey(`${aliasedSourceFile}::sheet::${sheetName}`);
+    }
+  }
+
   return keys;
 }
-
 
 function extractImportedFirstCurrencyValue(value: string | null | undefined) {
   const source = String(value || "");
@@ -1839,22 +1931,55 @@ function extractImportedImageSourceItemNumber(image: {
 
 function buildExtractedImageBucketKeys(image: {
   sourceFileName?: string;
+  originalSourceFileName?: string;
   sheetName?: string;
   source?: string;
   sheetScopedKey?: string;
+  worksheetRowNumber?: number;
 }) {
   const keys = new Set<string>();
   const sourceFileName = normalizeImportedLoose(image.sourceFileName);
+  const originalSourceFileName = normalizeImportedLoose(image.originalSourceFileName);
+  const baseSourceFileName = originalSourceFileName || sourceFileName;
   const sheetName = normalizeImportedLoose(image.sheetName);
+  const worksheetRowNumber =
+    typeof image.worksheetRowNumber === "number" && Number.isFinite(image.worksheetRowNumber)
+      ? image.worksheetRowNumber
+      : null;
   const itemNumber = extractImportedImageSourceItemNumber(image);
 
-  if (sourceFileName) {
+  if (baseSourceFileName) {
+    keys.add(baseSourceFileName);
+    if (sheetName) {
+      keys.add(`${baseSourceFileName}::sheet::${sheetName}`);
+      if (worksheetRowNumber != null && worksheetRowNumber > 0) {
+        keys.add(`${baseSourceFileName}::${sheetName}::row::${worksheetRowNumber}`);
+      }
+      if (itemNumber != null) {
+        keys.add(`${baseSourceFileName}::${sheetName}::item::${itemNumber}`);
+      }
+    }
+    if (worksheetRowNumber != null && worksheetRowNumber > 0) {
+      keys.add(`${baseSourceFileName}::row::${worksheetRowNumber}`);
+    }
+    if (itemNumber != null) {
+      keys.add(`${baseSourceFileName}::item::${itemNumber}`);
+    }
+  }
+
+  if (sourceFileName && sourceFileName !== baseSourceFileName) {
     keys.add(sourceFileName);
     if (sheetName) {
       keys.add(`${sourceFileName}::sheet::${sheetName}`);
+      if (worksheetRowNumber != null && worksheetRowNumber > 0) {
+        keys.add(`${sourceFileName}::${sheetName}::row::${worksheetRowNumber}`);
+      }
       if (itemNumber != null) {
         keys.add(`${sourceFileName}::${sheetName}::item::${itemNumber}`);
       }
+    }
+    if (worksheetRowNumber != null && worksheetRowNumber > 0) {
+      keys.add(`${sourceFileName}::row::${worksheetRowNumber}`);
     }
     if (itemNumber != null) {
       keys.add(`${sourceFileName}::item::${itemNumber}`);
@@ -1869,6 +1994,69 @@ function buildExtractedImageBucketKeys(image: {
   return Array.from(keys).filter(Boolean);
 }
 
+function scoreExtractedImageAgainstImportedItem(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  candidate: {
+    sourceFileName: string;
+    originalSourceFileName?: string;
+    sheetName?: string;
+    worksheetRowNumber?: number;
+    sheetScopedKey?: string;
+    rowIndex?: number;
+    fileName?: string;
+    source?: string;
+  }
+) {
+  let score = 0;
+
+  const itemOriginalSourceFile = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
+  const candidateOriginalSourceFile = normalizeImportedLoose(candidate.originalSourceFileName || candidate.sourceFileName);
+  if (itemOriginalSourceFile && candidateOriginalSourceFile) {
+    if (itemOriginalSourceFile === candidateOriginalSourceFile) score += 400;
+    else score -= 800;
+  }
+
+  const itemSheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
+  if (itemSheetName && candidateSheetName) {
+    if (itemSheetName === candidateSheetName) score += 250;
+    else score -= 600;
+  }
+
+  const itemSheetScopedKey = normalizeImportedLoose(extractImportedSheetScopedKey(item));
+  const candidateSheetScopedKey = normalizeImportedLoose(candidate.sheetScopedKey);
+  if (itemSheetScopedKey && candidateSheetScopedKey) {
+    if (itemSheetScopedKey === candidateSheetScopedKey) score += 1200;
+    else score -= 150;
+  }
+
+  const itemWorksheetRowNumber = extractImportedWorksheetRowNumber(item);
+  const candidateWorksheetRowNumber =
+    typeof candidate.worksheetRowNumber === "number"
+      ? candidate.worksheetRowNumber
+      : (typeof candidate.rowIndex === "number" ? candidate.rowIndex + 1 : null);
+  if (itemWorksheetRowNumber != null && candidateWorksheetRowNumber != null) {
+    const rowDistance = Math.abs(itemWorksheetRowNumber - candidateWorksheetRowNumber);
+    if (rowDistance === 0) score += 900;
+    else if (rowDistance === 1) score += 260;
+    else if (rowDistance === 2) score += 120;
+    else if (rowDistance === 3) score += 40;
+    else score -= Math.min(rowDistance * 30, 300);
+  }
+
+  const itemNumberRaw = extractImportedSourceItemNumber(item);
+  const itemNumber = itemNumberRaw ? Number(itemNumberRaw) : null;
+  const candidateItemNumber = extractImportedImageSourceItemNumber(candidate);
+  if (itemNumber != null && candidateItemNumber != null) {
+    const itemDistance = Math.abs(itemNumber - candidateItemNumber);
+    if (itemDistance === 0) score += 120;
+    else if (itemDistance <= 2) score += 40;
+    else score -= Math.min(itemDistance * 15, 120);
+  }
+
+  return score;
+}
+
 function pickBestRelatedFallbackImage(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   extractedImageSequence: Array<{
@@ -1877,6 +2065,7 @@ function pickBestRelatedFallbackImage(
     mimeType: string;
     dataUrl: string;
     sourceFileName: string;
+    originalSourceFileName?: string;
     source?: string;
     sheetName?: string;
     rowIndex?: number;
@@ -1887,47 +2076,42 @@ function pickBestRelatedFallbackImage(
   }>,
   consumedExtractedImageIds: Set<string>
 ) {
-  const sourceFileName = normalizeImportedLoose(item.sourceFileName);
+  const sourceFileName = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
   const sourceSheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
-  const sourceItemNumberRaw = extractImportedSourceItemNumber(item);
-  const sourceItemNumber = sourceItemNumberRaw ? Number(sourceItemNumberRaw) : null;
 
   const candidates = extractedImageSequence.filter((candidate) => {
     if (!candidate || consumedExtractedImageIds.has(candidate.id)) return false;
-    if (normalizeImportedLoose(candidate.sourceFileName) !== sourceFileName) return false;
+
+    const candidateSourceFileName = normalizeImportedLoose(
+      candidate.originalSourceFileName || candidate.sourceFileName
+    );
+    if (sourceFileName && candidateSourceFileName && candidateSourceFileName !== sourceFileName) {
+      return false;
+    }
+
     if (sourceSheetName) {
       const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
-      if (candidateSheetName && candidateSheetName !== sourceSheetName) return false;
+      if (candidateSheetName && candidateSheetName !== sourceSheetName) {
+        return false;
+      }
     }
+
     return true;
   });
 
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
 
-  if (sourceItemNumber != null) {
-    const candidatesWithItemNumber = candidates
-      .map((candidate) => ({
-        candidate,
-        itemNumber: extractImportedImageSourceItemNumber(candidate),
-      }))
-      .filter((entry) => entry.itemNumber != null) as Array<{
-      candidate: (typeof candidates)[number];
-      itemNumber: number;
-    }>;
+  const sortedCandidates = [...candidates].sort((left, right) => {
+    const leftScore = scoreExtractedImageAgainstImportedItem(item, left);
+    const rightScore = scoreExtractedImageAgainstImportedItem(item, right);
+    if (rightScore !== leftScore) return rightScore - leftScore;
+    return String(left.fileName || "").localeCompare(String(right.fileName || ""), undefined, {
+      numeric: true,
+    });
+  });
 
-    if (candidatesWithItemNumber.length > 0) {
-      candidatesWithItemNumber.sort((left, right) => {
-        const leftDistance = Math.abs(left.itemNumber - sourceItemNumber);
-        const rightDistance = Math.abs(right.itemNumber - sourceItemNumber);
-        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
-        return left.itemNumber - right.itemNumber;
-      });
-      return candidatesWithItemNumber[0].candidate;
-    }
-  }
-
-  return candidates[candidates.length - 1];
+  return sortedCandidates[0] ?? null;
 }
 
 function pickRelatedExtractedImages(
@@ -1940,6 +2124,7 @@ function pickRelatedExtractedImages(
       mimeType: string;
       dataUrl: string;
       sourceFileName: string;
+      originalSourceFileName?: string;
       source?: string;
       sheetName?: string;
       rowIndex?: number;
@@ -1956,6 +2141,7 @@ function pickRelatedExtractedImages(
     mimeType: string;
     dataUrl: string;
     sourceFileName: string;
+    originalSourceFileName?: string;
     source?: string;
     sheetName?: string;
     rowIndex?: number;
@@ -1968,7 +2154,7 @@ function pickRelatedExtractedImages(
   totalSourceItems: number
 ) {
   const sourceBucketKeys = buildImportedImageBucketKeys(item);
-  const sourceFileName = normalizeImportedLoose(item.sourceFileName);
+  const sourceFileName = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
   const sourceSheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
 
   const toPublicImage = (candidate: {
@@ -1985,7 +2171,7 @@ function pickRelatedExtractedImages(
 
   const tryConsumeFromBucket = (
     bucketKey: string,
-    options?: { requireExactSheet?: boolean }
+    options?: { requireExactSheet?: boolean; minimumScore?: number }
   ) => {
     const bucket = extractedImageBuckets.get(bucketKey);
     if (!bucket || bucket.length === 0) {
@@ -2010,6 +2196,11 @@ function pickRelatedExtractedImages(
         }
       }
 
+      const candidateScore = scoreExtractedImageAgainstImportedItem(item, candidate);
+      if ((options?.minimumScore ?? Number.NEGATIVE_INFINITY) > candidateScore) {
+        continue;
+      }
+
       consumedExtractedImageIds.add(candidate.id);
       return toPublicImage(candidate);
     }
@@ -2018,7 +2209,11 @@ function pickRelatedExtractedImages(
   };
 
   for (const bucketKey of sourceBucketKeys) {
-    const direct = tryConsumeFromBucket(bucketKey, { requireExactSheet: true });
+    const minimumScore = bucketKey.includes("::row::") || bucketKey.includes("::item::") ? 200 : 0;
+    const direct = tryConsumeFromBucket(bucketKey, {
+      requireExactSheet: true,
+      minimumScore,
+    });
     if (direct.length > 0) return direct;
   }
 
@@ -2027,14 +2222,20 @@ function pickRelatedExtractedImages(
     extractedImageSequence,
     consumedExtractedImageIds
   );
-  if (specificRelatedFallback) {
+  if (specificRelatedFallback && scoreExtractedImageAgainstImportedItem(item, specificRelatedFallback) >= 200) {
     consumedExtractedImageIds.add(specificRelatedFallback.id);
     return toPublicImage(specificRelatedFallback);
   }
 
   const remainingSameSourceCandidates = extractedImageSequence.filter((candidate) => {
     if (!candidate || consumedExtractedImageIds.has(candidate.id)) return false;
-    if (normalizeImportedLoose(candidate.sourceFileName) !== sourceFileName) return false;
+
+    const candidateSourceFileName = normalizeImportedLoose(
+      candidate.originalSourceFileName || candidate.sourceFileName
+    );
+    if (sourceFileName && candidateSourceFileName && candidateSourceFileName !== sourceFileName) {
+      return false;
+    }
 
     if (sourceSheetName) {
       const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
@@ -2048,14 +2249,22 @@ function pickRelatedExtractedImages(
 
   if (remainingSameSourceCandidates.length === 1) {
     const candidate = remainingSameSourceCandidates[0];
-    consumedExtractedImageIds.add(candidate.id);
-    return toPublicImage(candidate);
+    if (scoreExtractedImageAgainstImportedItem(item, candidate) >= 200) {
+      consumedExtractedImageIds.add(candidate.id);
+      return toPublicImage(candidate);
+    }
   }
 
   if (totalSourceItems === 1 && remainingSameSourceCandidates.length > 0) {
-    const candidate = remainingSameSourceCandidates[0];
-    consumedExtractedImageIds.add(candidate.id);
-    return toPublicImage(candidate);
+    const candidate = [...remainingSameSourceCandidates].sort((left, right) => {
+      const leftScore = scoreExtractedImageAgainstImportedItem(item, left);
+      const rightScore = scoreExtractedImageAgainstImportedItem(item, right);
+      return rightScore - leftScore;
+    })[0];
+    if (candidate) {
+      consumedExtractedImageIds.add(candidate.id);
+      return toPublicImage(candidate);
+    }
   }
 
   return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
@@ -2269,7 +2478,10 @@ function buildImportedCatalogMetadata(
     confidence: item.confidence,
     dedup_key: "dedupKey" in item ? item.dedupKey : null,
     source_location_key: buildImportedSourceLocationKey(item) || null,
+    source_file_name_original: extractImportedOriginalSourceFileName(item) || null,
     source_sheet_name: extractImportedSourceSheetName(item) || null,
+    source_worksheet_row_number: extractImportedWorksheetRowNumber(item),
+    source_sheet_scoped_key: extractImportedSheetScopedKey(item) || null,
     source_category: extractImportedSourceCategory(item) || null,
     source_subcategory: extractImportedSourceSubcategory(item) || null,
     imported_title: buildImportedCatalogName(item),
@@ -3097,6 +3309,10 @@ async function handleSaveImportedItemsToCatalog() {
         mimeType: image.mimeType || "image/jpeg",
         dataUrl: image.dataUrl,
         sourceFileName: String(image.sourceFileName || "").trim().toLowerCase(),
+        originalSourceFileName:
+          typeof image.originalSourceFileName === "string"
+            ? String(image.originalSourceFileName || "").trim().toLowerCase()
+            : String(image.sourceFileName || "").trim().toLowerCase(),
         source: typeof image.source === "string" ? image.source : undefined,
         sheetName: typeof image.sheetName === "string" ? image.sheetName : undefined,
         rowIndex: typeof image.rowIndex === "number" ? image.rowIndex : undefined,
