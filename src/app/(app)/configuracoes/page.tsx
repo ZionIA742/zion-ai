@@ -245,12 +245,10 @@ function CompactMetric({
 
 function SettingsTabButton({
   active,
-  index,
   label,
   onClick,
 }: {
   active: boolean;
-  index: number;
   label: string;
   onClick: () => void;
 }) {
@@ -265,10 +263,7 @@ function SettingsTabButton({
           : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
       ].join(" ")}
     >
-      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] opacity-80">
-        Aba {index}
-      </div>
-      <div className="mt-1 text-sm font-semibold">{label}</div>
+      <div className="text-sm font-semibold">{label}</div>
     </button>
   );
 }
@@ -529,7 +524,7 @@ export default function ConfiguracoesPage() {
           .delete()
           .in("id", ids);
 
-          if (deleteItemsError) throw deleteItemsError;
+        if (deleteItemsError) throw deleteItemsError;
       }
 
       setSuccessText("Todo o catálogo geral da loja foi apagado com sucesso.");
@@ -568,6 +563,26 @@ export default function ConfiguracoesPage() {
         </div>
       ) : null}
 
+      <section className="rounded-2xl border border-gray-200 bg-white p-4 md:p-5">
+        <div className="mb-4">
+          <h2 className="text-base font-semibold text-gray-900">Áreas da configuração</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            Escolha uma aba para revisar a parte certa da loja sem sair desta tela.
+          </p>
+        </div>
+
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+          {tabs.map((tab) => (
+            <SettingsTabButton
+              key={tab.id}
+              active={activeTab === tab.id}
+              label={tab.label}
+              onClick={() => setActiveTab(tab.id)}
+            />
+          ))}
+        </div>
+      </section>
+
       <SectionBlock
         title="Acessos rápidos"
         description="Tudo em um lugar, mantendo os atalhos principais da configuração da loja."
@@ -590,25 +605,25 @@ export default function ConfiguracoesPage() {
             <QuickCard
               href="/configuracoes/piscinas"
               title="Piscinas"
-              description="Abrir a gestão de piscinas cadastradas."
+              description=""
               count={counts.pools}
             />
             <QuickCard
               href="/configuracoes/catalogo/quimicos"
               title="Químicos"
-              description="Abrir a área de produtos químicos."
+              description=""
               count={counts.quimicos}
             />
             <QuickCard
               href="/configuracoes/catalogo/acessorios"
               title="Acessórios"
-              description="Abrir a área de acessórios cadastrados."
+              description=""
               count={counts.acessorios}
             />
             <QuickCard
               href="/configuracoes/catalogo/outros"
               title="Outros"
-              description="Abrir os outros itens do catálogo."
+              description=""
               count={counts.outros}
             />
           </div>
@@ -627,27 +642,6 @@ export default function ConfiguracoesPage() {
           </div>
         </div>
       </SectionBlock>
-
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 md:p-5">
-        <div className="mb-4">
-          <h2 className="text-base font-semibold text-gray-900">Áreas da configuração</h2>
-          <p className="mt-1 text-sm text-gray-600">
-            Escolha uma aba para revisar a parte certa da loja sem sair desta tela.
-          </p>
-        </div>
-
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-          {tabs.map((tab, index) => (
-            <SettingsTabButton
-              key={tab.id}
-              active={activeTab === tab.id}
-              index={index + 1}
-              label={tab.label}
-              onClick={() => setActiveTab(tab.id)}
-            />
-          ))}
-        </div>
-      </section>
 
       {activeTab === "visao-geral" ? (
         <SectionBlock
