@@ -35,6 +35,8 @@ type OnboardingRow = {
   created_at?: string | null;
 };
 
+type AnswersMap = Record<string, unknown>;
+
 type StatusTone = "green" | "amber" | "red" | "gray";
 
 type SettingsTabId =
@@ -48,6 +50,120 @@ type SettingsTabId =
   | "descontos"
   | "canais-integracoes"
   | "identidade";
+
+type Option = {
+  value: string;
+  label: string;
+};
+
+const STORE_SERVICE_OPTIONS: Option[] = [
+  { value: "venda_piscinas", label: "Venda de piscinas" },
+  { value: "instalacao_piscinas", label: "Instalação de piscinas" },
+  { value: "venda_produtos_quimicos", label: "Venda de produtos químicos" },
+  { value: "venda_acessorios", label: "Venda de acessórios" },
+  { value: "visita_tecnica", label: "Visita técnica" },
+  { value: "manutencao", label: "Limpeza / manutenção" },
+];
+
+const SERVICE_REGION_MODE_OPTIONS: Option[] = [
+  { value: "somente_cidade_loja", label: "Somente a cidade da loja" },
+  { value: "cidade_e_vizinhas", label: "Cidade da loja + cidades vizinhas" },
+  { value: "grande_regiao", label: "Atende várias cidades da região" },
+  { value: "todo_estado", label: "Todo o estado" },
+  { value: "sob_consulta", label: "Fora da região, só sob consulta" },
+];
+
+const POOL_TYPE_OPTIONS: Option[] = [
+  { value: "fibra", label: "Fibra" },
+  { value: "vinil", label: "Vinil" },
+  { value: "alvenaria", label: "Alvenaria" },
+  { value: "pastilha", label: "Pastilha / revestida" },
+  { value: "spa", label: "SPA / hidromassagem" },
+  { value: "prainha", label: "Prainha / complemento" },
+];
+
+const DAYS_OF_WEEK_OPTIONS: Option[] = [
+  { value: "segunda", label: "Segunda" },
+  { value: "terça", label: "Terça" },
+  { value: "quarta", label: "Quarta" },
+  { value: "quinta", label: "Quinta" },
+  { value: "sexta", label: "Sexta" },
+  { value: "sábado", label: "Sábado" },
+  { value: "domingo", label: "Domingo" },
+];
+
+const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
+  { value: "precisa_agendar", label: "Precisa agendar antes" },
+  { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
+  { value: "analise_do_local", label: "Pode depender de avaliação do local" },
+  { value: "pode_ter_taxa", label: "Pode ter taxa de deslocamento" },
+  { value: "somente_regiao_atendida", label: "Só atende a região cadastrada" },
+  { value: "horario_comercial", label: "Somente em horário comercial" },
+];
+
+const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
+  { value: "nao_atende_domingo", label: "Não atende domingo" },
+  { value: "nao_atende_fora_regiao", label: "Não atende fora da região definida" },
+  { value: "nao_faz_obra_entorno", label: "Não faz a obra estética completa do entorno" },
+  { value: "nao_passa_preco_sem_contexto", label: "Não passa preço sem entender o caso" },
+  { value: "depende_avaliacao_tecnica", label: "Alguns casos dependem de avaliação técnica" },
+  { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
+];
+
+const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
+  { value: "pix", label: "Pix" },
+  { value: "cartao_credito", label: "Cartão de crédito" },
+  { value: "cartao_debito", label: "Cartão de débito" },
+  { value: "boleto", label: "Boleto" },
+  { value: "dinheiro", label: "Dinheiro" },
+  { value: "transferencia", label: "Transferência" },
+];
+
+const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
+  { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
+  { value: "so_apos_identificar_interesse_real", label: "Só depois de perceber interesse real" },
+  { value: "so_apos_entender_tipo", label: "Só depois de entender o tipo de piscina ou produto" },
+  { value: "so_apos_entender_medidas", label: "Só depois de entender medidas ou porte do projeto" },
+  { value: "so_apos_entender_instalacao", label: "Só depois de entender se precisa instalação" },
+];
+
+const HUMAN_HELP_DISCOUNT_OPTIONS: Option[] = [
+  { value: "pediu_desconto_maior", label: "Pediu desconto maior que o permitido" },
+  { value: "quer_condicao_especial", label: "Quer condição especial" },
+  { value: "fechamento_imediato", label: "Cliente quer fechar agora" },
+  { value: "cliente_importante", label: "Cliente com alto potencial de fechar" },
+];
+
+const HUMAN_HELP_CUSTOM_PROJECT_OPTIONS: Option[] = [
+  { value: "projeto_fora_padrao", label: "Projeto fora do padrão" },
+  { value: "terreno_dificil", label: "Local ou terreno com dificuldade" },
+  { value: "duvida_tecnica_complexa", label: "Dúvida técnica complexa" },
+  { value: "pedido_muito_personalizado", label: "Pedido muito personalizado" },
+  { value: "obra_complementar", label: "Pedido com obra extra além da piscina" },
+];
+
+const HUMAN_HELP_PAYMENT_OPTIONS: Option[] = [
+  { value: "parcelamento_diferente", label: "Parcelamento diferente do padrão" },
+  { value: "financiamento_especifico", label: "Pedido de financiamento específico" },
+  { value: "prazo_especial", label: "Prazo especial de pagamento" },
+  { value: "comprovante_pagamento", label: "Validação manual de pagamento" },
+];
+
+const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
+  { value: "pedido_desconto", label: "Pedido de desconto" },
+  { value: "cliente_quase_fechando", label: "Cliente com alta chance de fechar" },
+  { value: "duvida_tecnica", label: "Dúvida técnica importante" },
+  { value: "pedido_visita", label: "Pedido de visita técnica" },
+  { value: "pedido_instalacao", label: "Pedido de instalação" },
+  { value: "problema_pagamento", label: "Problema de pagamento" },
+];
+
+const ACTIVATION_STYLE_OPTIONS: Option[] = [
+  { value: "ia_direta", label: "Mais direta" },
+  { value: "ia_humanizada", label: "Mais humana" },
+  { value: "priorizar_qualificacao", label: "Priorizar qualificação antes de preço" },
+  { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento" },
+];
 
 function normalizeCategory(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -91,6 +207,44 @@ function buildStoreName(activeStore: unknown) {
   );
 }
 
+function cleanText(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function parseArrayAnswer(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function yesNoLabel(value: unknown) {
+  const normalized = cleanText(value).toLowerCase();
+  if (!normalized) return "Não definido";
+  if (normalized === "sim") return "Sim";
+  if (normalized === "não" || normalized === "nao") return "Não";
+  return cleanText(value);
+}
+
+function optionLabel(value: string, options: Option[]) {
+  return options.find((option) => option.value === value)?.label || value;
+}
+
+function joinSelectedLabels(values: string[], options: Option[], extra?: string) {
+  const labels = values.map((value) => optionLabel(value, options)).filter(Boolean);
+  const safeExtra = cleanText(extra);
+  if (safeExtra) labels.push(safeExtra);
+  return labels.join(", ");
+}
+
+function buildBulletRows(items: Array<{ label: string; value: string }>) {
+  return items.filter((item) => cleanText(item.value)).map((item) => `${item.label}: ${item.value}`);
+}
+
 function SectionBlock({
   title,
   description,
@@ -119,12 +273,10 @@ function SectionBlock({
 function QuickCard({
   href,
   title,
-  description,
   count,
 }: {
   href: string;
   title: string;
-  description: string;
   count?: number;
 }) {
   return (
@@ -132,11 +284,8 @@ function QuickCard({
       href={href}
       className="group rounded-xl border border-gray-200 bg-white px-4 py-3 transition hover:border-black/20 hover:bg-gray-50"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
-          <p className="mt-1 text-xs leading-5 text-gray-600">{description}</p>
-        </div>
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="min-w-0 text-sm font-semibold text-gray-900">{title}</h3>
         {typeof count === "number" ? (
           <span className="inline-flex min-w-[2rem] shrink-0 justify-center rounded-full bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-700">
             {count}
@@ -282,6 +431,7 @@ export default function ConfiguracoesPage() {
     outros: 0,
   });
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
+  const [answers, setAnswers] = useState<AnswersMap>({});
   const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
@@ -307,6 +457,7 @@ export default function ConfiguracoesPage() {
     if (!organizationId || !activeStoreId) {
       setCounts({ pools: 0, quimicos: 0, acessorios: 0, outros: 0 });
       setOnboarding(null);
+      setAnswers({});
       setLoading(false);
       return;
     }
@@ -315,7 +466,7 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
 
     try {
-      const [poolsResult, catalogResult, onboardingResult] = await Promise.all([
+      const [poolsResult, catalogResult, onboardingResult, answersResult] = await Promise.all([
         supabase
           .from("pools")
           .select("id", { count: "exact", head: true })
@@ -330,11 +481,16 @@ export default function ConfiguracoesPage() {
           p_organization_id: organizationId,
           p_store_id: activeStoreId,
         }),
+        supabase.rpc("onboarding_get_answers_scoped", {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+        }),
       ]);
 
       if (poolsResult.error) throw poolsResult.error;
       if (catalogResult.error) throw catalogResult.error;
       if (onboardingResult.error) throw onboardingResult.error;
+      if (answersResult.error) throw answersResult.error;
 
       const nextCounts: CountState = {
         pools: poolsResult.count ?? 0,
@@ -350,6 +506,7 @@ export default function ConfiguracoesPage() {
 
       setCounts(nextCounts);
       setOnboarding((onboardingResult.data ?? null) as OnboardingRow | null);
+      setAnswers((answersResult.data ?? {}) as AnswersMap);
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao carregar a visão geral das configurações.");
     } finally {
@@ -371,32 +528,216 @@ export default function ConfiguracoesPage() {
     [onboarding?.status]
   );
 
-  const activationPendencies = useMemo(() => {
-    const list: string[] = [];
+  const strategyItems = useMemo(() => {
+    const city = cleanText(answers.city);
+    const state = cleanText(answers.state);
+    const serviceRegions = cleanText(answers.service_regions);
+    const services = joinSelectedLabels(
+      parseArrayAnswer(answers.store_services),
+      STORE_SERVICE_OPTIONS,
+      cleanText(answers.store_services_other)
+    );
+    const regionModes = joinSelectedLabels(
+      parseArrayAnswer(answers.service_region_modes),
+      SERVICE_REGION_MODE_OPTIONS,
+      cleanText(answers.service_region_notes)
+    );
 
-    if (onboardingStatus.label !== "Concluído") {
-      list.push("Finalizar o onboarding principal da loja.");
-    }
-    if (counts.pools === 0) {
-      list.push("Cadastrar pelo menos uma piscina, se a loja trabalha com venda de piscinas.");
-    }
-    if (totalCatalogo === 0) {
-      list.push("Cadastrar produtos, acessórios ou outros itens no catálogo.");
-    }
-    if (onboardingStatus.label === "Concluído" && totalCatalogo > 0) {
-      list.push("Revisar regras comerciais e operacionais antes da ativação real.");
-    }
+    return buildBulletRows([
+      { label: "Cidade/região de atendimento", value: [city, state].filter(Boolean).join(" / ") || serviceRegions },
+      { label: "Serviços principais da loja", value: services },
+      { label: "Tipo de loja / foco comercial", value: cleanText(answers.store_description) },
+      { label: "Marca principal / franquia principal", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
+      { label: "Perfil da operação", value: regionModes },
+      { label: "Resumo levantado na entrada da loja", value: cleanText(answers.service_region_notes) || cleanText(answers.store_description) },
+    ]);
+  }, [answers]);
 
-    return list;
-  }, [counts.pools, totalCatalogo, onboardingStatus.label]);
+  const poolsItems = useMemo(() => {
+    const poolTypes = joinSelectedLabels(
+      parseArrayAnswer(answers.pool_types_selected),
+      POOL_TYPE_OPTIONS,
+      cleanText(answers.pool_types_other)
+    );
+
+    return buildBulletRows([
+      { label: "Modelos cadastrados", value: String(counts.pools) },
+      { label: "Tipos de piscina trabalhados", value: poolTypes || cleanText(answers.pool_types) },
+      { label: "Material", value: poolTypes },
+      { label: "Marca", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
+      { label: "Fotos", value: counts.pools > 0 ? "Gerenciadas na aba interna de piscinas" : "Ainda sem piscinas cadastradas" },
+      { label: "Preço base", value: counts.pools > 0 ? "Editável na aba de piscinas" : "" },
+      { label: "Ativo/inativo", value: counts.pools > 0 ? "Controlado item por item na aba de piscinas" : "" },
+      { label: "Edição e exclusão", value: "Disponíveis na página interna de piscinas" },
+      { label: "Importação inteligente assistida", value: "Planejada para evolução do fluxo" },
+    ]);
+  }, [answers, counts.pools]);
+
+  const catalogItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Produtos químicos", value: String(counts.quimicos) },
+      { label: "Acessórios", value: String(counts.acessorios) },
+      { label: "Outros itens", value: String(counts.outros) },
+      { label: "Fotos", value: totalCatalogo > 0 ? "Gerenciadas por item nas páginas internas" : "" },
+      { label: "Preço", value: totalCatalogo > 0 ? "Controlado por item" : "" },
+      { label: "Estoque", value: totalCatalogo > 0 ? "Controlado por item" : "" },
+      { label: "SKU", value: totalCatalogo > 0 ? "Controlado por item" : "" },
+      { label: "Ativo/inativo", value: totalCatalogo > 0 ? "Controlado por item" : "" },
+      { label: "Edição e exclusão", value: "Disponíveis nas páginas internas de catálogo" },
+      { label: "Importação futura assistida", value: "Mantida como parte da evolução do catálogo" },
+    ]);
+  }, [counts.quimicos, counts.acessorios, counts.outros, totalCatalogo]);
+
+  const operationItems = useMemo(() => {
+    const installationDays = joinSelectedLabels(
+      parseArrayAnswer(answers.installation_available_days),
+      DAYS_OF_WEEK_OPTIONS
+    );
+    const visitDays = joinSelectedLabels(
+      parseArrayAnswer(answers.technical_visit_available_days),
+      DAYS_OF_WEEK_OPTIONS
+    );
+    const visitRules = joinSelectedLabels(
+      parseArrayAnswer(answers.technical_visit_rules_selected),
+      TECHNICAL_VISIT_RULE_OPTIONS,
+      cleanText(answers.technical_visit_rules_other)
+    );
+    const limitations = joinSelectedLabels(
+      parseArrayAnswer(answers.important_limitations_selected),
+      IMPORTANT_LIMITATION_OPTIONS,
+      cleanText(answers.important_limitations_other)
+    );
+
+    return buildBulletRows([
+      { label: "Faz instalação", value: yesNoLabel(answers.offers_installation) },
+      { label: "Faz visita técnica", value: yesNoLabel(answers.offers_technical_visit) },
+      { label: "Cobra visita", value: cleanText(answers.technical_visit_rules_other) || "Ver regras da visita técnica" },
+      { label: "Prazo médio", value: cleanText(answers.average_installation_time_days) },
+      { label: "Dias/horários de instalação", value: installationDays || cleanText(answers.installation_days_rule) },
+      { label: "Disponibilidade por dia para visita", value: visitDays || cleanText(answers.technical_visit_days_rule) },
+      { label: "Regiões atendidas", value: cleanText(answers.service_regions) || cleanText(answers.service_region_notes) },
+      { label: "Limitações importantes", value: limitations },
+      { label: "Regras da agenda", value: visitRules },
+      { label: "Mais de um compromisso por dia", value: cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) },
+      { label: "Mesmo horário", value: cleanText(answers.technical_visit_days_rule) },
+      { label: "Quantidade máxima por faixa", value: cleanText(answers.average_human_response_time) },
+    ]);
+  }, [answers]);
+
+  const commercialItems = useMemo(() => {
+    const payments = joinSelectedLabels(
+      parseArrayAnswer(answers.accepted_payment_methods),
+      PAYMENT_METHOD_MAIN_OPTIONS
+    );
+    const priceBefore = joinSelectedLabels(
+      parseArrayAnswer(answers.price_must_understand_before),
+      PRICE_DIRECT_BEFORE_OPTIONS
+    );
+    const discountCases = joinSelectedLabels(
+      parseArrayAnswer(answers.human_help_discount_cases_selected),
+      HUMAN_HELP_DISCOUNT_OPTIONS,
+      cleanText(answers.human_help_discount_cases_other)
+    );
+    const customProjectCases = joinSelectedLabels(
+      parseArrayAnswer(answers.human_help_custom_project_cases_selected),
+      HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
+      cleanText(answers.human_help_custom_project_cases_other)
+    );
+    const paymentCases = joinSelectedLabels(
+      parseArrayAnswer(answers.human_help_payment_cases_selected),
+      HUMAN_HELP_PAYMENT_OPTIONS,
+      cleanText(answers.human_help_payment_cases_other)
+    );
+
+    return buildBulletRows([
+      { label: "Nome que a IA usa no atendimento", value: cleanText(answers.responsible_name) ? `Base atual da loja: ${cleanText(answers.responsible_name)}` : cleanText(answers.store_display_name) },
+      { label: "Como a IA deve se apresentar", value: cleanText(answers.price_talk_mode) || "Revisar no onboarding comercial" },
+      { label: "Tom da IA", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), ACTIVATION_STYLE_OPTIONS, cleanText(answers.activation_preferences_other)) },
+      { label: "Fala como pessoa ou equipe", value: cleanText(answers.ai_should_notify_responsible) || "Revisar ativação" },
+      { label: "Quando pode falar preço", value: yesNoLabel(answers.ai_can_send_price_directly) },
+      { label: "Quando deve chamar humano", value: [discountCases, customProjectCases, paymentCases].filter(Boolean).join(" • ") },
+      { label: "Política comercial geral", value: cleanText(answers.price_direct_rule) || cleanText(answers.price_direct_rule_other) },
+      { label: "Formas de pagamento", value: payments },
+      { label: "Regras gerais de negociação", value: cleanText(answers.price_direct_conditions) || cleanText(answers.price_needs_human_help) },
+      { label: "Pode trabalhar com desconto", value: `${yesNoLabel(answers.can_offer_discount)}${cleanText(answers.max_discount_percent) ? ` • máx. ${cleanText(answers.max_discount_percent)}%` : ""}` },
+      { label: "Limites de promessa da IA", value: cleanText(answers.final_activation_notes) || cleanText(answers.store_description) },
+      { label: "Regras de pós-venda", value: cleanText(answers.sales_flow_final_steps) || cleanText(answers.sales_flow_notes) },
+      { label: "Comportamento fora do horário", value: priceBefore },
+    ]);
+  }, [answers]);
+
+  const activationItems = useMemo(() => {
+    const notificationCases = joinSelectedLabels(
+      parseArrayAnswer(answers.responsible_notification_cases),
+      RESPONSIBLE_NOTIFICATION_CASE_OPTIONS,
+      cleanText(answers.responsible_notification_cases_other)
+    );
+    const activationPrefs = joinSelectedLabels(
+      parseArrayAnswer(answers.activation_preferences),
+      ACTIVATION_STYLE_OPTIONS,
+      cleanText(answers.activation_preferences_other)
+    );
+
+    return buildBulletRows([
+      { label: "Responsável principal", value: cleanText(answers.responsible_name) },
+      { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
+      { label: "Responsável secundário", value: cleanText(answers.final_activation_notes) },
+      { label: "Canal para falar com a IA assistente", value: activationPrefs },
+      { label: "Web chat interno", value: "Previsto como canal do sistema" },
+      { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
+      { label: "Número/chip dedicado", value: cleanText(answers.commercial_whatsapp) },
+      { label: "Futuro Telegram", value: "Previsto para expansão" },
+      { label: "Dados mínimos para ativação", value: yesNoLabel(answers.confirm_information_is_correct) },
+      { label: "Checklist de ativação real", value: notificationCases },
+      { label: "Status da ativação da loja", value: resolveOnboardingLabel(onboarding?.status).label },
+    ]);
+  }, [answers, onboarding?.status]);
+
+  const discountItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Regra geral de desconto", value: yesNoLabel(answers.can_offer_discount) },
+      { label: "Limite máximo", value: cleanText(answers.max_discount_percent) ? `${cleanText(answers.max_discount_percent)}%` : "" },
+      { label: "Quando precisa aprovação humana", value: joinSelectedLabels(parseArrayAnswer(answers.human_help_discount_cases_selected), HUMAN_HELP_DISCOUNT_OPTIONS, cleanText(answers.human_help_discount_cases_other)) },
+      { label: "Quem aprova", value: cleanText(answers.responsible_name) || "Responsável principal" },
+      { label: "Histórico de pedidos de desconto", value: "Ainda não exibido nesta tela" },
+      { label: "Regras especiais por tipo de item", value: cleanText(answers.price_direct_rule_other) },
+    ]);
+  }, [answers]);
+
+  const integrationItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "WhatsApp comercial da loja", value: cleanText(answers.commercial_whatsapp) },
+      { label: "Canal do responsável", value: cleanText(answers.responsible_whatsapp) },
+      { label: "Integrações externas", value: cleanText(answers.activation_preferences_other) || "Ainda em definição" },
+      { label: "Site da loja", value: cleanText(answers.store_description) },
+      { label: "Logo da loja", value: "Ajustar quando houver upload/identidade visual" },
+      { label: "Dados para PDF, orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
+      { label: "Status das integrações", value: resolveOnboardingLabel(onboarding?.status).label },
+    ]);
+  }, [answers, storeName, onboarding?.status]);
+
+  const identityItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Nome da loja", value: cleanText(answers.store_display_name) || storeName },
+      { label: "Logo", value: "Ajustar quando houver logo cadastrada" },
+      { label: "Cores", value: "Ainda não configuradas nesta tela" },
+      { label: "Nome que a IA usa", value: cleanText(answers.store_display_name) || storeName },
+      { label: "Assinatura padrão da IA", value: cleanText(answers.store_description) },
+      { label: "Dados usados em orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
+    ]);
+  }, [answers, storeName]);
 
   const overviewSummary = useMemo(() => {
+    const responsible = cleanText(answers.responsible_name);
+    const responsibleWhatsapp = cleanText(answers.responsible_whatsapp);
+
     return [
       `Loja ativa: ${storeName}.`,
       `Status da configuração: ${onboardingStatus.label.toLowerCase()}.`,
       `Piscinas cadastradas: ${counts.pools}.`,
       `Catálogo geral: ${totalCatalogo} itens (${counts.quimicos} químicos, ${counts.acessorios} acessórios e ${counts.outros} outros).`,
-    ];
+      responsible ? `Responsável principal: ${responsible}${responsibleWhatsapp ? ` • ${responsibleWhatsapp}` : ""}.` : "",
+    ].filter(Boolean);
   }, [
     storeName,
     onboardingStatus.label,
@@ -405,6 +746,7 @@ export default function ConfiguracoesPage() {
     counts.quimicos,
     counts.acessorios,
     counts.outros,
+    answers,
   ]);
 
   const iaReadiness = useMemo(() => {
@@ -428,6 +770,28 @@ export default function ConfiguracoesPage() {
       hint: "A loja ainda precisa concluir a estrutura mínima de configuração.",
     };
   }, [onboardingStatus.label, counts.pools, totalCatalogo]);
+
+  const activationPendencies = useMemo(() => {
+    const list: string[] = [];
+
+    if (onboardingStatus.label !== "Concluído") {
+      list.push("Finalizar o onboarding principal da loja.");
+    }
+    if (counts.pools === 0) {
+      list.push("Cadastrar pelo menos uma piscina, se a loja trabalha com venda de piscinas.");
+    }
+    if (totalCatalogo === 0) {
+      list.push("Cadastrar produtos, acessórios ou outros itens no catálogo.");
+    }
+    if (!cleanText(answers.responsible_name)) {
+      list.push("Definir o responsável principal da loja.");
+    }
+    if (!cleanText(answers.responsible_whatsapp)) {
+      list.push("Definir o WhatsApp do responsável.");
+    }
+
+    return list;
+  }, [counts.pools, totalCatalogo, onboardingStatus.label, answers]);
 
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -600,35 +964,15 @@ export default function ConfiguracoesPage() {
           </>
         }
       >
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_290px]">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <QuickCard
-              href="/configuracoes/piscinas"
-              title="Piscinas"
-              description=""
-              count={counts.pools}
-            />
-            <QuickCard
-              href="/configuracoes/catalogo/quimicos"
-              title="Químicos"
-              description=""
-              count={counts.quimicos}
-            />
-            <QuickCard
-              href="/configuracoes/catalogo/acessorios"
-              title="Acessórios"
-              description=""
-              count={counts.acessorios}
-            />
-            <QuickCard
-              href="/configuracoes/catalogo/outros"
-              title="Outros"
-              description=""
-              count={counts.outros}
-            />
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_250px]">
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            <QuickCard href="/configuracoes/piscinas" title="Piscinas" count={counts.pools} />
+            <QuickCard href="/configuracoes/catalogo/quimicos" title="Químicos" count={counts.quimicos} />
+            <QuickCard href="/configuracoes/catalogo/acessorios" title="Acessórios" count={counts.acessorios} />
+            <QuickCard href="/configuracoes/catalogo/outros" title="Outros" count={counts.outros} />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+          <div className="grid gap-2">
             <CompactMetric
               label="Total do catálogo"
               value={String(totalCatalogo)}
@@ -658,21 +1002,21 @@ export default function ConfiguracoesPage() {
             />
             <StatusCard
               label="Canal comercial"
-              value={onboardingStatus.label === "Concluído" ? "Revisar conexão" : "Pendente"}
-              tone={onboardingStatus.label === "Concluído" ? "amber" : "red"}
-              hint="Canal de atendimento da loja e comunicação comercial."
+              value={cleanText(answers.commercial_whatsapp) ? "Configurado" : "Pendente"}
+              tone={cleanText(answers.commercial_whatsapp) ? "green" : "red"}
+              hint={cleanText(answers.commercial_whatsapp) || "WhatsApp comercial ainda não definido"}
             />
             <StatusCard
               label="Canal da assistente"
-              value={onboardingStatus.label === "Concluído" ? "Em definição" : "Pendente"}
-              tone="amber"
-              hint="Canal que o responsável vai usar para falar com a IA assistente."
+              value={cleanText(answers.responsible_whatsapp) ? "Configurado" : "Pendente"}
+              tone={cleanText(answers.responsible_whatsapp) ? "green" : "amber"}
+              hint={cleanText(answers.responsible_whatsapp) || "Canal do responsável ainda não definido"}
             />
             <StatusCard
               label="Agenda"
-              value={onboardingStatus.label !== "Não iniciado" ? "Revisar regras" : "Pendente"}
-              tone={onboardingStatus.label !== "Não iniciado" ? "amber" : "red"}
-              hint="Disponibilidade, limites e regras de compromisso."
+              value={cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) ? "Configurada" : "Pendente"}
+              tone={cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) ? "green" : "amber"}
+              hint="Regras de disponibilidade e operação"
             />
             <StatusCard
               label="Prontidão da IA"
@@ -694,6 +1038,30 @@ export default function ConfiguracoesPage() {
               <SummaryList items={activationPendencies} />
             </div>
           </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Responsáveis e acesso</div>
+              <SummaryList
+                items={buildBulletRows([
+                  { label: "Responsável principal", value: cleanText(answers.responsible_name) },
+                  { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
+                  { label: "Quem tem acesso ao sistema", value: cleanText(answers.responsible_name) || "Responsável principal da loja" },
+                ])}
+              />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Acesso rápido para outras abas</div>
+              <SummaryList
+                items={[
+                  "Estratégia para revisar a base da loja.",
+                  "Piscinas para revisar a oferta de piscinas.",
+                  "Produtos/Acessórios para revisar catálogo, estoque e SKU.",
+                  "Operação, Comercial e IA e Ativação para validar o comportamento real da loja.",
+                ]}
+              />
+            </div>
+          </div>
         </SectionBlock>
       ) : null}
 
@@ -703,13 +1071,7 @@ export default function ConfiguracoesPage() {
           description="Espelho estruturado do onboarding, sem substituir a configuração viva principal."
           actions={<SecondaryLink href="/onboarding?step=1">Revisar entrada da loja</SecondaryLink>}
         >
-          <SummaryList
-            items={[
-              "Cidade e região de atendimento devem ser revistas aqui com base no onboarding.",
-              "Serviços principais, foco comercial e marca principal precisam permanecer consistentes com a entrada da loja.",
-              `Status atual dessa base: ${onboardingStatus.label.toLowerCase()}.`,
-            ]}
-          />
+          <SummaryList items={strategyItems} />
         </SectionBlock>
       ) : null}
 
@@ -719,13 +1081,7 @@ export default function ConfiguracoesPage() {
           description="Tudo sobre a oferta de piscinas da loja."
           actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
         >
-          <SummaryList
-            items={[
-              `Modelos cadastrados agora: ${counts.pools}.`,
-              "A página interna já deve continuar com edição, exclusão, fotos, preço base e ativo/inativo.",
-              "A futura importação inteligente assistida de piscinas deve continuar entrando por esse fluxo.",
-            ]}
-          />
+          <SummaryList items={poolsItems} />
         </SectionBlock>
       ) : null}
 
@@ -741,14 +1097,7 @@ export default function ConfiguracoesPage() {
             </div>
           }
         >
-          <SummaryList
-            items={[
-              `Químicos cadastrados: ${counts.quimicos}.`,
-              `Acessórios cadastrados: ${counts.acessorios}.`,
-              `Outros itens cadastrados: ${counts.outros}.`,
-              "As páginas internas devem continuar responsáveis por preço, estoque, SKU, fotos, ativo/inativo, edição e exclusão.",
-            ]}
-          />
+          <SummaryList items={catalogItems} />
         </SectionBlock>
       ) : null}
 
@@ -758,13 +1107,7 @@ export default function ConfiguracoesPage() {
           description="Regras reais da operação da loja e da agenda operacional."
           actions={<SecondaryLink href="/onboarding?step=3">Revisar operação</SecondaryLink>}
         >
-          <SummaryList
-            items={[
-              "Aqui devem ficar as regras de instalação, visita técnica, prazo médio e disponibilidade por dia.",
-              "Também é a área certa para revisar regiões atendidas, limitações importantes e regras da agenda.",
-              "Hoje a melhor fonte de revisão para isso continua sendo o onboarding estruturado.",
-            ]}
-          />
+          <SummaryList items={operationItems} />
         </SectionBlock>
       ) : null}
 
@@ -774,13 +1117,7 @@ export default function ConfiguracoesPage() {
           description="Regras comerciais vivas que a IA vendedora deve obedecer."
           actions={<SecondaryLink href="/onboarding?step=4">Revisar comercial e IA</SecondaryLink>}
         >
-          <SummaryList
-            items={[
-              "Nome da IA no atendimento, forma de apresentação, tom, política de preço e regras de desconto devem ser revisados aqui.",
-              "Também é a área certa para regras de promessa da IA, pós-venda e comportamento fora do horário.",
-              "A base atual precisa continuar coerente com o onboarding e com os limites da operação da loja.",
-            ]}
-          />
+          <SummaryList items={commercialItems} />
         </SectionBlock>
       ) : null}
 
@@ -790,28 +1127,17 @@ export default function ConfiguracoesPage() {
           description="Ponte entre IA e humano responsável."
           actions={<SecondaryLink href="/onboarding?step=5">Abrir ativação</SecondaryLink>}
         >
-          <SummaryList
-            items={[
-              "Nome do responsável principal, WhatsApp, canal da assistente e checklist de ativação real devem aparecer aqui.",
-              `Status atual da ativação: ${onboardingStatus.label.toLowerCase()}.`,
-              "Essa área precisa servir como último ponto de conferência antes da loja entrar em operação real.",
-            ]}
-          />
+          <SummaryList items={activationItems} />
         </SectionBlock>
       ) : null}
 
       {activeTab === "descontos" ? (
         <SectionBlock
           title="8. Descontos"
-          description="Módulo próprio, sem brigar com Comercial e IA."
+          description="Módulo próprio, mas sem brigar com Comercial e IA."
           actions={<SecondaryLink href="/onboarding?step=4">Revisar descontos</SecondaryLink>}
         >
-          <SummaryList
-            items={[
-              "Regra geral de desconto, limite máximo, quando precisa aprovação humana e quem aprova devem ficar centralizados aqui.",
-              "Se existir histórico de pedidos de desconto no futuro, essa também é a área certa para acompanhar.",
-            ]}
-          />
+          <SummaryList items={discountItems} />
         </SectionBlock>
       ) : null}
 
@@ -821,12 +1147,7 @@ export default function ConfiguracoesPage() {
           description="WhatsApp comercial, canal do responsável e integrações externas."
           actions={<SecondaryLink href="/onboarding?step=5">Revisar canais</SecondaryLink>}
         >
-          <SummaryList
-            items={[
-              "WhatsApp comercial da loja, canal do responsável, logo, site e dados para PDF, orçamento e contrato devem ficar organizados aqui.",
-              "O ideal é essa área mostrar claramente o status das integrações e o que ainda depende de ativação real.",
-            ]}
-          />
+          <SummaryList items={integrationItems} />
         </SectionBlock>
       ) : null}
 
@@ -836,12 +1157,7 @@ export default function ConfiguracoesPage() {
           description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
           actions={<SecondaryLink href="/onboarding?step=1">Revisar identidade</SecondaryLink>}
         >
-          <SummaryList
-            items={[
-              `Nome atual da loja: ${storeName}.`,
-              "Essa área deve concentrar nome da loja, logo, nome que a IA usa, assinatura padrão e dados de orçamento/contrato.",
-            ]}
-          />
+          <SummaryList items={identityItems} />
         </SectionBlock>
       ) : null}
     </div>
