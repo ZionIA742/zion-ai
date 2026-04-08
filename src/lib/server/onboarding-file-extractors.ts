@@ -214,6 +214,8 @@ function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
 
   dataRows.forEach((row, index) => {
     const pairs: string[] = [];
+    const worksheetRowNumber = headerIndex + 2 + index;
+    const sheetScopedKey = `${normalizeLooseKey(sheetName)}::row::${worksheetRowNumber}`;
 
     headers.forEach((header, columnIndex) => {
       const value = String(row[columnIndex] ?? "")
@@ -229,7 +231,12 @@ function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
     if (pairs.length === 0) return;
 
     blocks.push(
-      [`=== ITEM ${index + 1} | PLANILHA: ${sheetName} ===`, ...pairs].join("\n")
+      [
+        `=== ITEM ${index + 1} | PLANILHA: ${sheetName} | LINHA: ${worksheetRowNumber} ===`,
+        `Linha da planilha: ${worksheetRowNumber}`,
+        `Sheet scoped key: ${sheetScopedKey}`,
+        ...pairs,
+      ].join("\n")
     );
   });
 

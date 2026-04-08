@@ -335,100 +335,20 @@ function attachPerItemAliases(
   items: NormalizedImportItem[],
   extractedImages: IntelligentImportPreviewImage[]
 ) {
-  const enrichedItems = items.map((item) => enrichItemWithImportCoordinates(item));
-  const groupedBySourceFile = new Map<string, Array<{ item: (typeof enrichedItems)[number]; index: number }>>();
+  const normalizedPreview = items.map((item) => enrichItemWithImportCoordinates(item));
 
-  for (const [index, item] of enrichedItems.entries()) {
-    const key = normalizeLoose(String(item.metadata?.source_file_name_original || item.sourceFileName || ""));
-    const current = groupedBySourceFile.get(key) ?? [];
-    current.push({ item, index });
-    groupedBySourceFile.set(key, current);
-  }
-
-  const aliasByOriginalIndex = new Map<number, string>();
-
-  for (const relatedItems of groupedBySourceFile.values()) {
-    const sortedForAssignment = [...relatedItems].sort((left, right) => {
-      const leftOrder = extractItemStableAssignmentOrder(left.item, left.index);
-      const rightOrder = extractItemStableAssignmentOrder(right.item, right.index);
-      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-      return left.index - right.index;
-    });
-
-    sortedForAssignment.forEach((entry, relatedIndex) => {
-      const sheetName = extractItemSheetName(entry.item);
-      aliasByOriginalIndex.set(
-        entry.index,
-        sortedForAssignment.length > 1
-          ? buildFileItemAlias(String(entry.item.metadata?.source_file_name_original || entry.item.sourceFileName || ""), relatedIndex, sheetName)
-          : String(entry.item.metadata?.source_file_name_original || entry.item.sourceFileName || "")
-      );
-    });
-  }
-
-  const normalizedPreview = enrichedItems.map((item, index) => ({
-    ...item,
-    sourceFileName: aliasByOriginalIndex.get(index) ?? item.sourceFileName,
+  const imagePreview: IntelligentImportPreviewImage[] = extractedImages.map((image) => ({
+    ...image,
+    sourceFileName: String(image.originalSourceFileName || image.sourceFileName || "").trim(),
+    originalSourceFileName: String(
+      image.originalSourceFileName || image.sourceFileName || ""
+    ).trim(),
   }));
-
-  const imagePreview: IntelligentImportPreviewImage[] = [];
-
-  for (const [key, relatedItems] of groupedBySourceFile.entries()) {
-    const sourceImages = sortImagesForStableAssignment(
-      extractedImages.filter((image) => normalizeLoose(image.originalSourceFileName || image.sourceFileName || "") === key)
-    );
-
-    const aliasedItems = [...relatedItems]
-      .sort((left, right) => {
-        const leftOrder = extractItemStableAssignmentOrder(left.item, left.index);
-        const rightOrder = extractItemStableAssignmentOrder(right.item, right.index);
-        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-        return left.index - right.index;
-      })
-      .map((entry) => ({
-        ...entry,
-        aliasSourceFileName: aliasByOriginalIndex.get(entry.index) ?? entry.item.sourceFileName,
-      }));
-
-    const remainingImages = [...sourceImages];
-
-    for (const itemEntry of aliasedItems) {
-      if (remainingImages.length === 0) break;
-
-      let bestIndex = -1;
-      let bestScore = Number.NEGATIVE_INFINITY;
-      for (let imageIndex = 0; imageIndex < remainingImages.length; imageIndex += 1) {
-        const score = scoreImageAgainstItem(itemEntry.item, remainingImages[imageIndex], imageIndex);
-        if (score > bestScore) {
-          bestScore = score;
-          bestIndex = imageIndex;
-        }
-      }
-
-      if (bestIndex < 0) continue;
-      const [selectedImage] = remainingImages.splice(bestIndex, 1);
-      if (!selectedImage) continue;
-
-      imagePreview.push({
-        ...selectedImage,
-        sourceFileName: itemEntry.aliasSourceFileName,
-        originalSourceFileName: selectedImage.originalSourceFileName || selectedImage.sourceFileName,
-      });
-    }
-
-    for (const [imageIndex, image] of remainingImages.entries()) {
-      const targetItem = aliasedItems[Math.min(imageIndex, aliasedItems.length - 1)];
-      imagePreview.push({
-        ...image,
-        sourceFileName: targetItem?.aliasSourceFileName || image.sourceFileName,
-        originalSourceFileName: image.originalSourceFileName || image.sourceFileName,
-      });
-    }
-  }
 
   debugIntelligentImport("attachPerItemAliases:result", {
     normalizedCount: normalizedPreview.length,
     imagePreviewCount: imagePreview.length,
+    mode: "preserve_original_image_coordinates",
   });
 
   return {
