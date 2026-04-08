@@ -1994,6 +1994,80 @@ function buildExtractedImageBucketKeys(image: {
   return Array.from(keys).filter(Boolean);
 }
 
+function getExtractedImageWorksheetRowNumber(candidate: {
+  worksheetRowNumber?: number;
+  rowIndex?: number;
+}) {
+  if (typeof candidate.worksheetRowNumber === "number" && Number.isFinite(candidate.worksheetRowNumber)) {
+    return candidate.worksheetRowNumber;
+  }
+
+  if (typeof candidate.rowIndex === "number" && Number.isFinite(candidate.rowIndex)) {
+    return candidate.rowIndex + 1;
+  }
+
+  return null;
+}
+
+function hasStrongExtractedImageCoordinateMatch(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  candidate: {
+    sourceFileName: string;
+    originalSourceFileName?: string;
+    sheetName?: string;
+    worksheetRowNumber?: number;
+    sheetScopedKey?: string;
+    rowIndex?: number;
+    source?: string;
+    fileName?: string;
+  }
+) {
+  const itemOriginalSourceFile = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
+  const candidateOriginalSourceFile = normalizeImportedLoose(
+    candidate.originalSourceFileName || candidate.sourceFileName
+  );
+
+  if (
+    itemOriginalSourceFile &&
+    candidateOriginalSourceFile &&
+    itemOriginalSourceFile !== candidateOriginalSourceFile
+  ) {
+    return false;
+  }
+
+  const itemSheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
+
+  if (itemSheetName && candidateSheetName && itemSheetName !== candidateSheetName) {
+    return false;
+  }
+
+  const itemSheetScopedKey = normalizeImportedLoose(extractImportedSheetScopedKey(item));
+  const candidateSheetScopedKey = normalizeImportedLoose(candidate.sheetScopedKey);
+  if (itemSheetScopedKey && candidateSheetScopedKey && itemSheetScopedKey === candidateSheetScopedKey) {
+    return true;
+  }
+
+  const itemWorksheetRowNumber = extractImportedWorksheetRowNumber(item);
+  const candidateWorksheetRowNumber = getExtractedImageWorksheetRowNumber(candidate);
+  if (
+    itemWorksheetRowNumber != null &&
+    candidateWorksheetRowNumber != null &&
+    itemWorksheetRowNumber === candidateWorksheetRowNumber
+  ) {
+    return true;
+  }
+
+  const itemNumberRaw = extractImportedSourceItemNumber(item);
+  const itemNumber = itemNumberRaw ? Number(itemNumberRaw) : null;
+  const candidateItemNumber = extractImportedImageSourceItemNumber(candidate);
+  if (itemNumber != null && candidateItemNumber != null && itemNumber === candidateItemNumber) {
+    return true;
+  }
+
+  return false;
+}
+
 function scoreExtractedImageAgainstImportedItem(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   candidate: {
@@ -2031,10 +2105,7 @@ function scoreExtractedImageAgainstImportedItem(
   }
 
   const itemWorksheetRowNumber = extractImportedWorksheetRowNumber(item);
-  const candidateWorksheetRowNumber =
-    typeof candidate.worksheetRowNumber === "number"
-      ? candidate.worksheetRowNumber
-      : (typeof candidate.rowIndex === "number" ? candidate.rowIndex + 1 : null);
+  const candidateWorksheetRowNumber = getExtractedImageWorksheetRowNumber(candidate);
   if (itemWorksheetRowNumber != null && candidateWorksheetRowNumber != null) {
     const rowDistance = Math.abs(itemWorksheetRowNumber - candidateWorksheetRowNumber);
     if (rowDistance === 0) score += 900;
@@ -2052,6 +2123,10 @@ function scoreExtractedImageAgainstImportedItem(
     if (itemDistance === 0) score += 120;
     else if (itemDistance <= 2) score += 40;
     else score -= Math.min(itemDistance * 15, 120);
+  }
+
+  if (hasStrongExtractedImageCoordinateMatch(item, candidate)) {
+    score += 600;
   }
 
   return score;
@@ -2106,6 +2181,9 @@ function pickBestRelatedFallbackImage(
     const leftScore = scoreExtractedImageAgainstImportedItem(item, left);
     const rightScore = scoreExtractedImageAgainstImportedItem(item, right);
     if (rightScore !== leftScore) return rightScore - leftScore;
+    const leftRow = getExtractedImageWorksheetRowNumber(left) ?? Number.MAX_SAFE_INTEGER;
+    const rightRow = getExtractedImageWorksheetRowNumber(right) ?? Number.MAX_SAFE_INTEGER;
+    if (leftRow !== rightRow) return leftRow - rightRow;
     return String(left.fileName || "").localeCompare(String(right.fileName || ""), undefined, {
       numeric: true,
     });
@@ -2156,6 +2234,8 @@ function pickRelatedExtractedImages(
   const sourceBucketKeys = buildImportedImageBucketKeys(item);
   const sourceFileName = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
   const sourceSheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const destination = resolveImportedDestination(item);
+  const requiresStrictMatch = destination === "outros";
 
   const toPublicImage = (candidate: {
     fileName: string;
@@ -2169,50 +2249,137 @@ function pickRelatedExtractedImages(
     },
   ] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
 
+  const selectBestCandidate = (
+    candidates: Array<{
+      id: string;
+      fileName: string;
+      mimeType: string;
+      dataUrl: string;
+      sourceFileName: string;
+      originalSourceFileName?: string;
+      source?: string;
+      sheetName?: string;
+      rowIndex?: number;
+      columnIndex?: number;
+      imageOrder?: number;
+      worksheetRowNumber?: number;
+      sheetScopedKey?: string;
+    }>,
+    options?: {
+      requireExactSheet?: boolean;
+      minimumScore?: number;
+      requireStrictCoordinateMatch?: boolean;
+      requireScoreGap?: number;
+    }
+  ) => {
+    const scoredCandidates = candidates
+      .filter((candidate) => {
+        if (!candidate || consumedExtractedImageIds.has(candidate.id)) return false;
+
+        const candidateSourceFileName = normalizeImportedLoose(
+          candidate.originalSourceFileName || candidate.sourceFileName
+        );
+        if (sourceFileName && candidateSourceFileName && candidateSourceFileName !== sourceFileName) {
+          return false;
+        }
+
+        if (options?.requireExactSheet && sourceSheetName) {
+          const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
+          if (candidateSheetName && candidateSheetName !== sourceSheetName) {
+            return false;
+          }
+        }
+
+        if (options?.requireStrictCoordinateMatch && !hasStrongExtractedImageCoordinateMatch(item, candidate)) {
+          return false;
+        }
+
+        return true;
+      })
+      .map((candidate) => ({
+        candidate,
+        score: scoreExtractedImageAgainstImportedItem(item, candidate),
+        rowNumber: getExtractedImageWorksheetRowNumber(candidate),
+      }))
+      .filter((entry) => entry.score >= (options?.minimumScore ?? Number.NEGATIVE_INFINITY))
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score;
+
+        const leftStrong = hasStrongExtractedImageCoordinateMatch(item, left.candidate) ? 1 : 0;
+        const rightStrong = hasStrongExtractedImageCoordinateMatch(item, right.candidate) ? 1 : 0;
+        if (rightStrong !== leftStrong) return rightStrong - leftStrong;
+
+        const leftRow = left.rowNumber ?? Number.MAX_SAFE_INTEGER;
+        const rightRow = right.rowNumber ?? Number.MAX_SAFE_INTEGER;
+        if (leftRow !== rightRow) return leftRow - rightRow;
+
+        return String(left.candidate.fileName || "").localeCompare(
+          String(right.candidate.fileName || ""),
+          undefined,
+          { numeric: true }
+        );
+      });
+
+    if (scoredCandidates.length === 0) return null;
+
+    if (options?.requireScoreGap != null && scoredCandidates.length > 1) {
+      const bestScore = scoredCandidates[0].score;
+      const secondScore = scoredCandidates[1].score;
+      if (bestScore - secondScore < options.requireScoreGap) {
+        return null;
+      }
+    }
+
+    return scoredCandidates[0]?.candidate ?? null;
+  };
+
   const tryConsumeFromBucket = (
     bucketKey: string,
-    options?: { requireExactSheet?: boolean; minimumScore?: number }
+    options?: {
+      requireExactSheet?: boolean;
+      minimumScore?: number;
+      requireStrictCoordinateMatch?: boolean;
+      requireScoreGap?: number;
+    }
   ) => {
     const bucket = extractedImageBuckets.get(bucketKey);
     if (!bucket || bucket.length === 0) {
       return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
     }
 
-    let cursor = extractedImageBucketCursors.get(bucketKey) ?? 0;
-
-    while (cursor < bucket.length) {
-      const candidate = bucket[cursor];
-      cursor += 1;
-      extractedImageBucketCursors.set(bucketKey, cursor);
-
-      if (!candidate || consumedExtractedImageIds.has(candidate.id)) {
-        continue;
-      }
-
-      if (options?.requireExactSheet && sourceSheetName) {
-        const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
-        if (candidateSheetName && candidateSheetName !== sourceSheetName) {
-          continue;
-        }
-      }
-
-      const candidateScore = scoreExtractedImageAgainstImportedItem(item, candidate);
-      if ((options?.minimumScore ?? Number.NEGATIVE_INFINITY) > candidateScore) {
-        continue;
-      }
-
-      consumedExtractedImageIds.add(candidate.id);
-      return toPublicImage(candidate);
+    const candidate = selectBestCandidate(bucket, options);
+    if (!candidate) {
+      return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
     }
 
-    return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+    consumedExtractedImageIds.add(candidate.id);
+
+    const bucketCursor = bucket.findIndex((entry) => entry.id === candidate.id);
+    if (bucketCursor >= 0) {
+      extractedImageBucketCursors.set(bucketKey, bucketCursor + 1);
+    }
+
+    return toPublicImage(candidate);
   };
 
   for (const bucketKey of sourceBucketKeys) {
-    const minimumScore = bucketKey.includes("::row::") || bucketKey.includes("::item::") ? 200 : 0;
+    const isStrictBucket =
+      bucketKey.includes("::row::") ||
+      bucketKey.includes("::item::") ||
+      bucketKey.includes("sheet::") ||
+      (!bucketKey.includes("::") && requiresStrictMatch);
+
     const direct = tryConsumeFromBucket(bucketKey, {
       requireExactSheet: true,
-      minimumScore,
+      minimumScore: bucketKey.includes("::row::")
+        ? 850
+        : bucketKey.includes("::item::")
+        ? 500
+        : requiresStrictMatch
+        ? 950
+        : 250,
+      requireStrictCoordinateMatch: requiresStrictMatch && isStrictBucket,
+      requireScoreGap: requiresStrictMatch && !bucketKey.includes("::row::") ? 180 : undefined,
     });
     if (direct.length > 0) return direct;
   }
@@ -2222,9 +2389,16 @@ function pickRelatedExtractedImages(
     extractedImageSequence,
     consumedExtractedImageIds
   );
-  if (specificRelatedFallback && scoreExtractedImageAgainstImportedItem(item, specificRelatedFallback) >= 200) {
-    consumedExtractedImageIds.add(specificRelatedFallback.id);
-    return toPublicImage(specificRelatedFallback);
+  if (specificRelatedFallback) {
+    const fallbackScore = scoreExtractedImageAgainstImportedItem(item, specificRelatedFallback);
+    const strongCoordinateMatch = hasStrongExtractedImageCoordinateMatch(item, specificRelatedFallback);
+    if (
+      (!requiresStrictMatch && fallbackScore >= 320) ||
+      (requiresStrictMatch && strongCoordinateMatch && fallbackScore >= 850)
+    ) {
+      consumedExtractedImageIds.add(specificRelatedFallback.id);
+      return toPublicImage(specificRelatedFallback);
+    }
   }
 
   const remainingSameSourceCandidates = extractedImageSequence.filter((candidate) => {
@@ -2249,18 +2423,24 @@ function pickRelatedExtractedImages(
 
   if (remainingSameSourceCandidates.length === 1) {
     const candidate = remainingSameSourceCandidates[0];
-    if (scoreExtractedImageAgainstImportedItem(item, candidate) >= 200) {
+    const candidateScore = scoreExtractedImageAgainstImportedItem(item, candidate);
+    const strongCoordinateMatch = hasStrongExtractedImageCoordinateMatch(item, candidate);
+    if (
+      (!requiresStrictMatch && candidateScore >= 320) ||
+      (requiresStrictMatch && strongCoordinateMatch && candidateScore >= 850)
+    ) {
       consumedExtractedImageIds.add(candidate.id);
       return toPublicImage(candidate);
     }
   }
 
   if (totalSourceItems === 1 && remainingSameSourceCandidates.length > 0) {
-    const candidate = [...remainingSameSourceCandidates].sort((left, right) => {
-      const leftScore = scoreExtractedImageAgainstImportedItem(item, left);
-      const rightScore = scoreExtractedImageAgainstImportedItem(item, right);
-      return rightScore - leftScore;
-    })[0];
+    const candidate = selectBestCandidate(remainingSameSourceCandidates, {
+      requireExactSheet: true,
+      minimumScore: requiresStrictMatch ? 850 : 320,
+      requireStrictCoordinateMatch: requiresStrictMatch,
+      requireScoreGap: requiresStrictMatch ? 180 : undefined,
+    });
     if (candidate) {
       consumedExtractedImageIds.add(candidate.id);
       return toPublicImage(candidate);
