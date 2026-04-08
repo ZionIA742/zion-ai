@@ -864,13 +864,15 @@ function extractImportedSourceItemNumber(
 function extractImportedOriginalSourceFileName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  return (
-    extractMetadataValue(item, [
-      "source_file_name_original",
-      "original_source_file_name",
-      "source_original_file_name",
-    ]) || item.sourceFileName
-  ).trim();
+  const explicit = extractMetadataValue(item, [
+    "original_source_file_name",
+    "source_file_name_original",
+    "source_original_file_name",
+    "originalSourceFileName",
+    "sourceFileNameOriginal",
+  ]);
+  if (explicit) return explicit.trim();
+  return String(item.sourceFileName || "").trim();
 }
 
 function extractImportedWorksheetRowNumber(
@@ -880,23 +882,19 @@ function extractImportedWorksheetRowNumber(
     extractMetadataValue(item, [
       "source_worksheet_row_number",
       "worksheet_row_number",
-      "worksheetRowNumber",
       "source_row_number",
       "row_number",
-      "sheet_row_number",
-    ]) ||
-    extractImportedLabeledValue(String(item.rawText || ""), [
-      "Linha da planilha",
+      "worksheetRowNumber",
       "Worksheet row number",
       "Linha",
-    ]);
+    ]) || "";
 
   const parsedMetadata = Number(String(metadataCandidate || "").replace(/[^\d-]/g, ""));
   if (Number.isFinite(parsedMetadata) && parsedMetadata > 0) {
     return parsedMetadata;
   }
 
-  const rawSource = String(item.rawText || "");
+  const rawSource = [String(item.title || ""), String(item.rawText || "")].join("\n");
   const match =
     rawSource.match(/(?:^|\n)linha da planilha\s*:\s*(\d+)/i) ||
     rawSource.match(/===\s*item\s*\d+\s*\|\s*planilha\s*:\s*[^|\n=]+\|\s*linha\s*:\s*(\d+)/i) ||
@@ -950,62 +948,6 @@ function buildImportedSourceLocationKey(
   return "";
 }
 
-function buildImportedImageBucketKeys(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
-) {
-  const keys: string[] = [];
-  const pushKey = (value: string | null | undefined) => {
-    const normalized = normalizeImportedLoose(value);
-    if (!normalized) return;
-    if (!keys.includes(normalized)) {
-      keys.push(normalized);
-    }
-  };
-
-  const sourceFile = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
-  const aliasedSourceFile = normalizeImportedLoose(item.sourceFileName);
-  const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
-  const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
-  const itemNumber = normalizeImportedLoose(extractImportedSourceItemNumber(item));
-  const sourceLocationKey = buildImportedSourceLocationKey(item);
-  const sheetScopedKey = extractImportedSheetScopedKey(item);
-
-  pushKey(sourceLocationKey);
-  pushKey(sheetScopedKey);
-
-  if (sourceFile && sheetName && worksheetRowNumber != null && worksheetRowNumber > 0) {
-    pushKey(`${sourceFile}::${sheetName}::row::${worksheetRowNumber}`);
-  }
-
-  if (sourceFile && worksheetRowNumber != null && worksheetRowNumber > 0) {
-    pushKey(`${sourceFile}::row::${worksheetRowNumber}`);
-  }
-
-  if (sourceFile && sheetName && itemNumber) {
-    pushKey(`${sourceFile}::${sheetName}::item::${itemNumber}`);
-  }
-
-  if (sourceFile && itemNumber) {
-    pushKey(`${sourceFile}::item::${itemNumber}`);
-  }
-
-  if (sourceFile && sheetName) {
-    pushKey(`${sourceFile}::sheet::${sheetName}`);
-  }
-
-  if (sourceFile) {
-    pushKey(sourceFile);
-  }
-
-  if (aliasedSourceFile && aliasedSourceFile !== sourceFile) {
-    pushKey(aliasedSourceFile);
-    if (sheetName) {
-      pushKey(`${aliasedSourceFile}::sheet::${sheetName}`);
-    }
-  }
-
-  return keys;
-}
 
 function extractImportedFirstCurrencyValue(value: string | null | undefined) {
   const source = String(value || "");
@@ -1994,6 +1936,44 @@ function buildExtractedImageBucketKeys(image: {
   return Array.from(keys).filter(Boolean);
 }
 
+function buildImportedImageBucketKeys(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const keys: string[] = [];
+  const pushKey = (value: string | null | undefined) => {
+    const normalized = normalizeImportedLoose(value);
+    if (!normalized) return;
+    if (!keys.includes(normalized)) keys.push(normalized);
+  };
+
+  const sourceFile = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
+  const aliasedSourceFile = normalizeImportedLoose(item.sourceFileName);
+  const sheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
+  const itemNumber = normalizeImportedLoose(extractImportedSourceItemNumber(item));
+  const sourceLocationKey = buildImportedSourceLocationKey(item);
+  const sheetScopedKey = extractImportedSheetScopedKey(item);
+
+  pushKey(sourceLocationKey);
+  pushKey(sheetScopedKey);
+
+  for (const fileKey of [sourceFile, aliasedSourceFile]) {
+    if (!fileKey) continue;
+    pushKey(fileKey);
+    if (sheetName) pushKey(`${fileKey}::sheet::${sheetName}`);
+    if (worksheetRowNumber != null && worksheetRowNumber > 0) {
+      pushKey(`${fileKey}::row::${worksheetRowNumber}`);
+      if (sheetName) pushKey(`${fileKey}::${sheetName}::row::${worksheetRowNumber}`);
+    }
+    if (itemNumber) {
+      pushKey(`${fileKey}::item::${itemNumber}`);
+      if (sheetName) pushKey(`${fileKey}::${sheetName}::item::${itemNumber}`);
+    }
+  }
+
+  return keys;
+}
+
 function scoreExtractedImageAgainstImportedItem(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   candidate: {
@@ -2078,29 +2058,46 @@ function pickBestRelatedFallbackImage(
 ) {
   const sourceFileName = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
   const sourceSheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
+  const sourceItemNumberRaw = extractImportedSourceItemNumber(item);
+  const sourceItemNumber = sourceItemNumberRaw ? Number(sourceItemNumberRaw) : null;
 
   const candidates = extractedImageSequence.filter((candidate) => {
     if (!candidate || consumedExtractedImageIds.has(candidate.id)) return false;
-
     const candidateSourceFileName = normalizeImportedLoose(
       candidate.originalSourceFileName || candidate.sourceFileName
     );
-    if (sourceFileName && candidateSourceFileName && candidateSourceFileName !== sourceFileName) {
-      return false;
-    }
-
+    if (candidateSourceFileName !== sourceFileName) return false;
     if (sourceSheetName) {
       const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
-      if (candidateSheetName && candidateSheetName !== sourceSheetName) {
-        return false;
-      }
+      if (candidateSheetName && candidateSheetName !== sourceSheetName) return false;
     }
-
     return true;
   });
 
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
+
+  if (sourceItemNumber != null) {
+    const candidatesWithItemNumber = candidates
+      .map((candidate) => ({
+        candidate,
+        itemNumber: extractImportedImageSourceItemNumber(candidate),
+      }))
+      .filter((entry) => entry.itemNumber != null) as Array<{
+      candidate: (typeof candidates)[number];
+      itemNumber: number;
+    }>;
+
+    if (candidatesWithItemNumber.length > 0) {
+      candidatesWithItemNumber.sort((left, right) => {
+        const leftDistance = Math.abs(left.itemNumber - sourceItemNumber);
+        const rightDistance = Math.abs(right.itemNumber - sourceItemNumber);
+        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+        return left.itemNumber - right.itemNumber;
+      });
+      return candidatesWithItemNumber[0].candidate;
+    }
+  }
 
   const sortedCandidates = [...candidates].sort((left, right) => {
     const leftScore = scoreExtractedImageAgainstImportedItem(item, left);
@@ -2112,6 +2109,218 @@ function pickBestRelatedFallbackImage(
   });
 
   return sortedCandidates[0] ?? null;
+}
+
+type ExtractedImageSequenceItem = {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  dataUrl: string;
+  sourceFileName: string;
+  originalSourceFileName?: string;
+  source?: string;
+  sheetName?: string;
+  rowIndex?: number;
+  columnIndex?: number;
+  imageOrder?: number;
+  worksheetRowNumber?: number;
+  sheetScopedKey?: string;
+};
+
+type ImportedImagePublic = { fileName: string; mimeType: string; dataUrl: string };
+
+type ImportedItemForImageAssignment = {
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  saveKey: string;
+  sourceFileName: string;
+  sheetName: string;
+  sheetScopedKey: string;
+  worksheetRowNumber: number | null;
+  itemNumber: number | null;
+  index: number;
+};
+
+function toImportedPublicImage(image: ExtractedImageSequenceItem): ImportedImagePublic {
+  return {
+    fileName: image.fileName,
+    mimeType: image.mimeType,
+    dataUrl: image.dataUrl,
+  };
+}
+
+function buildImportedItemForImageAssignment(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  index: number
+): ImportedItemForImageAssignment {
+  return {
+    item,
+    saveKey: buildImportedSaveKey(item),
+    sourceFileName: normalizeImportedLoose(extractImportedOriginalSourceFileName(item)),
+    sheetName: normalizeImportedLoose(extractImportedSourceSheetName(item)),
+    sheetScopedKey: normalizeImportedLoose(extractImportedSheetScopedKey(item)),
+    worksheetRowNumber: extractImportedWorksheetRowNumber(item),
+    itemNumber: (() => {
+      const raw = extractImportedSourceItemNumber(item);
+      if (!raw) return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    })(),
+    index,
+  };
+}
+
+function buildDeterministicExtractedImageAssignments(
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>,
+  extractedImageSequence: ExtractedImageSequenceItem[]
+): Map<string, ImportedImagePublic[]> {
+  const assignments = new Map<string, ImportedImagePublic[]>();
+  if (items.length === 0 || extractedImageSequence.length === 0) return assignments;
+
+  const preparedItems = items.map((item, index) => buildImportedItemForImageAssignment(item, index));
+  const itemAssigned = new Set<string>();
+  const imageAssigned = new Set<string>();
+
+  const assignPair = (preparedItem: ImportedItemForImageAssignment, image: ExtractedImageSequenceItem) => {
+    if (itemAssigned.has(preparedItem.saveKey) || imageAssigned.has(image.id)) return;
+    assignments.set(preparedItem.saveKey, [toImportedPublicImage(image)]);
+    itemAssigned.add(preparedItem.saveKey);
+    imageAssigned.add(image.id);
+  };
+
+  const preparedImages = extractedImageSequence.map((image, index) => ({
+    ...image,
+    normalizedSourceFileName: normalizeImportedLoose(image.originalSourceFileName || image.sourceFileName),
+    normalizedSheetName: normalizeImportedLoose(image.sheetName),
+    normalizedSheetScopedKey: normalizeImportedLoose(image.sheetScopedKey),
+    normalizedItemNumber: extractImportedImageSourceItemNumber(image),
+    normalizedWorksheetRowNumber:
+      typeof image.worksheetRowNumber === "number"
+        ? image.worksheetRowNumber
+        : (typeof image.rowIndex === "number" ? image.rowIndex + 1 : null),
+    originalIndex: index,
+  }));
+
+  const itemGroups = new Map<string, ImportedItemForImageAssignment[]>();
+  for (const preparedItem of preparedItems) {
+    const groupKey = `${preparedItem.sourceFileName || "__sem_arquivo__"}::${preparedItem.sheetName || "__sem_aba__"}`;
+    const current = itemGroups.get(groupKey) ?? [];
+    current.push(preparedItem);
+    itemGroups.set(groupKey, current);
+  }
+
+  const imageGroups = new Map<string, Array<typeof preparedImages[number]>>();
+  for (const image of preparedImages) {
+    const groupKey = `${image.normalizedSourceFileName || "__sem_arquivo__"}::${image.normalizedSheetName || "__sem_aba__"}`;
+    const current = imageGroups.get(groupKey) ?? [];
+    current.push(image);
+    imageGroups.set(groupKey, current);
+  }
+
+  const tryUniqueKeyPass = <TKey extends string | number>(
+    groupItems: ImportedItemForImageAssignment[],
+    groupImages: Array<typeof preparedImages[number]>,
+    itemKeyGetter: (item: ImportedItemForImageAssignment) => TKey | null,
+    imageKeyGetter: (image: typeof preparedImages[number]) => TKey | null
+  ) => {
+    const itemsByKey = new Map<TKey, ImportedItemForImageAssignment[]>();
+    const imagesByKey = new Map<TKey, Array<typeof preparedImages[number]>>();
+
+    for (const preparedItem of groupItems) {
+      if (itemAssigned.has(preparedItem.saveKey)) continue;
+      const key = itemKeyGetter(preparedItem);
+      if (key == null || key === ("" as TKey)) continue;
+      const current = itemsByKey.get(key) ?? [];
+      current.push(preparedItem);
+      itemsByKey.set(key, current);
+    }
+
+    for (const image of groupImages) {
+      if (imageAssigned.has(image.id)) continue;
+      const key = imageKeyGetter(image);
+      if (key == null || key === ("" as TKey)) continue;
+      const current = imagesByKey.get(key) ?? [];
+      current.push(image);
+      imagesByKey.set(key, current);
+    }
+
+    for (const [key, itemList] of itemsByKey.entries()) {
+      const imageList = imagesByKey.get(key) ?? [];
+      if (itemList.length !== 1 || imageList.length !== 1) continue;
+      assignPair(itemList[0], imageList[0]);
+    }
+  };
+
+  for (const [groupKey, groupItems] of itemGroups.entries()) {
+    const groupImages = imageGroups.get(groupKey) ?? [];
+    if (groupImages.length === 0) continue;
+
+    tryUniqueKeyPass(groupItems, groupImages, (entry) => entry.sheetScopedKey || null, (image) => image.normalizedSheetScopedKey || null);
+    tryUniqueKeyPass(groupItems, groupImages, (entry) => entry.worksheetRowNumber, (image) => image.normalizedWorksheetRowNumber);
+    tryUniqueKeyPass(groupItems, groupImages, (entry) => entry.itemNumber, (image) => image.normalizedItemNumber);
+
+    const remainingItems = groupItems.filter((entry) => !itemAssigned.has(entry.saveKey));
+    const remainingImages = groupImages.filter((image) => !imageAssigned.has(image.id));
+    if (remainingItems.length === 0 || remainingImages.length === 0) continue;
+
+    const scoredPairs: Array<{
+      item: ImportedItemForImageAssignment;
+      image: typeof preparedImages[number];
+      score: number;
+    }> = [];
+
+    for (const preparedItem of remainingItems) {
+      for (const image of remainingImages) {
+        const score = scoreExtractedImageAgainstImportedItem(preparedItem.item, image);
+        if (score < 80) continue;
+        scoredPairs.push({ item: preparedItem, image, score });
+      }
+    }
+
+    scoredPairs.sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      if (left.item.index !== right.item.index) return left.item.index - right.item.index;
+      return left.image.originalIndex - right.image.originalIndex;
+    });
+
+    for (const pair of scoredPairs) {
+      if (itemAssigned.has(pair.item.saveKey) || imageAssigned.has(pair.image.id)) continue;
+      assignPair(pair.item, pair.image);
+    }
+
+    const zipItems = groupItems
+      .filter((entry) => !itemAssigned.has(entry.saveKey))
+      .sort((left, right) => {
+        const leftRow = left.worksheetRowNumber ?? Number.MAX_SAFE_INTEGER;
+        const rightRow = right.worksheetRowNumber ?? Number.MAX_SAFE_INTEGER;
+        if (leftRow !== rightRow) return leftRow - rightRow;
+        const leftItemNo = left.itemNumber ?? Number.MAX_SAFE_INTEGER;
+        const rightItemNo = right.itemNumber ?? Number.MAX_SAFE_INTEGER;
+        if (leftItemNo !== rightItemNo) return leftItemNo - rightItemNo;
+        return left.index - right.index;
+      });
+
+    const zipImages = groupImages
+      .filter((image) => !imageAssigned.has(image.id))
+      .sort((left, right) => {
+        const leftRow = left.normalizedWorksheetRowNumber ?? Number.MAX_SAFE_INTEGER;
+        const rightRow = right.normalizedWorksheetRowNumber ?? Number.MAX_SAFE_INTEGER;
+        if (leftRow !== rightRow) return leftRow - rightRow;
+        const leftItemNo = left.normalizedItemNumber ?? Number.MAX_SAFE_INTEGER;
+        const rightItemNo = right.normalizedItemNumber ?? Number.MAX_SAFE_INTEGER;
+        if (leftItemNo !== rightItemNo) return leftItemNo - rightItemNo;
+        const leftOrder = left.imageOrder ?? left.originalIndex;
+        const rightOrder = right.imageOrder ?? right.originalIndex;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return left.originalIndex - right.originalIndex;
+      });
+
+    const zipLength = Math.min(zipItems.length, zipImages.length);
+    for (let index = 0; index < zipLength; index += 1) {
+      assignPair(zipItems[index], zipImages[index]);
+    }
+  }
+
+  return assignments;
 }
 
 function pickRelatedExtractedImages(
@@ -2157,204 +2366,57 @@ function pickRelatedExtractedImages(
   const sourceFileName = normalizeImportedLoose(extractImportedOriginalSourceFileName(item));
   const sourceSheetName = normalizeImportedLoose(extractImportedSourceSheetName(item));
 
-  const toPublicImage = (candidate: {
-    fileName: string;
-    mimeType: string;
-    dataUrl: string;
-  }) => [
-    {
-      fileName: candidate.fileName,
-      mimeType: candidate.mimeType,
-      dataUrl: candidate.dataUrl,
-    },
-  ] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+  const toPublicImage = (candidate: ExtractedImageSequenceItem) => [toImportedPublicImage(candidate)] as ImportedImagePublic[];
 
-  const getCandidateScore = (candidate: {
-    sourceFileName: string;
-    originalSourceFileName?: string;
-    sheetName?: string;
-    worksheetRowNumber?: number;
-    sheetScopedKey?: string;
-    rowIndex?: number;
-    fileName?: string;
-    source?: string;
-  }) => scoreExtractedImageAgainstImportedItem(item, candidate);
-
-  const selectBestCandidate = (
-    candidates: Array<{
-      id: string;
-      fileName: string;
-      mimeType: string;
-      dataUrl: string;
-      sourceFileName: string;
-      originalSourceFileName?: string;
-      source?: string;
-      sheetName?: string;
-      rowIndex?: number;
-      columnIndex?: number;
-      imageOrder?: number;
-      worksheetRowNumber?: number;
-      sheetScopedKey?: string;
-    }>,
-    options?: {
-      requireExactSheet?: boolean;
-      minimumScore?: number;
-      requireSameSourceFile?: boolean;
-      minimumLead?: number;
-    }
-  ) => {
-    const filtered = candidates.filter((candidate) => {
-      if (!candidate || consumedExtractedImageIds.has(candidate.id)) return false;
-
-      if (options?.requireSameSourceFile && sourceFileName) {
-        const candidateSourceFileName = normalizeImportedLoose(
-          candidate.originalSourceFileName || candidate.sourceFileName
-        );
-        if (candidateSourceFileName && candidateSourceFileName !== sourceFileName) {
-          return false;
-        }
-      }
-
-      if (options?.requireExactSheet && sourceSheetName) {
+  const selectBestFromCandidates = (candidates: ExtractedImageSequenceItem[]) => {
+    const available = candidates
+      .filter((candidate) => !consumedExtractedImageIds.has(candidate.id))
+      .filter((candidate) => {
+        const candidateSourceFileName = normalizeImportedLoose(candidate.originalSourceFileName || candidate.sourceFileName);
+        if (sourceFileName && candidateSourceFileName && candidateSourceFileName !== sourceFileName) return false;
         const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
-        if (candidateSheetName && candidateSheetName !== sourceSheetName) {
-          return false;
-        }
-      }
-
-      const candidateScore = getCandidateScore(candidate);
-      if ((options?.minimumScore ?? Number.NEGATIVE_INFINITY) > candidateScore) {
-        return false;
-      }
-
-      return true;
-    });
-
-    if (filtered.length === 0) return null;
-
-    const ranked = [...filtered].sort((left, right) => {
-      const rightScore = getCandidateScore(right);
-      const leftScore = getCandidateScore(left);
-      if (rightScore !== leftScore) return rightScore - leftScore;
-      return String(left.fileName || "").localeCompare(String(right.fileName || ""), undefined, {
-        numeric: true,
+        if (sourceSheetName && candidateSheetName && candidateSheetName !== sourceSheetName) return false;
+        return true;
+      })
+      .map((candidate) => ({ candidate, score: scoreExtractedImageAgainstImportedItem(item, candidate) }))
+      .filter((entry) => entry.score >= 80)
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score;
+        return String(left.candidate.fileName || "").localeCompare(String(right.candidate.fileName || ""), undefined, {
+          numeric: true,
+        });
       });
-    });
 
-    if (ranked.length > 1 && (options?.minimumLead ?? 0) > 0) {
-      const bestScore = getCandidateScore(ranked[0]);
-      const secondScore = getCandidateScore(ranked[1]);
-      if (bestScore - secondScore < (options?.minimumLead ?? 0)) {
-        return null;
-      }
-    }
-
-    return ranked[0] ?? null;
-  };
-
-  const consumeCandidate = (
-    candidate: {
-      id: string;
-      fileName: string;
-      mimeType: string;
-      dataUrl: string;
-    } | null
-  ) => {
-    if (!candidate) {
-      return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
-    }
-    consumedExtractedImageIds.add(candidate.id);
-    return toPublicImage(candidate);
+    return available[0]?.candidate ?? null;
   };
 
   for (const bucketKey of sourceBucketKeys) {
-    const bucket = extractedImageBuckets.get(bucketKey);
-    if (!bucket || bucket.length === 0) continue;
-
-    const minimumScore =
-      bucketKey.includes("::row::") || bucketKey.includes("::item::")
-        ? 150
-        : bucketKey.includes("::sheet::")
-        ? 120
-        : 60;
-
-    const candidate = selectBestCandidate(bucket, {
-      requireExactSheet: true,
-      requireSameSourceFile: true,
-      minimumScore,
-      minimumLead: bucketKey.includes("::row::") || bucketKey.includes("::item::") ? 0 : 80,
-    });
-
-    if (candidate) {
-      extractedImageBucketCursors.set(
-        bucketKey,
-        Math.max(extractedImageBucketCursors.get(bucketKey) ?? 0, bucket.indexOf(candidate) + 1)
-      );
-      return consumeCandidate(candidate);
-    }
-  }
-
-  const specificRelatedFallback = pickBestRelatedFallbackImage(
-    item,
-    extractedImageSequence,
-    consumedExtractedImageIds
-  );
-
-  if (specificRelatedFallback) {
-    const fallbackScore = getCandidateScore(specificRelatedFallback);
-    if (fallbackScore >= 120) {
-      return consumeCandidate(specificRelatedFallback);
-    }
-  }
-
-  const remainingSameSourceCandidates = extractedImageSequence.filter((candidate) => {
-    if (!candidate || consumedExtractedImageIds.has(candidate.id)) return false;
-
-    const candidateSourceFileName = normalizeImportedLoose(
-      candidate.originalSourceFileName || candidate.sourceFileName
+    const bucket = extractedImageBuckets.get(bucketKey) ?? [];
+    const candidate = selectBestFromCandidates(bucket as ExtractedImageSequenceItem[]);
+    if (!candidate) continue;
+    consumedExtractedImageIds.add(candidate.id);
+    extractedImageBucketCursors.set(
+      bucketKey,
+      Math.max(extractedImageBucketCursors.get(bucketKey) ?? 0, bucket.indexOf(candidate) + 1)
     );
-    if (sourceFileName && candidateSourceFileName && candidateSourceFileName !== sourceFileName) {
-      return false;
-    }
-
-    if (sourceSheetName) {
-      const candidateSheetName = normalizeImportedLoose(candidate.sheetName);
-      if (candidateSheetName && candidateSheetName !== sourceSheetName) {
-        return false;
-      }
-    }
-
-    return true;
-  });
-
-  const sameSourceCandidate = selectBestCandidate(remainingSameSourceCandidates, {
-    requireExactSheet: true,
-    requireSameSourceFile: true,
-    minimumScore: 80,
-    minimumLead: 120,
-  });
-
-  if (sameSourceCandidate) {
-    return consumeCandidate(sameSourceCandidate);
+    return toPublicImage(candidate);
   }
 
-  if (remainingSameSourceCandidates.length === 1) {
-    return consumeCandidate(remainingSameSourceCandidates[0]);
+  const candidate = selectBestFromCandidates(extractedImageSequence as ExtractedImageSequenceItem[]);
+  if (candidate) {
+    consumedExtractedImageIds.add(candidate.id);
+    return toPublicImage(candidate);
   }
 
-  if (totalSourceItems === 1 && remainingSameSourceCandidates.length > 0) {
-    const singleItemCandidate = selectBestCandidate(remainingSameSourceCandidates, {
-      requireExactSheet: true,
-      requireSameSourceFile: true,
-      minimumScore: 0,
-      minimumLead: 0,
-    });
-    if (singleItemCandidate) {
-      return consumeCandidate(singleItemCandidate);
+  if (totalSourceItems === 1) {
+    const firstAvailable = extractedImageSequence.find((image) => !consumedExtractedImageIds.has(image.id));
+    if (firstAvailable) {
+      consumedExtractedImageIds.add(firstAvailable.id);
+      return toPublicImage(firstAvailable as ExtractedImageSequenceItem);
     }
   }
 
-  return [] as Array<{ fileName: string; mimeType: string; dataUrl: string }>;
+  return [] as ImportedImagePublic[];
 }
 
 function canPersistAsPool(metrics: {
@@ -2565,10 +2627,7 @@ function buildImportedCatalogMetadata(
     confidence: item.confidence,
     dedup_key: "dedupKey" in item ? item.dedupKey : null,
     source_location_key: buildImportedSourceLocationKey(item) || null,
-    source_file_name_original: extractImportedOriginalSourceFileName(item) || null,
     source_sheet_name: extractImportedSourceSheetName(item) || null,
-    source_worksheet_row_number: extractImportedWorksheetRowNumber(item),
-    source_sheet_scoped_key: extractImportedSheetScopedKey(item) || null,
     source_category: extractImportedSourceCategory(item) || null,
     source_subcategory: extractImportedSourceSubcategory(item) || null,
     imported_title: buildImportedCatalogName(item),
@@ -3390,7 +3449,7 @@ async function handleSaveImportedItemsToCatalog() {
       const extractedImageBucketCursors = new Map<string, number>();
       const consumedExtractedImageIds = new Set<string>();
 
-      const extractedImageSequence = safeExtractedImagePreview.map((image, index) => ({
+      const extractedImageSequence: ExtractedImageSequenceItem[] = safeExtractedImagePreview.map((image, index) => ({
         id: `${String(image.sourceFileName || "").trim().toLowerCase()}::${image.fileName || "imagem-extraida.jpg"}::${index}`,
         fileName: image.fileName || "imagem-extraida.jpg",
         mimeType: image.mimeType || "image/jpeg",
@@ -3423,6 +3482,11 @@ async function handleSaveImportedItemsToCatalog() {
           extractedImageBuckets.set(bucketKey, currentBucket);
         }
       }
+
+      const extractedImageAssignments = buildDeterministicExtractedImageAssignments(
+        sourceItems,
+        extractedImageSequence
+      );
 
       let firstPoolId: string | null = null;
       let firstCatalogCategory: ImportedCatalogCategory | null = null;
