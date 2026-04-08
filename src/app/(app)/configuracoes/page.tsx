@@ -37,6 +37,18 @@ type OnboardingRow = {
 
 type StatusTone = "green" | "amber" | "red" | "gray";
 
+type SettingsTabId =
+  | "visao-geral"
+  | "estrategia"
+  | "piscinas"
+  | "produtos-acessorios"
+  | "operacao"
+  | "comercial-ia"
+  | "responsavel-ativacao"
+  | "descontos"
+  | "canais-integracoes"
+  | "identidade";
+
 function normalizeCategory(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "quimicos") return "quimicos";
@@ -138,7 +150,13 @@ function QuickCard({
   );
 }
 
-function SecondaryLink({ href, children }: { href: string; children: React.ReactNode }) {
+function SecondaryLink({
+  href,
+  children,
+}: {
+  href: string;
+  children: React.ReactNode;
+}) {
   return (
     <Link
       href={href}
@@ -162,9 +180,15 @@ function StatusCard({
 }) {
   return (
     <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">{label}</div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+        {label}
+      </div>
       <div className="mt-2">
-        <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusToneClass(tone)}`}>
+        <span
+          className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusToneClass(
+            tone
+          )}`}
+        >
           {value}
         </span>
       </div>
@@ -192,6 +216,63 @@ function SummaryList({ items }: { items: string[] }) {
   );
 }
 
+function CompactMetric({
+  label,
+  value,
+  tone = "gray",
+}: {
+  label: string;
+  value: string;
+  tone?: StatusTone;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+        {label}
+      </div>
+      <div className="mt-2">
+        <span
+          className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusToneClass(
+            tone
+          )}`}
+        >
+          {value}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function SettingsTabButton({
+  active,
+  index,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  index: number;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "rounded-xl border px-3 py-2 text-left transition",
+        active
+          ? "border-black bg-black text-white"
+          : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
+      ].join(" ")}
+    >
+      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] opacity-80">
+        Aba {index}
+      </div>
+      <div className="mt-1 text-sm font-semibold">{label}</div>
+    </button>
+  );
+}
+
 export default function ConfiguracoesPage() {
   const { organizationId, activeStoreId, activeStore } = useStoreContext();
 
@@ -206,9 +287,26 @@ export default function ConfiguracoesPage() {
     outros: 0,
   });
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
+  const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
+
+  const tabs = useMemo(
+    () => [
+      { id: "visao-geral" as const, label: "Visão Geral" },
+      { id: "estrategia" as const, label: "Estratégia" },
+      { id: "piscinas" as const, label: "Piscinas" },
+      { id: "produtos-acessorios" as const, label: "Produtos/Acessórios" },
+      { id: "operacao" as const, label: "Operação" },
+      { id: "comercial-ia" as const, label: "Comercial e IA" },
+      { id: "responsavel-ativacao" as const, label: "Responsável e ativação" },
+      { id: "descontos" as const, label: "Descontos" },
+      { id: "canais-integracoes" as const, label: "Canais e integrações" },
+      { id: "identidade" as const, label: "Identidade da loja" },
+    ],
+    []
+  );
 
   const fetchPageData = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -304,7 +402,15 @@ export default function ConfiguracoesPage() {
       `Piscinas cadastradas: ${counts.pools}.`,
       `Catálogo geral: ${totalCatalogo} itens (${counts.quimicos} químicos, ${counts.acessorios} acessórios e ${counts.outros} outros).`,
     ];
-  }, [storeName, onboardingStatus.label, counts.pools, totalCatalogo, counts.quimicos, counts.acessorios, counts.outros]);
+  }, [
+    storeName,
+    onboardingStatus.label,
+    counts.pools,
+    totalCatalogo,
+    counts.quimicos,
+    counts.acessorios,
+    counts.outros,
+  ]);
 
   const iaReadiness = useMemo(() => {
     if (onboardingStatus.label === "Concluído" && (counts.pools > 0 || totalCatalogo > 0)) {
@@ -365,7 +471,9 @@ export default function ConfiguracoesPage() {
 
       if (catalogItemsError) throw catalogItemsError;
 
-      const catalogItemIds = ((catalogItems || []) as Array<{ id: string }>).map((item) => item.id);
+      const catalogItemIds = ((catalogItems || []) as Array<{ id: string }>).map(
+        (item) => item.id
+      );
 
       if (catalogItemIds.length === 0) {
         setSuccessText("O catálogo geral já estava vazio.");
@@ -421,7 +529,7 @@ export default function ConfiguracoesPage() {
           .delete()
           .in("id", ids);
 
-        if (deleteItemsError) throw deleteItemsError;
+          if (deleteItemsError) throw deleteItemsError;
       }
 
       setSuccessText("Todo o catálogo geral da loja foi apagado com sucesso.");
@@ -477,76 +585,125 @@ export default function ConfiguracoesPage() {
           </>
         }
       >
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <QuickCard
-            href="/configuracoes/piscinas"
-            title="Piscinas"
-            description="Abrir a gestão de piscinas cadastradas."
-            count={counts.pools}
-          />
-          <QuickCard
-            href="/configuracoes/catalogo/quimicos"
-            title="Químicos"
-            description="Abrir a área de produtos químicos."
-            count={counts.quimicos}
-          />
-          <QuickCard
-            href="/configuracoes/catalogo/acessorios"
-            title="Acessórios"
-            description="Abrir a área de acessórios cadastrados."
-            count={counts.acessorios}
-          />
-          <QuickCard
-            href="/configuracoes/catalogo/outros"
-            title="Outros"
-            description="Abrir os outros itens do catálogo."
-            count={counts.outros}
-          />
-        </div>
-      </SectionBlock>
-
-      <SectionBlock
-        title="Resumo rápido"
-        description="Visão curta do que a loja já definiu e do que ainda precisa ser revisado."
-      >
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <StatusCard label="Piscinas" value={String(counts.pools)} tone={counts.pools > 0 ? "green" : "amber"} />
-          <StatusCard label="Químicos" value={String(counts.quimicos)} tone={counts.quimicos > 0 ? "green" : "gray"} />
-          <StatusCard label="Acessórios" value={String(counts.acessorios)} tone={counts.acessorios > 0 ? "green" : "gray"} />
-          <StatusCard label="Outros itens" value={String(counts.outros)} tone={counts.outros > 0 ? "green" : "gray"} />
-        </div>
-
-        <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-700">
-          Total do catálogo geral: <span className="font-semibold text-gray-900">{totalCatalogo}</span>
-        </div>
-      </SectionBlock>
-
-      <SectionBlock
-        title="1. Visão Geral"
-        description="Tela-resumo da loja com status, pendências e prontidão operacional."
-        actions={<SecondaryLink href="/onboarding?step=5">Revisar ativação</SecondaryLink>}
-      >
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          <StatusCard label="Configuração da loja" value={onboardingStatus.label} tone={onboardingStatus.tone} hint="Status geral do onboarding principal." />
-          <StatusCard label="Canal comercial" value={onboardingStatus.label === "Concluído" ? "Revisar conexão" : "Pendente"} tone={onboardingStatus.label === "Concluído" ? "amber" : "red"} hint="Canal de atendimento da loja e comunicação comercial." />
-          <StatusCard label="Canal da assistente" value={onboardingStatus.label === "Concluído" ? "Em definição" : "Pendente"} tone="amber" hint="Canal que o responsável vai usar para falar com a IA assistente." />
-          <StatusCard label="Agenda" value={onboardingStatus.label !== "Não iniciado" ? "Revisar regras" : "Pendente"} tone={onboardingStatus.label !== "Não iniciado" ? "amber" : "red"} hint="Disponibilidade, limites e regras de compromisso." />
-          <StatusCard label="Prontidão da IA" value={iaReadiness.value} tone={iaReadiness.tone} hint={iaReadiness.hint} />
-        </div>
-
-        <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-          <div>
-            <div className="mb-2 text-sm font-semibold text-gray-900">Resumo curto da loja</div>
-            <SummaryList items={overviewSummary} />
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_290px]">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <QuickCard
+              href="/configuracoes/piscinas"
+              title="Piscinas"
+              description="Abrir a gestão de piscinas cadastradas."
+              count={counts.pools}
+            />
+            <QuickCard
+              href="/configuracoes/catalogo/quimicos"
+              title="Químicos"
+              description="Abrir a área de produtos químicos."
+              count={counts.quimicos}
+            />
+            <QuickCard
+              href="/configuracoes/catalogo/acessorios"
+              title="Acessórios"
+              description="Abrir a área de acessórios cadastrados."
+              count={counts.acessorios}
+            />
+            <QuickCard
+              href="/configuracoes/catalogo/outros"
+              title="Outros"
+              description="Abrir os outros itens do catálogo."
+              count={counts.outros}
+            />
           </div>
-          <div>
-            <div className="mb-2 text-sm font-semibold text-gray-900">Pendências para ativação real</div>
-            <SummaryList items={activationPendencies} />
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+            <CompactMetric
+              label="Total do catálogo"
+              value={String(totalCatalogo)}
+              tone={totalCatalogo > 0 ? "green" : "gray"}
+            />
+            <CompactMetric
+              label="Status da configuração"
+              value={onboardingStatus.label}
+              tone={onboardingStatus.tone}
+            />
           </div>
         </div>
       </SectionBlock>
 
-      <div className="grid gap-5 xl:grid-cols-2">
+      <section className="rounded-2xl border border-gray-200 bg-white p-4 md:p-5">
+        <div className="mb-4">
+          <h2 className="text-base font-semibold text-gray-900">Áreas da configuração</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            Escolha uma aba para revisar a parte certa da loja sem sair desta tela.
+          </p>
+        </div>
+
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+          {tabs.map((tab, index) => (
+            <SettingsTabButton
+              key={tab.id}
+              active={activeTab === tab.id}
+              index={index + 1}
+              label={tab.label}
+              onClick={() => setActiveTab(tab.id)}
+            />
+          ))}
+        </div>
+      </section>
+
+      {activeTab === "visao-geral" ? (
+        <SectionBlock
+          title="1. Visão Geral"
+          description="Tela-resumo da loja com status, pendências e prontidão operacional."
+          actions={<SecondaryLink href="/onboarding?step=5">Revisar ativação</SecondaryLink>}
+        >
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <StatusCard
+              label="Configuração da loja"
+              value={onboardingStatus.label}
+              tone={onboardingStatus.tone}
+              hint="Status geral do onboarding principal."
+            />
+            <StatusCard
+              label="Canal comercial"
+              value={onboardingStatus.label === "Concluído" ? "Revisar conexão" : "Pendente"}
+              tone={onboardingStatus.label === "Concluído" ? "amber" : "red"}
+              hint="Canal de atendimento da loja e comunicação comercial."
+            />
+            <StatusCard
+              label="Canal da assistente"
+              value={onboardingStatus.label === "Concluído" ? "Em definição" : "Pendente"}
+              tone="amber"
+              hint="Canal que o responsável vai usar para falar com a IA assistente."
+            />
+            <StatusCard
+              label="Agenda"
+              value={onboardingStatus.label !== "Não iniciado" ? "Revisar regras" : "Pendente"}
+              tone={onboardingStatus.label !== "Não iniciado" ? "amber" : "red"}
+              hint="Disponibilidade, limites e regras de compromisso."
+            />
+            <StatusCard
+              label="Prontidão da IA"
+              value={iaReadiness.value}
+              tone={iaReadiness.tone}
+              hint={iaReadiness.hint}
+            />
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Resumo curto da loja</div>
+              <SummaryList items={overviewSummary} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">
+                Pendências para ativação real
+              </div>
+              <SummaryList items={activationPendencies} />
+            </div>
+          </div>
+        </SectionBlock>
+      ) : null}
+
+      {activeTab === "estrategia" ? (
         <SectionBlock
           title="2. Estratégia"
           description="Espelho estruturado do onboarding, sem substituir a configuração viva principal."
@@ -560,7 +717,9 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
+      ) : null}
 
+      {activeTab === "piscinas" ? (
         <SectionBlock
           title="3. Piscinas"
           description="Tudo sobre a oferta de piscinas da loja."
@@ -574,7 +733,9 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
+      ) : null}
 
+      {activeTab === "produtos-acessorios" ? (
         <SectionBlock
           title="4. Produtos/Acessórios"
           description="No lugar do catálogo geral, com separação clara por categoria."
@@ -595,7 +756,9 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
+      ) : null}
 
+      {activeTab === "operacao" ? (
         <SectionBlock
           title="5. Operação"
           description="Regras reais da operação da loja e da agenda operacional."
@@ -609,7 +772,9 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
+      ) : null}
 
+      {activeTab === "comercial-ia" ? (
         <SectionBlock
           title="6. Comercial e IA"
           description="Regras comerciais vivas que a IA vendedora deve obedecer."
@@ -623,7 +788,9 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
+      ) : null}
 
+      {activeTab === "responsavel-ativacao" ? (
         <SectionBlock
           title="7. Responsável e ativação"
           description="Ponte entre IA e humano responsável."
@@ -637,7 +804,9 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
+      ) : null}
 
+      {activeTab === "descontos" ? (
         <SectionBlock
           title="8. Descontos"
           description="Módulo próprio, sem brigar com Comercial e IA."
@@ -650,7 +819,9 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
+      ) : null}
 
+      {activeTab === "canais-integracoes" ? (
         <SectionBlock
           title="9. Canais e integrações"
           description="WhatsApp comercial, canal do responsável e integrações externas."
@@ -663,7 +834,9 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
+      ) : null}
 
+      {activeTab === "identidade" ? (
         <SectionBlock
           title="10. Identidade da loja"
           description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
@@ -676,7 +849,7 @@ export default function ConfiguracoesPage() {
             ]}
           />
         </SectionBlock>
-      </div>
+      ) : null}
     </div>
   );
 }
