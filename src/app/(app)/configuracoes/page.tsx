@@ -40,7 +40,31 @@ function chunkArray<T>(items: T[], chunkSize: number) {
   return chunks;
 }
 
-function QuickCard({
+function SummaryStat({
+  label,
+  value,
+  href,
+}: {
+  label: string;
+  value: number;
+  href: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-4 transition hover:border-black/15 hover:bg-white"
+    >
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-500">
+        {label}
+      </div>
+      <div className="mt-2 text-2xl font-black tracking-[-0.02em] text-black">
+        {value}
+      </div>
+    </Link>
+  );
+}
+
+function QuickAccessCard({
   href,
   title,
   description,
@@ -49,26 +73,27 @@ function QuickCard({
   href: string;
   title: string;
   description: string;
-  count?: number;
+  count: number;
 }) {
   return (
     <Link
       href={href}
-      className="group rounded-2xl border border-gray-200 bg-white p-4 transition hover:border-black/20 hover:bg-gray-50"
+      className="group rounded-2xl border border-gray-200 bg-white px-4 py-4 transition hover:border-black/15 hover:bg-gray-50"
     >
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
-          <p className="mt-1 text-sm leading-5 text-gray-600">{description}</p>
+        <div className="min-w-0">
+          <h2 className="text-lg font-black tracking-[-0.02em] text-black">
+            {title}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-gray-600">{description}</p>
         </div>
-        {typeof count === "number" ? (
-          <span className="inline-flex min-w-[2.2rem] justify-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">
-            {count}
-          </span>
-        ) : null}
+
+        <span className="inline-flex min-w-[2.4rem] shrink-0 justify-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">
+          {count}
+        </span>
       </div>
 
-      <div className="mt-3 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500 group-hover:text-gray-700">
+      <div className="mt-4 inline-flex items-center rounded-xl bg-gray-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-700 transition group-hover:bg-black group-hover:text-white">
         Abrir
       </div>
     </Link>
@@ -137,7 +162,9 @@ export default function ConfiguracoesPage() {
 
       setCounts(nextCounts);
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao carregar a visão geral das configurações.");
+      setErrorText(
+        error?.message ?? "Erro ao carregar a visão geral das configurações."
+      );
     } finally {
       setLoading(false);
     }
@@ -190,7 +217,9 @@ export default function ConfiguracoesPage() {
 
       if (catalogItemsError) throw catalogItemsError;
 
-      const catalogItemIds = ((catalogItems || []) as Array<{ id: string }>).map((item) => item.id);
+      const catalogItemIds = ((catalogItems || []) as Array<{ id: string }>).map(
+        (item) => item.id
+      );
 
       if (catalogItemIds.length === 0) {
         setSuccessText("O catálogo geral já estava vazio.");
@@ -254,21 +283,37 @@ export default function ConfiguracoesPage() {
       setSuccessText("Todo o catálogo geral da loja foi apagado com sucesso.");
       await fetchCounts();
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao apagar todo o catálogo geral da loja.");
+      setErrorText(
+        error?.message ?? "Erro ao apagar todo o catálogo geral da loja."
+      );
     } finally {
       setDeletingCatalog(false);
     }
-  }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchCounts]);
+  }, [
+    organizationId,
+    activeStoreId,
+    deletingCatalog,
+    totalCatalogo,
+    fetchCounts,
+  ]);
 
   return (
     <div className="space-y-5">
-      <div className="space-y-2">
-        <h1 className="text-2xl font-black tracking-[-0.02em] text-black">
-          Configurações
-        </h1>
-        <p className="text-sm text-gray-600">
-          Escolha a área que você quer abrir.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-2">
+          <h1 className="text-[42px] font-black tracking-[-0.03em] text-black">
+            Configurações
+          </h1>
+          <p className="max-w-3xl text-base text-gray-600">
+            Abra rapidamente as áreas da loja, revise o catálogo e acompanhe a
+            visão geral do que já está cadastrado.
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-700">
+          <span className="font-semibold text-gray-900">Loja ativa:</span>{" "}
+          {hasValidStoreContext ? "pronta para edição" : "não encontrada"}
+        </div>
       </div>
 
       {!hasValidStoreContext ? (
@@ -289,22 +334,29 @@ export default function ConfiguracoesPage() {
         </div>
       ) : null}
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4">
-        <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <section className="rounded-[28px] border border-gray-200 bg-white p-4 sm:p-5">
+        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h2 className="text-sm font-semibold text-gray-900">Acessos rápidos</h2>
-            <p className="mt-1 text-xs text-gray-500">
-              Tudo em um lugar, sem prender na tela errada.
+            <h2 className="text-lg font-bold text-gray-900">Acessos rápidos</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              Entre direto na área certa sem ficar preso na tela errada.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {loading ? <span className="text-xs text-gray-500">Carregando...</span> : null}
+            {loading ? (
+              <span className="text-xs font-medium text-gray-500">
+                Carregando...
+              </span>
+            ) : null}
+
             <button
               type="button"
               onClick={() => void handleDeleteAllCatalog()}
-              disabled={!hasValidStoreContext || deletingCatalog || totalCatalogo === 0}
-              className="rounded-xl border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={
+                !hasValidStoreContext || deletingCatalog || totalCatalogo === 0
+              }
+              className="rounded-2xl border border-red-300 bg-red-50 px-4 py-2.5 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {deletingCatalog ? "Apagando catálogo..." : "Apagar todo o catálogo"}
             </button>
@@ -312,25 +364,25 @@ export default function ConfiguracoesPage() {
         </div>
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <QuickCard
+          <QuickAccessCard
             href="/configuracoes/piscinas"
             title="Piscinas"
-            description="Ver, editar, excluir e revisar fotos das piscinas cadastradas."
+            description="Ver, editar, excluir e revisar as piscinas cadastradas."
             count={counts.pools}
           />
-          <QuickCard
+          <QuickAccessCard
             href="/configuracoes/catalogo/quimicos"
             title="Químicos"
             description="Ver e organizar os produtos químicos da loja."
             count={counts.quimicos}
           />
-          <QuickCard
+          <QuickAccessCard
             href="/configuracoes/catalogo/acessorios"
             title="Acessórios"
             description="Ver e organizar os acessórios cadastrados."
             count={counts.acessorios}
           />
-          <QuickCard
+          <QuickAccessCard
             href="/configuracoes/catalogo/outros"
             title="Outros"
             description="Ver e organizar os itens que não entram nas outras categorias."
@@ -339,39 +391,42 @@ export default function ConfiguracoesPage() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4">
-        <h2 className="text-sm font-semibold text-gray-900">Resumo rápido</h2>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
-              Piscinas
-            </div>
-            <div className="mt-1 text-lg font-bold text-gray-900">{counts.pools}</div>
+      <section className="rounded-[28px] border border-gray-200 bg-white p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Resumo rápido</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              Uma visão geral do que já existe hoje na loja.
+            </p>
           </div>
-          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
-              Químicos
-            </div>
-            <div className="mt-1 text-lg font-bold text-gray-900">{counts.quimicos}</div>
-          </div>
-          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
-              Acessórios
-            </div>
-            <div className="mt-1 text-lg font-bold text-gray-900">{counts.acessorios}</div>
-          </div>
-          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
-              Outros itens
-            </div>
-            <div className="mt-1 text-lg font-bold text-gray-900">
-              {counts.outros}
-            </div>
+
+          <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-2 text-sm text-gray-700">
+            Total do catálogo geral:{" "}
+            <span className="font-semibold text-black">{totalCatalogo}</span>
           </div>
         </div>
 
-        <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-700">
-          Total do catálogo geral: <span className="font-semibold text-gray-900">{totalCatalogo}</span>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <SummaryStat
+            label="Piscinas"
+            value={counts.pools}
+            href="/configuracoes/piscinas"
+          />
+          <SummaryStat
+            label="Químicos"
+            value={counts.quimicos}
+            href="/configuracoes/catalogo/quimicos"
+          />
+          <SummaryStat
+            label="Acessórios"
+            value={counts.acessorios}
+            href="/configuracoes/catalogo/acessorios"
+          />
+          <SummaryStat
+            label="Outros itens"
+            value={counts.outros}
+            href="/configuracoes/catalogo/outros"
+          />
         </div>
       </section>
     </div>
