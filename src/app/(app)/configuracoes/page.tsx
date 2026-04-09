@@ -403,13 +403,13 @@ function SettingsTabButton({
       type="button"
       onClick={onClick}
       className={[
-        "min-w-fit whitespace-nowrap rounded-xl border px-3 py-2 text-left transition",
+        "min-w-0 rounded-lg border px-1.5 py-2 text-center transition",
         active
           ? "border-black bg-black text-white"
           : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
       ].join(" ")}
     >
-      <div className="text-sm font-semibold">{label}</div>
+      <div className="truncate text-[11px] font-semibold leading-tight tracking-[-0.01em]">{label}</div>
     </button>
   );
 }
@@ -954,7 +954,7 @@ export default function ConfiguracoesPage() {
   }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchPageData]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-x-hidden">
       <div>
         <h1 className="text-2xl font-black tracking-[-0.02em] text-black">Configurações</h1>
       </div>
@@ -982,8 +982,8 @@ export default function ConfiguracoesPage() {
           <h2 className="text-sm font-semibold text-gray-900">Áreas da configuração</h2>
         </div>
 
-        <div className="-mx-1 overflow-x-auto px-1 pb-1">
-          <div className="flex min-w-max gap-2">
+        <div className="pb-1">
+          <div className="grid grid-cols-10 gap-1">
             {tabs.map((tab) => (
               <SettingsTabButton
                 key={tab.id}
@@ -1012,7 +1012,7 @@ export default function ConfiguracoesPage() {
 
       {activeTab === "visao-geral" ? (
         <SectionBlock title="Controle da configuração">
-          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_220px_220px]">
+          <div className="grid gap-2 md:grid-cols-3">
             <div className="flex items-start">
               <button
                 type="button"
