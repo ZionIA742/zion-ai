@@ -282,17 +282,17 @@ function QuickCard({
   return (
     <Link
       href={href}
-      className="group rounded-xl border border-gray-200 bg-white px-4 py-3 transition hover:border-black/20 hover:bg-gray-50"
+      className="group rounded-xl border border-gray-200 bg-white px-3 py-2.5 transition hover:border-black/20 hover:bg-gray-50"
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-2">
         <h3 className="min-w-0 text-sm font-semibold text-gray-900">{title}</h3>
         {typeof count === "number" ? (
-          <span className="inline-flex min-w-[2rem] shrink-0 justify-center rounded-full bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-700">
+          <span className="inline-flex min-w-[1.9rem] shrink-0 justify-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-700">
             {count}
           </span>
         ) : null}
       </div>
-      <div className="mt-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500 group-hover:text-gray-700">
+      <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-500 group-hover:text-gray-700">
         Abrir
       </div>
     </Link>
@@ -930,9 +930,6 @@ export default function ConfiguracoesPage() {
       <section className="rounded-2xl border border-gray-200 bg-white p-4 md:p-5">
         <div className="mb-4">
           <h2 className="text-base font-semibold text-gray-900">Áreas da configuração</h2>
-          <p className="mt-1 text-sm text-gray-600">
-            Escolha uma aba para revisar a parte certa da loja sem sair desta tela.
-          </p>
         </div>
 
         <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
@@ -949,7 +946,6 @@ export default function ConfiguracoesPage() {
 
       <SectionBlock
         title="Acessos rápidos"
-        description="Tudo em um lugar, mantendo os atalhos principais da configuração da loja."
         actions={
           <>
             {loading ? <span className="text-xs text-gray-500">Carregando...</span> : null}
