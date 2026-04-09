@@ -282,18 +282,15 @@ function QuickCard({
   return (
     <Link
       href={href}
-      className="group rounded-xl border border-gray-200 bg-white px-3 py-2.5 transition hover:border-black/20 hover:bg-gray-50"
+      className="group rounded-xl border border-gray-200 bg-white px-3 py-2 transition hover:border-black/20 hover:bg-gray-50"
     >
       <div className="flex items-center justify-between gap-2">
         <h3 className="min-w-0 text-sm font-semibold text-gray-900">{title}</h3>
         {typeof count === "number" ? (
-          <span className="inline-flex min-w-[1.9rem] shrink-0 justify-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-700">
+          <span className="inline-flex min-w-[1.7rem] shrink-0 justify-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-700">
             {count}
           </span>
         ) : null}
-      </div>
-      <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-500 group-hover:text-gray-700">
-        Abrir
       </div>
     </Link>
   );
@@ -406,7 +403,7 @@ function SettingsTabButton({
       type="button"
       onClick={onClick}
       className={[
-        "rounded-xl border px-3 py-2 text-left transition",
+        "min-w-fit whitespace-nowrap rounded-xl border px-3 py-2 text-left transition",
         active
           ? "border-black bg-black text-white"
           : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
@@ -433,6 +430,8 @@ export default function ConfiguracoesPage() {
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
+  const [isOverviewEditing, setIsOverviewEditing] = useState(false);
+  const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -517,6 +516,19 @@ export default function ConfiguracoesPage() {
   useEffect(() => {
     void fetchPageData();
   }, [fetchPageData]);
+
+  useEffect(() => {
+    setOverviewDraft({
+      store_display_name: cleanText(answers.store_display_name) || storeName,
+      responsible_name: cleanText(answers.responsible_name),
+      responsible_whatsapp: cleanText(answers.responsible_whatsapp),
+      commercial_whatsapp: cleanText(answers.commercial_whatsapp),
+      installation_days_rule: cleanText(answers.installation_days_rule),
+      technical_visit_days_rule: cleanText(answers.technical_visit_days_rule),
+      final_activation_notes: cleanText(answers.final_activation_notes),
+    });
+  }, [answers, storeName]);
+
 
   const totalCatalogo = useMemo(
     () => counts.quimicos + counts.acessorios + counts.outros,
@@ -793,6 +805,47 @@ export default function ConfiguracoesPage() {
     return list;
   }, [counts.pools, totalCatalogo, onboardingStatus.label, answers]);
 
+  const shouldShowQuickAccess =
+    activeTab === "visao-geral" ||
+    activeTab === "piscinas" ||
+    activeTab === "produtos-acessorios";
+
+  const handleOverviewDraftChange = useCallback((key: string, value: string) => {
+    setOverviewDraft((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }, []);
+
+  const handleOverviewEditCancel = useCallback(() => {
+    setOverviewDraft({
+      store_display_name: cleanText(answers.store_display_name) || storeName,
+      responsible_name: cleanText(answers.responsible_name),
+      responsible_whatsapp: cleanText(answers.responsible_whatsapp),
+      commercial_whatsapp: cleanText(answers.commercial_whatsapp),
+      installation_days_rule: cleanText(answers.installation_days_rule),
+      technical_visit_days_rule: cleanText(answers.technical_visit_days_rule),
+      final_activation_notes: cleanText(answers.final_activation_notes),
+    });
+    setIsOverviewEditing(false);
+  }, [answers, storeName]);
+
+  const handleOverviewEditSave = useCallback(() => {
+    setAnswers((current) => ({
+      ...current,
+      store_display_name: overviewDraft.store_display_name,
+      responsible_name: overviewDraft.responsible_name,
+      responsible_whatsapp: overviewDraft.responsible_whatsapp,
+      commercial_whatsapp: overviewDraft.commercial_whatsapp,
+      installation_days_rule: overviewDraft.installation_days_rule,
+      technical_visit_days_rule: overviewDraft.technical_visit_days_rule,
+      final_activation_notes: overviewDraft.final_activation_notes,
+    }));
+    setSuccessText("Alterações da visão geral atualizadas nesta tela.");
+    setErrorText(null);
+    setIsOverviewEditing(false);
+  }, [overviewDraft]);
+
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setErrorText("Nenhuma loja ativa foi encontrada para apagar o catálogo.");
@@ -901,12 +954,9 @@ export default function ConfiguracoesPage() {
   }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchPageData]);
 
   return (
-    <div className="space-y-5">
-      <div className="space-y-2">
+    <div className="space-y-4">
+      <div>
         <h1 className="text-2xl font-black tracking-[-0.02em] text-black">Configurações</h1>
-        <p className="text-sm text-gray-600">
-          Centro de visão geral, revisão operacional e acesso rápido da loja.
-        </p>
       </div>
 
       {!hasValidStoreContext ? (
@@ -927,67 +977,100 @@ export default function ConfiguracoesPage() {
         </div>
       ) : null}
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 md:p-5">
-        <div className="mb-4">
-          <h2 className="text-base font-semibold text-gray-900">Áreas da configuração</h2>
+      <section className="rounded-2xl border border-gray-200 bg-white px-4 py-3">
+        <div className="mb-3">
+          <h2 className="text-sm font-semibold text-gray-900">Áreas da configuração</h2>
         </div>
 
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-          {tabs.map((tab) => (
-            <SettingsTabButton
-              key={tab.id}
-              active={activeTab === tab.id}
-              label={tab.label}
-              onClick={() => setActiveTab(tab.id)}
-            />
-          ))}
+        <div className="-mx-1 overflow-x-auto px-1 pb-1">
+          <div className="flex min-w-max gap-2">
+            {tabs.map((tab) => (
+              <SettingsTabButton
+                key={tab.id}
+                active={activeTab === tab.id}
+                label={tab.label}
+                onClick={() => setActiveTab(tab.id)}
+              />
+            ))}
+          </div>
         </div>
       </section>
 
-      <SectionBlock
-        title="Acessos rápidos"
-        actions={
-          <>
-            {loading ? <span className="text-xs text-gray-500">Carregando...</span> : null}
-            <button
-              type="button"
-              onClick={() => void handleDeleteAllCatalog()}
-              disabled={!hasValidStoreContext || deletingCatalog || totalCatalogo === 0}
-              className="rounded-xl border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {deletingCatalog ? "Apagando catálogo..." : "Apagar todo o catálogo"}
-            </button>
-          </>
-        }
-      >
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_250px]">
+      {shouldShowQuickAccess ? (
+        <SectionBlock
+          title="Acessos rápidos"
+          actions={loading ? <span className="text-xs text-gray-500">Carregando...</span> : null}
+        >
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
             <QuickCard href="/configuracoes/piscinas" title="Piscinas" count={counts.pools} />
             <QuickCard href="/configuracoes/catalogo/quimicos" title="Químicos" count={counts.quimicos} />
             <QuickCard href="/configuracoes/catalogo/acessorios" title="Acessórios" count={counts.acessorios} />
             <QuickCard href="/configuracoes/catalogo/outros" title="Outros" count={counts.outros} />
           </div>
+        </SectionBlock>
+      ) : null}
 
-          <div className="grid gap-2">
+      {activeTab === "visao-geral" ? (
+        <SectionBlock title="Controle da configuração">
+          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_220px_220px]">
+            <div className="flex items-start">
+              <button
+                type="button"
+                onClick={() => void handleDeleteAllCatalog()}
+                disabled={!hasValidStoreContext || deletingCatalog || totalCatalogo === 0}
+                className="rounded-xl border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deletingCatalog ? "Apagando catálogo..." : "Apagar todo o catálogo"}
+              </button>
+            </div>
+
             <CompactMetric
               label="Total do catálogo"
               value={String(totalCatalogo)}
               tone={totalCatalogo > 0 ? "green" : "gray"}
             />
+
             <CompactMetric
               label="Status da configuração"
               value={onboardingStatus.label}
               tone={onboardingStatus.tone}
             />
           </div>
-        </div>
-      </SectionBlock>
+        </SectionBlock>
+      ) : null}
 
       {activeTab === "visao-geral" ? (
         <SectionBlock
           title="1. Visão Geral"
           description="Tela-resumo da loja com status, pendências e prontidão operacional."
-          actions={<SecondaryLink href="/onboarding?step=5">Revisar ativação</SecondaryLink>}
+          actions={
+            isOverviewEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleOverviewEditSave}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOverviewEditCancel}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsOverviewEditing(true)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+              >
+                Editar
+              </button>
+            )
+          }
         >
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             <StatusCard
@@ -1021,6 +1104,92 @@ export default function ConfiguracoesPage() {
               hint={iaReadiness.hint}
             />
           </div>
+
+          {isOverviewEditing ? (
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-3 text-sm font-semibold text-gray-900">Editar visão geral na mesma página</div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Nome da loja
+                  </span>
+                  <input
+                    value={overviewDraft.store_display_name ?? ""}
+                    onChange={(event) => handleOverviewDraftChange("store_display_name", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Responsável principal
+                  </span>
+                  <input
+                    value={overviewDraft.responsible_name ?? ""}
+                    onChange={(event) => handleOverviewDraftChange("responsible_name", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    WhatsApp do responsável
+                  </span>
+                  <input
+                    value={overviewDraft.responsible_whatsapp ?? ""}
+                    onChange={(event) => handleOverviewDraftChange("responsible_whatsapp", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    WhatsApp comercial
+                  </span>
+                  <input
+                    value={overviewDraft.commercial_whatsapp ?? ""}
+                    onChange={(event) => handleOverviewDraftChange("commercial_whatsapp", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Regra principal da agenda
+                  </span>
+                  <input
+                    value={overviewDraft.installation_days_rule ?? ""}
+                    onChange={(event) => handleOverviewDraftChange("installation_days_rule", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Regra de visita técnica
+                  </span>
+                  <input
+                    value={overviewDraft.technical_visit_days_rule ?? ""}
+                    onChange={(event) => handleOverviewDraftChange("technical_visit_days_rule", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Observações da configuração
+                  </span>
+                  <textarea
+                    value={overviewDraft.final_activation_notes ?? ""}
+                    onChange={(event) => handleOverviewDraftChange("final_activation_notes", event.target.value)}
+                    rows={4}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
             <div>
@@ -1065,7 +1234,6 @@ export default function ConfiguracoesPage() {
         <SectionBlock
           title="2. Estratégia"
           description="Espelho estruturado do onboarding, sem substituir a configuração viva principal."
-          actions={<SecondaryLink href="/onboarding?step=1">Revisar entrada da loja</SecondaryLink>}
         >
           <SummaryList items={strategyItems} />
         </SectionBlock>
@@ -1101,7 +1269,6 @@ export default function ConfiguracoesPage() {
         <SectionBlock
           title="5. Operação"
           description="Regras reais da operação da loja e da agenda operacional."
-          actions={<SecondaryLink href="/onboarding?step=3">Revisar operação</SecondaryLink>}
         >
           <SummaryList items={operationItems} />
         </SectionBlock>
@@ -1111,7 +1278,6 @@ export default function ConfiguracoesPage() {
         <SectionBlock
           title="6. Comercial e IA"
           description="Regras comerciais vivas que a IA vendedora deve obedecer."
-          actions={<SecondaryLink href="/onboarding?step=4">Revisar comercial e IA</SecondaryLink>}
         >
           <SummaryList items={commercialItems} />
         </SectionBlock>
@@ -1121,7 +1287,6 @@ export default function ConfiguracoesPage() {
         <SectionBlock
           title="7. Responsável e ativação"
           description="Ponte entre IA e humano responsável."
-          actions={<SecondaryLink href="/onboarding?step=5">Abrir ativação</SecondaryLink>}
         >
           <SummaryList items={activationItems} />
         </SectionBlock>
@@ -1131,7 +1296,6 @@ export default function ConfiguracoesPage() {
         <SectionBlock
           title="8. Descontos"
           description="Módulo próprio, mas sem brigar com Comercial e IA."
-          actions={<SecondaryLink href="/onboarding?step=4">Revisar descontos</SecondaryLink>}
         >
           <SummaryList items={discountItems} />
         </SectionBlock>
@@ -1141,7 +1305,6 @@ export default function ConfiguracoesPage() {
         <SectionBlock
           title="9. Canais e integrações"
           description="WhatsApp comercial, canal do responsável e integrações externas."
-          actions={<SecondaryLink href="/onboarding?step=5">Revisar canais</SecondaryLink>}
         >
           <SummaryList items={integrationItems} />
         </SectionBlock>
@@ -1151,7 +1314,6 @@ export default function ConfiguracoesPage() {
         <SectionBlock
           title="10. Identidade da loja"
           description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
-          actions={<SecondaryLink href="/onboarding?step=1">Revisar identidade</SecondaryLink>}
         >
           <SummaryList items={identityItems} />
         </SectionBlock>
