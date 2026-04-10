@@ -116,6 +116,16 @@ type CommercialDraftState = {
 };
 
 
+type DiscountDraftState = {
+  can_offer_discount: string;
+  max_discount_percent: string;
+  human_help_discount_summary: string;
+  discount_approver: string;
+  special_discount_rules: string;
+  discount_explanation: string;
+};
+
+
 type ResponsiblePersonDraft = {
   id: string;
   name: string;
@@ -588,6 +598,24 @@ function createCommercialDraftFromAnswers(answers: AnswersMap): CommercialDraftS
   };
 }
 
+
+function createDiscountDraftFromAnswers(answers: AnswersMap): DiscountDraftState {
+  return {
+    can_offer_discount: yesNoLabel(answers.can_offer_discount),
+    max_discount_percent: cleanText(answers.max_discount_percent),
+    human_help_discount_summary: joinSelectedLabels(
+      parseArrayAnswer(answers.human_help_discount_cases_selected),
+      HUMAN_HELP_DISCOUNT_OPTIONS,
+      cleanText(answers.human_help_discount_cases_other)
+    ),
+    discount_approver: cleanText(answers.discount_approver_name) || cleanText(answers.responsible_name) || "Responsável principal",
+    special_discount_rules: cleanText(answers.discount_special_rules) || cleanText(answers.price_direct_rule_other),
+    discount_explanation:
+      cleanText(answers.discount_explanation) ||
+      "A IA só deve trabalhar com desconto dentro do limite permitido pela loja. Quando o pedido sair da regra, ela deve acionar aprovação humana antes de confirmar qualquer condição especial.",
+  };
+}
+
 function validateSelectedPhotos(files: File[]) {
   if (files.length > 10) {
     return "Cada item pode ter no máximo 10 fotos.";
@@ -846,6 +874,8 @@ export default function ConfiguracoesPage() {
   const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}));
   const [isCommercialEditing, setIsCommercialEditing] = useState(false);
   const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(createCommercialDraftFromAnswers({}));
+  const [isDiscountEditing, setIsDiscountEditing] = useState(false);
+  const [discountDraft, setDiscountDraft] = useState<DiscountDraftState>(createDiscountDraftFromAnswers({}));
   const [isActivationEditing, setIsActivationEditing] = useState(false);
   const [primaryResponsibleDraft, setPrimaryResponsibleDraft] = useState<ResponsiblePersonDraft>(createEmptyResponsibleDraft(true));
   const [additionalResponsiblesDraft, setAdditionalResponsiblesDraft] = useState<ResponsiblePersonDraft[]>([]);
@@ -1424,11 +1454,11 @@ export default function ConfiguracoesPage() {
   const discountItems = useMemo(() => {
     return buildBulletRows([
       { label: "Regra geral de desconto", value: yesNoLabel(answers.can_offer_discount) },
-      { label: "Limite máximo", value: cleanText(answers.max_discount_percent) ? `${cleanText(answers.max_discount_percent)}%` : "" },
+      { label: "Limite máximo", value: cleanText(answers.max_discount_percent) ? `${cleanText(answers.max_discount_percent)}%` : "Não definido" },
       { label: "Quando precisa aprovação humana", value: joinSelectedLabels(parseArrayAnswer(answers.human_help_discount_cases_selected), HUMAN_HELP_DISCOUNT_OPTIONS, cleanText(answers.human_help_discount_cases_other)) },
-      { label: "Quem aprova", value: cleanText(answers.responsible_name) || "Responsável principal" },
-      { label: "Histórico de pedidos de desconto", value: "Ainda não exibido nesta tela" },
-      { label: "Regras especiais por tipo de item", value: cleanText(answers.price_direct_rule_other) },
+      { label: "Quem aprova", value: cleanText(answers.discount_approver_name) || cleanText(answers.responsible_name) || "Responsável principal" },
+      { label: "Regras especiais", value: cleanText(answers.discount_special_rules) || cleanText(answers.price_direct_rule_other) },
+      { label: "Como funciona", value: cleanText(answers.discount_explanation) || "A IA pode trabalhar com desconto apenas dentro da regra definida pela loja. Quando o pedido sai do limite ou exige condição especial, ela deve chamar aprovação humana antes de confirmar qualquer valor." },
     ]);
   }, [answers]);
 
@@ -1789,6 +1819,38 @@ export default function ConfiguracoesPage() {
     setIsCommercialEditing(false);
   }, [commercialDraft]);
 
+
+
+  useEffect(() => {
+    setDiscountDraft(createDiscountDraftFromAnswers(answers));
+  }, [answers]);
+
+  const handleDiscountDraftChange = useCallback((key: keyof DiscountDraftState, value: string) => {
+    setDiscountDraft((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }, []);
+
+  const handleDiscountEditCancel = useCallback(() => {
+    setDiscountDraft(createDiscountDraftFromAnswers(answers));
+    setIsDiscountEditing(false);
+  }, [answers]);
+
+  const handleDiscountEditSave = useCallback(() => {
+    setAnswers((current) => ({
+      ...current,
+      can_offer_discount: discountDraft.can_offer_discount,
+      max_discount_percent: discountDraft.max_discount_percent,
+      human_help_discount_cases_other: discountDraft.human_help_discount_summary,
+      discount_approver_name: discountDraft.discount_approver,
+      discount_special_rules: discountDraft.special_discount_rules,
+      discount_explanation: discountDraft.discount_explanation,
+    }));
+    setSuccessText("Alterações de descontos atualizadas nesta tela.");
+    setErrorText(null);
+    setIsDiscountEditing(false);
+  }, [discountDraft]);
 
   const handlePrimaryResponsibleChange = useCallback(
     (key: keyof ResponsiblePersonDraft, value: string | boolean) => {
@@ -3931,9 +3993,153 @@ export default function ConfiguracoesPage() {
       {activeTab === "descontos" ? (
         <SectionBlock
           title="8. Descontos"
-          description="Módulo próprio, mas sem brigar com Comercial e IA."
+          description="Defina se a IA pode conceder desconto, qual o limite máximo e quando a aprovação humana é obrigatória."
+          actions={
+            isDiscountEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleDiscountEditSave}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDiscountEditCancel}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsDiscountEditing(true)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+              >
+                Editar
+              </button>
+            )
+          }
         >
-          <SummaryList items={discountItems} />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <StatusCard
+              label="Desconto liberado"
+              value={yesNoLabel(answers.can_offer_discount)}
+              tone={yesNoLabel(answers.can_offer_discount) === "Sim" ? "green" : yesNoLabel(answers.can_offer_discount) === "Não" ? "amber" : "gray"}
+              hint="Define se a IA pode negociar desconto sem chamar humano em todos os casos."
+            />
+            <StatusCard
+              label="Limite máximo"
+              value={cleanText(answers.max_discount_percent) ? `${cleanText(answers.max_discount_percent)}%` : "Não definido"}
+              tone={cleanText(answers.max_discount_percent) ? "green" : "gray"}
+              hint="Teto máximo permitido para a IA trabalhar sem sair da regra."
+            />
+            <StatusCard
+              label="Aprovação humana"
+              value={cleanText(answers.discount_approver_name) || cleanText(answers.responsible_name) || "Responsável principal"}
+              tone="gray"
+              hint="Quem precisa entrar quando o pedido sai da regra."
+            />
+            <StatusCard
+              label="Fluxo de segurança"
+              value={joinSelectedLabels(parseArrayAnswer(answers.human_help_discount_cases_selected), HUMAN_HELP_DISCOUNT_OPTIONS) || cleanText(answers.human_help_discount_cases_other) ? "Definido" : "Pendente"}
+              tone={joinSelectedLabels(parseArrayAnswer(answers.human_help_discount_cases_selected), HUMAN_HELP_DISCOUNT_OPTIONS) || cleanText(answers.human_help_discount_cases_other) ? "green" : "amber"}
+              hint="Casos em que a IA não deve aprovar sozinha."
+            />
+          </div>
+
+          {isDiscountEditing ? (
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-3 text-sm font-semibold text-gray-900">Editar descontos na mesma página</div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA pode trabalhar com desconto?</span>
+                  <select
+                    value={discountDraft.can_offer_discount}
+                    onChange={(e) => handleDiscountDraftChange("can_offer_discount", e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  >
+                    <option>Não definido</option>
+                    <option>Sim</option>
+                    <option>Não</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Limite máximo de desconto</span>
+                  <input
+                    value={discountDraft.max_discount_percent}
+                    onChange={(e) => handleDiscountDraftChange("max_discount_percent", e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Ex.: 10 ou 15"
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando precisa aprovação humana</span>
+                  <textarea
+                    value={discountDraft.human_help_discount_summary}
+                    onChange={(e) => handleDiscountDraftChange("human_help_discount_summary", e.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Ex.: pedido de desconto maior que o permitido, condição especial, cliente muito quente..."
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quem aprova desconto</span>
+                  <input
+                    value={discountDraft.discount_approver}
+                    onChange={(e) => handleDiscountDraftChange("discount_approver", e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Nome do responsável"
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras especiais</span>
+                  <textarea
+                    value={discountDraft.special_discount_rules}
+                    onChange={(e) => handleDiscountDraftChange("special_discount_rules", e.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Ex.: em piscina completa pode negociar dentro da faixa, químico tem margem menor..."
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como essa parte funciona</span>
+                  <textarea
+                    value={discountDraft.discount_explanation}
+                    onChange={(e) => handleDiscountDraftChange("discount_explanation", e.target.value)}
+                    rows={4}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Explique a lógica que a IA deve seguir para trabalhar com desconto."
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1.1fr]">
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Regras atuais de desconto</div>
+              <SummaryList items={discountItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Como essa parte funciona</div>
+              <SummaryList
+                items={[
+                  "A IA só deve oferecer desconto quando a loja permitir isso nesta aba.",
+                  "O limite máximo define até onde a IA pode ir sem sair da regra.",
+                  "Quando o pedido ultrapassa o limite ou exige condição especial, a IA deve chamar aprovação humana antes de confirmar qualquer valor.",
+                  "Essa aba serve para proteger margem, padronizar negociação e evitar promessa comercial errada.",
+                ]}
+              />
+            </div>
+          </div>
         </SectionBlock>
       ) : null}
 
