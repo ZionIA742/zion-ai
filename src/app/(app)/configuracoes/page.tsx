@@ -51,6 +51,17 @@ type PoolFormState = {
   track_stock: boolean;
 };
 
+type CatalogFormState = {
+  category: "quimicos" | "acessorios" | "outros";
+  name: string;
+  sku: string;
+  brand: string;
+  price: string;
+  stock_quantity: string;
+  description: string;
+  is_active: boolean;
+  track_stock: boolean;
+};
 
 type StatusTone = "green" | "amber" | "red" | "gray";
 
@@ -242,6 +253,33 @@ function createEmptyPoolForm(): PoolFormState {
     is_active: true,
     track_stock: true,
   };
+}
+
+function createEmptyCatalogForm(): CatalogFormState {
+  return {
+    category: "quimicos",
+    name: "",
+    sku: "",
+    brand: "",
+    price: "",
+    stock_quantity: "",
+    description: "",
+    is_active: true,
+    track_stock: true,
+  };
+}
+
+function validateSelectedPhotos(files: File[]) {
+  if (files.length > 10) {
+    return "Cada item pode ter no máximo 10 fotos.";
+  }
+
+  const oversized = files.find((file) => file.size > 50 * 1024 * 1024);
+  if (oversized) {
+    return `A foto ${oversized.name} ultrapassa o limite de 50 MB.`;
+  }
+
+  return null;
 }
 
 function parseNumberInput(value: string) {
@@ -477,6 +515,9 @@ export default function ConfiguracoesPage() {
   const [poolForm, setPoolForm] = useState<PoolFormState>(createEmptyPoolForm());
   const [poolPhotos, setPoolPhotos] = useState<File[]>([]);
   const [savingPool, setSavingPool] = useState(false);
+  const [catalogForm, setCatalogForm] = useState<CatalogFormState>(createEmptyCatalogForm());
+  const [catalogPhotos, setCatalogPhotos] = useState<File[]>([]);
+  const [savingCatalogItem, setSavingCatalogItem] = useState(false);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -561,6 +602,24 @@ export default function ConfiguracoesPage() {
   useEffect(() => {
     void fetchPageData();
   }, [fetchPageData]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storageKey = `zion-config-active-tab:${activeStoreId || "sem-loja"}`;
+    const savedTab = window.localStorage.getItem(storageKey);
+    if (!savedTab) return;
+
+    const isValidTab = tabs.some((tab) => tab.id === savedTab);
+    if (isValidTab) {
+      setActiveTab(savedTab as SettingsTabId);
+    }
+  }, [activeStoreId, tabs]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storageKey = `zion-config-active-tab:${activeStoreId || "sem-loja"}`;
+    window.localStorage.setItem(storageKey, activeTab);
+  }, [activeTab, activeStoreId]);
 
   useEffect(() => {
     setOverviewDraft({
@@ -967,15 +1026,10 @@ export default function ConfiguracoesPage() {
 
   const handlePoolPhotosChange = useCallback((fileList: FileList | null) => {
     const selectedFiles = Array.from(fileList || []);
+    const validationError = validateSelectedPhotos(selectedFiles);
 
-    if (selectedFiles.length > 10) {
-      setErrorText("Cada piscina pode ter no máximo 10 fotos.");
-      return;
-    }
-
-    const oversized = selectedFiles.find((file) => file.size > 50 * 1024 * 1024);
-    if (oversized) {
-      setErrorText(`A foto ${oversized.name} ultrapassa o limite de 50 MB.`);
+    if (validationError) {
+      setErrorText(validationError);
       return;
     }
 
@@ -991,15 +1045,9 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    if (poolPhotos.length > 10) {
-      setErrorText("Cada piscina pode ter no máximo 10 fotos.");
-      setSuccessText(null);
-      return;
-    }
-
-    const oversized = poolPhotos.find((file) => file.size > 50 * 1024 * 1024);
-    if (oversized) {
-      setErrorText(`A foto ${oversized.name} ultrapassa o limite de 50 MB.`);
+    const poolPhotosError = validateSelectedPhotos(poolPhotos);
+    if (poolPhotosError) {
+      setErrorText(poolPhotosError);
       setSuccessText(null);
       return;
     }
@@ -1056,6 +1104,98 @@ export default function ConfiguracoesPage() {
       setSavingPool(false);
     }
   }, [organizationId, activeStoreId, poolForm, poolPhotos, fetchPageData]);
+
+  const handleCatalogFormChange = useCallback(
+    (key: keyof CatalogFormState, value: string | boolean) => {
+      setCatalogForm((current) => ({
+        ...current,
+        [key]: value,
+      } as CatalogFormState));
+    },
+    []
+  );
+
+  const handleCatalogPhotosChange = useCallback((fileList: FileList | null) => {
+    const selectedFiles = Array.from(fileList || []);
+    const validationError = validateSelectedPhotos(selectedFiles);
+
+    if (validationError) {
+      setErrorText(validationError);
+      return;
+    }
+
+    setCatalogPhotos(selectedFiles);
+    setErrorText(null);
+  }, []);
+
+  const handleSaveManualCatalogItem = useCallback(async () => {
+    const itemName = cleanText(catalogForm.name);
+    if (!itemName) {
+      setErrorText("Preencha pelo menos o nome do item antes de salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    const catalogPhotosError = validateSelectedPhotos(catalogPhotos);
+    if (catalogPhotosError) {
+      setErrorText(catalogPhotosError);
+      setSuccessText(null);
+      return;
+    }
+
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar o item do catálogo.");
+      setSuccessText(null);
+      return;
+    }
+
+    setSavingCatalogItem(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const parsedPrice = parseNumberInput(catalogForm.price);
+      const parsedStock = parseNumberInput(catalogForm.stock_quantity);
+      const insertPayload = {
+        organization_id: organizationId,
+        store_id: activeStoreId,
+        sku: cleanText(catalogForm.sku) || null,
+        name: itemName,
+        description: cleanText(catalogForm.description) || null,
+        price_cents: parsedPrice === null ? null : Math.round(parsedPrice * 100),
+        currency: "BRL",
+        is_active: catalogForm.is_active,
+        track_stock: catalogForm.track_stock,
+        stock_quantity: parsedStock === null ? null : Math.round(parsedStock),
+        metadata: {
+          categoria: catalogForm.category,
+          brand: cleanText(catalogForm.brand) || null,
+          manual_created_in_configuracoes: true,
+          pending_photo_upload_count: catalogPhotos.length,
+        },
+      };
+
+      const { error } = await supabase.from("store_catalog_items").insert(insertPayload);
+      if (error) throw error;
+
+      setCatalogForm(createEmptyCatalogForm());
+      setCatalogPhotos([]);
+      setCounts((current) => ({
+        ...current,
+        [catalogForm.category]: current[catalogForm.category] + 1,
+      }));
+      setSuccessText(
+        catalogPhotos.length > 0
+          ? "Item salvo. As fotos ainda precisam ser conectadas ao fluxo final de upload sem quebrar o restante do sistema."
+          : "Item salvo com sucesso."
+      );
+      await fetchPageData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao salvar o item manualmente.");
+    } finally {
+      setSavingCatalogItem(false);
+    }
+  }, [organizationId, activeStoreId, catalogForm, catalogPhotos, fetchPageData]);
 
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -1585,7 +1725,6 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Adicionar piscina manualmente"
             description="Cadastre uma piscina por aqui sem depender do onboarding. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
-            actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
           >
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <label className="space-y-1 md:col-span-2 xl:col-span-2">
@@ -1743,7 +1882,6 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="3. Piscinas"
             description="Tudo sobre a oferta de piscinas da loja."
-            actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
           >
             <SummaryList items={poolsItems} />
           </SectionBlock>
@@ -1751,19 +1889,154 @@ export default function ConfiguracoesPage() {
       ) : null}
 
       {activeTab === "produtos-acessorios" ? (
-        <SectionBlock
-          title="4. Produtos/Acessórios"
-          description="No lugar do catálogo geral, com separação clara por categoria."
-          actions={
-            <div className="flex flex-wrap gap-2">
-              <SecondaryLink href="/configuracoes/catalogo/quimicos">Químicos</SecondaryLink>
-              <SecondaryLink href="/configuracoes/catalogo/acessorios">Acessórios</SecondaryLink>
-              <SecondaryLink href="/configuracoes/catalogo/outros">Outros</SecondaryLink>
+        <div className="space-y-4">
+          <SectionBlock
+            title="Adicionar produto, acessório ou outro manualmente"
+            description="Cadastre um item por aqui sem depender do onboarding. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
+          >
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Categoria</span>
+                <select
+                  value={catalogForm.category}
+                  onChange={(event) => handleCatalogFormChange("category", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                >
+                  <option value="quimicos">Químicos</option>
+                  <option value="acessorios">Acessórios</option>
+                  <option value="outros">Outros</option>
+                </select>
+              </label>
+
+              <label className="space-y-1 md:col-span-2 xl:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do item</span>
+                <input
+                  value={catalogForm.name}
+                  onChange={(event) => handleCatalogFormChange("name", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: Cloro granulado premium"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">SKU</span>
+                <input
+                  value={catalogForm.sku}
+                  onChange={(event) => handleCatalogFormChange("sku", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Opcional"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca</span>
+                <input
+                  value={catalogForm.brand}
+                  onChange={(event) => handleCatalogFormChange("brand", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Marca do item"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</span>
+                <input
+                  value={catalogForm.price}
+                  onChange={(event) => handleCatalogFormChange("price", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="59,90"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estoque</span>
+                <input
+                  value={catalogForm.stock_quantity}
+                  onChange={(event) => handleCatalogFormChange("stock_quantity", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="0"
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição completa</span>
+                <textarea
+                  value={catalogForm.description}
+                  onChange={(event) => handleCatalogFormChange("description", event.target.value)}
+                  rows={4}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Descreva composição, litragem, aplicação, medidas, uso recomendado e detalhes importantes."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fotos do item</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(event) => handleCatalogPhotosChange(event.target.files)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                />
+                <div className="text-xs text-gray-500">Máximo de 10 fotos por item. Cada foto pode ter até 50 MB.</div>
+                {catalogPhotos.length > 0 ? (
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                    {catalogPhotos.length} foto(s) selecionada(s): {catalogPhotos.map((file) => file.name).join(", ")}
+                  </div>
+                ) : null}
+              </label>
             </div>
-          }
-        >
-          <SummaryList items={catalogItems} />
-        </SectionBlock>
+
+            <div className="mt-4 flex flex-wrap gap-3">
+              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={catalogForm.is_active}
+                  onChange={(event) => handleCatalogFormChange("is_active", event.target.checked)}
+                />
+                Item em estado vendível / ativo
+              </label>
+
+              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={catalogForm.track_stock}
+                  onChange={(event) => handleCatalogFormChange("track_stock", event.target.checked)}
+                />
+                Controlar estoque deste item
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSaveManualCatalogItem()}
+                disabled={!hasValidStoreContext || savingCatalogItem}
+                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {savingCatalogItem ? "Salvando item..." : "Salvar item"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCatalogForm(createEmptyCatalogForm());
+                  setCatalogPhotos([]);
+                }}
+                disabled={savingCatalogItem}
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Limpar formulário
+              </button>
+            </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="4. Produtos/Acessórios"
+            description="No lugar do catálogo geral, com separação clara por categoria."
+          >
+            <SummaryList items={catalogItems} />
+          </SectionBlock>
+        </div>
       ) : null}
 
       {activeTab === "operacao" ? (
