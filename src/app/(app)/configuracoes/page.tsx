@@ -2076,42 +2076,45 @@ export default function ConfiguracoesPage() {
     setIsStrategyEditing(false);
   }, [answers]);
 
-  const handleStrategyEditSave = useCallback(() => {
-    setAnswers((current) => ({
-      ...current,
-      city: strategyDraft.city,
-      state: strategyDraft.state,
-      service_regions: strategyDraft.service_regions,
-      service_region_notes: strategyDraft.service_region_notes,
-      store_services_other: strategyDraft.store_services_other,
-      store_description: strategyDraft.store_description,
-      main_store_brand: strategyDraft.main_store_brand,
-      brands_worked: strategyDraft.brands_worked,
-      strategy_service_exclusions: strategyDraft.strategy_service_exclusions,
-      strategy_primary_focus: strategyDraft.strategy_primary_focus,
-      strategy_sell_more: strategyDraft.strategy_sell_more,
-      strategy_common_customer: strategyDraft.strategy_common_customer,
-      strategy_ideal_customer: strategyDraft.strategy_ideal_customer,
-      strategy_ticket_range: strategyDraft.strategy_ticket_range,
-      strategy_positioning: strategyDraft.strategy_positioning,
-      strategy_priority_brands: strategyDraft.strategy_priority_brands,
-      strategy_non_worked_brands: strategyDraft.strategy_non_worked_brands,
-      strategy_top_lines: strategyDraft.strategy_top_lines,
-      strategy_top_products: strategyDraft.strategy_top_products,
-      strategy_differentials: strategyDraft.strategy_differentials,
-      strategy_promise_limits: strategyDraft.strategy_promise_limits,
-      strategy_requires_visit: strategyDraft.strategy_requires_visit,
-      strategy_requires_human: strategyDraft.strategy_requires_human,
-      strategy_exception_cases: strategyDraft.strategy_exception_cases,
-      strategy_ai_store_summary: strategyDraft.strategy_ai_store_summary,
-      strategy_ai_presentation: strategyDraft.strategy_ai_presentation,
-      strategy_ai_priorities: strategyDraft.strategy_ai_priorities,
-      strategy_ai_never_forget: strategyDraft.strategy_ai_never_forget,
-    }));
-    setSuccessText("Alterações da estratégia atualizadas nesta tela.");
-    setErrorText(null);
+  const handleStrategyEditSave = useCallback(async () => {
+    const saved = await upsertConfigAnswers(
+      {
+        city: strategyDraft.city,
+        state: strategyDraft.state,
+        service_regions: strategyDraft.service_regions,
+        service_region_notes: strategyDraft.service_region_notes,
+        store_services_other: strategyDraft.store_services_other,
+        store_description: strategyDraft.store_description,
+        main_store_brand: strategyDraft.main_store_brand,
+        brands_worked: strategyDraft.brands_worked,
+        strategy_service_exclusions: strategyDraft.strategy_service_exclusions,
+        strategy_primary_focus: strategyDraft.strategy_primary_focus,
+        strategy_sell_more: strategyDraft.strategy_sell_more,
+        strategy_common_customer: strategyDraft.strategy_common_customer,
+        strategy_ideal_customer: strategyDraft.strategy_ideal_customer,
+        strategy_ticket_range: strategyDraft.strategy_ticket_range,
+        strategy_positioning: strategyDraft.strategy_positioning,
+        strategy_priority_brands: strategyDraft.strategy_priority_brands,
+        strategy_non_worked_brands: strategyDraft.strategy_non_worked_brands,
+        strategy_top_lines: strategyDraft.strategy_top_lines,
+        strategy_top_products: strategyDraft.strategy_top_products,
+        strategy_differentials: strategyDraft.strategy_differentials,
+        strategy_promise_limits: strategyDraft.strategy_promise_limits,
+        strategy_requires_visit: strategyDraft.strategy_requires_visit,
+        strategy_requires_human: strategyDraft.strategy_requires_human,
+        strategy_exception_cases: strategyDraft.strategy_exception_cases,
+        strategy_ai_store_summary: strategyDraft.strategy_ai_store_summary,
+        strategy_ai_presentation: strategyDraft.strategy_ai_presentation,
+        strategy_ai_priorities: strategyDraft.strategy_ai_priorities,
+        strategy_ai_never_forget: strategyDraft.strategy_ai_never_forget,
+      },
+      "Alterações da estratégia salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsStrategyEditing(false);
-  }, [strategyDraft]);
+  }, [strategyDraft, upsertConfigAnswers]);
 
 
   useEffect(() => {
