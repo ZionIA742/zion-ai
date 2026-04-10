@@ -1205,6 +1205,61 @@ export default function ConfiguracoesPage() {
     }
   }, [organizationId, activeStoreId]);
 
+
+  const upsertConfigAnswers = useCallback(
+    async (entries: Record<string, unknown>, successMessage: string) => {
+      if (!organizationId || !activeStoreId) {
+        setErrorText("Nenhuma loja ativa foi encontrada para salvar essas alterações.");
+        setSuccessText(null);
+        return false;
+      }
+
+      try {
+        for (const [questionKey, rawValue] of Object.entries(entries)) {
+          const answerValue =
+            typeof rawValue === "string" ? rawValue.trim() : rawValue ?? null;
+
+          const { error } = await supabase.rpc("onboarding_upsert_answer_scoped", {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_question_key: questionKey,
+            p_answer_value: answerValue,
+          });
+
+          if (error) throw error;
+        }
+
+        const currentStatus = cleanText(onboarding?.status).toLowerCase();
+        const nextStatus = currentStatus === "completed" ? "completed" : "in_progress";
+
+        const { error: onboardingError } = await supabase.rpc(
+          "onboarding_upsert_store_onboarding_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
+            p_status: nextStatus,
+          }
+        );
+
+        if (onboardingError) throw onboardingError;
+
+        setAnswers((current) => ({
+          ...current,
+          ...entries,
+        }));
+        setSuccessText(successMessage);
+        setErrorText(null);
+        await fetchPageData();
+        return true;
+      } catch (error: any) {
+        setErrorText(error?.message ?? "Erro ao salvar alterações da configuração.");
+        setSuccessText(null);
+        return false;
+      }
+    },
+    [organizationId, activeStoreId, onboarding?.status, fetchPageData]
+  );
+
   useEffect(() => {
     void fetchPageData();
   }, [fetchPageData]);
@@ -1911,21 +1966,24 @@ export default function ConfiguracoesPage() {
     setIsOverviewEditing(false);
   }, [answers, storeName]);
 
-  const handleOverviewEditSave = useCallback(() => {
-    setAnswers((current) => ({
-      ...current,
-      store_display_name: overviewDraft.store_display_name,
-      responsible_name: overviewDraft.responsible_name,
-      responsible_whatsapp: overviewDraft.responsible_whatsapp,
-      commercial_whatsapp: overviewDraft.commercial_whatsapp,
-      installation_days_rule: overviewDraft.installation_days_rule,
-      technical_visit_days_rule: overviewDraft.technical_visit_days_rule,
-      final_activation_notes: overviewDraft.final_activation_notes,
-    }));
-    setSuccessText("Alterações da visão geral atualizadas nesta tela.");
-    setErrorText(null);
+  const handleOverviewEditSave = useCallback(async () => {
+    const saved = await upsertConfigAnswers(
+      {
+        store_display_name: overviewDraft.store_display_name,
+        responsible_name: overviewDraft.responsible_name,
+        responsible_whatsapp: overviewDraft.responsible_whatsapp,
+        commercial_whatsapp: overviewDraft.commercial_whatsapp,
+        installation_days_rule: overviewDraft.installation_days_rule,
+        technical_visit_days_rule: overviewDraft.technical_visit_days_rule,
+        final_activation_notes: overviewDraft.final_activation_notes,
+      },
+      "Alterações da visão geral salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsOverviewEditing(false);
-  }, [overviewDraft]);
+  }, [overviewDraft, upsertConfigAnswers]);
 
   const handleStrategyDraftChange = useCallback((key: string, value: string) => {
     setStrategyDraft((current) => ({
