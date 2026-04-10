@@ -126,6 +126,44 @@ type DiscountDraftState = {
 };
 
 
+type ChannelDraftState = {
+  commercial_channel_name: string;
+  commercial_whatsapp: string;
+  commercial_channel_active: string;
+  commercial_receives_real_clients: string;
+  commercial_is_official_sales_channel: string;
+  commercial_channel_notes: string;
+  responsible_channel_name: string;
+  responsible_whatsapp: string;
+  responsible_channel_active: string;
+  responsible_receives_ai_alerts: string;
+  responsible_receives_reports: string;
+  responsible_receives_urgencies: string;
+  responsible_receives_visit_alerts: string;
+  responsible_receives_payment_alerts: string;
+  responsible_channel_notes: string;
+  internal_chat_enabled: string;
+  internal_chat_for_assistant: string;
+  internal_chat_separate_from_inbox: string;
+  internal_chat_priority: string;
+  internal_chat_notes: string;
+  dedicated_number: string;
+  telegram_future_status: string;
+  extra_channel_notes: string;
+  webhook_inbound_status: string;
+  external_send_status: string;
+  whatsapp_integration_status: string;
+  integrations_status: string;
+  integrations_notes: string;
+  customer_messages_route: string;
+  assistant_alerts_route: string;
+  urgency_route: string;
+  reports_route: string;
+  channel_fallback_rule: string;
+  channels_system_summary: string;
+};
+
+
 type ResponsiblePersonDraft = {
   id: string;
   name: string;
@@ -616,6 +654,55 @@ function createDiscountDraftFromAnswers(answers: AnswersMap): DiscountDraftState
   };
 }
 
+
+function createChannelDraftFromAnswers(answers: AnswersMap): ChannelDraftState {
+  const commercialWhatsapp = cleanText(answers.commercial_whatsapp);
+  const responsibleWhatsapp = cleanText(answers.responsible_whatsapp);
+  const responsibleName = cleanText(answers.responsible_name);
+
+  return {
+    commercial_channel_name: cleanText(answers.commercial_channel_name) || "Canal comercial principal",
+    commercial_whatsapp: commercialWhatsapp,
+    commercial_channel_active: cleanText(answers.commercial_channel_active) || (commercialWhatsapp ? "Sim" : "Não definido"),
+    commercial_receives_real_clients: cleanText(answers.commercial_receives_real_clients) || (commercialWhatsapp ? "Sim" : "Não definido"),
+    commercial_is_official_sales_channel: cleanText(answers.commercial_is_official_sales_channel) || (commercialWhatsapp ? "Sim" : "Não definido"),
+    commercial_channel_notes: cleanText(answers.commercial_channel_notes),
+
+    responsible_channel_name: cleanText(answers.responsible_channel_name) || (responsibleName ? `Canal de ${responsibleName}` : "Canal do responsável"),
+    responsible_whatsapp: responsibleWhatsapp,
+    responsible_channel_active: cleanText(answers.responsible_channel_active) || (responsibleWhatsapp ? "Sim" : "Não definido"),
+    responsible_receives_ai_alerts: cleanText(answers.responsible_receives_ai_alerts) || "Sim",
+    responsible_receives_reports: cleanText(answers.responsible_receives_reports) || "Sim",
+    responsible_receives_urgencies: cleanText(answers.responsible_receives_urgencies) || "Sim",
+    responsible_receives_visit_alerts: cleanText(answers.responsible_receives_visit_alerts) || "Sim",
+    responsible_receives_payment_alerts: cleanText(answers.responsible_receives_payment_alerts) || "Sim",
+    responsible_channel_notes: cleanText(answers.responsible_channel_notes),
+
+    internal_chat_enabled: cleanText(answers.internal_chat_enabled) || "Sim",
+    internal_chat_for_assistant: cleanText(answers.internal_chat_for_assistant) || "Sim",
+    internal_chat_separate_from_inbox: cleanText(answers.internal_chat_separate_from_inbox) || "Sim",
+    internal_chat_priority: cleanText(answers.internal_chat_priority) || "Canal secundário de apoio",
+    internal_chat_notes: cleanText(answers.internal_chat_notes) || "Canal interno do painel para o responsável falar com a IA assistente sem misturar com clientes.",
+
+    dedicated_number: cleanText(answers.dedicated_number) || commercialWhatsapp,
+    telegram_future_status: cleanText(answers.telegram_future_status) || "Previsto para expansão futura",
+    extra_channel_notes: cleanText(answers.extra_channel_notes),
+
+    webhook_inbound_status: cleanText(answers.webhook_inbound_status) || "Previsto no projeto",
+    external_send_status: cleanText(answers.external_send_status) || "Previsto no projeto",
+    whatsapp_integration_status: cleanText(answers.whatsapp_integration_status) || (commercialWhatsapp ? "Base configurada" : "Pendente"),
+    integrations_status: cleanText(answers.integrations_status) || resolveOnboardingLabel(cleanText(answers.integration_status_override) || cleanText(answers.onboarding_status_override)).label,
+    integrations_notes: cleanText(answers.integrations_notes) || "As integrações devem respeitar a separação entre canal comercial da IA vendedora e canal do responsável para a IA assistente.",
+
+    customer_messages_route: cleanText(answers.customer_messages_route) || "Mensagens de clientes entram pelo canal comercial da loja e seguem para a IA vendedora.",
+    assistant_alerts_route: cleanText(answers.assistant_alerts_route) || "Avisos da assistente vão para o canal do responsável e também podem aparecer no chat interno.",
+    urgency_route: cleanText(answers.urgency_route) || "Urgências e casos críticos devem priorizar o responsável principal.",
+    reports_route: cleanText(answers.reports_route) || "Relatórios operacionais devem ir para o canal do responsável e ficar disponíveis no painel.",
+    channel_fallback_rule: cleanText(answers.channel_fallback_rule) || "Se um canal externo falhar, o sistema deve manter fallback pelo painel/chat interno até o humano visualizar.",
+    channels_system_summary: cleanText(answers.channels_system_summary) || "O canal comercial atende clientes. O canal do responsável recebe contexto, alertas e urgências. O chat interno serve como apoio operacional separado da Inbox.",
+  };
+}
+
 function validateSelectedPhotos(files: File[]) {
   if (files.length > 10) {
     return "Cada item pode ter no máximo 10 fotos.";
@@ -876,6 +963,8 @@ export default function ConfiguracoesPage() {
   const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(createCommercialDraftFromAnswers({}));
   const [isDiscountEditing, setIsDiscountEditing] = useState(false);
   const [discountDraft, setDiscountDraft] = useState<DiscountDraftState>(createDiscountDraftFromAnswers({}));
+  const [isChannelsEditing, setIsChannelsEditing] = useState(false);
+  const [channelDraft, setChannelDraft] = useState<ChannelDraftState>(createChannelDraftFromAnswers({}));
   const [isActivationEditing, setIsActivationEditing] = useState(false);
   const [primaryResponsibleDraft, setPrimaryResponsibleDraft] = useState<ResponsiblePersonDraft>(createEmptyResponsibleDraft(true));
   const [additionalResponsiblesDraft, setAdditionalResponsiblesDraft] = useState<ResponsiblePersonDraft[]>([]);
@@ -1462,17 +1551,98 @@ export default function ConfiguracoesPage() {
     ]);
   }, [answers]);
 
-  const integrationItems = useMemo(() => {
+  const channelsOverviewMetrics = useMemo(() => {
+    const commercialWhatsapp = cleanText(answers.commercial_whatsapp);
+    const responsibleWhatsapp = cleanText(answers.responsible_whatsapp);
+    const internalChatEnabled = cleanText(answers.internal_chat_enabled) || "Sim";
+    const integrationStatus = cleanText(answers.integrations_status) || resolveOnboardingLabel(onboarding?.status).label;
+
+    return [
+      {
+        label: "Canal comercial",
+        value: commercialWhatsapp ? "Configurado" : "Pendente",
+        tone: commercialWhatsapp ? ("green" as const) : ("amber" as const),
+        hint: commercialWhatsapp || "Defina o canal principal usado pela IA vendedora",
+      },
+      {
+        label: "Canal do responsável",
+        value: responsibleWhatsapp ? "Configurado" : "Pendente",
+        tone: responsibleWhatsapp ? ("green" as const) : ("amber" as const),
+        hint: responsibleWhatsapp || "Defina o canal usado pela assistente operacional",
+      },
+      {
+        label: "Chat interno",
+        value: yesNoLabel(internalChatEnabled),
+        tone: yesNoLabel(internalChatEnabled) === "Sim" ? ("green" as const) : ("gray" as const),
+        hint: "Canal interno separado da Inbox para a IA assistente",
+      },
+      {
+        label: "Integrações externas",
+        value: integrationStatus || "Pendente",
+        tone: integrationStatus === "Concluído" ? ("green" as const) : ("amber" as const),
+        hint: cleanText(answers.integrations_notes) || "Webhook, WhatsApp e envios externos do projeto",
+      },
+    ];
+  }, [answers, onboarding?.status]);
+
+  const channelCommercialItems = useMemo(() => {
     return buildBulletRows([
-      { label: "WhatsApp comercial da loja", value: cleanText(answers.commercial_whatsapp) },
-      { label: "Canal do responsável", value: cleanText(answers.responsible_whatsapp) },
-      { label: "Integrações externas", value: cleanText(answers.activation_preferences_other) || "Ainda em definição" },
-      { label: "Site da loja", value: cleanText(answers.store_description) },
-      { label: "Logo da loja", value: "Ajustar quando houver upload/identidade visual" },
-      { label: "Dados para PDF, orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
-      { label: "Status das integrações", value: resolveOnboardingLabel(onboarding?.status).label },
+      { label: "Nome do canal comercial", value: cleanText(answers.commercial_channel_name) || "Canal comercial principal" },
+      { label: "WhatsApp comercial", value: cleanText(answers.commercial_whatsapp) },
+      { label: "Canal ativo", value: yesNoLabel(answers.commercial_channel_active) || (cleanText(answers.commercial_whatsapp) ? "Sim" : "Não definido") },
+      { label: "Recebe clientes reais", value: yesNoLabel(answers.commercial_receives_real_clients) || (cleanText(answers.commercial_whatsapp) ? "Sim" : "Não definido") },
+      { label: "É o canal oficial da IA vendedora", value: yesNoLabel(answers.commercial_is_official_sales_channel) || (cleanText(answers.commercial_whatsapp) ? "Sim" : "Não definido") },
+      { label: "Observações", value: cleanText(answers.commercial_channel_notes) },
     ]);
-  }, [answers, storeName, onboarding?.status]);
+  }, [answers]);
+
+  const channelResponsibleItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Nome do canal do responsável", value: cleanText(answers.responsible_channel_name) || (cleanText(answers.responsible_name) ? `Canal de ${cleanText(answers.responsible_name)}` : "Canal do responsável") },
+      { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
+      { label: "Canal ativo", value: yesNoLabel(answers.responsible_channel_active) || (cleanText(answers.responsible_whatsapp) ? "Sim" : "Não definido") },
+      { label: "Recebe alertas da IA", value: yesNoLabel(answers.responsible_receives_ai_alerts) || "Sim" },
+      { label: "Recebe relatórios", value: yesNoLabel(answers.responsible_receives_reports) || "Sim" },
+      { label: "Recebe urgências", value: yesNoLabel(answers.responsible_receives_urgencies) || "Sim" },
+      { label: "Recebe avisos de visita", value: yesNoLabel(answers.responsible_receives_visit_alerts) || "Sim" },
+      { label: "Recebe avisos de pagamento", value: yesNoLabel(answers.responsible_receives_payment_alerts) || "Sim" },
+      { label: "Observações", value: cleanText(answers.responsible_channel_notes) },
+    ]);
+  }, [answers]);
+
+  const channelInternalChatItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Chat interno ativado", value: yesNoLabel(answers.internal_chat_enabled || "Sim") },
+      { label: "Pode ser usado pela IA assistente", value: yesNoLabel(answers.internal_chat_for_assistant || "Sim") },
+      { label: "Fica separado da Inbox", value: yesNoLabel(answers.internal_chat_separate_from_inbox || "Sim") },
+      { label: "Prioridade do chat interno", value: cleanText(answers.internal_chat_priority) || "Canal secundário de apoio" },
+      { label: "Observações", value: cleanText(answers.internal_chat_notes) || "Canal interno do painel para o responsável falar com a IA assistente sem misturar com clientes." },
+    ]);
+  }, [answers]);
+
+  const channelOtherAndIntegrationItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Número/chip dedicado", value: cleanText(answers.dedicated_number) || cleanText(answers.commercial_whatsapp) },
+      { label: "Telegram futuro", value: cleanText(answers.telegram_future_status) || "Previsto para expansão futura" },
+      { label: "Webhook de entrada", value: cleanText(answers.webhook_inbound_status) || "Previsto no projeto" },
+      { label: "Envio externo", value: cleanText(answers.external_send_status) || "Previsto no projeto" },
+      { label: "Integração de WhatsApp", value: cleanText(answers.whatsapp_integration_status) || (cleanText(answers.commercial_whatsapp) ? "Base configurada" : "Pendente") },
+      { label: "Status geral das integrações", value: cleanText(answers.integrations_status) || resolveOnboardingLabel(onboarding?.status).label },
+      { label: "Observações técnicas", value: cleanText(answers.integrations_notes) || "As integrações devem respeitar a separação entre canal comercial da IA vendedora e canal do responsável para a IA assistente." },
+      { label: "Notas extras", value: cleanText(answers.extra_channel_notes) },
+    ]);
+  }, [answers, onboarding?.status]);
+
+  const channelRoutingItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Mensagens de clientes", value: cleanText(answers.customer_messages_route) || "Mensagens de clientes entram pelo canal comercial da loja e seguem para a IA vendedora." },
+      { label: "Avisos da assistente", value: cleanText(answers.assistant_alerts_route) || "Avisos da assistente vão para o canal do responsável e também podem aparecer no chat interno." },
+      { label: "Urgências", value: cleanText(answers.urgency_route) || "Urgências e casos críticos devem priorizar o responsável principal." },
+      { label: "Relatórios", value: cleanText(answers.reports_route) || "Relatórios operacionais devem ir para o canal do responsável e ficar disponíveis no painel." },
+      { label: "Fallback entre canais", value: cleanText(answers.channel_fallback_rule) || "Se um canal externo falhar, o sistema deve manter fallback pelo painel/chat interno até o humano visualizar." },
+      { label: "Resumo dos canais do sistema", value: cleanText(answers.channels_system_summary) || "O canal comercial atende clientes. O canal do responsável recebe contexto, alertas e urgências. O chat interno serve como apoio operacional separado da Inbox." },
+    ]);
+  }, [answers]);
 
   const identityItems = useMemo(() => {
     return buildBulletRows([
@@ -1851,6 +2021,65 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setIsDiscountEditing(false);
   }, [discountDraft]);
+
+  useEffect(() => {
+    setChannelDraft(createChannelDraftFromAnswers(answers));
+  }, [answers]);
+
+  const handleChannelDraftChange = useCallback((key: keyof ChannelDraftState, value: string) => {
+    setChannelDraft((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }, []);
+
+  const handleChannelsEditCancel = useCallback(() => {
+    setChannelDraft(createChannelDraftFromAnswers(answers));
+    setIsChannelsEditing(false);
+  }, [answers]);
+
+  const handleChannelsEditSave = useCallback(() => {
+    setAnswers((current) => ({
+      ...current,
+      commercial_channel_name: channelDraft.commercial_channel_name,
+      commercial_whatsapp: channelDraft.commercial_whatsapp,
+      commercial_channel_active: channelDraft.commercial_channel_active,
+      commercial_receives_real_clients: channelDraft.commercial_receives_real_clients,
+      commercial_is_official_sales_channel: channelDraft.commercial_is_official_sales_channel,
+      commercial_channel_notes: channelDraft.commercial_channel_notes,
+      responsible_channel_name: channelDraft.responsible_channel_name,
+      responsible_whatsapp: channelDraft.responsible_whatsapp,
+      responsible_channel_active: channelDraft.responsible_channel_active,
+      responsible_receives_ai_alerts: channelDraft.responsible_receives_ai_alerts,
+      responsible_receives_reports: channelDraft.responsible_receives_reports,
+      responsible_receives_urgencies: channelDraft.responsible_receives_urgencies,
+      responsible_receives_visit_alerts: channelDraft.responsible_receives_visit_alerts,
+      responsible_receives_payment_alerts: channelDraft.responsible_receives_payment_alerts,
+      responsible_channel_notes: channelDraft.responsible_channel_notes,
+      internal_chat_enabled: channelDraft.internal_chat_enabled,
+      internal_chat_for_assistant: channelDraft.internal_chat_for_assistant,
+      internal_chat_separate_from_inbox: channelDraft.internal_chat_separate_from_inbox,
+      internal_chat_priority: channelDraft.internal_chat_priority,
+      internal_chat_notes: channelDraft.internal_chat_notes,
+      dedicated_number: channelDraft.dedicated_number,
+      telegram_future_status: channelDraft.telegram_future_status,
+      extra_channel_notes: channelDraft.extra_channel_notes,
+      webhook_inbound_status: channelDraft.webhook_inbound_status,
+      external_send_status: channelDraft.external_send_status,
+      whatsapp_integration_status: channelDraft.whatsapp_integration_status,
+      integrations_status: channelDraft.integrations_status,
+      integrations_notes: channelDraft.integrations_notes,
+      customer_messages_route: channelDraft.customer_messages_route,
+      assistant_alerts_route: channelDraft.assistant_alerts_route,
+      urgency_route: channelDraft.urgency_route,
+      reports_route: channelDraft.reports_route,
+      channel_fallback_rule: channelDraft.channel_fallback_rule,
+      channels_system_summary: channelDraft.channels_system_summary,
+    }));
+    setSuccessText("Alterações de canais e integrações atualizadas nesta tela.");
+    setErrorText(null);
+    setIsChannelsEditing(false);
+  }, [channelDraft]);
 
   const handlePrimaryResponsibleChange = useCallback(
     (key: keyof ResponsiblePersonDraft, value: string | boolean) => {
@@ -4146,9 +4375,238 @@ export default function ConfiguracoesPage() {
       {activeTab === "canais-integracoes" ? (
         <SectionBlock
           title="9. Canais e integrações"
-          description="WhatsApp comercial, canal do responsável e integrações externas."
+          description="Defina por onde a IA vende, por onde a assistente fala com o responsável e como o sistema roteia alertas, relatórios e integrações."
+          actions={
+            isChannelsEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleChannelsEditSave}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleChannelsEditCancel}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsChannelsEditing(true)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+              >
+                Editar
+              </button>
+            )
+          }
         >
-          <SummaryList items={integrationItems} />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {channelsOverviewMetrics.map((item) => (
+              <StatusCard
+                key={item.label}
+                label={item.label}
+                value={item.value}
+                tone={item.tone}
+                hint={item.hint}
+              />
+            ))}
+          </div>
+
+          {isChannelsEditing ? (
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-3 text-sm font-semibold text-gray-900">Editar canais e integrações na mesma página</div>
+
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                  <div className="mb-3 text-sm font-semibold text-gray-900">1. Canal comercial da loja</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do canal</span>
+                      <input value={channelDraft.commercial_channel_name} onChange={(e)=>handleChannelDraftChange("commercial_channel_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp comercial</span>
+                      <input value={channelDraft.commercial_whatsapp} onChange={(e)=>handleChannelDraftChange("commercial_whatsapp", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal ativo</span>
+                      <select value={channelDraft.commercial_channel_active} onChange={(e)=>handleChannelDraftChange("commercial_channel_active", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe clientes reais</span>
+                      <select value={channelDraft.commercial_receives_real_clients} onChange={(e)=>handleChannelDraftChange("commercial_receives_real_clients", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal oficial da IA vendedora</span>
+                      <select value={channelDraft.commercial_is_official_sales_channel} onChange={(e)=>handleChannelDraftChange("commercial_is_official_sales_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do canal comercial</span>
+                      <textarea value={channelDraft.commercial_channel_notes} onChange={(e)=>handleChannelDraftChange("commercial_channel_notes", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                  <div className="mb-3 text-sm font-semibold text-gray-900">2. Canal do responsável</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do canal</span>
+                      <input value={channelDraft.responsible_channel_name} onChange={(e)=>handleChannelDraftChange("responsible_channel_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp do responsável</span>
+                      <input value={channelDraft.responsible_whatsapp} onChange={(e)=>handleChannelDraftChange("responsible_whatsapp", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal ativo</span>
+                      <select value={channelDraft.responsible_channel_active} onChange={(e)=>handleChannelDraftChange("responsible_channel_active", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe alertas da IA</span>
+                      <select value={channelDraft.responsible_receives_ai_alerts} onChange={(e)=>handleChannelDraftChange("responsible_receives_ai_alerts", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe relatórios</span>
+                      <select value={channelDraft.responsible_receives_reports} onChange={(e)=>handleChannelDraftChange("responsible_receives_reports", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe urgências</span>
+                      <select value={channelDraft.responsible_receives_urgencies} onChange={(e)=>handleChannelDraftChange("responsible_receives_urgencies", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe avisos de visita</span>
+                      <select value={channelDraft.responsible_receives_visit_alerts} onChange={(e)=>handleChannelDraftChange("responsible_receives_visit_alerts", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe avisos de pagamento</span>
+                      <select value={channelDraft.responsible_receives_payment_alerts} onChange={(e)=>handleChannelDraftChange("responsible_receives_payment_alerts", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do canal do responsável</span>
+                      <textarea value={channelDraft.responsible_channel_notes} onChange={(e)=>handleChannelDraftChange("responsible_channel_notes", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                  <div className="mb-3 text-sm font-semibold text-gray-900">3. Chat interno e outros canais</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Chat interno ativado</span>
+                      <select value={channelDraft.internal_chat_enabled} onChange={(e)=>handleChannelDraftChange("internal_chat_enabled", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">IA assistente usa o chat interno</span>
+                      <select value={channelDraft.internal_chat_for_assistant} onChange={(e)=>handleChannelDraftChange("internal_chat_for_assistant", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Separado da Inbox</span>
+                      <select value={channelDraft.internal_chat_separate_from_inbox} onChange={(e)=>handleChannelDraftChange("internal_chat_separate_from_inbox", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade do chat interno</span>
+                      <input value={channelDraft.internal_chat_priority} onChange={(e)=>handleChannelDraftChange("internal_chat_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Número/chip dedicado</span>
+                      <input value={channelDraft.dedicated_number} onChange={(e)=>handleChannelDraftChange("dedicated_number", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Telegram futuro</span>
+                      <input value={channelDraft.telegram_future_status} onChange={(e)=>handleChannelDraftChange("telegram_future_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do chat interno</span>
+                      <textarea value={channelDraft.internal_chat_notes} onChange={(e)=>handleChannelDraftChange("internal_chat_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Notas extras de canais</span>
+                      <textarea value={channelDraft.extra_channel_notes} onChange={(e)=>handleChannelDraftChange("extra_channel_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                  <div className="mb-3 text-sm font-semibold text-gray-900">4. Integrações externas e roteamento</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de entrada</span>
+                      <input value={channelDraft.webhook_inbound_status} onChange={(e)=>handleChannelDraftChange("webhook_inbound_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Envio externo</span>
+                      <input value={channelDraft.external_send_status} onChange={(e)=>handleChannelDraftChange("external_send_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Integração de WhatsApp</span>
+                      <input value={channelDraft.whatsapp_integration_status} onChange={(e)=>handleChannelDraftChange("whatsapp_integration_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status geral das integrações</span>
+                      <input value={channelDraft.integrations_status} onChange={(e)=>handleChannelDraftChange("integrations_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações técnicas</span>
+                      <textarea value={channelDraft.integrations_notes} onChange={(e)=>handleChannelDraftChange("integrations_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Mensagens de clientes vão para</span>
+                      <textarea value={channelDraft.customer_messages_route} onChange={(e)=>handleChannelDraftChange("customer_messages_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Avisos da assistente vão para</span>
+                      <textarea value={channelDraft.assistant_alerts_route} onChange={(e)=>handleChannelDraftChange("assistant_alerts_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Urgências</span>
+                      <textarea value={channelDraft.urgency_route} onChange={(e)=>handleChannelDraftChange("urgency_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Relatórios</span>
+                      <textarea value={channelDraft.reports_route} onChange={(e)=>handleChannelDraftChange("reports_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fallback entre canais</span>
+                      <textarea value={channelDraft.channel_fallback_rule} onChange={(e)=>handleChannelDraftChange("channel_fallback_rule", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo dos canais do sistema</span>
+                      <textarea value={channelDraft.channels_system_summary} onChange={(e)=>handleChannelDraftChange("channels_system_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Canal comercial da loja</div>
+              <SummaryList items={channelCommercialItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Canal do responsável</div>
+              <SummaryList items={channelResponsibleItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Chat interno e outros canais</div>
+              <SummaryList items={channelInternalChatItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Integrações externas</div>
+              <SummaryList items={channelOtherAndIntegrationItems} />
+            </div>
+            <div className="lg:col-span-2">
+              <div className="mb-2 text-sm font-semibold text-gray-900">Regras de roteamento</div>
+              <SummaryList items={channelRoutingItems} />
+            </div>
+          </div>
         </SectionBlock>
       ) : null}
 
