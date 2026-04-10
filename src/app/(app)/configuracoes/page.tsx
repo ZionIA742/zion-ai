@@ -37,6 +37,21 @@ type OnboardingRow = {
 
 type AnswersMap = Record<string, unknown>;
 
+type PoolFormState = {
+  name: string;
+  material: string;
+  shape: string;
+  width_m: string;
+  length_m: string;
+  depth_m: string;
+  price: string;
+  stock_quantity: string;
+  description: string;
+  is_active: boolean;
+  track_stock: boolean;
+};
+
+
 type StatusTone = "green" | "amber" | "red" | "gray";
 
 type SettingsTabId =
@@ -209,6 +224,31 @@ function buildStoreName(activeStore: unknown) {
 
 function cleanText(value: unknown) {
   return String(value ?? "").trim();
+}
+
+
+
+function createEmptyPoolForm(): PoolFormState {
+  return {
+    name: "",
+    material: "",
+    shape: "",
+    width_m: "",
+    length_m: "",
+    depth_m: "",
+    price: "",
+    stock_quantity: "",
+    description: "",
+    is_active: true,
+    track_stock: true,
+  };
+}
+
+function parseNumberInput(value: string) {
+  const normalized = String(value || "").replace(",", ".").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseArrayAnswer(value: unknown): string[] {
@@ -434,6 +474,9 @@ export default function ConfiguracoesPage() {
   const [isStrategyEditing, setIsStrategyEditing] = useState(false);
   const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
   const [strategyDraft, setStrategyDraft] = useState<Record<string, string>>({});
+  const [poolForm, setPoolForm] = useState<PoolFormState>(createEmptyPoolForm());
+  const [poolPhotos, setPoolPhotos] = useState<File[]>([]);
+  const [savingPool, setSavingPool] = useState(false);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -911,6 +954,108 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setIsStrategyEditing(false);
   }, [strategyDraft]);
+
+  const handlePoolFormChange = useCallback(
+    (key: keyof PoolFormState, value: string | boolean) => {
+      setPoolForm((current) => ({
+        ...current,
+        [key]: value,
+      } as PoolFormState));
+    },
+    []
+  );
+
+  const handlePoolPhotosChange = useCallback((fileList: FileList | null) => {
+    const selectedFiles = Array.from(fileList || []);
+
+    if (selectedFiles.length > 10) {
+      setErrorText("Cada piscina pode ter no máximo 10 fotos.");
+      return;
+    }
+
+    const oversized = selectedFiles.find((file) => file.size > 50 * 1024 * 1024);
+    if (oversized) {
+      setErrorText(`A foto ${oversized.name} ultrapassa o limite de 50 MB.`);
+      return;
+    }
+
+    setPoolPhotos(selectedFiles);
+    setErrorText(null);
+  }, []);
+
+  const handleSaveManualPool = useCallback(async () => {
+    const poolName = cleanText(poolForm.name);
+    if (!poolName) {
+      setErrorText("Preencha pelo menos o nome da piscina antes de salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (poolPhotos.length > 10) {
+      setErrorText("Cada piscina pode ter no máximo 10 fotos.");
+      setSuccessText(null);
+      return;
+    }
+
+    const oversized = poolPhotos.find((file) => file.size > 50 * 1024 * 1024);
+    if (oversized) {
+      setErrorText(`A foto ${oversized.name} ultrapassa o limite de 50 MB.`);
+      setSuccessText(null);
+      return;
+    }
+
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar a piscina.");
+      setSuccessText(null);
+      return;
+    }
+
+    setSavingPool(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const insertPayload = {
+        organization_id: organizationId,
+        store_id: activeStoreId,
+        name: poolName,
+        description: cleanText(poolForm.description) || null,
+        price: parseNumberInput(poolForm.price),
+        stock_quantity: parseNumberInput(poolForm.stock_quantity),
+        is_active: poolForm.is_active,
+        track_stock: poolForm.track_stock,
+        metadata: {
+          material: cleanText(poolForm.material) || null,
+          shape: cleanText(poolForm.shape) || null,
+          width_m: parseNumberInput(poolForm.width_m),
+          length_m: parseNumberInput(poolForm.length_m),
+          depth_m: parseNumberInput(poolForm.depth_m),
+          manual_created_in_configuracoes: true,
+          pending_photo_upload_count: poolPhotos.length,
+        },
+      };
+
+      const { error } = await supabase.from("pools").insert(insertPayload);
+      if (error) throw error;
+
+      setPoolForm(createEmptyPoolForm());
+      setPoolPhotos([]);
+      setCounts((current) => ({
+        ...current,
+        pools: current.pools + 1,
+      }));
+      setSuccessText(
+        poolPhotos.length > 0
+          ? "Piscina salva. As fotos ainda precisam ser conectadas ao fluxo final de upload sem quebrar o restante do sistema."
+          : "Piscina salva com sucesso."
+      );
+      await fetchPageData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao salvar a piscina manualmente.");
+    } finally {
+      setSavingPool(false);
+    }
+  }, [organizationId, activeStoreId, poolForm, poolPhotos, fetchPageData]);
 
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -1436,13 +1581,173 @@ export default function ConfiguracoesPage() {
       ) : null}
 
       {activeTab === "piscinas" ? (
-        <SectionBlock
-          title="3. Piscinas"
-          description="Tudo sobre a oferta de piscinas da loja."
-          actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
-        >
-          <SummaryList items={poolsItems} />
-        </SectionBlock>
+        <div className="space-y-4">
+          <SectionBlock
+            title="Adicionar piscina manualmente"
+            description="Cadastre uma piscina por aqui sem depender do onboarding. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
+            actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
+          >
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <label className="space-y-1 md:col-span-2 xl:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome da piscina</span>
+                <input
+                  value={poolForm.name}
+                  onChange={(event) => handlePoolFormChange("name", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: Piscina Fibra Premium 7x3"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Material</span>
+                <input
+                  value={poolForm.material}
+                  onChange={(event) => handlePoolFormChange("material", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Fibra, vinil, alvenaria..."
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Formato</span>
+                <input
+                  value={poolForm.shape}
+                  onChange={(event) => handlePoolFormChange("shape", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Retangular, oval..."
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Largura (m)</span>
+                <input
+                  value={poolForm.width_m}
+                  onChange={(event) => handlePoolFormChange("width_m", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="3.00"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Comprimento (m)</span>
+                <input
+                  value={poolForm.length_m}
+                  onChange={(event) => handlePoolFormChange("length_m", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="7.00"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Profundidade (m)</span>
+                <input
+                  value={poolForm.depth_m}
+                  onChange={(event) => handlePoolFormChange("depth_m", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="1.40"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</span>
+                <input
+                  value={poolForm.price}
+                  onChange={(event) => handlePoolFormChange("price", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="15990"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estoque</span>
+                <input
+                  value={poolForm.stock_quantity}
+                  onChange={(event) => handlePoolFormChange("stock_quantity", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="0"
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição completa</span>
+                <textarea
+                  value={poolForm.description}
+                  onChange={(event) => handlePoolFormChange("description", event.target.value)}
+                  rows={4}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Descreva acabamento, diferenciais, instalação, cor, acessórios inclusos e qualquer detalhe importante."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fotos da piscina</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(event) => handlePoolPhotosChange(event.target.files)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                />
+                <div className="text-xs text-gray-500">Máximo de 10 fotos por piscina. Cada foto pode ter até 50 MB.</div>
+                {poolPhotos.length > 0 ? (
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                    {poolPhotos.length} foto(s) selecionada(s): {poolPhotos.map((file) => file.name).join(", ")}
+                  </div>
+                ) : null}
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-3">
+              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={poolForm.is_active}
+                  onChange={(event) => handlePoolFormChange("is_active", event.target.checked)}
+                />
+                Piscina em estado vendível / ativa
+              </label>
+
+              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={poolForm.track_stock}
+                  onChange={(event) => handlePoolFormChange("track_stock", event.target.checked)}
+                />
+                Controlar estoque desta piscina
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSaveManualPool()}
+                disabled={!hasValidStoreContext || savingPool}
+                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {savingPool ? "Salvando piscina..." : "Salvar piscina"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPoolForm(createEmptyPoolForm());
+                  setPoolPhotos([]);
+                }}
+                disabled={savingPool}
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Limpar formulário
+              </button>
+            </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="3. Piscinas"
+            description="Tudo sobre a oferta de piscinas da loja."
+            actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
+          >
+            <SummaryList items={poolsItems} />
+          </SectionBlock>
+        </div>
       ) : null}
 
       {activeTab === "produtos-acessorios" ? (
