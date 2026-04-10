@@ -409,6 +409,13 @@ function cleanText(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function summarizeMetricText(value: unknown, maxLength = 72) {
+  const normalized = cleanText(value).replace(/\s+/g, " ");
+  if (!normalized) return "";
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
+
 
 function formatFileSize(sizeBytes: number | null | undefined) {
   if (!sizeBytes || sizeBytes <= 0) return "Tamanho não definido";
@@ -683,7 +690,7 @@ function createCommercialDraftFromAnswers(answers: AnswersMap): CommercialDraftS
     ai_tone_summary: tone || "Ainda não definido",
     ai_speaks_as: cleanText(answers.ai_identity_mode) || "Equipe da loja",
     can_send_price_directly: yesNoLabel(answers.ai_can_send_price_directly),
-    price_before_summary: priceBefore || cleanText(answers.price_direct_rule) || "Ainda não definido",
+    price_before_summary: priceBefore || cleanText(answers.price_direct_rule_other) || cleanText(answers.price_direct_rule) || "Ainda não definido",
     price_policy_summary: cleanText(answers.price_direct_rule) || cleanText(answers.price_direct_rule_other),
     human_help_summary: humanHelp || "Ainda não definido",
     payment_methods_summary: [paymentMain, paymentConditions].filter(Boolean).join(" • "),
@@ -937,14 +944,16 @@ function StatusCard({
       </div>
       <div className="mt-2">
         <span
-          className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusToneClass(
+          className={`inline-flex max-w-full break-words whitespace-normal rounded-full border px-2.5 py-1 text-left text-xs font-semibold leading-5 ${statusToneClass(
             tone
           )}`}
         >
           {value}
         </span>
       </div>
-      {hint ? <div className="mt-2 text-xs leading-5 text-gray-600">{hint}</div> : null}
+      {hint ? (
+        <div className="mt-2 max-h-[4.5rem] overflow-hidden text-xs leading-5 text-gray-600">{hint}</div>
+      ) : null}
     </div>
   );
 }
@@ -1560,31 +1569,45 @@ export default function ConfiguracoesPage() {
     const hasInstallation = yesNoLabel(answers.offers_installation) === "Sim";
     const hasVisit = yesNoLabel(answers.offers_technical_visit) === "Sim";
     const serviceRegions = cleanText(answers.service_regions) || cleanText(answers.service_region_notes);
+    const compactOperationalHint = summarizeMetricText(
+      installationDaysLabel || technicalVisitDaysLabel || "Defina os dias reais de operação",
+      70
+    );
+    const compactVisitHint = summarizeMetricText(
+      technicalVisitRulesLabel || technicalVisitDaysLabel || "Defina regras e disponibilidade de visita",
+      70
+    );
+    const compactCoverageHint = summarizeMetricText(
+      serviceRegions || "Defina regiões e política de deslocamento",
+      70
+    );
 
     return [
       {
         label: "Atendimento operacional",
         value: hasOperationalSchedule ? "Configurado" : "Pendente",
         tone: hasOperationalSchedule ? ("green" as const) : ("amber" as const),
-        hint: installationDaysLabel || technicalVisitDaysLabel || "Defina os dias reais de operação",
+        hint: compactOperationalHint,
       },
       {
         label: "Instalação",
         value: hasInstallation ? "Ativa" : "Não configurada",
         tone: hasInstallation ? ("green" as const) : ("gray" as const),
-        hint: cleanText(answers.average_installation_time_days) ? `Prazo médio: ${cleanText(answers.average_installation_time_days)} dia(s)` : "Defina prazo e etapas da instalação",
+        hint: cleanText(answers.average_installation_time_days)
+          ? `Prazo médio: ${cleanText(answers.average_installation_time_days)} dia(s)`
+          : "Defina prazo e etapas da instalação",
       },
       {
         label: "Visita técnica",
         value: hasVisit ? "Ativa" : "Não configurada",
         tone: hasVisit ? ("green" as const) : ("gray" as const),
-        hint: technicalVisitRulesLabel || technicalVisitDaysLabel || "Defina regras e disponibilidade de visita",
+        hint: compactVisitHint,
       },
       {
         label: "Cobertura",
         value: serviceRegions ? "Definida" : "Pendente",
         tone: serviceRegions ? ("green" as const) : ("amber" as const),
-        hint: serviceRegions || "Defina regiões e política de deslocamento",
+        hint: compactCoverageHint,
       },
     ];
   }, [answers, installationDaysSelected.length, technicalVisitDaysSelected.length, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel]);
@@ -1666,7 +1689,7 @@ export default function ConfiguracoesPage() {
   const commercialPriceItems = useMemo(() => {
     return buildBulletRows([
       { label: "Pode falar preço", value: yesNoLabel(answers.ai_can_send_price_directly) },
-      { label: "O que precisa entender antes", value: joinSelectedLabels(parseArrayAnswer(answers.price_must_understand_before), PRICE_DIRECT_BEFORE_OPTIONS, cleanText(answers.price_direct_rule_other)) },
+      { label: "O que precisa entender antes", value: joinSelectedLabels(parseArrayAnswer(answers.price_must_understand_before), PRICE_DIRECT_BEFORE_OPTIONS, cleanText(answers.price_direct_rule_other)) || cleanText(answers.price_must_understand_before_summary) },
       { label: "Regra principal de preço", value: cleanText(answers.price_direct_rule) || cleanText(answers.price_direct_rule_other) },
       { label: "Modo de fala sobre preço", value: PRICE_TALK_MODE_OPTIONS.find((option) => option.value === cleanText(answers.price_talk_mode))?.label || cleanText(answers.price_talk_mode) },
     ]);
@@ -1684,7 +1707,7 @@ export default function ConfiguracoesPage() {
     const payments = joinSelectedLabels(parseArrayAnswer(answers.accepted_payment_methods), PAYMENT_METHOD_MAIN_OPTIONS);
     const paymentConditions = joinSelectedLabels(parseArrayAnswer(answers.accepted_payment_methods), PAYMENT_METHOD_CONDITION_OPTIONS);
     return buildBulletRows([
-      { label: "Formas de pagamento", value: [payments, paymentConditions].filter(Boolean).join(" • ") },
+      { label: "Formas de pagamento", value: [payments, paymentConditions].filter(Boolean).join(" • ") || cleanText(answers.accepted_payment_methods_summary) },
       { label: "Pode trabalhar com desconto", value: `${yesNoLabel(answers.can_offer_discount)}${cleanText(answers.max_discount_percent) ? ` • máximo de ${cleanText(answers.max_discount_percent)}%` : ""}` },
       { label: "Ticket médio da loja", value: cleanText(answers.average_ticket) ? `R$ ${cleanText(answers.average_ticket)}` : "Não definido" },
     ]);
@@ -1703,18 +1726,58 @@ export default function ConfiguracoesPage() {
   const commercialOverviewMetrics = useMemo(() => {
     const canTalkPrice = yesNoLabel(answers.ai_can_send_price_directly);
     const canDiscount = yesNoLabel(answers.can_offer_discount);
-    const tone = joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), ACTIVATION_STYLE_OPTIONS, cleanText(answers.activation_preferences_other)) || "A definir";
-    const humanCasesCount = [
-      parseArrayAnswer(answers.human_help_discount_cases_selected).length,
-      parseArrayAnswer(answers.human_help_custom_project_cases_selected).length,
-      parseArrayAnswer(answers.human_help_payment_cases_selected).length,
-    ].reduce((acc, value) => acc + value, 0);
+    const rawTone =
+      joinSelectedLabels(
+        parseArrayAnswer(answers.activation_preferences),
+        ACTIVATION_STYLE_OPTIONS,
+        cleanText(answers.activation_preferences_other)
+      ) || "A definir";
+    const humanCasesSummary = [
+      joinSelectedLabels(
+        parseArrayAnswer(answers.human_help_discount_cases_selected),
+        HUMAN_HELP_DISCOUNT_OPTIONS,
+        cleanText(answers.human_help_discount_cases_other)
+      ),
+      joinSelectedLabels(
+        parseArrayAnswer(answers.human_help_custom_project_cases_selected),
+        HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
+        cleanText(answers.human_help_custom_project_cases_other)
+      ),
+      joinSelectedLabels(
+        parseArrayAnswer(answers.human_help_payment_cases_selected),
+        HUMAN_HELP_PAYMENT_OPTIONS,
+        cleanText(answers.human_help_payment_cases_other)
+      ),
+      cleanText(answers.human_help_general_summary),
+    ]
+      .filter(Boolean)
+      .join(" • ");
 
     return [
-      { label: "Preço direto", value: canTalkPrice, tone: canTalkPrice === "Sim" ? ("green" as const) : canTalkPrice === "Não" ? ("amber" as const) : ("gray" as const), hint: "Define se a IA pode falar preço sem chamar humano" },
-      { label: "Desconto", value: canDiscount, tone: canDiscount === "Sim" ? ("green" as const) : canDiscount === "Não" ? ("amber" as const) : ("gray" as const), hint: cleanText(answers.max_discount_percent) ? `Máximo atual de ${cleanText(answers.max_discount_percent)}%` : "Sem teto informado" },
-      { label: "Tom da IA", value: tone, tone: tone === "A definir" ? ("gray" as const) : ("green" as const), hint: "Personalidade comercial viva da IA" },
-      { label: "Casos que chamam humano", value: humanCasesCount > 0 ? String(humanCasesCount) : "A definir", tone: humanCasesCount > 0 ? ("green" as const) : ("amber" as const), hint: "Desconto, projeto especial, pagamento e exceções" },
+      {
+        label: "Preço direto",
+        value: canTalkPrice,
+        tone: canTalkPrice === "Sim" ? ("green" as const) : canTalkPrice === "Não" ? ("amber" as const) : ("gray" as const),
+        hint: "Define se a IA pode falar preço sem chamar humano",
+      },
+      {
+        label: "Desconto",
+        value: canDiscount,
+        tone: canDiscount === "Sim" ? ("green" as const) : canDiscount === "Não" ? ("amber" as const) : ("gray" as const),
+        hint: cleanText(answers.max_discount_percent) ? `Máximo atual de ${cleanText(answers.max_discount_percent)}%` : "Sem teto informado",
+      },
+      {
+        label: "Tom da IA",
+        value: rawTone === "A definir" ? rawTone : summarizeMetricText(rawTone, 26),
+        tone: rawTone === "A definir" ? ("gray" as const) : ("green" as const),
+        hint: rawTone === "A definir" ? "Personalidade comercial viva da IA" : summarizeMetricText(rawTone, 72),
+      },
+      {
+        label: "Casos que chamam humano",
+        value: humanCasesSummary ? "Configurado" : "A definir",
+        tone: humanCasesSummary ? ("green" as const) : ("amber" as const),
+        hint: humanCasesSummary ? summarizeMetricText(humanCasesSummary, 72) : "Desconto, projeto especial, pagamento e exceções",
+      },
     ];
   }, [answers]);
 
@@ -2194,29 +2257,32 @@ export default function ConfiguracoesPage() {
     setIsCommercialEditing(false);
   }, [answers]);
 
-  const handleCommercialEditSave = useCallback(() => {
-    setAnswers((current) => ({
-      ...current,
-      store_display_name: commercialDraft.ai_display_name,
-      price_talk_mode: commercialDraft.ai_presentation_mode,
-      activation_preferences_other: commercialDraft.ai_tone_summary,
-      ai_identity_mode: commercialDraft.ai_speaks_as,
-      ai_can_send_price_directly: commercialDraft.can_send_price_directly,
-      price_must_understand_before_summary: commercialDraft.price_before_summary,
-      price_direct_rule: commercialDraft.price_policy_summary,
-      human_help_general_summary: commercialDraft.human_help_summary,
-      accepted_payment_methods_summary: commercialDraft.payment_methods_summary,
-      discount_policy_summary: commercialDraft.discount_policy_summary,
-      negotiation_rules_summary: commercialDraft.negotiation_rules_summary,
-      final_activation_notes: commercialDraft.promise_limits_summary,
-      sales_flow_notes: commercialDraft.post_sale_summary,
-      after_hours_behavior: commercialDraft.after_hours_summary,
-      commercial_ai_summary: commercialDraft.commercial_ai_summary,
-    }));
-    setSuccessText("Alterações de Comercial e IA atualizadas nesta tela.");
-    setErrorText(null);
+  const handleCommercialEditSave = useCallback(async () => {
+    const saved = await upsertConfigAnswers(
+      {
+        store_display_name: commercialDraft.ai_display_name,
+        price_talk_mode: commercialDraft.ai_presentation_mode,
+        activation_preferences_other: commercialDraft.ai_tone_summary,
+        ai_identity_mode: commercialDraft.ai_speaks_as,
+        ai_can_send_price_directly: commercialDraft.can_send_price_directly,
+        price_direct_rule_other: commercialDraft.price_before_summary,
+        price_direct_rule: commercialDraft.price_policy_summary,
+        human_help_general_summary: commercialDraft.human_help_summary,
+        accepted_payment_methods_summary: commercialDraft.payment_methods_summary,
+        discount_policy_summary: commercialDraft.discount_policy_summary,
+        negotiation_rules_summary: commercialDraft.negotiation_rules_summary,
+        final_activation_notes: commercialDraft.promise_limits_summary,
+        sales_flow_notes: commercialDraft.post_sale_summary,
+        after_hours_behavior: commercialDraft.after_hours_summary,
+        commercial_ai_summary: commercialDraft.commercial_ai_summary,
+      },
+      "Alterações de Comercial e IA salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsCommercialEditing(false);
-  }, [commercialDraft]);
+  }, [commercialDraft, upsertConfigAnswers]);
 
 
 
