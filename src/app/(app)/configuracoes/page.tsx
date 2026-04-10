@@ -1134,7 +1134,7 @@ export default function ConfiguracoesPage() {
       }
 
       const { data: importDestinationsData, error: importDestinationsError } = await supabase
-        .from("store_import_file_destinations")
+        .from("store_import_file_items")
         .select("import_file_id, destination_type")
         .eq("organization_id", organizationId)
         .eq("store_id", activeStoreId)
