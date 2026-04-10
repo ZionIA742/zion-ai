@@ -96,6 +96,25 @@ type OperationDraftState = {
   operational_ai_summary: string;
 };
 
+
+type CommercialDraftState = {
+  ai_display_name: string;
+  ai_presentation_mode: string;
+  ai_tone_summary: string;
+  ai_speaks_as: string;
+  can_send_price_directly: string;
+  price_before_summary: string;
+  price_policy_summary: string;
+  human_help_summary: string;
+  payment_methods_summary: string;
+  discount_policy_summary: string;
+  negotiation_rules_summary: string;
+  promise_limits_summary: string;
+  post_sale_summary: string;
+  after_hours_summary: string;
+  commercial_ai_summary: string;
+};
+
 type StatusTone = "green" | "amber" | "red" | "gray";
 
 type SettingsTabId =
@@ -401,6 +420,71 @@ function createOperationDraftFromAnswers(answers: AnswersMap): OperationDraftSta
   };
 }
 
+
+function createCommercialDraftFromAnswers(answers: AnswersMap): CommercialDraftState {
+  const paymentMain = joinSelectedLabels(
+    parseArrayAnswer(answers.accepted_payment_methods),
+    PAYMENT_METHOD_MAIN_OPTIONS
+  );
+  const paymentConditions = joinSelectedLabels(
+    parseArrayAnswer(answers.accepted_payment_methods),
+    PAYMENT_METHOD_CONDITION_OPTIONS
+  );
+  const priceBefore = joinSelectedLabels(
+    parseArrayAnswer(answers.price_must_understand_before),
+    PRICE_DIRECT_BEFORE_OPTIONS,
+    cleanText(answers.price_direct_rule_other)
+  );
+  const humanHelp = [
+    joinSelectedLabels(
+      parseArrayAnswer(answers.human_help_discount_cases_selected),
+      HUMAN_HELP_DISCOUNT_OPTIONS,
+      cleanText(answers.human_help_discount_cases_other)
+    ),
+    joinSelectedLabels(
+      parseArrayAnswer(answers.human_help_custom_project_cases_selected),
+      HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
+      cleanText(answers.human_help_custom_project_cases_other)
+    ),
+    joinSelectedLabels(
+      parseArrayAnswer(answers.human_help_payment_cases_selected),
+      HUMAN_HELP_PAYMENT_OPTIONS,
+      cleanText(answers.human_help_payment_cases_other)
+    ),
+  ].filter(Boolean).join(" • ");
+
+  const tone = joinSelectedLabels(
+    parseArrayAnswer(answers.activation_preferences),
+    [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS],
+    cleanText(answers.activation_preferences_other)
+  );
+
+  return {
+    ai_display_name: cleanText(answers.store_display_name) || cleanText(answers.responsible_name),
+    ai_presentation_mode:
+      PRICE_TALK_MODE_OPTIONS.find((option) => option.value === cleanText(answers.price_talk_mode))?.label ||
+      cleanText(answers.price_talk_mode) ||
+      "Quando o cliente perguntar",
+    ai_tone_summary: tone || "Ainda não definido",
+    ai_speaks_as: cleanText(answers.ai_identity_mode) || "Equipe da loja",
+    can_send_price_directly: yesNoLabel(answers.ai_can_send_price_directly),
+    price_before_summary: priceBefore || cleanText(answers.price_direct_rule) || "Ainda não definido",
+    price_policy_summary: cleanText(answers.price_direct_rule) || cleanText(answers.price_direct_rule_other),
+    human_help_summary: humanHelp || "Ainda não definido",
+    payment_methods_summary: [paymentMain, paymentConditions].filter(Boolean).join(" • "),
+    discount_policy_summary: `${yesNoLabel(answers.can_offer_discount)}${cleanText(answers.max_discount_percent) ? ` • máximo de ${cleanText(answers.max_discount_percent)}%` : ""}`,
+    negotiation_rules_summary:
+      joinSelectedLabels(parseArrayAnswer(answers.price_must_understand_before), PRICE_DIRECT_BEFORE_OPTIONS) ||
+      cleanText(answers.price_direct_rule),
+    promise_limits_summary: cleanText(answers.final_activation_notes) || cleanText(answers.store_description),
+    post_sale_summary:
+      joinSelectedLabels(parseArrayAnswer(answers.sales_flow_final_steps), SALES_FLOW_FINAL_OPTIONS, cleanText(answers.sales_flow_notes)) ||
+      cleanText(answers.sales_flow_notes),
+    after_hours_summary: cleanText(answers.after_hours_behavior) || "Fora do horário, a IA deve acolher, qualificar e alinhar próximo passo sem prometer execução imediata.",
+    commercial_ai_summary: cleanText(answers.commercial_ai_summary) || cleanText(answers.price_direct_rule),
+  };
+}
+
 function validateSelectedPhotos(files: File[]) {
   if (files.length > 10) {
     return "Cada item pode ter no máximo 10 fotos.";
@@ -574,7 +658,7 @@ function SummaryList({ items }: { items: string[] }) {
       {items.map((item, index) => (
         <div
           key={`${item}-${index}`}
-          className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700"
+          className="min-w-0 overflow-hidden break-words whitespace-pre-wrap rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm leading-6 text-gray-700"
         >
           {item}
         </div>
@@ -624,13 +708,13 @@ function SettingsTabButton({
       type="button"
       onClick={onClick}
       className={[
-        "min-w-fit whitespace-nowrap rounded-xl border px-3 py-2 text-left transition",
+        "min-w-0 w-full rounded-xl border px-3 py-2 text-left transition",
         active
           ? "border-black bg-black text-white"
           : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
       ].join(" ")}
     >
-      <div className="text-[13px] font-semibold leading-tight">{label}</div>
+      <div className="break-words text-[13px] font-semibold leading-tight">{label}</div>
     </button>
   );
 }
@@ -657,6 +741,8 @@ export default function ConfiguracoesPage() {
   const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
   const [strategyDraft, setStrategyDraft] = useState<Record<string, string>>({});
   const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}));
+  const [isCommercialEditing, setIsCommercialEditing] = useState(false);
+  const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(createCommercialDraftFromAnswers({}));
   const [poolForm, setPoolForm] = useState<PoolFormState>(createEmptyPoolForm());
   const [poolPhotos, setPoolPhotos] = useState<File[]>([]);
   const [savingPool, setSavingPool] = useState(false);
@@ -1138,46 +1224,68 @@ export default function ConfiguracoesPage() {
     ];
   }, [answers, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, importantLimitationsLabel, servesSaturdayLabel, servesSundayLabel, servesHolidayLabel]);
 
-  const commercialItems = useMemo(() => {
-    const payments = joinSelectedLabels(
-      parseArrayAnswer(answers.accepted_payment_methods),
-      PAYMENT_METHOD_MAIN_OPTIONS
-    );
-    const priceBefore = joinSelectedLabels(
-      parseArrayAnswer(answers.price_must_understand_before),
-      PRICE_DIRECT_BEFORE_OPTIONS
-    );
-    const discountCases = joinSelectedLabels(
-      parseArrayAnswer(answers.human_help_discount_cases_selected),
-      HUMAN_HELP_DISCOUNT_OPTIONS,
-      cleanText(answers.human_help_discount_cases_other)
-    );
-    const customProjectCases = joinSelectedLabels(
-      parseArrayAnswer(answers.human_help_custom_project_cases_selected),
-      HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
-      cleanText(answers.human_help_custom_project_cases_other)
-    );
-    const paymentCases = joinSelectedLabels(
-      parseArrayAnswer(answers.human_help_payment_cases_selected),
-      HUMAN_HELP_PAYMENT_OPTIONS,
-      cleanText(answers.human_help_payment_cases_other)
-    );
-
+  const commercialIdentityItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Nome que a IA usa no atendimento", value: cleanText(answers.responsible_name) ? `Base atual da loja: ${cleanText(answers.responsible_name)}` : cleanText(answers.store_display_name) },
-      { label: "Como a IA deve se apresentar", value: cleanText(answers.price_talk_mode) || "Revisar no onboarding comercial" },
-      { label: "Tom da IA", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), ACTIVATION_STYLE_OPTIONS, cleanText(answers.activation_preferences_other)) },
-      { label: "Fala como pessoa ou equipe", value: cleanText(answers.ai_should_notify_responsible) || "Revisar ativação" },
-      { label: "Quando pode falar preço", value: yesNoLabel(answers.ai_can_send_price_directly) },
-      { label: "Quando deve chamar humano", value: [discountCases, customProjectCases, paymentCases].filter(Boolean).join(" • ") },
-      { label: "Política comercial geral", value: cleanText(answers.price_direct_rule) || cleanText(answers.price_direct_rule_other) },
-      { label: "Formas de pagamento", value: payments },
-      { label: "Regras gerais de negociação", value: cleanText(answers.price_direct_conditions) || cleanText(answers.price_needs_human_help) },
-      { label: "Pode trabalhar com desconto", value: `${yesNoLabel(answers.can_offer_discount)}${cleanText(answers.max_discount_percent) ? ` • máx. ${cleanText(answers.max_discount_percent)}%` : ""}` },
-      { label: "Limites de promessa da IA", value: cleanText(answers.final_activation_notes) || cleanText(answers.store_description) },
-      { label: "Regras de pós-venda", value: cleanText(answers.sales_flow_final_steps) || cleanText(answers.sales_flow_notes) },
-      { label: "Comportamento fora do horário", value: priceBefore },
+      { label: "Nome da IA no atendimento", value: cleanText(answers.store_display_name) || cleanText(answers.responsible_name) || "Não definido" },
+      { label: "Como a IA se apresenta", value: PRICE_TALK_MODE_OPTIONS.find((option) => option.value === cleanText(answers.price_talk_mode))?.label || cleanText(answers.price_talk_mode) || "Quando o cliente perguntar" },
+      { label: "Tom comercial da IA", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS], cleanText(answers.activation_preferences_other)) || "Ainda não definido" },
+      { label: "Fala como", value: cleanText(answers.ai_identity_mode) || "Equipe da loja" },
     ]);
+  }, [answers]);
+
+  const commercialPriceItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Pode falar preço", value: yesNoLabel(answers.ai_can_send_price_directly) },
+      { label: "O que precisa entender antes", value: joinSelectedLabels(parseArrayAnswer(answers.price_must_understand_before), PRICE_DIRECT_BEFORE_OPTIONS, cleanText(answers.price_direct_rule_other)) },
+      { label: "Regra principal de preço", value: cleanText(answers.price_direct_rule) || cleanText(answers.price_direct_rule_other) },
+      { label: "Modo de fala sobre preço", value: PRICE_TALK_MODE_OPTIONS.find((option) => option.value === cleanText(answers.price_talk_mode))?.label || cleanText(answers.price_talk_mode) },
+    ]);
+  }, [answers]);
+
+  const commercialHumanHelpItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Casos de desconto", value: joinSelectedLabels(parseArrayAnswer(answers.human_help_discount_cases_selected), HUMAN_HELP_DISCOUNT_OPTIONS, cleanText(answers.human_help_discount_cases_other)) },
+      { label: "Projetos fora do padrão", value: joinSelectedLabels(parseArrayAnswer(answers.human_help_custom_project_cases_selected), HUMAN_HELP_CUSTOM_PROJECT_OPTIONS, cleanText(answers.human_help_custom_project_cases_other)) },
+      { label: "Pagamentos e validações", value: joinSelectedLabels(parseArrayAnswer(answers.human_help_payment_cases_selected), HUMAN_HELP_PAYMENT_OPTIONS, cleanText(answers.human_help_payment_cases_other)) },
+    ]);
+  }, [answers]);
+
+  const commercialPaymentItems = useMemo(() => {
+    const payments = joinSelectedLabels(parseArrayAnswer(answers.accepted_payment_methods), PAYMENT_METHOD_MAIN_OPTIONS);
+    const paymentConditions = joinSelectedLabels(parseArrayAnswer(answers.accepted_payment_methods), PAYMENT_METHOD_CONDITION_OPTIONS);
+    return buildBulletRows([
+      { label: "Formas de pagamento", value: [payments, paymentConditions].filter(Boolean).join(" • ") },
+      { label: "Pode trabalhar com desconto", value: `${yesNoLabel(answers.can_offer_discount)}${cleanText(answers.max_discount_percent) ? ` • máximo de ${cleanText(answers.max_discount_percent)}%` : ""}` },
+      { label: "Ticket médio da loja", value: cleanText(answers.average_ticket) ? `R$ ${cleanText(answers.average_ticket)}` : "Não definido" },
+    ]);
+  }, [answers]);
+
+  const commercialNegotiationItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Regras gerais de negociação", value: joinSelectedLabels(parseArrayAnswer(answers.price_must_understand_before), PRICE_DIRECT_BEFORE_OPTIONS) || cleanText(answers.negotiation_rules_summary) || cleanText(answers.price_direct_rule) },
+      { label: "Limites de promessa da IA", value: cleanText(answers.final_activation_notes) || cleanText(answers.store_description) },
+      { label: "Pós-venda", value: joinSelectedLabels(parseArrayAnswer(answers.sales_flow_final_steps), SALES_FLOW_FINAL_OPTIONS, cleanText(answers.sales_flow_notes)) || cleanText(answers.sales_flow_notes) },
+      { label: "Comportamento fora do horário", value: cleanText(answers.after_hours_behavior) || "Acolher, qualificar e alinhar próximo passo sem prometer execução imediata." },
+      { label: "Resumo comercial para a IA", value: cleanText(answers.commercial_ai_summary) || cleanText(answers.price_direct_rule) || "Ainda não definido" },
+    ]);
+  }, [answers]);
+
+  const commercialOverviewMetrics = useMemo(() => {
+    const canTalkPrice = yesNoLabel(answers.ai_can_send_price_directly);
+    const canDiscount = yesNoLabel(answers.can_offer_discount);
+    const tone = joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), ACTIVATION_STYLE_OPTIONS, cleanText(answers.activation_preferences_other)) || "A definir";
+    const humanCasesCount = [
+      parseArrayAnswer(answers.human_help_discount_cases_selected).length,
+      parseArrayAnswer(answers.human_help_custom_project_cases_selected).length,
+      parseArrayAnswer(answers.human_help_payment_cases_selected).length,
+    ].reduce((acc, value) => acc + value, 0);
+
+    return [
+      { label: "Preço direto", value: canTalkPrice, tone: canTalkPrice === "Sim" ? ("green" as const) : canTalkPrice === "Não" ? ("amber" as const) : ("gray" as const), hint: "Define se a IA pode falar preço sem chamar humano" },
+      { label: "Desconto", value: canDiscount, tone: canDiscount === "Sim" ? ("green" as const) : canDiscount === "Não" ? ("amber" as const) : ("gray" as const), hint: cleanText(answers.max_discount_percent) ? `Máximo atual de ${cleanText(answers.max_discount_percent)}%` : "Sem teto informado" },
+      { label: "Tom da IA", value: tone, tone: tone === "A definir" ? ("gray" as const) : ("green" as const), hint: "Personalidade comercial viva da IA" },
+      { label: "Casos que chamam humano", value: humanCasesCount > 0 ? String(humanCasesCount) : "A definir", tone: humanCasesCount > 0 ? ("green" as const) : ("amber" as const), hint: "Desconto, projeto especial, pagamento e exceções" },
+    ];
   }, [answers]);
 
   const activationItems = useMemo(() => {
@@ -1519,6 +1627,47 @@ export default function ConfiguracoesPage() {
     setIsOperationEditing(false);
   }, [operationDraft]);
 
+
+  useEffect(() => {
+    setCommercialDraft(createCommercialDraftFromAnswers(answers));
+  }, [answers]);
+
+  const handleCommercialDraftChange = useCallback((key: keyof CommercialDraftState, value: string) => {
+    setCommercialDraft((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }, []);
+
+  const handleCommercialEditCancel = useCallback(() => {
+    setCommercialDraft(createCommercialDraftFromAnswers(answers));
+    setIsCommercialEditing(false);
+  }, [answers]);
+
+  const handleCommercialEditSave = useCallback(() => {
+    setAnswers((current) => ({
+      ...current,
+      store_display_name: commercialDraft.ai_display_name,
+      price_talk_mode: commercialDraft.ai_presentation_mode,
+      activation_preferences_other: commercialDraft.ai_tone_summary,
+      ai_identity_mode: commercialDraft.ai_speaks_as,
+      ai_can_send_price_directly: commercialDraft.can_send_price_directly,
+      price_must_understand_before_summary: commercialDraft.price_before_summary,
+      price_direct_rule: commercialDraft.price_policy_summary,
+      human_help_general_summary: commercialDraft.human_help_summary,
+      accepted_payment_methods_summary: commercialDraft.payment_methods_summary,
+      discount_policy_summary: commercialDraft.discount_policy_summary,
+      negotiation_rules_summary: commercialDraft.negotiation_rules_summary,
+      final_activation_notes: commercialDraft.promise_limits_summary,
+      sales_flow_notes: commercialDraft.post_sale_summary,
+      after_hours_behavior: commercialDraft.after_hours_summary,
+      commercial_ai_summary: commercialDraft.commercial_ai_summary,
+    }));
+    setSuccessText("Alterações de Comercial e IA atualizadas nesta tela.");
+    setErrorText(null);
+    setIsCommercialEditing(false);
+  }, [commercialDraft]);
+
   const handlePoolFormChange = useCallback(
     (key: keyof PoolFormState, value: string | boolean) => {
       setPoolForm((current) => ({
@@ -1824,7 +1973,7 @@ export default function ConfiguracoesPage() {
   }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchPageData]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-x-hidden">
       <div>
         <h1 className="text-2xl font-black tracking-[-0.02em] text-black">Configurações</h1>
       </div>
@@ -2134,14 +2283,14 @@ export default function ConfiguracoesPage() {
           }
         >
           {isStrategyEditing ? (
-            <div className="space-y-4">
+            <div className="space-y-4 overflow-x-hidden">
               <div className="rounded-2xl border border-black/10 bg-gray-50 p-4">
                 <div className="mb-1 text-sm font-semibold text-gray-900">Editar estratégia na mesma página</div>
                 <div className="mb-3 text-xs text-gray-600">
                   Aqui você pode completar ou adicionar informações que estejam faltando no onboarding.
                 </div>
 
-                <div className="space-y-4">
+                <div className="space-y-4 overflow-x-hidden">
                   <div className="rounded-2xl border border-gray-200 bg-white p-4">
                     <div className="mb-3 text-sm font-semibold text-gray-900">1. Base de atuação da loja</div>
                     <div className="grid gap-3 md:grid-cols-2">
@@ -2461,7 +2610,7 @@ export default function ConfiguracoesPage() {
               </div>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-4 overflow-x-hidden">
               <div className="grid gap-4 xl:grid-cols-2">
                 <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                   <div className="mb-2 text-sm font-semibold text-gray-900">1. Base de atuação da loja</div>
@@ -2501,7 +2650,7 @@ export default function ConfiguracoesPage() {
       ) : null}
 
       {activeTab === "piscinas" ? (
-        <div className="space-y-4">
+        <div className="space-y-4 overflow-x-hidden">
           <SectionBlock
             title="Adicionar piscina manualmente"
             description="Cadastre uma piscina por aqui sem depender do onboarding. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
@@ -2749,7 +2898,7 @@ export default function ConfiguracoesPage() {
       ) : null}
 
       {activeTab === "produtos-acessorios" ? (
-        <div className="space-y-4">
+        <div className="space-y-4 overflow-x-hidden">
           <SectionBlock
             title="Adicionar item manualmente"
             description="Cadastre produtos químicos, acessórios e outros itens do catálogo por aqui. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
@@ -3142,9 +3291,138 @@ export default function ConfiguracoesPage() {
       {activeTab === "comercial-ia" ? (
         <SectionBlock
           title="6. Comercial e IA"
-          description="Regras comerciais vivas que a IA vendedora deve obedecer."
+          description="Fonte viva das regras comerciais da IA, sem texto cru, sem códigos internos aparentes e sem rolagem lateral."
+          actions={
+            isCommercialEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCommercialEditSave}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCommercialEditCancel}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsCommercialEditing(true)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+              >
+                Editar
+              </button>
+            )
+          }
         >
-          <SummaryList items={commercialItems} />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {commercialOverviewMetrics.map((item) => (
+              <StatusCard
+                key={item.label}
+                label={item.label}
+                value={item.value}
+                tone={item.tone}
+                hint={item.hint}
+              />
+            ))}
+          </div>
+
+          {isCommercialEditing ? (
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-3 text-sm font-semibold text-gray-900">Editar Comercial e IA na mesma página</div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome da IA no atendimento</span>
+                  <input value={commercialDraft.ai_display_name} onChange={(e)=>handleCommercialDraftChange("ai_display_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA se apresenta</span>
+                  <input value={commercialDraft.ai_presentation_mode} onChange={(e)=>handleCommercialDraftChange("ai_presentation_mode", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tom comercial da IA</span>
+                  <textarea value={commercialDraft.ai_tone_summary} onChange={(e)=>handleCommercialDraftChange("ai_tone_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fala como</span>
+                  <input value={commercialDraft.ai_speaks_as} onChange={(e)=>handleCommercialDraftChange("ai_speaks_as", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pode falar preço</span>
+                  <select value={commercialDraft.can_send_price_directly} onChange={(e)=>handleCommercialDraftChange("can_send_price_directly", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que precisa entender antes de falar preço</span>
+                  <textarea value={commercialDraft.price_before_summary} onChange={(e)=>handleCommercialDraftChange("price_before_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra principal de preço</span>
+                  <textarea value={commercialDraft.price_policy_summary} onChange={(e)=>handleCommercialDraftChange("price_policy_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando deve chamar humano</span>
+                  <textarea value={commercialDraft.human_help_summary} onChange={(e)=>handleCommercialDraftChange("human_help_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Formas de pagamento</span>
+                  <textarea value={commercialDraft.payment_methods_summary} onChange={(e)=>handleCommercialDraftChange("payment_methods_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Política de desconto</span>
+                  <input value={commercialDraft.discount_policy_summary} onChange={(e)=>handleCommercialDraftChange("discount_policy_summary", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras de negociação</span>
+                  <textarea value={commercialDraft.negotiation_rules_summary} onChange={(e)=>handleCommercialDraftChange("negotiation_rules_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Limites de promessa da IA</span>
+                  <textarea value={commercialDraft.promise_limits_summary} onChange={(e)=>handleCommercialDraftChange("promise_limits_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pós-venda</span>
+                  <textarea value={commercialDraft.post_sale_summary} onChange={(e)=>handleCommercialDraftChange("post_sale_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Comportamento fora do horário</span>
+                  <textarea value={commercialDraft.after_hours_summary} onChange={(e)=>handleCommercialDraftChange("after_hours_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo comercial para a IA</span>
+                  <textarea value={commercialDraft.commercial_ai_summary} onChange={(e)=>handleCommercialDraftChange("commercial_ai_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Identidade comercial da IA</div>
+              <SummaryList items={commercialIdentityItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Regra de preço</div>
+              <SummaryList items={commercialPriceItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Quando chamar humano</div>
+              <SummaryList items={commercialHumanHelpItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Pagamento e desconto</div>
+              <SummaryList items={commercialPaymentItems} />
+            </div>
+            <div className="lg:col-span-2">
+              <div className="mb-2 text-sm font-semibold text-gray-900">Regras de negociação, promessas e pós-venda</div>
+              <SummaryList items={commercialNegotiationItems} />
+            </div>
+          </div>
         </SectionBlock>
       ) : null}
 
