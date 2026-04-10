@@ -383,6 +383,7 @@ export default function CatalogCategoryPage() {
   const [deletingPhotoId, setDeletingPhotoId] = useState<string | null>(null);
   const [selectedCatalogFilesByItemId, setSelectedCatalogFilesByItemId] = useState<Record<string, File[]>>({});
   const [uploadingPhotosItemId, setUploadingPhotosItemId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -682,6 +683,26 @@ export default function CatalogCategoryPage() {
 
   const pageTitle = useMemo(() => categoryLabel(category), [category]);
 
+  const filteredItems = useMemo(() => {
+    const safeSearch = searchTerm
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .trim();
+
+    if (!safeSearch) return items;
+
+    return items.filter((item) => {
+      const haystack = [item.name, item.sku || "", item.metadata?.brand || ""]
+        .join(" ")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "");
+
+      return haystack.includes(safeSearch);
+    });
+  }, [items, searchTerm]);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -690,7 +711,7 @@ export default function CatalogCategoryPage() {
             {pageTitle}
           </h1>
           <p className="mt-1 text-sm text-gray-600">
-            Visualize e edite os itens desta categoria em um layout mais compacto.
+            Visualize, pesquise e edite os itens desta categoria em um layout mais compacto.
           </p>
         </div>
 
@@ -700,6 +721,25 @@ export default function CatalogCategoryPage() {
         >
           Voltar para configurações
         </Link>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="relative w-full md:max-w-xl">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔎</span>
+            <input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder={`Buscar ${pageTitle.toLowerCase()} por nome, SKU ou marca`}
+              className="w-full rounded-xl border border-gray-200 bg-white py-2 pl-10 pr-3 text-sm text-gray-900 outline-none transition focus:border-black"
+            />
+          </div>
+
+          <div className="text-sm font-medium text-gray-600">
+            {filteredItems.length} resultado(s)
+            {searchTerm.trim() ? ` de ${items.length}` : ""}
+          </div>
+        </div>
       </div>
 
       {errorText ? (
@@ -726,9 +766,13 @@ export default function CatalogCategoryPage() {
         <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
           Nenhum item cadastrado nesta categoria.
         </div>
+      ) : filteredItems.length === 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
+          Nenhum item encontrado para a busca "{searchTerm}".
+        </div>
       ) : (
         <div className="space-y-4">
-          {items.map((item) => {
+          {filteredItems.map((item) => {
             const itemPhotos = photosByItemId[item.id] || [];
             const isEditing = editingItemId === item.id;
             const characteristics = buildCatalogCharacteristics(item, category);
