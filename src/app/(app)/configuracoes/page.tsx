@@ -1998,6 +1998,92 @@ export default function ConfiguracoesPage() {
     ]);
   }, [answers]);
 
+  const channelEssentialPendencies = useMemo(() => {
+    const pendencies: string[] = [];
+
+    if (!cleanText(answers.commercial_whatsapp)) {
+      pendencies.push("Definir o WhatsApp comercial real usado pela IA vendedora.");
+    }
+    if (!cleanText(answers.responsible_whatsapp)) {
+      pendencies.push("Definir o WhatsApp do responsável que recebe alertas, urgências e relatórios.");
+    }
+    if (!cleanText(answers.integration_provider_name) || normalizeLoose(answers.integration_provider_name).includes("ainda nao definido")) {
+      pendencies.push("Definir qual é o provedor principal da integração de WhatsApp.");
+    }
+    if (!cleanText(answers.integration_connection_mode)) {
+      pendencies.push("Definir como a integração se conecta ao sistema.");
+    }
+    if (!cleanText(answers.customer_messages_route)) {
+      pendencies.push("Explicar para onde vão as mensagens dos clientes.");
+    }
+    if (!cleanText(answers.assistant_alerts_route)) {
+      pendencies.push("Explicar para onde vão os avisos da assistente operacional.");
+    }
+
+    return pendencies;
+  }, [answers]);
+
+  const channelRecommendedPendencies = useMemo(() => {
+    const pendencies: string[] = [];
+
+    if (!cleanText(answers.integration_test_status) || normalizeLoose(answers.integration_test_status).includes("nao testado")) {
+      pendencies.push("Registrar o status real do teste da integração.");
+    }
+    if (!cleanText(answers.webhook_inbound_status) || normalizeLoose(answers.webhook_inbound_status).includes("previsto no projeto")) {
+      pendencies.push("Descrever a situação real do webhook de entrada.");
+    }
+    if (!cleanText(answers.external_send_status) || normalizeLoose(answers.external_send_status).includes("previsto no projeto")) {
+      pendencies.push("Descrever a situação real do envio externo.");
+    }
+    if (!cleanText(answers.channel_fallback_rule)) {
+      pendencies.push("Definir a regra de fallback entre canal externo e painel interno.");
+    }
+    if (!cleanText(answers.dedicated_number)) {
+      pendencies.push("Definir se existe número ou chip dedicado.");
+    }
+    if (!cleanText(answers.telegram_future_status)) {
+      pendencies.push("Definir o status do canal futuro do Telegram.");
+    }
+
+    return pendencies;
+  }, [answers]);
+
+  const channelGuidedStatusMetrics = useMemo(() => {
+    const essentialDone = channelEssentialPendencies.length === 0;
+    const recommendedDone = channelRecommendedPendencies.length === 0;
+    const providerDefined =
+      cleanText(answers.integration_provider_name) &&
+      !normalizeLoose(answers.integration_provider_name).includes("ainda nao definido");
+    const routingDefined = cleanText(answers.customer_messages_route) && cleanText(answers.assistant_alerts_route);
+
+    return [
+      {
+        label: "Essencial",
+        value: essentialDone ? "Completo" : "Pendente",
+        tone: essentialDone ? ("green" as const) : ("amber" as const),
+        hint: essentialDone ? "Os campos mínimos dos canais já foram definidos." : `${channelEssentialPendencies.length} pendência(s) crítica(s) para ativação.`,
+      },
+      {
+        label: "Recomendado",
+        value: recommendedDone ? "Completo" : "Faltando revisar",
+        tone: recommendedDone ? ("green" as const) : ("gray" as const),
+        hint: recommendedDone ? "Os ajustes finos dos canais já foram revisados." : `${channelRecommendedPendencies.length} pendência(s) recomendada(s).`,
+      },
+      {
+        label: "Provedor",
+        value: providerDefined ? "Definido" : "Pendente",
+        tone: providerDefined ? ("green" as const) : ("amber" as const),
+        hint: cleanText(answers.integration_provider_name) || "Defina qual integração principal a loja usa.",
+      },
+      {
+        label: "Roteamento",
+        value: routingDefined ? "Definido" : "Pendente",
+        tone: routingDefined ? ("green" as const) : ("amber" as const),
+        hint: routingDefined ? "Rotas principais de cliente e assistente já descritas." : "Explique para onde vão clientes, avisos, urgências e relatórios.",
+      },
+    ];
+  }, [answers, channelEssentialPendencies, channelRecommendedPendencies]);
+
   const identitySummaryMetrics = useMemo(() => {
     const logoStatusText =
       cleanText((answers as Record<string, unknown>).identity_logo_status) || "Pendente";
@@ -5039,6 +5125,7 @@ export default function ConfiguracoesPage() {
         </SectionBlock>
       ) : null}
 
+      
       {activeTab === "canais-integracoes" ? (
         <SectionBlock
           title="9. Canais e integrações"
@@ -5084,21 +5171,78 @@ export default function ConfiguracoesPage() {
             ))}
           </div>
 
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {channelGuidedStatusMetrics.map((item) => (
+              <StatusCard
+                key={item.label}
+                label={item.label}
+                value={item.value}
+                tone={item.tone}
+                hint={item.hint}
+              />
+            ))}
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+              <div className="mb-2 text-sm font-semibold text-amber-950">Pendências essenciais</div>
+              <SummaryList
+                items={
+                  channelEssentialPendencies.length > 0
+                    ? channelEssentialPendencies
+                    : ["Os campos essenciais dos canais já foram definidos."]
+                }
+              />
+            </div>
+
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-2 text-sm font-semibold text-gray-900">Pendências recomendadas</div>
+              <SummaryList
+                items={
+                  channelRecommendedPendencies.length > 0
+                    ? channelRecommendedPendencies
+                    : ["Os ajustes recomendados desta aba já foram revisados."]
+                }
+              />
+            </div>
+          </div>
+
+          {!isChannelsEditing ? (
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Preenchimento guiado</div>
+                  <div className="mt-1 text-sm text-gray-600">
+                    Esta aba não deve depender da iniciativa do usuário. Quando algo importante estiver faltando, a tela precisa mostrar isso claramente e convidar o preenchimento.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsChannelsEditing(true)}
+                  className="rounded-xl border border-black bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Preencher pendências agora
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {isChannelsEditing ? (
             <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
               <div className="mb-3 text-sm font-semibold text-gray-900">Editar canais e integrações na mesma página</div>
 
               <div className="space-y-4">
                 <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-3 text-sm font-semibold text-gray-900">1. Canal comercial da loja</div>
+                  <div className="mb-1 text-sm font-semibold text-gray-900">1. Canal comercial da loja</div>
+                  <div className="mb-3 text-xs text-gray-600">Essencial para a IA vendedora atender clientes reais sem depender de suposição.</div>
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do canal</span>
                       <input value={channelDraft.commercial_channel_name} onChange={(e)=>handleChannelDraftChange("commercial_channel_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp comercial</span>
-                      <input value={channelDraft.commercial_whatsapp} onChange={(e)=>handleChannelDraftChange("commercial_whatsapp", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">WhatsApp comercial • essencial</span>
+                      <input value={channelDraft.commercial_whatsapp} onChange={(e)=>handleChannelDraftChange("commercial_whatsapp", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Número real usado para falar com clientes" />
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal ativo</span>
@@ -5132,15 +5276,16 @@ export default function ConfiguracoesPage() {
                 </div>
 
                 <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-3 text-sm font-semibold text-gray-900">2. Canal do responsável</div>
+                  <div className="mb-1 text-sm font-semibold text-gray-900">2. Canal do responsável</div>
+                  <div className="mb-3 text-xs text-gray-600">Essencial para alertas, urgências e relatórios da IA assistente.</div>
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do canal</span>
                       <input value={channelDraft.responsible_channel_name} onChange={(e)=>handleChannelDraftChange("responsible_channel_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp do responsável</span>
-                      <input value={channelDraft.responsible_whatsapp} onChange={(e)=>handleChannelDraftChange("responsible_whatsapp", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">WhatsApp do responsável • essencial</span>
+                      <input value={channelDraft.responsible_whatsapp} onChange={(e)=>handleChannelDraftChange("responsible_whatsapp", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Número real que recebe avisos da assistente" />
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal ativo</span>
@@ -5155,7 +5300,7 @@ export default function ConfiguracoesPage() {
                       <select value={channelDraft.responsible_is_primary_alert_channel} onChange={(e)=>handleChannelDraftChange("responsible_is_primary_alert_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É canal para comandos humanos</span>
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal para comandos humanos</span>
                       <select value={channelDraft.responsible_is_human_command_channel} onChange={(e)=>handleChannelDraftChange("responsible_is_human_command_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
@@ -5186,18 +5331,19 @@ export default function ConfiguracoesPage() {
                 </div>
 
                 <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-3 text-sm font-semibold text-gray-900">3. Chat interno e outros canais</div>
+                  <div className="mb-1 text-sm font-semibold text-gray-900">3. Chat interno, separação de canais e apoio</div>
+                  <div className="mb-3 text-xs text-gray-600">Use este bloco para deixar claro o que acontece dentro do painel e o que fica nos canais externos.</div>
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Chat interno ativado</span>
                       <select value={channelDraft.internal_chat_enabled} onChange={(e)=>handleChannelDraftChange("internal_chat_enabled", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">IA assistente usa o chat interno</span>
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pode ser usado pela IA assistente</span>
                       <select value={channelDraft.internal_chat_for_assistant} onChange={(e)=>handleChannelDraftChange("internal_chat_for_assistant", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Separado da Inbox</span>
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fica separado da Inbox</span>
                       <select value={channelDraft.internal_chat_separate_from_inbox} onChange={(e)=>handleChannelDraftChange("internal_chat_separate_from_inbox", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
@@ -5209,20 +5355,20 @@ export default function ConfiguracoesPage() {
                       <select value={channelDraft.internal_chat_accepts_manual_commands} onChange={(e)=>handleChannelDraftChange("internal_chat_accepts_manual_commands", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade do chat interno</span>
-                      <input value={channelDraft.internal_chat_priority} onChange={(e)=>handleChannelDraftChange("internal_chat_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal comercial e do responsável são separados</span>
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal comercial e responsável são separados</span>
                       <select value={channelDraft.channels_are_separate} onChange={(e)=>handleChannelDraftChange("channels_are_separate", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Número/chip dedicado</span>
-                      <input value={channelDraft.dedicated_number} onChange={(e)=>handleChannelDraftChange("dedicated_number", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <input value={channelDraft.dedicated_number} onChange={(e)=>handleChannelDraftChange("dedicated_number", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: mesmo número do comercial ou outro número dedicado" />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Telegram futuro</span>
-                      <input value={channelDraft.telegram_future_status} onChange={(e)=>handleChannelDraftChange("telegram_future_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status do Telegram futuro</span>
+                      <input value={channelDraft.telegram_future_status} onChange={(e)=>handleChannelDraftChange("telegram_future_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: previsto para expansão futura" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade do chat interno</span>
+                      <input value={channelDraft.internal_chat_priority} onChange={(e)=>handleChannelDraftChange("internal_chat_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                     </label>
                     <label className="space-y-1 md:col-span-2">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do chat interno</span>
@@ -5236,23 +5382,24 @@ export default function ConfiguracoesPage() {
                 </div>
 
                 <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-3 text-sm font-semibold text-gray-900">4. Integrações externas e roteamento</div>
+                  <div className="mb-1 text-sm font-semibold text-gray-900">4. Integrações externas e roteamento</div>
+                  <div className="mb-3 text-xs text-gray-600">Aqui o sistema precisa pedir a configuração real, e não assumir que está “previsto”.</div>
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Provedor / integração principal</span>
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">Provedor / integração principal • essencial</span>
                       <input value={channelDraft.integration_provider_name} onChange={(e)=>handleChannelDraftChange("integration_provider_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: WhatsApp Cloud API, Evolution, Z-API..." />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Modo de conexão</span>
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">Modo de conexão • essencial</span>
                       <input value={channelDraft.integration_connection_mode} onChange={(e)=>handleChannelDraftChange("integration_connection_mode", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: API / webhook" />
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de entrada</span>
-                      <input value={channelDraft.webhook_inbound_status} onChange={(e)=>handleChannelDraftChange("webhook_inbound_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <input value={channelDraft.webhook_inbound_status} onChange={(e)=>handleChannelDraftChange("webhook_inbound_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: funcionando, pendente, em validação..." />
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Envio externo</span>
-                      <input value={channelDraft.external_send_status} onChange={(e)=>handleChannelDraftChange("external_send_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <input value={channelDraft.external_send_status} onChange={(e)=>handleChannelDraftChange("external_send_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: funcionando, pendente, em validação..." />
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Integração de WhatsApp</span>
@@ -5283,12 +5430,12 @@ export default function ConfiguracoesPage() {
                       <textarea value={channelDraft.integrations_notes} onChange={(e)=>handleChannelDraftChange("integrations_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                     </label>
                     <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Mensagens de clientes vão para</span>
-                      <textarea value={channelDraft.customer_messages_route} onChange={(e)=>handleChannelDraftChange("customer_messages_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">Mensagens de clientes vão para • essencial</span>
+                      <textarea value={channelDraft.customer_messages_route} onChange={(e)=>handleChannelDraftChange("customer_messages_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Explique por onde o cliente entra e como a IA vendedora atende." />
                     </label>
                     <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Avisos da assistente vão para</span>
-                      <textarea value={channelDraft.assistant_alerts_route} onChange={(e)=>handleChannelDraftChange("assistant_alerts_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">Avisos da assistente vão para • essencial</span>
+                      <textarea value={channelDraft.assistant_alerts_route} onChange={(e)=>handleChannelDraftChange("assistant_alerts_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Explique quem recebe alertas, urgências e contexto operacional." />
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Urgências</span>
@@ -5304,7 +5451,7 @@ export default function ConfiguracoesPage() {
                     </label>
                     <label className="space-y-1 md:col-span-2">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo dos canais do sistema</span>
-                      <textarea value={channelDraft.channels_system_summary} onChange={(e)=>handleChannelDraftChange("channels_system_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                      <textarea value={channelDraft.channels_system_summary} onChange={(e)=>handleChannelDraftChange("channels_system_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                     </label>
                   </div>
                 </div>
@@ -5312,32 +5459,33 @@ export default function ConfiguracoesPage() {
             </div>
           ) : null}
 
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Canal comercial da loja</div>
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-2 text-sm font-semibold text-gray-900">Canal comercial</div>
               <SummaryList items={channelCommercialItems} />
             </div>
-            <div>
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
               <div className="mb-2 text-sm font-semibold text-gray-900">Canal do responsável</div>
               <SummaryList items={channelResponsibleItems} />
             </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Chat interno e outros canais</div>
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-2 text-sm font-semibold text-gray-900">Chat interno e apoio</div>
               <SummaryList items={channelInternalChatItems} />
             </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Integrações externas</div>
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-2 text-sm font-semibold text-gray-900">Integrações e estrutura de canais</div>
               <SummaryList items={channelOtherAndIntegrationItems} />
             </div>
-            <div className="lg:col-span-2">
-              <div className="mb-2 text-sm font-semibold text-gray-900">Regras de roteamento</div>
-              <SummaryList items={channelRoutingItems} />
-            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-2 text-sm font-semibold text-gray-900">Roteamento do sistema</div>
+            <SummaryList items={channelRoutingItems} />
           </div>
         </SectionBlock>
       ) : null}
 
-      {activeTab === "identidade" ? (
+      {activeTab === "identidade"  ? (
         <SectionBlock
           title="10. Identidade da loja"
           description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
