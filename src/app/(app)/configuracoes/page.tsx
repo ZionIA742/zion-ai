@@ -867,6 +867,20 @@ export default function ConfiguracoesPage() {
     }));
   }, []);
 
+  const handleStrategyEditOpen = useCallback(() => {
+    setStrategyDraft({
+      city: cleanText(answers.city),
+      state: cleanText(answers.state),
+      service_regions: cleanText(answers.service_regions),
+      service_region_notes: cleanText(answers.service_region_notes),
+      store_services_other: cleanText(answers.store_services_other),
+      store_description: cleanText(answers.store_description),
+      main_store_brand: cleanText(answers.main_store_brand),
+      brands_worked: cleanText(answers.brands_worked),
+    });
+    setIsStrategyEditing(true);
+  }, [answers]);
+
   const handleStrategyEditCancel = useCallback(() => {
     setStrategyDraft({
       city: cleanText(answers.city),
@@ -1307,7 +1321,7 @@ export default function ConfiguracoesPage() {
             ) : (
               <button
                 type="button"
-                onClick={() => setIsStrategyEditing(true)}
+                onClick={handleStrategyEditOpen}
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
               >
                 Editar
@@ -1315,10 +1329,8 @@ export default function ConfiguracoesPage() {
             )
           }
         >
-          <SummaryList items={strategyItems} />
-
           {isStrategyEditing ? (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+            <div className="rounded-2xl border border-black/10 bg-gray-50 p-4">
               <div className="mb-1 text-sm font-semibold text-gray-900">Editar estratégia na mesma página</div>
               <div className="mb-3 text-xs text-gray-600">
                 Aqui você pode completar ou adicionar informações que estejam faltando no onboarding.
@@ -1417,7 +1429,9 @@ export default function ConfiguracoesPage() {
                 </label>
               </div>
             </div>
-          ) : null}
+          ) : (
+            <SummaryList items={strategyItems} />
+          )}
         </SectionBlock>
       ) : null}
 
