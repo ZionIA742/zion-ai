@@ -79,6 +79,32 @@ type CatalogFormState = {
 
 type StatusTone = "green" | "amber" | "red" | "gray";
 
+type OperationDraftState = {
+  operating_days: string;
+  operating_hours: string;
+  installation_days: string;
+  installation_hours: string;
+  technical_visit_days: string;
+  technical_visit_hours: string;
+  serves_saturday: string;
+  serves_sunday: string;
+  serves_holiday: string;
+  offers_installation: string;
+  installation_mode: string;
+  average_installation_time_days: string;
+  installation_requirements: string;
+  offers_technical_visit: string;
+  technical_visit_fee_rule: string;
+  technical_visit_rules: string;
+  service_regions: string;
+  displacement_policy: string;
+  important_limitations: string;
+  agenda_capacity_rule: string;
+  agenda_exception_rule: string;
+  operational_ai_summary: string;
+};
+
+
 type SettingsTabId =
   | "visao-geral"
   | "estrategia"
@@ -294,6 +320,56 @@ function createEmptyCatalogForm(): CatalogFormState {
     technical_notes: "",
     is_active: true,
     track_stock: true,
+  };
+}
+
+
+
+function createOperationDraftFromAnswers(answers: AnswersMap): OperationDraftState {
+  const installationDays = joinSelectedLabels(
+    parseArrayAnswer(answers.installation_available_days),
+    DAYS_OF_WEEK_OPTIONS,
+    cleanText(answers.installation_days_rule)
+  );
+  const visitDays = joinSelectedLabels(
+    parseArrayAnswer(answers.technical_visit_available_days),
+    DAYS_OF_WEEK_OPTIONS,
+    cleanText(answers.technical_visit_days_rule)
+  );
+  const visitRules = joinSelectedLabels(
+    parseArrayAnswer(answers.technical_visit_rules_selected),
+    TECHNICAL_VISIT_RULE_OPTIONS,
+    cleanText(answers.technical_visit_rules_other)
+  );
+  const limitations = joinSelectedLabels(
+    parseArrayAnswer(answers.important_limitations_selected),
+    IMPORTANT_LIMITATION_OPTIONS,
+    cleanText(answers.important_limitations_other)
+  );
+
+  return {
+    operating_days: cleanText(answers.operating_days),
+    operating_hours: cleanText(answers.operating_hours),
+    installation_days: installationDays,
+    installation_hours: cleanText(answers.installation_hours),
+    technical_visit_days: visitDays,
+    technical_visit_hours: cleanText(answers.technical_visit_hours),
+    serves_saturday: cleanText(answers.serves_saturday),
+    serves_sunday: cleanText(answers.serves_sunday),
+    serves_holiday: cleanText(answers.serves_holiday),
+    offers_installation: cleanText(answers.offers_installation),
+    installation_mode: cleanText(answers.installation_mode),
+    average_installation_time_days: cleanText(answers.average_installation_time_days),
+    installation_requirements: cleanText(answers.installation_requirements),
+    offers_technical_visit: cleanText(answers.offers_technical_visit),
+    technical_visit_fee_rule: cleanText(answers.technical_visit_fee_rule),
+    technical_visit_rules: visitRules,
+    service_regions: cleanText(answers.service_regions) || cleanText(answers.service_region_notes),
+    displacement_policy: cleanText(answers.displacement_policy),
+    important_limitations: limitations,
+    agenda_capacity_rule: cleanText(answers.agenda_capacity_rule) || cleanText(answers.average_human_response_time),
+    agenda_exception_rule: cleanText(answers.agenda_exception_rule),
+    operational_ai_summary: cleanText(answers.operational_ai_summary),
   };
 }
 
@@ -546,6 +622,8 @@ export default function ConfiguracoesPage() {
   const [catalogForm, setCatalogForm] = useState<CatalogFormState>(createEmptyCatalogForm());
   const [catalogPhotos, setCatalogPhotos] = useState<File[]>([]);
   const [savingCatalogItem, setSavingCatalogItem] = useState(false);
+  const [isOperationEditing, setIsOperationEditing] = useState(false);
+  const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}));
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -672,6 +750,10 @@ export default function ConfiguracoesPage() {
       main_store_brand: cleanText(answers.main_store_brand),
       brands_worked: cleanText(answers.brands_worked),
     });
+  }, [answers]);
+
+  useEffect(() => {
+    setOperationDraft(createOperationDraftFromAnswers(answers));
   }, [answers]);
 
   const totalCatalogo = useMemo(
@@ -803,14 +885,49 @@ export default function ConfiguracoesPage() {
     ]);
   }, [counts.quimicos, counts.acessorios, counts.outros, totalCatalogo]);
 
-  const operationItems = useMemo(() => {
+  const operationReadinessMetrics = useMemo(() => {
+    const hasInstallation = yesNoLabel(answers.offers_installation) === "Sim";
+    const hasVisit = yesNoLabel(answers.offers_technical_visit) === "Sim";
+    const serviceRegions = cleanText(answers.service_regions) || cleanText(answers.service_region_notes);
+
+    return [
+      {
+        label: "Atendimento operacional",
+        value: cleanText(answers.operating_hours) || cleanText(answers.operating_days) ? "Configurado" : "Pendente",
+        tone: cleanText(answers.operating_hours) || cleanText(answers.operating_days) ? ("green" as const) : ("amber" as const),
+        hint: cleanText(answers.operating_days) || "Defina dias e horários de atendimento",
+      },
+      {
+        label: "Instalação",
+        value: hasInstallation ? "Ativa" : "Não configurada",
+        tone: hasInstallation ? ("green" as const) : ("gray" as const),
+        hint: cleanText(answers.average_installation_time_days) ? `Prazo médio: ${cleanText(answers.average_installation_time_days)} dia(s)` : "Defina prazo e regras de instalação",
+      },
+      {
+        label: "Visita técnica",
+        value: hasVisit ? "Ativa" : "Não configurada",
+        tone: hasVisit ? ("green" as const) : ("gray" as const),
+        hint: cleanText(answers.technical_visit_days_rule) || "Defina regras e disponibilidade de visita",
+      },
+      {
+        label: "Cobertura",
+        value: serviceRegions ? "Definida" : "Pendente",
+        tone: serviceRegions ? ("green" as const) : ("amber" as const),
+        hint: serviceRegions || "Defina regiões e política de deslocamento",
+      },
+    ];
+  }, [answers]);
+
+  const operationSections = useMemo(() => {
     const installationDays = joinSelectedLabels(
       parseArrayAnswer(answers.installation_available_days),
-      DAYS_OF_WEEK_OPTIONS
+      DAYS_OF_WEEK_OPTIONS,
+      cleanText(answers.installation_days_rule)
     );
     const visitDays = joinSelectedLabels(
       parseArrayAnswer(answers.technical_visit_available_days),
-      DAYS_OF_WEEK_OPTIONS
+      DAYS_OF_WEEK_OPTIONS,
+      cleanText(answers.technical_visit_days_rule)
     );
     const visitRules = joinSelectedLabels(
       parseArrayAnswer(answers.technical_visit_rules_selected),
@@ -823,20 +940,67 @@ export default function ConfiguracoesPage() {
       cleanText(answers.important_limitations_other)
     );
 
-    return buildBulletRows([
-      { label: "Faz instalação", value: yesNoLabel(answers.offers_installation) },
-      { label: "Faz visita técnica", value: yesNoLabel(answers.offers_technical_visit) },
-      { label: "Cobra visita", value: cleanText(answers.technical_visit_rules_other) || "Ver regras da visita técnica" },
-      { label: "Prazo médio", value: cleanText(answers.average_installation_time_days) },
-      { label: "Dias/horários de instalação", value: installationDays || cleanText(answers.installation_days_rule) },
-      { label: "Disponibilidade por dia para visita", value: visitDays || cleanText(answers.technical_visit_days_rule) },
-      { label: "Regiões atendidas", value: cleanText(answers.service_regions) || cleanText(answers.service_region_notes) },
-      { label: "Limitações importantes", value: limitations },
-      { label: "Regras da agenda", value: visitRules },
-      { label: "Mais de um compromisso por dia", value: cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) },
-      { label: "Mesmo horário", value: cleanText(answers.technical_visit_days_rule) },
-      { label: "Quantidade máxima por faixa", value: cleanText(answers.average_human_response_time) },
-    ]);
+    return [
+      {
+        title: "Disponibilidade operacional",
+        items: buildBulletRows([
+          { label: "Dias de atendimento", value: cleanText(answers.operating_days) },
+          { label: "Horário de atendimento", value: cleanText(answers.operating_hours) },
+          { label: "Dias de instalação", value: installationDays },
+          { label: "Horários de instalação", value: cleanText(answers.installation_hours) },
+          { label: "Dias de visita técnica", value: visitDays },
+          { label: "Horários de visita técnica", value: cleanText(answers.technical_visit_hours) },
+          { label: "Atende sábado", value: yesNoLabel(answers.serves_saturday) },
+          { label: "Atende domingo", value: yesNoLabel(answers.serves_sunday) },
+          { label: "Atende feriado", value: yesNoLabel(answers.serves_holiday) },
+        ]),
+      },
+      {
+        title: "Visita técnica",
+        items: buildBulletRows([
+          { label: "Faz visita técnica", value: yesNoLabel(answers.offers_technical_visit) },
+          { label: "Regra de cobrança", value: cleanText(answers.technical_visit_fee_rule) },
+          { label: "Regras da visita", value: visitRules },
+          { label: "Observações adicionais", value: cleanText(answers.technical_visit_rules_other) },
+        ]),
+      },
+      {
+        title: "Instalação",
+        items: buildBulletRows([
+          { label: "Faz instalação", value: yesNoLabel(answers.offers_installation) },
+          { label: "Modelo de instalação", value: cleanText(answers.installation_mode) },
+          { label: "Prazo médio", value: cleanText(answers.average_installation_time_days) ? `${cleanText(answers.average_installation_time_days)} dia(s)` : "" },
+          { label: "Pré-requisitos e etapas", value: cleanText(answers.installation_requirements) },
+        ]),
+      },
+      {
+        title: "Cobertura e deslocamento",
+        items: buildBulletRows([
+          { label: "Regiões atendidas", value: cleanText(answers.service_regions) || cleanText(answers.service_region_notes) },
+          { label: "Política de deslocamento", value: cleanText(answers.displacement_policy) },
+        ]),
+      },
+      {
+        title: "Limites operacionais",
+        items: buildBulletRows([
+          { label: "Limitações importantes", value: limitations },
+          { label: "Casos que dependem de análise", value: cleanText(answers.installation_requirements) },
+        ]),
+      },
+      {
+        title: "Capacidade da agenda",
+        items: buildBulletRows([
+          { label: "Regra de capacidade", value: cleanText(answers.agenda_capacity_rule) || cleanText(answers.average_human_response_time) },
+          { label: "Regras de exceção", value: cleanText(answers.agenda_exception_rule) },
+        ]),
+      },
+      {
+        title: "Resumo operacional para a IA",
+        items: buildBulletRows([
+          { label: "Resumo", value: cleanText(answers.operational_ai_summary) || "Ainda não definido" },
+        ]),
+      },
+    ];
   }, [answers]);
 
   const commercialItems = useMemo(() => {
@@ -1100,6 +1264,49 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setIsStrategyEditing(false);
   }, [strategyDraft]);
+
+  const handleOperationDraftChange = useCallback((key: keyof OperationDraftState, value: string) => {
+    setOperationDraft((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }, []);
+
+  const handleOperationEditCancel = useCallback(() => {
+    setOperationDraft(createOperationDraftFromAnswers(answers));
+    setIsOperationEditing(false);
+  }, [answers]);
+
+  const handleOperationEditSave = useCallback(() => {
+    setAnswers((current) => ({
+      ...current,
+      operating_days: operationDraft.operating_days,
+      operating_hours: operationDraft.operating_hours,
+      installation_days_rule: operationDraft.installation_days,
+      installation_hours: operationDraft.installation_hours,
+      technical_visit_days_rule: operationDraft.technical_visit_days,
+      technical_visit_hours: operationDraft.technical_visit_hours,
+      serves_saturday: operationDraft.serves_saturday,
+      serves_sunday: operationDraft.serves_sunday,
+      serves_holiday: operationDraft.serves_holiday,
+      offers_installation: operationDraft.offers_installation,
+      installation_mode: operationDraft.installation_mode,
+      average_installation_time_days: operationDraft.average_installation_time_days,
+      installation_requirements: operationDraft.installation_requirements,
+      offers_technical_visit: operationDraft.offers_technical_visit,
+      technical_visit_fee_rule: operationDraft.technical_visit_fee_rule,
+      technical_visit_rules_other: operationDraft.technical_visit_rules,
+      service_regions: operationDraft.service_regions,
+      displacement_policy: operationDraft.displacement_policy,
+      important_limitations_other: operationDraft.important_limitations,
+      agenda_capacity_rule: operationDraft.agenda_capacity_rule,
+      agenda_exception_rule: operationDraft.agenda_exception_rule,
+      operational_ai_summary: operationDraft.operational_ai_summary,
+    }));
+    setSuccessText("Alterações da operação atualizadas nesta tela.");
+    setErrorText(null);
+    setIsOperationEditing(false);
+  }, [operationDraft]);
 
   const handlePoolFormChange = useCallback(
     (key: keyof PoolFormState, value: string | boolean) => {
@@ -2343,9 +2550,148 @@ export default function ConfiguracoesPage() {
       {activeTab === "operacao" ? (
         <SectionBlock
           title="5. Operação"
-          description="Regras reais da operação da loja e da agenda operacional."
+          description="Regras reais da operação da loja, capacidade da agenda e limites que a IA deve respeitar."
+          actions={
+            isOperationEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleOperationEditSave}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOperationEditCancel}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsOperationEditing(true)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+              >
+                Editar
+              </button>
+            )
+          }
         >
-          <SummaryList items={operationItems} />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {operationReadinessMetrics.map((item) => (
+              <StatusCard
+                key={item.label}
+                label={item.label}
+                value={item.value}
+                tone={item.tone}
+                hint={item.hint}
+              />
+            ))}
+          </div>
+
+          {isOperationEditing ? (
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-3 text-sm font-semibold text-gray-900">Editar operação na mesma página</div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dias de atendimento</span>
+                  <input value={operationDraft.operating_days} onChange={(e)=>handleOperationDraftChange("operating_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Horário de atendimento</span>
+                  <input value={operationDraft.operating_hours} onChange={(e)=>handleOperationDraftChange("operating_hours", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dias de instalação</span>
+                  <input value={operationDraft.installation_days} onChange={(e)=>handleOperationDraftChange("installation_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Horários de instalação</span>
+                  <input value={operationDraft.installation_hours} onChange={(e)=>handleOperationDraftChange("installation_hours", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dias de visita técnica</span>
+                  <input value={operationDraft.technical_visit_days} onChange={(e)=>handleOperationDraftChange("technical_visit_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Horários de visita técnica</span>
+                  <input value={operationDraft.technical_visit_hours} onChange={(e)=>handleOperationDraftChange("technical_visit_hours", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende sábado</span>
+                  <input value={operationDraft.serves_saturday} onChange={(e)=>handleOperationDraftChange("serves_saturday", e.target.value)} placeholder="sim ou não" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende domingo / feriado</span>
+                  <input value={`${operationDraft.serves_sunday}${operationDraft.serves_holiday ? ` • feriado: ${operationDraft.serves_holiday}` : ""}`} onChange={(e)=>handleOperationDraftChange("serves_sunday", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faz instalação</span>
+                  <input value={operationDraft.offers_installation} onChange={(e)=>handleOperationDraftChange("offers_installation", e.target.value)} placeholder="sim ou não" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Modelo de instalação</span>
+                  <input value={operationDraft.installation_mode} onChange={(e)=>handleOperationDraftChange("installation_mode", e.target.value)} placeholder="própria, terceirizada, mista..." className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prazo médio de instalação</span>
+                  <input value={operationDraft.average_installation_time_days} onChange={(e)=>handleOperationDraftChange("average_installation_time_days", e.target.value)} placeholder="em dias" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faz visita técnica</span>
+                  <input value={operationDraft.offers_technical_visit} onChange={(e)=>handleOperationDraftChange("offers_technical_visit", e.target.value)} placeholder="sim ou não" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra de cobrança da visita</span>
+                  <input value={operationDraft.technical_visit_fee_rule} onChange={(e)=>handleOperationDraftChange("technical_visit_fee_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras da visita</span>
+                  <textarea value={operationDraft.technical_visit_rules} onChange={(e)=>handleOperationDraftChange("technical_visit_rules", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pré-requisitos e etapas da instalação</span>
+                  <textarea value={operationDraft.installation_requirements} onChange={(e)=>handleOperationDraftChange("installation_requirements", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regiões atendidas</span>
+                  <input value={operationDraft.service_regions} onChange={(e)=>handleOperationDraftChange("service_regions", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Política de deslocamento</span>
+                  <textarea value={operationDraft.displacement_policy} onChange={(e)=>handleOperationDraftChange("displacement_policy", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Limitações importantes</span>
+                  <textarea value={operationDraft.important_limitations} onChange={(e)=>handleOperationDraftChange("important_limitations", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Capacidade da agenda</span>
+                  <input value={operationDraft.agenda_capacity_rule} onChange={(e)=>handleOperationDraftChange("agenda_capacity_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Urgências e exceções</span>
+                  <input value={operationDraft.agenda_exception_rule} onChange={(e)=>handleOperationDraftChange("agenda_exception_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo operacional para a IA</span>
+                  <textarea value={operationDraft.operational_ai_summary} onChange={(e)=>handleOperationDraftChange("operational_ai_summary", e.target.value)} rows={4} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            {operationSections.map((section) => (
+              <div key={section.title}>
+                <div className="mb-2 text-sm font-semibold text-gray-900">{section.title}</div>
+                <SummaryList items={section.items} />
+              </div>
+            ))}
+          </div>
         </SectionBlock>
       ) : null}
 
