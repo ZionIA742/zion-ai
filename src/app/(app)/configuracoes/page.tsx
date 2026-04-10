@@ -2438,24 +2438,27 @@ export default function ConfiguracoesPage() {
     setIsActivationEditing(false);
   }, [answers]);
 
-  const handleActivationEditSave = useCallback(() => {
+  const handleActivationEditSave = useCallback(async () => {
     const cleanAdditional = additionalResponsiblesDraft.filter(
       (item) => cleanText(item.name) || cleanText(item.whatsapp)
     );
 
-    setAnswers((current) => ({
-      ...current,
-      responsible_name: cleanText(primaryResponsibleDraft.name),
-      responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
-      responsible_role: cleanText(primaryResponsibleDraft.role),
-      confirm_information_is_correct: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não",
-      final_activation_notes: cleanText(primaryResponsibleDraft.notes),
-      additional_responsibles: serializeResponsiblePeople(cleanAdditional),
-    }));
-    setSuccessText("Alterações de responsável e ativação atualizadas nesta tela.");
-    setErrorText(null);
+    const saved = await upsertConfigAnswers(
+      {
+        responsible_name: cleanText(primaryResponsibleDraft.name),
+        responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
+        responsible_role: cleanText(primaryResponsibleDraft.role),
+        confirm_information_is_correct: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não",
+        final_activation_notes: cleanText(primaryResponsibleDraft.notes),
+        additional_responsibles: serializeResponsiblePeople(cleanAdditional),
+      },
+      "Alterações de responsável e ativação salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsActivationEditing(false);
-  }, [primaryResponsibleDraft, additionalResponsiblesDraft]);
+  }, [primaryResponsibleDraft, additionalResponsiblesDraft, upsertConfigAnswers]);
 
   const handlePoolFormChange = useCallback(
     (key: keyof PoolFormState, value: string | boolean) => {
