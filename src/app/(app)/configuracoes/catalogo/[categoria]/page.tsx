@@ -1,463 +1,397 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useParams } from "next/navigation";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
-type CountState = {
-  pools: number;
-  quimicos: number;
-  acessorios: number;
-  outros: number;
+type CatalogItemMetadata = {
+  categoria?: string | null;
+  source_file_name?: string | null;
+  clean_description?: string | null;
+  destination?: string | null;
+  categoryHint?: string | null;
+  price?: string | null;
+  dimensions?: string | null;
+  depth?: string | null;
+  capacity?: string | null;
+  material?: string | null;
+  shape?: string | null;
+  brand?: string | null;
+  sku?: string | null;
+  weight?: string | null;
+  dosage?: string | null;
+  color?: string | null;
+  usage?: string | null;
+  notes?: string | null;
+  indication?: string | null;
+  composition?: string | null;
+  embalagem?: string | null;
+  packaging?: string | null;
+  model?: string | null;
+  size?: string | null;
+  compatibility?: string | null;
+  function?: string | null;
+  environment?: string | null;
+  diferencial?: string | null;
+  application?: string | null;
+  feature?: string | null;
+  [key: string]: any;
 };
 
 type CatalogItemRow = {
   id: string;
-  metadata?: {
-    categoria?: string | null;
-  } | null;
+  organization_id: string;
+  store_id: string;
+  sku: string | null;
+  name: string;
+  description: string | null;
+  price_cents: number | null;
+  currency: string;
+  is_active: boolean;
+  track_stock: boolean;
+  stock_quantity: number | null;
+  metadata: CatalogItemMetadata | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
-type CatalogPhotoRow = {
+type CatalogItemPhotoRow = {
   id: string;
   catalog_item_id: string;
-  storage_path: string | null;
-};
-
-type OnboardingRow = {
-  id?: string;
-  store_id: string;
-  organization_id: string;
-  status: string;
-  completed_at?: string | null;
-  updated_at?: string | null;
+  storage_path: string;
+  file_name: string | null;
+  file_size_bytes: number | null;
+  sort_order: number | null;
   created_at?: string | null;
 };
 
-type AnswersMap = Record<string, unknown>;
-
-type StatusTone = "green" | "amber" | "red" | "gray";
-
-type SettingsTabId =
-  | "visao-geral"
-  | "estrategia"
-  | "piscinas"
-  | "produtos-acessorios"
-  | "operacao"
-  | "comercial-ia"
-  | "responsavel-ativacao"
-  | "descontos"
-  | "canais-integracoes"
-  | "identidade";
-
-type Option = {
-  value: string;
-  label: string;
+type EditCatalogForm = {
+  name: string;
+  sku: string;
+  description: string;
+  price: string;
+  is_active: boolean;
+  track_stock: boolean;
+  stock_quantity: string;
 };
 
-const STORE_SERVICE_OPTIONS: Option[] = [
-  { value: "venda_piscinas", label: "Venda de piscinas" },
-  { value: "instalacao_piscinas", label: "Instalação de piscinas" },
-  { value: "venda_produtos_quimicos", label: "Venda de produtos químicos" },
-  { value: "venda_acessorios", label: "Venda de acessórios" },
-  { value: "visita_tecnica", label: "Visita técnica" },
-  { value: "manutencao", label: "Limpeza / manutenção" },
-];
+type CharacteristicRow = {
+  label: string;
+  value: string;
+};
 
-const SERVICE_REGION_MODE_OPTIONS: Option[] = [
-  { value: "somente_cidade_loja", label: "Somente a cidade da loja" },
-  { value: "cidade_e_vizinhas", label: "Cidade da loja + cidades vizinhas" },
-  { value: "grande_regiao", label: "Atende várias cidades da região" },
-  { value: "todo_estado", label: "Todo o estado" },
-  { value: "sob_consulta", label: "Fora da região, só sob consulta" },
-];
+const STORAGE_BUCKET = "store-catalog-photos";
+const MAX_CATALOG_PHOTOS = 10;
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
-const POOL_TYPE_OPTIONS: Option[] = [
-  { value: "fibra", label: "Fibra" },
-  { value: "vinil", label: "Vinil" },
-  { value: "alvenaria", label: "Alvenaria" },
-  { value: "pastilha", label: "Pastilha / revestida" },
-  { value: "spa", label: "SPA / hidromassagem" },
-  { value: "prainha", label: "Prainha / complemento" },
-];
-
-const DAYS_OF_WEEK_OPTIONS: Option[] = [
-  { value: "segunda", label: "Segunda" },
-  { value: "terça", label: "Terça" },
-  { value: "quarta", label: "Quarta" },
-  { value: "quinta", label: "Quinta" },
-  { value: "sexta", label: "Sexta" },
-  { value: "sábado", label: "Sábado" },
-  { value: "domingo", label: "Domingo" },
-];
-
-const TECHNICAL_VISIT_RULE_OPTIONS: Option[] = [
-  { value: "precisa_agendar", label: "Precisa agendar antes" },
-  { value: "confirmar_endereco", label: "Precisa confirmar endereço antes" },
-  { value: "analise_do_local", label: "Pode depender de avaliação do local" },
-  { value: "pode_ter_taxa", label: "Pode ter taxa de deslocamento" },
-  { value: "somente_regiao_atendida", label: "Só atende a região cadastrada" },
-  { value: "horario_comercial", label: "Somente em horário comercial" },
-];
-
-const IMPORTANT_LIMITATION_OPTIONS: Option[] = [
-  { value: "nao_atende_domingo", label: "Não atende domingo" },
-  { value: "nao_atende_fora_regiao", label: "Não atende fora da região definida" },
-  { value: "nao_faz_obra_entorno", label: "Não faz a obra estética completa do entorno" },
-  { value: "nao_passa_preco_sem_contexto", label: "Não passa preço sem entender o caso" },
-  { value: "depende_avaliacao_tecnica", label: "Alguns casos dependem de avaliação técnica" },
-  { value: "prazos_podem_variar", label: "Prazos podem variar conforme o projeto" },
-];
-
-const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
-  { value: "pix", label: "Pix" },
-  { value: "cartao_credito", label: "Cartão de crédito" },
-  { value: "cartao_debito", label: "Cartão de débito" },
-  { value: "boleto", label: "Boleto" },
-  { value: "dinheiro", label: "Dinheiro" },
-  { value: "transferencia", label: "Transferência" },
-];
-
-const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
-  { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
-  { value: "so_apos_identificar_interesse_real", label: "Só depois de perceber interesse real" },
-  { value: "so_apos_entender_tipo", label: "Só depois de entender o tipo de piscina ou produto" },
-  { value: "so_apos_entender_medidas", label: "Só depois de entender medidas ou porte do projeto" },
-  { value: "so_apos_entender_instalacao", label: "Só depois de entender se precisa instalação" },
-];
-
-const HUMAN_HELP_DISCOUNT_OPTIONS: Option[] = [
-  { value: "pediu_desconto_maior", label: "Pediu desconto maior que o permitido" },
-  { value: "quer_condicao_especial", label: "Quer condição especial" },
-  { value: "fechamento_imediato", label: "Cliente quer fechar agora" },
-  { value: "cliente_importante", label: "Cliente com alto potencial de fechar" },
-];
-
-const HUMAN_HELP_CUSTOM_PROJECT_OPTIONS: Option[] = [
-  { value: "projeto_fora_padrao", label: "Projeto fora do padrão" },
-  { value: "terreno_dificil", label: "Local ou terreno com dificuldade" },
-  { value: "duvida_tecnica_complexa", label: "Dúvida técnica complexa" },
-  { value: "pedido_muito_personalizado", label: "Pedido muito personalizado" },
-  { value: "obra_complementar", label: "Pedido com obra extra além da piscina" },
-];
-
-const HUMAN_HELP_PAYMENT_OPTIONS: Option[] = [
-  { value: "parcelamento_diferente", label: "Parcelamento diferente do padrão" },
-  { value: "financiamento_especifico", label: "Pedido de financiamento específico" },
-  { value: "prazo_especial", label: "Prazo especial de pagamento" },
-  { value: "comprovante_pagamento", label: "Validação manual de pagamento" },
-];
-
-const RESPONSIBLE_NOTIFICATION_CASE_OPTIONS: Option[] = [
-  { value: "pedido_desconto", label: "Pedido de desconto" },
-  { value: "cliente_quase_fechando", label: "Cliente com alta chance de fechar" },
-  { value: "duvida_tecnica", label: "Dúvida técnica importante" },
-  { value: "pedido_visita", label: "Pedido de visita técnica" },
-  { value: "pedido_instalacao", label: "Pedido de instalação" },
-  { value: "problema_pagamento", label: "Problema de pagamento" },
-];
-
-const ACTIVATION_STYLE_OPTIONS: Option[] = [
-  { value: "ia_direta", label: "Mais direta" },
-  { value: "ia_humanizada", label: "Mais humana" },
-  { value: "priorizar_qualificacao", label: "Priorizar qualificação antes de preço" },
-  { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento" },
-];
-
-function normalizeCategory(value: string | null | undefined) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "quimicos") return "quimicos";
-  if (normalized === "acessorios") return "acessorios";
+function normalizeCategory(category: string | null | undefined) {
+  if (category === "acessorios") return "acessorios";
+  if (category === "quimicos") return "quimicos";
   return "outros";
 }
 
-function chunkArray<T>(items: T[], chunkSize: number) {
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += chunkSize) {
-    chunks.push(items.slice(index, index + chunkSize));
-  }
-  return chunks;
+function categoryLabel(category: string) {
+  if (category === "acessorios") return "Acessórios";
+  if (category === "quimicos") return "Produtos químicos";
+  return "Outros itens";
 }
 
-function statusToneClass(tone: StatusTone) {
-  if (tone === "green") return "border-emerald-200 bg-emerald-50 text-emerald-800";
-  if (tone === "amber") return "border-amber-200 bg-amber-50 text-amber-900";
-  if (tone === "red") return "border-red-200 bg-red-50 text-red-800";
-  return "border-gray-200 bg-gray-50 text-gray-700";
+function formatMoney(cents: number | null | undefined) {
+  if (typeof cents !== "number") return "Sem preço";
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(cents / 100);
 }
 
-function resolveOnboardingLabel(status: string | null | undefined) {
-  const normalized = String(status || "not_started").trim().toLowerCase();
-  if (normalized === "completed") return { label: "Concluído", tone: "green" as const };
-  if (normalized === "in_progress") return { label: "Em andamento", tone: "amber" as const };
-  return { label: "Não iniciado", tone: "red" as const };
+function formatFileSize(size: number) {
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function buildStoreName(activeStore: unknown) {
-  const store = (activeStore || {}) as Record<string, unknown>;
+function toPriceInput(cents: number | null | undefined) {
+  if (typeof cents !== "number") return "";
+  return (cents / 100).toFixed(2).replace(".", ",");
+}
+
+function priceInputToCents(value: string) {
+  const normalized = value
+    .replace(/\./g, "")
+    .replace(",", ".")
+    .replace(/[^\d.]/g, "")
+    .trim();
+
+  if (!normalized) return null;
+
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return null;
+
+  return Math.round(parsed * 100);
+}
+
+function getPublicImageUrl(storagePath: string) {
+  const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
+  return data.publicUrl;
+}
+
+function cleanLooseText(value: string | null | undefined) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeLoose(value: string | null | undefined) {
+  return cleanLooseText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isJunkDescriptionLine(value: string) {
+  const normalized = normalizeLoose(value);
+  if (!normalized) return true;
+
+  const blockedExact = new Set([
+    "campo",
+    "valor",
+    "descricao detalhada",
+    "descrição detalhada",
+    "nome do item",
+    "categoria",
+    "preco",
+    "preço",
+    "marca",
+    "peso",
+    "cor",
+    "funcao",
+    "função",
+    "material",
+    "dosagem",
+    "aplicacao",
+    "aplicação",
+    "compatibilidade",
+    "modelo",
+    "tamanho",
+    "embalagem",
+    "composicao",
+    "composição",
+    "indicacao",
+    "indicação",
+    "ambiente indicado",
+    "diferencial",
+    "uso",
+    "observacao",
+    "observação",
+    "capacidade",
+    "medidas",
+    "profundidade",
+    "largura",
+    "comprimento",
+    "formato",
+  ]);
+
+  if (blockedExact.has(normalized)) return true;
+
   return (
-    String(
-      store.store_display_name ||
-        store.display_name ||
-        store.name ||
-        store.store_name ||
-        "Loja ativa"
-    ).trim() || "Loja ativa"
+    normalized.startsWith("arquivo de teste") ||
+    normalized.startsWith("categoria esperada") ||
+    normalized.startsWith("objetivo validar") ||
+    normalized.startsWith("salvar em configuracoes") ||
+    normalized.startsWith("salvar em configurações")
   );
 }
 
-function cleanText(value: unknown) {
-  return String(value ?? "").trim();
+function characteristicValue(raw: unknown) {
+  const value = cleanLooseText(
+    typeof raw === "string" || typeof raw === "number" ? String(raw) : ""
+  );
+  return value || "";
 }
 
-function parseArrayAnswer(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
-  if (typeof value === "string") {
-    return value
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
+function pushCharacteristic(rows: CharacteristicRow[], label: string, value: unknown) {
+  const safeValue = characteristicValue(value);
+  if (!safeValue) return;
+  if (rows.some((row) => row.label === label && row.value === safeValue)) return;
+  rows.push({ label, value: safeValue });
+}
+
+function buildCatalogCharacteristics(item: CatalogItemRow, category: string): CharacteristicRow[] {
+  const metadata = item.metadata || {};
+  const rows: CharacteristicRow[] = [];
+
+  pushCharacteristic(rows, "Nome", item.name);
+  if (typeof item.price_cents === "number") pushCharacteristic(rows, "Preço", formatMoney(item.price_cents));
+  pushCharacteristic(rows, "SKU", item.sku || metadata.sku);
+
+  if (category === "quimicos") {
+    pushCharacteristic(rows, "Marca", metadata.brand);
+    pushCharacteristic(rows, "Peso", metadata.weight);
+    pushCharacteristic(rows, "Formato", metadata.shape);
+    pushCharacteristic(rows, "Cor", metadata.color);
+    pushCharacteristic(rows, "Dosagem", metadata.dosage);
+    pushCharacteristic(rows, "Concentração", metadata.concentration || metadata.capacity);
+    pushCharacteristic(rows, "Aplicação", metadata.application || metadata.usage);
+    pushCharacteristic(rows, "Indicação", metadata.indication || metadata.notes);
+    pushCharacteristic(rows, "Composição", metadata.composition);
+    pushCharacteristic(rows, "Embalagem", metadata.embalagem || metadata.packaging);
+  } else if (category === "acessorios") {
+    pushCharacteristic(rows, "Marca", metadata.brand);
+    pushCharacteristic(rows, "Material", metadata.material);
+    pushCharacteristic(rows, "Cor", metadata.color);
+    pushCharacteristic(rows, "Compatibilidade", metadata.compatibility || metadata.usage);
+    pushCharacteristic(rows, "Função", metadata.function || metadata.notes);
+    pushCharacteristic(rows, "Aplicação", metadata.application);
+    pushCharacteristic(rows, "Modelo", metadata.model);
+    pushCharacteristic(rows, "Tamanho", metadata.size || metadata.dimensions);
+  } else {
+    pushCharacteristic(rows, "Marca", metadata.brand);
+    pushCharacteristic(rows, "Material", metadata.material);
+    pushCharacteristic(rows, "Cor", metadata.color);
+    pushCharacteristic(rows, "Aplicação", metadata.application || metadata.usage);
+    pushCharacteristic(rows, "Diferencial", metadata.diferencial || metadata.feature || metadata.notes);
+    pushCharacteristic(rows, "Ambiente indicado", metadata.environment);
+    pushCharacteristic(rows, "Modelo", metadata.model);
+    pushCharacteristic(rows, "Tamanho", metadata.size || metadata.dimensions);
   }
-  return [];
+
+  return rows;
 }
 
-function yesNoLabel(value: unknown) {
-  const normalized = cleanText(value).toLowerCase();
-  if (!normalized) return "Não definido";
-  if (normalized === "sim") return "Sim";
-  if (normalized === "não" || normalized === "nao") return "Não";
-  return cleanText(value);
+function buildComplementaryDescription(item: CatalogItemRow, characteristics: CharacteristicRow[]) {
+  const metadata = item.metadata || {};
+  const sourceText = cleanLooseText(String(metadata.clean_description || item.description || ""));
+  if (!sourceText) return "";
+
+  const characteristicValues = characteristics
+    .map((row) => normalizeLoose(row.value))
+    .filter(Boolean);
+
+  const lines = sourceText
+    .split(/\n+/)
+    .map((line) => cleanLooseText(line))
+    .filter(Boolean)
+    .filter((line) => !isJunkDescriptionLine(line))
+    .filter((line) => {
+      const normalized = normalizeLoose(line);
+      if (!normalized) return false;
+      if (characteristicValues.includes(normalized)) return false;
+      return !characteristicValues.some(
+        (value) => value.length >= 10 && normalized === value
+      );
+    });
+
+  const unique: string[] = [];
+  for (const line of lines) {
+    if (!unique.some((existing) => normalizeLoose(existing) === normalizeLoose(line))) {
+      unique.push(line);
+    }
+  }
+
+  return unique.join("\n").trim();
 }
 
-function optionLabel(value: string, options: Option[]) {
-  return options.find((option) => option.value === value)?.label || value;
+function buildEditForm(item: CatalogItemRow): EditCatalogForm {
+  return {
+    name: item.name || "",
+    sku: item.sku || "",
+    description: item.description || "",
+    price: toPriceInput(item.price_cents),
+    is_active: item.is_active,
+    track_stock: item.track_stock,
+    stock_quantity: item.stock_quantity == null ? "" : String(item.stock_quantity),
+  };
 }
 
-function joinSelectedLabels(values: string[], options: Option[], extra?: string) {
-  const labels = values.map((value) => optionLabel(value, options)).filter(Boolean);
-  const safeExtra = cleanText(extra);
-  if (safeExtra) labels.push(safeExtra);
-  return labels.join(", ");
+function DetailChip({ value }: { value: string }) {
+  return (
+    <span className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700">
+      {value}
+    </span>
+  );
 }
 
-function buildBulletRows(items: Array<{ label: string; value: string }>) {
-  return items.filter((item) => cleanText(item.value)).map((item) => `${item.label}: ${item.value}`);
-}
-
-function SectionBlock({
+function SectionCard({
   title,
-  description,
-  actions,
   children,
 }: {
   title: string;
-  description?: string;
-  actions?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-gray-200 bg-white p-4 md:p-5">
-      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
-          {description ? <p className="mt-1 text-sm text-gray-600">{description}</p> : null}
-        </div>
-        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
-      </div>
+    <div className="rounded-xl border border-gray-200 bg-white p-3">
+      <h3 className="mb-2 text-sm font-semibold text-gray-900">{title}</h3>
       {children}
-    </section>
+    </div>
   );
 }
 
-function QuickCard({
-  href,
+function CharacteristicsTable({
   title,
-  count,
+  rows,
 }: {
-  href: string;
   title: string;
-  count?: number;
+  rows: CharacteristicRow[];
 }) {
+  if (rows.length === 0) return null;
+
   return (
-    <Link
-      href={href}
-      className="group rounded-xl border border-gray-200 bg-white px-3 py-2.5 transition hover:border-black/20 hover:bg-gray-50"
-    >
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="min-w-0 text-sm font-semibold text-gray-900">{title}</h3>
-        {typeof count === "number" ? (
-          <span className="inline-flex min-w-[1.9rem] shrink-0 justify-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-700">
-            {count}
-          </span>
-        ) : null}
+    <SectionCard title={title}>
+      <div className="overflow-hidden rounded-lg border border-gray-200">
+        {rows.map((row, index) => (
+          <div
+            key={`${row.label}-${index}`}
+            className={`grid gap-1 px-3 py-2 text-sm sm:grid-cols-[150px_minmax(0,1fr)] ${
+              index % 2 === 0 ? "bg-gray-50" : "bg-white"
+            } ${index > 0 ? "border-t border-gray-200" : ""}`}
+          >
+            <div className="font-medium text-gray-600">{row.label}</div>
+            <div className="break-words text-gray-900">{row.value}</div>
+          </div>
+        ))}
       </div>
-      <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-500 group-hover:text-gray-700">
-        Abrir
-      </div>
-    </Link>
+    </SectionCard>
   );
 }
 
-function SecondaryLink({
-  href,
-  children,
-}: {
-  href: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Link
-      href={href}
-      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-    >
-      {children}
-    </Link>
+export default function CatalogCategoryPage() {
+  const params = useParams<{ categoria?: string }>();
+  const category = normalizeCategory(
+    Array.isArray(params?.categoria) ? params?.categoria[0] : params?.categoria
   );
-}
 
-function StatusCard({
-  label,
-  value,
-  tone = "gray",
-  hint,
-}: {
-  label: string;
-  value: string;
-  tone?: StatusTone;
-  hint?: string;
-}) {
-  return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
-        {label}
-      </div>
-      <div className="mt-2">
-        <span
-          className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusToneClass(
-            tone
-          )}`}
-        >
-          {value}
-        </span>
-      </div>
-      {hint ? <div className="mt-2 text-xs leading-5 text-gray-600">{hint}</div> : null}
-    </div>
-  );
-}
+  const { organizationId, activeStoreId } = useStoreContext();
 
-function SummaryList({ items }: { items: string[] }) {
-  if (items.length === 0) {
-    return <div className="text-sm text-gray-500">Nada relevante para mostrar ainda.</div>;
-  }
-
-  return (
-    <div className="space-y-2">
-      {items.map((item, index) => (
-        <div
-          key={`${item}-${index}`}
-          className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700"
-        >
-          {item}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function CompactMetric({
-  label,
-  value,
-  tone = "gray",
-}: {
-  label: string;
-  value: string;
-  tone?: StatusTone;
-}) {
-  return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
-        {label}
-      </div>
-      <div className="mt-2">
-        <span
-          className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusToneClass(
-            tone
-          )}`}
-        >
-          {value}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function SettingsTabButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "rounded-xl border px-3 py-2 text-left transition",
-        active
-          ? "border-black bg-black text-white"
-          : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
-      ].join(" ")}
-    >
-      <div className="text-sm font-semibold">{label}</div>
-    </button>
-  );
-}
-
-export default function ConfiguracoesPage() {
-  const { organizationId, activeStoreId, activeStore } = useStoreContext();
-
+  const [items, setItems] = useState<CatalogItemRow[]>([]);
+  const [photosByItemId, setPhotosByItemId] = useState<Record<string, CatalogItemPhotoRow[]>>({});
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [successText, setSuccessText] = useState<string | null>(null);
-  const [deletingCatalog, setDeletingCatalog] = useState(false);
-  const [counts, setCounts] = useState<CountState>({
-    pools: 0,
-    quimicos: 0,
-    acessorios: 0,
-    outros: 0,
-  });
-  const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
-  const [answers, setAnswers] = useState<AnswersMap>({});
-  const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<EditCatalogForm | null>(null);
+  const [savingItemId, setSavingItemId] = useState<string | null>(null);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
+  const [deletingPhotoId, setDeletingPhotoId] = useState<string | null>(null);
+  const [selectedCatalogFilesByItemId, setSelectedCatalogFilesByItemId] = useState<Record<string, File[]>>({});
+  const [uploadingPhotosItemId, setUploadingPhotosItemId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
-  const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  const tabs = useMemo(
-    () => [
-      { id: "visao-geral" as const, label: "Visão Geral" },
-      { id: "estrategia" as const, label: "Estratégia" },
-      { id: "piscinas" as const, label: "Piscinas" },
-      { id: "produtos-acessorios" as const, label: "Produtos/Acessórios" },
-      { id: "operacao" as const, label: "Operação" },
-      { id: "comercial-ia" as const, label: "Comercial e IA" },
-      { id: "responsavel-ativacao" as const, label: "Responsável e ativação" },
-      { id: "descontos" as const, label: "Descontos" },
-      { id: "canais-integracoes" as const, label: "Canais e integrações" },
-      { id: "identidade" as const, label: "Identidade da loja" },
-    ],
-    []
-  );
-
-  const fetchPageData = useCallback(async () => {
+  async function fetchData() {
     if (!organizationId || !activeStoreId) {
-      setCounts({ pools: 0, quimicos: 0, acessorios: 0, outros: 0 });
-      setOnboarding(null);
-      setAnswers({});
+      setItems([]);
+      setPhotosByItemId({});
       setLoading(false);
       return;
     }
@@ -466,696 +400,699 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
 
     try {
-      const [poolsResult, catalogResult, onboardingResult, answersResult] = await Promise.all([
-        supabase
-          .from("pools")
-          .select("id", { count: "exact", head: true })
-          .eq("organization_id", organizationId)
-          .eq("store_id", activeStoreId),
-        supabase
-          .from("store_catalog_items")
-          .select("id, metadata")
-          .eq("organization_id", organizationId)
-          .eq("store_id", activeStoreId),
-        supabase.rpc("onboarding_get_store_onboarding_scoped", {
-          p_organization_id: organizationId,
-          p_store_id: activeStoreId,
-        }),
-        supabase.rpc("onboarding_get_answers_scoped", {
-          p_organization_id: organizationId,
-          p_store_id: activeStoreId,
-        }),
-      ]);
+      const { data: rows, error } = await supabase
+        .from("store_catalog_items")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId)
+        .order("created_at", { ascending: false });
 
-      if (poolsResult.error) throw poolsResult.error;
-      if (catalogResult.error) throw catalogResult.error;
-      if (onboardingResult.error) throw onboardingResult.error;
-      if (answersResult.error) throw answersResult.error;
+      if (error) throw error;
 
-      const nextCounts: CountState = {
-        pools: poolsResult.count ?? 0,
-        quimicos: 0,
-        acessorios: 0,
-        outros: 0,
-      };
+      const filtered = ((rows || []) as CatalogItemRow[]).filter(
+        (item) => normalizeCategory(item.metadata?.categoria) === category
+      );
 
-      for (const row of (catalogResult.data || []) as CatalogItemRow[]) {
-        const category = normalizeCategory(row?.metadata?.categoria);
-        nextCounts[category] += 1;
+      setItems(filtered);
+
+      if (filtered.length === 0) {
+        setPhotosByItemId({});
+        return;
       }
 
-      setCounts(nextCounts);
-      setOnboarding((onboardingResult.data ?? null) as OnboardingRow | null);
-      setAnswers((answersResult.data ?? {}) as AnswersMap);
+      const itemIds = filtered.map((item) => item.id);
+      const { data: photoRows, error: photosError } = await supabase
+        .from("store_catalog_item_photos")
+        .select("*")
+        .in("catalog_item_id", itemIds)
+        .order("sort_order", { ascending: true });
+
+      if (photosError) throw photosError;
+
+      const grouped: Record<string, CatalogItemPhotoRow[]> = {};
+      for (const photo of (photoRows || []) as CatalogItemPhotoRow[]) {
+        if (!grouped[photo.catalog_item_id]) grouped[photo.catalog_item_id] = [];
+        grouped[photo.catalog_item_id].push(photo);
+      }
+
+      setPhotosByItemId(grouped);
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao carregar a visão geral das configurações.");
+      setErrorText(error?.message ?? "Erro ao carregar itens do catálogo.");
     } finally {
       setLoading(false);
     }
-  }, [organizationId, activeStoreId]);
+  }
 
   useEffect(() => {
-    void fetchPageData();
-  }, [fetchPageData]);
+    void fetchData();
+  }, [organizationId, activeStoreId, category]);
 
-  const totalCatalogo = useMemo(
-    () => counts.quimicos + counts.acessorios + counts.outros,
-    [counts]
-  );
+  function startEditing(item: CatalogItemRow) {
+    setEditingItemId(item.id);
+    setEditForm(buildEditForm(item));
+    setErrorText(null);
+    setSuccessText(null);
+  }
 
-  const onboardingStatus = useMemo(
-    () => resolveOnboardingLabel(onboarding?.status),
-    [onboarding?.status]
-  );
+  function cancelEditing() {
+    setEditingItemId(null);
+    setEditForm(null);
+  }
 
-  const strategyItems = useMemo(() => {
-    const city = cleanText(answers.city);
-    const state = cleanText(answers.state);
-    const serviceRegions = cleanText(answers.service_regions);
-    const services = joinSelectedLabels(
-      parseArrayAnswer(answers.store_services),
-      STORE_SERVICE_OPTIONS,
-      cleanText(answers.store_services_other)
-    );
-    const regionModes = joinSelectedLabels(
-      parseArrayAnswer(answers.service_region_modes),
-      SERVICE_REGION_MODE_OPTIONS,
-      cleanText(answers.service_region_notes)
-    );
+  function handleCatalogFilesChange(itemId: string, event: ChangeEvent<HTMLInputElement>) {
+    const fileList = Array.from(event.target.files || []);
+    const currentCount = (photosByItemId[itemId] || []).length;
 
-    return buildBulletRows([
-      { label: "Cidade/região de atendimento", value: [city, state].filter(Boolean).join(" / ") || serviceRegions },
-      { label: "Serviços principais da loja", value: services },
-      { label: "Tipo de loja / foco comercial", value: cleanText(answers.store_description) },
-      { label: "Marca principal / franquia principal", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
-      { label: "Perfil da operação", value: regionModes },
-      { label: "Resumo levantado na entrada da loja", value: cleanText(answers.service_region_notes) || cleanText(answers.store_description) },
-    ]);
-  }, [answers]);
-
-  const poolsItems = useMemo(() => {
-    const poolTypes = joinSelectedLabels(
-      parseArrayAnswer(answers.pool_types_selected),
-      POOL_TYPE_OPTIONS,
-      cleanText(answers.pool_types_other)
-    );
-
-    return buildBulletRows([
-      { label: "Modelos cadastrados", value: String(counts.pools) },
-      { label: "Tipos de piscina trabalhados", value: poolTypes || cleanText(answers.pool_types) },
-      { label: "Material", value: poolTypes },
-      { label: "Marca", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
-      { label: "Fotos", value: counts.pools > 0 ? "Gerenciadas na aba interna de piscinas" : "Ainda sem piscinas cadastradas" },
-      { label: "Preço base", value: counts.pools > 0 ? "Editável na aba de piscinas" : "" },
-      { label: "Ativo/inativo", value: counts.pools > 0 ? "Controlado item por item na aba de piscinas" : "" },
-      { label: "Edição e exclusão", value: "Disponíveis na página interna de piscinas" },
-      { label: "Importação inteligente assistida", value: "Planejada para evolução do fluxo" },
-    ]);
-  }, [answers, counts.pools]);
-
-  const catalogItems = useMemo(() => {
-    return buildBulletRows([
-      { label: "Produtos químicos", value: String(counts.quimicos) },
-      { label: "Acessórios", value: String(counts.acessorios) },
-      { label: "Outros itens", value: String(counts.outros) },
-      { label: "Fotos", value: totalCatalogo > 0 ? "Gerenciadas por item nas páginas internas" : "" },
-      { label: "Preço", value: totalCatalogo > 0 ? "Controlado por item" : "" },
-      { label: "Estoque", value: totalCatalogo > 0 ? "Controlado por item" : "" },
-      { label: "SKU", value: totalCatalogo > 0 ? "Controlado por item" : "" },
-      { label: "Ativo/inativo", value: totalCatalogo > 0 ? "Controlado por item" : "" },
-      { label: "Edição e exclusão", value: "Disponíveis nas páginas internas de catálogo" },
-      { label: "Importação futura assistida", value: "Mantida como parte da evolução do catálogo" },
-    ]);
-  }, [counts.quimicos, counts.acessorios, counts.outros, totalCatalogo]);
-
-  const operationItems = useMemo(() => {
-    const installationDays = joinSelectedLabels(
-      parseArrayAnswer(answers.installation_available_days),
-      DAYS_OF_WEEK_OPTIONS
-    );
-    const visitDays = joinSelectedLabels(
-      parseArrayAnswer(answers.technical_visit_available_days),
-      DAYS_OF_WEEK_OPTIONS
-    );
-    const visitRules = joinSelectedLabels(
-      parseArrayAnswer(answers.technical_visit_rules_selected),
-      TECHNICAL_VISIT_RULE_OPTIONS,
-      cleanText(answers.technical_visit_rules_other)
-    );
-    const limitations = joinSelectedLabels(
-      parseArrayAnswer(answers.important_limitations_selected),
-      IMPORTANT_LIMITATION_OPTIONS,
-      cleanText(answers.important_limitations_other)
-    );
-
-    return buildBulletRows([
-      { label: "Faz instalação", value: yesNoLabel(answers.offers_installation) },
-      { label: "Faz visita técnica", value: yesNoLabel(answers.offers_technical_visit) },
-      { label: "Cobra visita", value: cleanText(answers.technical_visit_rules_other) || "Ver regras da visita técnica" },
-      { label: "Prazo médio", value: cleanText(answers.average_installation_time_days) },
-      { label: "Dias/horários de instalação", value: installationDays || cleanText(answers.installation_days_rule) },
-      { label: "Disponibilidade por dia para visita", value: visitDays || cleanText(answers.technical_visit_days_rule) },
-      { label: "Regiões atendidas", value: cleanText(answers.service_regions) || cleanText(answers.service_region_notes) },
-      { label: "Limitações importantes", value: limitations },
-      { label: "Regras da agenda", value: visitRules },
-      { label: "Mais de um compromisso por dia", value: cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) },
-      { label: "Mesmo horário", value: cleanText(answers.technical_visit_days_rule) },
-      { label: "Quantidade máxima por faixa", value: cleanText(answers.average_human_response_time) },
-    ]);
-  }, [answers]);
-
-  const commercialItems = useMemo(() => {
-    const payments = joinSelectedLabels(
-      parseArrayAnswer(answers.accepted_payment_methods),
-      PAYMENT_METHOD_MAIN_OPTIONS
-    );
-    const priceBefore = joinSelectedLabels(
-      parseArrayAnswer(answers.price_must_understand_before),
-      PRICE_DIRECT_BEFORE_OPTIONS
-    );
-    const discountCases = joinSelectedLabels(
-      parseArrayAnswer(answers.human_help_discount_cases_selected),
-      HUMAN_HELP_DISCOUNT_OPTIONS,
-      cleanText(answers.human_help_discount_cases_other)
-    );
-    const customProjectCases = joinSelectedLabels(
-      parseArrayAnswer(answers.human_help_custom_project_cases_selected),
-      HUMAN_HELP_CUSTOM_PROJECT_OPTIONS,
-      cleanText(answers.human_help_custom_project_cases_other)
-    );
-    const paymentCases = joinSelectedLabels(
-      parseArrayAnswer(answers.human_help_payment_cases_selected),
-      HUMAN_HELP_PAYMENT_OPTIONS,
-      cleanText(answers.human_help_payment_cases_other)
-    );
-
-    return buildBulletRows([
-      { label: "Nome que a IA usa no atendimento", value: cleanText(answers.responsible_name) ? `Base atual da loja: ${cleanText(answers.responsible_name)}` : cleanText(answers.store_display_name) },
-      { label: "Como a IA deve se apresentar", value: cleanText(answers.price_talk_mode) || "Revisar no onboarding comercial" },
-      { label: "Tom da IA", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), ACTIVATION_STYLE_OPTIONS, cleanText(answers.activation_preferences_other)) },
-      { label: "Fala como pessoa ou equipe", value: cleanText(answers.ai_should_notify_responsible) || "Revisar ativação" },
-      { label: "Quando pode falar preço", value: yesNoLabel(answers.ai_can_send_price_directly) },
-      { label: "Quando deve chamar humano", value: [discountCases, customProjectCases, paymentCases].filter(Boolean).join(" • ") },
-      { label: "Política comercial geral", value: cleanText(answers.price_direct_rule) || cleanText(answers.price_direct_rule_other) },
-      { label: "Formas de pagamento", value: payments },
-      { label: "Regras gerais de negociação", value: cleanText(answers.price_direct_conditions) || cleanText(answers.price_needs_human_help) },
-      { label: "Pode trabalhar com desconto", value: `${yesNoLabel(answers.can_offer_discount)}${cleanText(answers.max_discount_percent) ? ` • máx. ${cleanText(answers.max_discount_percent)}%` : ""}` },
-      { label: "Limites de promessa da IA", value: cleanText(answers.final_activation_notes) || cleanText(answers.store_description) },
-      { label: "Regras de pós-venda", value: cleanText(answers.sales_flow_final_steps) || cleanText(answers.sales_flow_notes) },
-      { label: "Comportamento fora do horário", value: priceBefore },
-    ]);
-  }, [answers]);
-
-  const activationItems = useMemo(() => {
-    const notificationCases = joinSelectedLabels(
-      parseArrayAnswer(answers.responsible_notification_cases),
-      RESPONSIBLE_NOTIFICATION_CASE_OPTIONS,
-      cleanText(answers.responsible_notification_cases_other)
-    );
-    const activationPrefs = joinSelectedLabels(
-      parseArrayAnswer(answers.activation_preferences),
-      ACTIVATION_STYLE_OPTIONS,
-      cleanText(answers.activation_preferences_other)
-    );
-
-    return buildBulletRows([
-      { label: "Responsável principal", value: cleanText(answers.responsible_name) },
-      { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
-      { label: "Responsável secundário", value: cleanText(answers.final_activation_notes) },
-      { label: "Canal para falar com a IA assistente", value: activationPrefs },
-      { label: "Web chat interno", value: "Previsto como canal do sistema" },
-      { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
-      { label: "Número/chip dedicado", value: cleanText(answers.commercial_whatsapp) },
-      { label: "Futuro Telegram", value: "Previsto para expansão" },
-      { label: "Dados mínimos para ativação", value: yesNoLabel(answers.confirm_information_is_correct) },
-      { label: "Checklist de ativação real", value: notificationCases },
-      { label: "Status da ativação da loja", value: resolveOnboardingLabel(onboarding?.status).label },
-    ]);
-  }, [answers, onboarding?.status]);
-
-  const discountItems = useMemo(() => {
-    return buildBulletRows([
-      { label: "Regra geral de desconto", value: yesNoLabel(answers.can_offer_discount) },
-      { label: "Limite máximo", value: cleanText(answers.max_discount_percent) ? `${cleanText(answers.max_discount_percent)}%` : "" },
-      { label: "Quando precisa aprovação humana", value: joinSelectedLabels(parseArrayAnswer(answers.human_help_discount_cases_selected), HUMAN_HELP_DISCOUNT_OPTIONS, cleanText(answers.human_help_discount_cases_other)) },
-      { label: "Quem aprova", value: cleanText(answers.responsible_name) || "Responsável principal" },
-      { label: "Histórico de pedidos de desconto", value: "Ainda não exibido nesta tela" },
-      { label: "Regras especiais por tipo de item", value: cleanText(answers.price_direct_rule_other) },
-    ]);
-  }, [answers]);
-
-  const integrationItems = useMemo(() => {
-    return buildBulletRows([
-      { label: "WhatsApp comercial da loja", value: cleanText(answers.commercial_whatsapp) },
-      { label: "Canal do responsável", value: cleanText(answers.responsible_whatsapp) },
-      { label: "Integrações externas", value: cleanText(answers.activation_preferences_other) || "Ainda em definição" },
-      { label: "Site da loja", value: cleanText(answers.store_description) },
-      { label: "Logo da loja", value: "Ajustar quando houver upload/identidade visual" },
-      { label: "Dados para PDF, orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
-      { label: "Status das integrações", value: resolveOnboardingLabel(onboarding?.status).label },
-    ]);
-  }, [answers, storeName, onboarding?.status]);
-
-  const identityItems = useMemo(() => {
-    return buildBulletRows([
-      { label: "Nome da loja", value: cleanText(answers.store_display_name) || storeName },
-      { label: "Logo", value: "Ajustar quando houver logo cadastrada" },
-      { label: "Cores", value: "Ainda não configuradas nesta tela" },
-      { label: "Nome que a IA usa", value: cleanText(answers.store_display_name) || storeName },
-      { label: "Assinatura padrão da IA", value: cleanText(answers.store_description) },
-      { label: "Dados usados em orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
-    ]);
-  }, [answers, storeName]);
-
-  const overviewSummary = useMemo(() => {
-    const responsible = cleanText(answers.responsible_name);
-    const responsibleWhatsapp = cleanText(answers.responsible_whatsapp);
-
-    return [
-      `Loja ativa: ${storeName}.`,
-      `Status da configuração: ${onboardingStatus.label.toLowerCase()}.`,
-      `Piscinas cadastradas: ${counts.pools}.`,
-      `Catálogo geral: ${totalCatalogo} itens (${counts.quimicos} químicos, ${counts.acessorios} acessórios e ${counts.outros} outros).`,
-      responsible ? `Responsável principal: ${responsible}${responsibleWhatsapp ? ` • ${responsibleWhatsapp}` : ""}.` : "",
-    ].filter(Boolean);
-  }, [
-    storeName,
-    onboardingStatus.label,
-    counts.pools,
-    totalCatalogo,
-    counts.quimicos,
-    counts.acessorios,
-    counts.outros,
-    answers,
-  ]);
-
-  const iaReadiness = useMemo(() => {
-    if (onboardingStatus.label === "Concluído" && (counts.pools > 0 || totalCatalogo > 0)) {
-      return {
-        value: "Pronta para revisão final",
-        tone: "green" as const,
-        hint: "Base mínima já existe para validar a operação real da IA.",
-      };
-    }
-    if (onboardingStatus.label === "Em andamento") {
-      return {
-        value: "Em preparação",
-        tone: "amber" as const,
-        hint: "Ainda faltam definições da loja para liberar a IA com segurança.",
-      };
-    }
-    return {
-      value: "Não pronta",
-      tone: "red" as const,
-      hint: "A loja ainda precisa concluir a estrutura mínima de configuração.",
-    };
-  }, [onboardingStatus.label, counts.pools, totalCatalogo]);
-
-  const activationPendencies = useMemo(() => {
-    const list: string[] = [];
-
-    if (onboardingStatus.label !== "Concluído") {
-      list.push("Finalizar o onboarding principal da loja.");
-    }
-    if (counts.pools === 0) {
-      list.push("Cadastrar pelo menos uma piscina, se a loja trabalha com venda de piscinas.");
-    }
-    if (totalCatalogo === 0) {
-      list.push("Cadastrar produtos, acessórios ou outros itens no catálogo.");
-    }
-    if (!cleanText(answers.responsible_name)) {
-      list.push("Definir o responsável principal da loja.");
-    }
-    if (!cleanText(answers.responsible_whatsapp)) {
-      list.push("Definir o WhatsApp do responsável.");
-    }
-
-    return list;
-  }, [counts.pools, totalCatalogo, onboardingStatus.label, answers]);
-
-  const handleDeleteAllCatalog = useCallback(async () => {
-    if (!organizationId || !activeStoreId) {
-      setErrorText("Nenhuma loja ativa foi encontrada para apagar o catálogo.");
+    if (currentCount + fileList.length > MAX_CATALOG_PHOTOS) {
+      setErrorText(`Esse item pode ter no máximo ${MAX_CATALOG_PHOTOS} fotos no total.`);
+      event.target.value = "";
       return;
     }
 
-    if (deletingCatalog) return;
-
-    if (totalCatalogo === 0) {
-      setSuccessText("O catálogo geral já está vazio.");
-      setErrorText(null);
+    const oversized = fileList.find((file) => file.size > MAX_FILE_SIZE_BYTES);
+    if (oversized) {
+      setErrorText(`A imagem "${oversized.name}" ultrapassa o limite de 50 MB.`);
+      event.target.value = "";
       return;
     }
 
-    const firstConfirm = window.confirm(
-      "Tem certeza que deseja apagar TODO o catálogo geral desta loja? Isso vai remover químicos, acessórios e outros itens cadastrados."
-    );
-    if (!firstConfirm) return;
+    const invalidType = fileList.find((file) => !file.type.startsWith("image/"));
+    if (invalidType) {
+      setErrorText(`O arquivo "${invalidType.name}" não é uma imagem válida.`);
+      event.target.value = "";
+      return;
+    }
 
-    const secondConfirm = window.confirm(
-      "Confirma mais uma vez: apagar todo o catálogo geral agora? Essa ação não apaga as piscinas."
-    );
-    if (!secondConfirm) return;
+    setErrorText(null);
+    setSelectedCatalogFilesByItemId((prev) => ({ ...prev, [itemId]: fileList }));
+  }
 
-    setDeletingCatalog(true);
+  async function uploadCatalogFiles(itemId: string, files: File[]) {
+    if (!organizationId || !activeStoreId) throw new Error("Loja ativa não encontrada.");
+
+    const existingPhotos = photosByItemId[itemId] || [];
+    let nextSortOrder = existingPhotos.length;
+
+    for (const file of files) {
+      const extension = file.name.split(".").pop() || "jpg";
+      const safeFileName = `${crypto.randomUUID()}.${extension}`;
+      const storagePath = `${organizationId}/${activeStoreId}/${itemId}/${safeFileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(storagePath, file, {
+          cacheControl: "3600",
+          upsert: false,
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { error: metadataError } = await supabase.from("store_catalog_item_photos").insert({
+        catalog_item_id: itemId,
+        storage_path: storagePath,
+        file_name: file.name,
+        file_size_bytes: file.size,
+        sort_order: nextSortOrder,
+      });
+
+      if (metadataError) throw metadataError;
+      nextSortOrder += 1;
+    }
+  }
+
+  async function handleUploadNewPhotos(itemId: string) {
+    const files = selectedCatalogFilesByItemId[itemId] || [];
+    if (files.length === 0) {
+      setErrorText("Selecione uma ou mais fotos para adicionar.");
+      return;
+    }
+
+    setErrorText(null);
+    setSuccessText(null);
+    setUploadingPhotosItemId(itemId);
+
+    try {
+      await uploadCatalogFiles(itemId, files);
+      setSelectedCatalogFilesByItemId((prev) => ({ ...prev, [itemId]: [] }));
+      const input = fileInputRefs.current[itemId];
+      if (input) input.value = "";
+      setSuccessText("Fotos adicionadas com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao adicionar fotos do item.");
+    } finally {
+      setUploadingPhotosItemId(null);
+    }
+  }
+
+  async function handleDeletePhoto(photo: CatalogItemPhotoRow) {
+    setErrorText(null);
+    setSuccessText(null);
+    setDeletingPhotoId(photo.id);
+
+    try {
+      const { error: storageError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .remove([photo.storage_path]);
+      if (storageError) throw storageError;
+
+      const { error: dbError } = await supabase
+        .from("store_catalog_item_photos")
+        .delete()
+        .eq("id", photo.id);
+
+      if (dbError) throw dbError;
+
+      setSuccessText("Foto excluída com sucesso.");
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao excluir foto.");
+    } finally {
+      setDeletingPhotoId(null);
+    }
+  }
+
+  async function handleSaveItem(itemId: string) {
+    if (!editForm || !organizationId || !activeStoreId) return;
+
+    setSavingItemId(itemId);
     setErrorText(null);
     setSuccessText(null);
 
     try {
-      const { data: catalogItems, error: catalogItemsError } = await supabase
+      const payload = {
+        name: editForm.name.trim(),
+        sku: editForm.sku.trim() || null,
+        description: editForm.description.trim() || null,
+        price_cents: priceInputToCents(editForm.price),
+        is_active: editForm.is_active,
+        track_stock: editForm.track_stock,
+        stock_quantity:
+          editForm.track_stock && editForm.stock_quantity.trim()
+            ? Number(editForm.stock_quantity)
+            : null,
+      };
+
+      const { error } = await supabase
         .from("store_catalog_items")
-        .select("id")
+        .update(payload)
+        .eq("id", itemId)
         .eq("organization_id", organizationId)
         .eq("store_id", activeStoreId);
 
-      if (catalogItemsError) throw catalogItemsError;
+      if (error) throw error;
 
-      const catalogItemIds = ((catalogItems || []) as Array<{ id: string }>).map(
-        (item) => item.id
-      );
-
-      if (catalogItemIds.length === 0) {
-        setSuccessText("O catálogo geral já estava vazio.");
-        await fetchPageData();
-        return;
+      const pendingFiles = selectedCatalogFilesByItemId[itemId] || [];
+      if (pendingFiles.length > 0) {
+        await uploadCatalogFiles(itemId, pendingFiles);
+        setSelectedCatalogFilesByItemId((prev) => ({ ...prev, [itemId]: [] }));
+        const input = fileInputRefs.current[itemId];
+        if (input) input.value = "";
       }
 
-      const photoRows: CatalogPhotoRow[] = [];
-      const idChunks = chunkArray(catalogItemIds, 200);
-
-      for (const ids of idChunks) {
-        const { data: photoChunk, error: photosError } = await supabase
-          .from("store_catalog_item_photos")
-          .select("id, catalog_item_id, storage_path")
-          .in("catalog_item_id", ids);
-
-        if (photosError) throw photosError;
-        photoRows.push(...((photoChunk || []) as CatalogPhotoRow[]));
-      }
-
-      const storagePaths = photoRows
-        .map((row) => String(row.storage_path || "").trim())
-        .filter(Boolean);
-
-      const storagePathChunks = chunkArray(storagePaths, 100);
-      for (const paths of storagePathChunks) {
-        const { error: storageRemoveError } = await supabase.storage
-          .from("store-catalog-photos")
-          .remove(paths);
-
-        if (storageRemoveError) throw storageRemoveError;
-      }
-
-      if (photoRows.length > 0) {
-        const photoIdChunks = chunkArray(
-          photoRows.map((row) => row.id),
-          200
-        );
-
-        for (const ids of photoIdChunks) {
-          const { error: deletePhotosError } = await supabase
-            .from("store_catalog_item_photos")
-            .delete()
-            .in("id", ids);
-
-          if (deletePhotosError) throw deletePhotosError;
-        }
-      }
-
-      for (const ids of idChunks) {
-        const { error: deleteItemsError } = await supabase
-          .from("store_catalog_items")
-          .delete()
-          .in("id", ids);
-
-        if (deleteItemsError) throw deleteItemsError;
-      }
-
-      setSuccessText("Todo o catálogo geral da loja foi apagado com sucesso.");
-      await fetchPageData();
+      setSuccessText("Item salvo com sucesso.");
+      setEditingItemId(null);
+      setEditForm(null);
+      await fetchData();
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao apagar todo o catálogo geral da loja.");
+      setErrorText(error?.message ?? "Erro ao salvar item.");
     } finally {
-      setDeletingCatalog(false);
+      setSavingItemId(null);
     }
-  }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchPageData]);
+  }
+
+  async function handleDeleteItem(itemId: string) {
+    if (!organizationId || !activeStoreId) return;
+
+    const confirmed = window.confirm(
+      "Tem certeza que deseja excluir este item? Essa ação também apaga as fotos dele."
+    );
+    if (!confirmed) return;
+
+    setDeletingItemId(itemId);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const itemPhotos = photosByItemId[itemId] || [];
+      const storagePaths = itemPhotos.map((photo) => photo.storage_path).filter(Boolean);
+
+      if (storagePaths.length > 0) {
+        const { error: storageError } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .remove(storagePaths);
+        if (storageError) throw storageError;
+      }
+
+      if (itemPhotos.length > 0) {
+        const { error: photoDeleteError } = await supabase
+          .from("store_catalog_item_photos")
+          .delete()
+          .eq("catalog_item_id", itemId);
+
+        if (photoDeleteError) throw photoDeleteError;
+      }
+
+      const { error: itemDeleteError } = await supabase
+        .from("store_catalog_items")
+        .delete()
+        .eq("id", itemId)
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (itemDeleteError) throw itemDeleteError;
+
+      setSuccessText("Item excluído com sucesso.");
+      setItems((prev) => prev.filter((item) => item.id !== itemId));
+      setPhotosByItemId((prev) => {
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
+
+      if (editingItemId === itemId) {
+        setEditingItemId(null);
+        setEditForm(null);
+      }
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao excluir item.");
+    } finally {
+      setDeletingItemId(null);
+    }
+  }
+
+  const pageTitle = useMemo(() => categoryLabel(category), [category]);
+
+  const filteredItems = useMemo(() => {
+    const safeSearch = searchTerm
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .trim();
+
+    if (!safeSearch) return items;
+
+    return items.filter((item) => {
+      const haystack = [item.name, item.sku || "", item.metadata?.brand || ""]
+        .join(" ")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "");
+
+      return haystack.includes(safeSearch);
+    });
+  }, [items, searchTerm]);
 
   return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <h1 className="text-2xl font-black tracking-[-0.02em] text-black">Configurações</h1>
-        <p className="text-sm text-gray-600">
-          Centro de visão geral, revisão operacional e acesso rápido da loja.
-        </p>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-black tracking-[-0.02em] text-black">
+            {pageTitle}
+          </h1>
+          <p className="mt-1 text-sm text-gray-600">
+            Visualize, pesquise e edite os itens desta categoria em um layout mais compacto.
+          </p>
+        </div>
+
+        <Link
+          href="/configuracoes"
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
+        >
+          Voltar para configurações
+        </Link>
       </div>
 
-      {!hasValidStoreContext ? (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          Nenhuma loja ativa foi encontrada.
+      <div className="rounded-2xl border border-gray-200 bg-white p-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="relative w-full md:max-w-xl">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔎</span>
+            <input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder={`Buscar ${pageTitle.toLowerCase()} por nome, SKU ou marca`}
+              className="w-full rounded-xl border border-gray-200 bg-white py-2 pl-10 pr-3 text-sm text-gray-900 outline-none transition focus:border-black"
+            />
+          </div>
+
+          <div className="text-sm font-medium text-gray-600">
+            {filteredItems.length} resultado(s)
+            {searchTerm.trim() ? ` de ${items.length}` : ""}
+          </div>
         </div>
-      ) : null}
+      </div>
 
       {errorText ? (
-        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
           {errorText}
         </div>
       ) : null}
 
       {successText ? (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700">
           {successText}
         </div>
       ) : null}
 
-      <section className="rounded-2xl border border-gray-200 bg-white p-4 md:p-5">
-        <div className="mb-4">
-          <h2 className="text-base font-semibold text-gray-900">Áreas da configuração</h2>
+      {!hasValidStoreContext ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+          Nenhuma loja ativa encontrada.
         </div>
-
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-          {tabs.map((tab) => (
-            <SettingsTabButton
-              key={tab.id}
-              active={activeTab === tab.id}
-              label={tab.label}
-              onClick={() => setActiveTab(tab.id)}
-            />
-          ))}
+      ) : loading ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
+          Carregando itens...
         </div>
-      </section>
-
-      <SectionBlock
-        title="Acessos rápidos"
-        actions={
-          <>
-            {loading ? <span className="text-xs text-gray-500">Carregando...</span> : null}
-            <button
-              type="button"
-              onClick={() => void handleDeleteAllCatalog()}
-              disabled={!hasValidStoreContext || deletingCatalog || totalCatalogo === 0}
-              className="rounded-xl border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {deletingCatalog ? "Apagando catálogo..." : "Apagar todo o catálogo"}
-            </button>
-          </>
-        }
-      >
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_250px]">
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-            <QuickCard href="/configuracoes/piscinas" title="Piscinas" count={counts.pools} />
-            <QuickCard href="/configuracoes/catalogo/quimicos" title="Químicos" count={counts.quimicos} />
-            <QuickCard href="/configuracoes/catalogo/acessorios" title="Acessórios" count={counts.acessorios} />
-            <QuickCard href="/configuracoes/catalogo/outros" title="Outros" count={counts.outros} />
-          </div>
-
-          <div className="grid gap-2">
-            <CompactMetric
-              label="Total do catálogo"
-              value={String(totalCatalogo)}
-              tone={totalCatalogo > 0 ? "green" : "gray"}
-            />
-            <CompactMetric
-              label="Status da configuração"
-              value={onboardingStatus.label}
-              tone={onboardingStatus.tone}
-            />
-          </div>
+      ) : items.length === 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
+          Nenhum item cadastrado nesta categoria.
         </div>
-      </SectionBlock>
+      ) : filteredItems.length === 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
+          Nenhum item encontrado para a busca "{searchTerm}".
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filteredItems.map((item) => {
+            const itemPhotos = photosByItemId[item.id] || [];
+            const isEditing = editingItemId === item.id;
+            const characteristics = buildCatalogCharacteristics(item, category);
+            const complementaryDescription = buildComplementaryDescription(
+              item,
+              characteristics
+            );
 
-      {activeTab === "visao-geral" ? (
-        <SectionBlock
-          title="1. Visão Geral"
-          description="Tela-resumo da loja com status, pendências e prontidão operacional."
-          actions={<SecondaryLink href="/onboarding?step=5">Revisar ativação</SecondaryLink>}
-        >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <StatusCard
-              label="Configuração da loja"
-              value={onboardingStatus.label}
-              tone={onboardingStatus.tone}
-              hint="Status geral do onboarding principal."
-            />
-            <StatusCard
-              label="Canal comercial"
-              value={cleanText(answers.commercial_whatsapp) ? "Configurado" : "Pendente"}
-              tone={cleanText(answers.commercial_whatsapp) ? "green" : "red"}
-              hint={cleanText(answers.commercial_whatsapp) || "WhatsApp comercial ainda não definido"}
-            />
-            <StatusCard
-              label="Canal da assistente"
-              value={cleanText(answers.responsible_whatsapp) ? "Configurado" : "Pendente"}
-              tone={cleanText(answers.responsible_whatsapp) ? "green" : "amber"}
-              hint={cleanText(answers.responsible_whatsapp) || "Canal do responsável ainda não definido"}
-            />
-            <StatusCard
-              label="Agenda"
-              value={cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) ? "Configurada" : "Pendente"}
-              tone={cleanText(answers.installation_days_rule) || cleanText(answers.technical_visit_days_rule) ? "green" : "amber"}
-              hint="Regras de disponibilidade e operação"
-            />
-            <StatusCard
-              label="Prontidão da IA"
-              value={iaReadiness.value}
-              tone={iaReadiness.tone}
-              hint={iaReadiness.hint}
-            />
-          </div>
+            return (
+              <section
+                key={item.id}
+                className="overflow-hidden rounded-2xl border border-gray-200 bg-white"
+              >
+                <div className="border-b border-gray-200 px-3 py-3 sm:px-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <h2 className="text-lg font-black leading-tight text-black">
+                        {item.name}
+                      </h2>
+                      <p className="mt-1 text-sm text-gray-600">
+                        {item.sku ? `SKU: ${item.sku}` : "Sem SKU"}
+                      </p>
+                    </div>
 
-          <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Resumo curto da loja</div>
-              <SummaryList items={overviewSummary} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">
-                Pendências para ativação real
-              </div>
-              <SummaryList items={activationPendencies} />
-            </div>
-          </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <DetailChip value={formatMoney(item.price_cents)} />
+                      <DetailChip value={item.is_active ? "Ativo" : "Inativo"} />
+                      <DetailChip
+                        value={
+                          item.track_stock
+                            ? `Estoque: ${item.stock_quantity ?? 0}`
+                            : "Sem estoque"
+                        }
+                      />
+                      <button
+                        type="button"
+                        onClick={() => startEditing(item)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
+                      >
+                        Editar
+                      </button>
+                    </div>
+                  </div>
+                </div>
 
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Responsáveis e acesso</div>
-              <SummaryList
-                items={buildBulletRows([
-                  { label: "Responsável principal", value: cleanText(answers.responsible_name) },
-                  { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
-                  { label: "Quem tem acesso ao sistema", value: cleanText(answers.responsible_name) || "Responsável principal da loja" },
-                ])}
-              />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Acesso rápido para outras abas</div>
-              <SummaryList
-                items={[
-                  "Estratégia para revisar a base da loja.",
-                  "Piscinas para revisar a oferta de piscinas.",
-                  "Produtos/Acessórios para revisar catálogo, estoque e SKU.",
-                  "Operação, Comercial e IA e Ativação para validar o comportamento real da loja.",
-                ]}
-              />
-            </div>
-          </div>
-        </SectionBlock>
-      ) : null}
+                <div className="space-y-3 px-3 py-3 sm:px-4">
+                  {isEditing && editForm ? (
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Nome
+                          </label>
+                          <input
+                            value={editForm.name}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, name: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
 
-      {activeTab === "estrategia" ? (
-        <SectionBlock
-          title="2. Estratégia"
-          description="Espelho estruturado do onboarding, sem substituir a configuração viva principal."
-          actions={<SecondaryLink href="/onboarding?step=1">Revisar entrada da loja</SecondaryLink>}
-        >
-          <SummaryList items={strategyItems} />
-        </SectionBlock>
-      ) : null}
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            SKU
+                          </label>
+                          <input
+                            value={editForm.sku}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, sku: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
 
-      {activeTab === "piscinas" ? (
-        <SectionBlock
-          title="3. Piscinas"
-          description="Tudo sobre a oferta de piscinas da loja."
-          actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
-        >
-          <SummaryList items={poolsItems} />
-        </SectionBlock>
-      ) : null}
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Preço
+                          </label>
+                          <input
+                            value={editForm.price}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, price: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            placeholder="129,90"
+                          />
+                        </div>
 
-      {activeTab === "produtos-acessorios" ? (
-        <SectionBlock
-          title="4. Produtos/Acessórios"
-          description="No lugar do catálogo geral, com separação clara por categoria."
-          actions={
-            <div className="flex flex-wrap gap-2">
-              <SecondaryLink href="/configuracoes/catalogo/quimicos">Químicos</SecondaryLink>
-              <SecondaryLink href="/configuracoes/catalogo/acessorios">Acessórios</SecondaryLink>
-              <SecondaryLink href="/configuracoes/catalogo/outros">Outros</SecondaryLink>
-            </div>
-          }
-        >
-          <SummaryList items={catalogItems} />
-        </SectionBlock>
-      ) : null}
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Quantidade em estoque
+                          </label>
+                          <input
+                            value={editForm.stock_quantity}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current
+                                  ? { ...current, stock_quantity: event.target.value }
+                                  : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                            placeholder="0"
+                          />
+                        </div>
 
-      {activeTab === "operacao" ? (
-        <SectionBlock
-          title="5. Operação"
-          description="Regras reais da operação da loja e da agenda operacional."
-          actions={<SecondaryLink href="/onboarding?step=3">Revisar operação</SecondaryLink>}
-        >
-          <SummaryList items={operationItems} />
-        </SectionBlock>
-      ) : null}
+                        <div className="flex flex-wrap items-center gap-4 pt-6 text-sm text-gray-800">
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={editForm.is_active}
+                              onChange={(event) =>
+                                setEditForm((current) =>
+                                  current
+                                    ? { ...current, is_active: event.target.checked }
+                                    : current
+                                )
+                              }
+                            />
+                            Item ativo
+                          </label>
 
-      {activeTab === "comercial-ia" ? (
-        <SectionBlock
-          title="6. Comercial e IA"
-          description="Regras comerciais vivas que a IA vendedora deve obedecer."
-          actions={<SecondaryLink href="/onboarding?step=4">Revisar comercial e IA</SecondaryLink>}
-        >
-          <SummaryList items={commercialItems} />
-        </SectionBlock>
-      ) : null}
+                          <label className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={editForm.track_stock}
+                              onChange={(event) =>
+                                setEditForm((current) =>
+                                  current
+                                    ? { ...current, track_stock: event.target.checked }
+                                    : current
+                                )
+                              }
+                            />
+                            Controlar estoque
+                          </label>
+                        </div>
 
-      {activeTab === "responsavel-ativacao" ? (
-        <SectionBlock
-          title="7. Responsável e ativação"
-          description="Ponte entre IA e humano responsável."
-          actions={<SecondaryLink href="/onboarding?step=5">Abrir ativação</SecondaryLink>}
-        >
-          <SummaryList items={activationItems} />
-        </SectionBlock>
-      ) : null}
+                        <div className="lg:col-span-2">
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Descrição
+                          </label>
+                          <textarea
+                            value={editForm.description}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current
+                                  ? { ...current, description: event.target.value }
+                                  : current
+                              )
+                            }
+                            rows={5}
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+                      </div>
 
-      {activeTab === "descontos" ? (
-        <SectionBlock
-          title="8. Descontos"
-          description="Módulo próprio, mas sem brigar com Comercial e IA."
-          actions={<SecondaryLink href="/onboarding?step=4">Revisar descontos</SecondaryLink>}
-        >
-          <SummaryList items={discountItems} />
-        </SectionBlock>
-      ) : null}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleSaveItem(item.id)}
+                          disabled={savingItemId === item.id}
+                          className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {savingItemId === item.id ? "Salvando..." : "Salvar"}
+                        </button>
 
-      {activeTab === "canais-integracoes" ? (
-        <SectionBlock
-          title="9. Canais e integrações"
-          description="WhatsApp comercial, canal do responsável e integrações externas."
-          actions={<SecondaryLink href="/onboarding?step=5">Revisar canais</SecondaryLink>}
-        >
-          <SummaryList items={integrationItems} />
-        </SectionBlock>
-      ) : null}
+                        <button
+                          type="button"
+                          onClick={cancelEditing}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900"
+                        >
+                          Cancelar
+                        </button>
 
-      {activeTab === "identidade" ? (
-        <SectionBlock
-          title="10. Identidade da loja"
-          description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
-          actions={<SecondaryLink href="/onboarding?step=1">Revisar identidade</SecondaryLink>}
-        >
-          <SummaryList items={identityItems} />
-        </SectionBlock>
-      ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteItem(item.id)}
+                          disabled={deletingItemId === item.id}
+                          className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deletingItemId === item.id ? "Excluindo..." : "Excluir"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <CharacteristicsTable
+                    title={category === "quimicos" ? "Características do produto" : "Características do item"}
+                    rows={characteristics}
+                  />
+
+                  {complementaryDescription ? (
+                    <SectionCard title="Descrição complementar">
+                      <div className="whitespace-pre-wrap text-sm leading-6 text-gray-800">
+                        {complementaryDescription}
+                      </div>
+                    </SectionCard>
+                  ) : null}
+
+                  <SectionCard title="Fotos do item">
+                    {isEditing ? (
+                      <div className="space-y-3">
+                        <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                          <input
+                            ref={(element) => {
+                              fileInputRefs.current[item.id] = element;
+                            }}
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            onChange={(event) => handleCatalogFilesChange(item.id, event)}
+                            className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
+                          />
+                          <p className="mt-2 text-xs text-gray-500">
+                            Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.
+                          </p>
+                        </div>
+
+                        {(selectedCatalogFilesByItemId[item.id] || []).length > 0 ? (
+                          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            {(selectedCatalogFilesByItemId[item.id] || []).map((file) => (
+                              <div
+                                key={`${file.name}-${file.size}`}
+                                className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 py-2 last:border-b-0"
+                              >
+                                <span className="truncate font-medium text-gray-900">
+                                  {file.name}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {formatFileSize(file.size)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <button
+                          type="button"
+                          onClick={() => void handleUploadNewPhotos(item.id)}
+                          disabled={uploadingPhotosItemId === item.id}
+                          className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {uploadingPhotosItemId === item.id
+                            ? "Adicionando fotos..."
+                            : "Adicionar fotos"}
+                        </button>
+
+                        {itemPhotos.length === 0 ? (
+                          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
+                            Nenhuma foto cadastrada para este item.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                            {itemPhotos.map((photo) => {
+                              const isDeletingPhoto = deletingPhotoId === photo.id;
+
+                              return (
+                                <div
+                                  key={photo.id}
+                                  className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
+                                >
+                                  <img
+                                    src={getPublicImageUrl(photo.storage_path)}
+                                    alt={photo.file_name || item.name}
+                                    className="block h-24 w-full object-cover"
+                                  />
+                                  <div className="space-y-2 p-2.5">
+                                    <div className="truncate text-[11px] text-gray-600">
+                                      {photo.file_name || "Foto"}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleDeletePhoto(photo)}
+                                      disabled={isDeletingPhoto}
+                                      className="w-full rounded-lg border border-red-200 bg-white px-2.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {isDeletingPhoto ? "Excluindo..." : "Excluir foto"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : itemPhotos.length === 0 ? (
+                      <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
+                        Nenhuma foto cadastrada para este item.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
+                        {itemPhotos.map((photo) => (
+                          <div
+                            key={photo.id}
+                            className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
+                          >
+                            <img
+                              src={getPublicImageUrl(photo.storage_path)}
+                              alt={photo.file_name || item.name}
+                              className="block h-16 w-full object-cover"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </SectionCard>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
