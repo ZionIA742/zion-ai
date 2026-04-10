@@ -403,13 +403,13 @@ function SettingsTabButton({
       type="button"
       onClick={onClick}
       className={[
-        "min-w-0 rounded-lg border px-1.5 py-2 text-center transition",
+        "min-w-fit whitespace-nowrap rounded-xl border px-3 py-2 text-left transition",
         active
           ? "border-black bg-black text-white"
           : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
       ].join(" ")}
     >
-      <div className="truncate text-[11px] font-semibold leading-tight tracking-[-0.01em]">{label}</div>
+      <div className="text-[13px] font-semibold leading-tight">{label}</div>
     </button>
   );
 }
@@ -431,7 +431,9 @@ export default function ConfiguracoesPage() {
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
   const [isOverviewEditing, setIsOverviewEditing] = useState(false);
+  const [isStrategyEditing, setIsStrategyEditing] = useState(false);
   const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
+  const [strategyDraft, setStrategyDraft] = useState<Record<string, string>>({});
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -529,6 +531,18 @@ export default function ConfiguracoesPage() {
     });
   }, [answers, storeName]);
 
+  useEffect(() => {
+    setStrategyDraft({
+      city: cleanText(answers.city),
+      state: cleanText(answers.state),
+      service_regions: cleanText(answers.service_regions),
+      service_region_notes: cleanText(answers.service_region_notes),
+      store_services_other: cleanText(answers.store_services_other),
+      store_description: cleanText(answers.store_description),
+      main_store_brand: cleanText(answers.main_store_brand),
+      brands_worked: cleanText(answers.brands_worked),
+    });
+  }, [answers]);
 
   const totalCatalogo = useMemo(
     () => counts.quimicos + counts.acessorios + counts.outros,
@@ -846,6 +860,44 @@ export default function ConfiguracoesPage() {
     setIsOverviewEditing(false);
   }, [overviewDraft]);
 
+  const handleStrategyDraftChange = useCallback((key: string, value: string) => {
+    setStrategyDraft((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }, []);
+
+  const handleStrategyEditCancel = useCallback(() => {
+    setStrategyDraft({
+      city: cleanText(answers.city),
+      state: cleanText(answers.state),
+      service_regions: cleanText(answers.service_regions),
+      service_region_notes: cleanText(answers.service_region_notes),
+      store_services_other: cleanText(answers.store_services_other),
+      store_description: cleanText(answers.store_description),
+      main_store_brand: cleanText(answers.main_store_brand),
+      brands_worked: cleanText(answers.brands_worked),
+    });
+    setIsStrategyEditing(false);
+  }, [answers]);
+
+  const handleStrategyEditSave = useCallback(() => {
+    setAnswers((current) => ({
+      ...current,
+      city: strategyDraft.city,
+      state: strategyDraft.state,
+      service_regions: strategyDraft.service_regions,
+      service_region_notes: strategyDraft.service_region_notes,
+      store_services_other: strategyDraft.store_services_other,
+      store_description: strategyDraft.store_description,
+      main_store_brand: strategyDraft.main_store_brand,
+      brands_worked: strategyDraft.brands_worked,
+    }));
+    setSuccessText("Alterações da estratégia atualizadas nesta tela.");
+    setErrorText(null);
+    setIsStrategyEditing(false);
+  }, [strategyDraft]);
+
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setErrorText("Nenhuma loja ativa foi encontrada para apagar o catálogo.");
@@ -954,7 +1006,7 @@ export default function ConfiguracoesPage() {
   }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchPageData]);
 
   return (
-    <div className="space-y-4 overflow-x-hidden">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-black tracking-[-0.02em] text-black">Configurações</h1>
       </div>
@@ -982,8 +1034,8 @@ export default function ConfiguracoesPage() {
           <h2 className="text-sm font-semibold text-gray-900">Áreas da configuração</h2>
         </div>
 
-        <div className="pb-1">
-          <div className="grid grid-cols-10 gap-1">
+        <div className="px-1 pb-1">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
             {tabs.map((tab) => (
               <SettingsTabButton
                 key={tab.id}
@@ -1012,7 +1064,7 @@ export default function ConfiguracoesPage() {
 
       {activeTab === "visao-geral" ? (
         <SectionBlock title="Controle da configuração">
-          <div className="grid gap-2 md:grid-cols-3">
+          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_220px_220px]">
             <div className="flex items-start">
               <button
                 type="button"
@@ -1233,9 +1285,139 @@ export default function ConfiguracoesPage() {
       {activeTab === "estrategia" ? (
         <SectionBlock
           title="2. Estratégia"
-          description="Espelho estruturado do onboarding, sem substituir a configuração viva principal."
+          description="Base principal da loja para contexto comercial, regiões, serviços e posicionamento."
+          actions={
+            isStrategyEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleStrategyEditSave}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleStrategyEditCancel}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsStrategyEditing(true)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+              >
+                Editar
+              </button>
+            )
+          }
         >
           <SummaryList items={strategyItems} />
+
+          {isStrategyEditing ? (
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-1 text-sm font-semibold text-gray-900">Editar estratégia na mesma página</div>
+              <div className="mb-3 text-xs text-gray-600">
+                Aqui você pode completar ou adicionar informações que estejam faltando no onboarding.
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Cidade
+                  </span>
+                  <input
+                    value={strategyDraft.city ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("city", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Estado
+                  </span>
+                  <input
+                    value={strategyDraft.state ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("state", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Região de atendimento
+                  </span>
+                  <input
+                    value={strategyDraft.service_regions ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("service_regions", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Serviços adicionais ou faltando
+                  </span>
+                  <input
+                    value={strategyDraft.store_services_other ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("store_services_other", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Ex.: reforma, assistência, automação..."
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Descrição da loja
+                  </span>
+                  <textarea
+                    value={strategyDraft.store_description ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("store_description", event.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Marca principal
+                  </span>
+                  <input
+                    value={strategyDraft.main_store_brand ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("main_store_brand", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Outras marcas
+                  </span>
+                  <input
+                    value={strategyDraft.brands_worked ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("brands_worked", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Observações de região e posicionamento
+                  </span>
+                  <textarea
+                    value={strategyDraft.service_region_notes ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("service_region_notes", event.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
         </SectionBlock>
       ) : null}
 
