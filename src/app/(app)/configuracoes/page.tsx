@@ -2302,20 +2302,23 @@ export default function ConfiguracoesPage() {
     setIsDiscountEditing(false);
   }, [answers]);
 
-  const handleDiscountEditSave = useCallback(() => {
-    setAnswers((current) => ({
-      ...current,
-      can_offer_discount: discountDraft.can_offer_discount,
-      max_discount_percent: discountDraft.max_discount_percent,
-      human_help_discount_cases_other: discountDraft.human_help_discount_summary,
-      discount_approver_name: discountDraft.discount_approver,
-      discount_special_rules: discountDraft.special_discount_rules,
-      discount_explanation: discountDraft.discount_explanation,
-    }));
-    setSuccessText("Alterações de descontos atualizadas nesta tela.");
-    setErrorText(null);
+  const handleDiscountEditSave = useCallback(async () => {
+    const saved = await upsertConfigAnswers(
+      {
+        can_offer_discount: discountDraft.can_offer_discount,
+        max_discount_percent: discountDraft.max_discount_percent,
+        human_help_discount_cases_other: discountDraft.human_help_discount_summary,
+        discount_approver_name: discountDraft.discount_approver,
+        discount_special_rules: discountDraft.special_discount_rules,
+        discount_explanation: discountDraft.discount_explanation,
+      },
+      "Alterações de descontos salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsDiscountEditing(false);
-  }, [discountDraft]);
+  }, [discountDraft, upsertConfigAnswers]);
 
   useEffect(() => {
     setChannelDraft(createChannelDraftFromAnswers(answers));
