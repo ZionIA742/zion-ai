@@ -243,6 +243,37 @@ const ACTIVATION_STYLE_OPTIONS: Option[] = [
   { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento" },
 ];
 
+
+const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
+  { value: "parcelado", label: "Parcelado" },
+  { value: "a_vista", label: "À vista" },
+  { value: "financiamento", label: "Financiamento" },
+  { value: "entrada_mais_parcelas", label: "Entrada + parcelas" },
+];
+
+const PRICE_TALK_MODE_OPTIONS: Option[] = [
+  { value: "quando_cliente_perguntar", label: "Quando o cliente perguntar" },
+  { value: "so_depois_de_qualificar", label: "Só depois de qualificar" },
+  { value: "so_depois_de_entender_contexto", label: "Só depois de entender o contexto" },
+  { value: "preferir_faixa_inicial", label: "Preferir faixa inicial antes do valor exato" },
+  { value: "sempre_com_cuidado", label: "Sempre com cuidado e contexto" },
+];
+
+const SALES_FLOW_FINAL_OPTIONS: Option[] = [
+  { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
+  { value: "instalacao", label: "Instalação" },
+  { value: "confirmacao_entrega", label: "Confirmação de entrega" },
+  { value: "pos_venda", label: "Pós-venda" },
+  { value: "pedido_avaliacao", label: "Pedido de avaliação" },
+];
+
+const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
+  { value: "nao_prometer_fora_escopo", label: "Nunca prometer fora do escopo" },
+  { value: "encaminhar_humano_casos_criticos", label: "Chamar humano em casos críticos" },
+  { value: "nao_confirmar_prazo_sem_validar", label: "Não confirmar prazo sem validar" },
+  { value: "nao_confirmar_valor_sem_contexto", label: "Não confirmar valor sem contexto" },
+];
+
 function normalizeCategory(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "quimicos") return "quimicos";
