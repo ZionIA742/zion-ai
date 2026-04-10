@@ -25,6 +25,24 @@ type CatalogPhotoRow = {
   storage_path: string | null;
 };
 
+type StoreImportFileRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  source: string | null;
+  original_file_name: string | null;
+  mime_type: string | null;
+  extension: string | null;
+  size_bytes: number | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  import_summary?: Record<string, unknown> | null;
+  status: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+
 type OnboardingRow = {
   id?: string;
   store_id: string;
@@ -389,6 +407,37 @@ function buildStoreName(activeStore: unknown) {
 
 function cleanText(value: unknown) {
   return String(value ?? "").trim();
+}
+
+
+function formatFileSize(sizeBytes: number | null | undefined) {
+  if (!sizeBytes || sizeBytes <= 0) return "Tamanho não definido";
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  if (sizeBytes < 1024 * 1024 * 1024) return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(sizeBytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatImportDate(value: string | null | undefined) {
+  if (!value) return "Data não definida";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Data não definida";
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(parsed);
+}
+
+function getImportSummaryText(summary: Record<string, unknown> | null | undefined) {
+  if (!summary || typeof summary !== "object") return "Resumo não disponível";
+  const totalFiles = Number(summary.totalFiles ?? 0);
+  const normalizedItems = Number(summary.normalizedItems ?? 0);
+  const extractedImages = Number(summary.extractedImages ?? 0);
+  const parts: string[] = [];
+  if (totalFiles > 0) parts.push(`${totalFiles} arquivo(s)`);
+  if (normalizedItems > 0) parts.push(`${normalizedItems} item(ns)`);
+  if (extractedImages > 0) parts.push(`${extractedImages} imagem(ns)`);
+  return parts.length > 0 ? parts.join(" • ") : "Resumo não disponível";
 }
 
 
@@ -1008,6 +1057,9 @@ export default function ConfiguracoesPage() {
   const [catalogForm, setCatalogForm] = useState<CatalogFormState>(createEmptyCatalogForm());
   const [catalogPhotos, setCatalogPhotos] = useState<File[]>([]);
   const [savingCatalogItem, setSavingCatalogItem] = useState(false);
+  const [poolImportFiles, setPoolImportFiles] = useState<StoreImportFileRow[]>([]);
+  const [catalogImportFiles, setCatalogImportFiles] = useState<StoreImportFileRow[]>([]);
+  const [downloadingImportFileId, setDownloadingImportFileId] = useState<string | null>(null);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -1033,6 +1085,8 @@ export default function ConfiguracoesPage() {
       setCounts({ pools: 0, quimicos: 0, acessorios: 0, outros: 0 });
       setOnboarding(null);
       setAnswers({});
+      setPoolImportFiles([]);
+      setCatalogImportFiles([]);
       setLoading(false);
       return;
     }
@@ -1079,9 +1133,71 @@ export default function ConfiguracoesPage() {
         nextCounts[category] += 1;
       }
 
+      const { data: importDestinationsData, error: importDestinationsError } = await supabase
+        .from("store_import_file_destinations")
+        .select("import_file_id, destination_type")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId)
+        .in("destination_type", ["pool", "catalog_item"]);
+
+      if (importDestinationsError) throw importDestinationsError;
+
+      const poolImportIds = new Set<string>();
+      const catalogImportIds = new Set<string>();
+
+      for (const row of ((importDestinationsData || []) as Array<{ import_file_id: string; destination_type: string }>)) {
+        const importFileId = String(row.import_file_id || "").trim();
+        const destinationType = String(row.destination_type || "").trim();
+        if (!importFileId) continue;
+        if (destinationType === "pool") poolImportIds.add(importFileId);
+        if (destinationType === "catalog_item") catalogImportIds.add(importFileId);
+      }
+
+      const allImportIds = Array.from(new Set([...poolImportIds, ...catalogImportIds]));
+      let importFilesMap = new Map<string, StoreImportFileRow>();
+
+      if (allImportIds.length > 0) {
+        const { data: importFilesData, error: importFilesError } = await supabase
+          .from("store_import_files")
+          .select(
+            "id, organization_id, store_id, source, original_file_name, mime_type, extension, size_bytes, storage_bucket, storage_path, import_summary, status, created_at, updated_at"
+          )
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .in("id", allImportIds)
+          .order("created_at", { ascending: false });
+
+        if (importFilesError) throw importFilesError;
+
+        importFilesMap = new Map(
+          ((importFilesData || []) as StoreImportFileRow[]).map((item) => [item.id, item])
+        );
+      }
+
+      const nextPoolImportFiles = Array.from(poolImportIds)
+        .map((id) => importFilesMap.get(id))
+        .filter(Boolean) as StoreImportFileRow[];
+      const nextCatalogImportFiles = Array.from(catalogImportIds)
+        .map((id) => importFilesMap.get(id))
+        .filter(Boolean) as StoreImportFileRow[];
+
+      nextPoolImportFiles.sort((a, b) => {
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return bTime - aTime;
+      });
+
+      nextCatalogImportFiles.sort((a, b) => {
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return bTime - aTime;
+      });
+
       setCounts(nextCounts);
       setOnboarding((onboardingResult.data ?? null) as OnboardingRow | null);
       setAnswers((answersResult.data ?? {}) as AnswersMap);
+      setPoolImportFiles(nextPoolImportFiles);
+      setCatalogImportFiles(nextCatalogImportFiles);
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao carregar a visão geral das configurações.");
     } finally {
@@ -2405,6 +2521,35 @@ export default function ConfiguracoesPage() {
     }
   }, [organizationId, activeStoreId, catalogForm, catalogPhotos, fetchPageData]);
 
+  const handleDownloadImportFile = useCallback(
+    async (file: StoreImportFileRow) => {
+      const bucket = cleanText(file.storage_bucket);
+      const path = cleanText(file.storage_path);
+
+      if (!bucket || !path) {
+        setErrorText("Este arquivo bruto não possui bucket ou caminho válido para download.");
+        setSuccessText(null);
+        return;
+      }
+
+      setDownloadingImportFileId(file.id);
+      setErrorText(null);
+
+      try {
+        const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60);
+        if (error) throw error;
+        if (!data?.signedUrl) throw new Error("Não foi possível gerar o link temporário deste arquivo.");
+        window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+      } catch (error: any) {
+        setErrorText(error?.message ?? "Erro ao gerar o download do arquivo bruto.");
+        setSuccessText(null);
+      } finally {
+        setDownloadingImportFileId(null);
+      }
+    },
+    []
+  );
+
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setErrorText("Nenhuma loja ativa foi encontrada para apagar o catálogo.");
@@ -3434,6 +3579,61 @@ export default function ConfiguracoesPage() {
               </div>
             </div>
           </SectionBlock>
+
+          <SectionBlock
+            title="Arquivos brutos importados"
+            description="Esses são os arquivos originais usados no upload inteligente que geraram piscinas no sistema. Este bloco deve ficar sempre no final da aba."
+          >
+            {poolImportFiles.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                Nenhum arquivo bruto importado foi encontrado para piscinas ainda.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {poolImportFiles.map((file) => (
+                  <div
+                    key={file.id}
+                    className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="break-words text-sm font-semibold text-gray-900">
+                          {cleanText(file.original_file_name) || "Arquivo sem nome"}
+                        </div>
+                        <div className="mt-1 text-xs text-gray-500">
+                          Importado em {formatImportDate(file.created_at)}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleDownloadImportFile(file)}
+                        disabled={downloadingImportFileId === file.id}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {downloadingImportFileId === file.id ? "Gerando link..." : "Baixar arquivo bruto"}
+                      </button>
+                    </div>
+
+                    <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                        Tipo: {cleanText(file.extension)?.toUpperCase() || cleanText(file.mime_type) || "Não definido"}
+                      </div>
+                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                        Tamanho: {formatFileSize(file.size_bytes)}
+                      </div>
+                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                        Status: {cleanText(file.status) || "Não definido"}
+                      </div>
+                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                        Resumo: {getImportSummaryText(file.import_summary || null)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionBlock>
         </div>
       ) : null}
 
@@ -3704,6 +3904,61 @@ export default function ConfiguracoesPage() {
                 />
               </div>
             </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="Arquivos brutos importados"
+            description="Esses são os arquivos originais usados no upload inteligente que geraram produtos, químicos, acessórios ou outros itens no sistema. Este bloco deve ficar sempre no final da aba."
+          >
+            {catalogImportFiles.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                Nenhum arquivo bruto importado foi encontrado para produtos e acessórios ainda.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {catalogImportFiles.map((file) => (
+                  <div
+                    key={file.id}
+                    className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="break-words text-sm font-semibold text-gray-900">
+                          {cleanText(file.original_file_name) || "Arquivo sem nome"}
+                        </div>
+                        <div className="mt-1 text-xs text-gray-500">
+                          Importado em {formatImportDate(file.created_at)}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleDownloadImportFile(file)}
+                        disabled={downloadingImportFileId === file.id}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {downloadingImportFileId === file.id ? "Gerando link..." : "Baixar arquivo bruto"}
+                      </button>
+                    </div>
+
+                    <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                        Tipo: {cleanText(file.extension)?.toUpperCase() || cleanText(file.mime_type) || "Não definido"}
+                      </div>
+                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                        Tamanho: {formatFileSize(file.size_bytes)}
+                      </div>
+                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                        Status: {cleanText(file.status) || "Não definido"}
+                      </div>
+                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                        Resumo: {getImportSummaryText(file.import_summary || null)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </SectionBlock>
         </div>
       ) : null}
