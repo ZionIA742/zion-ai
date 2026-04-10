@@ -115,6 +115,19 @@ type CommercialDraftState = {
   commercial_ai_summary: string;
 };
 
+
+type ResponsiblePersonDraft = {
+  id: string;
+  name: string;
+  whatsapp: string;
+  role: string;
+  receives_ai_alerts: boolean;
+  can_approve_discount: boolean;
+  can_approve_exceptions: boolean;
+  can_assume_human: boolean;
+  notes: string;
+};
+
 type StatusTone = "green" | "amber" | "red" | "gray";
 
 type SettingsTabId =
@@ -243,36 +256,31 @@ const ACTIVATION_STYLE_OPTIONS: Option[] = [
   { value: "priorizar_agendamento", label: "Priorizar visita ou agendamento" },
 ];
 
+const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
+  { value: "nao_prometer_fora_escopo", label: "Nunca prometer fora do escopo" },
+  { value: "encaminhar_humano_casos_criticos", label: "Chamar humano em casos críticos" },
+];
 
 const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
   { value: "parcelado", label: "Parcelado" },
   { value: "a_vista", label: "À vista" },
-  { value: "financiamento", label: "Financiamento" },
-  { value: "entrada_mais_parcelas", label: "Entrada + parcelas" },
+  { value: "sinal_mais_parcelas", label: "Sinal + parcelas" },
+  { value: "sob_analise", label: "Sob análise" },
 ];
 
 const PRICE_TALK_MODE_OPTIONS: Option[] = [
   { value: "quando_cliente_perguntar", label: "Quando o cliente perguntar" },
-  { value: "so_depois_de_qualificar", label: "Só depois de qualificar" },
-  { value: "so_depois_de_entender_contexto", label: "Só depois de entender o contexto" },
-  { value: "preferir_faixa_inicial", label: "Preferir faixa inicial antes do valor exato" },
-  { value: "sempre_com_cuidado", label: "Sempre com cuidado e contexto" },
+  { value: "so_quando_fizer_sentido", label: "Só quando fizer sentido" },
+  { value: "com_contexto_antes", label: "Primeiro com contexto, depois preço" },
 ];
 
 const SALES_FLOW_FINAL_OPTIONS: Option[] = [
   { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
   { value: "instalacao", label: "Instalação" },
-  { value: "confirmacao_entrega", label: "Confirmação de entrega" },
+  { value: "entrega_final", label: "Entrega final" },
   { value: "pos_venda", label: "Pós-venda" },
-  { value: "pedido_avaliacao", label: "Pedido de avaliação" },
 ];
 
-const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
-  { value: "nao_prometer_fora_escopo", label: "Nunca prometer fora do escopo" },
-  { value: "encaminhar_humano_casos_criticos", label: "Chamar humano em casos críticos" },
-  { value: "nao_confirmar_prazo_sem_validar", label: "Não confirmar prazo sem validar" },
-  { value: "nao_confirmar_valor_sem_contexto", label: "Não confirmar valor sem contexto" },
-];
 
 function normalizeCategory(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -364,6 +372,70 @@ function createEmptyCatalogForm(): CatalogFormState {
     is_active: true,
     track_stock: true,
   };
+}
+
+
+function createEmptyResponsibleDraft(isPrimary = false): ResponsiblePersonDraft {
+  return {
+    id: Math.random().toString(36).slice(2, 10),
+    name: "",
+    whatsapp: "",
+    role: isPrimary ? "Responsável principal" : "",
+    receives_ai_alerts: true,
+    can_approve_discount: isPrimary,
+    can_approve_exceptions: isPrimary,
+    can_assume_human: isPrimary,
+    notes: "",
+  };
+}
+
+function parseResponsiblePeopleFromAnswers(answers: AnswersMap): ResponsiblePersonDraft[] {
+  const raw = (answers as Record<string, unknown>).additional_responsibles;
+  let parsed: unknown[] = [];
+  if (Array.isArray(raw)) {
+    parsed = raw;
+  } else if (typeof raw === "string" && raw.trim()) {
+    try {
+      const json = JSON.parse(raw);
+      if (Array.isArray(json)) parsed = json;
+    } catch {}
+  }
+
+  return parsed
+    .map((item, index) => {
+      const row = (item || {}) as Record<string, unknown>;
+      const name = cleanText(row.name);
+      const whatsapp = cleanText(row.whatsapp);
+      if (!name && !whatsapp) return null;
+      return {
+        id: cleanText(row.id) || `resp-${index + 1}`,
+        name,
+        whatsapp,
+        role: cleanText(row.role),
+        receives_ai_alerts: Boolean(row.receives_ai_alerts),
+        can_approve_discount: Boolean(row.can_approve_discount),
+        can_approve_exceptions: Boolean(row.can_approve_exceptions),
+        can_assume_human: Boolean(row.can_assume_human),
+        notes: cleanText(row.notes),
+      } satisfies ResponsiblePersonDraft;
+    })
+    .filter(Boolean) as ResponsiblePersonDraft[];
+}
+
+function serializeResponsiblePeople(items: ResponsiblePersonDraft[]) {
+  return JSON.stringify(
+    items.map((item) => ({
+      id: item.id,
+      name: cleanText(item.name),
+      whatsapp: cleanText(item.whatsapp),
+      role: cleanText(item.role),
+      receives_ai_alerts: item.receives_ai_alerts,
+      can_approve_discount: item.can_approve_discount,
+      can_approve_exceptions: item.can_approve_exceptions,
+      can_assume_human: item.can_assume_human,
+      notes: cleanText(item.notes),
+    }))
+  );
 }
 
 function includesDay(values: string[], day: string) {
@@ -774,6 +846,9 @@ export default function ConfiguracoesPage() {
   const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}));
   const [isCommercialEditing, setIsCommercialEditing] = useState(false);
   const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(createCommercialDraftFromAnswers({}));
+  const [isActivationEditing, setIsActivationEditing] = useState(false);
+  const [primaryResponsibleDraft, setPrimaryResponsibleDraft] = useState<ResponsiblePersonDraft>(createEmptyResponsibleDraft(true));
+  const [additionalResponsiblesDraft, setAdditionalResponsiblesDraft] = useState<ResponsiblePersonDraft[]>([]);
   const [poolForm, setPoolForm] = useState<PoolFormState>(createEmptyPoolForm());
   const [poolPhotos, setPoolPhotos] = useState<File[]>([]);
   const [savingPool, setSavingPool] = useState(false);
@@ -1663,6 +1738,21 @@ export default function ConfiguracoesPage() {
     setCommercialDraft(createCommercialDraftFromAnswers(answers));
   }, [answers]);
 
+  useEffect(() => {
+    setPrimaryResponsibleDraft({
+      id: "principal",
+      name: cleanText(answers.responsible_name),
+      whatsapp: cleanText(answers.responsible_whatsapp),
+      role: cleanText(answers.responsible_role) || "Responsável principal",
+      receives_ai_alerts: yesNoLabel(answers.confirm_information_is_correct) !== "Não",
+      can_approve_discount: true,
+      can_approve_exceptions: true,
+      can_assume_human: true,
+      notes: cleanText(answers.final_activation_notes),
+    });
+    setAdditionalResponsiblesDraft(parseResponsiblePeopleFromAnswers(answers));
+  }, [answers]);
+
   const handleCommercialDraftChange = useCallback((key: keyof CommercialDraftState, value: string) => {
     setCommercialDraft((current) => ({
       ...current,
@@ -1698,6 +1788,70 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setIsCommercialEditing(false);
   }, [commercialDraft]);
+
+
+  const handlePrimaryResponsibleChange = useCallback(
+    (key: keyof ResponsiblePersonDraft, value: string | boolean) => {
+      setPrimaryResponsibleDraft((current) => ({
+        ...current,
+        [key]: value,
+      }));
+    },
+    []
+  );
+
+  const handleAdditionalResponsibleChange = useCallback(
+    (id: string, key: keyof ResponsiblePersonDraft, value: string | boolean) => {
+      setAdditionalResponsiblesDraft((current) =>
+        current.map((item) => (item.id === id ? { ...item, [key]: value } : item))
+      );
+    },
+    []
+  );
+
+  const handleAddResponsible = useCallback(() => {
+    setAdditionalResponsiblesDraft((current) => [...current, createEmptyResponsibleDraft(false)]);
+    setIsActivationEditing(true);
+  }, []);
+
+  const handleRemoveResponsible = useCallback((id: string) => {
+    setAdditionalResponsiblesDraft((current) => current.filter((item) => item.id !== id));
+  }, []);
+
+  const handleActivationEditCancel = useCallback(() => {
+    setPrimaryResponsibleDraft({
+      id: "principal",
+      name: cleanText(answers.responsible_name),
+      whatsapp: cleanText(answers.responsible_whatsapp),
+      role: cleanText(answers.responsible_role) || "Responsável principal",
+      receives_ai_alerts: yesNoLabel(answers.confirm_information_is_correct) !== "Não",
+      can_approve_discount: true,
+      can_approve_exceptions: true,
+      can_assume_human: true,
+      notes: cleanText(answers.final_activation_notes),
+    });
+    setAdditionalResponsiblesDraft(parseResponsiblePeopleFromAnswers(answers));
+    setIsActivationEditing(false);
+  }, [answers]);
+
+  const handleActivationEditSave = useCallback(() => {
+    const cleanAdditional = additionalResponsiblesDraft.filter(
+      (item) => cleanText(item.name) || cleanText(item.whatsapp)
+    );
+
+    setAnswers((current) => ({
+      ...current,
+      responsible_name: cleanText(primaryResponsibleDraft.name),
+      responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
+      responsible_role: cleanText(primaryResponsibleDraft.role),
+      confirm_information_is_correct: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não",
+      final_activation_notes: cleanText(primaryResponsibleDraft.notes),
+      additional_responsibles: serializeResponsiblePeople(cleanAdditional),
+    }));
+    setSuccessText("Alterações de responsável e ativação atualizadas nesta tela.");
+    setErrorText(null);
+    setIsActivationEditing(false);
+  }, [primaryResponsibleDraft, additionalResponsiblesDraft]);
 
   const handlePoolFormChange = useCallback(
     (key: keyof PoolFormState, value: string | boolean) => {
@@ -3460,9 +3614,317 @@ export default function ConfiguracoesPage() {
       {activeTab === "responsavel-ativacao" ? (
         <SectionBlock
           title="7. Responsável e ativação"
-          description="Ponte entre IA e humano responsável."
+          description="Gerencie o responsável principal, cadastre outros responsáveis da loja e revise a base mínima de ativação."
+          actions={
+            isActivationEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleActivationEditSave}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleActivationEditCancel}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsActivationEditing(true)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Editar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddResponsible}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Adicionar responsável
+                </button>
+              </>
+            )
+          }
         >
-          <SummaryList items={activationItems} />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <StatusCard
+              label="Responsável principal"
+              value={cleanText(primaryResponsibleDraft.name) || "Não cadastrado"}
+              tone={cleanText(primaryResponsibleDraft.name) ? "green" : "amber"}
+              hint={cleanText(primaryResponsibleDraft.whatsapp) || "Cadastre o contato principal da loja"}
+            />
+            <StatusCard
+              label="Outros responsáveis"
+              value={String(additionalResponsiblesDraft.filter((item) => cleanText(item.name) || cleanText(item.whatsapp)).length)}
+              tone={additionalResponsiblesDraft.length > 0 ? "green" : "gray"}
+              hint="Contatos extras para aviso, operação e exceções"
+            />
+            <StatusCard
+              label="Recebe alertas da IA"
+              value={primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não"}
+              tone={primaryResponsibleDraft.receives_ai_alerts ? "green" : "amber"}
+              hint="Lead quente, visita, instalação, pagamento e urgências"
+            />
+            <StatusCard
+              label="Status da ativação"
+              value={resolveOnboardingLabel(onboarding?.status).label}
+              tone={resolveOnboardingLabel(onboarding?.status).tone}
+              hint="Base mínima da loja para ativação operacional"
+            />
+          </div>
+
+          {isActivationEditing ? (
+            <div className="mt-4 space-y-4">
+              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <div className="mb-3 text-sm font-semibold text-gray-900">Responsável principal</div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome</span>
+                    <input
+                      value={primaryResponsibleDraft.name}
+                      onChange={(e) => handlePrimaryResponsibleChange("name", e.target.value)}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp</span>
+                    <input
+                      value={primaryResponsibleDraft.whatsapp}
+                      onChange={(e) => handlePrimaryResponsibleChange("whatsapp", e.target.value)}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cargo / função</span>
+                    <input
+                      value={primaryResponsibleDraft.role}
+                      onChange={(e) => handlePrimaryResponsibleChange("role", e.target.value)}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    />
+                  </label>
+                  <label className="space-y-1 md:col-span-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações</span>
+                    <textarea
+                      value={primaryResponsibleDraft.notes}
+                      onChange={(e) => handlePrimaryResponsibleChange("notes", e.target.value)}
+                      rows={3}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    />
+                  </label>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={primaryResponsibleDraft.receives_ai_alerts}
+                      onChange={(e) => handlePrimaryResponsibleChange("receives_ai_alerts", e.target.checked)}
+                    />
+                    Recebe alertas da IA
+                  </label>
+                  <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={primaryResponsibleDraft.can_approve_discount}
+                      onChange={(e) => handlePrimaryResponsibleChange("can_approve_discount", e.target.checked)}
+                    />
+                    Pode aprovar desconto
+                  </label>
+                  <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={primaryResponsibleDraft.can_approve_exceptions}
+                      onChange={(e) => handlePrimaryResponsibleChange("can_approve_exceptions", e.target.checked)}
+                    />
+                    Pode aprovar exceções
+                  </label>
+                  <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={primaryResponsibleDraft.can_assume_human}
+                      onChange={(e) => handlePrimaryResponsibleChange("can_assume_human", e.target.checked)}
+                    />
+                    Pode assumir conversa humana
+                  </label>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold text-gray-900">Outros responsáveis</div>
+                  <button
+                    type="button"
+                    onClick={handleAddResponsible}
+                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                  >
+                    Adicionar responsável
+                  </button>
+                </div>
+
+                {additionalResponsiblesDraft.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-300 bg-white px-4 py-4 text-sm text-gray-600">
+                    Nenhum outro responsável cadastrado ainda. Você pode adicionar manualmente por aqui.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {additionalResponsiblesDraft.map((person, index) => (
+                      <div key={person.id} className="rounded-2xl border border-gray-200 bg-white p-4">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div className="text-sm font-semibold text-gray-900">
+                            Responsável extra {index + 1}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveResponsible(person.id)}
+                            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100"
+                          >
+                            Remover
+                          </button>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <label className="space-y-1">
+                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome</span>
+                            <input
+                              value={person.name}
+                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "name", e.target.value)}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                            />
+                          </label>
+                          <label className="space-y-1">
+                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">WhatsApp</span>
+                            <input
+                              value={person.whatsapp}
+                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "whatsapp", e.target.value)}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                            />
+                          </label>
+                          <label className="space-y-1">
+                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cargo / função</span>
+                            <input
+                              value={person.role}
+                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "role", e.target.value)}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                            />
+                          </label>
+                          <label className="space-y-1 md:col-span-2">
+                            <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações</span>
+                            <textarea
+                              value={person.notes}
+                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "notes", e.target.value)}
+                              rows={2}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                            />
+                          </label>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-3">
+                          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={person.receives_ai_alerts}
+                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "receives_ai_alerts", e.target.checked)}
+                            />
+                            Recebe alertas da IA
+                          </label>
+                          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={person.can_approve_discount}
+                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "can_approve_discount", e.target.checked)}
+                            />
+                            Pode aprovar desconto
+                          </label>
+                          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={person.can_approve_exceptions}
+                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "can_approve_exceptions", e.target.checked)}
+                            />
+                            Pode aprovar exceções
+                          </label>
+                          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={person.can_assume_human}
+                              onChange={(e) => handleAdditionalResponsibleChange(person.id, "can_assume_human", e.target.checked)}
+                            />
+                            Pode assumir conversa humana
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="mt-4 space-y-4">
+              <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-gray-900">Responsável principal</div>
+                  <SummaryList
+                    items={buildBulletRows([
+                      { label: "Nome", value: cleanText(primaryResponsibleDraft.name) || "Não cadastrado" },
+                      { label: "WhatsApp", value: cleanText(primaryResponsibleDraft.whatsapp) || "Não cadastrado" },
+                      { label: "Cargo / função", value: cleanText(primaryResponsibleDraft.role) || "Não definido" },
+                      { label: "Recebe alertas da IA", value: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não" },
+                      { label: "Pode aprovar desconto", value: primaryResponsibleDraft.can_approve_discount ? "Sim" : "Não" },
+                      { label: "Pode aprovar exceções", value: primaryResponsibleDraft.can_approve_exceptions ? "Sim" : "Não" },
+                      { label: "Pode assumir conversa humana", value: primaryResponsibleDraft.can_assume_human ? "Sim" : "Não" },
+                      { label: "Observações", value: cleanText(primaryResponsibleDraft.notes) },
+                    ])}
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-gray-900">Status de ativação</div>
+                  <SummaryList
+                    items={buildBulletRows([
+                      { label: "Dados mínimos para ativação", value: yesNoLabel(answers.confirm_information_is_correct) },
+                      { label: "Checklist de ativação real", value: joinSelectedLabels(parseArrayAnswer(answers.responsible_notification_cases), RESPONSIBLE_NOTIFICATION_CASE_OPTIONS, cleanText(answers.responsible_notification_cases_other)) },
+                      { label: "Canal da IA assistente", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), ACTIVATION_STYLE_OPTIONS, cleanText(answers.activation_preferences_other)) },
+                      { label: "Status da ativação da loja", value: resolveOnboardingLabel(onboarding?.status).label },
+                    ])}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <div className="mb-2 text-sm font-semibold text-gray-900">Outros responsáveis</div>
+                {additionalResponsiblesDraft.filter((item) => cleanText(item.name) || cleanText(item.whatsapp)).length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-300 bg-white px-4 py-4 text-sm text-gray-600">
+                    Nenhum outro responsável cadastrado ainda. Use o botão "Adicionar responsável" para cadastrar manualmente.
+                  </div>
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {additionalResponsiblesDraft
+                      .filter((item) => cleanText(item.name) || cleanText(item.whatsapp))
+                      .map((person) => (
+                        <div key={person.id} className="rounded-2xl border border-gray-200 bg-white p-4">
+                          <div className="mb-2 text-sm font-semibold text-gray-900">{cleanText(person.name) || "Responsável extra"}</div>
+                          <SummaryList
+                            items={buildBulletRows([
+                              { label: "WhatsApp", value: cleanText(person.whatsapp) },
+                              { label: "Cargo / função", value: cleanText(person.role) },
+                              { label: "Recebe alertas da IA", value: person.receives_ai_alerts ? "Sim" : "Não" },
+                              { label: "Pode aprovar desconto", value: person.can_approve_discount ? "Sim" : "Não" },
+                              { label: "Pode aprovar exceções", value: person.can_approve_exceptions ? "Sim" : "Não" },
+                              { label: "Pode assumir conversa humana", value: person.can_assume_human ? "Sim" : "Não" },
+                              { label: "Observações", value: cleanText(person.notes) },
+                            ])}
+                          />
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </SectionBlock>
       ) : null}
 
