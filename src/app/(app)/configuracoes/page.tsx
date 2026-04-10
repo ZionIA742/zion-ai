@@ -77,33 +77,26 @@ type CatalogFormState = {
   track_stock: boolean;
 };
 
-type StatusTone = "green" | "amber" | "red" | "gray";
-
 type OperationDraftState = {
   operating_days: string;
   operating_hours: string;
-  installation_days: string;
-  installation_hours: string;
-  technical_visit_days: string;
-  technical_visit_hours: string;
+  installation_days_rule: string;
+  technical_visit_days_rule: string;
   serves_saturday: string;
   serves_sunday: string;
   serves_holiday: string;
   offers_installation: string;
-  installation_mode: string;
   average_installation_time_days: string;
-  installation_requirements: string;
+  installation_process_summary: string;
   offers_technical_visit: string;
-  technical_visit_fee_rule: string;
-  technical_visit_rules: string;
+  technical_visit_rules_summary: string;
   service_regions: string;
-  displacement_policy: string;
   important_limitations: string;
   agenda_capacity_rule: string;
-  agenda_exception_rule: string;
   operational_ai_summary: string;
 };
 
+type StatusTone = "green" | "amber" | "red" | "gray";
 
 type SettingsTabId =
   | "visao-geral"
@@ -323,52 +316,87 @@ function createEmptyCatalogForm(): CatalogFormState {
   };
 }
 
+function includesDay(values: string[], day: string) {
+  return values.map((value) => normalizeLoose(value)).includes(normalizeLoose(day));
+}
 
+function normalizeLoose(value: unknown) {
+  return String(value ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim();
+}
+
+function deriveWeekendAvailabilityLabel(answers: AnswersMap, day: "sábado" | "domingo") {
+  const explicit = cleanText((answers as Record<string, unknown>)[day === "sábado" ? "serves_saturday" : "serves_sunday"]);
+  if (explicit) return yesNoLabel(explicit);
+
+  const installationDays = parseArrayAnswer(answers.installation_available_days);
+  const visitDays = parseArrayAnswer(answers.technical_visit_available_days);
+  const hasSchedules = installationDays.length > 0 || visitDays.length > 0;
+  const isSelected = includesDay(installationDays, day) || includesDay(visitDays, day);
+
+  if (isSelected) return "Sim";
+  if (hasSchedules) return "Não";
+  return "Não definido";
+}
+
+function deriveHolidayAvailabilityLabel(answers: AnswersMap) {
+  const explicit = cleanText(answers.serves_holiday);
+  if (explicit) return yesNoLabel(explicit);
+
+  const notes = [
+    cleanText(answers.installation_days_rule),
+    cleanText(answers.technical_visit_days_rule),
+    cleanText(answers.technical_visit_rules_other),
+    cleanText(answers.important_limitations_other),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (notes.includes("não atende feriado") || notes.includes("nao atende feriado")) return "Não";
+  if (notes.includes("atende feriado")) return "Sim";
+  return "Não definido";
+}
 
 function createOperationDraftFromAnswers(answers: AnswersMap): OperationDraftState {
-  const installationDays = joinSelectedLabels(
-    parseArrayAnswer(answers.installation_available_days),
-    DAYS_OF_WEEK_OPTIONS,
-    cleanText(answers.installation_days_rule)
-  );
-  const visitDays = joinSelectedLabels(
-    parseArrayAnswer(answers.technical_visit_available_days),
-    DAYS_OF_WEEK_OPTIONS,
-    cleanText(answers.technical_visit_days_rule)
-  );
-  const visitRules = joinSelectedLabels(
-    parseArrayAnswer(answers.technical_visit_rules_selected),
-    TECHNICAL_VISIT_RULE_OPTIONS,
-    cleanText(answers.technical_visit_rules_other)
-  );
-  const limitations = joinSelectedLabels(
-    parseArrayAnswer(answers.important_limitations_selected),
-    IMPORTANT_LIMITATION_OPTIONS,
-    cleanText(answers.important_limitations_other)
-  );
-
   return {
     operating_days: cleanText(answers.operating_days),
     operating_hours: cleanText(answers.operating_hours),
-    installation_days: installationDays,
-    installation_hours: cleanText(answers.installation_hours),
-    technical_visit_days: visitDays,
-    technical_visit_hours: cleanText(answers.technical_visit_hours),
-    serves_saturday: cleanText(answers.serves_saturday),
-    serves_sunday: cleanText(answers.serves_sunday),
-    serves_holiday: cleanText(answers.serves_holiday),
-    offers_installation: cleanText(answers.offers_installation),
-    installation_mode: cleanText(answers.installation_mode),
+    installation_days_rule: cleanText(answers.installation_days_rule),
+    technical_visit_days_rule: cleanText(answers.technical_visit_days_rule),
+    serves_saturday: deriveWeekendAvailabilityLabel(answers, "sábado"),
+    serves_sunday: deriveWeekendAvailabilityLabel(answers, "domingo"),
+    serves_holiday: deriveHolidayAvailabilityLabel(answers),
+    offers_installation: yesNoLabel(answers.offers_installation),
     average_installation_time_days: cleanText(answers.average_installation_time_days),
-    installation_requirements: cleanText(answers.installation_requirements),
-    offers_technical_visit: cleanText(answers.offers_technical_visit),
-    technical_visit_fee_rule: cleanText(answers.technical_visit_fee_rule),
-    technical_visit_rules: visitRules,
+    installation_process_summary: joinSelectedLabels(
+      parseArrayAnswer(answers.installation_process_steps),
+      [
+        { value: "aprovacao_do_orcamento", label: "Aprovação do orçamento" },
+        { value: "pagamento_sinal", label: "Pagamento / sinal" },
+        { value: "confirmacao_do_pagamento", label: "Confirmação do pagamento" },
+        { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
+        { value: "instalacao", label: "Instalação" },
+        { value: "entrega_final", label: "Entrega final" },
+        { value: "pos_venda", label: "Pós-venda" },
+      ],
+      cleanText(answers.installation_process_other)
+    ),
+    offers_technical_visit: yesNoLabel(answers.offers_technical_visit),
+    technical_visit_rules_summary: joinSelectedLabels(
+      parseArrayAnswer(answers.technical_visit_rules_selected),
+      TECHNICAL_VISIT_RULE_OPTIONS,
+      cleanText(answers.technical_visit_rules_other)
+    ),
     service_regions: cleanText(answers.service_regions) || cleanText(answers.service_region_notes),
-    displacement_policy: cleanText(answers.displacement_policy),
-    important_limitations: limitations,
+    important_limitations: joinSelectedLabels(
+      parseArrayAnswer(answers.important_limitations_selected),
+      IMPORTANT_LIMITATION_OPTIONS,
+      cleanText(answers.important_limitations_other)
+    ),
     agenda_capacity_rule: cleanText(answers.agenda_capacity_rule) || cleanText(answers.average_human_response_time),
-    agenda_exception_rule: cleanText(answers.agenda_exception_rule),
     operational_ai_summary: cleanText(answers.operational_ai_summary),
   };
 }
@@ -396,19 +424,30 @@ function parseNumberInput(value: string) {
 function parseArrayAnswer(value: unknown): string[] {
   if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
   if (typeof value === "string") {
-    return value
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if ((trimmed.startsWith("[") && trimmed.endsWith("]")) || (trimmed.startsWith('{') && trimmed.endsWith('}')) ) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item) => String(item).trim()).filter(Boolean);
+        }
+      } catch {}
+    }
+    return trimmed
       .split(",")
-      .map((item) => item.trim())
+      .map((item) => item.replace(/^[\[\]"]+|[\[\]"]+$/g, "").trim())
       .filter(Boolean);
   }
   return [];
 }
 
 function yesNoLabel(value: unknown) {
+  if (typeof value === "boolean") return value ? "Sim" : "Não";
   const normalized = cleanText(value).toLowerCase();
   if (!normalized) return "Não definido";
-  if (normalized === "sim") return "Sim";
-  if (normalized === "não" || normalized === "nao") return "Não";
+  if (["sim", "true", "1"].includes(normalized)) return "Sim";
+  if (["não", "nao", "false", "0"].includes(normalized)) return "Não";
   return cleanText(value);
 }
 
@@ -614,16 +653,16 @@ export default function ConfiguracoesPage() {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
   const [isOverviewEditing, setIsOverviewEditing] = useState(false);
   const [isStrategyEditing, setIsStrategyEditing] = useState(false);
+  const [isOperationEditing, setIsOperationEditing] = useState(false);
   const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
   const [strategyDraft, setStrategyDraft] = useState<Record<string, string>>({});
+  const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}));
   const [poolForm, setPoolForm] = useState<PoolFormState>(createEmptyPoolForm());
   const [poolPhotos, setPoolPhotos] = useState<File[]>([]);
   const [savingPool, setSavingPool] = useState(false);
   const [catalogForm, setCatalogForm] = useState<CatalogFormState>(createEmptyCatalogForm());
   const [catalogPhotos, setCatalogPhotos] = useState<File[]>([]);
   const [savingCatalogItem, setSavingCatalogItem] = useState(false);
-  const [isOperationEditing, setIsOperationEditing] = useState(false);
-  const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}));
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -745,15 +784,39 @@ export default function ConfiguracoesPage() {
       state: cleanText(answers.state),
       service_regions: cleanText(answers.service_regions),
       service_region_notes: cleanText(answers.service_region_notes),
+      service_region_modes_text: joinSelectedLabels(
+        parseArrayAnswer(answers.service_region_modes),
+        SERVICE_REGION_MODE_OPTIONS
+      ),
+      store_services_text: joinSelectedLabels(
+        parseArrayAnswer(answers.store_services),
+        STORE_SERVICE_OPTIONS
+      ),
       store_services_other: cleanText(answers.store_services_other),
+      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
       store_description: cleanText(answers.store_description),
+      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
+      strategy_sell_more: cleanText(answers.strategy_sell_more),
+      strategy_common_customer: cleanText(answers.strategy_common_customer),
+      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
+      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
+      strategy_positioning: cleanText(answers.strategy_positioning),
       main_store_brand: cleanText(answers.main_store_brand),
       brands_worked: cleanText(answers.brands_worked),
+      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
+      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
+      strategy_top_lines: cleanText(answers.strategy_top_lines),
+      strategy_top_products: cleanText(answers.strategy_top_products),
+      strategy_differentials: cleanText(answers.strategy_differentials),
+      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
+      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
+      strategy_requires_human: cleanText(answers.strategy_requires_human),
+      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
+      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
+      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
+      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
+      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
     });
-  }, [answers]);
-
-  useEffect(() => {
-    setOperationDraft(createOperationDraftFromAnswers(answers));
   }, [answers]);
 
   const totalCatalogo = useMemo(
@@ -766,28 +829,77 @@ export default function ConfiguracoesPage() {
     [onboarding?.status]
   );
 
-  const strategyItems = useMemo(() => {
+  const strategyBaseItems = useMemo(() => {
     const city = cleanText(answers.city);
     const state = cleanText(answers.state);
     const serviceRegions = cleanText(answers.service_regions);
+    const regionModes = joinSelectedLabels(
+      parseArrayAnswer(answers.service_region_modes),
+      SERVICE_REGION_MODE_OPTIONS
+    );
+
+    return buildBulletRows([
+      { label: "Cidade base", value: city },
+      { label: "Estado", value: state },
+      { label: "Região principal de atendimento", value: serviceRegions },
+      { label: "Até onde atende", value: regionModes },
+      { label: "Observações sobre cobertura", value: cleanText(answers.service_region_notes) },
+    ]);
+  }, [answers]);
+
+  const strategyServicesItems = useMemo(() => {
     const services = joinSelectedLabels(
       parseArrayAnswer(answers.store_services),
       STORE_SERVICE_OPTIONS,
       cleanText(answers.store_services_other)
     );
-    const regionModes = joinSelectedLabels(
-      parseArrayAnswer(answers.service_region_modes),
-      SERVICE_REGION_MODE_OPTIONS,
-      cleanText(answers.service_region_notes)
-    );
 
     return buildBulletRows([
-      { label: "Cidade/região de atendimento", value: [city, state].filter(Boolean).join(" / ") || serviceRegions },
-      { label: "Serviços principais da loja", value: services },
+      { label: "Serviços principais", value: services },
+      { label: "Serviços extras", value: cleanText(answers.store_services_other) },
+      { label: "Serviços que a loja não faz", value: cleanText(answers.strategy_service_exclusions) },
+    ]);
+  }, [answers]);
+
+  const strategyCommercialFocusItems = useMemo(() => {
+    return buildBulletRows([
       { label: "Tipo de loja / foco comercial", value: cleanText(answers.store_description) },
-      { label: "Marca principal / franquia principal", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
-      { label: "Perfil da operação", value: regionModes },
-      { label: "Resumo levantado na entrada da loja", value: cleanText(answers.service_region_notes) || cleanText(answers.store_description) },
+      { label: "Principal foco da loja", value: cleanText(answers.strategy_primary_focus) },
+      { label: "O que quer vender mais", value: cleanText(answers.strategy_sell_more) },
+      { label: "Tipo de cliente mais comum", value: cleanText(answers.strategy_common_customer) },
+      { label: "Tipo de cliente ideal", value: cleanText(answers.strategy_ideal_customer) },
+      { label: "Faixa de ticket mais comum", value: cleanText(answers.strategy_ticket_range) },
+      { label: "Posicionamento da loja", value: cleanText(answers.strategy_positioning) },
+    ]);
+  }, [answers]);
+
+  const strategyBrandsItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Marca principal", value: cleanText(answers.main_store_brand) },
+      { label: "Outras marcas trabalhadas", value: cleanText(answers.brands_worked) },
+      { label: "Marcas prioritárias", value: cleanText(answers.strategy_priority_brands) },
+      { label: "Marcas que não trabalha", value: cleanText(answers.strategy_non_worked_brands) },
+      { label: "Linhas principais", value: cleanText(answers.strategy_top_lines) },
+      { label: "Produtos com maior giro", value: cleanText(answers.strategy_top_products) },
+    ]);
+  }, [answers]);
+
+  const strategyDifferentialsItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Diferenciais da loja", value: cleanText(answers.strategy_differentials) },
+      { label: "O que não pode prometer", value: cleanText(answers.strategy_promise_limits) },
+      { label: "O que depende de visita", value: cleanText(answers.strategy_requires_visit) },
+      { label: "O que depende de humano", value: cleanText(answers.strategy_requires_human) },
+      { label: "Casos de exceção", value: cleanText(answers.strategy_exception_cases) },
+    ]);
+  }, [answers]);
+
+  const strategyAiSummaryItems = useMemo(() => {
+    return buildBulletRows([
+      { label: "Como a IA deve entender a loja", value: cleanText(answers.strategy_ai_store_summary) },
+      { label: "Como deve apresentar a loja", value: cleanText(answers.strategy_ai_presentation) },
+      { label: "O que a IA deve priorizar", value: cleanText(answers.strategy_ai_priorities) },
+      { label: "O que nunca deve esquecer", value: cleanText(answers.strategy_ai_never_forget) },
     ]);
   }, [answers]);
 
@@ -885,7 +997,50 @@ export default function ConfiguracoesPage() {
     ]);
   }, [counts.quimicos, counts.acessorios, counts.outros, totalCatalogo]);
 
+  const installationDaysSelected = useMemo(
+    () => parseArrayAnswer(answers.installation_available_days),
+    [answers.installation_available_days]
+  );
+
+  const technicalVisitDaysSelected = useMemo(
+    () => parseArrayAnswer(answers.technical_visit_available_days),
+    [answers.technical_visit_available_days]
+  );
+
+  const installationDaysLabel = useMemo(
+    () => joinSelectedLabels(installationDaysSelected, DAYS_OF_WEEK_OPTIONS),
+    [installationDaysSelected]
+  );
+
+  const technicalVisitDaysLabel = useMemo(
+    () => joinSelectedLabels(technicalVisitDaysSelected, DAYS_OF_WEEK_OPTIONS),
+    [technicalVisitDaysSelected]
+  );
+
+  const technicalVisitRulesLabel = useMemo(
+    () => joinSelectedLabels(
+      parseArrayAnswer(answers.technical_visit_rules_selected),
+      TECHNICAL_VISIT_RULE_OPTIONS,
+      cleanText(answers.technical_visit_rules_other)
+    ),
+    [answers]
+  );
+
+  const importantLimitationsLabel = useMemo(
+    () => joinSelectedLabels(
+      parseArrayAnswer(answers.important_limitations_selected),
+      IMPORTANT_LIMITATION_OPTIONS,
+      cleanText(answers.important_limitations_other)
+    ),
+    [answers]
+  );
+
+  const servesSaturdayLabel = useMemo(() => deriveWeekendAvailabilityLabel(answers, "sábado"), [answers]);
+  const servesSundayLabel = useMemo(() => deriveWeekendAvailabilityLabel(answers, "domingo"), [answers]);
+  const servesHolidayLabel = useMemo(() => deriveHolidayAvailabilityLabel(answers), [answers]);
+
   const operationReadinessMetrics = useMemo(() => {
+    const hasOperationalSchedule = installationDaysSelected.length > 0 || technicalVisitDaysSelected.length > 0;
     const hasInstallation = yesNoLabel(answers.offers_installation) === "Sim";
     const hasVisit = yesNoLabel(answers.offers_technical_visit) === "Sim";
     const serviceRegions = cleanText(answers.service_regions) || cleanText(answers.service_region_notes);
@@ -893,21 +1048,21 @@ export default function ConfiguracoesPage() {
     return [
       {
         label: "Atendimento operacional",
-        value: cleanText(answers.operating_hours) || cleanText(answers.operating_days) ? "Configurado" : "Pendente",
-        tone: cleanText(answers.operating_hours) || cleanText(answers.operating_days) ? ("green" as const) : ("amber" as const),
-        hint: cleanText(answers.operating_days) || "Defina dias e horários de atendimento",
+        value: hasOperationalSchedule ? "Configurado" : "Pendente",
+        tone: hasOperationalSchedule ? ("green" as const) : ("amber" as const),
+        hint: installationDaysLabel || technicalVisitDaysLabel || "Defina os dias reais de operação",
       },
       {
         label: "Instalação",
         value: hasInstallation ? "Ativa" : "Não configurada",
         tone: hasInstallation ? ("green" as const) : ("gray" as const),
-        hint: cleanText(answers.average_installation_time_days) ? `Prazo médio: ${cleanText(answers.average_installation_time_days)} dia(s)` : "Defina prazo e regras de instalação",
+        hint: cleanText(answers.average_installation_time_days) ? `Prazo médio: ${cleanText(answers.average_installation_time_days)} dia(s)` : "Defina prazo e etapas da instalação",
       },
       {
         label: "Visita técnica",
         value: hasVisit ? "Ativa" : "Não configurada",
         tone: hasVisit ? ("green" as const) : ("gray" as const),
-        hint: cleanText(answers.technical_visit_days_rule) || "Defina regras e disponibilidade de visita",
+        hint: technicalVisitRulesLabel || technicalVisitDaysLabel || "Defina regras e disponibilidade de visita",
       },
       {
         label: "Cobertura",
@@ -916,82 +1071,62 @@ export default function ConfiguracoesPage() {
         hint: serviceRegions || "Defina regiões e política de deslocamento",
       },
     ];
-  }, [answers]);
+  }, [answers, installationDaysSelected.length, technicalVisitDaysSelected.length, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel]);
 
   const operationSections = useMemo(() => {
-    const installationDays = joinSelectedLabels(
-      parseArrayAnswer(answers.installation_available_days),
-      DAYS_OF_WEEK_OPTIONS,
-      cleanText(answers.installation_days_rule)
-    );
-    const visitDays = joinSelectedLabels(
-      parseArrayAnswer(answers.technical_visit_available_days),
-      DAYS_OF_WEEK_OPTIONS,
-      cleanText(answers.technical_visit_days_rule)
-    );
-    const visitRules = joinSelectedLabels(
-      parseArrayAnswer(answers.technical_visit_rules_selected),
-      TECHNICAL_VISIT_RULE_OPTIONS,
-      cleanText(answers.technical_visit_rules_other)
-    );
-    const limitations = joinSelectedLabels(
-      parseArrayAnswer(answers.important_limitations_selected),
-      IMPORTANT_LIMITATION_OPTIONS,
-      cleanText(answers.important_limitations_other)
-    );
-
     return [
       {
         title: "Disponibilidade operacional",
         items: buildBulletRows([
-          { label: "Dias de atendimento", value: cleanText(answers.operating_days) },
-          { label: "Horário de atendimento", value: cleanText(answers.operating_hours) },
-          { label: "Dias de instalação", value: installationDays },
-          { label: "Horários de instalação", value: cleanText(answers.installation_hours) },
-          { label: "Dias de visita técnica", value: visitDays },
-          { label: "Horários de visita técnica", value: cleanText(answers.technical_visit_hours) },
-          { label: "Atende sábado", value: yesNoLabel(answers.serves_saturday) },
-          { label: "Atende domingo", value: yesNoLabel(answers.serves_sunday) },
-          { label: "Atende feriado", value: yesNoLabel(answers.serves_holiday) },
+          { label: "Dias de instalação", value: installationDaysLabel },
+          { label: "Regra complementar da instalação", value: cleanText(answers.installation_days_rule) },
+          { label: "Dias de visita técnica", value: technicalVisitDaysLabel },
+          { label: "Regra complementar da visita técnica", value: cleanText(answers.technical_visit_days_rule) },
+          { label: "Atende sábado", value: servesSaturdayLabel },
+          { label: "Atende domingo", value: servesSundayLabel },
+          { label: "Atende feriado", value: servesHolidayLabel },
         ]),
       },
       {
         title: "Visita técnica",
         items: buildBulletRows([
           { label: "Faz visita técnica", value: yesNoLabel(answers.offers_technical_visit) },
-          { label: "Regra de cobrança", value: cleanText(answers.technical_visit_fee_rule) },
-          { label: "Regras da visita", value: visitRules },
-          { label: "Observações adicionais", value: cleanText(answers.technical_visit_rules_other) },
+          { label: "Regras da visita", value: technicalVisitRulesLabel },
         ]),
       },
       {
         title: "Instalação",
         items: buildBulletRows([
           { label: "Faz instalação", value: yesNoLabel(answers.offers_installation) },
-          { label: "Modelo de instalação", value: cleanText(answers.installation_mode) },
-          { label: "Prazo médio", value: cleanText(answers.average_installation_time_days) ? `${cleanText(answers.average_installation_time_days)} dia(s)` : "" },
-          { label: "Pré-requisitos e etapas", value: cleanText(answers.installation_requirements) },
+          { label: "Prazo médio", value: cleanText(answers.average_installation_time_days) ? `${cleanText(answers.average_installation_time_days)} dia(s)` : "Não definido" },
+          { label: "Etapas principais da instalação", value: joinSelectedLabels(parseArrayAnswer(answers.installation_process_steps), [
+            { value: "aprovacao_do_orcamento", label: "Aprovação do orçamento" },
+            { value: "pagamento_sinal", label: "Pagamento / sinal" },
+            { value: "confirmacao_do_pagamento", label: "Confirmação do pagamento" },
+            { value: "agendamento_da_instalacao", label: "Agendamento da instalação" },
+            { value: "instalacao", label: "Instalação" },
+            { value: "entrega_final", label: "Entrega final" },
+            { value: "pos_venda", label: "Pós-venda" },
+          ], cleanText(answers.installation_process_other)) },
         ]),
       },
       {
         title: "Cobertura e deslocamento",
         items: buildBulletRows([
           { label: "Regiões atendidas", value: cleanText(answers.service_regions) || cleanText(answers.service_region_notes) },
-          { label: "Política de deslocamento", value: cleanText(answers.displacement_policy) },
+          { label: "Cobertura principal", value: joinSelectedLabels(parseArrayAnswer(answers.service_region_modes), SERVICE_REGION_MODE_OPTIONS) },
         ]),
       },
       {
         title: "Limites operacionais",
         items: buildBulletRows([
-          { label: "Limitações importantes", value: limitations },
-          { label: "Casos que dependem de análise", value: cleanText(answers.installation_requirements) },
+          { label: "Limitações importantes", value: importantLimitationsLabel },
         ]),
       },
       {
         title: "Capacidade da agenda",
         items: buildBulletRows([
-          { label: "Regra de capacidade", value: cleanText(answers.agenda_capacity_rule) || cleanText(answers.average_human_response_time) },
-          { label: "Regras de exceção", value: cleanText(answers.agenda_exception_rule) },
+          { label: "Regra de capacidade", value: cleanText(answers.average_human_response_time) || cleanText(answers.agenda_capacity_rule) },
         ]),
       },
       {
@@ -1001,7 +1136,7 @@ export default function ConfiguracoesPage() {
         ]),
       },
     ];
-  }, [answers]);
+  }, [answers, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, importantLimitationsLabel, servesSaturdayLabel, servesSundayLabel, servesHolidayLabel]);
 
   const commercialItems = useMemo(() => {
     const payments = joinSelectedLabels(
@@ -1226,10 +1361,38 @@ export default function ConfiguracoesPage() {
       state: cleanText(answers.state),
       service_regions: cleanText(answers.service_regions),
       service_region_notes: cleanText(answers.service_region_notes),
+      service_region_modes_text: joinSelectedLabels(
+        parseArrayAnswer(answers.service_region_modes),
+        SERVICE_REGION_MODE_OPTIONS
+      ),
+      store_services_text: joinSelectedLabels(
+        parseArrayAnswer(answers.store_services),
+        STORE_SERVICE_OPTIONS
+      ),
       store_services_other: cleanText(answers.store_services_other),
+      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
       store_description: cleanText(answers.store_description),
+      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
+      strategy_sell_more: cleanText(answers.strategy_sell_more),
+      strategy_common_customer: cleanText(answers.strategy_common_customer),
+      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
+      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
+      strategy_positioning: cleanText(answers.strategy_positioning),
       main_store_brand: cleanText(answers.main_store_brand),
       brands_worked: cleanText(answers.brands_worked),
+      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
+      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
+      strategy_top_lines: cleanText(answers.strategy_top_lines),
+      strategy_top_products: cleanText(answers.strategy_top_products),
+      strategy_differentials: cleanText(answers.strategy_differentials),
+      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
+      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
+      strategy_requires_human: cleanText(answers.strategy_requires_human),
+      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
+      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
+      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
+      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
+      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
     });
     setIsStrategyEditing(true);
   }, [answers]);
@@ -1240,10 +1403,38 @@ export default function ConfiguracoesPage() {
       state: cleanText(answers.state),
       service_regions: cleanText(answers.service_regions),
       service_region_notes: cleanText(answers.service_region_notes),
+      service_region_modes_text: joinSelectedLabels(
+        parseArrayAnswer(answers.service_region_modes),
+        SERVICE_REGION_MODE_OPTIONS
+      ),
+      store_services_text: joinSelectedLabels(
+        parseArrayAnswer(answers.store_services),
+        STORE_SERVICE_OPTIONS
+      ),
       store_services_other: cleanText(answers.store_services_other),
+      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
       store_description: cleanText(answers.store_description),
+      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
+      strategy_sell_more: cleanText(answers.strategy_sell_more),
+      strategy_common_customer: cleanText(answers.strategy_common_customer),
+      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
+      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
+      strategy_positioning: cleanText(answers.strategy_positioning),
       main_store_brand: cleanText(answers.main_store_brand),
       brands_worked: cleanText(answers.brands_worked),
+      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
+      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
+      strategy_top_lines: cleanText(answers.strategy_top_lines),
+      strategy_top_products: cleanText(answers.strategy_top_products),
+      strategy_differentials: cleanText(answers.strategy_differentials),
+      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
+      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
+      strategy_requires_human: cleanText(answers.strategy_requires_human),
+      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
+      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
+      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
+      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
+      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
     });
     setIsStrategyEditing(false);
   }, [answers]);
@@ -1259,11 +1450,36 @@ export default function ConfiguracoesPage() {
       store_description: strategyDraft.store_description,
       main_store_brand: strategyDraft.main_store_brand,
       brands_worked: strategyDraft.brands_worked,
+      strategy_service_exclusions: strategyDraft.strategy_service_exclusions,
+      strategy_primary_focus: strategyDraft.strategy_primary_focus,
+      strategy_sell_more: strategyDraft.strategy_sell_more,
+      strategy_common_customer: strategyDraft.strategy_common_customer,
+      strategy_ideal_customer: strategyDraft.strategy_ideal_customer,
+      strategy_ticket_range: strategyDraft.strategy_ticket_range,
+      strategy_positioning: strategyDraft.strategy_positioning,
+      strategy_priority_brands: strategyDraft.strategy_priority_brands,
+      strategy_non_worked_brands: strategyDraft.strategy_non_worked_brands,
+      strategy_top_lines: strategyDraft.strategy_top_lines,
+      strategy_top_products: strategyDraft.strategy_top_products,
+      strategy_differentials: strategyDraft.strategy_differentials,
+      strategy_promise_limits: strategyDraft.strategy_promise_limits,
+      strategy_requires_visit: strategyDraft.strategy_requires_visit,
+      strategy_requires_human: strategyDraft.strategy_requires_human,
+      strategy_exception_cases: strategyDraft.strategy_exception_cases,
+      strategy_ai_store_summary: strategyDraft.strategy_ai_store_summary,
+      strategy_ai_presentation: strategyDraft.strategy_ai_presentation,
+      strategy_ai_priorities: strategyDraft.strategy_ai_priorities,
+      strategy_ai_never_forget: strategyDraft.strategy_ai_never_forget,
     }));
     setSuccessText("Alterações da estratégia atualizadas nesta tela.");
     setErrorText(null);
     setIsStrategyEditing(false);
   }, [strategyDraft]);
+
+
+  useEffect(() => {
+    setOperationDraft(createOperationDraftFromAnswers(answers));
+  }, [answers]);
 
   const handleOperationDraftChange = useCallback((key: keyof OperationDraftState, value: string) => {
     setOperationDraft((current) => ({
@@ -1282,25 +1498,19 @@ export default function ConfiguracoesPage() {
       ...current,
       operating_days: operationDraft.operating_days,
       operating_hours: operationDraft.operating_hours,
-      installation_days_rule: operationDraft.installation_days,
-      installation_hours: operationDraft.installation_hours,
-      technical_visit_days_rule: operationDraft.technical_visit_days,
-      technical_visit_hours: operationDraft.technical_visit_hours,
+      installation_days_rule: operationDraft.installation_days_rule,
+      technical_visit_days_rule: operationDraft.technical_visit_days_rule,
       serves_saturday: operationDraft.serves_saturday,
       serves_sunday: operationDraft.serves_sunday,
       serves_holiday: operationDraft.serves_holiday,
       offers_installation: operationDraft.offers_installation,
-      installation_mode: operationDraft.installation_mode,
       average_installation_time_days: operationDraft.average_installation_time_days,
-      installation_requirements: operationDraft.installation_requirements,
+      installation_process_other: operationDraft.installation_process_summary,
       offers_technical_visit: operationDraft.offers_technical_visit,
-      technical_visit_fee_rule: operationDraft.technical_visit_fee_rule,
-      technical_visit_rules_other: operationDraft.technical_visit_rules,
+      technical_visit_rules_other: operationDraft.technical_visit_rules_summary,
       service_regions: operationDraft.service_regions,
-      displacement_policy: operationDraft.displacement_policy,
       important_limitations_other: operationDraft.important_limitations,
       agenda_capacity_rule: operationDraft.agenda_capacity_rule,
-      agenda_exception_rule: operationDraft.agenda_exception_rule,
       operational_ai_summary: operationDraft.operational_ai_summary,
     }));
     setSuccessText("Alterações da operação atualizadas nesta tela.");
@@ -1923,107 +2133,368 @@ export default function ConfiguracoesPage() {
           }
         >
           {isStrategyEditing ? (
-            <div className="rounded-2xl border border-black/10 bg-gray-50 p-4">
-              <div className="mb-1 text-sm font-semibold text-gray-900">Editar estratégia na mesma página</div>
-              <div className="mb-3 text-xs text-gray-600">
-                Aqui você pode completar ou adicionar informações que estejam faltando no onboarding.
-              </div>
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-black/10 bg-gray-50 p-4">
+                <div className="mb-1 text-sm font-semibold text-gray-900">Editar estratégia na mesma página</div>
+                <div className="mb-3 text-xs text-gray-600">
+                  Aqui você pode completar ou adicionar informações que estejam faltando no onboarding.
+                </div>
 
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Cidade
-                  </span>
-                  <input
-                    value={strategyDraft.city ?? ""}
-                    onChange={(event) => handleStrategyDraftChange("city", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">1. Base de atuação da loja</div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cidade principal</span>
+                        <input
+                          value={strategyDraft.city ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("city", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
 
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Estado
-                  </span>
-                  <input
-                    value={strategyDraft.state ?? ""}
-                    onChange={(event) => handleStrategyDraftChange("state", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estado</span>
+                        <input
+                          value={strategyDraft.state ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("state", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
 
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Região de atendimento
-                  </span>
-                  <input
-                    value={strategyDraft.service_regions ?? ""}
-                    onChange={(event) => handleStrategyDraftChange("service_regions", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Região principal de atendimento</span>
+                        <input
+                          value={strategyDraft.service_regions ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("service_regions", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
 
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Serviços adicionais ou faltando
-                  </span>
-                  <input
-                    value={strategyDraft.store_services_other ?? ""}
-                    onChange={(event) => handleStrategyDraftChange("store_services_other", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: reforma, assistência, automação..."
-                  />
-                </label>
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Até onde atende</span>
+                        <input
+                          value={strategyDraft.service_region_modes_text ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("service_region_modes_text", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: cidade + cidades vizinhas, todo o estado, sob consulta..."
+                        />
+                      </label>
 
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Descrição da loja
-                  </span>
-                  <textarea
-                    value={strategyDraft.store_description ?? ""}
-                    onChange={(event) => handleStrategyDraftChange("store_description", event.target.value)}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações sobre cobertura</span>
+                        <textarea
+                          value={strategyDraft.service_region_notes ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("service_region_notes", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+                    </div>
+                  </div>
 
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Marca principal
-                  </span>
-                  <input
-                    value={strategyDraft.main_store_brand ?? ""}
-                    onChange={(event) => handleStrategyDraftChange("main_store_brand", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">2. Serviços que a loja oferece</div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Serviços principais</span>
+                        <input
+                          value={strategyDraft.store_services_text ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("store_services_text", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: venda de piscinas, instalação, visita técnica..."
+                        />
+                      </label>
 
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Outras marcas
-                  </span>
-                  <input
-                    value={strategyDraft.brands_worked ?? ""}
-                    onChange={(event) => handleStrategyDraftChange("brands_worked", event.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Outros serviços</span>
+                        <input
+                          value={strategyDraft.store_services_other ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("store_services_other", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
 
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
-                    Observações de região e posicionamento
-                  </span>
-                  <textarea
-                    value={strategyDraft.service_region_notes ?? ""}
-                    onChange={(event) => handleStrategyDraftChange("service_region_notes", event.target.value)}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Serviços que não faz</span>
+                        <input
+                          value={strategyDraft.strategy_service_exclusions ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_service_exclusions", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: não faz obra do entorno, não faz manutenção..."
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">3. Foco comercial da loja</div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de loja / foco comercial</span>
+                        <textarea
+                          value={strategyDraft.store_description ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("store_description", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Principal foco da loja</span>
+                        <input
+                          value={strategyDraft.strategy_primary_focus ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_primary_focus", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que quer vender mais</span>
+                        <input
+                          value={strategyDraft.strategy_sell_more ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_sell_more", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de cliente mais comum</span>
+                        <input
+                          value={strategyDraft.strategy_common_customer ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_common_customer", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de cliente ideal</span>
+                        <input
+                          value={strategyDraft.strategy_ideal_customer ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_ideal_customer", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faixa de ticket mais comum</span>
+                        <input
+                          value={strategyDraft.strategy_ticket_range ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_ticket_range", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Posicionamento comercial</span>
+                        <input
+                          value={strategyDraft.strategy_positioning ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_positioning", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: consultiva, premium, técnica, popular..."
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">4. Marcas, linhas e produtos trabalhados</div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca principal</span>
+                        <input
+                          value={strategyDraft.main_store_brand ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("main_store_brand", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Outras marcas</span>
+                        <input
+                          value={strategyDraft.brands_worked ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("brands_worked", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marcas que prefere priorizar</span>
+                        <input
+                          value={strategyDraft.strategy_priority_brands ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_priority_brands", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marcas ou linhas que não trabalha</span>
+                        <input
+                          value={strategyDraft.strategy_non_worked_brands ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_non_worked_brands", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Linhas principais vendidas</span>
+                        <input
+                          value={strategyDraft.strategy_top_lines ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_top_lines", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Produtos com maior giro</span>
+                        <input
+                          value={strategyDraft.strategy_top_products ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_top_products", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">5. Diferenciais, limites e restrições</div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Diferenciais da loja</span>
+                        <textarea
+                          value={strategyDraft.strategy_differentials ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_differentials", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: frete grátis, envio no mesmo dia, instalação própria..."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a loja não promete</span>
+                        <textarea
+                          value={strategyDraft.strategy_promise_limits ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_promise_limits", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que depende de visita</span>
+                        <textarea
+                          value={strategyDraft.strategy_requires_visit ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_requires_visit", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que depende de humano</span>
+                        <textarea
+                          value={strategyDraft.strategy_requires_human ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_requires_human", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Casos de exceção importantes</span>
+                        <textarea
+                          value={strategyDraft.strategy_exception_cases ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_exception_cases", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">6. Resumo estratégico para a IA</div>
+                    <div className="grid gap-3">
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA deve entender a loja</span>
+                        <textarea
+                          value={strategyDraft.strategy_ai_store_summary ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_ai_store_summary", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA deve apresentar a loja</span>
+                        <textarea
+                          value={strategyDraft.strategy_ai_presentation ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_ai_presentation", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA deve priorizar</span>
+                        <textarea
+                          value={strategyDraft.strategy_ai_priorities ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_ai_priorities", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA nunca deve esquecer</span>
+                        <textarea
+                          value={strategyDraft.strategy_ai_never_forget ?? ""}
+                          onChange={(event) => handleStrategyDraftChange("strategy_ai_never_forget", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           ) : (
-            <SummaryList items={strategyItems} />
+            <div className="space-y-4">
+              <div className="grid gap-4 xl:grid-cols-2">
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-gray-900">1. Base de atuação da loja</div>
+                  <SummaryList items={strategyBaseItems} />
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-gray-900">2. Serviços que a loja oferece</div>
+                  <SummaryList items={strategyServicesItems} />
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-gray-900">3. Foco comercial da loja</div>
+                  <SummaryList items={strategyCommercialFocusItems} />
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-gray-900">4. Marcas, linhas e produtos trabalhados</div>
+                  <SummaryList items={strategyBrandsItems} />
+                </div>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-gray-900">5. Diferenciais, limites e restrições</div>
+                  <SummaryList items={strategyDifferentialsItems} />
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 text-sm font-semibold text-gray-900">6. Resumo estratégico para a IA</div>
+                  <SummaryList items={strategyAiSummaryItems} />
+                </div>
+              </div>
+            </div>
           )}
         </SectionBlock>
       ) : null}
@@ -2596,89 +3067,61 @@ export default function ConfiguracoesPage() {
             <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
               <div className="mb-3 text-sm font-semibold text-gray-900">Editar operação na mesma página</div>
               <div className="grid gap-4 md:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dias de atendimento</span>
-                  <input value={operationDraft.operating_days} onChange={(e)=>handleOperationDraftChange("operating_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra complementar da instalação</span>
+                  <input value={operationDraft.installation_days_rule} onChange={(e)=>handleOperationDraftChange("installation_days_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Horário de atendimento</span>
-                  <input value={operationDraft.operating_hours} onChange={(e)=>handleOperationDraftChange("operating_hours", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dias de instalação</span>
-                  <input value={operationDraft.installation_days} onChange={(e)=>handleOperationDraftChange("installation_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Horários de instalação</span>
-                  <input value={operationDraft.installation_hours} onChange={(e)=>handleOperationDraftChange("installation_hours", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dias de visita técnica</span>
-                  <input value={operationDraft.technical_visit_days} onChange={(e)=>handleOperationDraftChange("technical_visit_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Horários de visita técnica</span>
-                  <input value={operationDraft.technical_visit_hours} onChange={(e)=>handleOperationDraftChange("technical_visit_hours", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra complementar da visita técnica</span>
+                  <input value={operationDraft.technical_visit_days_rule} onChange={(e)=>handleOperationDraftChange("technical_visit_days_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende sábado</span>
-                  <input value={operationDraft.serves_saturday} onChange={(e)=>handleOperationDraftChange("serves_saturday", e.target.value)} placeholder="sim ou não" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <select value={operationDraft.serves_saturday} onChange={(e)=>handleOperationDraftChange("serves_saturday", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                 </label>
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende domingo / feriado</span>
-                  <input value={`${operationDraft.serves_sunday}${operationDraft.serves_holiday ? ` • feriado: ${operationDraft.serves_holiday}` : ""}`} onChange={(e)=>handleOperationDraftChange("serves_sunday", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende domingo</span>
+                  <select value={operationDraft.serves_sunday} onChange={(e)=>handleOperationDraftChange("serves_sunday", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Atende feriado</span>
+                  <select value={operationDraft.serves_holiday} onChange={(e)=>handleOperationDraftChange("serves_holiday", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faz instalação</span>
-                  <input value={operationDraft.offers_installation} onChange={(e)=>handleOperationDraftChange("offers_installation", e.target.value)} placeholder="sim ou não" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Modelo de instalação</span>
-                  <input value={operationDraft.installation_mode} onChange={(e)=>handleOperationDraftChange("installation_mode", e.target.value)} placeholder="própria, terceirizada, mista..." className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <select value={operationDraft.offers_installation} onChange={(e)=>handleOperationDraftChange("offers_installation", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prazo médio de instalação</span>
-                  <input value={operationDraft.average_installation_time_days} onChange={(e)=>handleOperationDraftChange("average_installation_time_days", e.target.value)} placeholder="em dias" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <input value={operationDraft.average_installation_time_days} onChange={(e)=>handleOperationDraftChange("average_installation_time_days", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Etapas principais da instalação</span>
+                  <textarea value={operationDraft.installation_process_summary} onChange={(e)=>handleOperationDraftChange("installation_process_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faz visita técnica</span>
-                  <input value={operationDraft.offers_technical_visit} onChange={(e)=>handleOperationDraftChange("offers_technical_visit", e.target.value)} placeholder="sim ou não" className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <select value={operationDraft.offers_technical_visit} onChange={(e)=>handleOperationDraftChange("offers_technical_visit", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                 </label>
                 <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra de cobrança da visita</span>
-                  <input value={operationDraft.technical_visit_fee_rule} onChange={(e)=>handleOperationDraftChange("technical_visit_fee_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras da visita</span>
-                  <textarea value={operationDraft.technical_visit_rules} onChange={(e)=>handleOperationDraftChange("technical_visit_rules", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pré-requisitos e etapas da instalação</span>
-                  <textarea value={operationDraft.installation_requirements} onChange={(e)=>handleOperationDraftChange("installation_requirements", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regras da visita técnica</span>
+                  <textarea value={operationDraft.technical_visit_rules_summary} onChange={(e)=>handleOperationDraftChange("technical_visit_rules_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regiões atendidas</span>
                   <input value={operationDraft.service_regions} onChange={(e)=>handleOperationDraftChange("service_regions", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Política de deslocamento</span>
-                  <textarea value={operationDraft.displacement_policy} onChange={(e)=>handleOperationDraftChange("displacement_policy", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Limitações importantes</span>
                   <textarea value={operationDraft.important_limitations} onChange={(e)=>handleOperationDraftChange("important_limitations", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Capacidade da agenda</span>
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra de capacidade da agenda</span>
                   <input value={operationDraft.agenda_capacity_rule} onChange={(e)=>handleOperationDraftChange("agenda_capacity_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Urgências e exceções</span>
-                  <input value={operationDraft.agenda_exception_rule} onChange={(e)=>handleOperationDraftChange("agenda_exception_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1 md:col-span-2">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo operacional para a IA</span>
-                  <textarea value={operationDraft.operational_ai_summary} onChange={(e)=>handleOperationDraftChange("operational_ai_summary", e.target.value)} rows={4} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <textarea value={operationDraft.operational_ai_summary} onChange={(e)=>handleOperationDraftChange("operational_ai_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
               </div>
             </div>
