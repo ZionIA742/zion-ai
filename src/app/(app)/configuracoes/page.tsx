@@ -197,6 +197,19 @@ type ChannelDraftState = {
 };
 
 
+
+type IdentityDraftState = {
+  institutional_name: string;
+  trade_name: string;
+  ai_display_name: string;
+  ai_signature: string;
+  institutional_summary: string;
+  quote_contract_data: string;
+  brand_colors: string;
+  logo_status: string;
+  presentation_notes: string;
+};
+
 type ResponsiblePersonDraft = {
   id: string;
   name: string;
@@ -793,6 +806,62 @@ function createChannelDraftFromAnswers(answers: AnswersMap): ChannelDraftState {
   };
 }
 
+
+function createIdentityDraftFromAnswers(answers: AnswersMap, storeName: string): IdentityDraftState {
+  const institutionalName =
+    cleanText((answers as Record<string, unknown>).identity_institutional_name) ||
+    cleanText(answers.store_display_name) ||
+    storeName;
+
+  const tradeName =
+    cleanText((answers as Record<string, unknown>).identity_trade_name) ||
+    cleanText(answers.store_display_name) ||
+    storeName;
+
+  const aiDisplayName =
+    cleanText((answers as Record<string, unknown>).identity_ai_display_name) ||
+    cleanText(answers.store_display_name) ||
+    storeName;
+
+  const aiSignature =
+    cleanText((answers as Record<string, unknown>).identity_ai_signature) ||
+    cleanText(answers.store_description) ||
+    cleanText(answers.commercial_ai_summary);
+
+  const institutionalSummary =
+    cleanText((answers as Record<string, unknown>).identity_institutional_summary) ||
+    cleanText(answers.store_description) ||
+    cleanText(answers.strategy_ai_store_summary);
+
+  const quoteContractData =
+    cleanText((answers as Record<string, unknown>).identity_quote_contract_data) ||
+    cleanText(answers.store_display_name) ||
+    storeName;
+
+  const brandColors =
+    cleanText((answers as Record<string, unknown>).identity_brand_colors);
+
+  const logoStatus =
+    cleanText((answers as Record<string, unknown>).identity_logo_status) ||
+    "Ainda não definida nesta tela";
+
+  const presentationNotes =
+    cleanText((answers as Record<string, unknown>).identity_presentation_notes) ||
+    cleanText(answers.final_activation_notes);
+
+  return {
+    institutional_name: institutionalName,
+    trade_name: tradeName,
+    ai_display_name: aiDisplayName,
+    ai_signature: aiSignature,
+    institutional_summary: institutionalSummary,
+    quote_contract_data: quoteContractData,
+    brand_colors: brandColors,
+    logo_status: logoStatus,
+    presentation_notes: presentationNotes,
+  };
+}
+
 function validateSelectedPhotos(files: File[]) {
   if (files.length > 10) {
     return "Cada item pode ter no máximo 10 fotos.";
@@ -1057,6 +1126,8 @@ export default function ConfiguracoesPage() {
   const [discountDraft, setDiscountDraft] = useState<DiscountDraftState>(createDiscountDraftFromAnswers({}));
   const [isChannelsEditing, setIsChannelsEditing] = useState(false);
   const [channelDraft, setChannelDraft] = useState<ChannelDraftState>(createChannelDraftFromAnswers({}));
+  const [isIdentityEditing, setIsIdentityEditing] = useState(false);
+  const [identityDraft, setIdentityDraft] = useState<IdentityDraftState>(createIdentityDraftFromAnswers({}, "Loja ativa"));
   const [isActivationEditing, setIsActivationEditing] = useState(false);
   const [primaryResponsibleDraft, setPrimaryResponsibleDraft] = useState<ResponsiblePersonDraft>(createEmptyResponsibleDraft(true));
   const [additionalResponsiblesDraft, setAdditionalResponsiblesDraft] = useState<ResponsiblePersonDraft[]>([]);
@@ -1927,14 +1998,119 @@ export default function ConfiguracoesPage() {
     ]);
   }, [answers]);
 
-  const identityItems = useMemo(() => {
+  const identitySummaryMetrics = useMemo(() => {
+    const logoStatusText =
+      cleanText((answers as Record<string, unknown>).identity_logo_status) || "Pendente";
+    const brandColorsText =
+      cleanText((answers as Record<string, unknown>).identity_brand_colors);
+
+    return [
+      {
+        label: "Nome institucional",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_institutional_name) ||
+          cleanText(answers.store_display_name) ||
+          storeName,
+        tone: "green" as const,
+        hint: "Nome principal usado pela loja no sistema.",
+      },
+      {
+        label: "Nome da IA",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_ai_display_name) ||
+          cleanText(answers.store_display_name) ||
+          storeName,
+        tone: "green" as const,
+        hint: "Forma como a IA representa a loja no atendimento.",
+      },
+      {
+        label: "Logo",
+        value: logoStatusText,
+        tone:
+          normalizeLoose(logoStatusText).includes("defin")
+            ? ("green" as const)
+            : ("amber" as const),
+        hint: "Status visual da marca nesta tela.",
+      },
+      {
+        label: "Cores da marca",
+        value: brandColorsText ? "Definidas" : "Pendentes",
+        tone: brandColorsText ? ("green" as const) : ("amber" as const),
+        hint: brandColorsText || "Defina as cores principais da marca.",
+      },
+    ];
+  }, [answers, storeName]);
+
+  const identityBaseItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Nome da loja", value: cleanText(answers.store_display_name) || storeName },
-      { label: "Logo", value: "Ajustar quando houver logo cadastrada" },
-      { label: "Cores", value: "Ainda não configuradas nesta tela" },
-      { label: "Nome que a IA usa", value: cleanText(answers.store_display_name) || storeName },
-      { label: "Assinatura padrão da IA", value: cleanText(answers.store_description) },
-      { label: "Dados usados em orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
+      {
+        label: "Nome institucional",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_institutional_name) ||
+          cleanText(answers.store_display_name) ||
+          storeName,
+      },
+      {
+        label: "Nome fantasia",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_trade_name) ||
+          cleanText(answers.store_display_name) ||
+          storeName,
+      },
+      {
+        label: "Nome usado pela IA",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_ai_display_name) ||
+          cleanText(answers.store_display_name) ||
+          storeName,
+      },
+      {
+        label: "Resumo institucional",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_institutional_summary) ||
+          cleanText(answers.store_description) ||
+          cleanText(answers.strategy_ai_store_summary),
+      },
+    ]);
+  }, [answers, storeName]);
+
+  const identityBrandItems = useMemo(() => {
+    return buildBulletRows([
+      {
+        label: "Status da logo",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_logo_status) ||
+          "Ainda não definida nesta tela",
+      },
+      {
+        label: "Cores principais",
+        value: cleanText((answers as Record<string, unknown>).identity_brand_colors),
+      },
+      {
+        label: "Observações de apresentação",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_presentation_notes) ||
+          cleanText(answers.final_activation_notes),
+      },
+    ]);
+  }, [answers]);
+
+  const identityDocumentItems = useMemo(() => {
+    return buildBulletRows([
+      {
+        label: "Assinatura padrão da IA",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_ai_signature) ||
+          cleanText(answers.store_description) ||
+          cleanText(answers.commercial_ai_summary),
+      },
+      {
+        label: "Dados usados em orçamento e contrato",
+        value:
+          cleanText((answers as Record<string, unknown>).identity_quote_contract_data) ||
+          cleanText(answers.store_display_name) ||
+          storeName,
+      },
     ]);
   }, [answers, storeName]);
 
@@ -2321,6 +2497,11 @@ export default function ConfiguracoesPage() {
     setChannelDraft(createChannelDraftFromAnswers(answers));
   }, [answers]);
 
+  useEffect(() => {
+    setIdentityDraft(createIdentityDraftFromAnswers(answers, storeName));
+  }, [answers, storeName]);
+
+
   const handleChannelDraftChange = useCallback((key: keyof ChannelDraftState, value: string) => {
     setChannelDraft((current) => ({
       ...current,
@@ -2393,6 +2574,40 @@ export default function ConfiguracoesPage() {
 
     setIsChannelsEditing(false);
   }, [channelDraft, upsertConfigAnswers]);
+
+  const handleIdentityDraftChange = useCallback((key: keyof IdentityDraftState, value: string) => {
+    setIdentityDraft((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }, []);
+
+  const handleIdentityEditCancel = useCallback(() => {
+    setIdentityDraft(createIdentityDraftFromAnswers(answers, storeName));
+    setIsIdentityEditing(false);
+  }, [answers, storeName]);
+
+  const handleIdentityEditSave = useCallback(async () => {
+    const saved = await upsertConfigAnswers(
+      {
+        identity_institutional_name: identityDraft.institutional_name,
+        identity_trade_name: identityDraft.trade_name,
+        identity_ai_display_name: identityDraft.ai_display_name,
+        identity_ai_signature: identityDraft.ai_signature,
+        identity_institutional_summary: identityDraft.institutional_summary,
+        identity_quote_contract_data: identityDraft.quote_contract_data,
+        identity_brand_colors: identityDraft.brand_colors,
+        identity_logo_status: identityDraft.logo_status,
+        identity_presentation_notes: identityDraft.presentation_notes,
+      },
+      "Alterações de identidade da loja salvas com sucesso."
+    );
+
+    if (!saved) return;
+
+    setIsIdentityEditing(false);
+  }, [identityDraft, upsertConfigAnswers]);
+
 
   const handlePrimaryResponsibleChange = useCallback(
     (key: keyof ResponsiblePersonDraft, value: string | boolean) => {
@@ -5126,8 +5341,155 @@ export default function ConfiguracoesPage() {
         <SectionBlock
           title="10. Identidade da loja"
           description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
+          actions={
+            isIdentityEditing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleIdentityEditSave}
+                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleIdentityEditCancel}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsIdentityEditing(true)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+              >
+                Editar
+              </button>
+            )
+          }
         >
-          <SummaryList items={identityItems} />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {identitySummaryMetrics.map((item) => (
+              <StatusCard
+                key={item.label}
+                label={item.label}
+                value={item.value}
+                tone={item.tone}
+                hint={item.hint}
+              />
+            ))}
+          </div>
+
+          {isIdentityEditing ? (
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="mb-3 text-sm font-semibold text-gray-900">Editar identidade da loja na mesma página</div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome institucional</span>
+                  <input
+                    value={identityDraft.institutional_name}
+                    onChange={(e) => handleIdentityDraftChange("institutional_name", e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome fantasia</span>
+                  <input
+                    value={identityDraft.trade_name}
+                    onChange={(e) => handleIdentityDraftChange("trade_name", e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome usado pela IA</span>
+                  <input
+                    value={identityDraft.ai_display_name}
+                    onChange={(e) => handleIdentityDraftChange("ai_display_name", e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status da logo</span>
+                  <input
+                    value={identityDraft.logo_status}
+                    onChange={(e) => handleIdentityDraftChange("logo_status", e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Ex.: definida, pendente, temporária..."
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Assinatura padrão da IA</span>
+                  <textarea
+                    value={identityDraft.ai_signature}
+                    onChange={(e) => handleIdentityDraftChange("ai_signature", e.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo institucional da loja</span>
+                  <textarea
+                    value={identityDraft.institutional_summary}
+                    onChange={(e) => handleIdentityDraftChange("institutional_summary", e.target.value)}
+                    rows={4}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dados usados em orçamento e contrato</span>
+                  <textarea
+                    value={identityDraft.quote_contract_data}
+                    onChange={(e) => handleIdentityDraftChange("quote_contract_data", e.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cores principais da marca</span>
+                  <input
+                    value={identityDraft.brand_colors}
+                    onChange={(e) => handleIdentityDraftChange("brand_colors", e.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Ex.: azul escuro, branco, amarelo..."
+                  />
+                </label>
+
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações de apresentação</span>
+                  <textarea
+                    value={identityDraft.presentation_notes}
+                    onChange={(e) => handleIdentityDraftChange("presentation_notes", e.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-3">
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Base institucional</div>
+              <SummaryList items={identityBaseItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Marca visual e apresentação</div>
+              <SummaryList items={identityBrandItems} />
+            </div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Documentos e assinatura da IA</div>
+              <SummaryList items={identityDocumentItems} />
+            </div>
+          </div>
         </SectionBlock>
       ) : null}
     </div>
