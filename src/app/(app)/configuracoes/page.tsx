@@ -2133,31 +2133,34 @@ export default function ConfiguracoesPage() {
     setIsOperationEditing(false);
   }, [answers]);
 
-  const handleOperationEditSave = useCallback(() => {
-    setAnswers((current) => ({
-      ...current,
-      operating_days: operationDraft.operating_days,
-      operating_hours: operationDraft.operating_hours,
-      installation_days_rule: operationDraft.installation_days_rule,
-      technical_visit_days_rule: operationDraft.technical_visit_days_rule,
-      serves_saturday: operationDraft.serves_saturday,
-      serves_sunday: operationDraft.serves_sunday,
-      attends_holidays: operationDraft.serves_holiday,
-      serves_holiday: operationDraft.serves_holiday,
-      offers_installation: operationDraft.offers_installation,
-      average_installation_time_days: operationDraft.average_installation_time_days,
-      installation_process_other: operationDraft.installation_process_summary,
-      offers_technical_visit: operationDraft.offers_technical_visit,
-      technical_visit_rules_other: operationDraft.technical_visit_rules_summary,
-      service_regions: operationDraft.service_regions,
-      important_limitations_other: operationDraft.important_limitations,
-      agenda_capacity_rule: operationDraft.agenda_capacity_rule,
-      operational_ai_summary: operationDraft.operational_ai_summary,
-    }));
-    setSuccessText("Alterações da operação atualizadas nesta tela.");
-    setErrorText(null);
+  const handleOperationEditSave = useCallback(async () => {
+    const saved = await upsertConfigAnswers(
+      {
+        operating_days: operationDraft.operating_days,
+        operating_hours: operationDraft.operating_hours,
+        installation_days_rule: operationDraft.installation_days_rule,
+        technical_visit_days_rule: operationDraft.technical_visit_days_rule,
+        serves_saturday: operationDraft.serves_saturday,
+        serves_sunday: operationDraft.serves_sunday,
+        attends_holidays: operationDraft.serves_holiday,
+        serves_holiday: operationDraft.serves_holiday,
+        offers_installation: operationDraft.offers_installation,
+        average_installation_time_days: operationDraft.average_installation_time_days,
+        installation_process_other: operationDraft.installation_process_summary,
+        offers_technical_visit: operationDraft.offers_technical_visit,
+        technical_visit_rules_other: operationDraft.technical_visit_rules_summary,
+        service_regions: operationDraft.service_regions,
+        important_limitations_other: operationDraft.important_limitations,
+        agenda_capacity_rule: operationDraft.agenda_capacity_rule,
+        operational_ai_summary: operationDraft.operational_ai_summary,
+      },
+      "Alterações da operação salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsOperationEditing(false);
-  }, [operationDraft]);
+  }, [operationDraft, upsertConfigAnswers]);
 
 
   useEffect(() => {
