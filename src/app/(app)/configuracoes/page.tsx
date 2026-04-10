@@ -132,10 +132,16 @@ type ChannelDraftState = {
   commercial_channel_active: string;
   commercial_receives_real_clients: string;
   commercial_is_official_sales_channel: string;
+  commercial_channel_type: string;
+  commercial_entry_priority: string;
+  commercial_human_handoff_enabled: string;
   commercial_channel_notes: string;
   responsible_channel_name: string;
   responsible_whatsapp: string;
   responsible_channel_active: string;
+  responsible_channel_type: string;
+  responsible_is_primary_alert_channel: string;
+  responsible_is_human_command_channel: string;
   responsible_receives_ai_alerts: string;
   responsible_receives_reports: string;
   responsible_receives_urgencies: string;
@@ -145,13 +151,22 @@ type ChannelDraftState = {
   internal_chat_enabled: string;
   internal_chat_for_assistant: string;
   internal_chat_separate_from_inbox: string;
+  internal_chat_visible_to_team: string;
+  internal_chat_accepts_manual_commands: string;
   internal_chat_priority: string;
   internal_chat_notes: string;
+  channels_are_separate: string;
   dedicated_number: string;
   telegram_future_status: string;
   extra_channel_notes: string;
+  integration_provider_name: string;
+  integration_connection_mode: string;
+  integration_test_status: string;
   webhook_inbound_status: string;
   external_send_status: string;
+  integration_has_inbound_webhook: string;
+  integration_has_status_webhook: string;
+  integration_has_outbound_delivery: string;
   whatsapp_integration_status: string;
   integrations_status: string;
   integrations_notes: string;
@@ -665,12 +680,20 @@ function createChannelDraftFromAnswers(answers: AnswersMap): ChannelDraftState {
     commercial_whatsapp: commercialWhatsapp,
     commercial_channel_active: cleanText(answers.commercial_channel_active) || (commercialWhatsapp ? "Sim" : "Não definido"),
     commercial_receives_real_clients: cleanText(answers.commercial_receives_real_clients) || (commercialWhatsapp ? "Sim" : "Não definido"),
+
     commercial_is_official_sales_channel: cleanText(answers.commercial_is_official_sales_channel) || (commercialWhatsapp ? "Sim" : "Não definido"),
+    commercial_channel_type: cleanText(answers.commercial_channel_type) || "WhatsApp comercial da loja",
+    commercial_entry_priority: cleanText(answers.commercial_entry_priority) || "Canal principal de entrada de clientes",
+    commercial_human_handoff_enabled: cleanText(answers.commercial_human_handoff_enabled) || "Sim",
     commercial_channel_notes: cleanText(answers.commercial_channel_notes),
 
     responsible_channel_name: cleanText(answers.responsible_channel_name) || (responsibleName ? `Canal de ${responsibleName}` : "Canal do responsável"),
     responsible_whatsapp: responsibleWhatsapp,
+
     responsible_channel_active: cleanText(answers.responsible_channel_active) || (responsibleWhatsapp ? "Sim" : "Não definido"),
+    responsible_channel_type: cleanText(answers.responsible_channel_type) || "WhatsApp do responsável",
+    responsible_is_primary_alert_channel: cleanText(answers.responsible_is_primary_alert_channel) || "Sim",
+    responsible_is_human_command_channel: cleanText(answers.responsible_is_human_command_channel) || "Sim",
     responsible_receives_ai_alerts: cleanText(answers.responsible_receives_ai_alerts) || "Sim",
     responsible_receives_reports: cleanText(answers.responsible_receives_reports) || "Sim",
     responsible_receives_urgencies: cleanText(answers.responsible_receives_urgencies) || "Sim",
@@ -679,17 +702,28 @@ function createChannelDraftFromAnswers(answers: AnswersMap): ChannelDraftState {
     responsible_channel_notes: cleanText(answers.responsible_channel_notes),
 
     internal_chat_enabled: cleanText(answers.internal_chat_enabled) || "Sim",
+
     internal_chat_for_assistant: cleanText(answers.internal_chat_for_assistant) || "Sim",
     internal_chat_separate_from_inbox: cleanText(answers.internal_chat_separate_from_inbox) || "Sim",
+    internal_chat_visible_to_team: cleanText(answers.internal_chat_visible_to_team) || "Sim",
+    internal_chat_accepts_manual_commands: cleanText(answers.internal_chat_accepts_manual_commands) || "Sim",
     internal_chat_priority: cleanText(answers.internal_chat_priority) || "Canal secundário de apoio",
     internal_chat_notes: cleanText(answers.internal_chat_notes) || "Canal interno do painel para o responsável falar com a IA assistente sem misturar com clientes.",
 
+    channels_are_separate: cleanText(answers.channels_are_separate) || "Sim",
     dedicated_number: cleanText(answers.dedicated_number) || commercialWhatsapp,
     telegram_future_status: cleanText(answers.telegram_future_status) || "Previsto para expansão futura",
+
     extra_channel_notes: cleanText(answers.extra_channel_notes),
 
+    integration_provider_name: cleanText(answers.integration_provider_name) || "Ainda não definido",
+    integration_connection_mode: cleanText(answers.integration_connection_mode) || "API / webhook",
+    integration_test_status: cleanText(answers.integration_test_status) || "Ainda não testado nesta tela",
     webhook_inbound_status: cleanText(answers.webhook_inbound_status) || "Previsto no projeto",
     external_send_status: cleanText(answers.external_send_status) || "Previsto no projeto",
+    integration_has_inbound_webhook: cleanText(answers.integration_has_inbound_webhook) || "Não definido",
+    integration_has_status_webhook: cleanText(answers.integration_has_status_webhook) || "Não definido",
+    integration_has_outbound_delivery: cleanText(answers.integration_has_outbound_delivery) || "Não definido",
     whatsapp_integration_status: cleanText(answers.whatsapp_integration_status) || (commercialWhatsapp ? "Base configurada" : "Pendente"),
     integrations_status: cleanText(answers.integrations_status) || resolveOnboardingLabel(cleanText(answers.integration_status_override) || cleanText(answers.onboarding_status_override)).label,
     integrations_notes: cleanText(answers.integrations_notes) || "As integrações devem respeitar a separação entre canal comercial da IA vendedora e canal do responsável para a IA assistente.",
@@ -1592,6 +1626,9 @@ export default function ConfiguracoesPage() {
       { label: "Canal ativo", value: yesNoLabel(answers.commercial_channel_active) || (cleanText(answers.commercial_whatsapp) ? "Sim" : "Não definido") },
       { label: "Recebe clientes reais", value: yesNoLabel(answers.commercial_receives_real_clients) || (cleanText(answers.commercial_whatsapp) ? "Sim" : "Não definido") },
       { label: "É o canal oficial da IA vendedora", value: yesNoLabel(answers.commercial_is_official_sales_channel) || (cleanText(answers.commercial_whatsapp) ? "Sim" : "Não definido") },
+      { label: "Tipo de canal", value: cleanText(answers.commercial_channel_type) || "WhatsApp comercial da loja" },
+      { label: "Prioridade de entrada", value: cleanText(answers.commercial_entry_priority) || "Canal principal de entrada de clientes" },
+      { label: "Permite transbordo para humano", value: yesNoLabel(answers.commercial_human_handoff_enabled) || "Sim" },
       { label: "Observações", value: cleanText(answers.commercial_channel_notes) },
     ]);
   }, [answers]);
@@ -1601,6 +1638,9 @@ export default function ConfiguracoesPage() {
       { label: "Nome do canal do responsável", value: cleanText(answers.responsible_channel_name) || (cleanText(answers.responsible_name) ? `Canal de ${cleanText(answers.responsible_name)}` : "Canal do responsável") },
       { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
       { label: "Canal ativo", value: yesNoLabel(answers.responsible_channel_active) || (cleanText(answers.responsible_whatsapp) ? "Sim" : "Não definido") },
+      { label: "Tipo de canal", value: cleanText(answers.responsible_channel_type) || "WhatsApp do responsável" },
+      { label: "É o canal principal de alertas", value: yesNoLabel(answers.responsible_is_primary_alert_channel) || "Sim" },
+      { label: "É o canal para comandos humanos", value: yesNoLabel(answers.responsible_is_human_command_channel) || "Sim" },
       { label: "Recebe alertas da IA", value: yesNoLabel(answers.responsible_receives_ai_alerts) || "Sim" },
       { label: "Recebe relatórios", value: yesNoLabel(answers.responsible_receives_reports) || "Sim" },
       { label: "Recebe urgências", value: yesNoLabel(answers.responsible_receives_urgencies) || "Sim" },
@@ -1615,6 +1655,8 @@ export default function ConfiguracoesPage() {
       { label: "Chat interno ativado", value: yesNoLabel(answers.internal_chat_enabled || "Sim") },
       { label: "Pode ser usado pela IA assistente", value: yesNoLabel(answers.internal_chat_for_assistant || "Sim") },
       { label: "Fica separado da Inbox", value: yesNoLabel(answers.internal_chat_separate_from_inbox || "Sim") },
+      { label: "Visível para a equipe", value: yesNoLabel(answers.internal_chat_visible_to_team || "Sim") },
+      { label: "Aceita comandos manuais", value: yesNoLabel(answers.internal_chat_accepts_manual_commands || "Sim") },
       { label: "Prioridade do chat interno", value: cleanText(answers.internal_chat_priority) || "Canal secundário de apoio" },
       { label: "Observações", value: cleanText(answers.internal_chat_notes) || "Canal interno do painel para o responsável falar com a IA assistente sem misturar com clientes." },
     ]);
@@ -1622,11 +1664,18 @@ export default function ConfiguracoesPage() {
 
   const channelOtherAndIntegrationItems = useMemo(() => {
     return buildBulletRows([
+      { label: "Canal comercial e responsável são separados", value: yesNoLabel(answers.channels_are_separate || "Sim") },
       { label: "Número/chip dedicado", value: cleanText(answers.dedicated_number) || cleanText(answers.commercial_whatsapp) },
       { label: "Telegram futuro", value: cleanText(answers.telegram_future_status) || "Previsto para expansão futura" },
+      { label: "Provedor / integração principal", value: cleanText(answers.integration_provider_name) || "Ainda não definido" },
+      { label: "Modo de conexão", value: cleanText(answers.integration_connection_mode) || "API / webhook" },
       { label: "Webhook de entrada", value: cleanText(answers.webhook_inbound_status) || "Previsto no projeto" },
       { label: "Envio externo", value: cleanText(answers.external_send_status) || "Previsto no projeto" },
+      { label: "Webhook de entrada realmente disponível", value: yesNoLabel(answers.integration_has_inbound_webhook) || "Não definido" },
+      { label: "Webhook de status / entrega", value: yesNoLabel(answers.integration_has_status_webhook) || "Não definido" },
+      { label: "Disparo externo funcionando", value: yesNoLabel(answers.integration_has_outbound_delivery) || "Não definido" },
       { label: "Integração de WhatsApp", value: cleanText(answers.whatsapp_integration_status) || (cleanText(answers.commercial_whatsapp) ? "Base configurada" : "Pendente") },
+      { label: "Status do teste de integração", value: cleanText(answers.integration_test_status) || "Ainda não testado nesta tela" },
       { label: "Status geral das integrações", value: cleanText(answers.integrations_status) || resolveOnboardingLabel(onboarding?.status).label },
       { label: "Observações técnicas", value: cleanText(answers.integrations_notes) || "As integrações devem respeitar a separação entre canal comercial da IA vendedora e canal do responsável para a IA assistente." },
       { label: "Notas extras", value: cleanText(answers.extra_channel_notes) },
@@ -2046,10 +2095,16 @@ export default function ConfiguracoesPage() {
       commercial_channel_active: channelDraft.commercial_channel_active,
       commercial_receives_real_clients: channelDraft.commercial_receives_real_clients,
       commercial_is_official_sales_channel: channelDraft.commercial_is_official_sales_channel,
+      commercial_channel_type: channelDraft.commercial_channel_type,
+      commercial_entry_priority: channelDraft.commercial_entry_priority,
+      commercial_human_handoff_enabled: channelDraft.commercial_human_handoff_enabled,
       commercial_channel_notes: channelDraft.commercial_channel_notes,
       responsible_channel_name: channelDraft.responsible_channel_name,
       responsible_whatsapp: channelDraft.responsible_whatsapp,
       responsible_channel_active: channelDraft.responsible_channel_active,
+      responsible_channel_type: channelDraft.responsible_channel_type,
+      responsible_is_primary_alert_channel: channelDraft.responsible_is_primary_alert_channel,
+      responsible_is_human_command_channel: channelDraft.responsible_is_human_command_channel,
       responsible_receives_ai_alerts: channelDraft.responsible_receives_ai_alerts,
       responsible_receives_reports: channelDraft.responsible_receives_reports,
       responsible_receives_urgencies: channelDraft.responsible_receives_urgencies,
@@ -2059,13 +2114,22 @@ export default function ConfiguracoesPage() {
       internal_chat_enabled: channelDraft.internal_chat_enabled,
       internal_chat_for_assistant: channelDraft.internal_chat_for_assistant,
       internal_chat_separate_from_inbox: channelDraft.internal_chat_separate_from_inbox,
+      internal_chat_visible_to_team: channelDraft.internal_chat_visible_to_team,
+      internal_chat_accepts_manual_commands: channelDraft.internal_chat_accepts_manual_commands,
       internal_chat_priority: channelDraft.internal_chat_priority,
       internal_chat_notes: channelDraft.internal_chat_notes,
+      channels_are_separate: channelDraft.channels_are_separate,
       dedicated_number: channelDraft.dedicated_number,
       telegram_future_status: channelDraft.telegram_future_status,
       extra_channel_notes: channelDraft.extra_channel_notes,
+      integration_provider_name: channelDraft.integration_provider_name,
+      integration_connection_mode: channelDraft.integration_connection_mode,
+      integration_test_status: channelDraft.integration_test_status,
       webhook_inbound_status: channelDraft.webhook_inbound_status,
       external_send_status: channelDraft.external_send_status,
+      integration_has_inbound_webhook: channelDraft.integration_has_inbound_webhook,
+      integration_has_status_webhook: channelDraft.integration_has_status_webhook,
+      integration_has_outbound_delivery: channelDraft.integration_has_outbound_delivery,
       whatsapp_integration_status: channelDraft.whatsapp_integration_status,
       integrations_status: channelDraft.integrations_status,
       integrations_notes: channelDraft.integrations_notes,
@@ -4445,6 +4509,18 @@ export default function ConfiguracoesPage() {
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal oficial da IA vendedora</span>
                       <select value={channelDraft.commercial_is_official_sales_channel} onChange={(e)=>handleChannelDraftChange("commercial_is_official_sales_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de canal comercial</span>
+                      <input value={channelDraft.commercial_channel_type} onChange={(e)=>handleChannelDraftChange("commercial_channel_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: WhatsApp comercial da loja" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade desse canal</span>
+                      <input value={channelDraft.commercial_entry_priority} onChange={(e)=>handleChannelDraftChange("commercial_entry_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: Canal principal de entrada de clientes" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pode transbordar para humano</span>
+                      <select value={channelDraft.commercial_human_handoff_enabled} onChange={(e)=>handleChannelDraftChange("commercial_human_handoff_enabled", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
                     <label className="space-y-1 md:col-span-2">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do canal comercial</span>
                       <textarea value={channelDraft.commercial_channel_notes} onChange={(e)=>handleChannelDraftChange("commercial_channel_notes", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
@@ -4466,6 +4542,18 @@ export default function ConfiguracoesPage() {
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal ativo</span>
                       <select value={channelDraft.responsible_channel_active} onChange={(e)=>handleChannelDraftChange("responsible_channel_active", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de canal do responsável</span>
+                      <input value={channelDraft.responsible_channel_type} onChange={(e)=>handleChannelDraftChange("responsible_channel_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: WhatsApp do responsável" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal principal de alertas</span>
+                      <select value={channelDraft.responsible_is_primary_alert_channel} onChange={(e)=>handleChannelDraftChange("responsible_is_primary_alert_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É canal para comandos humanos</span>
+                      <select value={channelDraft.responsible_is_human_command_channel} onChange={(e)=>handleChannelDraftChange("responsible_is_human_command_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe alertas da IA</span>
@@ -4510,8 +4598,20 @@ export default function ConfiguracoesPage() {
                       <select value={channelDraft.internal_chat_separate_from_inbox} onChange={(e)=>handleChannelDraftChange("internal_chat_separate_from_inbox", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Visível para a equipe</span>
+                      <select value={channelDraft.internal_chat_visible_to_team} onChange={(e)=>handleChannelDraftChange("internal_chat_visible_to_team", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Aceita comandos manuais</span>
+                      <select value={channelDraft.internal_chat_accepts_manual_commands} onChange={(e)=>handleChannelDraftChange("internal_chat_accepts_manual_commands", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade do chat interno</span>
                       <input value={channelDraft.internal_chat_priority} onChange={(e)=>handleChannelDraftChange("internal_chat_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal comercial e do responsável são separados</span>
+                      <select value={channelDraft.channels_are_separate} onChange={(e)=>handleChannelDraftChange("channels_are_separate", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Número/chip dedicado</span>
@@ -4536,6 +4636,14 @@ export default function ConfiguracoesPage() {
                   <div className="mb-3 text-sm font-semibold text-gray-900">4. Integrações externas e roteamento</div>
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Provedor / integração principal</span>
+                      <input value={channelDraft.integration_provider_name} onChange={(e)=>handleChannelDraftChange("integration_provider_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: WhatsApp Cloud API, Evolution, Z-API..." />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Modo de conexão</span>
+                      <input value={channelDraft.integration_connection_mode} onChange={(e)=>handleChannelDraftChange("integration_connection_mode", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: API / webhook" />
+                    </label>
+                    <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de entrada</span>
                       <input value={channelDraft.webhook_inbound_status} onChange={(e)=>handleChannelDraftChange("webhook_inbound_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                     </label>
@@ -4546,6 +4654,22 @@ export default function ConfiguracoesPage() {
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Integração de WhatsApp</span>
                       <input value={channelDraft.whatsapp_integration_status} onChange={(e)=>handleChannelDraftChange("whatsapp_integration_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de entrada disponível</span>
+                      <select value={channelDraft.integration_has_inbound_webhook} onChange={(e)=>handleChannelDraftChange("integration_has_inbound_webhook", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de status / entrega</span>
+                      <select value={channelDraft.integration_has_status_webhook} onChange={(e)=>handleChannelDraftChange("integration_has_status_webhook", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Disparo externo funcionando</span>
+                      <select value={channelDraft.integration_has_outbound_delivery} onChange={(e)=>handleChannelDraftChange("integration_has_outbound_delivery", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status do teste de integração</span>
+                      <input value={channelDraft.integration_test_status} onChange={(e)=>handleChannelDraftChange("integration_test_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: testado e funcionando" />
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status geral das integrações</span>
