@@ -2302,23 +2302,20 @@ export default function ConfiguracoesPage() {
     setIsDiscountEditing(false);
   }, [answers]);
 
-  const handleDiscountEditSave = useCallback(async () => {
-    const saved = await upsertConfigAnswers(
-      {
-        can_offer_discount: discountDraft.can_offer_discount,
-        max_discount_percent: discountDraft.max_discount_percent,
-        human_help_discount_cases_other: discountDraft.human_help_discount_summary,
-        discount_approver_name: discountDraft.discount_approver,
-        discount_special_rules: discountDraft.special_discount_rules,
-        discount_explanation: discountDraft.discount_explanation,
-      },
-      "Alterações de descontos salvas com sucesso."
-    );
-
-    if (!saved) return;
-
+  const handleDiscountEditSave = useCallback(() => {
+    setAnswers((current) => ({
+      ...current,
+      can_offer_discount: discountDraft.can_offer_discount,
+      max_discount_percent: discountDraft.max_discount_percent,
+      human_help_discount_cases_other: discountDraft.human_help_discount_summary,
+      discount_approver_name: discountDraft.discount_approver,
+      discount_special_rules: discountDraft.special_discount_rules,
+      discount_explanation: discountDraft.discount_explanation,
+    }));
+    setSuccessText("Alterações de descontos atualizadas nesta tela.");
+    setErrorText(null);
     setIsDiscountEditing(false);
-  }, [discountDraft, upsertConfigAnswers]);
+  }, [discountDraft]);
 
   useEffect(() => {
     setChannelDraft(createChannelDraftFromAnswers(answers));
@@ -2336,63 +2333,66 @@ export default function ConfiguracoesPage() {
     setIsChannelsEditing(false);
   }, [answers]);
 
-  const handleChannelsEditSave = useCallback(() => {
-    setAnswers((current) => ({
-      ...current,
-      commercial_channel_name: channelDraft.commercial_channel_name,
-      commercial_whatsapp: channelDraft.commercial_whatsapp,
-      commercial_channel_active: channelDraft.commercial_channel_active,
-      commercial_receives_real_clients: channelDraft.commercial_receives_real_clients,
-      commercial_is_official_sales_channel: channelDraft.commercial_is_official_sales_channel,
-      commercial_channel_type: channelDraft.commercial_channel_type,
-      commercial_entry_priority: channelDraft.commercial_entry_priority,
-      commercial_human_handoff_enabled: channelDraft.commercial_human_handoff_enabled,
-      commercial_channel_notes: channelDraft.commercial_channel_notes,
-      responsible_channel_name: channelDraft.responsible_channel_name,
-      responsible_whatsapp: channelDraft.responsible_whatsapp,
-      responsible_channel_active: channelDraft.responsible_channel_active,
-      responsible_channel_type: channelDraft.responsible_channel_type,
-      responsible_is_primary_alert_channel: channelDraft.responsible_is_primary_alert_channel,
-      responsible_is_human_command_channel: channelDraft.responsible_is_human_command_channel,
-      responsible_receives_ai_alerts: channelDraft.responsible_receives_ai_alerts,
-      responsible_receives_reports: channelDraft.responsible_receives_reports,
-      responsible_receives_urgencies: channelDraft.responsible_receives_urgencies,
-      responsible_receives_visit_alerts: channelDraft.responsible_receives_visit_alerts,
-      responsible_receives_payment_alerts: channelDraft.responsible_receives_payment_alerts,
-      responsible_channel_notes: channelDraft.responsible_channel_notes,
-      internal_chat_enabled: channelDraft.internal_chat_enabled,
-      internal_chat_for_assistant: channelDraft.internal_chat_for_assistant,
-      internal_chat_separate_from_inbox: channelDraft.internal_chat_separate_from_inbox,
-      internal_chat_visible_to_team: channelDraft.internal_chat_visible_to_team,
-      internal_chat_accepts_manual_commands: channelDraft.internal_chat_accepts_manual_commands,
-      internal_chat_priority: channelDraft.internal_chat_priority,
-      internal_chat_notes: channelDraft.internal_chat_notes,
-      channels_are_separate: channelDraft.channels_are_separate,
-      dedicated_number: channelDraft.dedicated_number,
-      telegram_future_status: channelDraft.telegram_future_status,
-      extra_channel_notes: channelDraft.extra_channel_notes,
-      integration_provider_name: channelDraft.integration_provider_name,
-      integration_connection_mode: channelDraft.integration_connection_mode,
-      integration_test_status: channelDraft.integration_test_status,
-      webhook_inbound_status: channelDraft.webhook_inbound_status,
-      external_send_status: channelDraft.external_send_status,
-      integration_has_inbound_webhook: channelDraft.integration_has_inbound_webhook,
-      integration_has_status_webhook: channelDraft.integration_has_status_webhook,
-      integration_has_outbound_delivery: channelDraft.integration_has_outbound_delivery,
-      whatsapp_integration_status: channelDraft.whatsapp_integration_status,
-      integrations_status: channelDraft.integrations_status,
-      integrations_notes: channelDraft.integrations_notes,
-      customer_messages_route: channelDraft.customer_messages_route,
-      assistant_alerts_route: channelDraft.assistant_alerts_route,
-      urgency_route: channelDraft.urgency_route,
-      reports_route: channelDraft.reports_route,
-      channel_fallback_rule: channelDraft.channel_fallback_rule,
-      channels_system_summary: channelDraft.channels_system_summary,
-    }));
-    setSuccessText("Alterações de canais e integrações atualizadas nesta tela.");
-    setErrorText(null);
+  const handleChannelsEditSave = useCallback(async () => {
+    const saved = await upsertConfigAnswers(
+      {
+        commercial_channel_name: channelDraft.commercial_channel_name,
+        commercial_whatsapp: channelDraft.commercial_whatsapp,
+        commercial_channel_active: channelDraft.commercial_channel_active,
+        commercial_receives_real_clients: channelDraft.commercial_receives_real_clients,
+        commercial_is_official_sales_channel: channelDraft.commercial_is_official_sales_channel,
+        commercial_channel_type: channelDraft.commercial_channel_type,
+        commercial_entry_priority: channelDraft.commercial_entry_priority,
+        commercial_human_handoff_enabled: channelDraft.commercial_human_handoff_enabled,
+        commercial_channel_notes: channelDraft.commercial_channel_notes,
+        responsible_channel_name: channelDraft.responsible_channel_name,
+        responsible_whatsapp: channelDraft.responsible_whatsapp,
+        responsible_channel_active: channelDraft.responsible_channel_active,
+        responsible_channel_type: channelDraft.responsible_channel_type,
+        responsible_is_primary_alert_channel: channelDraft.responsible_is_primary_alert_channel,
+        responsible_is_human_command_channel: channelDraft.responsible_is_human_command_channel,
+        responsible_receives_ai_alerts: channelDraft.responsible_receives_ai_alerts,
+        responsible_receives_reports: channelDraft.responsible_receives_reports,
+        responsible_receives_urgencies: channelDraft.responsible_receives_urgencies,
+        responsible_receives_visit_alerts: channelDraft.responsible_receives_visit_alerts,
+        responsible_receives_payment_alerts: channelDraft.responsible_receives_payment_alerts,
+        responsible_channel_notes: channelDraft.responsible_channel_notes,
+        internal_chat_enabled: channelDraft.internal_chat_enabled,
+        internal_chat_for_assistant: channelDraft.internal_chat_for_assistant,
+        internal_chat_separate_from_inbox: channelDraft.internal_chat_separate_from_inbox,
+        internal_chat_visible_to_team: channelDraft.internal_chat_visible_to_team,
+        internal_chat_accepts_manual_commands: channelDraft.internal_chat_accepts_manual_commands,
+        internal_chat_priority: channelDraft.internal_chat_priority,
+        internal_chat_notes: channelDraft.internal_chat_notes,
+        channels_are_separate: channelDraft.channels_are_separate,
+        dedicated_number: channelDraft.dedicated_number,
+        telegram_future_status: channelDraft.telegram_future_status,
+        extra_channel_notes: channelDraft.extra_channel_notes,
+        integration_provider_name: channelDraft.integration_provider_name,
+        integration_connection_mode: channelDraft.integration_connection_mode,
+        integration_test_status: channelDraft.integration_test_status,
+        webhook_inbound_status: channelDraft.webhook_inbound_status,
+        external_send_status: channelDraft.external_send_status,
+        integration_has_inbound_webhook: channelDraft.integration_has_inbound_webhook,
+        integration_has_status_webhook: channelDraft.integration_has_status_webhook,
+        integration_has_outbound_delivery: channelDraft.integration_has_outbound_delivery,
+        whatsapp_integration_status: channelDraft.whatsapp_integration_status,
+        integrations_status: channelDraft.integrations_status,
+        integrations_notes: channelDraft.integrations_notes,
+        customer_messages_route: channelDraft.customer_messages_route,
+        assistant_alerts_route: channelDraft.assistant_alerts_route,
+        urgency_route: channelDraft.urgency_route,
+        reports_route: channelDraft.reports_route,
+        channel_fallback_rule: channelDraft.channel_fallback_rule,
+        channels_system_summary: channelDraft.channels_system_summary,
+      },
+      "Alterações de canais e integrações salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsChannelsEditing(false);
-  }, [channelDraft]);
+  }, [channelDraft, upsertConfigAnswers]);
 
   const handlePrimaryResponsibleChange = useCallback(
     (key: keyof ResponsiblePersonDraft, value: string | boolean) => {
@@ -2438,27 +2438,24 @@ export default function ConfiguracoesPage() {
     setIsActivationEditing(false);
   }, [answers]);
 
-  const handleActivationEditSave = useCallback(async () => {
+  const handleActivationEditSave = useCallback(() => {
     const cleanAdditional = additionalResponsiblesDraft.filter(
       (item) => cleanText(item.name) || cleanText(item.whatsapp)
     );
 
-    const saved = await upsertConfigAnswers(
-      {
-        responsible_name: cleanText(primaryResponsibleDraft.name),
-        responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
-        responsible_role: cleanText(primaryResponsibleDraft.role),
-        confirm_information_is_correct: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não",
-        final_activation_notes: cleanText(primaryResponsibleDraft.notes),
-        additional_responsibles: serializeResponsiblePeople(cleanAdditional),
-      },
-      "Alterações de responsável e ativação salvas com sucesso."
-    );
-
-    if (!saved) return;
-
+    setAnswers((current) => ({
+      ...current,
+      responsible_name: cleanText(primaryResponsibleDraft.name),
+      responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
+      responsible_role: cleanText(primaryResponsibleDraft.role),
+      confirm_information_is_correct: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não",
+      final_activation_notes: cleanText(primaryResponsibleDraft.notes),
+      additional_responsibles: serializeResponsiblePeople(cleanAdditional),
+    }));
+    setSuccessText("Alterações de responsável e ativação atualizadas nesta tela.");
+    setErrorText(null);
     setIsActivationEditing(false);
-  }, [primaryResponsibleDraft, additionalResponsiblesDraft, upsertConfigAnswers]);
+  }, [primaryResponsibleDraft, additionalResponsiblesDraft]);
 
   const handlePoolFormChange = useCallback(
     (key: keyof PoolFormState, value: string | boolean) => {
