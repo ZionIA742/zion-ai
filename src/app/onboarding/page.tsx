@@ -50,6 +50,7 @@ type Step3FormData = {
   installation_process_other: string;
   technical_visit_rules_selected: string[];
   technical_visit_rules_other: string;
+  attends_holidays: string;
   important_limitations_selected: string[];
   important_limitations_other: string;
   sales_flow_start_steps: string[];
@@ -2816,6 +2817,7 @@ function OnboardingContent() {
     installation_process_other: "",
     technical_visit_rules_selected: [],
     technical_visit_rules_other: "",
+    attends_holidays: "",
     important_limitations_selected: [],
     important_limitations_other: "",
     sales_flow_start_steps: [],
@@ -3992,6 +3994,13 @@ async function upsertAnswers(
               : remoteTechnicalVisitRulesSelected,
           technical_visit_rules_other:
             prev.technical_visit_rules_other || String(answers.technical_visit_rules_other ?? ""),
+          attends_holidays:
+            prev.attends_holidays ||
+            (typeof answers.attends_holidays === "boolean"
+              ? answers.attends_holidays
+                ? "sim"
+                : "não"
+              : String(answers.attends_holidays ?? "")),
           important_limitations_selected:
             prev.important_limitations_selected.length
               ? prev.important_limitations_selected
@@ -4289,6 +4298,10 @@ async function upsertAnswers(
         return;
       }
     }
+    if (!step3Form.attends_holidays) {
+      setFormError("Informe se a loja atende ou não em feriados.");
+      return;
+    }
     if (
       step3Form.important_limitations_selected.length === 0 &&
       !step3Form.important_limitations_other.trim()
@@ -4321,6 +4334,7 @@ async function upsertAnswers(
         ["installation_process_other", step3Form.installation_process_other.trim()],
         ["technical_visit_rules_selected", step3Form.technical_visit_rules_selected],
         ["technical_visit_rules_other", step3Form.technical_visit_rules_other.trim()],
+        ["attends_holidays", step3Form.attends_holidays.trim().toLowerCase() === "sim"],
         ["important_limitations_selected", step3Form.important_limitations_selected],
         ["important_limitations_other", step3Form.important_limitations_other.trim()],
         ["sales_flow_start_steps", step3Form.sales_flow_start_steps],
@@ -5374,6 +5388,17 @@ async function upsertAnswers(
                   </div>
                 </>
               )}
+              <div>
+                <SectionTitle
+                  title="A loja atende em feriados?"
+                  hint="Essa resposta precisa bater com a aba de Operação em Configurações."
+                />
+                <SingleSelectorGrid
+                  options={YES_NO_OPTIONS}
+                  value={step3Form.attends_holidays}
+                  onChange={(value) => updateStep3Field("attends_holidays", value)}
+                />
+              </div>
               <div>
                 <SectionTitle
                   title="Quais limitações importantes a IA precisa saber?"
