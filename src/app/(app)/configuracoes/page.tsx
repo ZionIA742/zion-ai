@@ -39,18 +39,43 @@ type AnswersMap = Record<string, unknown>;
 
 type PoolFormState = {
   name: string;
+  brand: string;
   material: string;
   shape: string;
+  color: string;
+  finish: string;
   width_m: string;
   length_m: string;
   depth_m: string;
   price: string;
   stock_quantity: string;
   description: string;
+  included_items: string;
+  installation_notes: string;
   is_active: boolean;
   track_stock: boolean;
 };
 
+type CatalogFormState = {
+  category: "quimicos" | "acessorios" | "outros";
+  name: string;
+  sku: string;
+  brand: string;
+  line: string;
+  unit_label: string;
+  size_details: string;
+  width_cm: string;
+  height_cm: string;
+  length_cm: string;
+  weight_kg: string;
+  price: string;
+  stock_quantity: string;
+  description: string;
+  application: string;
+  technical_notes: string;
+  is_active: boolean;
+  track_stock: boolean;
+};
 
 type StatusTone = "green" | "amber" | "red" | "gray";
 
@@ -231,17 +256,58 @@ function cleanText(value: unknown) {
 function createEmptyPoolForm(): PoolFormState {
   return {
     name: "",
+    brand: "",
     material: "",
     shape: "",
+    color: "",
+    finish: "",
     width_m: "",
     length_m: "",
     depth_m: "",
     price: "",
     stock_quantity: "",
     description: "",
+    included_items: "",
+    installation_notes: "",
     is_active: true,
     track_stock: true,
   };
+}
+
+function createEmptyCatalogForm(): CatalogFormState {
+  return {
+    category: "quimicos",
+    name: "",
+    sku: "",
+    brand: "",
+    line: "",
+    unit_label: "",
+    size_details: "",
+    width_cm: "",
+    height_cm: "",
+    length_cm: "",
+    weight_kg: "",
+    price: "",
+    stock_quantity: "",
+    description: "",
+    application: "",
+    technical_notes: "",
+    is_active: true,
+    track_stock: true,
+  };
+}
+
+function validateSelectedPhotos(files: File[]) {
+  if (files.length > 10) {
+    return "Cada item pode ter no máximo 10 fotos.";
+  }
+
+  const oversized = files.find((file) => file.size > 50 * 1024 * 1024);
+  if (oversized) {
+    return `A foto ${oversized.name} ultrapassa o limite de 50 MB.`;
+  }
+
+  return null;
 }
 
 function parseNumberInput(value: string) {
@@ -477,6 +543,9 @@ export default function ConfiguracoesPage() {
   const [poolForm, setPoolForm] = useState<PoolFormState>(createEmptyPoolForm());
   const [poolPhotos, setPoolPhotos] = useState<File[]>([]);
   const [savingPool, setSavingPool] = useState(false);
+  const [catalogForm, setCatalogForm] = useState<CatalogFormState>(createEmptyCatalogForm());
+  const [catalogPhotos, setCatalogPhotos] = useState<File[]>([]);
+  const [savingCatalogItem, setSavingCatalogItem] = useState(false);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -563,6 +632,24 @@ export default function ConfiguracoesPage() {
   }, [fetchPageData]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storageKey = `zion-config-active-tab:${activeStoreId || "sem-loja"}`;
+    const savedTab = window.localStorage.getItem(storageKey);
+    if (!savedTab) return;
+
+    const isValidTab = tabs.some((tab) => tab.id === savedTab);
+    if (isValidTab) {
+      setActiveTab(savedTab as SettingsTabId);
+    }
+  }, [activeStoreId, tabs]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storageKey = `zion-config-active-tab:${activeStoreId || "sem-loja"}`;
+    window.localStorage.setItem(storageKey, activeTab);
+  }, [activeTab, activeStoreId]);
+
+  useEffect(() => {
     setOverviewDraft({
       store_display_name: cleanText(answers.store_display_name) || storeName,
       responsible_name: cleanText(answers.responsible_name),
@@ -580,38 +667,10 @@ export default function ConfiguracoesPage() {
       state: cleanText(answers.state),
       service_regions: cleanText(answers.service_regions),
       service_region_notes: cleanText(answers.service_region_notes),
-      service_region_modes_text: joinSelectedLabels(
-        parseArrayAnswer(answers.service_region_modes),
-        SERVICE_REGION_MODE_OPTIONS
-      ),
-      store_services_text: joinSelectedLabels(
-        parseArrayAnswer(answers.store_services),
-        STORE_SERVICE_OPTIONS
-      ),
       store_services_other: cleanText(answers.store_services_other),
-      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
       store_description: cleanText(answers.store_description),
-      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
-      strategy_sell_more: cleanText(answers.strategy_sell_more),
-      strategy_common_customer: cleanText(answers.strategy_common_customer),
-      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
-      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
-      strategy_positioning: cleanText(answers.strategy_positioning),
       main_store_brand: cleanText(answers.main_store_brand),
       brands_worked: cleanText(answers.brands_worked),
-      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
-      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
-      strategy_top_lines: cleanText(answers.strategy_top_lines),
-      strategy_top_products: cleanText(answers.strategy_top_products),
-      strategy_differentials: cleanText(answers.strategy_differentials),
-      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
-      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
-      strategy_requires_human: cleanText(answers.strategy_requires_human),
-      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
-      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
-      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
-      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
-      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
     });
   }, [answers]);
 
@@ -625,112 +684,122 @@ export default function ConfiguracoesPage() {
     [onboarding?.status]
   );
 
-  const strategyBaseItems = useMemo(() => {
+  const strategyItems = useMemo(() => {
     const city = cleanText(answers.city);
     const state = cleanText(answers.state);
     const serviceRegions = cleanText(answers.service_regions);
-    const regionModes = joinSelectedLabels(
-      parseArrayAnswer(answers.service_region_modes),
-      SERVICE_REGION_MODE_OPTIONS
-    );
-
-    return buildBulletRows([
-      { label: "Cidade base", value: city },
-      { label: "Estado", value: state },
-      { label: "Região principal de atendimento", value: serviceRegions },
-      { label: "Até onde atende", value: regionModes },
-      { label: "Observações sobre cobertura", value: cleanText(answers.service_region_notes) },
-    ]);
-  }, [answers]);
-
-  const strategyServicesItems = useMemo(() => {
     const services = joinSelectedLabels(
       parseArrayAnswer(answers.store_services),
       STORE_SERVICE_OPTIONS,
       cleanText(answers.store_services_other)
     );
+    const regionModes = joinSelectedLabels(
+      parseArrayAnswer(answers.service_region_modes),
+      SERVICE_REGION_MODE_OPTIONS,
+      cleanText(answers.service_region_notes)
+    );
 
     return buildBulletRows([
-      { label: "Serviços principais", value: services },
-      { label: "Serviços extras", value: cleanText(answers.store_services_other) },
-      { label: "Serviços que a loja não faz", value: cleanText(answers.strategy_service_exclusions) },
-    ]);
-  }, [answers]);
-
-  const strategyCommercialFocusItems = useMemo(() => {
-    return buildBulletRows([
+      { label: "Cidade/região de atendimento", value: [city, state].filter(Boolean).join(" / ") || serviceRegions },
+      { label: "Serviços principais da loja", value: services },
       { label: "Tipo de loja / foco comercial", value: cleanText(answers.store_description) },
-      { label: "Principal foco da loja", value: cleanText(answers.strategy_primary_focus) },
-      { label: "O que a loja quer vender mais", value: cleanText(answers.strategy_sell_more) },
-      { label: "Tipo de cliente mais comum", value: cleanText(answers.strategy_common_customer) },
-      { label: "Tipo de cliente ideal", value: cleanText(answers.strategy_ideal_customer) },
-      { label: "Faixa de ticket mais comum", value: cleanText(answers.strategy_ticket_range) },
-      { label: "Posicionamento comercial", value: cleanText(answers.strategy_positioning) },
+      { label: "Marca principal / franquia principal", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
+      { label: "Perfil da operação", value: regionModes },
+      { label: "Resumo levantado na entrada da loja", value: cleanText(answers.service_region_notes) || cleanText(answers.store_description) },
     ]);
   }, [answers]);
 
-  const strategyBrandsItems = useMemo(() => {
-    return buildBulletRows([
-      { label: "Marca principal", value: cleanText(answers.main_store_brand) },
-      { label: "Outras marcas trabalhadas", value: cleanText(answers.brands_worked) },
-      { label: "Marcas que prefere priorizar", value: cleanText(answers.strategy_priority_brands) },
-      { label: "Marcas ou linhas que não trabalha", value: cleanText(answers.strategy_non_worked_brands) },
-      { label: "Linhas principais vendidas", value: cleanText(answers.strategy_top_lines) },
-      { label: "Produtos com maior giro", value: cleanText(answers.strategy_top_products) },
-    ]);
-  }, [answers]);
-
-  const strategyDifferentialsItems = useMemo(() => {
-    return buildBulletRows([
-      { label: "Diferenciais da loja", value: cleanText(answers.strategy_differentials) },
-      { label: "O que a loja não promete", value: cleanText(answers.strategy_promise_limits) },
-      { label: "O que depende de visita", value: cleanText(answers.strategy_requires_visit) },
-      { label: "O que depende de humano", value: cleanText(answers.strategy_requires_human) },
-      { label: "Casos de exceção importantes", value: cleanText(answers.strategy_exception_cases) },
-    ]);
-  }, [answers]);
-
-  const strategyAiSummaryItems = useMemo(() => {
-    return buildBulletRows([
-      { label: "Como a IA deve entender a loja", value: cleanText(answers.strategy_ai_store_summary) },
-      { label: "Como a IA deve apresentar a loja", value: cleanText(answers.strategy_ai_presentation) },
-      { label: "O que a IA deve priorizar", value: cleanText(answers.strategy_ai_priorities) },
-      { label: "O que a IA nunca deve esquecer", value: cleanText(answers.strategy_ai_never_forget) },
-    ]);
-  }, [answers]);
-
-  const poolsItems = useMemo(() => {
-    const poolTypes = joinSelectedLabels(
+  const poolTypesLabel = useMemo(() => {
+    return joinSelectedLabels(
       parseArrayAnswer(answers.pool_types_selected),
       POOL_TYPE_OPTIONS,
       cleanText(answers.pool_types_other)
     );
+  }, [answers]);
 
+  const poolsOverviewMetrics = useMemo(() => {
+    const stockRule = counts.pools > 0 ? "Controle por piscina" : "A definir";
+    return [
+      {
+        label: "Piscinas cadastradas",
+        value: String(counts.pools),
+        tone: counts.pools > 0 ? ("green" as const) : ("gray" as const),
+        hint: counts.pools > 0 ? "Já existe base manual/importada" : "Nenhuma piscina cadastrada ainda",
+      },
+      {
+        label: "Fotos por piscina",
+        value: "Até 10",
+        tone: "gray" as const,
+        hint: "Máximo de 50 MB por foto",
+      },
+      {
+        label: "Status de venda",
+        value: counts.pools > 0 ? "Controlado por item" : "Aguardando cadastro",
+        tone: counts.pools > 0 ? ("green" as const) : ("amber" as const),
+        hint: "Ativa/inativa e vendível por piscina",
+      },
+      {
+        label: "Estoque",
+        value: stockRule,
+        tone: counts.pools > 0 ? ("green" as const) : ("gray" as const),
+        hint: "Quantidade disponível por item",
+      },
+    ];
+  }, [counts.pools]);
+
+  const poolsOperationalItems = useMemo(() => {
     return buildBulletRows([
-      { label: "Modelos cadastrados", value: String(counts.pools) },
-      { label: "Tipos de piscina trabalhados", value: poolTypes || cleanText(answers.pool_types) },
-      { label: "Material", value: poolTypes },
-      { label: "Marca", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
-      { label: "Fotos", value: counts.pools > 0 ? "Gerenciadas na aba interna de piscinas" : "Ainda sem piscinas cadastradas" },
-      { label: "Preço base", value: counts.pools > 0 ? "Editável na aba de piscinas" : "" },
-      { label: "Ativo/inativo", value: counts.pools > 0 ? "Controlado item por item na aba de piscinas" : "" },
-      { label: "Edição e exclusão", value: "Disponíveis na página interna de piscinas" },
-      { label: "Importação inteligente assistida", value: "Planejada para evolução do fluxo" },
+      { label: "Tipos de piscina trabalhados", value: poolTypesLabel || cleanText(answers.pool_types) },
+      { label: "Marca principal para piscinas", value: cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) },
+      { label: "Cadastro manual", value: "Pode cadastrar piscina completa com medidas, estoque, preço, fotos, itens inclusos e observações" },
+      { label: "Fotos", value: counts.pools > 0 ? "Gerenciadas por piscina, com até 10 imagens" : "Quando cadastrar, poderá subir até 10 imagens por piscina" },
+      { label: "Preço e estoque", value: "Preenchidos diretamente na própria aba de Configurações" },
+      { label: "Campos esperados", value: "Nome, marca, material, formato, cor, acabamento, medidas, descrição, itens inclusos e observações de instalação" },
+      { label: "Edição e exclusão", value: "Devem continuar disponíveis nas páginas internas de piscinas" },
+      { label: "Importação inteligente", value: "Continua existindo sem depender deste cadastro manual" },
     ]);
-  }, [answers, counts.pools]);
+  }, [answers, counts.pools, poolTypesLabel]);
 
-  const catalogItems = useMemo(() => {
+  const catalogOverviewMetrics = useMemo(() => {
+    return [
+      {
+        label: "Total do catálogo",
+        value: String(totalCatalogo),
+        tone: totalCatalogo > 0 ? ("green" as const) : ("gray" as const),
+        hint: `${counts.quimicos} químicos • ${counts.acessorios} acessórios • ${counts.outros} outros`,
+      },
+      {
+        label: "Fotos por item",
+        value: "Até 10",
+        tone: "gray" as const,
+        hint: "Máximo de 50 MB por foto",
+      },
+      {
+        label: "Controle de estoque",
+        value: totalCatalogo > 0 ? "Por item" : "A definir",
+        tone: totalCatalogo > 0 ? ("green" as const) : ("gray" as const),
+        hint: "Ativo/inativo, estoque e SKU por cadastro",
+      },
+      {
+        label: "Cadastro manual",
+        value: "Disponível",
+        tone: "green" as const,
+        hint: "Químicos, acessórios e outros na mesma aba",
+      },
+    ];
+  }, [counts.quimicos, counts.acessorios, counts.outros, totalCatalogo]);
+
+  const catalogOperationalItems = useMemo(() => {
     return buildBulletRows([
       { label: "Produtos químicos", value: String(counts.quimicos) },
       { label: "Acessórios", value: String(counts.acessorios) },
       { label: "Outros itens", value: String(counts.outros) },
-      { label: "Fotos", value: totalCatalogo > 0 ? "Gerenciadas por item nas páginas internas" : "" },
-      { label: "Preço", value: totalCatalogo > 0 ? "Controlado por item" : "" },
-      { label: "Estoque", value: totalCatalogo > 0 ? "Controlado por item" : "" },
-      { label: "SKU", value: totalCatalogo > 0 ? "Controlado por item" : "" },
-      { label: "Ativo/inativo", value: totalCatalogo > 0 ? "Controlado por item" : "" },
-      { label: "Edição e exclusão", value: "Disponíveis nas páginas internas de catálogo" },
-      { label: "Importação futura assistida", value: "Mantida como parte da evolução do catálogo" },
+      { label: "Cadastro manual", value: "Pode cadastrar item com categoria, SKU, marca, linha, medidas, peso, aplicação, descrição e fotos" },
+      { label: "Campos principais", value: "Nome, categoria, SKU, marca, linha, unidade, tamanho, medidas, peso, preço, estoque, aplicação e observações técnicas" },
+      { label: "Fotos", value: totalCatalogo > 0 ? "Gerenciadas por item, com até 10 imagens" : "Quando cadastrar, poderá subir até 10 imagens por item" },
+      { label: "Preço e estoque", value: "Controlados item por item dentro da própria aba de Configurações" },
+      { label: "Edição e exclusão", value: "Devem continuar disponíveis nas páginas internas de catálogo" },
+      { label: "Importação inteligente", value: "Continua existindo sem depender deste cadastro manual" },
     ]);
   }, [counts.quimicos, counts.acessorios, counts.outros, totalCatalogo]);
 
@@ -993,38 +1062,10 @@ export default function ConfiguracoesPage() {
       state: cleanText(answers.state),
       service_regions: cleanText(answers.service_regions),
       service_region_notes: cleanText(answers.service_region_notes),
-      service_region_modes_text: joinSelectedLabels(
-        parseArrayAnswer(answers.service_region_modes),
-        SERVICE_REGION_MODE_OPTIONS
-      ),
-      store_services_text: joinSelectedLabels(
-        parseArrayAnswer(answers.store_services),
-        STORE_SERVICE_OPTIONS
-      ),
       store_services_other: cleanText(answers.store_services_other),
-      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
       store_description: cleanText(answers.store_description),
-      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
-      strategy_sell_more: cleanText(answers.strategy_sell_more),
-      strategy_common_customer: cleanText(answers.strategy_common_customer),
-      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
-      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
-      strategy_positioning: cleanText(answers.strategy_positioning),
       main_store_brand: cleanText(answers.main_store_brand),
       brands_worked: cleanText(answers.brands_worked),
-      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
-      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
-      strategy_top_lines: cleanText(answers.strategy_top_lines),
-      strategy_top_products: cleanText(answers.strategy_top_products),
-      strategy_differentials: cleanText(answers.strategy_differentials),
-      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
-      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
-      strategy_requires_human: cleanText(answers.strategy_requires_human),
-      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
-      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
-      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
-      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
-      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
     });
     setIsStrategyEditing(true);
   }, [answers]);
@@ -1035,38 +1076,10 @@ export default function ConfiguracoesPage() {
       state: cleanText(answers.state),
       service_regions: cleanText(answers.service_regions),
       service_region_notes: cleanText(answers.service_region_notes),
-      service_region_modes_text: joinSelectedLabels(
-        parseArrayAnswer(answers.service_region_modes),
-        SERVICE_REGION_MODE_OPTIONS
-      ),
-      store_services_text: joinSelectedLabels(
-        parseArrayAnswer(answers.store_services),
-        STORE_SERVICE_OPTIONS
-      ),
       store_services_other: cleanText(answers.store_services_other),
-      strategy_service_exclusions: cleanText(answers.strategy_service_exclusions),
       store_description: cleanText(answers.store_description),
-      strategy_primary_focus: cleanText(answers.strategy_primary_focus),
-      strategy_sell_more: cleanText(answers.strategy_sell_more),
-      strategy_common_customer: cleanText(answers.strategy_common_customer),
-      strategy_ideal_customer: cleanText(answers.strategy_ideal_customer),
-      strategy_ticket_range: cleanText(answers.strategy_ticket_range),
-      strategy_positioning: cleanText(answers.strategy_positioning),
       main_store_brand: cleanText(answers.main_store_brand),
       brands_worked: cleanText(answers.brands_worked),
-      strategy_priority_brands: cleanText(answers.strategy_priority_brands),
-      strategy_non_worked_brands: cleanText(answers.strategy_non_worked_brands),
-      strategy_top_lines: cleanText(answers.strategy_top_lines),
-      strategy_top_products: cleanText(answers.strategy_top_products),
-      strategy_differentials: cleanText(answers.strategy_differentials),
-      strategy_promise_limits: cleanText(answers.strategy_promise_limits),
-      strategy_requires_visit: cleanText(answers.strategy_requires_visit),
-      strategy_requires_human: cleanText(answers.strategy_requires_human),
-      strategy_exception_cases: cleanText(answers.strategy_exception_cases),
-      strategy_ai_store_summary: cleanText(answers.strategy_ai_store_summary),
-      strategy_ai_presentation: cleanText(answers.strategy_ai_presentation),
-      strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
-      strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
     });
     setIsStrategyEditing(false);
   }, [answers]);
@@ -1082,26 +1095,6 @@ export default function ConfiguracoesPage() {
       store_description: strategyDraft.store_description,
       main_store_brand: strategyDraft.main_store_brand,
       brands_worked: strategyDraft.brands_worked,
-      strategy_service_exclusions: strategyDraft.strategy_service_exclusions,
-      strategy_primary_focus: strategyDraft.strategy_primary_focus,
-      strategy_sell_more: strategyDraft.strategy_sell_more,
-      strategy_common_customer: strategyDraft.strategy_common_customer,
-      strategy_ideal_customer: strategyDraft.strategy_ideal_customer,
-      strategy_ticket_range: strategyDraft.strategy_ticket_range,
-      strategy_positioning: strategyDraft.strategy_positioning,
-      strategy_priority_brands: strategyDraft.strategy_priority_brands,
-      strategy_non_worked_brands: strategyDraft.strategy_non_worked_brands,
-      strategy_top_lines: strategyDraft.strategy_top_lines,
-      strategy_top_products: strategyDraft.strategy_top_products,
-      strategy_differentials: strategyDraft.strategy_differentials,
-      strategy_promise_limits: strategyDraft.strategy_promise_limits,
-      strategy_requires_visit: strategyDraft.strategy_requires_visit,
-      strategy_requires_human: strategyDraft.strategy_requires_human,
-      strategy_exception_cases: strategyDraft.strategy_exception_cases,
-      strategy_ai_store_summary: strategyDraft.strategy_ai_store_summary,
-      strategy_ai_presentation: strategyDraft.strategy_ai_presentation,
-      strategy_ai_priorities: strategyDraft.strategy_ai_priorities,
-      strategy_ai_never_forget: strategyDraft.strategy_ai_never_forget,
     }));
     setSuccessText("Alterações da estratégia atualizadas nesta tela.");
     setErrorText(null);
@@ -1120,15 +1113,10 @@ export default function ConfiguracoesPage() {
 
   const handlePoolPhotosChange = useCallback((fileList: FileList | null) => {
     const selectedFiles = Array.from(fileList || []);
+    const validationError = validateSelectedPhotos(selectedFiles);
 
-    if (selectedFiles.length > 10) {
-      setErrorText("Cada piscina pode ter no máximo 10 fotos.");
-      return;
-    }
-
-    const oversized = selectedFiles.find((file) => file.size > 50 * 1024 * 1024);
-    if (oversized) {
-      setErrorText(`A foto ${oversized.name} ultrapassa o limite de 50 MB.`);
+    if (validationError) {
+      setErrorText(validationError);
       return;
     }
 
@@ -1144,15 +1132,9 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    if (poolPhotos.length > 10) {
-      setErrorText("Cada piscina pode ter no máximo 10 fotos.");
-      setSuccessText(null);
-      return;
-    }
-
-    const oversized = poolPhotos.find((file) => file.size > 50 * 1024 * 1024);
-    if (oversized) {
-      setErrorText(`A foto ${oversized.name} ultrapassa o limite de 50 MB.`);
+    const poolPhotosError = validateSelectedPhotos(poolPhotos);
+    if (poolPhotosError) {
+      setErrorText(poolPhotosError);
       setSuccessText(null);
       return;
     }
@@ -1178,11 +1160,16 @@ export default function ConfiguracoesPage() {
         is_active: poolForm.is_active,
         track_stock: poolForm.track_stock,
         metadata: {
+          brand: cleanText(poolForm.brand) || null,
           material: cleanText(poolForm.material) || null,
           shape: cleanText(poolForm.shape) || null,
+          color: cleanText(poolForm.color) || null,
+          finish: cleanText(poolForm.finish) || null,
           width_m: parseNumberInput(poolForm.width_m),
           length_m: parseNumberInput(poolForm.length_m),
           depth_m: parseNumberInput(poolForm.depth_m),
+          included_items: cleanText(poolForm.included_items) || null,
+          installation_notes: cleanText(poolForm.installation_notes) || null,
           manual_created_in_configuracoes: true,
           pending_photo_upload_count: poolPhotos.length,
         },
@@ -1209,6 +1196,107 @@ export default function ConfiguracoesPage() {
       setSavingPool(false);
     }
   }, [organizationId, activeStoreId, poolForm, poolPhotos, fetchPageData]);
+
+  const handleCatalogFormChange = useCallback(
+    (key: keyof CatalogFormState, value: string | boolean) => {
+      setCatalogForm((current) => ({
+        ...current,
+        [key]: value,
+      } as CatalogFormState));
+    },
+    []
+  );
+
+  const handleCatalogPhotosChange = useCallback((fileList: FileList | null) => {
+    const selectedFiles = Array.from(fileList || []);
+    const validationError = validateSelectedPhotos(selectedFiles);
+
+    if (validationError) {
+      setErrorText(validationError);
+      return;
+    }
+
+    setCatalogPhotos(selectedFiles);
+    setErrorText(null);
+  }, []);
+
+  const handleSaveManualCatalogItem = useCallback(async () => {
+    const itemName = cleanText(catalogForm.name);
+    if (!itemName) {
+      setErrorText("Preencha pelo menos o nome do item antes de salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    const catalogPhotosError = validateSelectedPhotos(catalogPhotos);
+    if (catalogPhotosError) {
+      setErrorText(catalogPhotosError);
+      setSuccessText(null);
+      return;
+    }
+
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar o item do catálogo.");
+      setSuccessText(null);
+      return;
+    }
+
+    setSavingCatalogItem(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const parsedPrice = parseNumberInput(catalogForm.price);
+      const parsedStock = parseNumberInput(catalogForm.stock_quantity);
+      const insertPayload = {
+        organization_id: organizationId,
+        store_id: activeStoreId,
+        sku: cleanText(catalogForm.sku) || null,
+        name: itemName,
+        description: cleanText(catalogForm.description) || null,
+        price_cents: parsedPrice === null ? null : Math.round(parsedPrice * 100),
+        currency: "BRL",
+        is_active: catalogForm.is_active,
+        track_stock: catalogForm.track_stock,
+        stock_quantity: parsedStock === null ? null : Math.round(parsedStock),
+        metadata: {
+          categoria: catalogForm.category,
+          brand: cleanText(catalogForm.brand) || null,
+          line: cleanText(catalogForm.line) || null,
+          unit_label: cleanText(catalogForm.unit_label) || null,
+          size_details: cleanText(catalogForm.size_details) || null,
+          width_cm: parseNumberInput(catalogForm.width_cm),
+          height_cm: parseNumberInput(catalogForm.height_cm),
+          length_cm: parseNumberInput(catalogForm.length_cm),
+          weight_kg: parseNumberInput(catalogForm.weight_kg),
+          application: cleanText(catalogForm.application) || null,
+          technical_notes: cleanText(catalogForm.technical_notes) || null,
+          manual_created_in_configuracoes: true,
+          pending_photo_upload_count: catalogPhotos.length,
+        },
+      };
+
+      const { error } = await supabase.from("store_catalog_items").insert(insertPayload);
+      if (error) throw error;
+
+      setCatalogForm(createEmptyCatalogForm());
+      setCatalogPhotos([]);
+      setCounts((current) => ({
+        ...current,
+        [catalogForm.category]: current[catalogForm.category] + 1,
+      }));
+      setSuccessText(
+        catalogPhotos.length > 0
+          ? "Item salvo. As fotos ainda precisam ser conectadas ao fluxo final de upload sem quebrar o restante do sistema."
+          : "Item salvo com sucesso."
+      );
+      await fetchPageData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao salvar o item manualmente.");
+    } finally {
+      setSavingCatalogItem(false);
+    }
+  }, [organizationId, activeStoreId, catalogForm, catalogPhotos, fetchPageData]);
 
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -1628,368 +1716,107 @@ export default function ConfiguracoesPage() {
           }
         >
           {isStrategyEditing ? (
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-black/10 bg-gray-50 p-4">
-                <div className="mb-1 text-sm font-semibold text-gray-900">Editar estratégia na mesma página</div>
-                <div className="mb-3 text-xs text-gray-600">
-                  Aqui você pode completar ou adicionar informações que estejam faltando no onboarding.
-                </div>
+            <div className="rounded-2xl border border-black/10 bg-gray-50 p-4">
+              <div className="mb-1 text-sm font-semibold text-gray-900">Editar estratégia na mesma página</div>
+              <div className="mb-3 text-xs text-gray-600">
+                Aqui você pode completar ou adicionar informações que estejam faltando no onboarding.
+              </div>
 
-                <div className="space-y-4">
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">1. Base de atuação da loja</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cidade principal</span>
-                        <input
-                          value={strategyDraft.city ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("city", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Cidade
+                  </span>
+                  <input
+                    value={strategyDraft.city ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("city", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
 
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estado</span>
-                        <input
-                          value={strategyDraft.state ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("state", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Estado
+                  </span>
+                  <input
+                    value={strategyDraft.state ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("state", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
 
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Região principal de atendimento</span>
-                        <input
-                          value={strategyDraft.service_regions ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("service_regions", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Região de atendimento
+                  </span>
+                  <input
+                    value={strategyDraft.service_regions ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("service_regions", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
 
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Até onde atende</span>
-                        <input
-                          value={strategyDraft.service_region_modes_text ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("service_region_modes_text", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: cidade + cidades vizinhas, todo o estado, sob consulta..."
-                        />
-                      </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Serviços adicionais ou faltando
+                  </span>
+                  <input
+                    value={strategyDraft.store_services_other ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("store_services_other", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    placeholder="Ex.: reforma, assistência, automação..."
+                  />
+                </label>
 
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações sobre cobertura</span>
-                        <textarea
-                          value={strategyDraft.service_region_notes ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("service_region_notes", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-                    </div>
-                  </div>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Descrição da loja
+                  </span>
+                  <textarea
+                    value={strategyDraft.store_description ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("store_description", event.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
 
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">2. Serviços que a loja oferece</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Serviços principais</span>
-                        <input
-                          value={strategyDraft.store_services_text ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("store_services_text", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: venda de piscinas, instalação, visita técnica..."
-                        />
-                      </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Marca principal
+                  </span>
+                  <input
+                    value={strategyDraft.main_store_brand ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("main_store_brand", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
 
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Outros serviços</span>
-                        <input
-                          value={strategyDraft.store_services_other ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("store_services_other", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Outras marcas
+                  </span>
+                  <input
+                    value={strategyDraft.brands_worked ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("brands_worked", event.target.value)}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
 
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Serviços que não faz</span>
-                        <input
-                          value={strategyDraft.strategy_service_exclusions ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_service_exclusions", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: não faz obra do entorno, não faz manutenção..."
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">3. Foco comercial da loja</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de loja / foco comercial</span>
-                        <textarea
-                          value={strategyDraft.store_description ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("store_description", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Principal foco da loja</span>
-                        <input
-                          value={strategyDraft.strategy_primary_focus ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_primary_focus", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que quer vender mais</span>
-                        <input
-                          value={strategyDraft.strategy_sell_more ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_sell_more", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de cliente mais comum</span>
-                        <input
-                          value={strategyDraft.strategy_common_customer ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_common_customer", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de cliente ideal</span>
-                        <input
-                          value={strategyDraft.strategy_ideal_customer ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ideal_customer", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Faixa de ticket mais comum</span>
-                        <input
-                          value={strategyDraft.strategy_ticket_range ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ticket_range", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Posicionamento comercial</span>
-                        <input
-                          value={strategyDraft.strategy_positioning ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_positioning", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: consultiva, premium, técnica, popular..."
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">4. Marcas, linhas e produtos trabalhados</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca principal</span>
-                        <input
-                          value={strategyDraft.main_store_brand ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("main_store_brand", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Outras marcas</span>
-                        <input
-                          value={strategyDraft.brands_worked ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("brands_worked", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marcas que prefere priorizar</span>
-                        <input
-                          value={strategyDraft.strategy_priority_brands ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_priority_brands", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marcas ou linhas que não trabalha</span>
-                        <input
-                          value={strategyDraft.strategy_non_worked_brands ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_non_worked_brands", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Linhas principais vendidas</span>
-                        <input
-                          value={strategyDraft.strategy_top_lines ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_top_lines", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Produtos com maior giro</span>
-                        <input
-                          value={strategyDraft.strategy_top_products ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_top_products", event.target.value)}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">5. Diferenciais, limites e restrições</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="space-y-1 md:col-span-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Diferenciais da loja</span>
-                        <textarea
-                          value={strategyDraft.strategy_differentials ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_differentials", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                          placeholder="Ex.: frete grátis, envio no mesmo dia, instalação própria..."
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a loja não promete</span>
-                        <textarea
-                          value={strategyDraft.strategy_promise_limits ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_promise_limits", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que depende de visita</span>
-                        <textarea
-                          value={strategyDraft.strategy_requires_visit ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_requires_visit", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que depende de humano</span>
-                        <textarea
-                          value={strategyDraft.strategy_requires_human ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_requires_human", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Casos de exceção importantes</span>
-                        <textarea
-                          value={strategyDraft.strategy_exception_cases ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_exception_cases", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-gray-900">6. Resumo estratégico para a IA</div>
-                    <div className="grid gap-3">
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA deve entender a loja</span>
-                        <textarea
-                          value={strategyDraft.strategy_ai_store_summary ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ai_store_summary", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como a IA deve apresentar a loja</span>
-                        <textarea
-                          value={strategyDraft.strategy_ai_presentation ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ai_presentation", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA deve priorizar</span>
-                        <textarea
-                          value={strategyDraft.strategy_ai_priorities ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ai_priorities", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">O que a IA nunca deve esquecer</span>
-                        <textarea
-                          value={strategyDraft.strategy_ai_never_forget ?? ""}
-                          onChange={(event) => handleStrategyDraftChange("strategy_ai_never_forget", event.target.value)}
-                          rows={3}
-                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                </div>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                    Observações de região e posicionamento
+                  </span>
+                  <textarea
+                    value={strategyDraft.service_region_notes ?? ""}
+                    onChange={(event) => handleStrategyDraftChange("service_region_notes", event.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  />
+                </label>
               </div>
             </div>
           ) : (
-            <div className="space-y-4">
-              <div className="grid gap-4 xl:grid-cols-2">
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">1. Base de atuação da loja</div>
-                  <SummaryList items={strategyBaseItems} />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">2. Serviços que a loja oferece</div>
-                  <SummaryList items={strategyServicesItems} />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">3. Foco comercial da loja</div>
-                  <SummaryList items={strategyCommercialFocusItems} />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">4. Marcas, linhas e produtos trabalhados</div>
-                  <SummaryList items={strategyBrandsItems} />
-                </div>
-              </div>
-
-              <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">5. Diferenciais, limites e restrições</div>
-                  <SummaryList items={strategyDifferentialsItems} />
-                </div>
-
-                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">6. Resumo estratégico para a IA</div>
-                  <SummaryList items={strategyAiSummaryItems} />
-                </div>
-              </div>
-            </div>
+            <SummaryList items={strategyItems} />
           )}
         </SectionBlock>
       ) : null}
@@ -1999,7 +1826,6 @@ export default function ConfiguracoesPage() {
           <SectionBlock
             title="Adicionar piscina manualmente"
             description="Cadastre uma piscina por aqui sem depender do onboarding. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
-            actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
           >
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <label className="space-y-1 md:col-span-2 xl:col-span-2">
@@ -2009,6 +1835,16 @@ export default function ConfiguracoesPage() {
                   onChange={(event) => handlePoolFormChange("name", event.target.value)}
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                   placeholder="Ex.: Piscina Fibra Premium 7x3"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca</span>
+                <input
+                  value={poolForm.brand}
+                  onChange={(event) => handlePoolFormChange("brand", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: iGUi"
                 />
               </label>
 
@@ -2029,6 +1865,26 @@ export default function ConfiguracoesPage() {
                   onChange={(event) => handlePoolFormChange("shape", event.target.value)}
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                   placeholder="Retangular, oval..."
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cor</span>
+                <input
+                  value={poolForm.color}
+                  onChange={(event) => handlePoolFormChange("color", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Azul, branca, areia..."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Acabamento / linha</span>
+                <input
+                  value={poolForm.finish}
+                  onChange={(event) => handlePoolFormChange("finish", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Premium, borda molhada, com hidro..."
                 />
               </label>
 
@@ -2090,6 +1946,28 @@ export default function ConfiguracoesPage() {
                   rows={4}
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
                   placeholder="Descreva acabamento, diferenciais, instalação, cor, acessórios inclusos e qualquer detalhe importante."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Itens inclusos</span>
+                <textarea
+                  value={poolForm.included_items}
+                  onChange={(event) => handlePoolFormChange("included_items", event.target.value)}
+                  rows={3}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: dispositivo, casa de máquinas, hidro, iluminação..."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações de instalação</span>
+                <textarea
+                  value={poolForm.installation_notes}
+                  onChange={(event) => handlePoolFormChange("installation_notes", event.target.value)}
+                  rows={3}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: precisa de visita técnica, prazo médio, condições do terreno..."
                 />
               </label>
 
@@ -2156,28 +2034,310 @@ export default function ConfiguracoesPage() {
 
           <SectionBlock
             title="3. Piscinas"
-            description="Tudo sobre a oferta de piscinas da loja."
-            actions={<SecondaryLink href="/configuracoes/piscinas">Abrir piscinas</SecondaryLink>}
+            description="Visão mais forte da oferta de piscinas da loja, sem depender só de texto corrido."
           >
-            <SummaryList items={poolsItems} />
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {poolsOverviewMetrics.map((item) => (
+                <StatusCard
+                  key={item.label}
+                  label={item.label}
+                  value={item.value}
+                  tone={item.tone}
+                  hint={item.hint}
+                />
+              ))}
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+              <div>
+                <div className="mb-2 text-sm font-semibold text-gray-900">Base comercial de piscinas</div>
+                <SummaryList items={poolsOperationalItems} />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-semibold text-gray-900">Contagem rápida</div>
+                <SummaryList
+                  items={[
+                    `Piscinas cadastradas: ${counts.pools}.`,
+                    `Tipos-base configurados: ${poolTypesLabel || "Ainda não definidos"}.`,
+                    `Marca principal ligada à operação: ${cleanText(answers.main_store_brand) || cleanText(answers.brands_worked) || "Ainda não definida"}.`,
+                    "Cadastro manual e importação inteligente podem coexistir sem conflito.",
+                  ]}
+                />
+              </div>
+            </div>
           </SectionBlock>
         </div>
       ) : null}
 
       {activeTab === "produtos-acessorios" ? (
-        <SectionBlock
-          title="4. Produtos/Acessórios"
-          description="No lugar do catálogo geral, com separação clara por categoria."
-          actions={
-            <div className="flex flex-wrap gap-2">
-              <SecondaryLink href="/configuracoes/catalogo/quimicos">Químicos</SecondaryLink>
-              <SecondaryLink href="/configuracoes/catalogo/acessorios">Acessórios</SecondaryLink>
-              <SecondaryLink href="/configuracoes/catalogo/outros">Outros</SecondaryLink>
+        <div className="space-y-4">
+          <SectionBlock
+            title="Adicionar item manualmente"
+            description="Cadastre produtos químicos, acessórios e outros itens do catálogo por aqui. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
+          >
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Categoria</span>
+                <select
+                  value={catalogForm.category}
+                  onChange={(event) => handleCatalogFormChange("category", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                >
+                  <option value="quimicos">Químicos</option>
+                  <option value="acessorios">Acessórios</option>
+                  <option value="outros">Outros</option>
+                </select>
+              </label>
+
+              <label className="space-y-1 md:col-span-2 xl:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do item</span>
+                <input
+                  value={catalogForm.name}
+                  onChange={(event) => handleCatalogFormChange("name", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: Cloro granulado premium"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">SKU</span>
+                <input
+                  value={catalogForm.sku}
+                  onChange={(event) => handleCatalogFormChange("sku", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Opcional"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca</span>
+                <input
+                  value={catalogForm.brand}
+                  onChange={(event) => handleCatalogFormChange("brand", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Marca do item"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Linha / modelo</span>
+                <input
+                  value={catalogForm.line}
+                  onChange={(event) => handleCatalogFormChange("line", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: Premium, Manutenção..."
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Unidade</span>
+                <input
+                  value={catalogForm.unit_label}
+                  onChange={(event) => handleCatalogFormChange("unit_label", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Un, kg, L, kit..."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tamanho / variação</span>
+                <input
+                  value={catalogForm.size_details}
+                  onChange={(event) => handleCatalogFormChange("size_details", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: 10kg, 1L, 1,5 polegada..."
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Largura (cm)</span>
+                <input
+                  value={catalogForm.width_cm}
+                  onChange={(event) => handleCatalogFormChange("width_cm", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Opcional"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Altura (cm)</span>
+                <input
+                  value={catalogForm.height_cm}
+                  onChange={(event) => handleCatalogFormChange("height_cm", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Opcional"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Comprimento (cm)</span>
+                <input
+                  value={catalogForm.length_cm}
+                  onChange={(event) => handleCatalogFormChange("length_cm", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Opcional"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Peso (kg)</span>
+                <input
+                  value={catalogForm.weight_kg}
+                  onChange={(event) => handleCatalogFormChange("weight_kg", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Opcional"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</span>
+                <input
+                  value={catalogForm.price}
+                  onChange={(event) => handleCatalogFormChange("price", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="59,90"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estoque</span>
+                <input
+                  value={catalogForm.stock_quantity}
+                  onChange={(event) => handleCatalogFormChange("stock_quantity", event.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="0"
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição completa</span>
+                <textarea
+                  value={catalogForm.description}
+                  onChange={(event) => handleCatalogFormChange("description", event.target.value)}
+                  rows={4}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Descreva composição, litragem, aplicação, medidas, uso recomendado e detalhes importantes."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Aplicação / uso recomendado</span>
+                <textarea
+                  value={catalogForm.application}
+                  onChange={(event) => handleCatalogFormChange("application", event.target.value)}
+                  rows={3}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: tratamento semanal, aspiração, conexão hidráulica..."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações técnicas</span>
+                <textarea
+                  value={catalogForm.technical_notes}
+                  onChange={(event) => handleCatalogFormChange("technical_notes", event.target.value)}
+                  rows={3}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  placeholder="Ex.: compatibilidade, concentração, conexão, restrições..."
+                />
+              </label>
+
+              <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fotos do item</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(event) => handleCatalogPhotosChange(event.target.files)}
+                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                />
+                <div className="text-xs text-gray-500">Máximo de 10 fotos por item. Cada foto pode ter até 50 MB.</div>
+                {catalogPhotos.length > 0 ? (
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                    {catalogPhotos.length} foto(s) selecionada(s): {catalogPhotos.map((file) => file.name).join(", ")}
+                  </div>
+                ) : null}
+              </label>
             </div>
-          }
-        >
-          <SummaryList items={catalogItems} />
-        </SectionBlock>
+
+            <div className="mt-4 flex flex-wrap gap-3">
+              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={catalogForm.is_active}
+                  onChange={(event) => handleCatalogFormChange("is_active", event.target.checked)}
+                />
+                Item em estado vendível / ativo
+              </label>
+
+              <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={catalogForm.track_stock}
+                  onChange={(event) => handleCatalogFormChange("track_stock", event.target.checked)}
+                />
+                Controlar estoque deste item
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSaveManualCatalogItem()}
+                disabled={!hasValidStoreContext || savingCatalogItem}
+                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {savingCatalogItem ? "Salvando item..." : "Salvar item"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCatalogForm(createEmptyCatalogForm());
+                  setCatalogPhotos([]);
+                }}
+                disabled={savingCatalogItem}
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Limpar formulário
+              </button>
+            </div>
+          </SectionBlock>
+
+          <SectionBlock
+            title="4. Produtos/Acessórios"
+            description="Visão mais forte do catálogo, com cadastro manual completo e leitura rápida da base já cadastrada."
+          >
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {catalogOverviewMetrics.map((item) => (
+                <StatusCard
+                  key={item.label}
+                  label={item.label}
+                  value={item.value}
+                  tone={item.tone}
+                  hint={item.hint}
+                />
+              ))}
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+              <div>
+                <div className="mb-2 text-sm font-semibold text-gray-900">Base operacional do catálogo</div>
+                <SummaryList items={catalogOperationalItems} />
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-semibold text-gray-900">Contagem rápida</div>
+                <SummaryList
+                  items={[
+                    `Produtos químicos cadastrados: ${counts.quimicos}.`,
+                    `Acessórios cadastrados: ${counts.acessorios}.`,
+                    `Outros itens cadastrados: ${counts.outros}.`,
+                    "Cadastro manual e importação inteligente podem coexistir sem conflito.",
+                  ]}
+                />
+              </div>
+            </div>
+          </SectionBlock>
+        </div>
       ) : null}
 
       {activeTab === "operacao" ? (
