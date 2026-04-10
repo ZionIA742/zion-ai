@@ -1,65 +1,35 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
-type CatalogItemMetadata = {
-  categoria?: string | null;
-  source_file_name?: string | null;
-  clean_description?: string | null;
-  destination?: string | null;
-  categoryHint?: string | null;
-  price?: string | null;
-  dimensions?: string | null;
-  depth?: string | null;
-  capacity?: string | null;
-  material?: string | null;
-  shape?: string | null;
-  brand?: string | null;
-  sku?: string | null;
-  weight?: string | null;
-  dosage?: string | null;
-  color?: string | null;
-  usage?: string | null;
-  notes?: string | null;
-  indication?: string | null;
-  composition?: string | null;
-  embalagem?: string | null;
-  packaging?: string | null;
-  model?: string | null;
-  size?: string | null;
-  compatibility?: string | null;
-  function?: string | null;
-  environment?: string | null;
-  diferencial?: string | null;
-  application?: string | null;
-  feature?: string | null;
-  [key: string]: any;
-};
-
-type CatalogItemRow = {
+type PoolRow = {
   id: string;
   organization_id: string;
   store_id: string;
-  sku: string | null;
-  name: string;
+  name: string | null;
+  width_m: number | null;
+  length_m: number | null;
+  depth_m: number | null;
+  shape: string | null;
+  material: string | null;
+  max_capacity_l: number | null;
+  weight_kg: number | null;
+  price: number | null;
   description: string | null;
-  price_cents: number | null;
-  currency: string;
   is_active: boolean;
   track_stock: boolean;
   stock_quantity: number | null;
-  metadata: CatalogItemMetadata | null;
   created_at?: string | null;
-  updated_at?: string | null;
 };
 
-type CatalogItemPhotoRow = {
+type PoolPhotoRow = {
   id: string;
-  catalog_item_id: string;
+  pool_id: string;
+  organization_id: string;
+  store_id: string;
   storage_path: string;
   file_name: string | null;
   file_size_bytes: number | null;
@@ -67,9 +37,8 @@ type CatalogItemPhotoRow = {
   created_at?: string | null;
 };
 
-type EditCatalogForm = {
+type EditPoolForm = {
   name: string;
-  sku: string;
   description: string;
   price: string;
   is_active: boolean;
@@ -82,60 +51,50 @@ type CharacteristicRow = {
   value: string;
 };
 
-const STORAGE_BUCKET = "store-catalog-photos";
-const MAX_CATALOG_PHOTOS = 10;
+const STORAGE_BUCKET = "pool-photos";
+const MAX_POOL_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
-function normalizeCategory(category: string | null | undefined) {
-  if (category === "acessorios") return "acessorios";
-  if (category === "quimicos") return "quimicos";
-  return "outros";
-}
-
-function categoryLabel(category: string) {
-  if (category === "acessorios") return "Acessórios";
-  if (category === "quimicos") return "Produtos químicos";
-  return "Outros itens";
-}
-
-function formatMoney(cents: number | null | undefined) {
-  if (typeof cents !== "number") return "Sem preço";
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(cents / 100);
-}
-
-function formatFileSize(size: number) {
-  if (!Number.isFinite(size) || size <= 0) return "0 B";
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function toPriceInput(cents: number | null | undefined) {
-  if (typeof cents !== "number") return "";
-  return (cents / 100).toFixed(2).replace(".", ",");
-}
-
-function priceInputToCents(value: string) {
-  const normalized = value
-    .replace(/\./g, "")
-    .replace(",", ".")
-    .replace(/[^\d.]/g, "")
-    .trim();
-
-  if (!normalized) return null;
-
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed)) return null;
-
-  return Math.round(parsed * 100);
+function moneyBRL(value: number | null) {
+  if (value == null) return "Sem preço";
+  return `R$ ${Number(value).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 function getPublicImageUrl(storagePath: string) {
   const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
   return data.publicUrl;
+}
+
+function formatPriceInput(value: string) {
+  const cleaned = value.replace(/[^\d,]/g, "");
+  if (!cleaned) return "";
+
+  const parts = cleaned.split(",");
+  const integerPartRaw = parts[0].replace(/^0+(?=\d)/, "");
+  const integerPart = integerPartRaw || (parts[0] ? "0" : "");
+  const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+
+  if (parts.length === 1) return formattedInteger;
+
+  const decimalPart = parts.slice(1).join("").slice(0, 2);
+  return `${formattedInteger},${decimalPart}`;
+}
+
+function priceInputToNumber(value: string) {
+  const normalized = value.replace(/\./g, "").replace(",", ".").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatFileSize(size: number | null) {
+  if (!Number.isFinite(size) || !size || size <= 0) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function cleanLooseText(value: string | null | undefined) {
@@ -157,119 +116,72 @@ function normalizeLoose(value: string | null | undefined) {
     .trim();
 }
 
+
+
+function matchesPoolSearch(pool: PoolRow, search: string) {
+  const term = normalizeLoose(search);
+  if (!term) return true;
+
+  const haystack = [
+    pool.name,
+    pool.material,
+    pool.shape,
+    pool.description,
+  ]
+    .map((value) => normalizeLoose(value))
+    .filter(Boolean)
+    .join(" ");
+
+  return haystack.includes(term);
+}
 function isJunkDescriptionLine(value: string) {
   const normalized = normalizeLoose(value);
   if (!normalized) return true;
 
-  const blockedExact = new Set([
-    "campo",
-    "valor",
-    "descricao detalhada",
-    "descrição detalhada",
-    "nome do item",
-    "categoria",
-    "preco",
-    "preço",
-    "marca",
-    "peso",
-    "cor",
-    "funcao",
-    "função",
-    "material",
-    "dosagem",
-    "aplicacao",
-    "aplicação",
-    "compatibilidade",
-    "modelo",
-    "tamanho",
-    "embalagem",
-    "composicao",
-    "composição",
-    "indicacao",
-    "indicação",
-    "ambiente indicado",
-    "diferencial",
-    "uso",
-    "observacao",
-    "observação",
-    "capacidade",
-    "medidas",
-    "profundidade",
-    "largura",
-    "comprimento",
-    "formato",
-  ]);
-
-  if (blockedExact.has(normalized)) return true;
-
   return (
+    normalized === "descricao detalhada" ||
+    normalized === "descrição detalhada" ||
     normalized.startsWith("arquivo de teste") ||
-    normalized.startsWith("categoria esperada") ||
-    normalized.startsWith("objetivo validar") ||
-    normalized.startsWith("salvar em configuracoes") ||
-    normalized.startsWith("salvar em configurações")
+    normalized.startsWith("campo") ||
+    normalized.startsWith("valor") ||
+    normalized.startsWith("categoria") ||
+    normalized.startsWith("modelo") ||
+    normalized.startsWith("tipo") ||
+    normalized.startsWith("medidas") ||
+    normalized.startsWith("profundidade") ||
+    normalized.startsWith("capacidade") ||
+    normalized.startsWith("material") ||
+    normalized.startsWith("preco") ||
+    normalized.startsWith("preço") ||
+    normalized.startsWith("prazo")
   );
 }
 
-function characteristicValue(raw: unknown) {
-  const value = cleanLooseText(
-    typeof raw === "string" || typeof raw === "number" ? String(raw) : ""
-  );
-  return value || "";
-}
-
-function pushCharacteristic(rows: CharacteristicRow[], label: string, value: unknown) {
-  const safeValue = characteristicValue(value);
+function pushCharacteristic(rows: CharacteristicRow[], label: string, value: string | null | undefined) {
+  const safeValue = cleanLooseText(value);
   if (!safeValue) return;
   if (rows.some((row) => row.label === label && row.value === safeValue)) return;
   rows.push({ label, value: safeValue });
 }
 
-function buildCatalogCharacteristics(item: CatalogItemRow, category: string): CharacteristicRow[] {
-  const metadata = item.metadata || {};
+function buildPoolCharacteristics(pool: PoolRow): CharacteristicRow[] {
   const rows: CharacteristicRow[] = [];
-
-  pushCharacteristic(rows, "Nome", item.name);
-  if (typeof item.price_cents === "number") pushCharacteristic(rows, "Preço", formatMoney(item.price_cents));
-  pushCharacteristic(rows, "SKU", item.sku || metadata.sku);
-
-  if (category === "quimicos") {
-    pushCharacteristic(rows, "Marca", metadata.brand);
-    pushCharacteristic(rows, "Peso", metadata.weight);
-    pushCharacteristic(rows, "Formato", metadata.shape);
-    pushCharacteristic(rows, "Cor", metadata.color);
-    pushCharacteristic(rows, "Dosagem", metadata.dosage);
-    pushCharacteristic(rows, "Concentração", metadata.concentration || metadata.capacity);
-    pushCharacteristic(rows, "Aplicação", metadata.application || metadata.usage);
-    pushCharacteristic(rows, "Indicação", metadata.indication || metadata.notes);
-    pushCharacteristic(rows, "Composição", metadata.composition);
-    pushCharacteristic(rows, "Embalagem", metadata.embalagem || metadata.packaging);
-  } else if (category === "acessorios") {
-    pushCharacteristic(rows, "Marca", metadata.brand);
-    pushCharacteristic(rows, "Material", metadata.material);
-    pushCharacteristic(rows, "Cor", metadata.color);
-    pushCharacteristic(rows, "Compatibilidade", metadata.compatibility || metadata.usage);
-    pushCharacteristic(rows, "Função", metadata.function || metadata.notes);
-    pushCharacteristic(rows, "Aplicação", metadata.application);
-    pushCharacteristic(rows, "Modelo", metadata.model);
-    pushCharacteristic(rows, "Tamanho", metadata.size || metadata.dimensions);
-  } else {
-    pushCharacteristic(rows, "Marca", metadata.brand);
-    pushCharacteristic(rows, "Material", metadata.material);
-    pushCharacteristic(rows, "Cor", metadata.color);
-    pushCharacteristic(rows, "Aplicação", metadata.application || metadata.usage);
-    pushCharacteristic(rows, "Diferencial", metadata.diferencial || metadata.feature || metadata.notes);
-    pushCharacteristic(rows, "Ambiente indicado", metadata.environment);
-    pushCharacteristic(rows, "Modelo", metadata.model);
-    pushCharacteristic(rows, "Tamanho", metadata.size || metadata.dimensions);
+  pushCharacteristic(rows, "Nome", pool.name || "");
+  if (pool.price != null) pushCharacteristic(rows, "Preço", moneyBRL(pool.price));
+  pushCharacteristic(rows, "Formato", pool.shape);
+  pushCharacteristic(rows, "Material", pool.material);
+  if (pool.width_m != null) pushCharacteristic(rows, "Largura", `${pool.width_m} m`);
+  if (pool.length_m != null) pushCharacteristic(rows, "Comprimento", `${pool.length_m} m`);
+  if (pool.depth_m != null) pushCharacteristic(rows, "Profundidade", `${pool.depth_m} m`);
+  if (pool.max_capacity_l != null) {
+    pushCharacteristic(rows, "Capacidade", `${pool.max_capacity_l.toLocaleString("pt-BR")} L`);
   }
-
+  if (pool.weight_kg != null) pushCharacteristic(rows, "Peso", `${pool.weight_kg} kg`);
   return rows;
 }
 
-function buildComplementaryDescription(item: CatalogItemRow, characteristics: CharacteristicRow[]) {
-  const metadata = item.metadata || {};
-  const sourceText = cleanLooseText(String(metadata.clean_description || item.description || ""));
+function buildComplementaryDescription(pool: PoolRow, characteristics: CharacteristicRow[]) {
+  const sourceText = cleanLooseText(pool.description || "");
   if (!sourceText) return "";
 
   const characteristicValues = characteristics
@@ -286,7 +198,7 @@ function buildComplementaryDescription(item: CatalogItemRow, characteristics: Ch
       if (!normalized) return false;
       if (characteristicValues.includes(normalized)) return false;
       return !characteristicValues.some(
-        (value) => value.length >= 10 && normalized === value
+        (value) => value.length >= 8 && normalized === value
       );
     });
 
@@ -300,15 +212,17 @@ function buildComplementaryDescription(item: CatalogItemRow, characteristics: Ch
   return unique.join("\n").trim();
 }
 
-function buildEditForm(item: CatalogItemRow): EditCatalogForm {
+function buildEditForm(pool: PoolRow): EditPoolForm {
   return {
-    name: item.name || "",
-    sku: item.sku || "",
-    description: item.description || "",
-    price: toPriceInput(item.price_cents),
-    is_active: item.is_active,
-    track_stock: item.track_stock,
-    stock_quantity: item.stock_quantity == null ? "" : String(item.stock_quantity),
+    name: pool.name || "",
+    description: pool.description || "",
+    price:
+      pool.price == null
+        ? ""
+        : formatPriceInput(String(pool.price.toFixed(2).replace(".", ","))),
+    is_active: pool.is_active,
+    track_stock: pool.track_stock,
+    stock_quantity: pool.stock_quantity == null ? "" : String(pool.stock_quantity),
   };
 }
 
@@ -363,34 +277,30 @@ function CharacteristicsTable({
   );
 }
 
-export default function CatalogCategoryPage() {
-  const params = useParams<{ categoria?: string }>();
-  const category = normalizeCategory(
-    Array.isArray(params?.categoria) ? params?.categoria[0] : params?.categoria
-  );
-
+export default function PiscinasPage() {
   const { organizationId, activeStoreId } = useStoreContext();
 
-  const [items, setItems] = useState<CatalogItemRow[]>([]);
-  const [photosByItemId, setPhotosByItemId] = useState<Record<string, CatalogItemPhotoRow[]>>({});
+  const [pools, setPools] = useState<PoolRow[]>([]);
+  const [photosByPoolId, setPhotosByPoolId] = useState<Record<string, PoolPhotoRow[]>>({});
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [successText, setSuccessText] = useState<string | null>(null);
-  const [editingItemId, setEditingItemId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<EditCatalogForm | null>(null);
-  const [savingItemId, setSavingItemId] = useState<string | null>(null);
-  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
-  const [deletingPhotoId, setDeletingPhotoId] = useState<string | null>(null);
-  const [selectedCatalogFilesByItemId, setSelectedCatalogFilesByItemId] = useState<Record<string, File[]>>({});
-  const [uploadingPhotosItemId, setUploadingPhotosItemId] = useState<string | null>(null);
+  const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
+  const [editPoolForm, setEditPoolForm] = useState<EditPoolForm | null>(null);
+  const [savingPoolId, setSavingPoolId] = useState<string | null>(null);
+  const [deletingPoolId, setDeletingPoolId] = useState<string | null>(null);
+  const [deletingPoolPhotoId, setDeletingPoolPhotoId] = useState<string | null>(null);
+  const [selectedPoolFilesByPoolId, setSelectedPoolFilesByPoolId] = useState<Record<string, File[]>>({});
+  const [uploadingPoolPhotosId, setUploadingPoolPhotosId] = useState<string | null>(null);
 
-  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const hasValidStoreContext = Boolean(organizationId && activeStoreId);
+  const [searchText, setSearchText] = useState("");
 
   async function fetchData() {
     if (!organizationId || !activeStoreId) {
-      setItems([]);
-      setPhotosByItemId({});
+      setPools([]);
+      setPhotosByPoolId({});
       setLoading(false);
       return;
     }
@@ -399,8 +309,8 @@ export default function CatalogCategoryPage() {
     setErrorText(null);
 
     try {
-      const { data: rows, error } = await supabase
-        .from("store_catalog_items")
+      const { data: poolRows, error } = await supabase
+        .from("pools")
         .select("*")
         .eq("organization_id", organizationId)
         .eq("store_id", activeStoreId)
@@ -408,35 +318,31 @@ export default function CatalogCategoryPage() {
 
       if (error) throw error;
 
-      const filtered = ((rows || []) as CatalogItemRow[]).filter(
-        (item) => normalizeCategory(item.metadata?.categoria) === category
-      );
+      const nextPools = (poolRows || []) as PoolRow[];
+      setPools(nextPools);
 
-      setItems(filtered);
-
-      if (filtered.length === 0) {
-        setPhotosByItemId({});
+      if (nextPools.length === 0) {
+        setPhotosByPoolId({});
         return;
       }
 
-      const itemIds = filtered.map((item) => item.id);
+      const poolIds = nextPools.map((pool) => pool.id);
       const { data: photoRows, error: photosError } = await supabase
-        .from("store_catalog_item_photos")
+        .from("pool_photos")
         .select("*")
-        .in("catalog_item_id", itemIds)
+        .in("pool_id", poolIds)
         .order("sort_order", { ascending: true });
 
       if (photosError) throw photosError;
 
-      const grouped: Record<string, CatalogItemPhotoRow[]> = {};
-      for (const photo of (photoRows || []) as CatalogItemPhotoRow[]) {
-        if (!grouped[photo.catalog_item_id]) grouped[photo.catalog_item_id] = [];
-        grouped[photo.catalog_item_id].push(photo);
+      const grouped: Record<string, PoolPhotoRow[]> = {};
+      for (const photo of (photoRows || []) as PoolPhotoRow[]) {
+        if (!grouped[photo.pool_id]) grouped[photo.pool_id] = [];
+        grouped[photo.pool_id].push(photo);
       }
-
-      setPhotosByItemId(grouped);
+      setPhotosByPoolId(grouped);
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao carregar itens do catálogo.");
+      setErrorText(error?.message ?? "Erro ao carregar piscinas.");
     } finally {
       setLoading(false);
     }
@@ -444,26 +350,26 @@ export default function CatalogCategoryPage() {
 
   useEffect(() => {
     void fetchData();
-  }, [organizationId, activeStoreId, category]);
+  }, [organizationId, activeStoreId]);
 
-  function startEditing(item: CatalogItemRow) {
-    setEditingItemId(item.id);
-    setEditForm(buildEditForm(item));
+  function startEditing(pool: PoolRow) {
+    setEditingPoolId(pool.id);
+    setEditPoolForm(buildEditForm(pool));
     setErrorText(null);
     setSuccessText(null);
   }
 
   function cancelEditing() {
-    setEditingItemId(null);
-    setEditForm(null);
+    setEditingPoolId(null);
+    setEditPoolForm(null);
   }
 
-  function handleCatalogFilesChange(itemId: string, event: ChangeEvent<HTMLInputElement>) {
+  function handlePoolFilesChange(poolId: string, event: ChangeEvent<HTMLInputElement>) {
     const fileList = Array.from(event.target.files || []);
-    const currentCount = (photosByItemId[itemId] || []).length;
+    const currentCount = (photosByPoolId[poolId] || []).length;
 
-    if (currentCount + fileList.length > MAX_CATALOG_PHOTOS) {
-      setErrorText(`Esse item pode ter no máximo ${MAX_CATALOG_PHOTOS} fotos no total.`);
+    if (currentCount + fileList.length > MAX_POOL_PHOTOS) {
+      setErrorText(`Essa piscina pode ter no máximo ${MAX_POOL_PHOTOS} fotos no total.`);
       event.target.value = "";
       return;
     }
@@ -483,19 +389,19 @@ export default function CatalogCategoryPage() {
     }
 
     setErrorText(null);
-    setSelectedCatalogFilesByItemId((prev) => ({ ...prev, [itemId]: fileList }));
+    setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: fileList }));
   }
 
-  async function uploadCatalogFiles(itemId: string, files: File[]) {
+  async function uploadPoolFiles(poolId: string, files: File[]) {
     if (!organizationId || !activeStoreId) throw new Error("Loja ativa não encontrada.");
 
-    const existingPhotos = photosByItemId[itemId] || [];
+    const existingPhotos = photosByPoolId[poolId] || [];
     let nextSortOrder = existingPhotos.length;
 
     for (const file of files) {
       const extension = file.name.split(".").pop() || "jpg";
       const safeFileName = `${crypto.randomUUID()}.${extension}`;
-      const storagePath = `${organizationId}/${activeStoreId}/${itemId}/${safeFileName}`;
+      const storagePath = `${organizationId}/${activeStoreId}/${poolId}/${safeFileName}`;
 
       const { error: uploadError } = await supabase.storage
         .from(STORAGE_BUCKET)
@@ -506,8 +412,10 @@ export default function CatalogCategoryPage() {
 
       if (uploadError) throw uploadError;
 
-      const { error: metadataError } = await supabase.from("store_catalog_item_photos").insert({
-        catalog_item_id: itemId,
+      const { error: metadataError } = await supabase.from("pool_photos").insert({
+        pool_id: poolId,
+        organization_id: organizationId,
+        store_id: activeStoreId,
         storage_path: storagePath,
         file_name: file.name,
         file_size_bytes: file.size,
@@ -519,8 +427,8 @@ export default function CatalogCategoryPage() {
     }
   }
 
-  async function handleUploadNewPhotos(itemId: string) {
-    const files = selectedCatalogFilesByItemId[itemId] || [];
+  async function handleUploadNewPoolPhotos(poolId: string) {
+    const files = selectedPoolFilesByPoolId[poolId] || [];
     if (files.length === 0) {
       setErrorText("Selecione uma ou mais fotos para adicionar.");
       return;
@@ -528,26 +436,26 @@ export default function CatalogCategoryPage() {
 
     setErrorText(null);
     setSuccessText(null);
-    setUploadingPhotosItemId(itemId);
+    setUploadingPoolPhotosId(poolId);
 
     try {
-      await uploadCatalogFiles(itemId, files);
-      setSelectedCatalogFilesByItemId((prev) => ({ ...prev, [itemId]: [] }));
-      const input = fileInputRefs.current[itemId];
+      await uploadPoolFiles(poolId, files);
+      setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: [] }));
+      const input = fileInputRefs.current[poolId];
       if (input) input.value = "";
       setSuccessText("Fotos adicionadas com sucesso.");
       await fetchData();
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao adicionar fotos do item.");
+      setErrorText(error?.message ?? "Erro ao adicionar fotos da piscina.");
     } finally {
-      setUploadingPhotosItemId(null);
+      setUploadingPoolPhotosId(null);
     }
   }
 
-  async function handleDeletePhoto(photo: CatalogItemPhotoRow) {
+  async function handleDeletePoolPhoto(photo: PoolPhotoRow) {
     setErrorText(null);
     setSuccessText(null);
-    setDeletingPhotoId(photo.id);
+    setDeletingPoolPhotoId(photo.id);
 
     try {
       const { error: storageError } = await supabase.storage
@@ -556,7 +464,7 @@ export default function CatalogCategoryPage() {
       if (storageError) throw storageError;
 
       const { error: dbError } = await supabase
-        .from("store_catalog_item_photos")
+        .from("pool_photos")
         .delete()
         .eq("id", photo.id);
 
@@ -565,76 +473,75 @@ export default function CatalogCategoryPage() {
       setSuccessText("Foto excluída com sucesso.");
       await fetchData();
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao excluir foto.");
+      setErrorText(error?.message ?? "Erro ao excluir foto da piscina.");
     } finally {
-      setDeletingPhotoId(null);
+      setDeletingPoolPhotoId(null);
     }
   }
 
-  async function handleSaveItem(itemId: string) {
-    if (!editForm || !organizationId || !activeStoreId) return;
+  async function handleSavePool(poolId: string) {
+    if (!editPoolForm || !organizationId || !activeStoreId) return;
 
-    setSavingItemId(itemId);
+    setSavingPoolId(poolId);
     setErrorText(null);
     setSuccessText(null);
 
     try {
-      const payload = {
-        name: editForm.name.trim(),
-        sku: editForm.sku.trim() || null,
-        description: editForm.description.trim() || null,
-        price_cents: priceInputToCents(editForm.price),
-        is_active: editForm.is_active,
-        track_stock: editForm.track_stock,
-        stock_quantity:
-          editForm.track_stock && editForm.stock_quantity.trim()
-            ? Number(editForm.stock_quantity)
-            : null,
-      };
+      const parsedPrice = priceInputToNumber(editPoolForm.price);
 
       const { error } = await supabase
-        .from("store_catalog_items")
-        .update(payload)
-        .eq("id", itemId)
+        .from("pools")
+        .update({
+          name: editPoolForm.name.trim() || null,
+          description: editPoolForm.description.trim() || null,
+          price: parsedPrice,
+          is_active: editPoolForm.is_active,
+          track_stock: editPoolForm.track_stock,
+          stock_quantity:
+            editPoolForm.track_stock && editPoolForm.stock_quantity.trim()
+              ? Number(editPoolForm.stock_quantity)
+              : null,
+        })
+        .eq("id", poolId)
         .eq("organization_id", organizationId)
         .eq("store_id", activeStoreId);
 
       if (error) throw error;
 
-      const pendingFiles = selectedCatalogFilesByItemId[itemId] || [];
+      const pendingFiles = selectedPoolFilesByPoolId[poolId] || [];
       if (pendingFiles.length > 0) {
-        await uploadCatalogFiles(itemId, pendingFiles);
-        setSelectedCatalogFilesByItemId((prev) => ({ ...prev, [itemId]: [] }));
-        const input = fileInputRefs.current[itemId];
+        await uploadPoolFiles(poolId, pendingFiles);
+        setSelectedPoolFilesByPoolId((prev) => ({ ...prev, [poolId]: [] }));
+        const input = fileInputRefs.current[poolId];
         if (input) input.value = "";
       }
 
-      setSuccessText("Item salvo com sucesso.");
-      setEditingItemId(null);
-      setEditForm(null);
+      setSuccessText("Piscina salva com sucesso.");
+      setEditingPoolId(null);
+      setEditPoolForm(null);
       await fetchData();
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao salvar item.");
+      setErrorText(error?.message ?? "Erro ao salvar piscina.");
     } finally {
-      setSavingItemId(null);
+      setSavingPoolId(null);
     }
   }
 
-  async function handleDeleteItem(itemId: string) {
+  async function handleDeletePool(poolId: string) {
     if (!organizationId || !activeStoreId) return;
 
     const confirmed = window.confirm(
-      "Tem certeza que deseja excluir este item? Essa ação também apaga as fotos dele."
+      "Tem certeza que deseja excluir esta piscina? Essa ação também apaga as fotos dela."
     );
     if (!confirmed) return;
 
-    setDeletingItemId(itemId);
+    setDeletingPoolId(poolId);
     setErrorText(null);
     setSuccessText(null);
 
     try {
-      const itemPhotos = photosByItemId[itemId] || [];
-      const storagePaths = itemPhotos.map((photo) => photo.storage_path).filter(Boolean);
+      const poolPhotos = photosByPoolId[poolId] || [];
+      const storagePaths = poolPhotos.map((photo) => photo.storage_path).filter(Boolean);
 
       if (storagePaths.length > 0) {
         const { error: storageError } = await supabase.storage
@@ -643,64 +550,65 @@ export default function CatalogCategoryPage() {
         if (storageError) throw storageError;
       }
 
-      if (itemPhotos.length > 0) {
+      if (poolPhotos.length > 0) {
         const { error: photoDeleteError } = await supabase
-          .from("store_catalog_item_photos")
+          .from("pool_photos")
           .delete()
-          .eq("catalog_item_id", itemId);
+          .eq("pool_id", poolId);
 
         if (photoDeleteError) throw photoDeleteError;
       }
 
-      const { error: itemDeleteError } = await supabase
-        .from("store_catalog_items")
+      const { error: poolDeleteError } = await supabase
+        .from("pools")
         .delete()
-        .eq("id", itemId)
+        .eq("id", poolId)
         .eq("organization_id", organizationId)
         .eq("store_id", activeStoreId);
 
-      if (itemDeleteError) throw itemDeleteError;
+      if (poolDeleteError) throw poolDeleteError;
 
-      setSuccessText("Item excluído com sucesso.");
-      setItems((prev) => prev.filter((item) => item.id !== itemId));
-      setPhotosByItemId((prev) => {
+      setSuccessText("Piscina excluída com sucesso.");
+      setPools((prev) => prev.filter((pool) => pool.id !== poolId));
+      setPhotosByPoolId((prev) => {
         const next = { ...prev };
-        delete next[itemId];
+        delete next[poolId];
         return next;
       });
 
-      if (editingItemId === itemId) {
-        setEditingItemId(null);
-        setEditForm(null);
+      if (editingPoolId === poolId) {
+        setEditingPoolId(null);
+        setEditPoolForm(null);
       }
     } catch (error: any) {
-      setErrorText(error?.message ?? "Erro ao excluir item.");
+      setErrorText(error?.message ?? "Erro ao excluir piscina.");
     } finally {
-      setDeletingItemId(null);
+      setDeletingPoolId(null);
     }
   }
 
-  const pageTitle = useMemo(() => categoryLabel(category), [category]);
+  const totalPools = useMemo(() => pools.length, [pools]);
+  const filteredPools = useMemo(() => pools.filter((pool) => matchesPoolSearch(pool, searchText)), [pools, searchText]);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-black tracking-[-0.02em] text-black">
-            {pageTitle}
+            Piscinas cadastradas
           </h1>
           <p className="mt-1 text-sm text-gray-600">
-            Visualize e edite os itens desta categoria em um layout mais compacto.
+            Visualize e edite as piscinas sem ficar preso na rota errada.
           </p>
+          <p className="mt-1 text-xs text-gray-500">Total de piscinas: {totalPools}</p>
         </div>
 
-          <Link
-            href="/configuracoes"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
-          >
-            Voltar para configurações
-          </Link>
-        </div>
+        <Link
+          href="/configuracoes"
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
+        >
+          Voltar para configurações
+        </Link>
       </div>
 
       {errorText ? (
@@ -715,58 +623,88 @@ export default function CatalogCategoryPage() {
         </div>
       ) : null}
 
+      <div className="rounded-xl border border-gray-200 bg-white p-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-gray-900">Buscar piscinas</div>
+            <div className="text-xs text-gray-500">Procure por nome, material, formato ou descrição.</div>
+          </div>
+          <div className="w-full md:max-w-md">
+            <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
+              <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="m20 20-3.5-3.5"></path>
+              </svg>
+              <input
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder="Buscar piscina..."
+                className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+              />
+            </div>
+          </div>
+        </div>
+        {searchText.trim() ? (
+          <div className="mt-2 text-xs text-gray-500">
+            {filteredPools.length} resultado(s) encontrado(s) para "{searchText.trim()}".
+          </div>
+        ) : null}
+      </div>
+
       {!hasValidStoreContext ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
           Nenhuma loja ativa encontrada.
         </div>
       ) : loading ? (
         <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
-          Carregando itens...
+          Carregando piscinas...
         </div>
-      ) : items.length === 0 ? (
+      ) : filteredPools.length === 0 ? (
         <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-600">
-          Nenhum item cadastrado nesta categoria.
+          {searchText.trim() ? "Nenhuma piscina encontrada para essa busca." : "Nenhuma piscina cadastrada."}
         </div>
       ) : (
         <div className="space-y-4">
-          {items.map((item) => {
-            const itemPhotos = photosByItemId[item.id] || [];
-            const isEditing = editingItemId === item.id;
-            const characteristics = buildCatalogCharacteristics(item, category);
+          {filteredPools.map((pool) => {
+            const poolPhotos = photosByPoolId[pool.id] || [];
+            const isEditing = editingPoolId === pool.id;
+            const characteristics = buildPoolCharacteristics(pool);
             const complementaryDescription = buildComplementaryDescription(
-              item,
+              pool,
               characteristics
             );
 
             return (
               <section
-                key={item.id}
+                key={pool.id}
                 className="overflow-hidden rounded-2xl border border-gray-200 bg-white"
               >
                 <div className="border-b border-gray-200 px-3 py-3 sm:px-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0">
                       <h2 className="text-lg font-black leading-tight text-black">
-                        {item.name}
+                        {pool.name || "Piscina sem nome"}
                       </h2>
                       <p className="mt-1 text-sm text-gray-600">
-                        {item.sku ? `SKU: ${item.sku}` : "Sem SKU"}
+                        {pool.shape && pool.material
+                          ? `${pool.shape} • ${pool.material}`
+                          : "Dados básicos da piscina"}
                       </p>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      <DetailChip value={formatMoney(item.price_cents)} />
-                      <DetailChip value={item.is_active ? "Ativo" : "Inativo"} />
+                      <DetailChip value={moneyBRL(pool.price)} />
+                      <DetailChip value={pool.is_active ? "Ativa" : "Inativa"} />
                       <DetailChip
                         value={
-                          item.track_stock
-                            ? `Estoque: ${item.stock_quantity ?? 0}`
+                          pool.track_stock
+                            ? `Estoque: ${pool.stock_quantity ?? 0}`
                             : "Sem estoque"
                         }
                       />
                       <button
                         type="button"
-                        onClick={() => startEditing(item)}
+                        onClick={() => startEditing(pool)}
                         className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
                       >
                         Editar
@@ -776,7 +714,7 @@ export default function CatalogCategoryPage() {
                 </div>
 
                 <div className="space-y-3 px-3 py-3 sm:px-4">
-                  {isEditing && editForm ? (
+                  {isEditing && editPoolForm ? (
                     <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                       <div className="grid gap-3 lg:grid-cols-2">
                         <div>
@@ -784,25 +722,10 @@ export default function CatalogCategoryPage() {
                             Nome
                           </label>
                           <input
-                            value={editForm.name}
+                            value={editPoolForm.name}
                             onChange={(event) =>
-                              setEditForm((current) =>
+                              setEditPoolForm((current) =>
                                 current ? { ...current, name: event.target.value } : current
-                              )
-                            }
-                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
-                            SKU
-                          </label>
-                          <input
-                            value={editForm.sku}
-                            onChange={(event) =>
-                              setEditForm((current) =>
-                                current ? { ...current, sku: event.target.value } : current
                               )
                             }
                             className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
@@ -814,14 +737,19 @@ export default function CatalogCategoryPage() {
                             Preço
                           </label>
                           <input
-                            value={editForm.price}
+                            value={editPoolForm.price}
                             onChange={(event) =>
-                              setEditForm((current) =>
-                                current ? { ...current, price: event.target.value } : current
+                              setEditPoolForm((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      price: formatPriceInput(event.target.value),
+                                    }
+                                  : current
                               )
                             }
                             className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
-                            placeholder="129,90"
+                            placeholder="58.900,00"
                           />
                         </div>
 
@@ -830,9 +758,9 @@ export default function CatalogCategoryPage() {
                             Quantidade em estoque
                           </label>
                           <input
-                            value={editForm.stock_quantity}
+                            value={editPoolForm.stock_quantity}
                             onChange={(event) =>
-                              setEditForm((current) =>
+                              setEditPoolForm((current) =>
                                 current
                                   ? { ...current, stock_quantity: event.target.value }
                                   : current
@@ -847,24 +775,24 @@ export default function CatalogCategoryPage() {
                           <label className="inline-flex items-center gap-2">
                             <input
                               type="checkbox"
-                              checked={editForm.is_active}
+                              checked={editPoolForm.is_active}
                               onChange={(event) =>
-                                setEditForm((current) =>
+                                setEditPoolForm((current) =>
                                   current
                                     ? { ...current, is_active: event.target.checked }
                                     : current
                                 )
                               }
                             />
-                            Item ativo
+                            Piscina ativa
                           </label>
 
                           <label className="inline-flex items-center gap-2">
                             <input
                               type="checkbox"
-                              checked={editForm.track_stock}
+                              checked={editPoolForm.track_stock}
                               onChange={(event) =>
-                                setEditForm((current) =>
+                                setEditPoolForm((current) =>
                                   current
                                     ? { ...current, track_stock: event.target.checked }
                                     : current
@@ -880,9 +808,9 @@ export default function CatalogCategoryPage() {
                             Descrição
                           </label>
                           <textarea
-                            value={editForm.description}
+                            value={editPoolForm.description}
                             onChange={(event) =>
-                              setEditForm((current) =>
+                              setEditPoolForm((current) =>
                                 current
                                   ? { ...current, description: event.target.value }
                                   : current
@@ -897,11 +825,11 @@ export default function CatalogCategoryPage() {
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => void handleSaveItem(item.id)}
-                          disabled={savingItemId === item.id}
+                          onClick={() => void handleSavePool(pool.id)}
+                          disabled={savingPoolId === pool.id}
                           className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {savingItemId === item.id ? "Salvando..." : "Salvar"}
+                          {savingPoolId === pool.id ? "Salvando..." : "Salvar"}
                         </button>
 
                         <button
@@ -914,18 +842,18 @@ export default function CatalogCategoryPage() {
 
                         <button
                           type="button"
-                          onClick={() => void handleDeleteItem(item.id)}
-                          disabled={deletingItemId === item.id}
+                          onClick={() => void handleDeletePool(pool.id)}
+                          disabled={deletingPoolId === pool.id}
                           className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {deletingItemId === item.id ? "Excluindo..." : "Excluir"}
+                          {deletingPoolId === pool.id ? "Excluindo..." : "Excluir"}
                         </button>
                       </div>
                     </div>
                   ) : null}
 
                   <CharacteristicsTable
-                    title={category === "quimicos" ? "Características do produto" : "Características do item"}
+                    title="Características da piscina"
                     rows={characteristics}
                   />
 
@@ -937,28 +865,28 @@ export default function CatalogCategoryPage() {
                     </SectionCard>
                   ) : null}
 
-                  <SectionCard title="Fotos do item">
+                  <SectionCard title="Fotos da piscina">
                     {isEditing ? (
                       <div className="space-y-3">
                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                           <input
                             ref={(element) => {
-                              fileInputRefs.current[item.id] = element;
+                              fileInputRefs.current[pool.id] = element;
                             }}
                             type="file"
                             multiple
                             accept="image/*"
-                            onChange={(event) => handleCatalogFilesChange(item.id, event)}
+                            onChange={(event) => handlePoolFilesChange(pool.id, event)}
                             className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                           />
                           <p className="mt-2 text-xs text-gray-500">
-                            Até {MAX_CATALOG_PHOTOS} imagens, máximo de 50 MB por arquivo.
+                            Até {MAX_POOL_PHOTOS} imagens, máximo de 50 MB por arquivo.
                           </p>
                         </div>
 
-                        {(selectedCatalogFilesByItemId[item.id] || []).length > 0 ? (
+                        {(selectedPoolFilesByPoolId[pool.id] || []).length > 0 ? (
                           <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                            {(selectedCatalogFilesByItemId[item.id] || []).map((file) => (
+                            {(selectedPoolFilesByPoolId[pool.id] || []).map((file) => (
                               <div
                                 key={`${file.name}-${file.size}`}
                                 className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 py-2 last:border-b-0"
@@ -976,23 +904,23 @@ export default function CatalogCategoryPage() {
 
                         <button
                           type="button"
-                          onClick={() => void handleUploadNewPhotos(item.id)}
-                          disabled={uploadingPhotosItemId === item.id}
+                          onClick={() => void handleUploadNewPoolPhotos(pool.id)}
+                          disabled={uploadingPoolPhotosId === pool.id}
                           className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {uploadingPhotosItemId === item.id
+                          {uploadingPoolPhotosId === pool.id
                             ? "Adicionando fotos..."
                             : "Adicionar fotos"}
                         </button>
 
-                        {itemPhotos.length === 0 ? (
+                        {poolPhotos.length === 0 ? (
                           <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
-                            Nenhuma foto cadastrada para este item.
+                            Nenhuma foto cadastrada para esta piscina.
                           </div>
                         ) : (
                           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                            {itemPhotos.map((photo) => {
-                              const isDeletingPhoto = deletingPhotoId === photo.id;
+                            {poolPhotos.map((photo) => {
+                              const isDeletingPhoto = deletingPoolPhotoId === photo.id;
 
                               return (
                                 <div
@@ -1001,7 +929,7 @@ export default function CatalogCategoryPage() {
                                 >
                                   <img
                                     src={getPublicImageUrl(photo.storage_path)}
-                                    alt={photo.file_name || item.name}
+                                    alt={photo.file_name || pool.name || "Foto da piscina"}
                                     className="block h-24 w-full object-cover"
                                   />
                                   <div className="space-y-2 p-2.5">
@@ -1010,7 +938,7 @@ export default function CatalogCategoryPage() {
                                     </div>
                                     <button
                                       type="button"
-                                      onClick={() => void handleDeletePhoto(photo)}
+                                      onClick={() => void handleDeletePoolPhoto(photo)}
                                       disabled={isDeletingPhoto}
                                       className="w-full rounded-lg border border-red-200 bg-white px-2.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                                     >
@@ -1023,20 +951,20 @@ export default function CatalogCategoryPage() {
                           </div>
                         )}
                       </div>
-                    ) : itemPhotos.length === 0 ? (
+                    ) : poolPhotos.length === 0 ? (
                       <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
-                        Nenhuma foto cadastrada para este item.
+                        Nenhuma foto cadastrada para esta piscina.
                       </div>
                     ) : (
                       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
-                        {itemPhotos.map((photo) => (
+                        {poolPhotos.map((photo) => (
                           <div
                             key={photo.id}
                             className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
                           >
                             <img
                               src={getPublicImageUrl(photo.storage_path)}
-                              alt={photo.file_name || item.name}
+                              alt={photo.file_name || pool.name || "Foto da piscina"}
                               className="block h-16 w-full object-cover"
                             />
                           </div>
