@@ -1223,7 +1223,7 @@ export default function ConfiguracoesPage() {
             p_organization_id: organizationId,
             p_store_id: activeStoreId,
             p_question_key: questionKey,
-            p_answer_value: answerValue,
+            p_answer: answerValue,
           });
 
           if (error) throw error;
