@@ -2479,6 +2479,110 @@ function buildSafeImportedImageExtension(fileName: string, mimeType: string) {
   if (mimeType.includes("webp")) return "webp";
   return "jpg";
 }
+
+function buildImportedRawFileExtension(fileName: string) {
+  const normalized = String(fileName || "").trim();
+  const extension = normalized.includes(".") ? normalized.split(".").pop() : "";
+  return String(extension || "").trim().toLowerCase() || null;
+}
+
+function buildImportedRawFilePath(
+  organizationId: string,
+  storeId: string,
+  fileName: string
+) {
+  const safeName = String(fileName || "arquivo")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(-120) || "arquivo";
+  return `${organizationId}/${storeId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
+}
+
+async function persistImportedRawFiles(params: {
+  organizationId: string;
+  storeId: string;
+  files: File[];
+  summary: IntelligentImportSummary;
+}) {
+  const savedFiles = new Map<
+    string,
+    {
+      id: string;
+      original_file_name: string;
+      storage_path: string;
+    }
+  >();
+
+  for (const file of params.files) {
+    const storagePath = buildImportedRawFilePath(
+      params.organizationId,
+      params.storeId,
+      file.name
+    );
+
+    const { error: uploadError } = await supabase.storage
+      .from("store-import-files")
+      .upload(storagePath, file, {
+        upsert: false,
+        contentType: file.type || undefined,
+      });
+
+    if (uploadError) throw uploadError;
+
+    const payload = {
+      organization_id: params.organizationId,
+      store_id: params.storeId,
+      source: "onboarding_intelligent_import",
+      original_file_name: file.name,
+      mime_type: file.type || null,
+      extension: buildImportedRawFileExtension(file.name),
+      size_bytes: file.size,
+      storage_bucket: "store-import-files",
+      storage_path: storagePath,
+      import_summary: params.summary,
+      status: "active",
+    };
+
+    const { data: createdRow, error: insertError } = await supabase
+      .from("store_import_files")
+      .insert(payload)
+      .select("id, original_file_name, storage_path")
+      .single();
+
+    if (insertError) throw insertError;
+
+    savedFiles.set(String(file.name || "").trim().toLowerCase(), {
+      id: createdRow.id,
+      original_file_name: createdRow.original_file_name,
+      storage_path: createdRow.storage_path,
+    });
+  }
+
+  return savedFiles;
+}
+
+async function linkImportedFileToDestination(params: {
+  importFileId: string;
+  organizationId: string;
+  storeId: string;
+  destinationType: "pool" | "catalog_item";
+  destinationTable: "pools" | "store_catalog_items";
+  destinationItemId: string;
+}) {
+  const { error } = await supabase.from("store_import_file_items").insert({
+    import_file_id: params.importFileId,
+    organization_id: params.organizationId,
+    store_id: params.storeId,
+    destination_type: params.destinationType,
+    destination_table: params.destinationTable,
+    destination_item_id: params.destinationItemId,
+  });
+
+  if (error) throw error;
+}
 async function uploadExtractedImageToPool(
   organizationId: string,
   storeId: string,
@@ -3125,9 +3229,10 @@ function OnboardingContent() {
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
     setIntelligentImportRecovered(false);
-    const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
-    setIntelligentImportSelectedFilesPreview(selectedFilesPreview);
     try {
+      const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
+      setIntelligentImportSelectedFilesPreview(selectedFilesPreview);
+
       const formData = new FormData();
       formData.append("organizationId", organizationId);
       formData.append("storeId", activeStore.id);
@@ -3240,6 +3345,13 @@ async function handleSaveImportedItemsToCatalog() {
       const selectedImageFiles = intelligentImportFiles.filter((file) =>
         String(file.type || "").startsWith("image/")
       );
+      const savedImportFilesByName = await persistImportedRawFiles({
+        organizationId,
+        storeId: activeStore.id,
+        files: intelligentImportFiles,
+        summary: intelligentImportResult.summary,
+      });
+
 
       const extractedImageBuckets = new Map<
         string,
@@ -3430,6 +3542,21 @@ async function handleSaveImportedItemsToCatalog() {
             savedPools += 1;
             runtimeIdentityKeys.forEach((key) => savedRuntimeIdentityKeys.add(key));
 
+            const sourceFileKey = String(extractImportedOriginalSourceFileName(item) || item.sourceFileName || "")
+              .trim()
+              .toLowerCase();
+            const relatedImportFile = savedImportFilesByName.get(sourceFileKey);
+            if (relatedImportFile?.id) {
+              await linkImportedFileToDestination({
+                importFileId: relatedImportFile.id,
+                organizationId,
+                storeId: activeStore.id,
+                destinationType: "pool",
+                destinationTable: "pools",
+                destinationItemId: persistedPoolId,
+              });
+            }
+
             const poolImages = (
               extractedImageAssignments.get(buildImportedSaveKey(item)) ??
               pickRelatedExtractedImages(
@@ -3570,6 +3697,21 @@ async function handleSaveImportedItemsToCatalog() {
           else savedOutros += 1;
           runtimeIdentityKeys.forEach((key) => savedRuntimeIdentityKeys.add(key));
 
+          const sourceFileKey = String(extractImportedOriginalSourceFileName(item) || item.sourceFileName || "")
+            .trim()
+            .toLowerCase();
+          const relatedImportFile = savedImportFilesByName.get(sourceFileKey);
+          if (relatedImportFile?.id) {
+            await linkImportedFileToDestination({
+              importFileId: relatedImportFile.id,
+              organizationId,
+              storeId: activeStore.id,
+              destinationType: "catalog_item",
+              destinationTable: "store_catalog_items",
+              destinationItemId: persistedCatalogItemId,
+            });
+          }
+
           const catalogImages = (
             extractedImageAssignments.get(buildImportedSaveKey(item)) ??
             pickRelatedExtractedImages(
@@ -3629,7 +3771,7 @@ async function handleSaveImportedItemsToCatalog() {
       }
 
       setSuccessMessage(
-        `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}.`
+        `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}. Os arquivos brutos desta importação também foram guardados no sistema.`
       );
 
       clearIntelligentImportState();
