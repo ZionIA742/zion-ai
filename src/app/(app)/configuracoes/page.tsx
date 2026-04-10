@@ -343,7 +343,7 @@ function deriveWeekendAvailabilityLabel(answers: AnswersMap, day: "sábado" | "d
 }
 
 function deriveHolidayAvailabilityLabel(answers: AnswersMap) {
-  const explicit = cleanText(answers.serves_holiday);
+  const explicit = cleanText(answers.attends_holidays ?? answers.serves_holiday);
   if (explicit) return yesNoLabel(explicit);
 
   const notes = [
@@ -1502,6 +1502,7 @@ export default function ConfiguracoesPage() {
       technical_visit_days_rule: operationDraft.technical_visit_days_rule,
       serves_saturday: operationDraft.serves_saturday,
       serves_sunday: operationDraft.serves_sunday,
+      attends_holidays: operationDraft.serves_holiday,
       serves_holiday: operationDraft.serves_holiday,
       offers_installation: operationDraft.offers_installation,
       average_installation_time_days: operationDraft.average_installation_time_days,
