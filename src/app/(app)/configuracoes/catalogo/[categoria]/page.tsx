@@ -711,8 +711,9 @@ export default function CatalogCategoryPage() {
             {pageTitle}
           </h1>
           <p className="mt-1 text-sm text-gray-600">
-            Visualize, pesquise e edite os itens desta categoria em um layout mais compacto.
+            Visualize e edite os itens desta categoria sem ficar preso na rota errada.
           </p>
+          <p className="mt-1 text-xs text-gray-500">Total de itens: {items.length}</p>
         </div>
 
         <Link
@@ -722,24 +723,32 @@ export default function CatalogCategoryPage() {
           Voltar para configurações
         </Link>
       </div>
-
-      <div className="rounded-2xl border border-gray-200 bg-white p-3">
+      <div className="rounded-xl border border-gray-200 bg-white p-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="relative w-full md:max-w-xl">
-            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔎</span>
-            <input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder={`Buscar ${pageTitle.toLowerCase()} por nome, SKU ou marca`}
-              className="w-full rounded-xl border border-gray-200 bg-white py-2 pl-10 pr-3 text-sm text-gray-900 outline-none transition focus:border-black"
-            />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-gray-900">Buscar {pageTitle.toLowerCase()}</div>
+            <div className="text-xs text-gray-500">Procure por nome, SKU ou marca.</div>
           </div>
-
-          <div className="text-sm font-medium text-gray-600">
-            {filteredItems.length} resultado(s)
-            {searchTerm.trim() ? ` de ${items.length}` : ""}
+          <div className="w-full md:max-w-md">
+            <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
+              <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="m20 20-3.5-3.5"></path>
+              </svg>
+              <input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder={`Buscar ${pageTitle.toLowerCase()}...`}
+                className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+              />
+            </div>
           </div>
         </div>
+        {searchTerm.trim() ? (
+          <div className="mt-2 text-xs text-gray-500">
+            {filteredItems.length} resultado(s) encontrado(s) para "{searchTerm.trim()}".
+          </div>
+        ) : null}
       </div>
 
       {errorText ? (
