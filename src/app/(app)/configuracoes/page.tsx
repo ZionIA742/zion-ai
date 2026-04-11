@@ -197,19 +197,6 @@ type ChannelDraftState = {
 };
 
 
-
-type IdentityDraftState = {
-  institutional_name: string;
-  trade_name: string;
-  ai_display_name: string;
-  ai_signature: string;
-  institutional_summary: string;
-  quote_contract_data: string;
-  brand_colors: string;
-  logo_status: string;
-  presentation_notes: string;
-};
-
 type ResponsiblePersonDraft = {
   id: string;
   name: string;
@@ -806,62 +793,6 @@ function createChannelDraftFromAnswers(answers: AnswersMap): ChannelDraftState {
   };
 }
 
-
-function createIdentityDraftFromAnswers(answers: AnswersMap, storeName: string): IdentityDraftState {
-  const institutionalName =
-    cleanText((answers as Record<string, unknown>).identity_institutional_name) ||
-    cleanText(answers.store_display_name) ||
-    storeName;
-
-  const tradeName =
-    cleanText((answers as Record<string, unknown>).identity_trade_name) ||
-    cleanText(answers.store_display_name) ||
-    storeName;
-
-  const aiDisplayName =
-    cleanText((answers as Record<string, unknown>).identity_ai_display_name) ||
-    cleanText(answers.store_display_name) ||
-    storeName;
-
-  const aiSignature =
-    cleanText((answers as Record<string, unknown>).identity_ai_signature) ||
-    cleanText(answers.store_description) ||
-    cleanText(answers.commercial_ai_summary);
-
-  const institutionalSummary =
-    cleanText((answers as Record<string, unknown>).identity_institutional_summary) ||
-    cleanText(answers.store_description) ||
-    cleanText(answers.strategy_ai_store_summary);
-
-  const quoteContractData =
-    cleanText((answers as Record<string, unknown>).identity_quote_contract_data) ||
-    cleanText(answers.store_display_name) ||
-    storeName;
-
-  const brandColors =
-    cleanText((answers as Record<string, unknown>).identity_brand_colors);
-
-  const logoStatus =
-    cleanText((answers as Record<string, unknown>).identity_logo_status) ||
-    "Ainda não definida nesta tela";
-
-  const presentationNotes =
-    cleanText((answers as Record<string, unknown>).identity_presentation_notes) ||
-    cleanText(answers.final_activation_notes);
-
-  return {
-    institutional_name: institutionalName,
-    trade_name: tradeName,
-    ai_display_name: aiDisplayName,
-    ai_signature: aiSignature,
-    institutional_summary: institutionalSummary,
-    quote_contract_data: quoteContractData,
-    brand_colors: brandColors,
-    logo_status: logoStatus,
-    presentation_notes: presentationNotes,
-  };
-}
-
 function validateSelectedPhotos(files: File[]) {
   if (files.length > 10) {
     return "Cada item pode ter no máximo 10 fotos.";
@@ -1098,6 +1029,40 @@ function SettingsTabButton({
   );
 }
 
+function ChoiceButtonGroup({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {options.map((option) => {
+        const active = normalizeLoose(value) === normalizeLoose(option.value);
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={[
+              "rounded-xl border px-3 py-2 text-sm font-semibold transition",
+              active
+                ? "border-black bg-black text-white"
+                : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
+            ].join(" ")}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+
 export default function ConfiguracoesPage() {
   const { organizationId, activeStoreId, activeStore } = useStoreContext();
 
@@ -1125,9 +1090,8 @@ export default function ConfiguracoesPage() {
   const [isDiscountEditing, setIsDiscountEditing] = useState(false);
   const [discountDraft, setDiscountDraft] = useState<DiscountDraftState>(createDiscountDraftFromAnswers({}));
   const [isChannelsEditing, setIsChannelsEditing] = useState(false);
+  const [showChannelsAdvanced, setShowChannelsAdvanced] = useState(false);
   const [channelDraft, setChannelDraft] = useState<ChannelDraftState>(createChannelDraftFromAnswers({}));
-  const [isIdentityEditing, setIsIdentityEditing] = useState(false);
-  const [identityDraft, setIdentityDraft] = useState<IdentityDraftState>(createIdentityDraftFromAnswers({}, "Loja ativa"));
   const [isActivationEditing, setIsActivationEditing] = useState(false);
   const [primaryResponsibleDraft, setPrimaryResponsibleDraft] = useState<ResponsiblePersonDraft>(createEmptyResponsibleDraft(true));
   const [additionalResponsiblesDraft, setAdditionalResponsiblesDraft] = useState<ResponsiblePersonDraft[]>([]);
@@ -1924,6 +1888,93 @@ export default function ConfiguracoesPage() {
     ];
   }, [answers, onboarding?.status]);
 
+
+  const channelEssentialPendencies = useMemo(() => {
+    const pendencies: string[] = [];
+
+    if (!cleanText(channelDraft.commercial_whatsapp)) {
+      pendencies.push("Definir o WhatsApp comercial real usado pela IA vendedora.");
+    }
+    if (!cleanText(channelDraft.responsible_whatsapp)) {
+      pendencies.push("Definir o WhatsApp do responsável que recebe alertas, urgências e relatórios.");
+    }
+    if (!cleanText(channelDraft.integration_provider_name) || normalizeLoose(channelDraft.integration_provider_name).includes("ainda nao definido")) {
+      pendencies.push("Definir qual é o provedor principal da integração de WhatsApp.");
+    }
+    if (!cleanText(channelDraft.integration_connection_mode)) {
+      pendencies.push("Definir como a integração se conecta ao sistema.");
+    }
+    if (!cleanText(channelDraft.customer_messages_route)) {
+      pendencies.push("Explicar para onde vão as mensagens dos clientes.");
+    }
+    if (!cleanText(channelDraft.assistant_alerts_route)) {
+      pendencies.push("Explicar para onde vão os avisos da assistente operacional.");
+    }
+
+    return pendencies;
+  }, [channelDraft]);
+
+  const channelRecommendedPendencies = useMemo(() => {
+    const pendencies: string[] = [];
+
+    if (!cleanText(channelDraft.integration_test_status) || normalizeLoose(channelDraft.integration_test_status).includes("nao testado")) {
+      pendencies.push("Registrar o status real do teste da integração.");
+    }
+    if (!cleanText(channelDraft.webhook_inbound_status) || normalizeLoose(channelDraft.webhook_inbound_status).includes("previsto no projeto")) {
+      pendencies.push("Descrever a situação real do webhook de entrada.");
+    }
+    if (!cleanText(channelDraft.external_send_status) || normalizeLoose(channelDraft.external_send_status).includes("previsto no projeto")) {
+      pendencies.push("Descrever a situação real do envio externo.");
+    }
+    if (!cleanText(channelDraft.channel_fallback_rule)) {
+      pendencies.push("Definir a regra de fallback entre canal externo e painel interno.");
+    }
+    if (!cleanText(channelDraft.dedicated_number)) {
+      pendencies.push("Definir se existe número ou chip dedicado.");
+    }
+    if (!cleanText(channelDraft.telegram_future_status)) {
+      pendencies.push("Definir o status do canal futuro do Telegram.");
+    }
+
+    return pendencies;
+  }, [channelDraft]);
+
+  const channelGuidedStatusMetrics = useMemo(() => {
+    const essentialDone = channelEssentialPendencies.length === 0;
+    const recommendedDone = channelRecommendedPendencies.length === 0;
+    const providerDefined =
+      cleanText(channelDraft.integration_provider_name) &&
+      !normalizeLoose(channelDraft.integration_provider_name).includes("ainda nao definido");
+    const routingDefined = cleanText(channelDraft.customer_messages_route) && cleanText(channelDraft.assistant_alerts_route);
+
+    return [
+      {
+        label: "Essencial",
+        value: essentialDone ? "Completo" : "Pendente",
+        tone: essentialDone ? ("green" as const) : ("amber" as const),
+        hint: essentialDone ? "Os campos mínimos dos canais já foram definidos." : `${channelEssentialPendencies.length} pendência(s) crítica(s) para ativação.`,
+      },
+      {
+        label: "Recomendado",
+        value: recommendedDone ? "Completo" : "Faltando revisar",
+        tone: recommendedDone ? ("green" as const) : ("gray" as const),
+        hint: recommendedDone ? "Os ajustes finos dos canais já foram revisados." : `${channelRecommendedPendencies.length} pendência(s) recomendada(s).`,
+      },
+      {
+        label: "Provedor",
+        value: providerDefined ? "Definido" : "Pendente",
+        tone: providerDefined ? ("green" as const) : ("amber" as const),
+        hint: cleanText(channelDraft.integration_provider_name) || "Defina qual integração principal a loja usa.",
+      },
+      {
+        label: "Roteamento",
+        value: routingDefined ? "Definido" : "Pendente",
+        tone: routingDefined ? ("green" as const) : ("amber" as const),
+        hint: routingDefined ? "Rotas principais de cliente e assistente já descritas." : "Explique para onde vão clientes, avisos, urgências e relatórios.",
+      },
+    ];
+  }, [channelDraft, channelEssentialPendencies, channelRecommendedPendencies]);
+
   const channelCommercialItems = useMemo(() => {
     return buildBulletRows([
       { label: "Nome do canal comercial", value: cleanText(answers.commercial_channel_name) || "Canal comercial principal" },
@@ -1998,205 +2049,14 @@ export default function ConfiguracoesPage() {
     ]);
   }, [answers]);
 
-  const channelEssentialPendencies = useMemo(() => {
-    const pendencies: string[] = [];
-
-    if (!cleanText(answers.commercial_whatsapp)) {
-      pendencies.push("Definir o WhatsApp comercial real usado pela IA vendedora.");
-    }
-    if (!cleanText(answers.responsible_whatsapp)) {
-      pendencies.push("Definir o WhatsApp do responsável que recebe alertas, urgências e relatórios.");
-    }
-    if (!cleanText(answers.integration_provider_name) || normalizeLoose(answers.integration_provider_name).includes("ainda nao definido")) {
-      pendencies.push("Definir qual é o provedor principal da integração de WhatsApp.");
-    }
-    if (!cleanText(answers.integration_connection_mode)) {
-      pendencies.push("Definir como a integração se conecta ao sistema.");
-    }
-    if (!cleanText(answers.customer_messages_route)) {
-      pendencies.push("Explicar para onde vão as mensagens dos clientes.");
-    }
-    if (!cleanText(answers.assistant_alerts_route)) {
-      pendencies.push("Explicar para onde vão os avisos da assistente operacional.");
-    }
-
-    return pendencies;
-  }, [answers]);
-
-  const channelRecommendedPendencies = useMemo(() => {
-    const pendencies: string[] = [];
-
-    if (!cleanText(answers.integration_test_status) || normalizeLoose(answers.integration_test_status).includes("nao testado")) {
-      pendencies.push("Registrar o status real do teste da integração.");
-    }
-    if (!cleanText(answers.webhook_inbound_status) || normalizeLoose(answers.webhook_inbound_status).includes("previsto no projeto")) {
-      pendencies.push("Descrever a situação real do webhook de entrada.");
-    }
-    if (!cleanText(answers.external_send_status) || normalizeLoose(answers.external_send_status).includes("previsto no projeto")) {
-      pendencies.push("Descrever a situação real do envio externo.");
-    }
-    if (!cleanText(answers.channel_fallback_rule)) {
-      pendencies.push("Definir a regra de fallback entre canal externo e painel interno.");
-    }
-    if (!cleanText(answers.dedicated_number)) {
-      pendencies.push("Definir se existe número ou chip dedicado.");
-    }
-    if (!cleanText(answers.telegram_future_status)) {
-      pendencies.push("Definir o status do canal futuro do Telegram.");
-    }
-
-    return pendencies;
-  }, [answers]);
-
-  const channelGuidedStatusMetrics = useMemo(() => {
-    const essentialDone = channelEssentialPendencies.length === 0;
-    const recommendedDone = channelRecommendedPendencies.length === 0;
-    const providerDefined =
-      cleanText(answers.integration_provider_name) &&
-      !normalizeLoose(answers.integration_provider_name).includes("ainda nao definido");
-    const routingDefined = cleanText(answers.customer_messages_route) && cleanText(answers.assistant_alerts_route);
-
-    return [
-      {
-        label: "Essencial",
-        value: essentialDone ? "Completo" : "Pendente",
-        tone: essentialDone ? ("green" as const) : ("amber" as const),
-        hint: essentialDone ? "Os campos mínimos dos canais já foram definidos." : `${channelEssentialPendencies.length} pendência(s) crítica(s) para ativação.`,
-      },
-      {
-        label: "Recomendado",
-        value: recommendedDone ? "Completo" : "Faltando revisar",
-        tone: recommendedDone ? ("green" as const) : ("gray" as const),
-        hint: recommendedDone ? "Os ajustes finos dos canais já foram revisados." : `${channelRecommendedPendencies.length} pendência(s) recomendada(s).`,
-      },
-      {
-        label: "Provedor",
-        value: providerDefined ? "Definido" : "Pendente",
-        tone: providerDefined ? ("green" as const) : ("amber" as const),
-        hint: cleanText(answers.integration_provider_name) || "Defina qual integração principal a loja usa.",
-      },
-      {
-        label: "Roteamento",
-        value: routingDefined ? "Definido" : "Pendente",
-        tone: routingDefined ? ("green" as const) : ("amber" as const),
-        hint: routingDefined ? "Rotas principais de cliente e assistente já descritas." : "Explique para onde vão clientes, avisos, urgências e relatórios.",
-      },
-    ];
-  }, [answers, channelEssentialPendencies, channelRecommendedPendencies]);
-
-  const identitySummaryMetrics = useMemo(() => {
-    const logoStatusText =
-      cleanText((answers as Record<string, unknown>).identity_logo_status) || "Pendente";
-    const brandColorsText =
-      cleanText((answers as Record<string, unknown>).identity_brand_colors);
-
-    return [
-      {
-        label: "Nome institucional",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_institutional_name) ||
-          cleanText(answers.store_display_name) ||
-          storeName,
-        tone: "green" as const,
-        hint: "Nome principal usado pela loja no sistema.",
-      },
-      {
-        label: "Nome da IA",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_ai_display_name) ||
-          cleanText(answers.store_display_name) ||
-          storeName,
-        tone: "green" as const,
-        hint: "Forma como a IA representa a loja no atendimento.",
-      },
-      {
-        label: "Logo",
-        value: logoStatusText,
-        tone:
-          normalizeLoose(logoStatusText).includes("defin")
-            ? ("green" as const)
-            : ("amber" as const),
-        hint: "Status visual da marca nesta tela.",
-      },
-      {
-        label: "Cores da marca",
-        value: brandColorsText ? "Definidas" : "Pendentes",
-        tone: brandColorsText ? ("green" as const) : ("amber" as const),
-        hint: brandColorsText || "Defina as cores principais da marca.",
-      },
-    ];
-  }, [answers, storeName]);
-
-  const identityBaseItems = useMemo(() => {
+  const identityItems = useMemo(() => {
     return buildBulletRows([
-      {
-        label: "Nome institucional",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_institutional_name) ||
-          cleanText(answers.store_display_name) ||
-          storeName,
-      },
-      {
-        label: "Nome fantasia",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_trade_name) ||
-          cleanText(answers.store_display_name) ||
-          storeName,
-      },
-      {
-        label: "Nome usado pela IA",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_ai_display_name) ||
-          cleanText(answers.store_display_name) ||
-          storeName,
-      },
-      {
-        label: "Resumo institucional",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_institutional_summary) ||
-          cleanText(answers.store_description) ||
-          cleanText(answers.strategy_ai_store_summary),
-      },
-    ]);
-  }, [answers, storeName]);
-
-  const identityBrandItems = useMemo(() => {
-    return buildBulletRows([
-      {
-        label: "Status da logo",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_logo_status) ||
-          "Ainda não definida nesta tela",
-      },
-      {
-        label: "Cores principais",
-        value: cleanText((answers as Record<string, unknown>).identity_brand_colors),
-      },
-      {
-        label: "Observações de apresentação",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_presentation_notes) ||
-          cleanText(answers.final_activation_notes),
-      },
-    ]);
-  }, [answers]);
-
-  const identityDocumentItems = useMemo(() => {
-    return buildBulletRows([
-      {
-        label: "Assinatura padrão da IA",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_ai_signature) ||
-          cleanText(answers.store_description) ||
-          cleanText(answers.commercial_ai_summary),
-      },
-      {
-        label: "Dados usados em orçamento e contrato",
-        value:
-          cleanText((answers as Record<string, unknown>).identity_quote_contract_data) ||
-          cleanText(answers.store_display_name) ||
-          storeName,
-      },
+      { label: "Nome da loja", value: cleanText(answers.store_display_name) || storeName },
+      { label: "Logo", value: "Ajustar quando houver logo cadastrada" },
+      { label: "Cores", value: "Ainda não configuradas nesta tela" },
+      { label: "Nome que a IA usa", value: cleanText(answers.store_display_name) || storeName },
+      { label: "Assinatura padrão da IA", value: cleanText(answers.store_description) },
+      { label: "Dados usados em orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
     ]);
   }, [answers, storeName]);
 
@@ -2583,11 +2443,6 @@ export default function ConfiguracoesPage() {
     setChannelDraft(createChannelDraftFromAnswers(answers));
   }, [answers]);
 
-  useEffect(() => {
-    setIdentityDraft(createIdentityDraftFromAnswers(answers, storeName));
-  }, [answers, storeName]);
-
-
   const handleChannelDraftChange = useCallback((key: keyof ChannelDraftState, value: string) => {
     setChannelDraft((current) => ({
       ...current,
@@ -2597,6 +2452,7 @@ export default function ConfiguracoesPage() {
 
   const handleChannelsEditCancel = useCallback(() => {
     setChannelDraft(createChannelDraftFromAnswers(answers));
+    setShowChannelsAdvanced(false);
     setIsChannelsEditing(false);
   }, [answers]);
 
@@ -2658,42 +2514,9 @@ export default function ConfiguracoesPage() {
 
     if (!saved) return;
 
+    setShowChannelsAdvanced(false);
     setIsChannelsEditing(false);
   }, [channelDraft, upsertConfigAnswers]);
-
-  const handleIdentityDraftChange = useCallback((key: keyof IdentityDraftState, value: string) => {
-    setIdentityDraft((current) => ({
-      ...current,
-      [key]: value,
-    }));
-  }, []);
-
-  const handleIdentityEditCancel = useCallback(() => {
-    setIdentityDraft(createIdentityDraftFromAnswers(answers, storeName));
-    setIsIdentityEditing(false);
-  }, [answers, storeName]);
-
-  const handleIdentityEditSave = useCallback(async () => {
-    const saved = await upsertConfigAnswers(
-      {
-        identity_institutional_name: identityDraft.institutional_name,
-        identity_trade_name: identityDraft.trade_name,
-        identity_ai_display_name: identityDraft.ai_display_name,
-        identity_ai_signature: identityDraft.ai_signature,
-        identity_institutional_summary: identityDraft.institutional_summary,
-        identity_quote_contract_data: identityDraft.quote_contract_data,
-        identity_brand_colors: identityDraft.brand_colors,
-        identity_logo_status: identityDraft.logo_status,
-        identity_presentation_notes: identityDraft.presentation_notes,
-      },
-      "Alterações de identidade da loja salvas com sucesso."
-    );
-
-    if (!saved) return;
-
-    setIsIdentityEditing(false);
-  }, [identityDraft, upsertConfigAnswers]);
-
 
   const handlePrimaryResponsibleChange = useCallback(
     (key: keyof ResponsiblePersonDraft, value: string | boolean) => {
@@ -5129,7 +4952,7 @@ export default function ConfiguracoesPage() {
       {activeTab === "canais-integracoes" ? (
         <SectionBlock
           title="9. Canais e integrações"
-          description="Defina por onde a IA vende, por onde a assistente fala com o responsável e como o sistema roteia alertas, relatórios e integrações."
+          description="Deixe esta parte rápida de preencher: primeiro só o essencial, depois os detalhes avançados."
           actions={
             isChannelsEditing ? (
               <>
@@ -5160,18 +4983,6 @@ export default function ConfiguracoesPage() {
           }
         >
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {channelsOverviewMetrics.map((item) => (
-              <StatusCard
-                key={item.label}
-                label={item.label}
-                value={item.value}
-                tone={item.tone}
-                hint={item.hint}
-              />
-            ))}
-          </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {channelGuidedStatusMetrics.map((item) => (
               <StatusCard
                 key={item.label}
@@ -5183,461 +4994,645 @@ export default function ConfiguracoesPage() {
             ))}
           </div>
 
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-3">
+            <div className="rounded-2xl border border-gray-200 bg-white p-4">
+              <div className="mb-2 text-sm font-semibold text-gray-900">Como preencher rápido</div>
+              <SummaryList
+                items={[
+                  "Primeiro defina o WhatsApp comercial e o WhatsApp do responsável.",
+                  "Depois marque se cada canal está ativo e se recebe o tipo certo de mensagem.",
+                  "Por último descreva em uma frase para onde vão clientes, avisos, urgências e relatórios.",
+                ]}
+              />
+            </div>
+            <div className="rounded-2xl border border-gray-200 bg-white p-4">
+              <div className="mb-2 text-sm font-semibold text-gray-900">O que é obrigatório para ativar bem</div>
+              <SummaryList
+                items={[
+                  "Um canal real para clientes.",
+                  "Um canal real para o responsável.",
+                  "Uma integração principal definida.",
+                  "Uma regra simples de roteamento para cliente e assistente.",
+                ]}
+              />
+            </div>
+            <div className="rounded-2xl border border-gray-200 bg-white p-4">
+              <div className="mb-2 text-sm font-semibold text-gray-900">O que pode ficar para depois</div>
+              <SummaryList
+                items={[
+                  "Webhook de status e detalhes técnicos finos.",
+                  "Fallback detalhado entre canais.",
+                  "Notas extras, Telegram futuro e observações avançadas.",
+                ]}
+              />
+            </div>
+          </div>
+
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-              <div className="mb-2 text-sm font-semibold text-amber-950">Pendências essenciais</div>
+              <div className="mb-2 text-sm font-semibold text-amber-900">Pendências essenciais</div>
               <SummaryList
                 items={
                   channelEssentialPendencies.length > 0
                     ? channelEssentialPendencies
-                    : ["Os campos essenciais dos canais já foram definidos."]
+                    : ["Nada essencial pendente nesta aba."]
                 }
               />
             </div>
-
             <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
               <div className="mb-2 text-sm font-semibold text-gray-900">Pendências recomendadas</div>
               <SummaryList
                 items={
                   channelRecommendedPendencies.length > 0
                     ? channelRecommendedPendencies
-                    : ["Os ajustes recomendados desta aba já foram revisados."]
+                    : ["Nada recomendado pendente nesta aba."]
                 }
               />
             </div>
           </div>
 
-          {!isChannelsEditing ? (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-gray-900">Preenchimento guiado</div>
-                  <div className="mt-1 text-sm text-gray-600">
-                    Esta aba não deve depender da iniciativa do usuário. Quando algo importante estiver faltando, a tela precisa mostrar isso claramente e convidar o preenchimento.
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsChannelsEditing(true)}
-                  className="rounded-xl border border-black bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Preencher pendências agora
-                </button>
-              </div>
-            </div>
-          ) : null}
-
           {isChannelsEditing ? (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-3 text-sm font-semibold text-gray-900">Editar canais e integrações na mesma página</div>
-
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-1 text-sm font-semibold text-gray-900">1. Canal comercial da loja</div>
-                  <div className="mb-3 text-xs text-gray-600">Essencial para a IA vendedora atender clientes reais sem depender de suposição.</div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do canal</span>
-                      <input value={channelDraft.commercial_channel_name} onChange={(e)=>handleChannelDraftChange("commercial_channel_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">WhatsApp comercial • essencial</span>
-                      <input value={channelDraft.commercial_whatsapp} onChange={(e)=>handleChannelDraftChange("commercial_whatsapp", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Número real usado para falar com clientes" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal ativo</span>
-                      <select value={channelDraft.commercial_channel_active} onChange={(e)=>handleChannelDraftChange("commercial_channel_active", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe clientes reais</span>
-                      <select value={channelDraft.commercial_receives_real_clients} onChange={(e)=>handleChannelDraftChange("commercial_receives_real_clients", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal oficial da IA vendedora</span>
-                      <select value={channelDraft.commercial_is_official_sales_channel} onChange={(e)=>handleChannelDraftChange("commercial_is_official_sales_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de canal comercial</span>
-                      <input value={channelDraft.commercial_channel_type} onChange={(e)=>handleChannelDraftChange("commercial_channel_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: WhatsApp comercial da loja" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade desse canal</span>
-                      <input value={channelDraft.commercial_entry_priority} onChange={(e)=>handleChannelDraftChange("commercial_entry_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: Canal principal de entrada de clientes" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pode transbordar para humano</span>
-                      <select value={channelDraft.commercial_human_handoff_enabled} onChange={(e)=>handleChannelDraftChange("commercial_human_handoff_enabled", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do canal comercial</span>
-                      <textarea value={channelDraft.commercial_channel_notes} onChange={(e)=>handleChannelDraftChange("commercial_channel_notes", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                  </div>
+            <div className="mt-4 space-y-4">
+              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <div className="mb-1 text-sm font-semibold text-gray-900">Preenchimento rápido</div>
+                <div className="mb-4 text-xs text-gray-600">
+                  Primeiro preencha só o que é mais importante. Os detalhes mais técnicos ficam escondidos em opções avançadas.
                 </div>
 
-                <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-1 text-sm font-semibold text-gray-900">2. Canal do responsável</div>
-                  <div className="mb-3 text-xs text-gray-600">Essencial para alertas, urgências e relatórios da IA assistente.</div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do canal</span>
-                      <input value={channelDraft.responsible_channel_name} onChange={(e)=>handleChannelDraftChange("responsible_channel_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">WhatsApp do responsável • essencial</span>
-                      <input value={channelDraft.responsible_whatsapp} onChange={(e)=>handleChannelDraftChange("responsible_whatsapp", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Número real que recebe avisos da assistente" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal ativo</span>
-                      <select value={channelDraft.responsible_channel_active} onChange={(e)=>handleChannelDraftChange("responsible_channel_active", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de canal do responsável</span>
-                      <input value={channelDraft.responsible_channel_type} onChange={(e)=>handleChannelDraftChange("responsible_channel_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: WhatsApp do responsável" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal principal de alertas</span>
-                      <select value={channelDraft.responsible_is_primary_alert_channel} onChange={(e)=>handleChannelDraftChange("responsible_is_primary_alert_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal para comandos humanos</span>
-                      <select value={channelDraft.responsible_is_human_command_channel} onChange={(e)=>handleChannelDraftChange("responsible_is_human_command_channel", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe alertas da IA</span>
-                      <select value={channelDraft.responsible_receives_ai_alerts} onChange={(e)=>handleChannelDraftChange("responsible_receives_ai_alerts", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe relatórios</span>
-                      <select value={channelDraft.responsible_receives_reports} onChange={(e)=>handleChannelDraftChange("responsible_receives_reports", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe urgências</span>
-                      <select value={channelDraft.responsible_receives_urgencies} onChange={(e)=>handleChannelDraftChange("responsible_receives_urgencies", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe avisos de visita</span>
-                      <select value={channelDraft.responsible_receives_visit_alerts} onChange={(e)=>handleChannelDraftChange("responsible_receives_visit_alerts", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe avisos de pagamento</span>
-                      <select value={channelDraft.responsible_receives_payment_alerts} onChange={(e)=>handleChannelDraftChange("responsible_receives_payment_alerts", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do canal do responsável</span>
-                      <textarea value={channelDraft.responsible_channel_notes} onChange={(e)=>handleChannelDraftChange("responsible_channel_notes", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">1. Canal dos clientes</div>
+                    <div className="grid gap-3">
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o WhatsApp que fala com clientes?</span>
+                        <input
+                          value={channelDraft.commercial_whatsapp}
+                          onChange={(e) => handleChannelDraftChange("commercial_whatsapp", e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: (11) 99999-9999"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome desse canal</span>
+                        <input
+                          value={channelDraft.commercial_channel_name}
+                          onChange={(e) => handleChannelDraftChange("commercial_channel_name", e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: WhatsApp comercial principal"
+                        />
+                      </label>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse canal já está ativo?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.commercial_channel_active}
+                          onChange={(value) => handleChannelDraftChange("commercial_channel_active", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                            { value: "Não definido", label: "Ainda não" },
+                          ]}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA usa esse canal como oficial de vendas?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.commercial_is_official_sales_channel}
+                          onChange={(value) => handleChannelDraftChange("commercial_is_official_sales_channel", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                          ]}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Se precisar, pode passar para humano?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.commercial_human_handoff_enabled}
+                          onChange={(value) => handleChannelDraftChange("commercial_human_handoff_enabled", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                          ]}
+                        />
+                      </div>
+                    </div>
                   </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">2. Canal do responsável</div>
+                    <div className="grid gap-3">
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual é o WhatsApp do responsável?</span>
+                        <input
+                          value={channelDraft.responsible_whatsapp}
+                          onChange={(e) => handleChannelDraftChange("responsible_whatsapp", e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: (11) 98888-8888"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome desse canal</span>
+                        <input
+                          value={channelDraft.responsible_channel_name}
+                          onChange={(e) => handleChannelDraftChange("responsible_channel_name", e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: WhatsApp do responsável"
+                        />
+                      </label>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse canal recebe alertas da IA?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.responsible_receives_ai_alerts}
+                          onChange={(value) => handleChannelDraftChange("responsible_receives_ai_alerts", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                          ]}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse canal recebe urgências?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.responsible_receives_urgencies}
+                          onChange={(value) => handleChannelDraftChange("responsible_receives_urgencies", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                          ]}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse canal recebe relatórios?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.responsible_receives_reports}
+                          onChange={(value) => handleChannelDraftChange("responsible_receives_reports", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                          ]}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">3. Chat interno do sistema</div>
+                    <div className="grid gap-3">
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Vai usar chat interno?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.internal_chat_enabled}
+                          onChange={(value) => handleChannelDraftChange("internal_chat_enabled", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                          ]}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Ele fica separado da Inbox?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.internal_chat_separate_from_inbox}
+                          onChange={(value) => handleChannelDraftChange("internal_chat_separate_from_inbox", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                          ]}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Esse chat aceita comandos manuais?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.internal_chat_accepts_manual_commands}
+                          onChange={(value) => handleChannelDraftChange("internal_chat_accepts_manual_commands", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                          ]}
+                        />
+                      </div>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade do chat interno</span>
+                        <input
+                          value={channelDraft.internal_chat_priority}
+                          onChange={(e) => handleChannelDraftChange("internal_chat_priority", e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: apoio secundário, principal para alertas..."
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">4. Integração externa</div>
+                    <div className="grid gap-3">
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Qual integração vocês usam?</span>
+                        <input
+                          value={channelDraft.integration_provider_name}
+                          onChange={(e) => handleChannelDraftChange("integration_provider_name", e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: WhatsApp Cloud API, Evolution, Z-API..."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Como ela se conecta?</span>
+                        <input
+                          value={channelDraft.integration_connection_mode}
+                          onChange={(e) => handleChannelDraftChange("integration_connection_mode", e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: API, webhook, painel externo..."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status do teste</span>
+                        <input
+                          value={channelDraft.integration_test_status}
+                          onChange={(e) => handleChannelDraftChange("integration_test_status", e.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: funcionando, parcial, pendente..."
+                        />
+                      </label>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Entrada de mensagens funciona?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.integration_has_inbound_webhook}
+                          onChange={(value) => handleChannelDraftChange("integration_has_inbound_webhook", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                            { value: "Não definido", label: "Não sei" },
+                          ]}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Envio de mensagens funciona?</span>
+                        <ChoiceButtonGroup
+                          value={channelDraft.integration_has_outbound_delivery}
+                          onChange={(value) => handleChannelDraftChange("integration_has_outbound_delivery", value)}
+                          options={[
+                            { value: "Sim", label: "Sim" },
+                            { value: "Não", label: "Não" },
+                            { value: "Não definido", label: "Não sei" },
+                          ]}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4 xl:col-span-2">
+                    <div className="mb-3 text-sm font-semibold text-gray-900">5. Roteamento rápido</div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Para onde vão as mensagens dos clientes?</span>
+                        <textarea
+                          value={channelDraft.customer_messages_route}
+                          onChange={(e) => handleChannelDraftChange("customer_messages_route", e.target.value)}
+                          rows={2}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: entram no WhatsApp comercial e seguem para a IA vendedora."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Para onde vão os avisos da assistente?</span>
+                        <textarea
+                          value={channelDraft.assistant_alerts_route}
+                          onChange={(e) => handleChannelDraftChange("assistant_alerts_route", e.target.value)}
+                          rows={2}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: vão para o WhatsApp do responsável e também ficam no painel."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Para onde vão as urgências?</span>
+                        <textarea
+                          value={channelDraft.urgency_route}
+                          onChange={(e) => handleChannelDraftChange("urgency_route", e.target.value)}
+                          rows={2}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: direto para o responsável principal."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Para onde vão os relatórios?</span>
+                        <textarea
+                          value={channelDraft.reports_route}
+                          onChange={(e) => handleChannelDraftChange("reports_route", e.target.value)}
+                          rows={2}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: WhatsApp do responsável e painel."
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+
+              <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                <div className="mb-3 text-sm font-semibold text-gray-900">Prévia da configuração em linguagem simples</div>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo do canal comercial</div>
+                    <SummaryList
+                      items={[
+                        `Canal comercial: ${channelDraft.commercial_channel_name || "Não definido"}`,
+                        `WhatsApp comercial: ${channelDraft.commercial_whatsapp || "Não definido"}`,
+                        `Canal ativo: ${channelDraft.commercial_channel_active || "Não definido"}`,
+                        `Canal oficial da IA: ${channelDraft.commercial_is_official_sales_channel || "Não definido"}`,
+                      ]}
+                    />
+                  </div>
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo do canal do responsável</div>
+                    <SummaryList
+                      items={[
+                        `Canal do responsável: ${channelDraft.responsible_channel_name || "Não definido"}`,
+                        `WhatsApp do responsável: ${channelDraft.responsible_whatsapp || "Não definido"}`,
+                        `Recebe alertas: ${channelDraft.responsible_receives_ai_alerts || "Não definido"}`,
+                        `Recebe urgências: ${channelDraft.responsible_receives_urgencies || "Não definido"}`,
+                      ]}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">Opções avançadas</div>
+                    <div className="text-xs text-gray-600">
+                      Abra só se quiser detalhar webhook, fallback, observações e configurações mais técnicas.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowChannelsAdvanced((current) => !current)}
+                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                  >
+                    {showChannelsAdvanced ? "Ocultar opções avançadas" : "Mostrar opções avançadas"}
+                  </button>
                 </div>
 
-                <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-1 text-sm font-semibold text-gray-900">3. Chat interno, separação de canais e apoio</div>
-                  <div className="mb-3 text-xs text-gray-600">Use este bloco para deixar claro o que acontece dentro do painel e o que fica nos canais externos.</div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Chat interno ativado</span>
-                      <select value={channelDraft.internal_chat_enabled} onChange={(e)=>handleChannelDraftChange("internal_chat_enabled", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pode ser usado pela IA assistente</span>
-                      <select value={channelDraft.internal_chat_for_assistant} onChange={(e)=>handleChannelDraftChange("internal_chat_for_assistant", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fica separado da Inbox</span>
-                      <select value={channelDraft.internal_chat_separate_from_inbox} onChange={(e)=>handleChannelDraftChange("internal_chat_separate_from_inbox", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Visível para a equipe</span>
-                      <select value={channelDraft.internal_chat_visible_to_team} onChange={(e)=>handleChannelDraftChange("internal_chat_visible_to_team", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Aceita comandos manuais</span>
-                      <select value={channelDraft.internal_chat_accepts_manual_commands} onChange={(e)=>handleChannelDraftChange("internal_chat_accepts_manual_commands", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal comercial e responsável são separados</span>
-                      <select value={channelDraft.channels_are_separate} onChange={(e)=>handleChannelDraftChange("channels_are_separate", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Número/chip dedicado</span>
-                      <input value={channelDraft.dedicated_number} onChange={(e)=>handleChannelDraftChange("dedicated_number", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: mesmo número do comercial ou outro número dedicado" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status do Telegram futuro</span>
-                      <input value={channelDraft.telegram_future_status} onChange={(e)=>handleChannelDraftChange("telegram_future_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: previsto para expansão futura" />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade do chat interno</span>
-                      <input value={channelDraft.internal_chat_priority} onChange={(e)=>handleChannelDraftChange("internal_chat_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do chat interno</span>
-                      <textarea value={channelDraft.internal_chat_notes} onChange={(e)=>handleChannelDraftChange("internal_chat_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Notas extras de canais</span>
-                      <textarea value={channelDraft.extra_channel_notes} onChange={(e)=>handleChannelDraftChange("extra_channel_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                  </div>
-                </div>
+                {showChannelsAdvanced ? (
+                  <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="mb-3 text-sm font-semibold text-gray-900">Canal comercial — detalhes</div>
+                      <div className="grid gap-3">
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe clientes reais</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.commercial_receives_real_clients}
+                            onChange={(value) => handleChannelDraftChange("commercial_receives_real_clients", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                              { value: "Não definido", label: "Não definido" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de canal</span>
+                          <input value={channelDraft.commercial_channel_type} onChange={(e)=>handleChannelDraftChange("commercial_channel_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Prioridade de entrada</span>
+                          <input value={channelDraft.commercial_entry_priority} onChange={(e)=>handleChannelDraftChange("commercial_entry_priority", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações</span>
+                          <textarea value={channelDraft.commercial_channel_notes} onChange={(e)=>handleChannelDraftChange("commercial_channel_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                      </div>
+                    </div>
 
-                <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                  <div className="mb-1 text-sm font-semibold text-gray-900">4. Integrações externas e roteamento</div>
-                  <div className="mb-3 text-xs text-gray-600">Aqui o sistema precisa pedir a configuração real, e não assumir que está “previsto”.</div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">Provedor / integração principal • essencial</span>
-                      <input value={channelDraft.integration_provider_name} onChange={(e)=>handleChannelDraftChange("integration_provider_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: WhatsApp Cloud API, Evolution, Z-API..." />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">Modo de conexão • essencial</span>
-                      <input value={channelDraft.integration_connection_mode} onChange={(e)=>handleChannelDraftChange("integration_connection_mode", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: API / webhook" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de entrada</span>
-                      <input value={channelDraft.webhook_inbound_status} onChange={(e)=>handleChannelDraftChange("webhook_inbound_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: funcionando, pendente, em validação..." />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Envio externo</span>
-                      <input value={channelDraft.external_send_status} onChange={(e)=>handleChannelDraftChange("external_send_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: funcionando, pendente, em validação..." />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Integração de WhatsApp</span>
-                      <input value={channelDraft.whatsapp_integration_status} onChange={(e)=>handleChannelDraftChange("whatsapp_integration_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de entrada disponível</span>
-                      <select value={channelDraft.integration_has_inbound_webhook} onChange={(e)=>handleChannelDraftChange("integration_has_inbound_webhook", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de status / entrega</span>
-                      <select value={channelDraft.integration_has_status_webhook} onChange={(e)=>handleChannelDraftChange("integration_has_status_webhook", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Disparo externo funcionando</span>
-                      <select value={channelDraft.integration_has_outbound_delivery} onChange={(e)=>handleChannelDraftChange("integration_has_outbound_delivery", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não definido</option><option>Sim</option><option>Não</option></select>
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status do teste de integração</span>
-                      <input value={channelDraft.integration_test_status} onChange={(e)=>handleChannelDraftChange("integration_test_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Ex.: testado e funcionando" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status geral das integrações</span>
-                      <input value={channelDraft.integrations_status} onChange={(e)=>handleChannelDraftChange("integrations_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações técnicas</span>
-                      <textarea value={channelDraft.integrations_notes} onChange={(e)=>handleChannelDraftChange("integrations_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">Mensagens de clientes vão para • essencial</span>
-                      <textarea value={channelDraft.customer_messages_route} onChange={(e)=>handleChannelDraftChange("customer_messages_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Explique por onde o cliente entra e como a IA vendedora atende." />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-700">Avisos da assistente vão para • essencial</span>
-                      <textarea value={channelDraft.assistant_alerts_route} onChange={(e)=>handleChannelDraftChange("assistant_alerts_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" placeholder="Explique quem recebe alertas, urgências e contexto operacional." />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Urgências</span>
-                      <textarea value={channelDraft.urgency_route} onChange={(e)=>handleChannelDraftChange("urgency_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Relatórios</span>
-                      <textarea value={channelDraft.reports_route} onChange={(e)=>handleChannelDraftChange("reports_route", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fallback entre canais</span>
-                      <textarea value={channelDraft.channel_fallback_rule} onChange={(e)=>handleChannelDraftChange("channel_fallback_rule", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
-                    <label className="space-y-1 md:col-span-2">
-                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo dos canais do sistema</span>
-                      <textarea value={channelDraft.channels_system_summary} onChange={(e)=>handleChannelDraftChange("channels_system_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
-                    </label>
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="mb-3 text-sm font-semibold text-gray-900">Canal do responsável — detalhes</div>
+                      <div className="grid gap-3">
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal ativo</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.responsible_channel_active}
+                            onChange={(value) => handleChannelDraftChange("responsible_channel_active", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                              { value: "Não definido", label: "Não definido" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo de canal</span>
+                          <input value={channelDraft.responsible_channel_type} onChange={(e)=>handleChannelDraftChange("responsible_channel_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal principal de alertas</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.responsible_is_primary_alert_channel}
+                            onChange={(value) => handleChannelDraftChange("responsible_is_primary_alert_channel", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">É o canal para comandos humanos</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.responsible_is_human_command_channel}
+                            onChange={(value) => handleChannelDraftChange("responsible_is_human_command_channel", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe avisos de visita</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.responsible_receives_visit_alerts}
+                            onChange={(value) => handleChannelDraftChange("responsible_receives_visit_alerts", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Recebe avisos de pagamento</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.responsible_receives_payment_alerts}
+                            onChange={(value) => handleChannelDraftChange("responsible_receives_payment_alerts", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações</span>
+                          <textarea value={channelDraft.responsible_channel_notes} onChange={(e)=>handleChannelDraftChange("responsible_channel_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="mb-3 text-sm font-semibold text-gray-900">Chat interno e canais extras</div>
+                      <div className="grid gap-3">
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Pode ser usado pela IA assistente</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.internal_chat_for_assistant}
+                            onChange={(value) => handleChannelDraftChange("internal_chat_for_assistant", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Visível para a equipe</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.internal_chat_visible_to_team}
+                            onChange={(value) => handleChannelDraftChange("internal_chat_visible_to_team", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Canal comercial e responsável são separados</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.channels_are_separate}
+                            onChange={(value) => handleChannelDraftChange("channels_are_separate", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                              { value: "Não definido", label: "Não definido" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Número / chip dedicado</span>
+                          <input value={channelDraft.dedicated_number} onChange={(e)=>handleChannelDraftChange("dedicated_number", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Telegram futuro</span>
+                          <input value={channelDraft.telegram_future_status} onChange={(e)=>handleChannelDraftChange("telegram_future_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações do chat interno</span>
+                          <textarea value={channelDraft.internal_chat_notes} onChange={(e)=>handleChannelDraftChange("internal_chat_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Notas extras</span>
+                          <textarea value={channelDraft.extra_channel_notes} onChange={(e)=>handleChannelDraftChange("extra_channel_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="mb-3 text-sm font-semibold text-gray-900">Integrações e roteamento — detalhes</div>
+                      <div className="grid gap-3">
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de entrada</span>
+                          <input value={channelDraft.webhook_inbound_status} onChange={(e)=>handleChannelDraftChange("webhook_inbound_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Envio externo</span>
+                          <input value={channelDraft.external_send_status} onChange={(e)=>handleChannelDraftChange("external_send_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Integração de WhatsApp</span>
+                          <input value={channelDraft.whatsapp_integration_status} onChange={(e)=>handleChannelDraftChange("whatsapp_integration_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Webhook de status / entrega</span>
+                          <ChoiceButtonGroup
+                            value={channelDraft.integration_has_status_webhook}
+                            onChange={(value) => handleChannelDraftChange("integration_has_status_webhook", value)}
+                            options={[
+                              { value: "Sim", label: "Sim" },
+                              { value: "Não", label: "Não" },
+                              { value: "Não definido", label: "Não definido" },
+                            ]}
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status geral das integrações</span>
+                          <input value={channelDraft.integrations_status} onChange={(e)=>handleChannelDraftChange("integrations_status", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações técnicas</span>
+                          <textarea value={channelDraft.integrations_notes} onChange={(e)=>handleChannelDraftChange("integrations_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fallback entre canais</span>
+                          <textarea value={channelDraft.channel_fallback_rule} onChange={(e)=>handleChannelDraftChange("channel_fallback_rule", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo dos canais do sistema</span>
+                          <textarea value={channelDraft.channels_system_summary} onChange={(e)=>handleChannelDraftChange("channels_system_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                        </label>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ) : null}
               </div>
             </div>
           ) : null}
 
-          <div className="mt-4 grid gap-4 xl:grid-cols-2">
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-2 text-sm font-semibold text-gray-900">Canal comercial</div>
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Canal comercial da loja</div>
               <SummaryList items={channelCommercialItems} />
             </div>
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+            <div>
               <div className="mb-2 text-sm font-semibold text-gray-900">Canal do responsável</div>
               <SummaryList items={channelResponsibleItems} />
             </div>
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-2 text-sm font-semibold text-gray-900">Chat interno e apoio</div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Chat interno e outros canais</div>
               <SummaryList items={channelInternalChatItems} />
             </div>
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-2 text-sm font-semibold text-gray-900">Integrações e estrutura de canais</div>
+            <div>
+              <div className="mb-2 text-sm font-semibold text-gray-900">Integrações externas</div>
               <SummaryList items={channelOtherAndIntegrationItems} />
             </div>
-          </div>
-
-          <div className="mt-4">
-            <div className="mb-2 text-sm font-semibold text-gray-900">Roteamento do sistema</div>
-            <SummaryList items={channelRoutingItems} />
+            <div className="lg:col-span-2">
+              <div className="mb-2 text-sm font-semibold text-gray-900">Regras de roteamento</div>
+              <SummaryList items={channelRoutingItems} />
+            </div>
           </div>
         </SectionBlock>
       ) : null}
 
-      {activeTab === "identidade"  ? (
+      {activeTab === "identidade" ? (
         <SectionBlock
           title="10. Identidade da loja"
           description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
-          actions={
-            isIdentityEditing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleIdentityEditSave}
-                  className="rounded-xl border border-black bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                >
-                  Salvar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleIdentityEditCancel}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-                >
-                  Cancelar
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setIsIdentityEditing(true)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
-              >
-                Editar
-              </button>
-            )
-          }
         >
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {identitySummaryMetrics.map((item) => (
-              <StatusCard
-                key={item.label}
-                label={item.label}
-                value={item.value}
-                tone={item.tone}
-                hint={item.hint}
-              />
-            ))}
-          </div>
-
-          {isIdentityEditing ? (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-              <div className="mb-3 text-sm font-semibold text-gray-900">Editar identidade da loja na mesma página</div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome institucional</span>
-                  <input
-                    value={identityDraft.institutional_name}
-                    onChange={(e) => handleIdentityDraftChange("institutional_name", e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome fantasia</span>
-                  <input
-                    value={identityDraft.trade_name}
-                    onChange={(e) => handleIdentityDraftChange("trade_name", e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome usado pela IA</span>
-                  <input
-                    value={identityDraft.ai_display_name}
-                    onChange={(e) => handleIdentityDraftChange("ai_display_name", e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Status da logo</span>
-                  <input
-                    value={identityDraft.logo_status}
-                    onChange={(e) => handleIdentityDraftChange("logo_status", e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: definida, pendente, temporária..."
-                  />
-                </label>
-
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Assinatura padrão da IA</span>
-                  <textarea
-                    value={identityDraft.ai_signature}
-                    onChange={(e) => handleIdentityDraftChange("ai_signature", e.target.value)}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo institucional da loja</span>
-                  <textarea
-                    value={identityDraft.institutional_summary}
-                    onChange={(e) => handleIdentityDraftChange("institutional_summary", e.target.value)}
-                    rows={4}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dados usados em orçamento e contrato</span>
-                  <textarea
-                    value={identityDraft.quote_contract_data}
-                    onChange={(e) => handleIdentityDraftChange("quote_contract_data", e.target.value)}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-
-                <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cores principais da marca</span>
-                  <input
-                    value={identityDraft.brand_colors}
-                    onChange={(e) => handleIdentityDraftChange("brand_colors", e.target.value)}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                    placeholder="Ex.: azul escuro, branco, amarelo..."
-                  />
-                </label>
-
-                <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações de apresentação</span>
-                  <textarea
-                    value={identityDraft.presentation_notes}
-                    onChange={(e) => handleIdentityDraftChange("presentation_notes", e.target.value)}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  />
-                </label>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-3">
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Base institucional</div>
-              <SummaryList items={identityBaseItems} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Marca visual e apresentação</div>
-              <SummaryList items={identityBrandItems} />
-            </div>
-            <div>
-              <div className="mb-2 text-sm font-semibold text-gray-900">Documentos e assinatura da IA</div>
-              <SummaryList items={identityDocumentItems} />
-            </div>
-          </div>
+          <SummaryList items={identityItems} />
         </SectionBlock>
       ) : null}
     </div>
