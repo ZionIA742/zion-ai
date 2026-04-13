@@ -199,6 +199,7 @@ type ChannelDraftState = {
 
 type PersistedConfiguracoesState = {
   activeTab: SettingsTabId;
+  scrollY: number;
   isOverviewEditing: boolean;
   isStrategyEditing: boolean;
   isOperationEditing: boolean;
@@ -1236,6 +1237,7 @@ export default function ConfiguracoesPage() {
     return `zion_configuracoes_draft:${organizationId}:${activeStoreId}`;
   }, [organizationId, activeStoreId]);
   const hasRestoredLocalDraftRef = useRef(false);
+  const hasInitializedLocalDraftRef = useRef(false);
 
   const tabs = useMemo(
     () => [
@@ -1445,7 +1447,10 @@ export default function ConfiguracoesPage() {
     const raw = readFromLocalStorageSafe(configDraftStorageKey);
     hasRestoredLocalDraftRef.current = true;
 
-    if (!raw) return;
+    if (!raw) {
+      hasInitializedLocalDraftRef.current = true;
+      return;
+    }
 
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedConfiguracoesState>;
@@ -1478,18 +1483,29 @@ export default function ConfiguracoesPage() {
       }
       if (parsed.poolForm) setPoolForm(parsed.poolForm);
       if (parsed.catalogForm) setCatalogForm(parsed.catalogForm);
-      setSuccessText("Rascunho local das Configurações recuperado.");
+
+      if (typeof parsed.scrollY === "number" && Number.isFinite(parsed.scrollY) && parsed.scrollY >= 0) {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            window.scrollTo({ top: parsed.scrollY, behavior: "auto" });
+          });
+        });
+      }
     } catch (error) {
       console.error("[ConfiguracoesPage] restore draft error:", error);
       removeFromLocalStorageSafe(configDraftStorageKey);
+    } finally {
+      hasInitializedLocalDraftRef.current = true;
     }
   }, [configDraftStorageKey, loading]);
 
   const persistConfiguracoesDraft = useCallback(() => {
     if (!configDraftStorageKey || typeof window === "undefined") return;
+    if (!hasInitializedLocalDraftRef.current) return;
 
     const payload: PersistedConfiguracoesState = {
       activeTab,
+      scrollY: window.scrollY,
       isOverviewEditing,
       isStrategyEditing,
       isOperationEditing,
@@ -1542,6 +1558,7 @@ export default function ConfiguracoesPage() {
 
   useEffect(() => {
     if (!configDraftStorageKey || typeof window === "undefined") return;
+    if (!hasInitializedLocalDraftRef.current) return;
     persistConfiguracoesDraft();
   }, [configDraftStorageKey, persistConfiguracoesDraft]);
 
