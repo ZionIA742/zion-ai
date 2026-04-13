@@ -813,6 +813,49 @@ function parseNumberInput(value: string) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function formatFixedDecimalInput(value: string, decimalPlaces = 2) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+
+  const safeDecimalPlaces = Math.max(0, decimalPlaces);
+  if (safeDecimalPlaces === 0) {
+    return digits.replace(/^0+(?=\d)/, "") || "0";
+  }
+
+  const paddedDigits = digits.padStart(safeDecimalPlaces + 1, "0");
+  const integerPartRaw = paddedDigits.slice(0, -safeDecimalPlaces);
+  const decimalPart = paddedDigits.slice(-safeDecimalPlaces);
+  const integerPart = integerPartRaw.replace(/^0+(?=\d)/, "") || "0";
+
+  return `${integerPart}.${decimalPart}`;
+}
+
+function formatManualPoolFieldValue(
+  key: keyof PoolFormState,
+  value: string | boolean
+): string | boolean {
+  if (typeof value !== "string") return value;
+
+  if (["width_m", "length_m", "depth_m", "price"].includes(key)) {
+    return formatFixedDecimalInput(value, 2);
+  }
+
+  return value;
+}
+
+function formatManualCatalogFieldValue(
+  key: keyof CatalogFormState,
+  value: string | boolean
+): string | boolean {
+  if (typeof value !== "string") return value;
+
+  if (["width_cm", "height_cm", "length_cm", "weight_kg", "price"].includes(key)) {
+    return formatFixedDecimalInput(value, 2);
+  }
+
+  return value;
+}
+
 function parseArrayAnswer(value: unknown): string[] {
   if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
   if (typeof value === "string") {
@@ -2585,7 +2628,7 @@ export default function ConfiguracoesPage() {
     (key: keyof PoolFormState, value: string | boolean) => {
       setPoolForm((current) => ({
         ...current,
-        [key]: value,
+        [key]: formatManualPoolFieldValue(key, value),
       } as PoolFormState));
     },
     []
@@ -2681,7 +2724,7 @@ export default function ConfiguracoesPage() {
     (key: keyof CatalogFormState, value: string | boolean) => {
       setCatalogForm((current) => ({
         ...current,
-        [key]: value,
+        [key]: formatManualCatalogFieldValue(key, value),
       } as CatalogFormState));
     },
     []
@@ -3694,7 +3737,7 @@ export default function ConfiguracoesPage() {
                   value={poolForm.price}
                   onChange={(event) => handlePoolFormChange("price", event.target.value)}
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="15990"
+                  placeholder="15990.00"
                 />
               </label>
 
@@ -4020,7 +4063,7 @@ export default function ConfiguracoesPage() {
                   value={catalogForm.price}
                   onChange={(event) => handleCatalogFormChange("price", event.target.value)}
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="59,90"
+                  placeholder="59.90"
                 />
               </label>
 
