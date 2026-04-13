@@ -2865,6 +2865,7 @@ function OnboardingContent() {
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [hasCompletedOnboardingOnce, setHasCompletedOnboardingOnce] = useState(false);
+  const [onboardingStatus, setOnboardingStatus] = useState<string>("");
   const [intelligentImportFiles, setIntelligentImportFiles] = useState<File[]>([]);
   const [intelligentImportSelectedFilesPreview, setIntelligentImportSelectedFilesPreview] = useState<
     IntelligentImportSelectedFilePreview[]
@@ -2878,7 +2879,7 @@ function OnboardingContent() {
   const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
   const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
   const hasDiscountConfigOverride = Boolean(discountSettings);
-  const isOnboardingReviewMode = hasCompletedOnboardingOnce;
+  const isOnboardingReviewMode = hasCompletedOnboardingOnce || onboardingStatus === "completed";
   const [step1DraftRecovered, setStep1DraftRecovered] = useState(false);
   const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
   const [step3DraftRecovered, setStep3DraftRecovered] = useState(false);
@@ -3214,6 +3215,61 @@ function OnboardingContent() {
       }, 120);
     }
   }
+
+  const loadOnboardingStatus = useCallback(async () => {
+    if (!organizationId || !activeStore?.id) return "";
+
+    try {
+      const { data: onboardingData, error: onboardingRpcError } = await supabase.rpc(
+        "onboarding_get_store_onboarding_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+        }
+      );
+
+      if (onboardingRpcError) throw onboardingRpcError;
+
+      const normalizedRpcStatus = String(
+        Array.isArray(onboardingData)
+          ? onboardingData[0]?.status ?? ""
+          : onboardingData?.status ?? ""
+      )
+        .trim()
+        .toLowerCase();
+
+      if (normalizedRpcStatus) {
+        setOnboardingStatus(normalizedRpcStatus);
+        setHasCompletedOnboardingOnce(normalizedRpcStatus === "completed");
+        return normalizedRpcStatus;
+      }
+    } catch (rpcError) {
+      console.error("[OnboardingPage] loadOnboardingStatus RPC error:", rpcError);
+    }
+
+    try {
+      const { data: onboardingRow, error: onboardingSelectError } = await supabase
+        .from("store_onboarding")
+        .select("status")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStore.id)
+        .maybeSingle();
+
+      if (onboardingSelectError) throw onboardingSelectError;
+
+      const normalizedSelectStatus = String(onboardingRow?.status ?? "")
+        .trim()
+        .toLowerCase();
+      setOnboardingStatus(normalizedSelectStatus);
+      setHasCompletedOnboardingOnce(normalizedSelectStatus === "completed");
+      return normalizedSelectStatus;
+    } catch (selectError) {
+      console.error("[OnboardingPage] loadOnboardingStatus select error:", selectError);
+      setOnboardingStatus("");
+      setHasCompletedOnboardingOnce(false);
+      return "";
+    }
+  }, [organizationId, activeStore?.id]);
 
   function blockReviewModeEditing() {
     setFormError(
@@ -3822,6 +3878,9 @@ async function upsertAnswers(
         p_status: finalStatus ?? "in_progress",
       });
       if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
+      const nextResolvedStatus = (finalStatus ?? "in_progress").trim().toLowerCase();
+      setOnboardingStatus(nextResolvedStatus);
+      setHasCompletedOnboardingOnce(nextResolvedStatus === "completed");
       setSuccessMessage(nextSuccessMessage);
       if (typeof nextStep === "number") {
         ignoreNextStepScrollRef.current = false;
@@ -4257,26 +4316,14 @@ async function upsertAnswers(
           activation_preferences_other:
             prev.activation_preferences_other || String(answers.activation_preferences_other ?? ""),
         }));
-        const { data: onboardingRow, error: onboardingStatusError } = await supabase
-          .from("store_onboarding")
-          .select("status")
-          .eq("organization_id", organizationId)
-          .eq("store_id", activeStore.id)
-          .maybeSingle();
-
-        if (onboardingStatusError) {
-          console.error("[OnboardingPage] loadOnboardingStatus error:", onboardingStatusError);
-        }
-
-        const resolvedOnboardingStatus = String(onboardingRow?.status ?? "").trim().toLowerCase();
-        setHasCompletedOnboardingOnce(resolvedOnboardingStatus === "completed");
+        await loadOnboardingStatus();
       } catch (err) {
         console.error("[OnboardingPage] loadAnswers unexpected error:", err);
         setFatalError("Falha ao carregar respostas do onboarding.");
       }
     };
     loadAnswers();
-  }, [organizationId, activeStore?.id, activeStore?.name]);
+  }, [organizationId, activeStore?.id, activeStore?.name, loadOnboardingStatus]);
   useEffect(() => {
     const loadDiscountSettings = async () => {
       if (!organizationId || !activeStore?.id) return;
@@ -4703,6 +4750,8 @@ async function upsertAnswers(
         p_status: "in_progress",
       });
       if (statusError) throw new Error("Falha ao atualizar status do onboarding.");
+      setOnboardingStatus("in_progress");
+      setHasCompletedOnboardingOnce(false);
       setSuccessMessage(
         hasDiscountConfigOverride
           ? "Etapa 4 salva com sucesso. Os descontos continuam sendo controlados pela aba Configurações."
@@ -4794,8 +4843,10 @@ async function upsertAnswers(
         p_status: "completed",
       });
       if (statusError) throw new Error("Falha ao concluir o onboarding.");
-      setSuccessMessage("Onboarding concluído com sucesso.");
+      setOnboardingStatus("completed");
       setHasCompletedOnboardingOnce(true);
+      await loadOnboardingStatus();
+      setSuccessMessage("Onboarding concluído com sucesso. Agora este onboarding entra em modo revisão e as edições oficiais ficam na aba Configurações.");
       setStep5DraftRecovered(false);
       setTimeout(() => {
         router.push("/configuracoes");
