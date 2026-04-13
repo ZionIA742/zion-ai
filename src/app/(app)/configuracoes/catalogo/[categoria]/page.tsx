@@ -128,6 +128,21 @@ function toPriceInput(cents: number | null | undefined) {
   return (cents / 100).toFixed(2).replace(".", ",");
 }
 
+function priceInputToCents(value: string) {
+  const normalized = value
+    .replace(/\./g, "")
+    .replace(",", ".")
+    .replace(/[^\d.]/g, "")
+    .trim();
+
+  if (!normalized) return null;
+
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return null;
+
+  return Math.round(parsed * 100);
+}
+
 function parseLooseNumber(value: string | null | undefined) {
   const raw = String(value || "").trim();
   if (!raw) return null;
@@ -139,7 +154,7 @@ function parseLooseNumber(value: string | null | undefined) {
   if (lastComma >= 0 && lastDot >= 0) {
     const decimalSeparator = lastComma > lastDot ? "," : ".";
     const thousandSeparator = decimalSeparator === "," ? "." : ",";
-    normalized = normalized.replace(new RegExp(`\\${thousandSeparator}`, "g"), "");
+    normalized = normalized.replace(new RegExp(`\${thousandSeparator}`, "g"), "");
     if (decimalSeparator === ",") normalized = normalized.replace(",", ".");
   } else if (lastComma >= 0) {
     normalized = normalized.replace(/\./g, "").replace(",", ".");
@@ -158,12 +173,6 @@ function parseLooseNumber(value: string | null | undefined) {
 
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function priceInputToCents(value: string) {
-  const parsed = parseLooseNumber(value);
-  if (parsed == null) return null;
-  return Math.round(parsed * 100);
 }
 
 function formatLooseNumber(value: unknown) {
@@ -652,7 +661,7 @@ export default function CatalogCategoryPage() {
         throw new Error("A quantidade em estoque precisa ser um número válido.");
       }
 
-      const mergedMetadata = {
+      const nextMetadata = {
         ...(currentItem.metadata || {}),
         categoria: normalizeCategory(currentItem.metadata?.categoria || category),
         sku: editForm.sku.trim() || null,
@@ -672,7 +681,7 @@ export default function CatalogCategoryPage() {
         usage: editForm.application.trim() || null,
         technical_notes: editForm.technical_notes.trim() || null,
         notes: editForm.technical_notes.trim() || null,
-      } satisfies CatalogItemMetadata;
+      };
 
       const payload = {
         name: editForm.name.trim(),
@@ -682,21 +691,29 @@ export default function CatalogCategoryPage() {
         is_active: editForm.is_active,
         track_stock: editForm.track_stock,
         stock_quantity: parsedStockQuantity,
-        metadata: mergedMetadata,
+        metadata: nextMetadata,
       };
 
-      const { data: updatedItem, error } = await supabase
+      const { error: updateError } = await supabase
         .from("store_catalog_items")
         .update(payload)
         .eq("id", itemId)
         .eq("organization_id", organizationId)
-        .eq("store_id", activeStoreId)
-        .select("*")
-        .single();
+        .eq("store_id", activeStoreId);
 
-      if (error) throw error;
-      if (!updatedItem) {
-        throw new Error("O item não retornou atualizado. Precisamos investigar a policy ou o filtro desta rota.");
+      if (updateError) throw updateError;
+
+      const { data: refreshedItem, error: refreshedError } = await supabase
+        .from("store_catalog_items")
+        .select("*")
+        .eq("id", itemId)
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId)
+        .maybeSingle();
+
+      if (refreshedError) throw refreshedError;
+      if (!refreshedItem) {
+        throw new Error("O item foi salvo, mas não pôde ser recarregado. Verifique as permissões de leitura dessa tabela.");
       }
 
       const pendingFiles = selectedCatalogFilesByItemId[itemId] || [];
@@ -708,10 +725,9 @@ export default function CatalogCategoryPage() {
       }
 
       setItems((prev) =>
-        prev.map((item) =>
-          item.id === itemId ? ({ ...item, ...(updatedItem as CatalogItemRow) }) : item
-        )
+        prev.map((item) => (item.id === itemId ? (refreshedItem as CatalogItemRow) : item))
       );
+
       setSuccessText("Item salvo com sucesso.");
       setEditingItemId(null);
       setEditForm(null);
@@ -723,7 +739,7 @@ export default function CatalogCategoryPage() {
     }
   }
 
-  async function handleDeleteItem(itemId: string) {
+async function handleDeleteItem(itemId: string) {
     if (!organizationId || !activeStoreId) return;
 
     const confirmed = window.confirm(
