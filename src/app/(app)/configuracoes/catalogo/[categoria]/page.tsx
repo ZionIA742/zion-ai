@@ -75,6 +75,16 @@ type EditCatalogForm = {
   is_active: boolean;
   track_stock: boolean;
   stock_quantity: string;
+  brand: string;
+  line: string;
+  unit_label: string;
+  size_details: string;
+  width_cm: string;
+  height_cm: string;
+  length_cm: string;
+  weight_kg: string;
+  application: string;
+  technical_notes: string;
 };
 
 type CharacteristicRow = {
@@ -131,6 +141,44 @@ function priceInputToCents(value: string) {
   if (!Number.isFinite(parsed)) return null;
 
   return Math.round(parsed * 100);
+}
+
+function parseLooseNumber(value: string | null | undefined) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  let normalized = raw.replace(/\s+/g, "");
+  const lastComma = normalized.lastIndexOf(",");
+  const lastDot = normalized.lastIndexOf(".");
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    const decimalSeparator = lastComma > lastDot ? "," : ".";
+    const thousandSeparator = decimalSeparator === "," ? "." : ",";
+    normalized = normalized.replace(new RegExp(`\${thousandSeparator}`, "g"), "");
+    if (decimalSeparator === ",") normalized = normalized.replace(",", ".");
+  } else if (lastComma >= 0) {
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  } else if ((normalized.match(/\./g) || []).length > 1) {
+    const lastDotIndex = normalized.lastIndexOf(".");
+    normalized =
+      normalized.slice(0, lastDotIndex).replace(/\./g, "") +
+      "." +
+      normalized.slice(lastDotIndex + 1);
+  }
+
+  normalized = normalized.replace(/[^\d.-]/g, "");
+  if (!normalized || normalized === "." || normalized === "-" || normalized === "-.") {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatLooseNumber(value: unknown) {
+  if (value == null || value === "") return "";
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : String(value).replace(".", ",");
+  return cleanLooseText(String(value));
 }
 
 function getPublicImageUrl(storagePath: string) {
@@ -229,39 +277,50 @@ function buildCatalogCharacteristics(item: CatalogItemRow, category: string): Ch
   const metadata = item.metadata || {};
   const rows: CharacteristicRow[] = [];
 
+  const dimensionsParts = [
+    metadata.width_cm ? `L ${formatLooseNumber(metadata.width_cm)} cm` : "",
+    metadata.height_cm ? `A ${formatLooseNumber(metadata.height_cm)} cm` : "",
+    metadata.length_cm ? `C ${formatLooseNumber(metadata.length_cm)} cm` : "",
+  ].filter(Boolean);
+
   pushCharacteristic(rows, "Nome", item.name);
   if (typeof item.price_cents === "number") pushCharacteristic(rows, "Preço", formatMoney(item.price_cents));
   pushCharacteristic(rows, "SKU", item.sku || metadata.sku);
+  pushCharacteristic(rows, "Marca", metadata.brand);
+  pushCharacteristic(rows, "Linha / modelo", metadata.line || metadata.model);
+  pushCharacteristic(rows, "Unidade", metadata.unit_label);
+  pushCharacteristic(rows, "Tamanho / variação", metadata.size_details || metadata.size || metadata.dimensions);
+  pushCharacteristic(rows, "Largura (cm)", metadata.width_cm);
+  pushCharacteristic(rows, "Altura (cm)", metadata.height_cm);
+  pushCharacteristic(rows, "Comprimento (cm)", metadata.length_cm);
+  pushCharacteristic(rows, "Peso (kg)", metadata.weight_kg || metadata.weight);
 
   if (category === "quimicos") {
-    pushCharacteristic(rows, "Marca", metadata.brand);
-    pushCharacteristic(rows, "Peso", metadata.weight);
-    pushCharacteristic(rows, "Formato", metadata.shape);
+    pushCharacteristic(rows, "Aplicação", metadata.application || metadata.usage);
+    pushCharacteristic(rows, "Observações técnicas", metadata.technical_notes || metadata.indication || metadata.notes);
+    pushCharacteristic(rows, "Composição", metadata.composition);
+    pushCharacteristic(rows, "Embalagem", metadata.embalagem || metadata.packaging);
     pushCharacteristic(rows, "Cor", metadata.color);
     pushCharacteristic(rows, "Dosagem", metadata.dosage);
     pushCharacteristic(rows, "Concentração", metadata.concentration || metadata.capacity);
-    pushCharacteristic(rows, "Aplicação", metadata.application || metadata.usage);
-    pushCharacteristic(rows, "Indicação", metadata.indication || metadata.notes);
-    pushCharacteristic(rows, "Composição", metadata.composition);
-    pushCharacteristic(rows, "Embalagem", metadata.embalagem || metadata.packaging);
   } else if (category === "acessorios") {
-    pushCharacteristic(rows, "Marca", metadata.brand);
     pushCharacteristic(rows, "Material", metadata.material);
-    pushCharacteristic(rows, "Cor", metadata.color);
     pushCharacteristic(rows, "Compatibilidade", metadata.compatibility || metadata.usage);
-    pushCharacteristic(rows, "Função", metadata.function || metadata.notes);
+    pushCharacteristic(rows, "Função", metadata.function);
     pushCharacteristic(rows, "Aplicação", metadata.application);
-    pushCharacteristic(rows, "Modelo", metadata.model);
-    pushCharacteristic(rows, "Tamanho", metadata.size || metadata.dimensions);
-  } else {
-    pushCharacteristic(rows, "Marca", metadata.brand);
-    pushCharacteristic(rows, "Material", metadata.material);
+    pushCharacteristic(rows, "Observações técnicas", metadata.technical_notes || metadata.notes);
     pushCharacteristic(rows, "Cor", metadata.color);
+  } else {
+    pushCharacteristic(rows, "Material", metadata.material);
     pushCharacteristic(rows, "Aplicação", metadata.application || metadata.usage);
-    pushCharacteristic(rows, "Diferencial", metadata.diferencial || metadata.feature || metadata.notes);
+    pushCharacteristic(rows, "Observações técnicas", metadata.technical_notes || metadata.notes);
+    pushCharacteristic(rows, "Diferencial", metadata.diferencial || metadata.feature);
     pushCharacteristic(rows, "Ambiente indicado", metadata.environment);
-    pushCharacteristic(rows, "Modelo", metadata.model);
-    pushCharacteristic(rows, "Tamanho", metadata.size || metadata.dimensions);
+    pushCharacteristic(rows, "Cor", metadata.color);
+  }
+
+  if (dimensionsParts.length > 0) {
+    pushCharacteristic(rows, "Medidas resumidas", dimensionsParts.join(" • "));
   }
 
   return rows;
@@ -301,6 +360,7 @@ function buildComplementaryDescription(item: CatalogItemRow, characteristics: Ch
 }
 
 function buildEditForm(item: CatalogItemRow): EditCatalogForm {
+  const metadata = item.metadata || {};
   return {
     name: item.name || "",
     sku: item.sku || "",
@@ -309,6 +369,16 @@ function buildEditForm(item: CatalogItemRow): EditCatalogForm {
     is_active: item.is_active,
     track_stock: item.track_stock,
     stock_quantity: item.stock_quantity == null ? "" : String(item.stock_quantity),
+    brand: cleanLooseText(metadata.brand),
+    line: cleanLooseText(metadata.line || metadata.model),
+    unit_label: cleanLooseText(metadata.unit_label),
+    size_details: cleanLooseText(metadata.size_details || metadata.size || metadata.dimensions),
+    width_cm: formatLooseNumber(metadata.width_cm),
+    height_cm: formatLooseNumber(metadata.height_cm),
+    length_cm: formatLooseNumber(metadata.length_cm),
+    weight_kg: formatLooseNumber(metadata.weight_kg || metadata.weight),
+    application: cleanLooseText(metadata.application || metadata.usage),
+    technical_notes: cleanLooseText(metadata.technical_notes || metadata.notes || metadata.indication),
   };
 }
 
@@ -580,6 +650,9 @@ export default function CatalogCategoryPage() {
     setSuccessText(null);
 
     try {
+      const currentItem = items.find((item) => item.id === itemId);
+      if (!currentItem) throw new Error("Não foi possível localizar o item para salvar.");
+
       const payload = {
         name: editForm.name.trim(),
         sku: editForm.sku.trim() || null,
@@ -591,6 +664,27 @@ export default function CatalogCategoryPage() {
           editForm.track_stock && editForm.stock_quantity.trim()
             ? Number(editForm.stock_quantity)
             : null,
+        metadata: {
+          ...(currentItem.metadata || {}),
+          categoria: normalizeCategory(currentItem.metadata?.categoria),
+          sku: editForm.sku.trim() || null,
+          brand: editForm.brand.trim() || null,
+          line: editForm.line.trim() || null,
+          model: editForm.line.trim() || null,
+          unit_label: editForm.unit_label.trim() || null,
+          size_details: editForm.size_details.trim() || null,
+          size: editForm.size_details.trim() || null,
+          dimensions: editForm.size_details.trim() || null,
+          width_cm: parseLooseNumber(editForm.width_cm),
+          height_cm: parseLooseNumber(editForm.height_cm),
+          length_cm: parseLooseNumber(editForm.length_cm),
+          weight_kg: parseLooseNumber(editForm.weight_kg),
+          weight: editForm.weight_kg.trim() || null,
+          application: editForm.application.trim() || null,
+          usage: editForm.application.trim() || null,
+          technical_notes: editForm.technical_notes.trim() || null,
+          notes: editForm.technical_notes.trim() || null,
+        },
       };
 
       const { error } = await supabase
@@ -863,6 +957,126 @@ export default function CatalogCategoryPage() {
 
                         <div>
                           <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Marca
+                          </label>
+                          <input
+                            value={editForm.brand}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, brand: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Linha / modelo
+                          </label>
+                          <input
+                            value={editForm.line}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, line: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Unidade
+                          </label>
+                          <input
+                            value={editForm.unit_label}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, unit_label: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Tamanho / variação
+                          </label>
+                          <input
+                            value={editForm.size_details}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, size_details: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Largura (cm)
+                          </label>
+                          <input
+                            value={editForm.width_cm}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, width_cm: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Altura (cm)
+                          </label>
+                          <input
+                            value={editForm.height_cm}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, height_cm: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Comprimento (cm)
+                          </label>
+                          <input
+                            value={editForm.length_cm}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, length_cm: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Peso (kg)
+                          </label>
+                          <input
+                            value={editForm.weight_kg}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current ? { ...current, weight_kg: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
                             Preço
                           </label>
                           <input
@@ -895,7 +1109,7 @@ export default function CatalogCategoryPage() {
                           />
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-4 pt-6 text-sm text-gray-800">
+                        <div className="flex flex-wrap items-center gap-4 pt-6 text-sm text-gray-800 lg:col-span-2">
                           <label className="inline-flex items-center gap-2">
                             <input
                               type="checkbox"
@@ -925,6 +1139,42 @@ export default function CatalogCategoryPage() {
                             />
                             Controlar estoque
                           </label>
+                        </div>
+
+                        <div className="lg:col-span-2">
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Aplicação / uso recomendado
+                          </label>
+                          <textarea
+                            value={editForm.application}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current
+                                  ? { ...current, application: event.target.value }
+                                  : current
+                              )
+                            }
+                            rows={3}
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div className="lg:col-span-2">
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Observações técnicas
+                          </label>
+                          <textarea
+                            value={editForm.technical_notes}
+                            onChange={(event) =>
+                              setEditForm((current) =>
+                                current
+                                  ? { ...current, technical_notes: event.target.value }
+                                  : current
+                              )
+                            }
+                            rows={3}
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
                         </div>
 
                         <div className="lg:col-span-2">

@@ -44,6 +44,12 @@ type EditPoolForm = {
   is_active: boolean;
   track_stock: boolean;
   stock_quantity: string;
+  shape: string;
+  material: string;
+  width_m: string;
+  length_m: string;
+  depth_m: string;
+  weight_kg: string;
 };
 
 type CharacteristicRow = {
@@ -88,6 +94,20 @@ function priceInputToNumber(value: string) {
   if (!normalized) return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseLooseNumber(value: string | null | undefined) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const normalized = raw.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "");
+  if (!normalized || normalized === "." || normalized === "-" || normalized === "-.") return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatLooseNumber(value: number | null | undefined) {
+  if (value == null) return "";
+  return String(value).replace(".", ",");
 }
 
 function formatFileSize(size: number | null) {
@@ -223,6 +243,12 @@ function buildEditForm(pool: PoolRow): EditPoolForm {
     is_active: pool.is_active,
     track_stock: pool.track_stock,
     stock_quantity: pool.stock_quantity == null ? "" : String(pool.stock_quantity),
+    shape: pool.shape || "",
+    material: pool.material || "",
+    width_m: formatLooseNumber(pool.width_m),
+    length_m: formatLooseNumber(pool.length_m),
+    depth_m: formatLooseNumber(pool.depth_m),
+    weight_kg: formatLooseNumber(pool.weight_kg),
   };
 }
 
@@ -488,6 +514,14 @@ export default function PiscinasPage() {
 
     try {
       const parsedPrice = priceInputToNumber(editPoolForm.price);
+      const parsedWidth = parseLooseNumber(editPoolForm.width_m);
+      const parsedLength = parseLooseNumber(editPoolForm.length_m);
+      const parsedDepth = parseLooseNumber(editPoolForm.depth_m);
+      const parsedWeight = parseLooseNumber(editPoolForm.weight_kg);
+      const nextCapacity =
+        parsedWidth != null && parsedLength != null && parsedDepth != null
+          ? Math.max(1, Math.round(parsedWidth * parsedLength * parsedDepth * 1000))
+          : null;
 
       const { error } = await supabase
         .from("pools")
@@ -495,6 +529,13 @@ export default function PiscinasPage() {
           name: editPoolForm.name.trim() || null,
           description: editPoolForm.description.trim() || null,
           price: parsedPrice,
+          shape: editPoolForm.shape.trim() || null,
+          material: editPoolForm.material.trim() || null,
+          width_m: parsedWidth,
+          length_m: parsedLength,
+          depth_m: parsedDepth,
+          max_capacity_l: nextCapacity,
+          weight_kg: parsedWeight,
           is_active: editPoolForm.is_active,
           track_stock: editPoolForm.track_stock,
           stock_quantity:
@@ -755,6 +796,96 @@ export default function PiscinasPage() {
 
                         <div>
                           <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Formato
+                          </label>
+                          <input
+                            value={editPoolForm.shape}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current ? { ...current, shape: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Material
+                          </label>
+                          <input
+                            value={editPoolForm.material}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current ? { ...current, material: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Largura (m)
+                          </label>
+                          <input
+                            value={editPoolForm.width_m}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current ? { ...current, width_m: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Comprimento (m)
+                          </label>
+                          <input
+                            value={editPoolForm.length_m}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current ? { ...current, length_m: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Profundidade (m)
+                          </label>
+                          <input
+                            value={editPoolForm.depth_m}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current ? { ...current, depth_m: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                            Peso (kg)
+                          </label>
+                          <input
+                            value={editPoolForm.weight_kg}
+                            onChange={(event) =>
+                              setEditPoolForm((current) =>
+                                current ? { ...current, weight_kg: event.target.value } : current
+                              )
+                            }
+                            className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-black"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
                             Quantidade em estoque
                           </label>
                           <input
@@ -771,7 +902,7 @@ export default function PiscinasPage() {
                           />
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-4 pt-6 text-sm text-gray-800">
+                        <div className="flex flex-wrap items-center gap-4 pt-6 text-sm text-gray-800 lg:col-span-2">
                           <label className="inline-flex items-center gap-2">
                             <input
                               type="checkbox"
