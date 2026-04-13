@@ -158,7 +158,7 @@ export default function CrmPage() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="sticky top-0 z-30 border-b border-black/5 bg-white/80 backdrop-blur">
+      <div className="border-b border-black/5 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
           <div>
             <div className="text-xl font-semibold tracking-tight">CRM</div>
