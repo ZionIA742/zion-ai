@@ -128,21 +128,6 @@ function toPriceInput(cents: number | null | undefined) {
   return (cents / 100).toFixed(2).replace(".", ",");
 }
 
-function priceInputToCents(value: string) {
-  const normalized = value
-    .replace(/\./g, "")
-    .replace(",", ".")
-    .replace(/[^\d.]/g, "")
-    .trim();
-
-  if (!normalized) return null;
-
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed)) return null;
-
-  return Math.round(parsed * 100);
-}
-
 function parseLooseNumber(value: string | null | undefined) {
   const raw = String(value || "").trim();
   if (!raw) return null;
@@ -154,7 +139,7 @@ function parseLooseNumber(value: string | null | undefined) {
   if (lastComma >= 0 && lastDot >= 0) {
     const decimalSeparator = lastComma > lastDot ? "," : ".";
     const thousandSeparator = decimalSeparator === "," ? "." : ",";
-    normalized = normalized.replace(new RegExp(`\${thousandSeparator}`, "g"), "");
+    normalized = normalized.replace(new RegExp(`\\${thousandSeparator}`, "g"), "");
     if (decimalSeparator === ",") normalized = normalized.replace(",", ".");
   } else if (lastComma >= 0) {
     normalized = normalized.replace(/\./g, "").replace(",", ".");
@@ -173,6 +158,12 @@ function parseLooseNumber(value: string | null | undefined) {
 
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function priceInputToCents(value: string) {
+  const parsed = parseLooseNumber(value);
+  if (parsed == null) return null;
+  return Math.round(parsed * 100);
 }
 
 function formatLooseNumber(value: unknown) {
@@ -653,6 +644,14 @@ export default function CatalogCategoryPage() {
       const currentItem = items.find((item) => item.id === itemId);
       if (!currentItem) throw new Error("Não foi possível localizar o item para salvar.");
 
+      const parsedStockQuantity = editForm.track_stock && editForm.stock_quantity.trim()
+        ? Number(editForm.stock_quantity.replace(/[^\d-]/g, ""))
+        : null;
+
+      if (editForm.track_stock && editForm.stock_quantity.trim() && !Number.isFinite(parsedStockQuantity)) {
+        throw new Error("A quantidade em estoque precisa ser um número válido.");
+      }
+
       const payload = {
         name: editForm.name.trim(),
         sku: editForm.sku.trim() || null,
@@ -660,13 +659,10 @@ export default function CatalogCategoryPage() {
         price_cents: priceInputToCents(editForm.price),
         is_active: editForm.is_active,
         track_stock: editForm.track_stock,
-        stock_quantity:
-          editForm.track_stock && editForm.stock_quantity.trim()
-            ? Number(editForm.stock_quantity)
-            : null,
+        stock_quantity: parsedStockQuantity,
         metadata: {
           ...(currentItem.metadata || {}),
-          categoria: normalizeCategory(currentItem.metadata?.categoria),
+          categoria: normalizeCategory(currentItem.metadata?.categoria || category),
           sku: editForm.sku.trim() || null,
           brand: editForm.brand.trim() || null,
           line: editForm.line.trim() || null,
