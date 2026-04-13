@@ -30,6 +30,21 @@ type UiCardRow = {
 
 type Nivel = "ok" | "pendente" | "critico";
 
+const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  agendar_instalacao: ["pos_venda_nps"],
+  agendar_visita: ["pos_venda_nps"],
+  aguardando_aprovacao: ["humano_assumiu"],
+  fechamento_pagamento: ["humano_assumiu", "pagamento_pendente_confirmacao"],
+  humano_assumiu: ["negociacao", "orcamento", "qualificacao"],
+  negociacao: ["fechamento_pagamento", "humano_assumiu", "perdido"],
+  novo_lead: ["humano_assumiu", "qualificacao"],
+  orcamento: ["aguardando_aprovacao", "humano_assumiu", "negociacao"],
+  pagamento_confirmado: ["agendar_instalacao", "agendar_visita"],
+  pagamento_pendente_confirmacao: ["pagamento_confirmado"],
+  pos_venda_nps: ["humano_assumiu"],
+  qualificacao: ["aguardando_aprovacao", "humano_assumiu", "orcamento"],
+};
+
 function cx(...cls: Array<string | false | null | undefined>) {
   return cls.filter(Boolean).join(" ");
 }
@@ -66,6 +81,11 @@ function nivelToUI(nivel: Nivel) {
     chip: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/25",
     label: "OK",
   };
+}
+
+function canMoveTo(fromState: string, toState: string | null) {
+  if (!toState) return false;
+  return (ALLOWED_TRANSITIONS[fromState] || []).includes(toState);
 }
 
 export default function CrmPage() {
@@ -168,6 +188,11 @@ export default function CrmPage() {
       return;
     }
 
+    if (!canMoveTo(card.state, toColumnId)) {
+      setErrorMsg(`Transição inválida de ${card.state} para ${toColumnId}.`);
+      return;
+    }
+
     setErrorMsg(null);
     setMovingId(card.leadId);
 
@@ -187,9 +212,6 @@ export default function CrmPage() {
       return;
     }
 
-    // Importante para o Pilar 4:
-    // não confiar em atualização local otimista.
-    // sempre recarregar do backend para refletir o estado oficial real.
     setMovingId(null);
     await fetchPageData();
   }
@@ -300,9 +322,13 @@ export default function CrmPage() {
                           );
                           const cidx = currentIndex >= 0 ? currentIndex : idx;
 
-                          const prevId = cidx > 0 ? String(columns[cidx - 1].id) : null;
-                          const nextId =
+                          const previousColumnId =
+                            cidx > 0 ? String(columns[cidx - 1].id) : null;
+                          const nextColumnId =
                             cidx < columns.length - 1 ? String(columns[cidx + 1].id) : null;
+
+                          const canGoBack = canMoveTo(current, previousColumnId);
+                          const canGoNext = canMoveTo(current, nextColumnId);
 
                           return (
                             <div
@@ -355,11 +381,15 @@ export default function CrmPage() {
 
                                   <div className="flex flex-wrap items-center gap-2">
                                     <button
-                                      disabled={!prevId || movingId === card.leadId}
-                                      onClick={() => prevId && updateConversationState(card, prevId)}
+                                      disabled={!canGoBack || movingId === card.leadId}
+                                      onClick={() =>
+                                        previousColumnId &&
+                                        canGoBack &&
+                                        updateConversationState(card, previousColumnId)
+                                      }
                                       className={cx(
                                         "rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm ring-1 ring-black/10",
-                                        !prevId || movingId === card.leadId
+                                        !canGoBack || movingId === card.leadId
                                           ? "cursor-not-allowed bg-white/60 text-gray-400"
                                           : "bg-white text-gray-800 hover:bg-gray-50"
                                       )}
@@ -368,11 +398,15 @@ export default function CrmPage() {
                                     </button>
 
                                     <button
-                                      disabled={!nextId || movingId === card.leadId}
-                                      onClick={() => nextId && updateConversationState(card, nextId)}
+                                      disabled={!canGoNext || movingId === card.leadId}
+                                      onClick={() =>
+                                        nextColumnId &&
+                                        canGoNext &&
+                                        updateConversationState(card, nextColumnId)
+                                      }
                                       className={cx(
                                         "rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm ring-1 ring-black/10",
-                                        !nextId || movingId === card.leadId
+                                        !canGoNext || movingId === card.leadId
                                           ? "cursor-not-allowed bg-white/60 text-gray-400"
                                           : "bg-black text-white hover:opacity-90"
                                       )}
