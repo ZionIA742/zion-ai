@@ -6,23 +6,19 @@ import { supabase as supabaseClient } from "@/lib/supabaseBrowser";
 import { COLUNAS, nivelBaseDaColuna } from "@/config/crm";
 import { useStoreContext } from "@/components/StoreProvider";
 
-type LeadRow = {
-  id: string;
-  name?: string | null;
-  phone?: string | null;
-  state?: string | null;
-  created_at?: string | null;
-};
-
-type ConversationRow = {
-  id: string;
-  lead_id: string;
-  status: string | null;
-  is_human_active: boolean | null;
-  created_at?: string | null;
-};
-
 type CrmCardRow = {
+  lead_id: string;
+  conversation_id: string | null;
+  name: string | null;
+  phone: string | null;
+  effective_state: string | null;
+  lead_state: string | null;
+  conversation_status: string | null;
+  is_human_active: boolean | null;
+  created_at: string | null;
+};
+
+type UiCardRow = {
   leadId: string;
   conversationId: string | null;
   name: string | null;
@@ -73,10 +69,10 @@ function nivelToUI(nivel: Nivel) {
 }
 
 export default function CrmPage() {
-  const { loading: storeLoading, organizationId } = useStoreContext();
+  const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
 
   const [loading, setLoading] = useState(true);
-  const [cards, setCards] = useState<CrmCardRow[]>([]);
+  const [cards, setCards] = useState<UiCardRow[]>([]);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -93,7 +89,7 @@ export default function CrmPage() {
   }, []);
 
   const cardsByColumn = useMemo(() => {
-    const map = new Map<string, CrmCardRow[]>();
+    const map = new Map<string, UiCardRow[]>();
 
     for (const col of columns) {
       map.set(col.id, []);
@@ -128,52 +124,27 @@ export default function CrmPage() {
     setLoading(true);
 
     try {
-      const { data: leadsData, error: leadsError } = await supabaseClient
-        .from("leads")
-        .select("id,name,phone,state,created_at")
-        .eq("organization_id", organizationId)
-        .order("created_at", { ascending: false });
-
-      if (leadsError) throw leadsError;
-
-      const leads = (leadsData || []) as LeadRow[];
-      const leadIds = leads.map((lead) => lead.id);
-
-      let conversationsByLeadId = new Map<string, ConversationRow>();
-
-      if (leadIds.length > 0) {
-        const { data: conversationsData, error: conversationsError } = await supabaseClient
-          .from("conversations")
-          .select("id,lead_id,status,is_human_active,created_at")
-          .eq("organization_id", organizationId)
-          .in("lead_id", leadIds)
-          .order("created_at", { ascending: false });
-
-        if (conversationsError) throw conversationsError;
-
-        for (const conversation of (conversationsData || []) as ConversationRow[]) {
-          if (!conversationsByLeadId.has(conversation.lead_id)) {
-            conversationsByLeadId.set(conversation.lead_id, conversation);
-          }
+      const { data, error } = await supabaseClient.rpc(
+        "panel_list_crm_cards_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId ?? null,
+          p_limit: 500,
+          p_offset: 0,
         }
-      }
+      );
 
-      const nextCards: CrmCardRow[] = leads.map((lead) => {
-        const conversation = conversationsByLeadId.get(lead.id);
-        const effectiveState = String(
-          conversation?.status || lead.state || "novo_lead"
-        );
+      if (error) throw error;
 
-        return {
-          leadId: lead.id,
-          conversationId: conversation?.id || null,
-          name: lead.name || null,
-          phone: lead.phone || null,
-          state: effectiveState,
-          createdAt: conversation?.created_at || lead.created_at || null,
-          isHumanActive: conversation?.is_human_active === true,
-        };
-      });
+      const nextCards: UiCardRow[] = ((data || []) as CrmCardRow[]).map((row) => ({
+        leadId: row.lead_id,
+        conversationId: row.conversation_id || null,
+        name: row.name || null,
+        phone: row.phone || null,
+        state: String(row.effective_state || "novo_lead"),
+        createdAt: row.created_at || null,
+        isHumanActive: row.is_human_active === true,
+      }));
 
       setCards(nextCards);
     } catch (error: any) {
@@ -184,7 +155,7 @@ export default function CrmPage() {
     }
   }
 
-  async function updateConversationState(card: CrmCardRow, toColumnId: string) {
+  async function updateConversationState(card: UiCardRow, toColumnId: string) {
     if (!organizationId) {
       setErrorMsg("Organização não carregada.");
       return;
@@ -234,13 +205,13 @@ export default function CrmPage() {
     if (!storeLoading) {
       void fetchPageData();
     }
-  }, [storeLoading, organizationId]);
+  }, [storeLoading, organizationId, activeStoreId]);
 
-  function leadTitle(card: CrmCardRow) {
+  function leadTitle(card: UiCardRow) {
     return String(card.name || "Lead sem nome").trim();
   }
 
-  function leadPhone(card: CrmCardRow) {
+  function leadPhone(card: UiCardRow) {
     return String(card.phone || "").trim();
   }
 
