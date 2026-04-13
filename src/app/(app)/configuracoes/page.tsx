@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
@@ -196,6 +196,31 @@ type ChannelDraftState = {
   channels_system_summary: string;
 };
 
+
+type PersistedConfiguracoesState = {
+  activeTab: SettingsTabId;
+  isOverviewEditing: boolean;
+  isStrategyEditing: boolean;
+  isOperationEditing: boolean;
+  isCommercialEditing: boolean;
+  isDiscountEditing: boolean;
+  isChannelsEditing: boolean;
+  showChannelsAdvanced: boolean;
+  isActivationEditing: boolean;
+  overviewDraft: Record<string, string>;
+  strategyDraft: Record<string, string>;
+  operationDraft: OperationDraftState;
+  commercialDraft: CommercialDraftState;
+  discountDraft: DiscountDraftState;
+  channelDraft: ChannelDraftState;
+  primaryResponsibleDraft: ResponsiblePersonDraft;
+  additionalResponsiblesDraft: ResponsiblePersonDraft[];
+  activationConfirmInformationDraft: boolean;
+  activationNotificationCasesDraft: string;
+  activationPreferencesDraft: string;
+  poolForm: PoolFormState;
+  catalogForm: CatalogFormState;
+};
 
 type ResponsiblePersonDraft = {
   id: string;
@@ -445,6 +470,37 @@ function getImportSummaryText(summary: Record<string, unknown> | null | undefine
   if (normalizedItems > 0) parts.push(`${normalizedItems} item(ns)`);
   if (extractedImages > 0) parts.push(`${extractedImages} imagem(ns)`);
   return parts.length > 0 ? parts.join(" • ") : "Resumo não disponível";
+}
+
+function persistToLocalStorageSafe(key: string, value: string) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (error) {
+    console.error("[ConfiguracoesPage] localStorage setItem error:", error);
+  }
+}
+
+function readFromLocalStorageSafe(key: string) {
+  if (typeof window === "undefined") return null;
+
+  try {
+    return window.localStorage.getItem(key);
+  } catch (error) {
+    console.error("[ConfiguracoesPage] localStorage getItem error:", error);
+    return null;
+  }
+}
+
+function removeFromLocalStorageSafe(key: string) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.removeItem(key);
+  } catch (error) {
+    console.error("[ConfiguracoesPage] localStorage removeItem error:", error);
+  }
 }
 
 
@@ -1175,6 +1231,11 @@ export default function ConfiguracoesPage() {
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
+  const configDraftStorageKey = useMemo(() => {
+    if (!organizationId || !activeStoreId) return null;
+    return `zion_configuracoes_draft:${organizationId}:${activeStoreId}`;
+  }, [organizationId, activeStoreId]);
+  const hasRestoredLocalDraftRef = useRef(false);
 
   const tabs = useMemo(
     () => [
@@ -1377,22 +1438,134 @@ export default function ConfiguracoesPage() {
   }, [fetchPageData]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const storageKey = `zion-config-active-tab:${activeStoreId || "sem-loja"}`;
-    const savedTab = window.localStorage.getItem(storageKey);
-    if (!savedTab) return;
+    if (!configDraftStorageKey || typeof window === "undefined") return;
+    if (hasRestoredLocalDraftRef.current) return;
+    if (loading) return;
 
-    const isValidTab = tabs.some((tab) => tab.id === savedTab);
-    if (isValidTab) {
-      setActiveTab(savedTab as SettingsTabId);
+    const raw = readFromLocalStorageSafe(configDraftStorageKey);
+    hasRestoredLocalDraftRef.current = true;
+
+    if (!raw) return;
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<PersistedConfiguracoesState>;
+
+      if (parsed.activeTab) setActiveTab(parsed.activeTab);
+      if (typeof parsed.isOverviewEditing === "boolean") setIsOverviewEditing(parsed.isOverviewEditing);
+      if (typeof parsed.isStrategyEditing === "boolean") setIsStrategyEditing(parsed.isStrategyEditing);
+      if (typeof parsed.isOperationEditing === "boolean") setIsOperationEditing(parsed.isOperationEditing);
+      if (typeof parsed.isCommercialEditing === "boolean") setIsCommercialEditing(parsed.isCommercialEditing);
+      if (typeof parsed.isDiscountEditing === "boolean") setIsDiscountEditing(parsed.isDiscountEditing);
+      if (typeof parsed.isChannelsEditing === "boolean") setIsChannelsEditing(parsed.isChannelsEditing);
+      if (typeof parsed.showChannelsAdvanced === "boolean") setShowChannelsAdvanced(parsed.showChannelsAdvanced);
+      if (typeof parsed.isActivationEditing === "boolean") setIsActivationEditing(parsed.isActivationEditing);
+      if (parsed.overviewDraft) setOverviewDraft(parsed.overviewDraft);
+      if (parsed.strategyDraft) setStrategyDraft(parsed.strategyDraft);
+      if (parsed.operationDraft) setOperationDraft(parsed.operationDraft);
+      if (parsed.commercialDraft) setCommercialDraft(parsed.commercialDraft);
+      if (parsed.discountDraft) setDiscountDraft(parsed.discountDraft);
+      if (parsed.channelDraft) setChannelDraft(parsed.channelDraft);
+      if (parsed.primaryResponsibleDraft) setPrimaryResponsibleDraft(parsed.primaryResponsibleDraft);
+      if (Array.isArray(parsed.additionalResponsiblesDraft)) setAdditionalResponsiblesDraft(parsed.additionalResponsiblesDraft);
+      if (typeof parsed.activationConfirmInformationDraft === "boolean") {
+        setActivationConfirmInformationDraft(parsed.activationConfirmInformationDraft);
+      }
+      if (typeof parsed.activationNotificationCasesDraft === "string") {
+        setActivationNotificationCasesDraft(parsed.activationNotificationCasesDraft);
+      }
+      if (typeof parsed.activationPreferencesDraft === "string") {
+        setActivationPreferencesDraft(parsed.activationPreferencesDraft);
+      }
+      if (parsed.poolForm) setPoolForm(parsed.poolForm);
+      if (parsed.catalogForm) setCatalogForm(parsed.catalogForm);
+      setSuccessText("Rascunho local das Configurações recuperado.");
+    } catch (error) {
+      console.error("[ConfiguracoesPage] restore draft error:", error);
+      removeFromLocalStorageSafe(configDraftStorageKey);
     }
-  }, [activeStoreId, tabs]);
+  }, [configDraftStorageKey, loading]);
+
+  const persistConfiguracoesDraft = useCallback(() => {
+    if (!configDraftStorageKey || typeof window === "undefined") return;
+
+    const payload: PersistedConfiguracoesState = {
+      activeTab,
+      isOverviewEditing,
+      isStrategyEditing,
+      isOperationEditing,
+      isCommercialEditing,
+      isDiscountEditing,
+      isChannelsEditing,
+      showChannelsAdvanced,
+      isActivationEditing,
+      overviewDraft,
+      strategyDraft,
+      operationDraft,
+      commercialDraft,
+      discountDraft,
+      channelDraft,
+      primaryResponsibleDraft,
+      additionalResponsiblesDraft,
+      activationConfirmInformationDraft,
+      activationNotificationCasesDraft,
+      activationPreferencesDraft,
+      poolForm,
+      catalogForm,
+    };
+
+    persistToLocalStorageSafe(configDraftStorageKey, JSON.stringify(payload));
+  }, [
+    configDraftStorageKey,
+    activeTab,
+    isOverviewEditing,
+    isStrategyEditing,
+    isOperationEditing,
+    isCommercialEditing,
+    isDiscountEditing,
+    isChannelsEditing,
+    showChannelsAdvanced,
+    isActivationEditing,
+    overviewDraft,
+    strategyDraft,
+    operationDraft,
+    commercialDraft,
+    discountDraft,
+    channelDraft,
+    primaryResponsibleDraft,
+    additionalResponsiblesDraft,
+    activationConfirmInformationDraft,
+    activationNotificationCasesDraft,
+    activationPreferencesDraft,
+    poolForm,
+    catalogForm,
+  ]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const storageKey = `zion-config-active-tab:${activeStoreId || "sem-loja"}`;
-    window.localStorage.setItem(storageKey, activeTab);
-  }, [activeTab, activeStoreId]);
+    if (!configDraftStorageKey || typeof window === "undefined") return;
+    persistConfiguracoesDraft();
+  }, [configDraftStorageKey, persistConfiguracoesDraft]);
+
+  useEffect(() => {
+    if (!configDraftStorageKey || typeof window === "undefined") return;
+
+    const persistNow = () => persistConfiguracoesDraft();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        persistNow();
+      }
+    };
+
+    window.addEventListener("pagehide", persistNow);
+    window.addEventListener("beforeunload", persistNow);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      persistNow();
+      window.removeEventListener("pagehide", persistNow);
+      window.removeEventListener("beforeunload", persistNow);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [configDraftStorageKey, persistConfiguracoesDraft]);
 
   useEffect(() => {
     setOverviewDraft({
