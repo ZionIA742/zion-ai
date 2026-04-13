@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { supabase as supabaseClient } from "@/lib/supabaseBrowser";
 import { COLUNAS, nivelBaseDaColuna } from "@/config/crm";
+import { useStoreContext } from "@/components/StoreProvider";
 
 type LeadRow = {
   id: string;
@@ -11,6 +12,24 @@ type LeadRow = {
   phone?: string | null;
   state?: string | null;
   created_at?: string | null;
+};
+
+type ConversationRow = {
+  id: string;
+  lead_id: string;
+  status: string | null;
+  is_human_active: boolean | null;
+  created_at?: string | null;
+};
+
+type CrmCardRow = {
+  leadId: string;
+  conversationId: string | null;
+  name: string | null;
+  phone: string | null;
+  state: string;
+  createdAt: string | null;
+  isHumanActive: boolean;
 };
 
 type Nivel = "ok" | "pendente" | "critico";
@@ -54,8 +73,10 @@ function nivelToUI(nivel: Nivel) {
 }
 
 export default function CrmPage() {
+  const { loading: storeLoading, organizationId } = useStoreContext();
+
   const [loading, setLoading] = useState(true);
-  const [leads, setLeads] = useState<LeadRow[]>([]);
+  const [cards, setCards] = useState<CrmCardRow[]>([]);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -71,66 +92,123 @@ export default function CrmPage() {
     });
   }, []);
 
-  const leadsByColumn = useMemo(() => {
-    const map = new Map<string, LeadRow[]>();
+  const cardsByColumn = useMemo(() => {
+    const map = new Map<string, CrmCardRow[]>();
 
     for (const col of columns) {
       map.set(col.id, []);
     }
 
-    for (const l of leads) {
-      const colId = String(l.state || "novo_lead");
+    for (const card of cards) {
+      const colId = String(card.state || "novo_lead");
       if (!map.has(colId)) map.set(colId, []);
-      map.get(colId)!.push(l);
+      map.get(colId)!.push(card);
     }
 
     for (const [k, arr] of map.entries()) {
       arr.sort((a, b) => {
-        const da = a.created_at ? new Date(a.created_at).getTime() : 0;
-        const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+        const da = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const db = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return db - da;
       });
       map.set(k, arr);
     }
 
     return map;
-  }, [leads, columns]);
-
-  async function fetchLeads() {
-    const { data, error } = await supabaseClient
-      .from("leads")
-      .select("id,name,phone,state,created_at")
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      throw error;
-    }
-
-    setLeads((data || []) as LeadRow[]);
-  }
+  }, [cards, columns]);
 
   async function fetchPageData() {
+    if (!organizationId) {
+      setCards([]);
+      setLoading(false);
+      return;
+    }
+
     setErrorMsg(null);
     setLoading(true);
 
     try {
-      await fetchLeads();
+      const { data: leadsData, error: leadsError } = await supabaseClient
+        .from("leads")
+        .select("id,name,phone,state,created_at")
+        .eq("organization_id", organizationId)
+        .order("created_at", { ascending: false });
+
+      if (leadsError) throw leadsError;
+
+      const leads = (leadsData || []) as LeadRow[];
+      const leadIds = leads.map((lead) => lead.id);
+
+      let conversationsByLeadId = new Map<string, ConversationRow>();
+
+      if (leadIds.length > 0) {
+        const { data: conversationsData, error: conversationsError } = await supabaseClient
+          .from("conversations")
+          .select("id,lead_id,status,is_human_active,created_at")
+          .eq("organization_id", organizationId)
+          .in("lead_id", leadIds)
+          .order("created_at", { ascending: false });
+
+        if (conversationsError) throw conversationsError;
+
+        for (const conversation of (conversationsData || []) as ConversationRow[]) {
+          if (!conversationsByLeadId.has(conversation.lead_id)) {
+            conversationsByLeadId.set(conversation.lead_id, conversation);
+          }
+        }
+      }
+
+      const nextCards: CrmCardRow[] = leads.map((lead) => {
+        const conversation = conversationsByLeadId.get(lead.id);
+        const effectiveState = String(
+          conversation?.status || lead.state || "novo_lead"
+        );
+
+        return {
+          leadId: lead.id,
+          conversationId: conversation?.id || null,
+          name: lead.name || null,
+          phone: lead.phone || null,
+          state: effectiveState,
+          createdAt: conversation?.created_at || lead.created_at || null,
+          isHumanActive: conversation?.is_human_active === true,
+        };
+      });
+
+      setCards(nextCards);
     } catch (error: any) {
       setErrorMsg(error?.message ?? "Erro ao carregar CRM.");
-      setLeads([]);
+      setCards([]);
     } finally {
       setLoading(false);
     }
   }
 
-  async function updateLeadState(leadId: string, toColumnId: string) {
-    setErrorMsg(null);
-    setMovingId(leadId);
+  async function updateConversationState(card: CrmCardRow, toColumnId: string) {
+    if (!organizationId) {
+      setErrorMsg("Organização não carregada.");
+      return;
+    }
 
-    const { error } = await supabaseClient
-      .from("leads")
-      .update({ state: toColumnId })
-      .eq("id", leadId);
+    if (!card.conversationId) {
+      setErrorMsg(
+        "Este lead ainda não possui conversa. O CRM não deve mover estágio sem conversa real."
+      );
+      return;
+    }
+
+    setErrorMsg(null);
+    setMovingId(card.leadId);
+
+    const { error } = await supabaseClient.rpc(
+      "panel_transition_conversation_state_scoped",
+      {
+        p_organization_id: organizationId,
+        p_conversation_id: card.conversationId,
+        p_to_state: toColumnId,
+        p_reason: "manual_move_from_crm",
+      }
+    );
 
     if (error) {
       setErrorMsg(error.message);
@@ -138,22 +216,32 @@ export default function CrmPage() {
       return;
     }
 
-    setLeads((prev) =>
-      prev.map((l) => (l.id === leadId ? { ...l, state: toColumnId } : l))
+    setCards((prev) =>
+      prev.map((item) =>
+        item.leadId === card.leadId
+          ? {
+              ...item,
+              state: toColumnId,
+              isHumanActive: toColumnId === "humano_assumiu",
+            }
+          : item
+      )
     );
     setMovingId(null);
   }
 
   useEffect(() => {
-    void fetchPageData();
-  }, []);
+    if (!storeLoading) {
+      void fetchPageData();
+    }
+  }, [storeLoading, organizationId]);
 
-  function leadTitle(l: LeadRow) {
-    return String(l.name || "Lead sem nome").trim();
+  function leadTitle(card: CrmCardRow) {
+    return String(card.name || "Lead sem nome").trim();
   }
 
-  function leadPhone(l: LeadRow) {
-    return String(l.phone || "").trim();
+  function leadPhone(card: CrmCardRow) {
+    return String(card.phone || "").trim();
   }
 
   return (
@@ -163,7 +251,7 @@ export default function CrmPage() {
           <div>
             <div className="text-xl font-semibold tracking-tight">CRM</div>
             <div className="text-sm text-gray-600">
-              Verde = OK • Amarelo = Pendente • Vermelho = Crítico
+              Agora o CRM usa o status oficial da conversa como referência principal.
             </div>
           </div>
 
@@ -200,7 +288,7 @@ export default function CrmPage() {
         ) : (
           <div className="space-y-6">
             {columns.map((col, idx) => {
-              const items = leadsByColumn.get(col.id) || [];
+              const items = cardsByColumn.get(col.id) || [];
               const ui = col.ui || nivelToUI(col.nivel);
 
               return (
@@ -219,7 +307,9 @@ export default function CrmPage() {
                           {items.length}
                         </span>
                       </div>
-                      <div className="mt-1 text-sm text-gray-600">Leads neste estado</div>
+                      <div className="mt-1 text-sm text-gray-600">
+                        Leads neste estado oficial da conversa
+                      </div>
                     </div>
 
                     <span
@@ -239,8 +329,8 @@ export default function CrmPage() {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        {items.map((l) => {
-                          const current = String(l.state || "novo_lead");
+                        {items.map((card) => {
+                          const current = String(card.state || "novo_lead");
                           const currentIndex = columns.findIndex(
                             (c) => String(c.id) === current
                           );
@@ -252,7 +342,7 @@ export default function CrmPage() {
 
                           return (
                             <div
-                              key={l.id}
+                              key={card.leadId}
                               className="overflow-hidden rounded-2xl bg-gray-50 ring-1 ring-black/5"
                             >
                               <div className={cx("h-2 w-full", ui.bar)} />
@@ -261,30 +351,39 @@ export default function CrmPage() {
                                 <div className="flex items-start justify-between gap-4">
                                   <div className="min-w-0">
                                     <div className="truncate text-base font-semibold text-gray-900">
-                                      {leadTitle(l)}
+                                      {leadTitle(card)}
                                     </div>
 
-                                    {leadPhone(l) ? (
+                                    {leadPhone(card) ? (
                                       <div className="mt-1 text-sm text-gray-600">
-                                        {leadPhone(l)}
+                                        {leadPhone(card)}
                                       </div>
                                     ) : (
                                       <div className="mt-1 text-sm text-gray-400">
                                         Sem telefone
                                       </div>
                                     )}
+
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                                      <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-black/10">
+                                        conversa: {card.conversationId ? "sim" : "não"}
+                                      </span>
+                                      <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-black/10">
+                                        modo: {card.isHumanActive ? "humano" : "IA"}
+                                      </span>
+                                    </div>
                                   </div>
 
                                   <span className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
                                     {new Date(
-                                      l.created_at || Date.now()
+                                      card.createdAt || Date.now()
                                     ).toLocaleDateString("pt-BR")}
                                   </span>
                                 </div>
 
                                 <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
                                   <Link
-                                    href={`/crm/lead/${l.id}`}
+                                    href={`/crm/lead/${card.leadId}`}
                                     className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
                                   >
                                     Abrir conversa
@@ -292,11 +391,11 @@ export default function CrmPage() {
 
                                   <div className="flex flex-wrap items-center gap-2">
                                     <button
-                                      disabled={!prevId || movingId === l.id}
-                                      onClick={() => prevId && updateLeadState(l.id, prevId)}
+                                      disabled={!prevId || movingId === card.leadId}
+                                      onClick={() => prevId && updateConversationState(card, prevId)}
                                       className={cx(
                                         "rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm ring-1 ring-black/10",
-                                        !prevId || movingId === l.id
+                                        !prevId || movingId === card.leadId
                                           ? "cursor-not-allowed bg-white/60 text-gray-400"
                                           : "bg-white text-gray-800 hover:bg-gray-50"
                                       )}
@@ -305,11 +404,11 @@ export default function CrmPage() {
                                     </button>
 
                                     <button
-                                      disabled={!nextId || movingId === l.id}
-                                      onClick={() => nextId && updateLeadState(l.id, nextId)}
+                                      disabled={!nextId || movingId === card.leadId}
+                                      onClick={() => nextId && updateConversationState(card, nextId)}
                                       className={cx(
                                         "rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm ring-1 ring-black/10",
-                                        !nextId || movingId === l.id
+                                        !nextId || movingId === card.leadId
                                           ? "cursor-not-allowed bg-white/60 text-gray-400"
                                           : "bg-black text-white hover:opacity-90"
                                       )}
@@ -319,7 +418,7 @@ export default function CrmPage() {
                                   </div>
                                 </div>
 
-                                {movingId === l.id ? (
+                                {movingId === card.leadId ? (
                                   <div className="mt-3 text-sm text-gray-500">Atualizando...</div>
                                 ) : null}
                               </div>
