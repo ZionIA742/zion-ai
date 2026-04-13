@@ -1138,6 +1138,9 @@ export default function ConfiguracoesPage() {
   const [isActivationEditing, setIsActivationEditing] = useState(false);
   const [primaryResponsibleDraft, setPrimaryResponsibleDraft] = useState<ResponsiblePersonDraft>(createEmptyResponsibleDraft(true));
   const [additionalResponsiblesDraft, setAdditionalResponsiblesDraft] = useState<ResponsiblePersonDraft[]>([]);
+  const [activationConfirmInformationDraft, setActivationConfirmInformationDraft] = useState(false);
+  const [activationNotificationCasesDraft, setActivationNotificationCasesDraft] = useState("");
+  const [activationPreferencesDraft, setActivationPreferencesDraft] = useState("");
   const [poolForm, setPoolForm] = useState<PoolFormState>(createEmptyPoolForm());
   const [poolPhotos, setPoolPhotos] = useState<File[]>([]);
   const [savingPool, setSavingPool] = useState(false);
@@ -1874,10 +1877,10 @@ export default function ConfiguracoesPage() {
     return buildBulletRows([
       { label: "Responsável principal", value: cleanText(answers.responsible_name) },
       { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
-      { label: "Responsável secundário", value: cleanText(answers.final_activation_notes) },
+      { label: "Observações do responsável", value: cleanText(answers.responsible_notes) },
+      { label: "A IA avisa o responsável", value: yesNoLabel(answers.ai_should_notify_responsible) },
       { label: "Canal para falar com a IA assistente", value: activationPrefs },
       { label: "Web chat interno", value: "Previsto como canal do sistema" },
-      { label: "WhatsApp do responsável", value: cleanText(answers.responsible_whatsapp) },
       { label: "Número/chip dedicado", value: cleanText(answers.commercial_whatsapp) },
       { label: "Futuro Telegram", value: "Previsto para expansão" },
       { label: "Dados mínimos para ativação", value: yesNoLabel(answers.confirm_information_is_correct) },
@@ -2401,13 +2404,28 @@ export default function ConfiguracoesPage() {
       name: cleanText(answers.responsible_name),
       whatsapp: cleanText(answers.responsible_whatsapp),
       role: cleanText(answers.responsible_role) || "Responsável principal",
-      receives_ai_alerts: yesNoLabel(answers.confirm_information_is_correct) !== "Não",
+      receives_ai_alerts: yesNoLabel(answers.ai_should_notify_responsible) !== "Não",
       can_approve_discount: true,
       can_approve_exceptions: true,
       can_assume_human: true,
-      notes: cleanText(answers.final_activation_notes),
+      notes: cleanText(answers.responsible_notes),
     });
     setAdditionalResponsiblesDraft(parseResponsiblePeopleFromAnswers(answers));
+    setActivationConfirmInformationDraft(Boolean(answers.confirm_information_is_correct));
+    setActivationNotificationCasesDraft(
+      joinSelectedLabels(
+        parseArrayAnswer(answers.responsible_notification_cases),
+        RESPONSIBLE_NOTIFICATION_CASE_OPTIONS,
+        cleanText(answers.responsible_notification_cases_other)
+      )
+    );
+    setActivationPreferencesDraft(
+      joinSelectedLabels(
+        parseArrayAnswer(answers.activation_preferences),
+        [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS],
+        cleanText(answers.activation_preferences_other)
+      )
+    );
   }, [answers]);
 
   const handleCommercialDraftChange = useCallback((key: keyof CommercialDraftState, value: string) => {
@@ -2598,13 +2616,28 @@ export default function ConfiguracoesPage() {
       name: cleanText(answers.responsible_name),
       whatsapp: cleanText(answers.responsible_whatsapp),
       role: cleanText(answers.responsible_role) || "Responsável principal",
-      receives_ai_alerts: yesNoLabel(answers.confirm_information_is_correct) !== "Não",
+      receives_ai_alerts: yesNoLabel(answers.ai_should_notify_responsible) !== "Não",
       can_approve_discount: true,
       can_approve_exceptions: true,
       can_assume_human: true,
-      notes: cleanText(answers.final_activation_notes),
+      notes: cleanText(answers.responsible_notes),
     });
     setAdditionalResponsiblesDraft(parseResponsiblePeopleFromAnswers(answers));
+    setActivationConfirmInformationDraft(Boolean(answers.confirm_information_is_correct));
+    setActivationNotificationCasesDraft(
+      joinSelectedLabels(
+        parseArrayAnswer(answers.responsible_notification_cases),
+        RESPONSIBLE_NOTIFICATION_CASE_OPTIONS,
+        cleanText(answers.responsible_notification_cases_other)
+      )
+    );
+    setActivationPreferencesDraft(
+      joinSelectedLabels(
+        parseArrayAnswer(answers.activation_preferences),
+        [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS],
+        cleanText(answers.activation_preferences_other)
+      )
+    );
     setIsActivationEditing(false);
   }, [answers]);
 
@@ -2618,8 +2651,12 @@ export default function ConfiguracoesPage() {
         responsible_name: cleanText(primaryResponsibleDraft.name),
         responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
         responsible_role: cleanText(primaryResponsibleDraft.role),
-        confirm_information_is_correct: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não",
-        final_activation_notes: cleanText(primaryResponsibleDraft.notes),
+        responsible_notes: cleanText(primaryResponsibleDraft.notes),
+        ai_should_notify_responsible: primaryResponsibleDraft.receives_ai_alerts,
+        confirm_information_is_correct: activationConfirmInformationDraft,
+        responsible_notification_cases_other: cleanText(activationNotificationCasesDraft),
+        activation_preferences_other: cleanText(activationPreferencesDraft),
+        final_activation_notes: cleanText(activationPreferencesDraft),
         additional_responsibles: serializeResponsiblePeople(cleanAdditional),
       },
       "Alterações de responsável e ativação salvas com sucesso."
@@ -2628,7 +2665,14 @@ export default function ConfiguracoesPage() {
     if (!saved) return;
 
     setIsActivationEditing(false);
-  }, [primaryResponsibleDraft, additionalResponsiblesDraft, upsertConfigAnswers]);
+  }, [
+    primaryResponsibleDraft,
+    additionalResponsiblesDraft,
+    activationConfirmInformationDraft,
+    activationNotificationCasesDraft,
+    activationPreferencesDraft,
+    upsertConfigAnswers,
+  ]);
 
   const handlePoolFormChange = useCallback(
     (key: keyof PoolFormState, value: string | boolean) => {
@@ -4584,8 +4628,8 @@ export default function ConfiguracoesPage() {
             />
             <StatusCard
               label="Recebe alertas da IA"
-              value={primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não"}
-              tone={primaryResponsibleDraft.receives_ai_alerts ? "green" : "amber"}
+              value={yesNoLabel(answers.ai_should_notify_responsible)}
+              tone={yesNoLabel(answers.ai_should_notify_responsible) === "Sim" ? "green" : "amber"}
               hint="Lead quente, visita, instalação, pagamento e urgências"
             />
             <StatusCard
@@ -4667,6 +4711,57 @@ export default function ConfiguracoesPage() {
                       onChange={(e) => handlePrimaryResponsibleChange("can_assume_human", e.target.checked)}
                     />
                     Pode assumir conversa humana
+                  </label>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <div className="mb-3 text-sm font-semibold text-gray-900">Ativação da IA e avisos</div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">A IA deve avisar o responsável?</span>
+                    <select
+                      value={primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não"}
+                      onChange={(e) => handlePrimaryResponsibleChange("receives_ai_alerts", e.target.value === "Sim")}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    >
+                      <option>Sim</option>
+                      <option>Não</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Dados mínimos estão corretos?</span>
+                    <select
+                      value={activationConfirmInformationDraft ? "Sim" : "Não"}
+                      onChange={(e) => setActivationConfirmInformationDraft(e.target.value === "Sim")}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                    >
+                      <option>Sim</option>
+                      <option>Não</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 md:col-span-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Em quais casos a IA deve avisar</span>
+                    <textarea
+                      value={activationNotificationCasesDraft}
+                      onChange={(e) => setActivationNotificationCasesDraft(e.target.value)}
+                      rows={3}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                      placeholder="Ex.: pedido de desconto, cliente quase fechando, dúvida técnica, visita, instalação, pagamento..."
+                    />
+                  </label>
+
+                  <label className="space-y-1 md:col-span-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Orientações finais para ativação da IA</span>
+                    <textarea
+                      value={activationPreferencesDraft}
+                      onChange={(e) => setActivationPreferencesDraft(e.target.value)}
+                      rows={4}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                      placeholder="Ex.: mais humanizada, priorizar qualificação antes de preço, nunca prometer fora do escopo, chamar humano em casos críticos..."
+                    />
                   </label>
                 </div>
               </div>
@@ -4801,9 +4896,10 @@ export default function ConfiguracoesPage() {
                   <div className="mb-2 text-sm font-semibold text-gray-900">Status de ativação</div>
                   <SummaryList
                     items={buildBulletRows([
+                      { label: "A IA avisa o responsável", value: yesNoLabel(answers.ai_should_notify_responsible) },
                       { label: "Dados mínimos para ativação", value: yesNoLabel(answers.confirm_information_is_correct) },
-                      { label: "Checklist de ativação real", value: joinSelectedLabels(parseArrayAnswer(answers.responsible_notification_cases), RESPONSIBLE_NOTIFICATION_CASE_OPTIONS, cleanText(answers.responsible_notification_cases_other)) },
-                      { label: "Canal da IA assistente", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), ACTIVATION_STYLE_OPTIONS, cleanText(answers.activation_preferences_other)) },
+                      { label: "Checklist de ativação real", value: joinSelectedLabels(parseArrayAnswer(answers.responsible_notification_cases), RESPONSIBLE_NOTIFICATION_CASE_OPTIONS, cleanText(answers.responsible_notification_cases_other)) || cleanText(answers.responsible_notification_cases_other) },
+                      { label: "Orientações finais da IA", value: joinSelectedLabels(parseArrayAnswer(answers.activation_preferences), [...ACTIVATION_STYLE_OPTIONS, ...ACTIVATION_GUARDRAIL_OPTIONS], cleanText(answers.activation_preferences_other)) || cleanText(answers.final_activation_notes) },
                       { label: "Status da ativação da loja", value: resolveOnboardingLabel(onboarding?.status).label },
                     ])}
                   />
