@@ -856,6 +856,28 @@ function formatManualCatalogFieldValue(
   return value;
 }
 
+function buildPoolManualDescription(form: PoolFormState) {
+  const baseDescription = cleanText(form.description);
+  const detailLines = buildBulletRows([
+    { label: "Marca", value: cleanText(form.brand) },
+    { label: "Material", value: cleanText(form.material) },
+    { label: "Formato", value: cleanText(form.shape) },
+    { label: "Cor", value: cleanText(form.color) },
+    { label: "Acabamento / linha", value: cleanText(form.finish) },
+    { label: "Largura (m)", value: cleanText(form.width_m) },
+    { label: "Comprimento (m)", value: cleanText(form.length_m) },
+    { label: "Profundidade (m)", value: cleanText(form.depth_m) },
+    { label: "Itens inclusos", value: cleanText(form.included_items) },
+    { label: "Observações de instalação", value: cleanText(form.installation_notes) },
+  ]);
+
+  if (!baseDescription && detailLines.length === 0) return "";
+  if (!baseDescription) return detailLines.join("\n");
+  if (detailLines.length === 0) return baseDescription;
+
+  return `${baseDescription}\n\n${detailLines.join("\n")}`;
+}
+
 function parseArrayAnswer(value: unknown): string[] {
   if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
   if (typeof value === "string") {
@@ -2723,29 +2745,17 @@ export default function ConfiguracoesPage() {
     setSuccessText(null);
 
     try {
+      const composedPoolDescription = buildPoolManualDescription(poolForm);
+
       const insertPayload = {
         organization_id: organizationId,
         store_id: activeStoreId,
         name: poolName,
-        description: cleanText(poolForm.description) || null,
+        description: composedPoolDescription || null,
         price: parseNumberInput(poolForm.price),
         stock_quantity: parseNumberInput(poolForm.stock_quantity),
         is_active: poolForm.is_active,
         track_stock: poolForm.track_stock,
-        metadata: {
-          brand: cleanText(poolForm.brand) || null,
-          material: cleanText(poolForm.material) || null,
-          shape: cleanText(poolForm.shape) || null,
-          color: cleanText(poolForm.color) || null,
-          finish: cleanText(poolForm.finish) || null,
-          width_m: parseNumberInput(poolForm.width_m),
-          length_m: parseNumberInput(poolForm.length_m),
-          depth_m: parseNumberInput(poolForm.depth_m),
-          included_items: cleanText(poolForm.included_items) || null,
-          installation_notes: cleanText(poolForm.installation_notes) || null,
-          manual_created_in_configuracoes: true,
-          pending_photo_upload_count: poolPhotos.length,
-        },
       };
 
       const { error } = await supabase.from("pools").insert(insertPayload);
