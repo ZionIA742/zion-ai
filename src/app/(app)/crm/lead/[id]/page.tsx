@@ -264,7 +264,6 @@ export default function LeadPage() {
     const { error } = await supabase.rpc("panel_release_conversation_to_ai_scoped", {
       p_organization_id: lead.organization_id,
       p_conversation_id: conversation.id,
-      p_to_state: "qualificacao",
       p_reason: "manual_release_from_crm",
     });
 
@@ -282,7 +281,9 @@ export default function LeadPage() {
       return;
     }
 
-    setStatusText("IA liberada novamente.");
+    setStatusText(
+      "IA liberada novamente. O sistema voltou pelo último estado comercial válido com fallback seguro."
+    );
     setWorking(false);
     await fetchLeadConversationAndMessages({ silent: true });
   }
