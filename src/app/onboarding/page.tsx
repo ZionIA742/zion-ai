@@ -4257,7 +4257,19 @@ async function upsertAnswers(
           activation_preferences_other:
             prev.activation_preferences_other || String(answers.activation_preferences_other ?? ""),
         }));
-        setHasCompletedOnboardingOnce(Boolean((answers as any)?.status === "completed"));
+        const { data: onboardingRow, error: onboardingStatusError } = await supabase
+          .from("store_onboarding")
+          .select("status")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStore.id)
+          .maybeSingle();
+
+        if (onboardingStatusError) {
+          console.error("[OnboardingPage] loadOnboardingStatus error:", onboardingStatusError);
+        }
+
+        const resolvedOnboardingStatus = String(onboardingRow?.status ?? "").trim().toLowerCase();
+        setHasCompletedOnboardingOnce(resolvedOnboardingStatus === "completed");
       } catch (err) {
         console.error("[OnboardingPage] loadAnswers unexpected error:", err);
         setFatalError("Falha ao carregar respostas do onboarding.");
@@ -4829,8 +4841,8 @@ async function upsertAnswers(
           <StepBadge step={5} currentStep={currentStep} title="Ativação" onClick={() => changeStep(5)} />
         </div>
         <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-            <div>
+          <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+            <div className="min-w-0">
               <p className="mb-1 text-sm font-medium text-gray-500">Onboarding inicial</p>
               <h1 className="mb-2 text-2xl font-bold text-gray-900">
                 {currentStep === 1 && "Etapa 1 — Loja"}
@@ -4866,18 +4878,18 @@ async function upsertAnswers(
                 </div>
               ) : null}
             </div>
-            <div className="flex w-full flex-row items-center gap-3 md:w-auto md:justify-end">
+            <div className="flex shrink-0 flex-row items-center justify-start gap-3 md:justify-end">
               <button
                 type="button"
                 onClick={() => navigateWithFallback("/configuracoes")}
-                className="inline-flex items-center justify-center rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                className="inline-flex h-11 min-w-[178px] items-center justify-center whitespace-nowrap rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
               >
                 Ir para Configurações
               </button>
               <button
                 type="button"
                 onClick={() => navigateWithFallback("/dashboard")}
-                className="inline-flex items-center justify-center rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
+                className="inline-flex h-11 min-w-[118px] items-center justify-center whitespace-nowrap rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
               >
                 Salvar e sair
               </button>
@@ -4890,7 +4902,7 @@ async function upsertAnswers(
           ) : null}
           {currentStep === 1 && (
             <form onSubmit={saveStep1} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
               <div>
                 <SectionTitle
                   title="Como a loja quer aparecer no sistema?"
@@ -5036,10 +5048,10 @@ async function upsertAnswers(
               <div className="flex flex-col gap-3 border-t border-gray-200 pt-4 md:flex-row md:items-center md:justify-end">
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || isOnboardingReviewMode}
                   className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
                 >
-                  {saving ? "Salvando..." : "Salvar e ir para etapa 2"}
+                  {isOnboardingReviewMode ? "Edição bloqueada no onboarding" : saving ? "Salvando..." : "Salvar e ir para etapa 2"}
                 </button>
               </div>
               </fieldset>
@@ -5047,7 +5059,7 @@ async function upsertAnswers(
           )}
           {currentStep === 2 && (
             <form onSubmit={saveStep2} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
               <div>
                 <SectionTitle
                   title="Quais tipos de piscina a loja trabalha?"
@@ -5448,10 +5460,10 @@ async function upsertAnswers(
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || isOnboardingReviewMode}
                   className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
                 >
-                  {saving ? "Salvando..." : "Salvar e ir para etapa 3"}
+                  {isOnboardingReviewMode ? "Edição bloqueada no onboarding" : saving ? "Salvando..." : "Salvar e ir para etapa 3"}
                 </button>
               </div>
               </fieldset>
@@ -5459,7 +5471,7 @@ async function upsertAnswers(
           )}
           {currentStep === 3 && (
             <form onSubmit={saveStep3} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
               <div>
                 <SectionTitle
                   title="Qual é o tempo médio de resposta humana da loja?"
@@ -5678,10 +5690,10 @@ async function upsertAnswers(
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || isOnboardingReviewMode}
                   className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
                 >
-                  {saving ? "Salvando..." : "Salvar e ir para etapa 4"}
+                  {isOnboardingReviewMode ? "Edição bloqueada no onboarding" : saving ? "Salvando..." : "Salvar e ir para etapa 4"}
                 </button>
               </div>
               </fieldset>
@@ -5689,7 +5701,7 @@ async function upsertAnswers(
           )}
           {currentStep === 4 && (
             <form onSubmit={saveStep4} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
               <div>
                 <SectionTitle
                   title="Qual é o ticket médio da loja?"
@@ -5947,10 +5959,10 @@ async function upsertAnswers(
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || isOnboardingReviewMode}
                   className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
                 >
-                  {saving ? "Salvando..." : "Salvar e ir para etapa 5"}
+                  {isOnboardingReviewMode ? "Edição bloqueada no onboarding" : saving ? "Salvando..." : "Salvar e ir para etapa 5"}
                 </button>
               </div>
               </fieldset>
@@ -5958,7 +5970,7 @@ async function upsertAnswers(
           )}
           {currentStep === 5 && (
             <form onSubmit={saveStep5} className="space-y-6">
-              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className={cx("space-y-6", isOnboardingReviewMode && "pointer-events-none opacity-70")}>
               <div>
                 <SectionTitle
                   title="Quem é a principal pessoa da loja que a IA deve acionar?"
@@ -6058,7 +6070,7 @@ async function upsertAnswers(
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || isOnboardingReviewMode}
                   className="rounded-xl bg-black px-5 py-2.5 font-medium text-white disabled:opacity-60"
                 >
                   {saving ? "Concluindo..." : "Concluir onboarding"}
