@@ -878,6 +878,27 @@ function buildPoolManualDescription(form: PoolFormState) {
   return `${baseDescription}\n\n${detailLines.join("\n")}`;
 }
 
+function derivePoolMaxCapacityLiters(form: PoolFormState) {
+  const width = parseNumberInput(form.width_m);
+  const length = parseNumberInput(form.length_m);
+  const depth = parseNumberInput(form.depth_m);
+  const normalizedShape = normalizeLoose(form.shape);
+
+  if (width === null || length === null || depth === null) return null;
+
+  let factor = 1;
+  if (
+    normalizedShape.includes("oval") ||
+    normalizedShape.includes("redond") ||
+    normalizedShape.includes("circular")
+  ) {
+    factor = 0.85;
+  }
+
+  const liters = width * length * depth * 1000 * factor;
+  return Number.isFinite(liters) && liters > 0 ? Math.round(liters) : null;
+}
+
 function parseArrayAnswer(value: unknown): string[] {
   if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
   if (typeof value === "string") {
@@ -2721,8 +2742,40 @@ export default function ConfiguracoesPage() {
 
   const handleSaveManualPool = useCallback(async () => {
     const poolName = cleanText(poolForm.name);
+    const poolShape = cleanText(poolForm.shape);
+    const poolMaterial = cleanText(poolForm.material);
+    const parsedWidth = parseNumberInput(poolForm.width_m);
+    const parsedLength = parseNumberInput(poolForm.length_m);
+    const parsedDepth = parseNumberInput(poolForm.depth_m);
+    const parsedStockQuantity = parseNumberInput(poolForm.stock_quantity);
+    const derivedCapacityLiters = derivePoolMaxCapacityLiters(poolForm);
+
     if (!poolName) {
       setErrorText("Preencha pelo menos o nome da piscina antes de salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (parsedWidth === null || parsedLength === null || parsedDepth === null) {
+      setErrorText("Preencha largura, comprimento e profundidade da piscina antes de salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (!poolShape) {
+      setErrorText("Preencha o formato da piscina antes de salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (!poolMaterial) {
+      setErrorText("Preencha o material da piscina antes de salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (derivedCapacityLiters === null) {
+      setErrorText("Não foi possível calcular a capacidade estimada da piscina com as medidas informadas.");
       setSuccessText(null);
       return;
     }
@@ -2746,26 +2799,20 @@ export default function ConfiguracoesPage() {
 
     try {
       const composedPoolDescription = buildPoolManualDescription(poolForm);
-      const parsedWidth = parseNumberInput(poolForm.width_m);
-      const parsedLength = parseNumberInput(poolForm.length_m);
-      const parsedDepth = parseNumberInput(poolForm.depth_m);
-
-      if (parsedWidth === null || parsedLength === null || parsedDepth === null) {
-        setErrorText("Preencha largura, comprimento e profundidade da piscina antes de salvar.");
-        setSuccessText(null);
-        return;
-      }
 
       const insertPayload = {
         organization_id: organizationId,
         store_id: activeStoreId,
         name: poolName,
-        description: composedPoolDescription || null,
         width_m: parsedWidth,
         length_m: parsedLength,
         depth_m: parsedDepth,
+        shape: poolShape,
+        material: poolMaterial,
+        max_capacity_l: derivedCapacityLiters,
+        description: composedPoolDescription || null,
         price: parseNumberInput(poolForm.price),
-        stock_quantity: parseNumberInput(poolForm.stock_quantity),
+        stock_quantity: parsedStockQuantity === null ? null : Math.round(parsedStockQuantity),
         is_active: poolForm.is_active,
         track_stock: poolForm.track_stock,
       };
