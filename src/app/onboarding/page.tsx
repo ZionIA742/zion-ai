@@ -2878,6 +2878,7 @@ function OnboardingContent() {
   const [discountSettings, setDiscountSettings] = useState<DiscountSettingsRow | null>(null);
   const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
   const hasDiscountConfigOverride = Boolean(discountSettings);
+  const isOnboardingReviewMode = hasCompletedOnboardingOnce;
   const [step1DraftRecovered, setStep1DraftRecovered] = useState(false);
   const [step2DraftRecovered, setStep2DraftRecovered] = useState(false);
   const [step3DraftRecovered, setStep3DraftRecovered] = useState(false);
@@ -3212,6 +3213,12 @@ function OnboardingContent() {
         }
       }, 120);
     }
+  }
+
+  function blockReviewModeEditing() {
+    setFormError(
+      "O onboarding está em modo revisão. Para alterar dados atuais da loja, use a aba Configurações."
+    );
   }
   async function handleRunIntelligentImport() {
     if (!organizationId || !activeStore?.id) {
@@ -4315,6 +4322,10 @@ async function upsertAnswers(
   ]);
   async function saveStep1(e: FormEvent) {
     e.preventDefault();
+    if (isOnboardingReviewMode) {
+      blockReviewModeEditing();
+      return;
+    }
     if (!step1Form.store_display_name.trim()) {
       setFormError("Preencha o nome que a loja quer usar no sistema.");
       return;
@@ -4362,6 +4373,10 @@ async function upsertAnswers(
   }
   async function saveStep2(e: FormEvent) {
     e.preventDefault();
+    if (isOnboardingReviewMode) {
+      blockReviewModeEditing();
+      return;
+    }
     if (step2Form.pool_types_selected.length === 0 && !step2Form.pool_types_other.trim()) {
       setFormError("Marque pelo menos um tipo de piscina ou preencha o campo complementar.");
       return;
@@ -4406,6 +4421,10 @@ async function upsertAnswers(
   }
   async function saveStep3(e: FormEvent) {
     e.preventDefault();
+    if (isOnboardingReviewMode) {
+      blockReviewModeEditing();
+      return;
+    }
     if (!step3Form.average_human_response_time.trim()) {
       setFormError("Preencha o tempo médio de resposta humana.");
       return;
@@ -4494,6 +4513,10 @@ async function upsertAnswers(
   }
   async function saveStep4(e: FormEvent) {
     e.preventDefault();
+    if (isOnboardingReviewMode) {
+      blockReviewModeEditing();
+      return;
+    }
     if (!step4Form.average_ticket.trim()) {
       setFormError("Informe o ticket médio da loja.");
       return;
@@ -4685,6 +4708,10 @@ async function upsertAnswers(
   }
   async function saveStep5(e: FormEvent) {
     e.preventDefault();
+    if (isOnboardingReviewMode) {
+      blockReviewModeEditing();
+      return;
+    }
     if (!step5Form.responsible_name.trim()) {
       setFormError("Preencha o nome da pessoa principal que a IA deve acionar.");
       return;
@@ -4825,16 +4852,21 @@ async function upsertAnswers(
                   "Por fim, vamos organizar quem a IA deve avisar, em quais casos e quais orientações finais ela precisa seguir."}
               </p>
               {hasCompletedOnboardingOnce ? (
-                <div className="mt-3">
+                <div className="mt-3 space-y-3">
                   <InfoBlock
-                    title="Onboarding já concluído antes"
-                    description="Você pode revisar e ajustar os dados quando quiser. As regras vivas da loja continuam sendo controladas pela aba Configurações."
+                    title="Onboarding em modo revisão"
+                    description="Este onboarding agora serve como consulta do cadastro inicial da loja. Para alterar dados atuais, regras e políticas vivas, use a aba Configurações."
+                    subtle
+                  />
+                  <InfoBlock
+                    title="Onde editar de verdade"
+                    description="As mudanças oficiais da loja devem ser feitas em Configurações. Aqui você pode navegar pelas etapas para revisar o que foi preenchido inicialmente."
                     subtle
                   />
                 </div>
               ) : null}
             </div>
-            <div className="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
+            <div className="flex w-full flex-row items-center gap-3 md:w-auto md:justify-end">
               <button
                 type="button"
                 onClick={() => navigateWithFallback("/configuracoes")}
@@ -4858,6 +4890,7 @@ async function upsertAnswers(
           ) : null}
           {currentStep === 1 && (
             <form onSubmit={saveStep1} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
               <div>
                 <SectionTitle
                   title="Como a loja quer aparecer no sistema?"
@@ -5009,10 +5042,12 @@ async function upsertAnswers(
                   {saving ? "Salvando..." : "Salvar e ir para etapa 2"}
                 </button>
               </div>
+              </fieldset>
             </form>
           )}
           {currentStep === 2 && (
             <form onSubmit={saveStep2} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
               <div>
                 <SectionTitle
                   title="Quais tipos de piscina a loja trabalha?"
@@ -5419,10 +5454,12 @@ async function upsertAnswers(
                   {saving ? "Salvando..." : "Salvar e ir para etapa 3"}
                 </button>
               </div>
+              </fieldset>
             </form>
           )}
           {currentStep === 3 && (
             <form onSubmit={saveStep3} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
               <div>
                 <SectionTitle
                   title="Qual é o tempo médio de resposta humana da loja?"
@@ -5647,10 +5684,12 @@ async function upsertAnswers(
                   {saving ? "Salvando..." : "Salvar e ir para etapa 4"}
                 </button>
               </div>
+              </fieldset>
             </form>
           )}
           {currentStep === 4 && (
             <form onSubmit={saveStep4} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
               <div>
                 <SectionTitle
                   title="Qual é o ticket médio da loja?"
@@ -5914,10 +5953,12 @@ async function upsertAnswers(
                   {saving ? "Salvando..." : "Salvar e ir para etapa 5"}
                 </button>
               </div>
+              </fieldset>
             </form>
           )}
           {currentStep === 5 && (
             <form onSubmit={saveStep5} className="space-y-6">
+              <fieldset disabled={isOnboardingReviewMode} className="space-y-6">
               <div>
                 <SectionTitle
                   title="Quem é a principal pessoa da loja que a IA deve acionar?"
@@ -6023,6 +6064,7 @@ async function upsertAnswers(
                   {saving ? "Concluindo..." : "Concluir onboarding"}
                 </button>
               </div>
+              </fieldset>
             </form>
           )}
         </div>
