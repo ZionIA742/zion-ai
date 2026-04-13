@@ -2746,12 +2746,24 @@ export default function ConfiguracoesPage() {
 
     try {
       const composedPoolDescription = buildPoolManualDescription(poolForm);
+      const parsedWidth = parseNumberInput(poolForm.width_m);
+      const parsedLength = parseNumberInput(poolForm.length_m);
+      const parsedDepth = parseNumberInput(poolForm.depth_m);
+
+      if (parsedWidth === null || parsedLength === null || parsedDepth === null) {
+        setErrorText("Preencha largura, comprimento e profundidade da piscina antes de salvar.");
+        setSuccessText(null);
+        return;
+      }
 
       const insertPayload = {
         organization_id: organizationId,
         store_id: activeStoreId,
         name: poolName,
         description: composedPoolDescription || null,
+        width_m: parsedWidth,
+        length_m: parsedLength,
+        depth_m: parsedDepth,
         price: parseNumberInput(poolForm.price),
         stock_quantity: parseNumberInput(poolForm.stock_quantity),
         is_active: poolForm.is_active,
