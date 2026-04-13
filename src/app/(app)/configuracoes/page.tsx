@@ -2721,13 +2721,13 @@ export default function ConfiguracoesPage() {
 
   const handleSaveManualPool = useCallback(async () => {
     const poolName = cleanText(poolForm.name);
-    const poolShape = cleanText(poolForm.shape);
-    const poolMaterial = cleanText(poolForm.material);
+    const material = cleanText(poolForm.material);
+    const shape = cleanText(poolForm.shape);
     const widthM = parseNumberInput(poolForm.width_m);
     const lengthM = parseNumberInput(poolForm.length_m);
     const depthM = parseNumberInput(poolForm.depth_m);
     const price = parseNumberInput(poolForm.price);
-    const rawStockQuantity = parseNumberInput(poolForm.stock_quantity);
+    const parsedStock = parseNumberInput(poolForm.stock_quantity);
 
     if (!poolName) {
       setErrorText("Preencha pelo menos o nome da piscina antes de salvar.");
@@ -2735,32 +2735,20 @@ export default function ConfiguracoesPage() {
       return;
     }
 
-    if (widthM == null || widthM <= 0) {
-      setErrorText("Preencha a largura da piscina para salvar.");
+    if (widthM === null || lengthM === null || depthM === null) {
+      setErrorText("Preencha largura, comprimento e profundidade da piscina antes de salvar.");
       setSuccessText(null);
       return;
     }
 
-    if (lengthM == null || lengthM <= 0) {
-      setErrorText("Preencha o comprimento da piscina para salvar.");
+    if (!shape) {
+      setErrorText("Preencha o formato da piscina antes de salvar.");
       setSuccessText(null);
       return;
     }
 
-    if (depthM == null || depthM <= 0) {
-      setErrorText("Preencha a profundidade da piscina para salvar.");
-      setSuccessText(null);
-      return;
-    }
-
-    if (!poolShape) {
-      setErrorText("Preencha o formato da piscina para salvar.");
-      setSuccessText(null);
-      return;
-    }
-
-    if (!poolMaterial) {
-      setErrorText("Preencha o material da piscina para salvar.");
+    if (!material) {
+      setErrorText("Preencha o material da piscina antes de salvar.");
       setSuccessText(null);
       return;
     }
@@ -2782,17 +2770,12 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setSuccessText(null);
 
-    let createdPoolId: string | null = null;
+    let createdPoolId = "";
     const uploadedStoragePaths: string[] = [];
 
     try {
       const composedPoolDescription = buildPoolManualDescription(poolForm);
-      const shapeKey = normalizeLoose(poolShape);
-      const capacityFactor =
-        shapeKey.includes("oval") || shapeKey.includes("redond") || shapeKey.includes("circul") ? 0.85 : 1;
-      const maxCapacityL = Math.max(0, Math.round(widthM * lengthM * depthM * 1000 * capacityFactor));
-      const stockQuantity =
-        rawStockQuantity == null ? null : Math.max(0, Math.round(rawStockQuantity));
+      const maxCapacityL = Math.max(1, Math.round(widthM * lengthM * depthM * 1000));
 
       const insertPayload = {
         organization_id: organizationId,
@@ -2801,15 +2784,14 @@ export default function ConfiguracoesPage() {
         width_m: widthM,
         length_m: lengthM,
         depth_m: depthM,
-        shape: poolShape,
-        material: poolMaterial,
+        shape,
+        material,
         max_capacity_l: maxCapacityL,
-        weight_kg: null,
         price,
         description: composedPoolDescription || null,
+        stock_quantity: parsedStock === null ? null : Math.round(parsedStock),
         is_active: poolForm.is_active,
         track_stock: poolForm.track_stock,
-        stock_quantity: poolForm.track_stock ? stockQuantity : null,
       };
 
       const { data: createdPool, error: insertError } = await supabase
@@ -2820,7 +2802,10 @@ export default function ConfiguracoesPage() {
 
       if (insertError) throw insertError;
 
-      createdPoolId = createdPool.id;
+      createdPoolId = String(createdPool?.id || "").trim();
+      if (!createdPoolId) {
+        throw new Error("Não foi possível obter o ID da piscina criada.");
+      }
 
       if (poolPhotos.length > 0) {
         const photoRows: Array<{
@@ -2833,13 +2818,8 @@ export default function ConfiguracoesPage() {
           sort_order: number;
         }> = [];
 
-        for (let index = 0; index < poolPhotos.length; index += 1) {
-          const file = poolPhotos[index];
-          const extension =
-            file.name.split(".").pop()?.toLowerCase() ||
-            file.type.split("/").pop()?.toLowerCase() ||
-            "jpg";
-          const safeFileName = `${crypto.randomUUID()}.${extension}`;
+        for (const [index, file] of poolPhotos.entries()) {
+          const safeFileName = `${Date.now()}-${index}-${file.name.replace(/\s+/g, "-")}`;
           const storagePath = `${organizationId}/${activeStoreId}/${createdPoolId}/${safeFileName}`;
 
           const { error: uploadError } = await supabase.storage
@@ -2863,11 +2843,11 @@ export default function ConfiguracoesPage() {
           });
         }
 
-        const { error: photoInsertError } = await supabase
+        const { error: poolPhotosInsertError } = await supabase
           .from("pool_photos")
           .insert(photoRows);
 
-        if (photoInsertError) throw photoInsertError;
+        if (poolPhotosInsertError) throw poolPhotosInsertError;
       }
 
       setPoolForm(createEmptyPoolForm());
@@ -2893,6 +2873,7 @@ export default function ConfiguracoesPage() {
       }
 
       setErrorText(error?.message ?? "Erro ao salvar a piscina manualmente.");
+      setSuccessText(null);
     } finally {
       setSavingPool(false);
     }
