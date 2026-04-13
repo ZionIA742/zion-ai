@@ -187,18 +187,11 @@ export default function CrmPage() {
       return;
     }
 
-    setCards((prev) =>
-      prev.map((item) =>
-        item.leadId === card.leadId
-          ? {
-              ...item,
-              state: toColumnId,
-              isHumanActive: toColumnId === "humano_assumiu",
-            }
-          : item
-      )
-    );
+    // Importante para o Pilar 4:
+    // não confiar em atualização local otimista.
+    // sempre recarregar do backend para refletir o estado oficial real.
     setMovingId(null);
+    await fetchPageData();
   }
 
   useEffect(() => {
