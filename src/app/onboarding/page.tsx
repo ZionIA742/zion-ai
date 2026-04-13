@@ -3063,6 +3063,64 @@ function OnboardingContent() {
     }
     return intelligentImportSelectedFilesPreview;
   }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
+  const persistAllOnboardingDrafts = useCallback(() => {
+    if (typeof window === "undefined") return;
+
+    if (step1DraftStorageKey) {
+      persistToLocalStorageSafe(step1DraftStorageKey, JSON.stringify(step1Form));
+    }
+    if (step2DraftStorageKey) {
+      persistToLocalStorageSafe(step2DraftStorageKey, JSON.stringify(step2Form));
+    }
+    if (step3DraftStorageKey) {
+      persistToLocalStorageSafe(step3DraftStorageKey, JSON.stringify(step3Form));
+    }
+    if (step4DraftStorageKey) {
+      persistToLocalStorageSafe(step4DraftStorageKey, JSON.stringify(step4Form));
+    }
+    if (step5DraftStorageKey) {
+      persistToLocalStorageSafe(step5DraftStorageKey, JSON.stringify(step5Form));
+    }
+    if (currentStepStorageKey) {
+      persistToLocalStorageSafe(currentStepStorageKey, String(currentStep));
+    }
+    if (pageScrollStorageKey) {
+      persistToLocalStorageSafe(pageScrollStorageKey, String(window.scrollY || 0));
+    }
+    if (intelligentImportStorageKey) {
+      const hasPersistedContent =
+        visibleIntelligentImportFiles.length > 0 ||
+        Boolean(intelligentImportSuccess) ||
+        Boolean(intelligentImportError);
+
+      if (hasPersistedContent) {
+        const payload = buildLightPersistedIntelligentImportState({
+          selectedFiles: visibleIntelligentImportFiles,
+          successMessage: intelligentImportSuccess,
+          errorMessage: intelligentImportError,
+        });
+        persistToLocalStorageSafe(intelligentImportStorageKey, JSON.stringify(payload));
+      }
+    }
+  }, [
+    currentStep,
+    currentStepStorageKey,
+    intelligentImportError,
+    intelligentImportStorageKey,
+    intelligentImportSuccess,
+    pageScrollStorageKey,
+    step1DraftStorageKey,
+    step1Form,
+    step2DraftStorageKey,
+    step2Form,
+    step3DraftStorageKey,
+    step3Form,
+    step4DraftStorageKey,
+    step4Form,
+    step5DraftStorageKey,
+    step5Form,
+    visibleIntelligentImportFiles,
+  ]);
   const selectedImagePreviews = useMemo(() => {
     return intelligentImportFiles
       .filter((file) => isImageLikeFileType(file.type))
@@ -3201,6 +3259,7 @@ function OnboardingContent() {
     }
   }
   function navigateWithFallback(path: string) {
+    persistAllOnboardingDrafts();
     savePageScroll();
     try {
       router.push(path);
@@ -3973,11 +4032,19 @@ async function upsertAnswers(
   useEffect(() => {
     if (!pageScrollStorageKey || typeof window === "undefined") return;
     const onScroll = () => savePageScroll();
-    const onPageHide = () => savePageScroll();
+    const onPageHide = () => {
+      persistAllOnboardingDrafts();
+      savePageScroll();
+    };
+    const onBeforeUnload = () => {
+      persistAllOnboardingDrafts();
+      savePageScroll();
+    };
     const onPageShow = () => restorePageScroll(30);
     const onFocus = () => restorePageScroll(30);
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
+        persistAllOnboardingDrafts();
         savePageScroll();
         return;
       }
@@ -3985,18 +4052,21 @@ async function upsertAnswers(
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
+      persistAllOnboardingDrafts();
       savePageScroll();
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [pageScrollStorageKey, restorePageScroll, savePageScroll]);
+  }, [pageScrollStorageKey, persistAllOnboardingDrafts, restorePageScroll, savePageScroll]);
   useEffect(() => {
     if (!step1DraftStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(step1DraftStorageKey);
