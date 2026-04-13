@@ -2467,20 +2467,23 @@ export default function ConfiguracoesPage() {
     setIsDiscountEditing(false);
   }, [answers]);
 
-  const handleDiscountEditSave = useCallback(() => {
-    setAnswers((current) => ({
-      ...current,
-      can_offer_discount: discountDraft.can_offer_discount,
-      max_discount_percent: discountDraft.max_discount_percent,
-      human_help_discount_cases_other: discountDraft.human_help_discount_summary,
-      discount_approver_name: discountDraft.discount_approver,
-      discount_special_rules: discountDraft.special_discount_rules,
-      discount_explanation: discountDraft.discount_explanation,
-    }));
-    setSuccessText("Alterações de descontos atualizadas nesta tela.");
-    setErrorText(null);
+  const handleDiscountEditSave = useCallback(async () => {
+    const saved = await upsertConfigAnswers(
+      {
+        can_offer_discount: discountDraft.can_offer_discount,
+        max_discount_percent: discountDraft.max_discount_percent,
+        human_help_discount_cases_other: discountDraft.human_help_discount_summary,
+        discount_approver_name: discountDraft.discount_approver,
+        discount_special_rules: discountDraft.special_discount_rules,
+        discount_explanation: discountDraft.discount_explanation,
+      },
+      "Alterações de descontos salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsDiscountEditing(false);
-  }, [discountDraft]);
+  }, [discountDraft, upsertConfigAnswers]);
 
   useEffect(() => {
     setChannelDraft(createChannelDraftFromAnswers(answers));
@@ -2605,24 +2608,27 @@ export default function ConfiguracoesPage() {
     setIsActivationEditing(false);
   }, [answers]);
 
-  const handleActivationEditSave = useCallback(() => {
+  const handleActivationEditSave = useCallback(async () => {
     const cleanAdditional = additionalResponsiblesDraft.filter(
       (item) => cleanText(item.name) || cleanText(item.whatsapp)
     );
 
-    setAnswers((current) => ({
-      ...current,
-      responsible_name: cleanText(primaryResponsibleDraft.name),
-      responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
-      responsible_role: cleanText(primaryResponsibleDraft.role),
-      confirm_information_is_correct: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não",
-      final_activation_notes: cleanText(primaryResponsibleDraft.notes),
-      additional_responsibles: serializeResponsiblePeople(cleanAdditional),
-    }));
-    setSuccessText("Alterações de responsável e ativação atualizadas nesta tela.");
-    setErrorText(null);
+    const saved = await upsertConfigAnswers(
+      {
+        responsible_name: cleanText(primaryResponsibleDraft.name),
+        responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp),
+        responsible_role: cleanText(primaryResponsibleDraft.role),
+        confirm_information_is_correct: primaryResponsibleDraft.receives_ai_alerts ? "Sim" : "Não",
+        final_activation_notes: cleanText(primaryResponsibleDraft.notes),
+        additional_responsibles: serializeResponsiblePeople(cleanAdditional),
+      },
+      "Alterações de responsável e ativação salvas com sucesso."
+    );
+
+    if (!saved) return;
+
     setIsActivationEditing(false);
-  }, [primaryResponsibleDraft, additionalResponsiblesDraft]);
+  }, [primaryResponsibleDraft, additionalResponsiblesDraft, upsertConfigAnswers]);
 
   const handlePoolFormChange = useCallback(
     (key: keyof PoolFormState, value: string | boolean) => {
