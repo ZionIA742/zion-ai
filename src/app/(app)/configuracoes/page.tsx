@@ -807,8 +807,36 @@ function validateSelectedPhotos(files: File[]) {
 }
 
 function parseNumberInput(value: string) {
-  const normalized = String(value || "").replace(",", ".").trim();
-  if (!normalized) return null;
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  let normalized = raw.replace(/\s+/g, "");
+
+  const lastComma = normalized.lastIndexOf(",");
+  const lastDot = normalized.lastIndexOf(".");
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    const decimalSeparator = lastComma > lastDot ? "," : ".";
+    const thousandSeparator = decimalSeparator === "," ? "." : ",";
+    normalized = normalized.replace(new RegExp(`\\${thousandSeparator}`, "g"), "");
+    if (decimalSeparator === ",") {
+      normalized = normalized.replace(",", ".");
+    }
+  } else if (lastComma >= 0) {
+    normalized = normalized.replace(/\./g, "").replace(",", ".");
+  } else if ((normalized.match(/\./g) || []).length > 1) {
+    const lastDotIndex = normalized.lastIndexOf(".");
+    normalized =
+      normalized.slice(0, lastDotIndex).replace(/\./g, "") +
+      "." +
+      normalized.slice(lastDotIndex + 1);
+  }
+
+  normalized = normalized.replace(/[^\d.-]/g, "");
+  if (!normalized || normalized === "." || normalized === "-" || normalized === "-.") {
+    return null;
+  }
+
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -827,7 +855,7 @@ function formatFixedDecimalInput(value: string, decimalPlaces = 2) {
   const decimalPart = paddedDigits.slice(-safeDecimalPlaces);
   const integerPart = integerPartRaw.replace(/^0+(?=\d)/, "") || "0";
 
-  return `${integerPart}.${decimalPart}`;
+  return `${integerPart},${decimalPart}`;
 }
 
 function formatManualPoolFieldValue(
@@ -849,7 +877,7 @@ function formatManualCatalogFieldValue(
 ): string | boolean {
   if (typeof value !== "string") return value;
 
-  if (["width_cm", "height_cm", "length_cm", "weight_kg", "price"].includes(key)) {
+  if (key === "price") {
     return formatFixedDecimalInput(value, 2);
   }
 
@@ -2927,9 +2955,6 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setSuccessText(null);
 
-    let createdCatalogItemId = "";
-    const uploadedStoragePaths: string[] = [];
-
     try {
       const parsedPrice = parseNumberInput(catalogForm.price);
       const parsedStock = parseNumberInput(catalogForm.stock_quantity);
@@ -2957,60 +2982,12 @@ export default function ConfiguracoesPage() {
           application: cleanText(catalogForm.application) || null,
           technical_notes: cleanText(catalogForm.technical_notes) || null,
           manual_created_in_configuracoes: true,
+          pending_photo_upload_count: catalogPhotos.length,
         },
       };
 
-      const { data: createdCatalogItem, error: insertError } = await supabase
-        .from("store_catalog_items")
-        .insert(insertPayload)
-        .select("id")
-        .single();
-
-      if (insertError) throw insertError;
-
-      createdCatalogItemId = String(createdCatalogItem?.id || "").trim();
-      if (!createdCatalogItemId) {
-        throw new Error("Não foi possível obter o ID do item criado.");
-      }
-
-      if (catalogPhotos.length > 0) {
-        const photoRows: Array<{
-          catalog_item_id: string;
-          storage_path: string;
-          file_name: string;
-          file_size_bytes: number;
-          sort_order: number;
-        }> = [];
-
-        for (const [index, file] of catalogPhotos.entries()) {
-          const safeFileName = `${Date.now()}-${index}-${file.name.replace(/\s+/g, "-")}`;
-          const storagePath = `${organizationId}/${activeStoreId}/${createdCatalogItemId}/${safeFileName}`;
-
-          const { error: uploadError } = await supabase.storage
-            .from("store-catalog-photos")
-            .upload(storagePath, file, {
-              cacheControl: "3600",
-              upsert: false,
-            });
-
-          if (uploadError) throw uploadError;
-
-          uploadedStoragePaths.push(storagePath);
-          photoRows.push({
-            catalog_item_id: createdCatalogItemId,
-            storage_path: storagePath,
-            file_name: file.name,
-            file_size_bytes: file.size,
-            sort_order: index,
-          });
-        }
-
-        const { error: catalogPhotosInsertError } = await supabase
-          .from("store_catalog_item_photos")
-          .insert(photoRows);
-
-        if (catalogPhotosInsertError) throw catalogPhotosInsertError;
-      }
+      const { error } = await supabase.from("store_catalog_items").insert(insertPayload);
+      if (error) throw error;
 
       setCatalogForm(createEmptyCatalogForm());
       setCatalogPhotos([]);
@@ -3020,25 +2997,12 @@ export default function ConfiguracoesPage() {
       }));
       setSuccessText(
         catalogPhotos.length > 0
-          ? "Item e fotos salvos com sucesso."
+          ? "Item salvo. As fotos ainda precisam ser conectadas ao fluxo final de upload sem quebrar o restante do sistema."
           : "Item salvo com sucesso."
       );
       await fetchPageData();
     } catch (error: any) {
-      if (uploadedStoragePaths.length > 0) {
-        await supabase.storage.from("store-catalog-photos").remove(uploadedStoragePaths);
-      }
-
-      if (createdCatalogItemId) {
-        await supabase
-          .from("store_catalog_item_photos")
-          .delete()
-          .eq("catalog_item_id", createdCatalogItemId);
-        await supabase.from("store_catalog_items").delete().eq("id", createdCatalogItemId);
-      }
-
       setErrorText(error?.message ?? "Erro ao salvar o item manualmente.");
-      setSuccessText(null);
     } finally {
       setSavingCatalogItem(false);
     }
@@ -3960,7 +3924,7 @@ export default function ConfiguracoesPage() {
                   value={poolForm.price}
                   onChange={(event) => handlePoolFormChange("price", event.target.value)}
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="15990.00"
+                  placeholder="15990,00"
                 />
               </label>
 
@@ -4286,7 +4250,7 @@ export default function ConfiguracoesPage() {
                   value={catalogForm.price}
                   onChange={(event) => handleCatalogFormChange("price", event.target.value)}
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
-                  placeholder="59.90"
+                  placeholder="59,90"
                 />
               </label>
 
