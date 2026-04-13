@@ -2927,6 +2927,9 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setSuccessText(null);
 
+    let createdCatalogItemId = "";
+    const uploadedStoragePaths: string[] = [];
+
     try {
       const parsedPrice = parseNumberInput(catalogForm.price);
       const parsedStock = parseNumberInput(catalogForm.stock_quantity);
@@ -2954,12 +2957,60 @@ export default function ConfiguracoesPage() {
           application: cleanText(catalogForm.application) || null,
           technical_notes: cleanText(catalogForm.technical_notes) || null,
           manual_created_in_configuracoes: true,
-          pending_photo_upload_count: catalogPhotos.length,
         },
       };
 
-      const { error } = await supabase.from("store_catalog_items").insert(insertPayload);
-      if (error) throw error;
+      const { data: createdCatalogItem, error: insertError } = await supabase
+        .from("store_catalog_items")
+        .insert(insertPayload)
+        .select("id")
+        .single();
+
+      if (insertError) throw insertError;
+
+      createdCatalogItemId = String(createdCatalogItem?.id || "").trim();
+      if (!createdCatalogItemId) {
+        throw new Error("Não foi possível obter o ID do item criado.");
+      }
+
+      if (catalogPhotos.length > 0) {
+        const photoRows: Array<{
+          catalog_item_id: string;
+          storage_path: string;
+          file_name: string;
+          file_size_bytes: number;
+          sort_order: number;
+        }> = [];
+
+        for (const [index, file] of catalogPhotos.entries()) {
+          const safeFileName = `${Date.now()}-${index}-${file.name.replace(/\s+/g, "-")}`;
+          const storagePath = `${organizationId}/${activeStoreId}/${createdCatalogItemId}/${safeFileName}`;
+
+          const { error: uploadError } = await supabase.storage
+            .from("store-catalog-photos")
+            .upload(storagePath, file, {
+              cacheControl: "3600",
+              upsert: false,
+            });
+
+          if (uploadError) throw uploadError;
+
+          uploadedStoragePaths.push(storagePath);
+          photoRows.push({
+            catalog_item_id: createdCatalogItemId,
+            storage_path: storagePath,
+            file_name: file.name,
+            file_size_bytes: file.size,
+            sort_order: index,
+          });
+        }
+
+        const { error: catalogPhotosInsertError } = await supabase
+          .from("store_catalog_item_photos")
+          .insert(photoRows);
+
+        if (catalogPhotosInsertError) throw catalogPhotosInsertError;
+      }
 
       setCatalogForm(createEmptyCatalogForm());
       setCatalogPhotos([]);
@@ -2969,12 +3020,25 @@ export default function ConfiguracoesPage() {
       }));
       setSuccessText(
         catalogPhotos.length > 0
-          ? "Item salvo. As fotos ainda precisam ser conectadas ao fluxo final de upload sem quebrar o restante do sistema."
+          ? "Item e fotos salvos com sucesso."
           : "Item salvo com sucesso."
       );
       await fetchPageData();
     } catch (error: any) {
+      if (uploadedStoragePaths.length > 0) {
+        await supabase.storage.from("store-catalog-photos").remove(uploadedStoragePaths);
+      }
+
+      if (createdCatalogItemId) {
+        await supabase
+          .from("store_catalog_item_photos")
+          .delete()
+          .eq("catalog_item_id", createdCatalogItemId);
+        await supabase.from("store_catalog_items").delete().eq("id", createdCatalogItemId);
+      }
+
       setErrorText(error?.message ?? "Erro ao salvar o item manualmente.");
+      setSuccessText(null);
     } finally {
       setSavingCatalogItem(false);
     }
