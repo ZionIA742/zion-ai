@@ -2721,8 +2721,46 @@ export default function ConfiguracoesPage() {
 
   const handleSaveManualPool = useCallback(async () => {
     const poolName = cleanText(poolForm.name);
+    const poolShape = cleanText(poolForm.shape);
+    const poolMaterial = cleanText(poolForm.material);
+    const widthM = parseNumberInput(poolForm.width_m);
+    const lengthM = parseNumberInput(poolForm.length_m);
+    const depthM = parseNumberInput(poolForm.depth_m);
+    const price = parseNumberInput(poolForm.price);
+    const rawStockQuantity = parseNumberInput(poolForm.stock_quantity);
+
     if (!poolName) {
       setErrorText("Preencha pelo menos o nome da piscina antes de salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (widthM == null || widthM <= 0) {
+      setErrorText("Preencha a largura da piscina para salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (lengthM == null || lengthM <= 0) {
+      setErrorText("Preencha o comprimento da piscina para salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (depthM == null || depthM <= 0) {
+      setErrorText("Preencha a profundidade da piscina para salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (!poolShape) {
+      setErrorText("Preencha o formato da piscina para salvar.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (!poolMaterial) {
+      setErrorText("Preencha o material da piscina para salvar.");
       setSuccessText(null);
       return;
     }
@@ -2744,22 +2782,93 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
     setSuccessText(null);
 
+    let createdPoolId: string | null = null;
+    const uploadedStoragePaths: string[] = [];
+
     try {
       const composedPoolDescription = buildPoolManualDescription(poolForm);
+      const shapeKey = normalizeLoose(poolShape);
+      const capacityFactor =
+        shapeKey.includes("oval") || shapeKey.includes("redond") || shapeKey.includes("circul") ? 0.85 : 1;
+      const maxCapacityL = Math.max(0, Math.round(widthM * lengthM * depthM * 1000 * capacityFactor));
+      const stockQuantity =
+        rawStockQuantity == null ? null : Math.max(0, Math.round(rawStockQuantity));
 
       const insertPayload = {
         organization_id: organizationId,
         store_id: activeStoreId,
         name: poolName,
+        width_m: widthM,
+        length_m: lengthM,
+        depth_m: depthM,
+        shape: poolShape,
+        material: poolMaterial,
+        max_capacity_l: maxCapacityL,
+        weight_kg: null,
+        price,
         description: composedPoolDescription || null,
-        price: parseNumberInput(poolForm.price),
-        stock_quantity: parseNumberInput(poolForm.stock_quantity),
         is_active: poolForm.is_active,
         track_stock: poolForm.track_stock,
+        stock_quantity: poolForm.track_stock ? stockQuantity : null,
       };
 
-      const { error } = await supabase.from("pools").insert(insertPayload);
-      if (error) throw error;
+      const { data: createdPool, error: insertError } = await supabase
+        .from("pools")
+        .insert(insertPayload)
+        .select("id")
+        .single();
+
+      if (insertError) throw insertError;
+
+      createdPoolId = createdPool.id;
+
+      if (poolPhotos.length > 0) {
+        const photoRows: Array<{
+          pool_id: string;
+          organization_id: string;
+          store_id: string;
+          storage_path: string;
+          file_name: string;
+          file_size_bytes: number;
+          sort_order: number;
+        }> = [];
+
+        for (let index = 0; index < poolPhotos.length; index += 1) {
+          const file = poolPhotos[index];
+          const extension =
+            file.name.split(".").pop()?.toLowerCase() ||
+            file.type.split("/").pop()?.toLowerCase() ||
+            "jpg";
+          const safeFileName = `${crypto.randomUUID()}.${extension}`;
+          const storagePath = `${organizationId}/${activeStoreId}/${createdPoolId}/${safeFileName}`;
+
+          const { error: uploadError } = await supabase.storage
+            .from("pool-photos")
+            .upload(storagePath, file, {
+              cacheControl: "3600",
+              upsert: false,
+            });
+
+          if (uploadError) throw uploadError;
+
+          uploadedStoragePaths.push(storagePath);
+          photoRows.push({
+            pool_id: createdPoolId,
+            organization_id: organizationId,
+            store_id: activeStoreId,
+            storage_path: storagePath,
+            file_name: file.name,
+            file_size_bytes: file.size,
+            sort_order: index,
+          });
+        }
+
+        const { error: photoInsertError } = await supabase
+          .from("pool_photos")
+          .insert(photoRows);
+
+        if (photoInsertError) throw photoInsertError;
+      }
 
       setPoolForm(createEmptyPoolForm());
       setPoolPhotos([]);
@@ -2769,11 +2878,20 @@ export default function ConfiguracoesPage() {
       }));
       setSuccessText(
         poolPhotos.length > 0
-          ? "Piscina salva. As fotos ainda precisam ser conectadas ao fluxo final de upload sem quebrar o restante do sistema."
+          ? "Piscina e fotos salvas com sucesso."
           : "Piscina salva com sucesso."
       );
       await fetchPageData();
     } catch (error: any) {
+      if (uploadedStoragePaths.length > 0) {
+        await supabase.storage.from("pool-photos").remove(uploadedStoragePaths);
+      }
+
+      if (createdPoolId) {
+        await supabase.from("pool_photos").delete().eq("pool_id", createdPoolId);
+        await supabase.from("pools").delete().eq("id", createdPoolId);
+      }
+
       setErrorText(error?.message ?? "Erro ao salvar a piscina manualmente.");
     } finally {
       setSavingPool(false);
