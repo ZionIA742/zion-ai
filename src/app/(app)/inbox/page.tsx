@@ -1,4 +1,4 @@
-"use client";
+ "use client";
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -68,10 +68,11 @@ function formatBlockedReason(value: string | null) {
   if (normalized === "humano_ativo") return "Humano ativo";
   if (normalized === "aguardando_janela") return "Aguardando janela";
   if (normalized === "sem_mensagem_cliente") return "Sem mensagem do cliente";
-  if (normalized === "cliente_ainda_recente") return "Cliente ainda recente";
+  if (normalized === "cliente_ainda_recente") return "Cliente recente";
   if (normalized === "acao_ja_enfileirada") return "Ação já enfileirada";
+  if (normalized === "followup_recente") return "Follow-up recente";
 
-  return normalized;
+  return value || "-";
 }
 
 function formatSuggestedAction(value: string | null) {
@@ -81,6 +82,38 @@ function formatSuggestedAction(value: string | null) {
   if (normalized === "followup_visit") return "Follow-up de visita";
 
   return value || "-";
+}
+
+function formatDaysStopped(hours: number | null) {
+  if (hours == null || Number.isNaN(hours)) return "-";
+
+  const days = hours / 24;
+
+  if (days >= 1) {
+    return `${days.toFixed(1)}d • ${hours.toFixed(1)}h`;
+  }
+
+  return `${hours.toFixed(1)}h`;
+}
+
+function chipClasses(kind: "ok" | "warn" | "blocked" | "human" | "ia") {
+  if (kind === "ok") {
+    return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
+  }
+
+  if (kind === "warn") {
+    return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
+  }
+
+  if (kind === "blocked") {
+    return "bg-gray-100 text-gray-700 ring-1 ring-black/10";
+  }
+
+  if (kind === "human") {
+    return "bg-blue-50 text-blue-700 ring-1 ring-blue-200";
+  }
+
+  return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
 }
 
 export default function InboxPage() {
@@ -106,41 +139,36 @@ export default function InboxPage() {
     return !storeLoading && !!organizationId;
   }, [storeLoading, organizationId]);
 
-  const loadFollowupCandidates = useCallback(
-    async () => {
-      if (!organizationId) return;
+  const loadFollowupCandidates = useCallback(async () => {
+    if (!organizationId) return;
 
-      const { data, error } = await supabase.rpc(
-        "panel_list_followup_candidates_scoped",
-        {
-          p_organization_id: organizationId,
-          p_store_id: activeStoreId ?? null,
-          p_followup_type: "offer",
-          p_min_hours_since_customer: 24,
-          p_limit: 20,
-        }
-      );
-
-      if (error) {
-        console.error("[InboxPage] panel_list_followup_candidates_scoped error:", error);
-        setFollowupErrorText(error.message);
-        setFollowupRows([]);
-        return;
+    const { data, error } = await supabase.rpc(
+      "panel_list_followup_candidates_scoped",
+      {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId ?? null,
+        p_followup_type: "offer",
+        p_min_hours_since_customer: 24,
+        p_limit: 20,
       }
+    );
 
-      setFollowupErrorText(null);
-      setFollowupRows((data || []) as FollowupCandidateRow[]);
-    },
-    [organizationId, activeStoreId]
-  );
+    if (error) {
+      console.error("[InboxPage] panel_list_followup_candidates_scoped error:", error);
+      setFollowupErrorText(error.message);
+      setFollowupRows([]);
+      return;
+    }
+
+    setFollowupErrorText(null);
+    setFollowupRows((data || []) as FollowupCandidateRow[]);
+  }, [organizationId, activeStoreId]);
 
   const loadInbox = useCallback(
     async (options?: { silent?: boolean }) => {
       const silent = options?.silent ?? false;
 
-      if (!canLoadInbox || !organizationId) {
-        return;
-      }
+      if (!canLoadInbox || !organizationId) return;
 
       if (silent) {
         setRefreshing(true);
@@ -293,22 +321,12 @@ export default function InboxPage() {
   return (
     <div className="min-h-screen bg-gray-100">
       <div className="mx-auto max-w-7xl px-6 py-6">
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
-
-              {pendingReplyCount > 0 && !loading && !storeLoading ? (
-                <span className="inline-flex min-w-[28px] items-center justify-center rounded-full bg-amber-500 px-2.5 py-1 text-xs font-bold text-white">
-                  {pendingReplyCount}
-                </span>
-              ) : null}
-            </div>
-
-            <p className="text-sm text-gray-600">
+            <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
+            <p className="mt-1 text-sm text-gray-600">
               Conversas reais vindas da função oficial do backend.
             </p>
-
             <div className="mt-2 text-xs text-gray-500">
               {storeLoading
                 ? "Carregando contexto da loja..."
@@ -337,37 +355,29 @@ export default function InboxPage() {
           </div>
         </div>
 
-        {pendingReplyCount > 0 && !loading && !storeLoading ? (
-          <div className="mb-4 rounded-2xl bg-amber-50 p-4 text-amber-900 ring-1 ring-amber-200">
-            <div className="text-sm font-semibold">
-              Você tem {pendingReplyCount} conversa(s) com mensagem pendente de resposta.
-            </div>
-            <div className="mt-1 text-sm">
-              Essas conversas estão destacadas abaixo.
-            </div>
-          </div>
-        ) : null}
-
-        {errorText && (
+        {errorText ? (
           <div className="mb-4 rounded-xl bg-red-50 p-4 text-red-800 ring-1 ring-red-200">
             {errorText}
           </div>
-        )}
+        ) : null}
 
-        <div className="mb-6 rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+        <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
           <div className="border-b border-black/5 px-4 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">
-                  Candidatas a follow-up
-                </h2>
+                <h2 className="text-lg font-semibold text-gray-900">Inbox operacional</h2>
                 <p className="mt-1 text-sm text-gray-600">
-                  Conversas frias que podem receber follow-up manual controlado.
+                  Conversas pendentes e candidatas a follow-up dentro de um único bloco.
                 </p>
               </div>
 
-              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                {actionableFollowupCount} liberada(s) / {followupRows.length} total
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-200">
+                  {pendingReplyCount} pendente(s)
+                </span>
+                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                  {actionableFollowupCount} follow-up liberado(s)
+                </span>
               </div>
             </div>
           </div>
@@ -384,202 +394,218 @@ export default function InboxPage() {
             </div>
           ) : null}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="border-b border-black/5 bg-gray-50">
-                <tr className="text-left text-gray-600">
-                  <th className="px-4 py-3 font-semibold">Lead</th>
-                  <th className="px-4 py-3 font-semibold">Status</th>
-                  <th className="px-4 py-3 font-semibold">Último cliente</th>
-                  <th className="px-4 py-3 font-semibold">Horas paradas</th>
-                  <th className="px-4 py-3 font-semibold">Ação sugerida</th>
-                  <th className="px-4 py-3 font-semibold">Bloqueio</th>
-                  <th className="px-4 py-3 font-semibold text-right">Ação</th>
-                </tr>
-              </thead>
+          <div className="border-b border-black/5 px-4 py-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Candidatas a follow-up</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  Conversas frias que podem receber follow-up manual controlado.
+                </p>
+              </div>
 
-              <tbody>
-                {!loading && followupRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
-                      Nenhuma candidata a follow-up encontrada.
-                    </td>
-                  </tr>
-                ) : (
-                  followupRows.map((row) => {
-                    const blocked = !!row.blocked_reason;
-                    const isTriggering = triggeringConversationId === row.conversation_id;
+              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                {actionableFollowupCount} liberada(s) / {followupRows.length} total
+              </div>
+            </div>
 
-                    return (
-                      <tr
-                        key={row.conversation_id}
-                        className={`border-b border-black/5 ${
-                          blocked ? "bg-gray-50" : "hover:bg-gray-50"
-                        }`}
-                      >
-                        <td className="px-4 py-3">
+            <div className="space-y-3">
+              {!loading && followupRows.length === 0 ? (
+                <div className="rounded-xl bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/5">
+                  Nenhuma candidata a follow-up encontrada.
+                </div>
+              ) : (
+                followupRows.map((row) => {
+                  const blocked = !!row.blocked_reason;
+                  const isTriggering = triggeringConversationId === row.conversation_id;
+
+                  return (
+                    <div
+                      key={row.conversation_id}
+                      className="rounded-2xl bg-gray-50 px-4 py-4 ring-1 ring-black/5"
+                    >
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0 flex-1">
                           <div className="font-semibold text-gray-900">
                             {row.lead_name || `Lead ${shortId(row.lead_id)}`}
                           </div>
-                          <div className="text-xs text-gray-500">
+                          <div className="mt-1 text-xs text-gray-500">
                             {row.lead_phone || "-"} • {shortId(row.conversation_id)}
                           </div>
-                        </td>
 
-                        <td className="px-4 py-3">{row.conversation_status || "-"}</td>
-
-                        <td className="px-4 py-3">{formatDateTime(row.last_customer_message_at)}</td>
-
-                        <td className="px-4 py-3">
-                          {row.hours_since_customer != null
-                            ? `${row.hours_since_customer}h`
-                            : "-"}
-                        </td>
-
-                        <td className="px-4 py-3">{formatSuggestedAction(row.suggested_action)}</td>
-
-                        <td className="px-4 py-3">
-                          {blocked ? (
-                            <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-300">
-                              {formatBlockedReason(row.blocked_reason)}
+                          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                            <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              {row.conversation_status || "-"}
                             </span>
-                          ) : (
-                            <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-300">
-                              Liberado
-                            </span>
-                          )}
-                        </td>
 
-                        <td className="px-4 py-3 text-right">
-                          <div className="flex justify-end gap-2">
+                            <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              Último cliente: {formatDateTime(row.last_customer_message_at)}
+                            </span>
+
+                            <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              Parado: {formatDaysStopped(row.hours_since_customer)}
+                            </span>
+
+                            <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              {formatSuggestedAction(row.suggested_action)}
+                            </span>
+
+                            {blocked ? (
+                              <span
+                                className={`rounded-full px-2.5 py-1 font-semibold ${chipClasses(
+                                  "warn"
+                                )}`}
+                              >
+                                {formatBlockedReason(row.blocked_reason)}
+                              </span>
+                            ) : (
+                              <span
+                                className={`rounded-full px-2.5 py-1 font-semibold ${chipClasses(
+                                  "ok"
+                                )}`}
+                              >
+                                Liberado
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Link
+                            href={`/crm/lead/${row.lead_id}`}
+                            className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                          >
+                            Abrir
+                          </Link>
+
+                          <button
+                            onClick={() => void triggerManualFollowup(row)}
+                            disabled={blocked || isTriggering}
+                            className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isTriggering ? "Enfileirando..." : "Disparar follow-up"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          <div className="px-4 py-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Últimas mensagens</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  Conversas mais recentes da loja.
+                </p>
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl ring-1 ring-black/5">
+              <table className="w-full text-sm">
+                <thead className="border-b border-black/5 bg-gray-50">
+                  <tr className="text-left text-gray-600">
+                    <th className="px-4 py-3 font-semibold">Lead</th>
+                    <th className="px-4 py-3 font-semibold">Status</th>
+                    <th className="px-4 py-3 font-semibold">Modo</th>
+                    <th className="px-4 py-3 font-semibold">Última mensagem</th>
+                    <th className="px-4 py-3 font-semibold">Preview</th>
+                    <th className="px-4 py-3 font-semibold">Alerta</th>
+                    <th className="px-4 py-3 font-semibold text-right">Ação</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {(loading || storeLoading) && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
+                        Carregando inbox...
+                      </td>
+                    </tr>
+                  )}
+
+                  {!loading && !storeLoading && rows.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
+                        Nenhuma conversa encontrada para a loja atual.
+                      </td>
+                    </tr>
+                  )}
+
+                  {!loading &&
+                    !storeLoading &&
+                    rows.map((row) => {
+                      const isPending = isPendingReply(row);
+
+                      return (
+                        <tr
+                          key={row.conversation_id}
+                          className={`border-b border-black/5 ${
+                            isPending ? "bg-amber-50 hover:bg-amber-100" : "hover:bg-gray-50"
+                          }`}
+                        >
+                          <td className="px-4 py-3">
+                            <div className="font-semibold text-gray-900">
+                              {leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}
+                            </div>
+
+                            <div className="text-xs text-gray-500">
+                              {shortId(row.conversation_id)}
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3">{row.status || "-"}</td>
+
+                          <td className="px-4 py-3">
+                            {row.is_human_active ? (
+                              <span className={`rounded-full px-2 py-1 text-xs font-semibold ${chipClasses("human")}`}>
+                                Humano
+                              </span>
+                            ) : (
+                              <span className={`rounded-full px-2 py-1 text-xs font-semibold ${chipClasses("ia")}`}>
+                                IA
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="px-4 py-3">{formatDateTime(row.last_message_at)}</td>
+
+                          <td className="max-w-md truncate px-4 py-3 text-gray-600">
+                            {row.last_message_preview || "-"}
+                          </td>
+
+                          <td className="px-4 py-3">
+                            {isPending ? (
+                              <span className={`rounded-full px-2 py-1 text-xs font-semibold ${chipClasses("warn")}`}>
+                                Pendente
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-400">-</span>
+                            )}
+
+                            <div className="mt-1 text-[11px] text-gray-500">
+                              {formatDirection(row.last_message_direction)}
+                              {row.last_message_sender ? ` • ${row.last_message_sender}` : ""}
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3 text-right">
                             <Link
                               href={`/crm/lead/${row.lead_id}`}
-                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                              className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white hover:opacity-90"
                             >
                               Abrir
                             </Link>
-
-                            <button
-                              onClick={() => void triggerManualFollowup(row)}
-                              disabled={blocked || isTriggering}
-                              className="rounded-xl bg-black px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {isTriggering ? "Enfileirando..." : "Disparar follow-up"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-
-        <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-          <table className="w-full text-sm">
-            <thead className="border-b border-black/5 bg-gray-50">
-              <tr className="text-left text-gray-600">
-                <th className="px-4 py-3 font-semibold">Lead</th>
-                <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Modo</th>
-                <th className="px-4 py-3 font-semibold">Última mensagem</th>
-                <th className="px-4 py-3 font-semibold">Preview</th>
-                <th className="px-4 py-3 font-semibold">Alerta</th>
-                <th className="px-4 py-3 font-semibold text-right">Ação</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {(loading || storeLoading) && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
-                    Carregando inbox...
-                  </td>
-                </tr>
-              )}
-
-              {!loading && !storeLoading && rows.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
-                    Nenhuma conversa encontrada para a loja atual.
-                  </td>
-                </tr>
-              )}
-
-              {!loading &&
-                !storeLoading &&
-                rows.map((row) => {
-                  const isPending = isPendingReply(row);
-
-                  return (
-                    <tr
-                      key={row.conversation_id}
-                      className={`border-b border-black/5 ${
-                        isPending ? "bg-amber-50 hover:bg-amber-100" : "hover:bg-gray-50"
-                      }`}
-                    >
-                      <td className="px-4 py-3">
-                        <div className="font-semibold text-gray-900">
-                          {leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}
-                        </div>
-
-                        <div className="text-xs text-gray-500">
-                          {shortId(row.conversation_id)}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3">{row.status || "-"}</td>
-
-                      <td className="px-4 py-3">
-                        {row.is_human_active ? (
-                          <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-200">
-                            Humano
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
-                            IA
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="px-4 py-3">{formatDateTime(row.last_message_at)}</td>
-
-                      <td className="max-w-md truncate px-4 py-3 text-gray-600">
-                        {row.last_message_preview || "-"}
-                      </td>
-
-                      <td className="px-4 py-3">
-                        {isPending ? (
-                          <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-300">
-                            Pendente
-                          </span>
-                        ) : (
-                          <span className="text-xs text-gray-400">-</span>
-                        )}
-
-                        <div className="mt-1 text-[11px] text-gray-500">
-                          {formatDirection(row.last_message_direction)}
-                          {row.last_message_sender
-                            ? ` • ${row.last_message_sender}`
-                            : ""}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3 text-right">
-                        <Link
-                          href={`/crm/lead/${row.lead_id}`}
-                          className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-                        >
-                          Abrir
-                        </Link>
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
         </div>
       </div>
     </div>
