@@ -62,7 +62,7 @@ type AppointmentCreateForm = {
   notes: string;
 };
 
-type BlockCreateForm = {
+type BlockForm = {
   title: string;
   blockType: string;
   startAt: string;
@@ -306,6 +306,16 @@ function createAppointmentFormFromItem(item: ScheduleItem): AppointmentEditForm 
   };
 }
 
+function createBlockFormFromItem(item: ScheduleItem): BlockForm {
+  return {
+    title: item.title || "",
+    blockType: item.itemType || "manual_block",
+    startAt: toDateTimeLocalValue(item.startAt),
+    endAt: toDateTimeLocalValue(item.endAt),
+    notes: item.notes || "",
+  };
+}
+
 function createDefaultAppointmentCreateForm(
   selectedDateKey: string
 ): AppointmentCreateForm {
@@ -351,7 +361,7 @@ function createDefaultAppointmentCreateForm(
   };
 }
 
-function createDefaultBlockForm(selectedDateKey: string): BlockCreateForm {
+function createDefaultBlockForm(selectedDateKey: string): BlockForm {
   const base = selectedDateKey
     ? new Date(`${selectedDateKey}T09:00:00`)
     : new Date();
@@ -412,11 +422,12 @@ export default function SchedulePage() {
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState<AppointmentEditForm | null>(null);
+  const [blockEditForm, setBlockEditForm] = useState<BlockForm | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [saveErrorText, setSaveErrorText] = useState<string | null>(null);
 
   const [createBlockOpen, setCreateBlockOpen] = useState(false);
-  const [blockForm, setBlockForm] = useState<BlockCreateForm>(() =>
+  const [blockForm, setBlockForm] = useState<BlockForm>(() =>
     createDefaultBlockForm(toDateKey(new Date()))
   );
   const [savingBlock, setSavingBlock] = useState(false);
@@ -513,12 +524,19 @@ export default function SchedulePage() {
           setSelectedItem(refreshedSelectedItem);
 
           if (refreshedSelectedItem && editModeRef.current) {
-            setEditForm(createAppointmentFormFromItem(refreshedSelectedItem));
+            if (refreshedSelectedItem.itemKind === "appointment") {
+              setEditForm(createAppointmentFormFromItem(refreshedSelectedItem));
+              setBlockEditForm(null);
+            } else if (refreshedSelectedItem.itemKind === "block") {
+              setBlockEditForm(createBlockFormFromItem(refreshedSelectedItem));
+              setEditForm(null);
+            }
           }
 
           if (!refreshedSelectedItem) {
             setEditMode(false);
             setEditForm(null);
+            setBlockEditForm(null);
             setSaveErrorText(null);
           }
         }
@@ -655,9 +673,18 @@ export default function SchedulePage() {
 
     if (item.itemKind === "appointment") {
       setEditForm(createAppointmentFormFromItem(item));
-    } else {
-      setEditForm(null);
+      setBlockEditForm(null);
+      return;
     }
+
+    if (item.itemKind === "block") {
+      setBlockEditForm(createBlockFormFromItem(item));
+      setEditForm(null);
+      return;
+    }
+
+    setEditForm(null);
+    setBlockEditForm(null);
   }
 
   function closeItemDetails() {
@@ -667,29 +694,63 @@ export default function SchedulePage() {
     setSelectedItem(null);
     setEditMode(false);
     setEditForm(null);
+    setBlockEditForm(null);
     setSaveErrorText(null);
   }
 
   function startEditingSelectedItem() {
-    if (!selectedItem || selectedItem.itemKind !== "appointment") return;
-    setEditForm(createAppointmentFormFromItem(selectedItem));
-    setEditMode(true);
-    editModeRef.current = true;
-    setSaveErrorText(null);
-  }
+    if (!selectedItem) return;
 
-  function cancelEditingSelectedItem() {
-    if (!selectedItem || selectedItem.itemKind !== "appointment") {
-      setEditMode(false);
-      editModeRef.current = false;
-      setEditForm(null);
+    if (selectedItem.itemKind === "appointment") {
+      setEditForm(createAppointmentFormFromItem(selectedItem));
+      setBlockEditForm(null);
+      setEditMode(true);
+      editModeRef.current = true;
       setSaveErrorText(null);
       return;
     }
 
-    setEditForm(createAppointmentFormFromItem(selectedItem));
+    if (selectedItem.itemKind === "block") {
+      setBlockEditForm(createBlockFormFromItem(selectedItem));
+      setEditForm(null);
+      setEditMode(true);
+      editModeRef.current = true;
+      setSaveErrorText(null);
+    }
+  }
+
+  function cancelEditingSelectedItem() {
+    if (!selectedItem) {
+      setEditMode(false);
+      editModeRef.current = false;
+      setEditForm(null);
+      setBlockEditForm(null);
+      setSaveErrorText(null);
+      return;
+    }
+
+    if (selectedItem.itemKind === "appointment") {
+      setEditForm(createAppointmentFormFromItem(selectedItem));
+      setBlockEditForm(null);
+      setEditMode(false);
+      editModeRef.current = false;
+      setSaveErrorText(null);
+      return;
+    }
+
+    if (selectedItem.itemKind === "block") {
+      setBlockEditForm(createBlockFormFromItem(selectedItem));
+      setEditForm(null);
+      setEditMode(false);
+      editModeRef.current = false;
+      setSaveErrorText(null);
+      return;
+    }
+
     setEditMode(false);
     editModeRef.current = false;
+    setEditForm(null);
+    setBlockEditForm(null);
     setSaveErrorText(null);
   }
 
@@ -804,6 +865,93 @@ export default function SchedulePage() {
     }
   }
 
+  async function saveBlockEdit() {
+    if (!selectedItem || selectedItem.itemKind !== "block" || !blockEditForm) {
+      return;
+    }
+
+    if (!organizationId || !activeStoreId) {
+      setSaveErrorText("Contexto da loja não encontrado.");
+      return;
+    }
+
+    setSavingEdit(true);
+    setSaveErrorText(null);
+
+    try {
+      const startDate = new Date(blockEditForm.startAt);
+      const endDate = new Date(blockEditForm.endAt);
+
+      if (!blockEditForm.title.trim()) {
+        setSaveErrorText("Preencha o título do bloqueio.");
+        setSavingEdit(false);
+        return;
+      }
+
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        setSaveErrorText("Preencha um período válido.");
+        setSavingEdit(false);
+        return;
+      }
+
+      const { data, error } = await supabase.rpc("update_store_schedule_block", {
+        p_block_id: selectedItem.itemId,
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_title: blockEditForm.title.trim(),
+        p_block_type: blockEditForm.blockType,
+        p_start_at: startDate.toISOString(),
+        p_end_at: endDate.toISOString(),
+        p_notes: blockEditForm.notes.trim() || null,
+      });
+
+      if (error) {
+        setSaveErrorText(error.message);
+        setSavingEdit(false);
+        return;
+      }
+
+      const updatedItem = data
+        ? ({
+            itemKind: "block",
+            itemId: data.id,
+            organizationId: data.organization_id,
+            storeId: data.store_id,
+            leadId: null,
+            conversationId: null,
+            title: data.title,
+            itemType: data.block_type,
+            status: "blocked",
+            startAt: data.start_at,
+            endAt: data.end_at,
+            customerName: null,
+            customerPhone: null,
+            addressText: null,
+            notes: data.notes,
+            source: data.source,
+            createdByUserId: data.created_by_user_id,
+            createdAt: data.created_at,
+            updatedAt: data.updated_at,
+          } as ScheduleItem)
+        : null;
+
+      if (updatedItem) {
+        selectedItemRef.current = updatedItem;
+        setSelectedItem(updatedItem);
+        setBlockEditForm(createBlockFormFromItem(updatedItem));
+      }
+
+      setEditMode(false);
+      editModeRef.current = false;
+
+      await loadSchedule({ silent: true });
+      setSavingEdit(false);
+    } catch (error: any) {
+      setSaveErrorText(error?.message || "Erro inesperado ao salvar bloqueio.");
+      setSavingEdit(false);
+    }
+  }
+
   async function cancelAppointment() {
     if (!selectedItem || selectedItem.itemKind !== "appointment") return;
 
@@ -874,6 +1022,52 @@ export default function SchedulePage() {
       setSaveErrorText(
         error?.message || "Erro inesperado ao cancelar compromisso."
       );
+      setSavingEdit(false);
+    }
+  }
+
+  async function deleteBlock() {
+    if (!selectedItem || selectedItem.itemKind !== "block") return;
+
+    if (!organizationId || !activeStoreId) {
+      setSaveErrorText("Contexto da loja não encontrado.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Tem certeza que deseja excluir este bloqueio?"
+    );
+
+    if (!confirmed) return;
+
+    setSavingEdit(true);
+    setSaveErrorText(null);
+
+    try {
+      const { error } = await supabase.rpc("delete_store_schedule_block", {
+        p_block_id: selectedItem.itemId,
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+      });
+
+      if (error) {
+        setSaveErrorText(error.message);
+        setSavingEdit(false);
+        return;
+      }
+
+      selectedItemRef.current = null;
+      setSelectedItem(null);
+      setEditMode(false);
+      editModeRef.current = false;
+      setEditForm(null);
+      setBlockEditForm(null);
+      setSaveErrorText(null);
+
+      await loadSchedule({ silent: true });
+      setSavingEdit(false);
+    } catch (error: any) {
+      setSaveErrorText(error?.message || "Erro inesperado ao excluir bloqueio.");
       setSavingEdit(false);
     }
   }
@@ -1006,10 +1200,10 @@ export default function SchedulePage() {
               {storeLoading
                 ? "Carregando contexto da loja..."
                 : storeError
-                ? `Erro no contexto da loja: ${storeError}`
-                : `Loja ativa: ${activeStore?.name ?? "Sem loja ativa"} • Organização: ${
-                    organizationId ?? "-"
-                  }`}
+                  ? `Erro no contexto da loja: ${storeError}`
+                  : `Loja ativa: ${activeStore?.name ?? "Sem loja ativa"} • Organização: ${
+                      organizationId ?? "-"
+                    }`}
             </div>
           </div>
 
@@ -1220,7 +1414,7 @@ export default function SchedulePage() {
                             {item.title}
                           </div>
                           <div className="mt-1 text-xs text-gray-500">
-                            {formatItemKind(item.itemKind)} •{" "}
+                            {formatItemKind(item.itemKind)} • {" "}
                             {formatItemType(item.itemType)}
                           </div>
                         </div>
@@ -1342,11 +1536,22 @@ export default function SchedulePage() {
                   </div>
                 ) : null}
 
-                {selectedItem.itemKind === "block" ? (
-                  <div className="mb-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-200">
-                    A edição de bloqueio ainda não está conectada ao banco. A leitura e
-                    criação já estão prontas, mas para salvar edição de bloqueios ainda
-                    precisamos criar a função segura específica.
+                {selectedItem.itemKind === "block" && !editMode ? (
+                  <div className="mb-5 flex flex-wrap gap-3">
+                    <button
+                      onClick={startEditingSelectedItem}
+                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+                    >
+                      Editar bloqueio
+                    </button>
+
+                    <button
+                      onClick={() => void deleteBlock()}
+                      disabled={savingEdit}
+                      className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Excluir bloqueio
+                    </button>
                   </div>
                 ) : null}
 
@@ -1536,7 +1741,117 @@ export default function SchedulePage() {
                       </button>
                     </div>
                   </div>
-                ) : (
+                ) : null}
+
+                {selectedItem.itemKind === "block" && editMode && blockEditForm ? (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Título
+                      </label>
+                      <input
+                        value={blockEditForm.title}
+                        onChange={(e) =>
+                          setBlockEditForm((prev) =>
+                            prev ? { ...prev, title: e.target.value } : prev
+                          )
+                        }
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Tipo do bloqueio
+                      </label>
+                      <select
+                        value={blockEditForm.blockType}
+                        onChange={(e) =>
+                          setBlockEditForm((prev) =>
+                            prev ? { ...prev, blockType: e.target.value } : prev
+                          )
+                        }
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      >
+                        <option value="manual_block">Bloqueio manual</option>
+                        <option value="personal_unavailable">Indisponível</option>
+                        <option value="team_unavailable">Equipe indisponível</option>
+                        <option value="holiday">Feriado</option>
+                        <option value="other">Outro</option>
+                      </select>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Início
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={blockEditForm.startAt}
+                          onChange={(e) =>
+                            setBlockEditForm((prev) =>
+                              prev ? { ...prev, startAt: e.target.value } : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                          Fim
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={blockEditForm.endAt}
+                          onChange={(e) =>
+                            setBlockEditForm((prev) =>
+                              prev ? { ...prev, endAt: e.target.value } : prev
+                            )
+                          }
+                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Observações
+                      </label>
+                      <textarea
+                        value={blockEditForm.notes}
+                        onChange={(e) =>
+                          setBlockEditForm((prev) =>
+                            prev ? { ...prev, notes: e.target.value } : prev
+                          )
+                        }
+                        rows={5}
+                        className="w-full rounded-2xl border border-black/10 px-3 py-3 text-sm outline-none focus:border-black"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap gap-3 pt-2">
+                      <button
+                        onClick={() => void saveBlockEdit()}
+                        disabled={savingEdit}
+                        className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {savingEdit ? "Salvando..." : "Salvar bloqueio"}
+                      </button>
+
+                      <button
+                        onClick={cancelEditingSelectedItem}
+                        disabled={savingEdit}
+                        className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Cancelar edição
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {!editMode ? (
                   <div className="space-y-4">
                     <div className="rounded-2xl bg-gray-50 p-4">
                       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
@@ -1595,7 +1910,7 @@ export default function SchedulePage() {
                       </div>
                     </div>
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
           </div>
