@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
 
@@ -36,6 +36,9 @@ type FollowupCandidateRow = {
   suggested_action: string | null;
   blocked_reason: string | null;
 };
+
+const INBOX_OPEN_SECTION_KEY = "zion:inbox:open-section";
+const INBOX_SCROLL_KEY = "zion:inbox:scroll";
 
 function formatDateTime(value: string | null) {
   if (!value) return "-";
@@ -98,7 +101,7 @@ function chipClasses(kind: "ok" | "warn" | "human" | "ia" | "pending" | "neutral
   if (kind === "ok") return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
   if (kind === "warn") return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
   if (kind === "human") return "bg-blue-50 text-blue-700 ring-1 ring-blue-200";
-  if (kind === "pending") return "bg-amber-100 text-amber-800 ring-1 ring-amber-300";
+  if (kind === "pending") return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
   if (kind === "neutral") return "bg-gray-100 text-gray-700 ring-1 ring-black/10";
   return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
 }
@@ -140,11 +143,49 @@ export default function InboxPage() {
   const [followupErrorText, setFollowupErrorText] = useState<string | null>(null);
   const [followupStatusText, setFollowupStatusText] = useState<string | null>(null);
   const [triggeringConversationId, setTriggeringConversationId] = useState<string | null>(null);
-  const [openSection, setOpenSection] = useState<"followup" | "messages" | null>("messages");
+  const [openSection, setOpenSection] = useState<"followup" | "messages" | null>(null);
+
+  const restoredSectionRef = useRef(false);
+  const restoredScrollRef = useRef(false);
 
   const canLoadInbox = useMemo(() => {
     return !storeLoading && !!organizationId;
   }, [storeLoading, organizationId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || restoredSectionRef.current) return;
+
+    const saved = window.localStorage.getItem(INBOX_OPEN_SECTION_KEY);
+    if (saved === "followup" || saved === "messages") {
+      setOpenSection(saved);
+    } else {
+      setOpenSection(null);
+    }
+
+    restoredSectionRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (openSection) {
+      window.localStorage.setItem(INBOX_OPEN_SECTION_KEY, openSection);
+    } else {
+      window.localStorage.removeItem(INBOX_OPEN_SECTION_KEY);
+    }
+  }, [openSection]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const saveScroll = () => {
+      window.sessionStorage.setItem(INBOX_SCROLL_KEY, String(window.scrollY));
+    };
+
+    saveScroll();
+    window.addEventListener("scroll", saveScroll, { passive: true });
+    return () => window.removeEventListener("scroll", saveScroll);
+  }, []);
 
   const loadFollowupCandidates = useCallback(async () => {
     if (!organizationId) return;
@@ -254,6 +295,20 @@ export default function InboxPage() {
     return () => window.clearInterval(interval);
   }, [canLoadInbox, loadInbox]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (loading || storeLoading) return;
+    if (restoredScrollRef.current) return;
+
+    const saved = window.sessionStorage.getItem(INBOX_SCROLL_KEY);
+    const parsed = saved ? Number(saved) : 0;
+
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: Number.isFinite(parsed) ? parsed : 0, behavior: "auto" });
+      restoredScrollRef.current = true;
+    });
+  }, [loading, storeLoading]);
+
   const pendingReplyCount = useMemo(() => rows.filter(isPendingReply).length, [rows]);
 
   const actionableFollowupCount = useMemo(
@@ -353,7 +408,7 @@ export default function InboxPage() {
 
           <div className="flex items-center gap-3">
             {refreshing ? (
-              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 ring-1 ring-black/10">
+              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-black/10">
                 Atualizando...
               </div>
             ) : null}
@@ -398,24 +453,24 @@ export default function InboxPage() {
               className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
             >
               <div className="flex items-start justify-between gap-3">
-                <div>
+                <div className="min-w-0">
                   <div className="text-base font-semibold text-gray-900">Últimas mensagens</div>
                   <div className="mt-1 text-sm text-gray-600">
                     Conversas recentes e quem está aguardando resposta.
                   </div>
                 </div>
 
-                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${chipClasses("pending")}`}>
+                <span className="shrink-0 rounded-full bg-white px-3 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-black/10">
                   {formatCounter(
                     pendingReplyCount,
                     "pendência",
                     "pendências",
-                    "Nenhuma pendência"
+                    "Sem pendências"
                   )}
                 </span>
               </div>
 
-              <div className="mt-3 text-xs font-semibold text-gray-500">
+              <div className="mt-3 text-xs font-medium text-gray-500">
                 {openSection === "messages" ? "Ocultar detalhes" : "Abrir detalhes"}
               </div>
             </button>
@@ -426,24 +481,24 @@ export default function InboxPage() {
               className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
             >
               <div className="flex items-start justify-between gap-3">
-                <div>
+                <div className="min-w-0">
                   <div className="text-base font-semibold text-gray-900">Follow-up</div>
                   <div className="mt-1 text-sm text-gray-600">
                     Conversas disponíveis ou bloqueadas para follow-up.
                   </div>
                 </div>
 
-                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                <span className="shrink-0 rounded-full bg-white px-3 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-black/10">
                   {formatCounter(
                     actionableFollowupCount,
-                    "follow-up liberado",
-                    "follow-ups liberados",
-                    "Nenhum follow-up liberado"
+                    "liberado",
+                    "liberados",
+                    "Nenhum liberado"
                   )}
                 </span>
               </div>
 
-              <div className="mt-3 text-xs font-semibold text-gray-500">
+              <div className="mt-3 text-xs font-medium text-gray-500">
                 {openSection === "followup" ? "Ocultar detalhes" : "Abrir detalhes"}
               </div>
             </button>
@@ -473,7 +528,7 @@ export default function InboxPage() {
                       >
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                           <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                               <div className="font-semibold text-gray-900">
                                 {leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}
                               </div>
@@ -481,12 +536,12 @@ export default function InboxPage() {
                             </div>
 
                             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                              <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              <span className="rounded-full bg-white px-2.5 py-1 font-medium text-gray-700 ring-1 ring-black/10">
                                 {row.status || "-"}
                               </span>
 
                               <span
-                                className={`rounded-full px-2.5 py-1 font-semibold ${
+                                className={`rounded-full px-2.5 py-1 font-medium ${
                                   row.is_human_active ? chipClasses("human") : chipClasses("ia")
                                 }`}
                               >
@@ -494,18 +549,18 @@ export default function InboxPage() {
                               </span>
 
                               {pending ? (
-                                <span className={`rounded-full px-2.5 py-1 font-semibold ${chipClasses("pending")}`}>
+                                <span className={`rounded-full px-2.5 py-1 font-medium ${chipClasses("pending")}`}>
                                   Cliente aguardando resposta
                                 </span>
                               ) : (
-                                <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                                <span className="rounded-full bg-white px-2.5 py-1 font-medium text-gray-700 ring-1 ring-black/10">
                                   {formatDirection(row.last_message_direction)}
                                   {row.last_message_sender ? ` • ${row.last_message_sender}` : ""}
                                 </span>
                               )}
                             </div>
 
-                            <div className="mt-2 grid gap-2 md:grid-cols-[220px,minmax(0,1fr)]">
+                            <div className="mt-2 grid gap-2 md:grid-cols-[180px,minmax(0,1fr)]">
                               <div className="text-sm text-gray-700">{formatDateTime(row.last_message_at)}</div>
                               <div className="break-words text-sm text-gray-700">
                                 {row.last_message_preview || "-"}
@@ -516,7 +571,7 @@ export default function InboxPage() {
                           <div className="flex shrink-0 items-center gap-2">
                             <Link
                               href={`/crm/lead/${row.lead_id}`}
-                              className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white hover:opacity-90"
+                              className="rounded-xl bg-black px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
                             >
                               Abrir
                             </Link>
@@ -553,7 +608,7 @@ export default function InboxPage() {
                       >
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                           <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                               <div className="font-semibold text-gray-900">
                                 {row.lead_name || `Lead ${shortId(row.lead_id)}`}
                               </div>
@@ -563,24 +618,24 @@ export default function InboxPage() {
                             </div>
 
                             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                              <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              <span className="rounded-full bg-white px-2.5 py-1 font-medium text-gray-700 ring-1 ring-black/10">
                                 {row.conversation_status || "-"}
                               </span>
 
-                              <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              <span className="rounded-full bg-white px-2.5 py-1 font-medium text-gray-700 ring-1 ring-black/10">
                                 Último cliente: {formatDateTime(row.last_customer_message_at)}
                               </span>
 
-                              <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              <span className="rounded-full bg-white px-2.5 py-1 font-medium text-gray-700 ring-1 ring-black/10">
                                 Parado: {formatStoppedTime(row.hours_since_customer)}
                               </span>
 
-                              <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                              <span className="rounded-full bg-white px-2.5 py-1 font-medium text-gray-700 ring-1 ring-black/10">
                                 {formatSuggestedAction(row.suggested_action)}
                               </span>
 
                               <span
-                                className={`rounded-full px-2.5 py-1 font-semibold ${
+                                className={`rounded-full px-2.5 py-1 font-medium ${
                                   blocked ? chipClasses("warn") : chipClasses("ok")
                                 }`}
                               >
@@ -592,7 +647,7 @@ export default function InboxPage() {
                           <div className="flex shrink-0 items-center gap-2">
                             <Link
                               href={`/crm/lead/${row.lead_id}`}
-                              className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                              className="rounded-xl bg-white px-3 py-1.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
                             >
                               Abrir
                             </Link>
@@ -600,7 +655,7 @@ export default function InboxPage() {
                             <button
                               onClick={() => void triggerManualFollowup(row)}
                               disabled={blocked || isTriggering}
-                              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                              className="rounded-xl bg-black px-4 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {isTriggering ? "Enfileirando..." : "Disparar follow-up"}
                             </button>
