@@ -80,8 +80,8 @@ function formatBlockedReason(value: string | null) {
 function formatSuggestedAction(value: string | null) {
   const normalized = String(value || "").toLowerCase();
 
-  if (normalized === "followup_offer") return "Follow-up de proposta";
-  if (normalized === "followup_visit") return "Follow-up de visita";
+  if (normalized === "followup_offer") return "Proposta";
+  if (normalized === "followup_visit") return "Visita";
 
   return value || "-";
 }
@@ -399,10 +399,8 @@ export default function InboxPage() {
               {storeLoading
                 ? "Carregando contexto da loja..."
                 : storeError
-                ? `Erro no contexto da loja: ${storeError}`
-                : `Loja ativa: ${activeStore?.name ?? "Todas"} • Organização: ${
-                    organizationId ?? "-"
-                  }`}
+                  ? `Erro no contexto da loja: ${storeError}`
+                  : `Loja ativa: ${activeStore?.name ?? "Todas"} • Organização: ${organizationId ?? "-"}`}
             </div>
           </div>
 
@@ -461,12 +459,7 @@ export default function InboxPage() {
                 </div>
 
                 <span className="shrink-0 rounded-full bg-white px-3 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-black/10">
-                  {formatCounter(
-                    pendingReplyCount,
-                    "pendência",
-                    "pendências",
-                    "Sem pendências"
-                  )}
+                  {formatCounter(pendingReplyCount, "pendência", "pendências", "Sem pendências")}
                 </span>
               </div>
 
@@ -489,12 +482,7 @@ export default function InboxPage() {
                 </div>
 
                 <span className="shrink-0 rounded-full bg-white px-3 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-black/10">
-                  {formatCounter(
-                    actionableFollowupCount,
-                    "liberado",
-                    "liberados",
-                    "Nenhum liberado"
-                  )}
+                  {formatCounter(actionableFollowupCount, "liberado", "liberados", "Nenhum liberado")}
                 </span>
               </div>
 
@@ -522,14 +510,12 @@ export default function InboxPage() {
                     return (
                       <div
                         key={row.conversation_id}
-                        className={`rounded-2xl px-4 py-3 ring-1 ring-black/5 ${
-                          pending ? "bg-amber-50" : "bg-gray-50"
-                        }`}
+                        className={`rounded-2xl px-4 py-3 ring-1 ring-black/5 ${pending ? "bg-amber-50" : "bg-gray-50"}`}
                       >
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <div className="font-semibold text-gray-900">
+                              <div className="text-[15px] font-semibold text-gray-900">
                                 {leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}
                               </div>
                               <div className="text-xs text-gray-500">{shortId(row.conversation_id)}</div>
@@ -541,16 +527,14 @@ export default function InboxPage() {
                               </span>
 
                               <span
-                                className={`rounded-full px-2.5 py-1 font-medium ${
-                                  row.is_human_active ? chipClasses("human") : chipClasses("ia")
-                                }`}
+                                className={`rounded-full px-2.5 py-1 font-medium ${row.is_human_active ? chipClasses("human") : chipClasses("ia")}`}
                               >
                                 {row.is_human_active ? "Humano" : "IA"}
                               </span>
 
                               {pending ? (
                                 <span className={`rounded-full px-2.5 py-1 font-medium ${chipClasses("pending")}`}>
-                                  Cliente aguardando resposta
+                                  Cliente aguardando
                                 </span>
                               ) : (
                                 <span className="rounded-full bg-white px-2.5 py-1 font-medium text-gray-700 ring-1 ring-black/10">
@@ -560,9 +544,9 @@ export default function InboxPage() {
                               )}
                             </div>
 
-                            <div className="mt-2 grid gap-2 md:grid-cols-[180px,minmax(0,1fr)]">
-                              <div className="text-sm text-gray-700">{formatDateTime(row.last_message_at)}</div>
-                              <div className="break-words text-sm text-gray-700">
+                            <div className="mt-2 grid gap-1">
+                              <div className="text-xs text-gray-500">{formatDateTime(row.last_message_at)}</div>
+                              <div className="break-words text-sm text-gray-800">
                                 {row.last_message_preview || "-"}
                               </div>
                             </div>
@@ -609,7 +593,7 @@ export default function InboxPage() {
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <div className="font-semibold text-gray-900">
+                              <div className="text-[15px] font-semibold text-gray-900">
                                 {row.lead_name || `Lead ${shortId(row.lead_id)}`}
                               </div>
                               <div className="text-xs text-gray-500">
@@ -635,9 +619,7 @@ export default function InboxPage() {
                               </span>
 
                               <span
-                                className={`rounded-full px-2.5 py-1 font-medium ${
-                                  blocked ? chipClasses("warn") : chipClasses("ok")
-                                }`}
+                                className={`rounded-full px-2.5 py-1 font-medium ${blocked ? chipClasses("warn") : chipClasses("ok")}`}
                               >
                                 {formatBlockedReason(row.blocked_reason)}
                               </span>
