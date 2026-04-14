@@ -747,14 +747,6 @@ export default function SchedulePage() {
     return leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
   }, [leadOptions, appointmentCreateForm.leadId]);
 
-  const selectedConversationIdForCreate = useMemo(() => {
-    if (appointmentCreateForm.conversationId) {
-      return appointmentCreateForm.conversationId;
-    }
-
-    return selectedLeadOption?.conversationId || "";
-  }, [appointmentCreateForm.conversationId, selectedLeadOption]);
-
   const counts = useMemo(() => {
     const appointments = items.filter((item) => item.itemKind === "appointment").length;
     const blocks = items.filter((item) => item.itemKind === "block").length;
@@ -1294,11 +1286,33 @@ export default function SchedulePage() {
         return;
       }
 
+      let resolvedConversationId =
+        appointmentCreateForm.conversationId || selectedLeadOption?.conversationId || null;
+
+      if (appointmentCreateForm.leadId && !resolvedConversationId) {
+        const { data: fallbackConversation, error: fallbackConversationError } = await supabase
+          .from("conversations")
+          .select("id, status, is_human_active, last_message_at")
+          .eq("organization_id", organizationId)
+          .eq("lead_id", appointmentCreateForm.leadId)
+          .order("last_message_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (fallbackConversationError) {
+          setAppointmentCreateErrorText(fallbackConversationError.message);
+          setSavingAppointmentCreate(false);
+          return;
+        }
+
+        resolvedConversationId = fallbackConversation?.id || null;
+      }
+
       const { error } = await supabase.rpc("create_store_appointment", {
         p_organization_id: organizationId,
         p_store_id: activeStoreId,
         p_lead_id: appointmentCreateForm.leadId || null,
-        p_conversation_id: selectedConversationIdForCreate || null,
+        p_conversation_id: resolvedConversationId,
         p_title: appointmentCreateForm.title.trim(),
         p_appointment_type: appointmentCreateForm.appointmentType,
         p_status: appointmentCreateForm.status,
@@ -2420,7 +2434,7 @@ export default function SchedulePage() {
                         Conversa vinculada
                       </label>
                       <input
-                        value={selectedConversationIdForCreate}
+                        value={appointmentCreateForm.conversationId}
                         readOnly
                         placeholder="Será preenchida automaticamente pelo lead"
                         className="w-full rounded-xl border border-black/10 bg-gray-50 px-3 py-2 text-sm text-gray-600 outline-none"
