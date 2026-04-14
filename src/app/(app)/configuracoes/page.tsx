@@ -103,6 +103,8 @@ type OperationDraftState = {
   serves_saturday: string;
   serves_sunday: string;
   serves_holiday: string;
+  allow_multiple_appointments_per_day: string;
+  allow_same_time_appointments: string;
   offers_installation: string;
   average_installation_time_days: string;
   installation_process_summary: string;
@@ -112,6 +114,23 @@ type OperationDraftState = {
   important_limitations: string;
   agenda_capacity_rule: string;
   operational_ai_summary: string;
+};
+
+type ScheduleSettingsRow = {
+  id?: string;
+  organization_id: string;
+  store_id: string;
+  allow_multiple_appointments_per_day: boolean;
+  allow_same_time_appointments: boolean;
+  same_time_capacity: number;
+  attends_holidays: boolean;
+  operating_days: unknown;
+  operating_hours: unknown;
+  installation_days: unknown;
+  after_hours_behavior: string | null;
+  notes: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 
@@ -658,15 +677,38 @@ function deriveHolidayAvailabilityLabel(answers: AnswersMap) {
   return "Não definido";
 }
 
-function createOperationDraftFromAnswers(answers: AnswersMap): OperationDraftState {
+function createOperationDraftFromAnswers(
+  answers: AnswersMap,
+  scheduleSettings?: ScheduleSettingsRow | null
+): OperationDraftState {
+  const operatingDaysFromSettings = Array.isArray(scheduleSettings?.operating_days)
+    ? (scheduleSettings?.operating_days as unknown[]).map((item) => cleanText(item)).filter(Boolean).join(", ")
+    : cleanText(answers.operating_days);
+
+  const operatingHoursFromSettings =
+    scheduleSettings?.operating_hours && typeof scheduleSettings.operating_hours === "object"
+      ? JSON.stringify(scheduleSettings.operating_hours)
+      : cleanText(answers.operating_hours);
+
   return {
-    operating_days: cleanText(answers.operating_days),
-    operating_hours: cleanText(answers.operating_hours),
+    operating_days: operatingDaysFromSettings,
+    operating_hours: operatingHoursFromSettings,
     installation_days_rule: cleanText(answers.installation_days_rule),
     technical_visit_days_rule: cleanText(answers.technical_visit_days_rule),
     serves_saturday: deriveWeekendAvailabilityLabel(answers, "sábado"),
     serves_sunday: deriveWeekendAvailabilityLabel(answers, "domingo"),
-    serves_holiday: deriveHolidayAvailabilityLabel(answers),
+    serves_holiday:
+      scheduleSettings && typeof scheduleSettings.attends_holidays === "boolean"
+        ? yesNoLabel(scheduleSettings.attends_holidays)
+        : deriveHolidayAvailabilityLabel(answers),
+    allow_multiple_appointments_per_day:
+      scheduleSettings && typeof scheduleSettings.allow_multiple_appointments_per_day === "boolean"
+        ? yesNoLabel(scheduleSettings.allow_multiple_appointments_per_day)
+        : "Sim",
+    allow_same_time_appointments:
+      scheduleSettings && typeof scheduleSettings.allow_same_time_appointments === "boolean"
+        ? yesNoLabel(scheduleSettings.allow_same_time_appointments)
+        : "Não",
     offers_installation: yesNoLabel(answers.offers_installation),
     average_installation_time_days: cleanText(answers.average_installation_time_days),
     installation_process_summary: joinSelectedLabels(
@@ -694,7 +736,10 @@ function createOperationDraftFromAnswers(answers: AnswersMap): OperationDraftSta
       IMPORTANT_LIMITATION_OPTIONS,
       cleanText(answers.important_limitations_other)
     ),
-    agenda_capacity_rule: cleanText(answers.agenda_capacity_rule) || cleanText(answers.average_human_response_time),
+    agenda_capacity_rule:
+      scheduleSettings && Number.isFinite(Number(scheduleSettings.same_time_capacity))
+        ? String(scheduleSettings.same_time_capacity)
+        : cleanText(answers.agenda_capacity_rule) || cleanText(answers.average_human_response_time) || "1",
     operational_ai_summary: cleanText(answers.operational_ai_summary),
   };
 }
@@ -965,6 +1010,13 @@ function yesNoLabel(value: unknown) {
   return cleanText(value);
 }
 
+function parseYesNoToBoolean(value: unknown, fallback: boolean) {
+  const normalized = cleanText(value).toLowerCase();
+  if (["sim", "true", "1"].includes(normalized)) return true;
+  if (["não", "nao", "false", "0"].includes(normalized)) return false;
+  return fallback;
+}
+
 function optionLabel(value: string, options: Option[]) {
   return options.find((option) => option.value === value)?.label || value;
 }
@@ -1200,13 +1252,14 @@ export default function ConfiguracoesPage() {
   });
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
+  const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettingsRow | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
   const [isOverviewEditing, setIsOverviewEditing] = useState(false);
   const [isStrategyEditing, setIsStrategyEditing] = useState(false);
   const [isOperationEditing, setIsOperationEditing] = useState(false);
   const [overviewDraft, setOverviewDraft] = useState<Record<string, string>>({});
   const [strategyDraft, setStrategyDraft] = useState<Record<string, string>>({});
-  const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}));
+  const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}, null));
   const [isCommercialEditing, setIsCommercialEditing] = useState(false);
   const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(createCommercialDraftFromAnswers({}));
   const [isDiscountEditing, setIsDiscountEditing] = useState(false);
@@ -1260,6 +1313,7 @@ export default function ConfiguracoesPage() {
       setCounts({ pools: 0, quimicos: 0, acessorios: 0, outros: 0 });
       setOnboarding(null);
       setAnswers({});
+      setScheduleSettings(null);
       setPoolImportFiles([]);
       setCatalogImportFiles([]);
       setLoading(false);
@@ -1270,7 +1324,7 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
 
     try {
-      const [poolsResult, catalogResult, onboardingResult, answersResult] = await Promise.all([
+      const [poolsResult, catalogResult, onboardingResult, answersResult, scheduleSettingsResult] = await Promise.all([
         supabase
           .from("pools")
           .select("id", { count: "exact", head: true })
@@ -1289,12 +1343,19 @@ export default function ConfiguracoesPage() {
           p_organization_id: organizationId,
           p_store_id: activeStoreId,
         }),
+        supabase
+          .from("store_schedule_settings")
+          .select("id, organization_id, store_id, allow_multiple_appointments_per_day, allow_same_time_appointments, same_time_capacity, attends_holidays, operating_days, operating_hours, installation_days, after_hours_behavior, notes, created_at, updated_at")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .maybeSingle(),
       ]);
 
       if (poolsResult.error) throw poolsResult.error;
       if (catalogResult.error) throw catalogResult.error;
       if (onboardingResult.error) throw onboardingResult.error;
       if (answersResult.error) throw answersResult.error;
+      if (scheduleSettingsResult.error) throw scheduleSettingsResult.error;
 
       const nextCounts: CountState = {
         pools: poolsResult.count ?? 0,
@@ -1371,6 +1432,7 @@ export default function ConfiguracoesPage() {
       setCounts(nextCounts);
       setOnboarding((onboardingResult.data ?? null) as OnboardingRow | null);
       setAnswers((answersResult.data ?? {}) as AnswersMap);
+      setScheduleSettings((scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null);
       setPoolImportFiles(nextPoolImportFiles);
       setCatalogImportFiles(nextCatalogImportFiles);
     } catch (error: any) {
@@ -1874,6 +1936,8 @@ export default function ConfiguracoesPage() {
       serviceRegions || "Defina regiões e política de deslocamento",
       70
     );
+    const sameTimeAllowed = yesNoLabel(scheduleSettings?.allow_same_time_appointments);
+    const sameTimeCapacity = scheduleSettings?.same_time_capacity ? String(scheduleSettings.same_time_capacity) : "1";
 
     return [
       {
@@ -1897,13 +1961,13 @@ export default function ConfiguracoesPage() {
         hint: compactVisitHint,
       },
       {
-        label: "Cobertura",
-        value: serviceRegions ? "Definida" : "Pendente",
-        tone: serviceRegions ? ("green" as const) : ("amber" as const),
-        hint: compactCoverageHint,
+        label: "Agenda no mesmo horário",
+        value: sameTimeAllowed === "Sim" ? `Permitido • cap. ${sameTimeCapacity}` : "Bloqueado",
+        tone: sameTimeAllowed === "Sim" ? ("green" as const) : ("amber" as const),
+        hint: sameTimeAllowed === "Sim" ? "A agenda permite múltiplos compromissos no mesmo horário." : compactCoverageHint,
       },
     ];
-  }, [answers, installationDaysSelected.length, technicalVisitDaysSelected.length, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel]);
+  }, [answers, installationDaysSelected.length, technicalVisitDaysSelected.length, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, scheduleSettings]);
 
   const operationSections = useMemo(() => {
     return [
@@ -1916,7 +1980,7 @@ export default function ConfiguracoesPage() {
           { label: "Regra complementar da visita técnica", value: cleanText(answers.technical_visit_days_rule) },
           { label: "Atende sábado", value: servesSaturdayLabel },
           { label: "Atende domingo", value: servesSundayLabel },
-          { label: "Atende feriado", value: servesHolidayLabel },
+          { label: "Atende feriado", value: scheduleSettings ? yesNoLabel(scheduleSettings.attends_holidays) : servesHolidayLabel },
         ]),
       },
       {
@@ -1958,7 +2022,9 @@ export default function ConfiguracoesPage() {
       {
         title: "Capacidade da agenda",
         items: buildBulletRows([
-          { label: "Regra de capacidade", value: cleanText(answers.average_human_response_time) || cleanText(answers.agenda_capacity_rule) },
+          { label: "Pode ter vários compromissos no dia", value: scheduleSettings ? yesNoLabel(scheduleSettings.allow_multiple_appointments_per_day) : "Sim" },
+          { label: "Pode ter compromissos no mesmo horário", value: scheduleSettings ? yesNoLabel(scheduleSettings.allow_same_time_appointments) : "Não" },
+          { label: "Capacidade máxima no mesmo horário", value: scheduleSettings?.same_time_capacity ? String(scheduleSettings.same_time_capacity) : cleanText(answers.average_human_response_time) || cleanText(answers.agenda_capacity_rule) || "1" },
         ]),
       },
       {
@@ -1968,7 +2034,7 @@ export default function ConfiguracoesPage() {
         ]),
       },
     ];
-  }, [answers, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, importantLimitationsLabel, servesSaturdayLabel, servesSundayLabel, servesHolidayLabel]);
+  }, [answers, installationDaysLabel, technicalVisitDaysLabel, technicalVisitRulesLabel, importantLimitationsLabel, servesSaturdayLabel, servesSundayLabel, servesHolidayLabel, scheduleSettings]);
 
   const commercialIdentityItems = useMemo(() => {
     return buildBulletRows([
@@ -2561,8 +2627,8 @@ export default function ConfiguracoesPage() {
 
 
   useEffect(() => {
-    setOperationDraft(createOperationDraftFromAnswers(answers));
-  }, [answers]);
+    setOperationDraft(createOperationDraftFromAnswers(answers, scheduleSettings));
+  }, [answers, scheduleSettings]);
 
   const handleOperationDraftChange = useCallback((key: keyof OperationDraftState, value: string) => {
     setOperationDraft((current) => ({
@@ -2572,38 +2638,91 @@ export default function ConfiguracoesPage() {
   }, []);
 
   const handleOperationEditCancel = useCallback(() => {
-    setOperationDraft(createOperationDraftFromAnswers(answers));
+    setOperationDraft(createOperationDraftFromAnswers(answers, scheduleSettings));
     setIsOperationEditing(false);
-  }, [answers]);
+  }, [answers, scheduleSettings]);
 
   const handleOperationEditSave = useCallback(async () => {
-    const saved = await upsertConfigAnswers(
-      {
-        operating_days: operationDraft.operating_days,
-        operating_hours: operationDraft.operating_hours,
-        installation_days_rule: operationDraft.installation_days_rule,
-        technical_visit_days_rule: operationDraft.technical_visit_days_rule,
-        serves_saturday: operationDraft.serves_saturday,
-        serves_sunday: operationDraft.serves_sunday,
-        attends_holidays: operationDraft.serves_holiday,
-        serves_holiday: operationDraft.serves_holiday,
-        offers_installation: operationDraft.offers_installation,
-        average_installation_time_days: operationDraft.average_installation_time_days,
-        installation_process_other: operationDraft.installation_process_summary,
-        offers_technical_visit: operationDraft.offers_technical_visit,
-        technical_visit_rules_other: operationDraft.technical_visit_rules_summary,
-        service_regions: operationDraft.service_regions,
-        important_limitations_other: operationDraft.important_limitations,
-        agenda_capacity_rule: operationDraft.agenda_capacity_rule,
-        operational_ai_summary: operationDraft.operational_ai_summary,
-      },
-      "Alterações da operação salvas com sucesso."
-    );
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar a operação.");
+      setSuccessText(null);
+      return;
+    }
 
-    if (!saved) return;
+    try {
+      const { data: savedScheduleSettings, error: scheduleSettingsError } = await supabase.rpc(
+        "upsert_store_schedule_settings",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_allow_multiple_appointments_per_day: parseYesNoToBoolean(
+            operationDraft.allow_multiple_appointments_per_day,
+            true
+          ),
+          p_allow_same_time_appointments: parseYesNoToBoolean(
+            operationDraft.allow_same_time_appointments,
+            false
+          ),
+          p_same_time_capacity: Math.max(1, Number.parseInt(cleanText(operationDraft.agenda_capacity_rule) || "1", 10) || 1),
+          p_attends_holidays: parseYesNoToBoolean(operationDraft.serves_holiday, false),
+          p_operating_days:
+            scheduleSettings?.operating_days && Array.isArray(scheduleSettings.operating_days)
+              ? scheduleSettings.operating_days
+              : [],
+          p_operating_hours:
+            scheduleSettings?.operating_hours && typeof scheduleSettings.operating_hours === "object"
+              ? scheduleSettings.operating_hours
+              : {},
+          p_installation_days:
+            scheduleSettings?.installation_days && Array.isArray(scheduleSettings.installation_days)
+              ? scheduleSettings.installation_days
+              : [],
+          p_after_hours_behavior: cleanText(answers.after_hours_behavior) || null,
+          p_notes: "Fonte viva da agenda atualizada pela aba Operação.",
+        }
+      );
 
-    setIsOperationEditing(false);
-  }, [operationDraft, upsertConfigAnswers]);
+      if (scheduleSettingsError) throw scheduleSettingsError;
+
+      const saved = await upsertConfigAnswers(
+        {
+          operating_days: operationDraft.operating_days,
+          operating_hours: operationDraft.operating_hours,
+          installation_days_rule: operationDraft.installation_days_rule,
+          technical_visit_days_rule: operationDraft.technical_visit_days_rule,
+          serves_saturday: operationDraft.serves_saturday,
+          serves_sunday: operationDraft.serves_sunday,
+          attends_holidays: operationDraft.serves_holiday,
+          serves_holiday: operationDraft.serves_holiday,
+          offers_installation: operationDraft.offers_installation,
+          average_installation_time_days: operationDraft.average_installation_time_days,
+          installation_process_other: operationDraft.installation_process_summary,
+          offers_technical_visit: operationDraft.offers_technical_visit,
+          technical_visit_rules_other: operationDraft.technical_visit_rules_summary,
+          service_regions: operationDraft.service_regions,
+          important_limitations_other: operationDraft.important_limitations,
+          agenda_capacity_rule: operationDraft.agenda_capacity_rule,
+          operational_ai_summary: operationDraft.operational_ai_summary,
+        },
+        "Alterações da operação salvas com sucesso."
+      );
+
+      if (!saved) return;
+
+      setScheduleSettings((savedScheduleSettings ?? null) as ScheduleSettingsRow | null);
+      setIsOperationEditing(false);
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao salvar alterações da operação.");
+      setSuccessText(null);
+    }
+  }, [
+    organizationId,
+    activeStoreId,
+    operationDraft,
+    scheduleSettings,
+    answers.after_hours_behavior,
+    upsertConfigAnswers,
+  ]);
 
 
   useEffect(() => {
@@ -4783,7 +4902,15 @@ export default function ConfiguracoesPage() {
                   <textarea value={operationDraft.important_limitations} onChange={(e)=>handleOperationDraftChange("important_limitations", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra de capacidade da agenda</span>
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Vários compromissos no mesmo dia</span>
+                  <select value={operationDraft.allow_multiple_appointments_per_day} onChange={(e)=>handleOperationDraftChange("allow_multiple_appointments_per_day", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Sim</option><option>Não</option></select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Compromissos no mesmo horário</span>
+                  <select value={operationDraft.allow_same_time_appointments} onChange={(e)=>handleOperationDraftChange("allow_same_time_appointments", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option>Não</option><option>Sim</option></select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Capacidade no mesmo horário</span>
                   <input value={operationDraft.agenda_capacity_rule} onChange={(e)=>handleOperationDraftChange("agenda_capacity_rule", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
                 <label className="space-y-1 md:col-span-2">
