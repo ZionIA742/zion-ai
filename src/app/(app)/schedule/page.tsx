@@ -415,6 +415,7 @@ export default function SchedulePage() {
     toDateKey(new Date())
   );
   const [selectedItem, setSelectedItem] = useState<ScheduleItem | null>(null);
+  const [rightPanelTab, setRightPanelTab] = useState<"day" | "help">("day");
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1186,17 +1187,12 @@ export default function SchedulePage() {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-[1600px] px-6 py-6">
-        <div className="mb-6 flex items-start justify-between gap-4">
+      <div className="mx-auto max-w-[1440px] px-4 py-4 lg:px-5 lg:py-5">
+        <div className="mb-4 flex items-start justify-between gap-3">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Agenda</h1>
+            <h1 className="text-2xl font-bold text-gray-900">Agenda</h1>
 
-            <p className="mt-1 text-sm text-gray-600">
-              Agenda mensal da loja, com visual simples, leitura rápida e controle
-              manual dos compromissos e bloqueios.
-            </p>
-
-            <div className="mt-2 text-xs text-gray-500">
+            <div className="mt-1 text-xs text-gray-500">
               {storeLoading
                 ? "Carregando contexto da loja..."
                 : storeError
@@ -1207,11 +1203,11 @@ export default function SchedulePage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={openCreateAppointmentPanel}
               disabled={storeLoading || !organizationId || !activeStoreId}
-              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Novo compromisso
             </button>
@@ -1219,13 +1215,13 @@ export default function SchedulePage() {
             <button
               onClick={openCreateBlockPanel}
               disabled={storeLoading || !organizationId || !activeStoreId}
-              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-xl bg-black px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Novo bloqueio
             </button>
 
             {refreshing ? (
-              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 ring-1 ring-black/10">
+              <div className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600 ring-1 ring-black/10">
                 Atualizando...
               </div>
             ) : null}
@@ -1233,29 +1229,29 @@ export default function SchedulePage() {
             <button
               onClick={() => void loadSchedule()}
               disabled={loading || storeLoading || !organizationId || !activeStoreId}
-              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Recarregar
             </button>
           </div>
         </div>
 
-        <div className="mb-6 grid gap-4 md:grid-cols-3">
-          <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-            <div className="text-sm text-gray-500">Total de itens</div>
-            <div className="mt-2 text-3xl font-bold text-gray-900">{counts.total}</div>
+        <div className="mb-4 grid gap-3 md:grid-cols-3">
+          <div className="rounded-2xl bg-white px-4 py-3 shadow-sm ring-1 ring-black/5">
+            <div className="text-xs text-gray-500">Total de itens</div>
+            <div className="mt-1 text-2xl font-bold text-gray-900">{counts.total}</div>
           </div>
 
-          <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-            <div className="text-sm text-gray-500">Compromissos</div>
-            <div className="mt-2 text-3xl font-bold text-gray-900">
+          <div className="rounded-2xl bg-white px-4 py-3 shadow-sm ring-1 ring-black/5">
+            <div className="text-xs text-gray-500">Compromissos</div>
+            <div className="mt-1 text-2xl font-bold text-gray-900">
               {counts.appointments}
             </div>
           </div>
 
-          <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-            <div className="text-sm text-gray-500">Bloqueios</div>
-            <div className="mt-2 text-3xl font-bold text-gray-900">{counts.blocks}</div>
+          <div className="rounded-2xl bg-white px-4 py-3 shadow-sm ring-1 ring-black/5">
+            <div className="text-xs text-gray-500">Bloqueios</div>
+            <div className="mt-1 text-2xl font-bold text-gray-900">{counts.blocks}</div>
           </div>
         </div>
 
@@ -1265,55 +1261,54 @@ export default function SchedulePage() {
           </div>
         ) : null}
 
-        <div className="grid gap-6 xl:grid-cols-[1.6fr_0.8fr]">
-          <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-black/5">
-            <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="grid gap-4 xl:grid-cols-[1.72fr_0.78fr]">
+          <div className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+            <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <h2 className="text-xl font-bold capitalize text-gray-900">
+                <h2 className="text-lg font-bold capitalize text-gray-900">
                   {formatMonthYear(viewMonth)}
                 </h2>
-                <p className="mt-1 text-sm text-gray-500">
-                  O mês atual é carregado automaticamente. Quando o mês virar, a tela
-                  acompanha sozinha se você estiver olhando o mês atual.
+                <p className="mt-1 text-xs text-gray-500">
+                  A agenda segue a capacidade definida pela loja.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={goToPreviousMonth}
-                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Mês anterior
                 </button>
 
                 <button
                   onClick={goToCurrentMonth}
-                  className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+                  className="rounded-xl bg-black px-3 py-2 text-xs font-semibold text-white hover:opacity-90"
                 >
                   Hoje
                 </button>
 
                 <button
                   onClick={goToNextMonth}
-                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Próximo mês
                 </button>
               </div>
             </div>
 
-            <div className="mb-3 grid grid-cols-7 gap-2">
+            <div className="mb-2 grid grid-cols-7 gap-1.5">
               {WEEKDAY_LABELS.map((label) => (
                 <div
                   key={label}
-                  className="rounded-xl bg-gray-50 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-gray-500"
+                  className="rounded-lg bg-gray-50 px-2 py-1.5 text-center text-[11px] font-semibold uppercase tracking-wide text-gray-500"
                 >
                   {label}
                 </div>
               ))}
             </div>
 
-            <div className="grid grid-cols-7 gap-2">
+            <div className="grid grid-cols-7 gap-1.5">
               {calendarDays.map((date) => {
                 const dayKey = toDateKey(date);
                 const dayItems = itemsByDate[dayKey] || [];
@@ -1327,17 +1322,17 @@ export default function SchedulePage() {
                     type="button"
                     onClick={() => setSelectedDateKey(dayKey)}
                     className={[
-                      "min-h-[140px] rounded-2xl border p-3 text-left transition",
+                      "min-h-[108px] rounded-xl border p-2 text-left transition",
                       isSelected
                         ? "border-black bg-black/[0.03] ring-2 ring-black/10"
                         : "border-black/10 bg-white hover:bg-gray-50",
                       !isCurrentMonth ? "opacity-45" : "",
                     ].join(" ")}
                   >
-                    <div className="mb-3 flex items-center justify-between">
+                    <div className="mb-2 flex items-center justify-between">
                       <span
                         className={[
-                          "inline-flex h-8 w-8 items-center justify-center rounded-full text-sm font-bold",
+                          "inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold",
                           isToday
                             ? "bg-black text-white"
                             : "bg-transparent text-gray-900",
@@ -1346,12 +1341,12 @@ export default function SchedulePage() {
                         {formatDayNumber(date)}
                       </span>
 
-                      <span className="text-xs text-gray-400">
+                      <span className="text-[10px] text-gray-400">
                         {dayItems.length > 0 ? `${dayItems.length} item(ns)` : ""}
                       </span>
                     </div>
 
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       {dayItems.slice(0, 3).map((item) => (
                         <div
                           key={`${dayKey}-${item.itemId}`}
@@ -1359,21 +1354,21 @@ export default function SchedulePage() {
                             event.stopPropagation();
                             openItemDetails(item);
                           }}
-                          className={`cursor-pointer rounded-xl px-2.5 py-2 text-xs font-semibold ring-1 ${getItemChipClass(
+                          className={`cursor-pointer rounded-lg px-2 py-1.5 text-[11px] font-semibold ring-1 ${getItemChipClass(
                             item
                           )}`}
                         >
                           <div className="truncate">
                             {item.itemKind === "block" ? "Bloqueio" : "Compromisso"}
                           </div>
-                          <div className="mt-0.5 truncate font-medium">
+                          <div className="mt-0.5 truncate text-[10px] font-medium">
                             {item.title || "-"}
                           </div>
                         </div>
                       ))}
 
                       {dayItems.length > 3 ? (
-                        <div className="text-xs font-semibold text-gray-500">
+                        <div className="text-[11px] font-semibold text-gray-500">
                           +{dayItems.length - 3} item(ns)
                         </div>
                       ) : null}
@@ -1384,84 +1379,129 @@ export default function SchedulePage() {
             </div>
           </div>
 
-          <div className="space-y-6">
-            <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-black/5">
-              <h2 className="text-lg font-bold text-gray-900">Itens do dia</h2>
-              <p className="mt-1 text-sm capitalize text-gray-500">
-                {selectedDateLabel}
-              </p>
-
-              <div className="mt-4 space-y-3">
-                {loading || storeLoading ? (
-                  <div className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-500">
-                    Carregando itens do dia...
-                  </div>
-                ) : selectedDateItems.length === 0 ? (
-                  <div className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-500">
-                    Nenhum item nesse dia.
-                  </div>
-                ) : (
-                  selectedDateItems.map((item) => (
-                    <button
-                      key={item.itemId}
-                      type="button"
-                      onClick={() => openItemDetails(item)}
-                      className="w-full rounded-2xl border border-black/10 bg-white p-4 text-left transition hover:bg-gray-50"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-bold text-gray-900">
-                            {item.title}
-                          </div>
-                          <div className="mt-1 text-xs text-gray-500">
-                            {formatItemKind(item.itemKind)} • {" "}
-                            {formatItemType(item.itemType)}
-                          </div>
-                        </div>
-
-                        <span
-                          className={`rounded-full px-2 py-1 text-[11px] font-semibold ring-1 ${getStatusBadgeClass(
-                            item.status
-                          )}`}
-                        >
-                          {formatStatus(item.status)}
-                        </span>
-                      </div>
-
-                      <div className="mt-3 text-sm text-gray-600">
-                        {formatDateTime(item.startAt)} até {formatDateTime(item.endAt)}
-                      </div>
-
-                      {item.customerName ? (
-                        <div className="mt-1 text-xs text-gray-500">
-                          Cliente: {item.customerName}
-                        </div>
-                      ) : null}
-                    </button>
-                  ))
-                )}
+          <div className="space-y-4">
+            <div className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRightPanelTab("day")}
+                  className={[
+                    "rounded-xl px-3 py-2 text-xs font-semibold transition",
+                    rightPanelTab === "day"
+                      ? "bg-black text-white"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200",
+                  ].join(" ")}
+                >
+                  Itens do dia
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightPanelTab("help")}
+                  className={[
+                    "rounded-xl px-3 py-2 text-xs font-semibold transition",
+                    rightPanelTab === "help"
+                      ? "bg-black text-white"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200",
+                  ].join(" ")}
+                >
+                  Como funciona
+                </button>
               </div>
+
+              {rightPanelTab === "day" ? (
+                <>
+                  <p className="mt-3 text-xs capitalize text-gray-500">
+                    {selectedDateLabel}
+                  </p>
+
+                  <div className="mt-3 space-y-2.5">
+                    {loading || storeLoading ? (
+                      <div className="rounded-2xl bg-gray-50 p-3 text-sm text-gray-500">
+                        Carregando itens do dia...
+                      </div>
+                    ) : selectedDateItems.length === 0 ? (
+                      <div className="rounded-2xl bg-gray-50 p-3 text-sm text-gray-500">
+                        Nenhum item nesse dia.
+                      </div>
+                    ) : (
+                      selectedDateItems.map((item) => (
+                        <button
+                          key={item.itemId}
+                          type="button"
+                          onClick={() => openItemDetails(item)}
+                          className="w-full rounded-2xl border border-black/10 bg-white p-3 text-left transition hover:bg-gray-50"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-bold text-gray-900">
+                                {item.title}
+                              </div>
+                              <div className="mt-1 text-[11px] text-gray-500">
+                                {formatItemKind(item.itemKind)} • {" "}
+                                {formatItemType(item.itemType)}
+                              </div>
+                            </div>
+
+                            <span
+                              className={`rounded-full px-2 py-1 text-[10px] font-semibold ring-1 ${getStatusBadgeClass(
+                                item.status
+                              )}`}
+                            >
+                              {formatStatus(item.status)}
+                            </span>
+                          </div>
+
+                          <div className="mt-2 text-xs text-gray-600">
+                            {formatDateTime(item.startAt)} até {formatDateTime(item.endAt)}
+                          </div>
+
+                          {item.customerName ? (
+                            <div className="mt-1 text-[11px] text-gray-500">
+                              Cliente: {item.customerName}
+                            </div>
+                          ) : null}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  <div className="rounded-2xl bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+                    A agenda segue a capacidade definida na aba Operação.
+                  </div>
+                  <div className="rounded-2xl bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+                    Vários compromissos no mesmo dia são permitidos. No mesmo horário, vale a capacidade configurada pela loja.
+                  </div>
+                  <div className="rounded-2xl bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+                    Bloqueios impedem novos agendamentos e não podem ser criados por cima de compromisso ativo.
+                  </div>
+                  <div className="rounded-2xl bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+                    Para mudar a regra da agenda, vá em Configurações → Operação.
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-black/5">
-              <h2 className="text-lg font-bold text-gray-900">Resumo do mês</h2>
+            <div className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+              <h2 className="text-base font-bold text-gray-900">Resumo do mês</h2>
 
-              <div className="mt-4 space-y-3 text-sm">
-                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-4 py-3">
-                  <span className="text-gray-600">Total</span>
-                  <span className="font-bold text-gray-900">{counts.total}</span>
+              <div className="mt-3 space-y-2 text-sm">
+                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2.5">
+                  <span className="text-xs text-gray-600">Total</span>
+                  <span className="text-sm font-bold text-gray-900">{counts.total}</span>
                 </div>
 
-                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-4 py-3">
-                  <span className="text-gray-600">Compromissos</span>
-                  <span className="font-bold text-gray-900">
+                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2.5">
+                  <span className="text-xs text-gray-600">Compromissos</span>
+                  <span className="text-sm font-bold text-gray-900">
                     {counts.appointments}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-4 py-3">
-                  <span className="text-gray-600">Bloqueios</span>
-                  <span className="font-bold text-gray-900">{counts.blocks}</span>
+                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2.5">
+                  <span className="text-xs text-gray-600">Bloqueios</span>
+                  <span className="text-sm font-bold text-gray-900">{counts.blocks}</span>
                 </div>
               </div>
             </div>
