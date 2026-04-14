@@ -60,6 +60,19 @@ type AppointmentCreateForm = {
   customerPhone: string;
   addressText: string;
   notes: string;
+  leadId: string;
+  conversationId: string;
+};
+
+type LeadConversationOption = {
+  leadId: string;
+  leadName: string;
+  leadPhone: string | null;
+  leadState: string | null;
+  conversationId: string | null;
+  conversationStatus: string | null;
+  isHumanActive: boolean | null;
+  lastMessageAt: string | null;
 };
 
 type BlockForm = {
@@ -342,6 +355,8 @@ function createDefaultAppointmentCreateForm(
       customerPhone: "",
       addressText: "",
       notes: "",
+      leadId: "",
+      conversationId: "",
     };
   }
 
@@ -360,6 +375,8 @@ function createDefaultAppointmentCreateForm(
     customerPhone: "",
     addressText: "",
     notes: "",
+    leadId: "",
+    conversationId: "",
   };
 }
 
@@ -444,6 +461,8 @@ export default function SchedulePage() {
   const [savingAppointmentCreate, setSavingAppointmentCreate] = useState(false);
   const [appointmentCreateErrorText, setAppointmentCreateErrorText] =
     useState<string | null>(null);
+  const [leadOptions, setLeadOptions] = useState<LeadConversationOption[]>([]);
+  const [loadingLeadOptions, setLoadingLeadOptions] = useState(false);
 
   const lastKnownRealMonthRef = useRef<Date>(startOfMonth(new Date()));
   const selectedItemRef = useRef<ScheduleItem | null>(null);
@@ -572,6 +591,103 @@ export default function SchedulePage() {
     void loadSchedule();
   }, [canLoadSchedule, loadSchedule]);
 
+  const loadLeadOptions = useCallback(async () => {
+    if (!canLoadSchedule || !organizationId || !activeStoreId) {
+      setLeadOptions([]);
+      return;
+    }
+
+    setLoadingLeadOptions(true);
+
+    try {
+      const { data: leadsData, error: leadsError } = await supabase
+        .from("leads")
+        .select("id, name, phone, state, created_at")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId)
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      if (leadsError) throw leadsError;
+
+      const leads = (leadsData || []) as Array<{
+        id: string;
+        name: string | null;
+        phone: string | null;
+        state: string | null;
+      }>;
+
+      if (leads.length === 0) {
+        setLeadOptions([]);
+        setLoadingLeadOptions(false);
+        return;
+      }
+
+      const leadIds = leads.map((lead) => lead.id).filter(Boolean);
+      const { data: conversationsData, error: conversationsError } = await supabase
+        .from("conversations")
+        .select("id, lead_id, status, is_human_active, last_message_at")
+        .eq("organization_id", organizationId)
+        .in("lead_id", leadIds)
+        .order("last_message_at", { ascending: false });
+
+      if (conversationsError) throw conversationsError;
+
+      const bestConversationByLead = new Map<string, {
+        id: string;
+        status: string | null;
+        is_human_active: boolean | null;
+        last_message_at: string | null;
+      }>();
+
+      for (const conversation of ((conversationsData || []) as Array<{
+        id: string;
+        lead_id: string;
+        status: string | null;
+        is_human_active: boolean | null;
+        last_message_at: string | null;
+      }>)) {
+        if (!conversation.lead_id || bestConversationByLead.has(conversation.lead_id)) {
+          continue;
+        }
+
+        bestConversationByLead.set(conversation.lead_id, {
+          id: conversation.id,
+          status: conversation.status,
+          is_human_active: conversation.is_human_active,
+          last_message_at: conversation.last_message_at,
+        });
+      }
+
+      setLeadOptions(
+        leads.map((lead) => {
+          const bestConversation = bestConversationByLead.get(lead.id);
+
+          return {
+            leadId: lead.id,
+            leadName: String(lead.name || "").trim() || "Lead sem nome",
+            leadPhone: lead.phone,
+            leadState: lead.state,
+            conversationId: bestConversation?.id || null,
+            conversationStatus: bestConversation?.status || null,
+            isHumanActive: bestConversation?.is_human_active ?? null,
+            lastMessageAt: bestConversation?.last_message_at || null,
+          } satisfies LeadConversationOption;
+        })
+      );
+    } catch (error) {
+      console.error("[SchedulePage] loadLeadOptions error:", error);
+      setLeadOptions([]);
+    } finally {
+      setLoadingLeadOptions(false);
+    }
+  }, [canLoadSchedule, organizationId, activeStoreId]);
+
+  useEffect(() => {
+    if (!canLoadSchedule) return;
+    void loadLeadOptions();
+  }, [canLoadSchedule, loadLeadOptions]);
+
   useEffect(() => {
     const interval = window.setInterval(() => {
       const nowMonth = startOfMonth(new Date());
@@ -626,6 +742,10 @@ export default function SchedulePage() {
   const selectedDateItems = useMemo(() => {
     return itemsByDate[selectedDateKey] || [];
   }, [itemsByDate, selectedDateKey]);
+
+  const selectedLeadOption = useMemo(() => {
+    return leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
+  }, [leadOptions, appointmentCreateForm.leadId]);
 
   const counts = useMemo(() => {
     const appointments = items.filter((item) => item.itemKind === "appointment").length;
@@ -781,6 +901,20 @@ export default function SchedulePage() {
     setAppointmentCreateErrorText(null);
     setSavingAppointmentCreate(false);
     setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
+  }
+
+  function handleAppointmentLeadChange(nextLeadId: string) {
+    const matchedLead = leadOptions.find((lead) => lead.leadId === nextLeadId) || null;
+
+    setAppointmentCreateForm((prev) => ({
+      ...prev,
+      leadId: nextLeadId,
+      conversationId: matchedLead?.conversationId || "",
+      customerName: matchedLead?.leadName || prev.customerName,
+      customerPhone: matchedLead?.leadPhone
+        ? applyPhoneMask(matchedLead.leadPhone)
+        : prev.customerPhone,
+    }));
   }
 
   async function saveAppointmentEdit() {
@@ -1155,8 +1289,8 @@ export default function SchedulePage() {
       const { error } = await supabase.rpc("create_store_appointment", {
         p_organization_id: organizationId,
         p_store_id: activeStoreId,
-        p_lead_id: null,
-        p_conversation_id: null,
+        p_lead_id: appointmentCreateForm.leadId || null,
+        p_conversation_id: appointmentCreateForm.conversationId || null,
         p_title: appointmentCreateForm.title.trim(),
         p_appointment_type: appointmentCreateForm.appointmentType,
         p_status: appointmentCreateForm.status,
@@ -2244,6 +2378,52 @@ export default function SchedulePage() {
                         }
                         className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
                       />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Lead vinculado
+                      </label>
+                      <select
+                        value={appointmentCreateForm.leadId}
+                        onChange={(e) => handleAppointmentLeadChange(e.target.value)}
+                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      >
+                        <option value="">Sem vínculo manual</option>
+                        {leadOptions.map((lead) => (
+                          <option key={lead.leadId} value={lead.leadId}>
+                            {lead.leadName}{lead.leadState ? ` • ${lead.leadState}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="mt-1 text-xs text-gray-500">
+                        {loadingLeadOptions
+                          ? "Carregando leads da loja..."
+                          : selectedLeadOption
+                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${selectedLeadOption.conversationId ? ` • Conversa: ${selectedLeadOption.conversationStatus || "sem status"}` : " • Sem conversa vinculada"}`
+                          : "Opcional. Ao escolher um lead, nome e telefone podem ser preenchidos automaticamente."}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        Conversa vinculada
+                      </label>
+                      <input
+                        value={appointmentCreateForm.conversationId}
+                        readOnly
+                        placeholder="Será preenchida automaticamente pelo lead"
+                        className="w-full rounded-xl border border-black/10 bg-gray-50 px-3 py-2 text-sm text-gray-600 outline-none"
+                      />
+                      <div className="mt-1 text-xs text-gray-500">
+                        {selectedLeadOption?.isHumanActive
+                          ? "Conversa com humano ativo neste momento."
+                          : selectedLeadOption?.lastMessageAt
+                          ? `Última mensagem em ${formatDateTime(selectedLeadOption.lastMessageAt)}`
+                          : "Sem conversa recente vinculada."}
+                      </div>
                     </div>
                   </div>
 
