@@ -37,20 +37,6 @@ type FollowupCandidateRow = {
   blocked_reason: string | null;
 };
 
-type UnifiedConversationRow = {
-  conversationId: string;
-  leadId: string;
-  leadName: string;
-  leadPhone: string | null;
-  status: string | null;
-  isHumanActive: boolean;
-  lastMessageAt: string | null;
-  lastMessagePreview: string | null;
-  lastMessageDirection: string | null;
-  lastMessageSender: string | null;
-  followup: FollowupCandidateRow | null;
-};
-
 function formatDateTime(value: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -135,6 +121,7 @@ export default function InboxPage() {
   const [followupErrorText, setFollowupErrorText] = useState<string | null>(null);
   const [followupStatusText, setFollowupStatusText] = useState<string | null>(null);
   const [triggeringConversationId, setTriggeringConversationId] = useState<string | null>(null);
+  const [openSection, setOpenSection] = useState<"followup" | "messages" | null>("followup");
 
   const canLoadInbox = useMemo(() => {
     return !storeLoading && !!organizationId;
@@ -248,90 +235,30 @@ export default function InboxPage() {
     return () => window.clearInterval(interval);
   }, [canLoadInbox, loadInbox]);
 
-  const followupByConversation = useMemo(() => {
-    const map = new Map<string, FollowupCandidateRow>();
-    for (const row of followupRows) {
-      map.set(row.conversation_id, row);
-    }
-    return map;
-  }, [followupRows]);
-
-  const unifiedRows = useMemo(() => {
-    const byConversation = new Map<string, UnifiedConversationRow>();
-
-    for (const row of rows) {
-      const followup = followupByConversation.get(row.conversation_id) || null;
-
-      byConversation.set(row.conversation_id, {
-        conversationId: row.conversation_id,
-        leadId: row.lead_id,
-        leadName:
-          leadNames[row.lead_id] || followup?.lead_name || `Lead ${shortId(row.lead_id)}`,
-        leadPhone: followup?.lead_phone || null,
-        status: row.status || followup?.conversation_status || null,
-        isHumanActive: row.is_human_active === true || followup?.is_human_active === true,
-        lastMessageAt: row.last_message_at || followup?.last_customer_message_at || null,
-        lastMessagePreview: row.last_message_preview || null,
-        lastMessageDirection: row.last_message_direction || null,
-        lastMessageSender: row.last_message_sender || null,
-        followup,
-      });
-    }
-
-    for (const row of followupRows) {
-      if (byConversation.has(row.conversation_id)) continue;
-
-      byConversation.set(row.conversation_id, {
-        conversationId: row.conversation_id,
-        leadId: row.lead_id,
-        leadName: row.lead_name || `Lead ${shortId(row.lead_id)}`,
-        leadPhone: row.lead_phone || null,
-        status: row.conversation_status || null,
-        isHumanActive: row.is_human_active === true,
-        lastMessageAt: row.last_customer_message_at || row.last_ai_message_at || null,
-        lastMessagePreview: null,
-        lastMessageDirection: null,
-        lastMessageSender: null,
-        followup: row,
-      });
-    }
-
-    return Array.from(byConversation.values()).sort((a, b) => {
-      const da = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
-      const db = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
-      return db - da;
-    });
-  }, [rows, followupRows, leadNames, followupByConversation]);
-
   const pendingReplyCount = useMemo(() => rows.filter(isPendingReply).length, [rows]);
   const actionableFollowupCount = useMemo(
     () => followupRows.filter((row) => !row.blocked_reason).length,
     [followupRows]
   );
 
-  async function triggerManualFollowup(conversation: UnifiedConversationRow) {
+  async function triggerManualFollowup(candidate: FollowupCandidateRow) {
     if (!organizationId) {
       setFollowupErrorText("Organização não carregada.");
       return;
     }
 
-    if (!conversation.followup) {
-      setFollowupErrorText("Esta conversa não está elegível para follow-up.");
-      return;
-    }
-
-    setTriggeringConversationId(conversation.conversationId);
+    setTriggeringConversationId(candidate.conversation_id);
     setFollowupErrorText(null);
     setFollowupStatusText(null);
 
     const followupType =
-      String(conversation.followup.suggested_action || "").toLowerCase() === "followup_visit"
+      String(candidate.suggested_action || "").toLowerCase() === "followup_visit"
         ? "visit"
         : "offer";
 
     const { data, error } = await supabase.rpc("panel_enqueue_followup_scoped", {
       p_organization_id: organizationId,
-      p_conversation_id: conversation.conversationId,
+      p_conversation_id: candidate.conversation_id,
       p_followup_type: followupType,
     });
 
@@ -364,11 +291,15 @@ export default function InboxPage() {
 
     setFollowupStatusText(
       `Follow-up enfileirado com sucesso para a conversa ${shortId(
-        result.conversation_id || conversation.conversationId
+        result.conversation_id || candidate.conversation_id
       )}.`
     );
     setTriggeringConversationId(null);
     await loadFollowupCandidates();
+  }
+
+  function toggleSection(section: "followup" | "messages") {
+    setOpenSection((current) => (current === section ? null : section));
   }
 
   return (
@@ -428,153 +359,241 @@ export default function InboxPage() {
 
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
           <div className="border-b border-black/5 px-4 py-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">Inbox operacional</h2>
-                <p className="mt-1 text-sm text-gray-600">
-                  Tudo em um único bloco: últimas mensagens, status e follow-up.
-                </p>
+            <h2 className="text-lg font-semibold text-gray-900">Inbox operacional</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Dois cards principais. Ao clicar, a seção abre abaixo com os detalhes.
+            </p>
+          </div>
+
+          <div className="grid gap-3 border-b border-black/5 p-4 md:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => toggleSection("followup")}
+              className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-base font-semibold text-gray-900">Follow-up</div>
+                  <div className="mt-1 text-sm text-gray-600">
+                    Conversas disponíveis ou bloqueadas para follow-up.
+                  </div>
+                </div>
+
+                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                  {actionableFollowupCount} liberado(s)
+                </span>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="mt-3 text-xs font-semibold text-gray-500">
+                {openSection === "followup" ? "Ocultar detalhes" : "Abrir detalhes"}
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => toggleSection("messages")}
+              className="rounded-2xl bg-gray-50 p-4 text-left ring-1 ring-black/5 transition hover:bg-gray-100"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-base font-semibold text-gray-900">Últimas mensagens</div>
+                  <div className="mt-1 text-sm text-gray-600">
+                    Conversas recentes e quem está aguardando resposta.
+                  </div>
+                </div>
+
                 <span className={`rounded-full px-3 py-1 text-xs font-semibold ${chipClasses("pending")}`}>
                   {pendingReplyCount} pendente(s)
                 </span>
-                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                  {actionableFollowupCount} follow-up liberado(s)
-                </span>
               </div>
-            </div>
+
+              <div className="mt-3 text-xs font-semibold text-gray-500">
+                {openSection === "messages" ? "Ocultar detalhes" : "Abrir detalhes"}
+              </div>
+            </button>
           </div>
 
-          <div className="space-y-3 p-4">
-            {loading || storeLoading ? (
-              <div className="rounded-xl bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/5">
-                Carregando inbox...
+          {openSection === "followup" ? (
+            <div className="border-b border-black/5 p-4">
+              <div className="mb-3">
+                <h3 className="text-base font-semibold text-gray-900">Candidatas a follow-up</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  Conversas frias que podem receber follow-up manual controlado.
+                </p>
               </div>
-            ) : unifiedRows.length === 0 ? (
-              <div className="rounded-xl bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/5">
-                Nenhuma conversa encontrada para a loja atual.
-              </div>
-            ) : (
-              unifiedRows.map((row) => {
-                const pending = rows.some(
-                  (r) => r.conversation_id === row.conversationId && isPendingReply(r)
-                );
-                const followupBlocked = !!row.followup?.blocked_reason;
-                const followupText = row.followup
-                  ? formatBlockedReason(row.followup.blocked_reason)
-                  : "Sem regra";
-                const followupActionText = row.followup
-                  ? formatSuggestedAction(row.followup.suggested_action)
-                  : null;
-                const isTriggering = triggeringConversationId === row.conversationId;
 
-                return (
-                  <div
-                    key={row.conversationId}
-                    className={`rounded-2xl px-4 py-4 ring-1 ring-black/5 ${
-                      pending ? "bg-amber-50" : "bg-gray-50"
-                    }`}
-                  >
-                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-                          <div className="text-lg font-semibold text-gray-900">{row.leadName}</div>
-                          <span className="text-xs text-gray-500">
-                            {row.leadPhone ? `${row.leadPhone} • ` : ""}
-                            {shortId(row.conversationId)}
-                          </span>
-                        </div>
+              <div className="space-y-3">
+                {!loading && followupRows.length === 0 ? (
+                  <div className="rounded-xl bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/5">
+                    Nenhuma candidata a follow-up encontrada.
+                  </div>
+                ) : (
+                  followupRows.map((row) => {
+                    const blocked = !!row.blocked_reason;
+                    const isTriggering = triggeringConversationId === row.conversation_id;
 
-                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                          <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
-                            {row.status || "-"}
-                          </span>
+                    return (
+                      <div
+                        key={row.conversation_id}
+                        className="rounded-2xl bg-gray-50 px-4 py-4 ring-1 ring-black/5"
+                      >
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold text-gray-900">
+                              {row.lead_name || `Lead ${shortId(row.lead_id)}`}
+                            </div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              {row.lead_phone || "-"} • {shortId(row.conversation_id)}
+                            </div>
 
-                          <span
-                            className={`rounded-full px-2.5 py-1 font-semibold ${
-                              row.isHumanActive ? chipClasses("human") : chipClasses("ia")
-                            }`}
-                          >
-                            {row.isHumanActive ? "Humano" : "IA"}
-                          </span>
-
-                          {pending ? (
-                            <span className={`rounded-full px-2.5 py-1 font-semibold ${chipClasses("pending")}`}>
-                              Cliente aguardando resposta
-                            </span>
-                          ) : (
-                            <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
-                              {formatDirection(row.lastMessageDirection)}
-                              {row.lastMessageSender ? ` • ${row.lastMessageSender}` : ""}
-                            </span>
-                          )}
-
-                          {row.followup ? (
-                            <>
+                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                               <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
-                                {followupActionText}
+                                {row.conversation_status || "-"}
                               </span>
 
                               <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
-                                Parado: {formatStoppedTime(row.followup.hours_since_customer)}
+                                Último cliente: {formatDateTime(row.last_customer_message_at)}
+                              </span>
+
+                              <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                                Parado: {formatStoppedTime(row.hours_since_customer)}
+                              </span>
+
+                              <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                                {formatSuggestedAction(row.suggested_action)}
                               </span>
 
                               <span
                                 className={`rounded-full px-2.5 py-1 font-semibold ${
-                                  followupBlocked ? chipClasses("warn") : chipClasses("ok")
+                                  blocked ? chipClasses("warn") : chipClasses("ok")
                                 }`}
                               >
-                                {followupText}
+                                {formatBlockedReason(row.blocked_reason)}
                               </span>
-                            </>
-                          ) : null}
-                        </div>
-
-                        <div className="mt-3 grid gap-3 md:grid-cols-2">
-                          <div className="min-w-0">
-                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                              Última mensagem
                             </div>
-                            <div className="mt-1 text-sm text-gray-700">{formatDateTime(row.lastMessageAt)}</div>
                           </div>
 
-                          <div className="min-w-0">
-                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                              Preview
-                            </div>
-                            <div className="mt-1 break-words text-sm text-gray-700">
-                              {row.lastMessagePreview || "-"}
-                            </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <Link
+                              href={`/crm/lead/${row.lead_id}`}
+                              className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                            >
+                              Abrir
+                            </Link>
+
+                            <button
+                              onClick={() => void triggerManualFollowup(row)}
+                              disabled={blocked || isTriggering}
+                              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isTriggering ? "Enfileirando..." : "Disparar follow-up"}
+                            </button>
                           </div>
                         </div>
                       </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          ) : null}
 
-                      <div className="flex shrink-0 flex-wrap items-center gap-2 xl:justify-end">
-                        <Link
-                          href={`/crm/lead/${row.leadId}`}
-                          className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
-                        >
-                          Abrir
-                        </Link>
+          {openSection === "messages" ? (
+            <div className="p-4">
+              <div className="mb-3">
+                <h3 className="text-base font-semibold text-gray-900">Últimas mensagens</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  Conversas mais recentes da loja.
+                </p>
+              </div>
 
-                        {row.followup ? (
-                          <button
-                            onClick={() => void triggerManualFollowup(row)}
-                            disabled={followupBlocked || isTriggering}
-                            className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {isTriggering ? "Enfileirando..." : "Disparar follow-up"}
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
+              <div className="space-y-3">
+                {!loading && !storeLoading && rows.length === 0 ? (
+                  <div className="rounded-xl bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/5">
+                    Nenhuma conversa encontrada para a loja atual.
                   </div>
-                );
-              })
-            )}
-          </div>
+                ) : (
+                  rows.map((row) => {
+                    const pending = isPendingReply(row);
+
+                    return (
+                      <div
+                        key={row.conversation_id}
+                        className={`rounded-2xl px-4 py-4 ring-1 ring-black/5 ${
+                          pending ? "bg-amber-50" : "bg-gray-50"
+                        }`}
+                      >
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold text-gray-900">
+                              {leadNames[row.lead_id] || `Lead ${shortId(row.lead_id)}`}
+                            </div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              {shortId(row.conversation_id)}
+                            </div>
+
+                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                              <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                                {row.status || "-"}
+                              </span>
+
+                              <span
+                                className={`rounded-full px-2.5 py-1 font-semibold ${
+                                  row.is_human_active ? chipClasses("human") : chipClasses("ia")
+                                }`}
+                              >
+                                {row.is_human_active ? "Humano" : "IA"}
+                              </span>
+
+                              {pending ? (
+                                <span className={`rounded-full px-2.5 py-1 font-semibold ${chipClasses("pending")}`}>
+                                  Cliente aguardando resposta
+                                </span>
+                              ) : (
+                                <span className="rounded-full bg-white px-2.5 py-1 font-semibold text-gray-700 ring-1 ring-black/10">
+                                  {formatDirection(row.last_message_direction)}
+                                  {row.last_message_sender ? ` • ${row.last_message_sender}` : ""}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              <div className="min-w-0">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                  Última mensagem
+                                </div>
+                                <div className="mt-1 text-sm text-gray-700">
+                                  {formatDateTime(row.last_message_at)}
+                                </div>
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                  Preview
+                                </div>
+                                <div className="mt-1 break-words text-sm text-gray-700">
+                                  {row.last_message_preview || "-"}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex shrink-0 items-center gap-2">
+                            <Link
+                              href={`/crm/lead/${row.lead_id}`}
+                              className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white hover:opacity-90"
+                            >
+                              Abrir
+                            </Link>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
