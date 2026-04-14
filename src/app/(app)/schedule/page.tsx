@@ -152,6 +152,8 @@ function formatItemType(value: string) {
   if (normalized === "installation") return "Instalação";
   if (normalized === "follow_up") return "Retorno";
   if (normalized === "meeting") return "Reunião";
+  if (normalized === "measurement") return "Medição";
+  if (normalized === "maintenance") return "Manutenção";
   if (normalized === "personal_unavailable") return "Indisponível";
   if (normalized === "team_unavailable") return "Equipe indisponível";
   if (normalized === "holiday") return "Bloqueio por feriado";
@@ -1632,6 +1634,8 @@ export default function SchedulePage() {
                           <option value="installation">Instalação</option>
                           <option value="follow_up">Retorno</option>
                           <option value="meeting">Reunião</option>
+                          <option value="measurement">Medição</option>
+                          <option value="maintenance">Manutenção</option>
                           <option value="other">Outro</option>
                         </select>
                       </div>
@@ -2179,6 +2183,8 @@ export default function SchedulePage() {
                         <option value="installation">Instalação</option>
                         <option value="follow_up">Retorno</option>
                         <option value="meeting">Reunião</option>
+                        <option value="measurement">Medição</option>
+                        <option value="maintenance">Manutenção</option>
                         <option value="other">Outro</option>
                       </select>
                     </div>
