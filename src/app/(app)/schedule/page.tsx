@@ -747,6 +747,14 @@ export default function SchedulePage() {
     return leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
   }, [leadOptions, appointmentCreateForm.leadId]);
 
+  const selectedConversationIdForCreate = useMemo(() => {
+    if (appointmentCreateForm.conversationId) {
+      return appointmentCreateForm.conversationId;
+    }
+
+    return selectedLeadOption?.conversationId || "";
+  }, [appointmentCreateForm.conversationId, selectedLeadOption]);
+
   const counts = useMemo(() => {
     const appointments = items.filter((item) => item.itemKind === "appointment").length;
     const blocks = items.filter((item) => item.itemKind === "block").length;
@@ -1290,7 +1298,7 @@ export default function SchedulePage() {
         p_organization_id: organizationId,
         p_store_id: activeStoreId,
         p_lead_id: appointmentCreateForm.leadId || null,
-        p_conversation_id: appointmentCreateForm.conversationId || null,
+        p_conversation_id: selectedConversationIdForCreate || null,
         p_title: appointmentCreateForm.title.trim(),
         p_appointment_type: appointmentCreateForm.appointmentType,
         p_status: appointmentCreateForm.status,
@@ -2412,7 +2420,7 @@ export default function SchedulePage() {
                         Conversa vinculada
                       </label>
                       <input
-                        value={appointmentCreateForm.conversationId}
+                        value={selectedConversationIdForCreate}
                         readOnly
                         placeholder="Será preenchida automaticamente pelo lead"
                         className="w-full rounded-xl border border-black/10 bg-gray-50 px-3 py-2 text-sm text-gray-600 outline-none"
