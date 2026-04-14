@@ -23,6 +23,20 @@ type LeadRow = {
   name: string | null;
 };
 
+type FollowupCandidateRow = {
+  conversation_id: string;
+  lead_id: string;
+  lead_name: string | null;
+  lead_phone: string | null;
+  conversation_status: string | null;
+  is_human_active: boolean | null;
+  last_customer_message_at: string | null;
+  last_ai_message_at: string | null;
+  hours_since_customer: number | null;
+  suggested_action: string | null;
+  blocked_reason: string | null;
+};
+
 function formatDateTime(value: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -47,6 +61,28 @@ function formatDirection(value: string | null) {
   return "-";
 }
 
+function formatBlockedReason(value: string | null) {
+  const normalized = String(value || "").toLowerCase();
+
+  if (!normalized) return "-";
+  if (normalized === "humano_ativo") return "Humano ativo";
+  if (normalized === "aguardando_janela") return "Aguardando janela";
+  if (normalized === "sem_mensagem_cliente") return "Sem mensagem do cliente";
+  if (normalized === "cliente_ainda_recente") return "Cliente ainda recente";
+  if (normalized === "acao_ja_enfileirada") return "Ação já enfileirada";
+
+  return normalized;
+}
+
+function formatSuggestedAction(value: string | null) {
+  const normalized = String(value || "").toLowerCase();
+
+  if (normalized === "followup_offer") return "Follow-up de proposta";
+  if (normalized === "followup_visit") return "Follow-up de visita";
+
+  return value || "-";
+}
+
 export default function InboxPage() {
   const {
     loading: storeLoading,
@@ -58,13 +94,45 @@ export default function InboxPage() {
 
   const [rows, setRows] = useState<InboxRow[]>([]);
   const [leadNames, setLeadNames] = useState<Record<string, string>>({});
+  const [followupRows, setFollowupRows] = useState<FollowupCandidateRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [followupErrorText, setFollowupErrorText] = useState<string | null>(null);
+  const [followupStatusText, setFollowupStatusText] = useState<string | null>(null);
+  const [triggeringConversationId, setTriggeringConversationId] = useState<string | null>(null);
 
   const canLoadInbox = useMemo(() => {
     return !storeLoading && !!organizationId;
   }, [storeLoading, organizationId]);
+
+  const loadFollowupCandidates = useCallback(
+    async () => {
+      if (!organizationId) return;
+
+      const { data, error } = await supabase.rpc(
+        "panel_list_followup_candidates_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId ?? null,
+          p_followup_type: "offer",
+          p_min_hours_since_customer: 24,
+          p_limit: 20,
+        }
+      );
+
+      if (error) {
+        console.error("[InboxPage] panel_list_followup_candidates_scoped error:", error);
+        setFollowupErrorText(error.message);
+        setFollowupRows([]);
+        return;
+      }
+
+      setFollowupErrorText(null);
+      setFollowupRows((data || []) as FollowupCandidateRow[]);
+    },
+    [organizationId, activeStoreId]
+  );
 
   const loadInbox = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -127,13 +195,15 @@ export default function InboxPage() {
         setLeadNames({});
       }
 
+      await loadFollowupCandidates();
+
       if (silent) {
         setRefreshing(false);
       } else {
         setLoading(false);
       }
     },
-    [canLoadInbox, organizationId, activeStoreId]
+    [canLoadInbox, organizationId, activeStoreId, loadFollowupCandidates]
   );
 
   useEffect(() => {
@@ -156,6 +226,69 @@ export default function InboxPage() {
   const pendingReplyCount = useMemo(() => {
     return rows.filter(isPendingReply).length;
   }, [rows]);
+
+  const actionableFollowupCount = useMemo(() => {
+    return followupRows.filter((row) => !row.blocked_reason).length;
+  }, [followupRows]);
+
+  async function triggerManualFollowup(candidate: FollowupCandidateRow) {
+    if (!organizationId) {
+      setFollowupErrorText("Organização não carregada.");
+      return;
+    }
+
+    setTriggeringConversationId(candidate.conversation_id);
+    setFollowupErrorText(null);
+    setFollowupStatusText(null);
+
+    const followupType =
+      String(candidate.suggested_action || "").toLowerCase() === "followup_visit"
+        ? "visit"
+        : "offer";
+
+    const { data, error } = await supabase.rpc("panel_enqueue_followup_scoped", {
+      p_organization_id: organizationId,
+      p_conversation_id: candidate.conversation_id,
+      p_followup_type: followupType,
+    });
+
+    if (error) {
+      console.error("[InboxPage] panel_enqueue_followup_scoped error:", error);
+      setFollowupErrorText(error.message);
+      setTriggeringConversationId(null);
+      return;
+    }
+
+    const result = (data || {}) as {
+      ok?: boolean;
+      error?: string;
+      blocked_reason?: string;
+      next_action?: string;
+      ai_run_id?: string;
+      conversation_id?: string;
+    };
+
+    if (!result.ok) {
+      setFollowupErrorText(
+        result.error
+          ? `Não foi possível enfileirar o follow-up: ${result.error}${
+              result.blocked_reason ? ` (${formatBlockedReason(result.blocked_reason)})` : ""
+            }`
+          : "Não foi possível enfileirar o follow-up."
+      );
+      setTriggeringConversationId(null);
+      await loadFollowupCandidates();
+      return;
+    }
+
+    setFollowupStatusText(
+      `Follow-up enfileirado com sucesso para a conversa ${shortId(
+        result.conversation_id || candidate.conversation_id
+      )}.`
+    );
+    setTriggeringConversationId(null);
+    await loadFollowupCandidates();
+  }
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -220,6 +353,129 @@ export default function InboxPage() {
             {errorText}
           </div>
         )}
+
+        <div className="mb-6 rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+          <div className="border-b border-black/5 px-4 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Candidatas a follow-up
+                </h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  Conversas frias que podem receber follow-up manual controlado.
+                </p>
+              </div>
+
+              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                {actionableFollowupCount} liberada(s) / {followupRows.length} total
+              </div>
+            </div>
+          </div>
+
+          {followupErrorText ? (
+            <div className="mx-4 mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
+              {followupErrorText}
+            </div>
+          ) : null}
+
+          {followupStatusText ? (
+            <div className="mx-4 mt-4 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-200">
+              {followupStatusText}
+            </div>
+          ) : null}
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-black/5 bg-gray-50">
+                <tr className="text-left text-gray-600">
+                  <th className="px-4 py-3 font-semibold">Lead</th>
+                  <th className="px-4 py-3 font-semibold">Status</th>
+                  <th className="px-4 py-3 font-semibold">Último cliente</th>
+                  <th className="px-4 py-3 font-semibold">Horas paradas</th>
+                  <th className="px-4 py-3 font-semibold">Ação sugerida</th>
+                  <th className="px-4 py-3 font-semibold">Bloqueio</th>
+                  <th className="px-4 py-3 font-semibold text-right">Ação</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {!loading && followupRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
+                      Nenhuma candidata a follow-up encontrada.
+                    </td>
+                  </tr>
+                ) : (
+                  followupRows.map((row) => {
+                    const blocked = !!row.blocked_reason;
+                    const isTriggering = triggeringConversationId === row.conversation_id;
+
+                    return (
+                      <tr
+                        key={row.conversation_id}
+                        className={`border-b border-black/5 ${
+                          blocked ? "bg-gray-50" : "hover:bg-gray-50"
+                        }`}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-gray-900">
+                            {row.lead_name || `Lead ${shortId(row.lead_id)}`}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {row.lead_phone || "-"} • {shortId(row.conversation_id)}
+                          </div>
+                        </td>
+
+                        <td className="px-4 py-3">{row.conversation_status || "-"}</td>
+
+                        <td className="px-4 py-3">{formatDateTime(row.last_customer_message_at)}</td>
+
+                        <td className="px-4 py-3">
+                          {row.hours_since_customer != null
+                            ? `${row.hours_since_customer}h`
+                            : "-"}
+                        </td>
+
+                        <td className="px-4 py-3">{formatSuggestedAction(row.suggested_action)}</td>
+
+                        <td className="px-4 py-3">
+                          {blocked ? (
+                            <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800 ring-1 ring-amber-300">
+                              {formatBlockedReason(row.blocked_reason)}
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-300">
+                              Liberado
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex justify-end gap-2">
+                            <Link
+                              href={`/crm/lead/${row.lead_id}`}
+                              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                            >
+                              Abrir
+                            </Link>
+
+                            <button
+                              onClick={() => void triggerManualFollowup(row)}
+                              disabled={blocked || isTriggering}
+                              className="rounded-xl bg-black px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isTriggering ? "Enfileirando..." : "Disparar follow-up"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
           <table className="w-full text-sm">
