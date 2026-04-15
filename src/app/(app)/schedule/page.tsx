@@ -437,6 +437,219 @@ function isSameMonth(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 }
 
+
+const TIME_OPTIONS = Array.from({ length: 48 }, (_, index) => {
+  const hours = `${Math.floor(index / 2)}`.padStart(2, "0");
+  const minutes = index % 2 === 0 ? "00" : "30";
+  return `${hours}:${minutes}`;
+});
+
+function formatDateOnlyPtBr(value: string) {
+  if (!value) return "-";
+
+  const [year, month, day] = value.split("-");
+  const date = new Date(Number(year), Number(month) - 1, Number(day), 12, 0, 0);
+
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleDateString("pt-BR", {
+    weekday: "short",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function extractDatePart(value: string | null | undefined) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  const [datePart] = normalized.split("T");
+  return datePart || "";
+}
+
+function extractTimePart(value: string | null | undefined) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "09:00";
+
+  const [, timePart] = normalized.split("T");
+  if (!timePart) return "09:00";
+
+  const [hours = "09", minutes = "00"] = timePart.split(":");
+  const candidate = `${hours.padStart(2, "0")}:${minutes.padStart(2, "0")}`;
+
+  return TIME_OPTIONS.includes(candidate) ? candidate : "09:00";
+}
+
+function combineDateAndTime(datePart: string, timePart: string) {
+  if (!datePart) return "";
+  const safeTime = TIME_OPTIONS.includes(timePart) ? timePart : "09:00";
+  return `${datePart}T${safeTime}`;
+}
+
+function shiftMonthKey(dateKey: string, monthOffset: number) {
+  const base = dateKey
+    ? new Date(`${dateKey}T12:00:00`)
+    : new Date();
+
+  if (Number.isNaN(base.getTime())) {
+    const fallback = new Date();
+    return toDateKey(new Date(fallback.getFullYear(), fallback.getMonth() + monthOffset, 1));
+  }
+
+  return toDateKey(new Date(base.getFullYear(), base.getMonth() + monthOffset, 1));
+}
+
+type DateTimePickerFieldProps = {
+  label: string;
+  dateValue: string;
+  timeValue: string;
+  onDateChange: (nextDate: string) => void;
+  onTimeChange: (nextTime: string) => void;
+};
+
+function DateTimePickerField(props: DateTimePickerFieldProps) {
+  const { label, dateValue, timeValue, onDateChange, onTimeChange } = props;
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => {
+    const initial = dateValue ? new Date(`${dateValue}T12:00:00`) : new Date();
+    return startOfMonth(Number.isNaN(initial.getTime()) ? new Date() : initial);
+  });
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!calendarOpen) return;
+
+    function handleOutsideClick(event: MouseEvent) {
+      if (!containerRef.current) return;
+      if (containerRef.current.contains(event.target as Node)) return;
+      setCalendarOpen(false);
+    }
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [calendarOpen]);
+
+  useEffect(() => {
+    if (!dateValue) return;
+    const nextDate = new Date(`${dateValue}T12:00:00`);
+    if (Number.isNaN(nextDate.getTime())) return;
+    setCalendarMonth(startOfMonth(nextDate));
+  }, [dateValue]);
+
+  const calendarMonthDays = useMemo(() => buildCalendarDays(calendarMonth), [calendarMonth]);
+
+  const selectedDateLabel = dateValue ? formatDateOnlyPtBr(dateValue) : "Selecionar dia";
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-sm font-semibold text-gray-700">{label}</label>
+
+      <div className="grid gap-3 sm:grid-cols-[1.3fr_0.7fr]">
+        <div ref={containerRef} className="relative">
+          <button
+            type="button"
+            onClick={() => setCalendarOpen((prev) => !prev)}
+            className="flex w-full items-center justify-between rounded-xl border border-black/10 bg-white px-3 py-2 text-left text-sm text-gray-900 outline-none transition hover:bg-gray-50 focus:border-black"
+          >
+            <span className={dateValue ? "text-gray-900" : "text-gray-400"}>{selectedDateLabel}</span>
+            <span className="text-xs font-semibold text-gray-500">Calendário</span>
+          </button>
+
+          {calendarOpen ? (
+            <div className="absolute left-0 top-[calc(100%+8px)] z-20 w-full min-w-[280px] rounded-2xl border border-black/10 bg-white p-3 shadow-xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCalendarMonth(
+                      (prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1)
+                    )
+                  }
+                  className="rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-200"
+                >
+                  Mês anterior
+                </button>
+
+                <div className="text-[11px] font-bold capitalize text-gray-900">
+                  {formatMonthYear(calendarMonth)}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCalendarMonth(
+                      (prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1)
+                    )
+                  }
+                  className="rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-200"
+                >
+                  Próximo mês
+                </button>
+              </div>
+
+              <div className="mb-2 grid grid-cols-7 gap-1">
+                {WEEKDAY_LABELS.map((weekday) => (
+                  <div
+                    key={`${label}-${weekday}`}
+                    className="rounded-md bg-gray-50 px-1 py-1 text-center text-[10px] font-semibold uppercase tracking-wide text-gray-500"
+                  >
+                    {weekday}
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-7 gap-1">
+                {calendarMonthDays.map((day) => {
+                  const dayKey = toDateKey(day);
+                  const sameMonth = day.getMonth() === calendarMonth.getMonth();
+                  const isSelected = dayKey === dateValue;
+                  const isToday = dayKey === toDateKey(new Date());
+
+                  return (
+                    <button
+                      key={`${label}-${dayKey}`}
+                      type="button"
+                      onClick={() => {
+                        onDateChange(dayKey);
+                        setCalendarOpen(false);
+                      }}
+                      className={[
+                        "h-9 rounded-lg text-center text-xs font-semibold transition",
+                        sameMonth ? "text-gray-900" : "text-gray-300",
+                        isSelected
+                          ? "bg-black text-white"
+                          : isToday
+                          ? "bg-gray-100 text-gray-900 ring-1 ring-black/10"
+                          : "hover:bg-gray-100",
+                      ].join(" ")}
+                    >
+                      {day.getDate()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div>
+          <select
+            value={timeValue}
+            onChange={(event) => onTimeChange(event.target.value)}
+            className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-black"
+          >
+            {TIME_OPTIONS.map((option) => (
+              <option key={`${label}-${option}`} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SchedulePage() {
   const {
     loading: storeLoading,
@@ -1904,39 +2117,69 @@ export default function SchedulePage() {
                         />
                       </div>
 
-                      <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
-                          Início
-                        </label>
-                        <input
-                          type="datetime-local"
-                          value={editForm.scheduledStart}
-                          onChange={(e) =>
-                            setEditForm((prev) =>
-                              prev
-                                ? { ...prev, scheduledStart: e.target.value }
-                                : prev
-                            )
-                          }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
-                        />
-                      </div>
+                      <DateTimePickerField
+                        label="Início"
+                        dateValue={extractDatePart(editForm.scheduledStart)}
+                        timeValue={extractTimePart(editForm.scheduledStart)}
+                        onDateChange={(nextDate) =>
+                          setEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  scheduledStart: combineDateAndTime(
+                                    nextDate,
+                                    extractTimePart(prev.scheduledStart)
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                        onTimeChange={(nextTime) =>
+                          setEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  scheduledStart: combineDateAndTime(
+                                    extractDatePart(prev.scheduledStart),
+                                    nextTime
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                      />
 
-                      <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
-                          Fim
-                        </label>
-                        <input
-                          type="datetime-local"
-                          value={editForm.scheduledEnd}
-                          onChange={(e) =>
-                            setEditForm((prev) =>
-                              prev ? { ...prev, scheduledEnd: e.target.value } : prev
-                            )
-                          }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
-                        />
-                      </div>
+                      <DateTimePickerField
+                        label="Fim"
+                        dateValue={extractDatePart(editForm.scheduledEnd)}
+                        timeValue={extractTimePart(editForm.scheduledEnd)}
+                        onDateChange={(nextDate) =>
+                          setEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  scheduledEnd: combineDateAndTime(
+                                    nextDate,
+                                    extractTimePart(prev.scheduledEnd)
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                        onTimeChange={(nextTime) =>
+                          setEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  scheduledEnd: combineDateAndTime(
+                                    extractDatePart(prev.scheduledEnd),
+                                    nextTime
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                      />
 
                       <div>
                         <label className="mb-1 block text-sm font-semibold text-gray-700">
@@ -2053,37 +2296,69 @@ export default function SchedulePage() {
                     </div>
 
                     <div className="grid gap-4 md:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
-                          Início
-                        </label>
-                        <input
-                          type="datetime-local"
-                          value={blockEditForm.startAt}
-                          onChange={(e) =>
-                            setBlockEditForm((prev) =>
-                              prev ? { ...prev, startAt: e.target.value } : prev
-                            )
-                          }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
-                        />
-                      </div>
+                      <DateTimePickerField
+                        label="Início"
+                        dateValue={extractDatePart(blockEditForm.startAt)}
+                        timeValue={extractTimePart(blockEditForm.startAt)}
+                        onDateChange={(nextDate) =>
+                          setBlockEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  startAt: combineDateAndTime(
+                                    nextDate,
+                                    extractTimePart(prev.startAt)
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                        onTimeChange={(nextTime) =>
+                          setBlockEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  startAt: combineDateAndTime(
+                                    extractDatePart(prev.startAt),
+                                    nextTime
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                      />
 
-                      <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
-                          Fim
-                        </label>
-                        <input
-                          type="datetime-local"
-                          value={blockEditForm.endAt}
-                          onChange={(e) =>
-                            setBlockEditForm((prev) =>
-                              prev ? { ...prev, endAt: e.target.value } : prev
-                            )
-                          }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
-                        />
-                      </div>
+                      <DateTimePickerField
+                        label="Fim"
+                        dateValue={extractDatePart(blockEditForm.endAt)}
+                        timeValue={extractTimePart(blockEditForm.endAt)}
+                        onDateChange={(nextDate) =>
+                          setBlockEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  endAt: combineDateAndTime(
+                                    nextDate,
+                                    extractTimePart(prev.endAt)
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                        onTimeChange={(nextTime) =>
+                          setBlockEditForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  endAt: combineDateAndTime(
+                                    extractDatePart(prev.endAt),
+                                    nextTime
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                      />
                     </div>
 
                     <div>
@@ -2302,39 +2577,53 @@ export default function SchedulePage() {
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
-                    <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
-                        Início
-                      </label>
-                      <input
-                        type="datetime-local"
-                        value={blockForm.startAt}
-                        onChange={(e) =>
-                          setBlockForm((prev) => ({
-                            ...prev,
-                            startAt: e.target.value,
-                          }))
-                        }
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
-                      />
-                    </div>
+                    <DateTimePickerField
+                      label="Início"
+                      dateValue={extractDatePart(blockForm.startAt)}
+                      timeValue={extractTimePart(blockForm.startAt)}
+                      onDateChange={(nextDate) =>
+                        setBlockForm((prev) => ({
+                          ...prev,
+                          startAt: combineDateAndTime(
+                            nextDate,
+                            extractTimePart(prev.startAt)
+                          ),
+                        }))
+                      }
+                      onTimeChange={(nextTime) =>
+                        setBlockForm((prev) => ({
+                          ...prev,
+                          startAt: combineDateAndTime(
+                            extractDatePart(prev.startAt),
+                            nextTime
+                          ),
+                        }))
+                      }
+                    />
 
-                    <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
-                        Fim
-                      </label>
-                      <input
-                        type="datetime-local"
-                        value={blockForm.endAt}
-                        onChange={(e) =>
-                          setBlockForm((prev) => ({
-                            ...prev,
-                            endAt: e.target.value,
-                          }))
-                        }
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
-                      />
-                    </div>
+                    <DateTimePickerField
+                      label="Fim"
+                      dateValue={extractDatePart(blockForm.endAt)}
+                      timeValue={extractTimePart(blockForm.endAt)}
+                      onDateChange={(nextDate) =>
+                        setBlockForm((prev) => ({
+                          ...prev,
+                          endAt: combineDateAndTime(
+                            nextDate,
+                            extractTimePart(prev.endAt)
+                          ),
+                        }))
+                      }
+                      onTimeChange={(nextTime) =>
+                        setBlockForm((prev) => ({
+                          ...prev,
+                          endAt: combineDateAndTime(
+                            extractDatePart(prev.endAt),
+                            nextTime
+                          ),
+                        }))
+                      }
+                    />
                   </div>
 
                   <div>
@@ -2478,39 +2767,53 @@ export default function SchedulePage() {
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
-                    <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
-                        Início
-                      </label>
-                      <input
-                        type="datetime-local"
-                        value={appointmentCreateForm.scheduledStart}
-                        onChange={(e) =>
-                          setAppointmentCreateForm((prev) => ({
-                            ...prev,
-                            scheduledStart: e.target.value,
-                          }))
-                        }
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
-                      />
-                    </div>
+                    <DateTimePickerField
+                      label="Início"
+                      dateValue={extractDatePart(appointmentCreateForm.scheduledStart)}
+                      timeValue={extractTimePart(appointmentCreateForm.scheduledStart)}
+                      onDateChange={(nextDate) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          scheduledStart: combineDateAndTime(
+                            nextDate,
+                            extractTimePart(prev.scheduledStart)
+                          ),
+                        }))
+                      }
+                      onTimeChange={(nextTime) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          scheduledStart: combineDateAndTime(
+                            extractDatePart(prev.scheduledStart),
+                            nextTime
+                          ),
+                        }))
+                      }
+                    />
 
-                    <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
-                        Fim
-                      </label>
-                      <input
-                        type="datetime-local"
-                        value={appointmentCreateForm.scheduledEnd}
-                        onChange={(e) =>
-                          setAppointmentCreateForm((prev) => ({
-                            ...prev,
-                            scheduledEnd: e.target.value,
-                          }))
-                        }
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
-                      />
-                    </div>
+                    <DateTimePickerField
+                      label="Fim"
+                      dateValue={extractDatePart(appointmentCreateForm.scheduledEnd)}
+                      timeValue={extractTimePart(appointmentCreateForm.scheduledEnd)}
+                      onDateChange={(nextDate) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          scheduledEnd: combineDateAndTime(
+                            nextDate,
+                            extractTimePart(prev.scheduledEnd)
+                          ),
+                        }))
+                      }
+                      onTimeChange={(nextTime) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          scheduledEnd: combineDateAndTime(
+                            extractDatePart(prev.scheduledEnd),
+                            nextTime
+                          ),
+                        }))
+                      }
+                    />
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
