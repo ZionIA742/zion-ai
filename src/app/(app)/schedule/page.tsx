@@ -238,6 +238,24 @@ function getItemChipClass(item: ScheduleItem) {
   return "bg-gray-50 text-gray-700 ring-gray-200";
 }
 
+function getHighlightedStatusLabel(value: string) {
+  const normalized = String(value || "").toLowerCase();
+
+  if (normalized === "rescheduled") return "Remarcado";
+  if (normalized === "completed") return "Concluído";
+
+  return null;
+}
+
+function getHighlightedStatusTextClass(value: string) {
+  const normalized = String(value || "").toLowerCase();
+
+  if (normalized === "rescheduled") return "text-amber-700";
+  if (normalized === "completed") return "text-emerald-700";
+
+  return "text-gray-500";
+}
+
 function startOfMonth(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
 }
@@ -945,13 +963,29 @@ export default function SchedulePage() {
         return;
       }
 
+      const originalStartIso = selectedItem.startAt
+        ? new Date(selectedItem.startAt).toISOString()
+        : null;
+      const originalEndIso = selectedItem.endAt
+        ? new Date(selectedItem.endAt).toISOString()
+        : null;
+
+      const timeChanged =
+        originalStartIso !== startDate.toISOString() ||
+        originalEndIso !== endDate.toISOString();
+
+      const nextStatus =
+        timeChanged && editForm.status === "scheduled"
+          ? "rescheduled"
+          : editForm.status;
+
       const { data, error } = await supabase.rpc("update_store_appointment", {
         p_appointment_id: selectedItem.itemId,
         p_organization_id: organizationId,
         p_store_id: activeStoreId,
         p_title: editForm.title,
         p_appointment_type: editForm.appointmentType,
-        p_status: editForm.status,
+        p_status: nextStatus,
         p_scheduled_start: startDate.toISOString(),
         p_scheduled_end: endDate.toISOString(),
         p_customer_name: editForm.customerName || null,
@@ -1524,6 +1558,15 @@ export default function SchedulePage() {
                           <div className="truncate">
                             {item.itemKind === "block" ? "Bloqueio" : "Compromisso"}
                           </div>
+                          {item.itemKind === "appointment" && getHighlightedStatusLabel(item.status) ? (
+                            <div
+                              className={`mt-0.5 truncate text-[10px] font-bold uppercase tracking-wide ${getHighlightedStatusTextClass(
+                                item.status
+                              )}`}
+                            >
+                              {getHighlightedStatusLabel(item.status)}
+                            </div>
+                          ) : null}
                           <div className="mt-0.5 truncate text-[10px] font-medium">
                             {item.title || "-"}
                           </div>
@@ -1603,6 +1646,15 @@ export default function SchedulePage() {
                                 {formatItemKind(item.itemKind)} • {" "}
                                 {formatItemType(item.itemType)}
                               </div>
+                              {item.itemKind === "appointment" && getHighlightedStatusLabel(item.status) ? (
+                                <div
+                                  className={`mt-1 text-[11px] font-bold uppercase tracking-wide ${getHighlightedStatusTextClass(
+                                    item.status
+                                  )}`}
+                                >
+                                  {getHighlightedStatusLabel(item.status)}
+                                </div>
+                              ) : null}
                             </div>
 
                             <span
@@ -1719,6 +1771,20 @@ export default function SchedulePage() {
                     {formatItemType(selectedItem.itemType)}
                   </span>
                 </div>
+
+                {selectedItem.itemKind === "appointment" &&
+                selectedItem.status === "rescheduled" ? (
+                  <div className="mb-5 rounded-2xl bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 ring-1 ring-amber-200">
+                    Este compromisso foi remarcado. Confira abaixo o horário atualizado.
+                  </div>
+                ) : null}
+
+                {selectedItem.itemKind === "appointment" &&
+                selectedItem.status === "completed" ? (
+                  <div className="mb-5 rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 ring-1 ring-emerald-200">
+                    Este compromisso foi concluído.
+                  </div>
+                ) : null}
 
                 {selectedItem.itemKind === "appointment" && !editMode ? (
                   <div className="mb-5 flex flex-wrap gap-3">
