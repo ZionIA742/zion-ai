@@ -747,6 +747,11 @@ export default function SchedulePage() {
     return leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
   }, [leadOptions, appointmentCreateForm.leadId]);
 
+  const selectedItemLeadOption = useMemo(() => {
+    if (!selectedItem?.leadId) return null;
+    return leadOptions.find((lead) => lead.leadId === selectedItem.leadId) || null;
+  }, [leadOptions, selectedItem?.leadId]);
+
   const counts = useMemo(() => {
     const appointments = items.filter((item) => item.itemKind === "appointment").length;
     const blocks = items.filter((item) => item.itemKind === "block").length;
@@ -2082,6 +2087,45 @@ export default function SchedulePage() {
                         {formatPhone(selectedItem.customerPhone)}
                       </div>
                     </div>
+
+                    {selectedItem.itemKind === "appointment" ? (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="rounded-2xl bg-gray-50 p-4">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            Lead vinculado
+                          </div>
+                          <div className="mt-1 text-sm font-medium text-gray-900">
+                            {selectedItemLeadOption?.leadName || selectedItem.customerName || (selectedItem.leadId ? "Lead vinculado" : "-")}
+                          </div>
+                          <div className="mt-1 break-all text-xs text-gray-500">
+                            {selectedItem.leadId || "Sem lead vinculado"}
+                          </div>
+                          {selectedItemLeadOption?.leadState ? (
+                            <div className="mt-1 text-xs text-gray-500">
+                              Etapa atual: {selectedItemLeadOption.leadState}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="rounded-2xl bg-gray-50 p-4">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            Conversa vinculada
+                          </div>
+                          <div className="mt-1 text-sm font-medium text-gray-900">
+                            {selectedItem.conversationId ? "Conversa conectada" : "Sem conversa vinculada"}
+                          </div>
+                          <div className="mt-1 break-all text-xs text-gray-500">
+                            {selectedItem.conversationId || "-"}
+                          </div>
+                          {selectedItem.conversationId && selectedItemLeadOption?.conversationId === selectedItem.conversationId ? (
+                            <div className="mt-1 text-xs text-gray-500">
+                              Status: {selectedItemLeadOption.conversationStatus || "-"}
+                              {selectedItemLeadOption.isHumanActive ? " • Humano ativo" : " • IA ativa"}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
 
                     <div className="rounded-2xl bg-gray-50 p-4">
                       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
