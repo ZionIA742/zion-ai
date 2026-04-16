@@ -1,3 +1,4 @@
+
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
@@ -331,6 +332,10 @@ COMO RESPONDER SOBRE MATERIAIS, DOCUMENTOS E CHECKLIST
 - não diga que a loja usa isso com certeza
 - não entregue lista longa demais
 - se o responsável pedir muita coisa de uma vez, responda de forma resumida e controlada
+- quando estiver nesse terreno genérico, prefira este formato:
+  1) uma frase curta dizendo que é sugestão genérica
+  2) até 4 itens práticos
+  3) uma pergunta curta no final, se ajudar
 
 ANÁLISE DO PEDIDO ATUAL
 ${requestAnalysis}
@@ -377,6 +382,58 @@ function buildModelInput(messages: AssistantMessageRow[]) {
     });
 }
 
+function extractCompactGenericBullets(text: string) {
+  const normalized = normalizeText(text);
+
+  const candidates: Array<{ keys: string[]; label: string }> = [
+    {
+      keys: ["endereco", "telefone", "cliente"],
+      label: "endereço e telefone do cliente",
+    },
+    {
+      keys: ["medicao", "nivel", "medidor de ph", "ph"],
+      label: "equipamento de medição",
+    },
+    {
+      keys: ["formulario", "anotacao tecnica", "anotacao"],
+      label: "formulário de anotação técnica",
+    },
+    {
+      keys: ["amostra", "acessorio", "acessorios", "produto", "produtos"],
+      label: "amostras ou acessórios para demonstração",
+    },
+    {
+      keys: ["contrato", "prazo", "condicoes", "condição"],
+      label: "contratos ou condições comerciais, se precisar negociar",
+    },
+    {
+      keys: ["manual", "catalogo", "catálogo", "material de apoio"],
+      label: "catálogo ou material de apoio",
+    },
+    {
+      keys: ["epi", "protecao individual", "protecao", "proteção"],
+      label: "EPI, se fizer sentido para a visita",
+    },
+  ];
+
+  const selected: string[] = [];
+
+  for (const candidate of candidates) {
+    if (candidate.keys.some((key) => normalized.includes(normalizeText(key)))) {
+      selected.push(candidate.label);
+    }
+    if (selected.length >= 4) break;
+  }
+
+  if (selected.length === 0) {
+    selected.push("equipamento de medição");
+    selected.push("formulário de anotação técnica");
+    selected.push("endereço e telefone do cliente");
+  }
+
+  return selected.slice(0, 4);
+}
+
 function cleanupAiText(
   text: string,
   options?: {
@@ -400,47 +457,17 @@ function cleanupAiText(
   ];
 
   const isGenericMaterialReply =
-    options?.genericMaterialMode === true &&
+    options?.genericMaterialMode === true ||
     genericMarkers.some((marker) => cleaned.toLowerCase().includes(marker.toLowerCase()));
 
   if (isGenericMaterialReply) {
-    const paragraphs = cleaned
-      .split(/\n{2,}/)
-      .map((item) => item.trim())
-      .filter(Boolean);
+    const bullets = extractCompactGenericBullets(cleaned);
 
-    const bullets = cleaned
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("-"));
-
-    let intro = paragraphs.find(
-      (p) =>
-        !/^o que levar:?$/i.test(p) &&
-        !/^documentos/i.test(p) &&
-        !/^checklist/i.test(p) &&
-        !p.startsWith("-")
-    );
-
-    if (!intro) {
-      intro =
-        "Essa lista é uma sugestão genérica, porque eu não tenho um checklist oficial cadastrado da sua loja para essa visita.";
-    }
-
-    intro = intro
-      .replace(/\s+/g, " ")
-      .replace(/\s*:\s*/g, ": ")
-      .trim();
-
-    const conciseBullets = bullets.slice(0, 4).map((line) => line.replace(/\s+/g, " ").trim());
-
-    const compactParts: string[] = [intro];
-
-    if (conciseBullets.length > 0) {
-      compactParts.push(conciseBullets.join("\n"));
-    }
-
-    compactParts.push("Se quiser, eu resumo isso em 3 itens principais.");
+    const compactParts = [
+      "Essa lista é uma sugestão genérica, não um procedimento oficial da loja.",
+      bullets.map((item) => `- ${item}`).join("\n"),
+      "Se quiser, eu separo isso em materiais e documentos.",
+    ];
 
     return compactParts.join("\n\n").trim();
   }
@@ -676,7 +703,7 @@ async function generateAssistantReply(params: {
     const response = await openai.responses.create({
       model,
       input,
-      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 180 : 220,
+      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 140 : 220,
     });
 
     const aiText = cleanupAiText(String(response.output_text || "").trim(), {
