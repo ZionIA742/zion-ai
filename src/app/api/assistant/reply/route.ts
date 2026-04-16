@@ -1,4 +1,3 @@
-
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
@@ -50,6 +49,26 @@ type PendingNotificationRow = {
   related_lead_id: string | null;
   related_conversation_id: string | null;
   related_appointment_id: string | null;
+};
+
+type PostAppointmentFollowupRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  appointment_id: string;
+  lead_id: string | null;
+  conversation_id: string | null;
+  scheduled_end: string | null;
+  followup_status: string | null;
+  preferred_channel: string | null;
+  prompt_count: number | null;
+  last_prompted_at: string | null;
+  confirmed_at: string | null;
+  resolved_at: string | null;
+  resolution: string | null;
+  notes: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 type AssistantReplyResult =
@@ -148,6 +167,33 @@ function formatAppointmentStatus(value: string | null) {
   return value || "sem status";
 }
 
+function formatFollowupStatus(value: string | null) {
+  const normalized = normalizeText(value);
+
+  if (normalized === "prompt_sent") return "aguardando confirmação pós-compromisso";
+  if (normalized === "confirmed_completed") return "confirmado como concluído";
+  if (normalized === "confirmed_rescheduled") return "confirmado como remarcado";
+  if (normalized === "confirmed_cancelled") return "confirmado como cancelado";
+  return value || "sem status";
+}
+
+function formatResolution(value: string | null) {
+  const normalized = normalizeText(value);
+
+  if (normalized === "completed") return "concluído";
+  if (normalized === "rescheduled") return "remarcado";
+  if (normalized === "cancelled") return "cancelado";
+  return value || "sem resolução";
+}
+
+function formatPreferredChannel(value: string | null) {
+  const normalized = normalizeText(value);
+  if (!normalized || normalized === "unknown") return "canal não definido";
+  if (normalized === "whatsapp") return "WhatsApp";
+  if (normalized === "internal_chat") return "chat interno";
+  return value || "canal não definido";
+}
+
 function asksAboutToday(text: string) {
   const t = normalizeText(text);
   return (
@@ -172,6 +218,25 @@ function asksAboutMaterialsOrDocuments(text: string) {
     t.includes("usar nessa visita") ||
     t.includes("o que eu preciso levar") ||
     t.includes("o que eu tenho que levar")
+  );
+}
+
+function asksAboutPostAppointment(text: string) {
+  const t = normalizeText(text);
+  return (
+    t.includes("pos compromisso") ||
+    t.includes("pós compromisso") ||
+    t.includes("pos-compromisso") ||
+    t.includes("pós-compromisso") ||
+    t.includes("acompanhamento") ||
+    t.includes("retorno") ||
+    t.includes("depois da visita") ||
+    t.includes("depois do compromisso") ||
+    t.includes("o que ficou pendente") ||
+    t.includes("o que ainda preciso resolver") ||
+    t.includes("visitas pendentes") ||
+    t.includes("confirmacao") ||
+    t.includes("confirmação")
   );
 }
 
@@ -278,9 +343,55 @@ function buildPendingNotificationsBlock(items: PendingNotificationRow[]) {
     .join("\n");
 }
 
+function buildFollowupLine(
+  followup: PostAppointmentFollowupRow,
+  appointmentMap: Map<string, AppointmentRow>
+) {
+  const appointment = appointmentMap.get(followup.appointment_id);
+
+  const parts = [
+    appointment
+      ? `${formatAppointmentType(appointment.appointment_type)} ${formatAppointmentStatus(appointment.status)}`
+      : "compromisso sem detalhes carregados",
+    followup.followup_status ? formatFollowupStatus(followup.followup_status) : null,
+    appointment?.customer_name ? `cliente ${appointment.customer_name}` : null,
+    appointment?.customer_phone ? `telefone ${appointment.customer_phone}` : null,
+    followup.scheduled_end ? `fim previsto ${formatDateTime(followup.scheduled_end)}` : null,
+    followup.preferred_channel ? `canal ${formatPreferredChannel(followup.preferred_channel)}` : null,
+    followup.prompt_count != null ? `tentativas ${followup.prompt_count}` : null,
+    followup.resolution ? `resolução ${formatResolution(followup.resolution)}` : null,
+    followup.notes ? `observação ${followup.notes}` : null,
+  ].filter(Boolean);
+
+  return `- ${parts.join(" • ")}`;
+}
+
+function buildPendingPostAppointmentBlock(
+  items: PostAppointmentFollowupRow[],
+  appointmentMap: Map<string, AppointmentRow>
+) {
+  if (!items.length) {
+    return "- nenhum pós-compromisso pendente";
+  }
+
+  return items.map((item) => buildFollowupLine(item, appointmentMap)).join("\n");
+}
+
+function buildResolvedPostAppointmentBlock(
+  items: PostAppointmentFollowupRow[],
+  appointmentMap: Map<string, AppointmentRow>
+) {
+  if (!items.length) {
+    return "- nenhum pós-compromisso resolvido recentemente";
+  }
+
+  return items.map((item) => buildFollowupLine(item, appointmentMap)).join("\n");
+}
+
 function buildRequestAnalysisBlock(lastHumanMessage: string) {
   const materialRequest = asksAboutMaterialsOrDocuments(lastHumanMessage);
   const todayRequest = asksAboutToday(lastHumanMessage);
+  const postAppointmentRequest = asksAboutPostAppointment(lastHumanMessage);
 
   return [
     `- pedido ligado a materiais/documentos/checklist: ${materialRequest ? "sim" : "não"}`,
@@ -288,6 +399,7 @@ function buildRequestAnalysisBlock(lastHumanMessage: string) {
       ? "- quando responder isso, trate qualquer orientação de materiais ou documentos como sugestão genérica, nunca como procedimento confirmado da loja, a menos que exista base explícita no sistema"
       : "- não há pedido direto sobre materiais ou documentos nesta mensagem",
     `- pedido ligado a agenda, urgência ou compromissos: ${todayRequest ? "sim" : "não"}`,
+    `- pedido ligado a pós-compromisso, retorno ou acompanhamento: ${postAppointmentRequest ? "sim" : "não"}`,
   ].join("\n");
 }
 
@@ -299,6 +411,9 @@ function buildSystemPrompt(args: {
   overdueAppointments: AppointmentRow[];
   nextAppointments: AppointmentRow[];
   pendingNotifications: PendingNotificationRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+  recentResolvedPostFollowups: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
   lastHumanMessage: string;
 }) {
   const storeName = args.onboardingMap.store_display_name || args.store.name || "a loja";
@@ -314,6 +429,7 @@ MISSÃO
 - resumir agenda, prioridades e pendências
 - responder dúvidas operacionais sobre clientes, compromissos e rotina
 - trazer contexto suficiente para ação humana
+- usar também a base de pós-compromisso quando ela existir
 - ser honesta sobre o que sabe e o que não sabe
 
 REGRAS FIXAS
@@ -321,6 +437,7 @@ REGRAS FIXAS
 - nunca prometa ação automática que não existe
 - nunca diga que organizou, confirmou, enviou, separou ou preparou algo se isso não aconteceu de verdade
 - se algo não estiver confirmado no sistema, deixe isso explícito
+- quando houver pós-compromisso pendente, isso deve entrar como pendência operacional real
 - se a pergunta for sobre materiais, documentos ou checklist e não houver base oficial da loja, trate como sugestão genérica curta
 - não entregue textão quando bastar uma resposta curta
 - quando estiver em terreno genérico, use no máximo 3 a 5 itens
@@ -336,6 +453,13 @@ COMO RESPONDER SOBRE MATERIAIS, DOCUMENTOS E CHECKLIST
   1) uma frase curta dizendo que é sugestão genérica
   2) até 4 itens práticos
   3) uma pergunta curta no final, se ajudar
+
+COMO RESPONDER SOBRE PÓS-COMPROMISSO
+- trate follow-ups pendentes como pendências reais da operação
+- quando houver follow-up com status pendente ou prompt_sent, deixe isso claro
+- quando houver follow-up resolvido, trate como histórico recente, não como pendência aberta
+- se houver resolução completed, rescheduled ou cancelled, use isso como contexto operacional confiável
+- se faltar lead, conversation ou observação, deixe claro que essa parte não veio preenchida
 
 ANÁLISE DO PEDIDO ATUAL
 ${requestAnalysis}
@@ -357,6 +481,12 @@ ${buildOverdueAppointmentsBlock(args.overdueAppointments)}
 
 PENDÊNCIAS DA ASSISTENTE
 ${buildPendingNotificationsBlock(args.pendingNotifications)}
+
+PÓS-COMPROMISSO PENDENTE
+${buildPendingPostAppointmentBlock(args.pendingPostFollowups, args.appointmentMap)}
+
+PÓS-COMPROMISSO RESOLVIDO RECENTEMENTE
+${buildResolvedPostAppointmentBlock(args.recentResolvedPostFollowups, args.appointmentMap)}
 
 MENSAGEM MAIS RECENTE DO RESPONSÁVEL
 ${args.lastHumanMessage}
@@ -466,7 +596,7 @@ function cleanupAiText(
     const compactParts = [
       "Essa lista é uma sugestão genérica, não um procedimento oficial da loja.",
       bullets.map((item) => `- ${item}`).join("\n"),
-      "Se quiser, eu separo isso em materiais e documentos.",
+      "Se quiser, eu separo isso em materiais e documentos para você.",
     ];
 
     return compactParts.join("\n\n").trim();
@@ -681,6 +811,78 @@ async function generateAssistantReply(params: {
       };
     }
 
+    const { data: pendingPostFollowupsData, error: pendingPostFollowupsError } = await supabase
+      .from("schedule_post_appointment_followups")
+      .select(
+        "id, organization_id, store_id, appointment_id, lead_id, conversation_id, scheduled_end, followup_status, preferred_channel, prompt_count, last_prompted_at, confirmed_at, resolved_at, resolution, notes, created_at, updated_at"
+      )
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .is("resolved_at", null)
+      .order("scheduled_end", { ascending: true })
+      .limit(10);
+
+    if (pendingPostFollowupsError) {
+      return {
+        ok: false,
+        error: "LOAD_PENDING_POST_FOLLOWUPS_FAILED",
+        message: pendingPostFollowupsError.message,
+      };
+    }
+
+    const { data: recentResolvedPostFollowupsData, error: recentResolvedPostFollowupsError } = await supabase
+      .from("schedule_post_appointment_followups")
+      .select(
+        "id, organization_id, store_id, appointment_id, lead_id, conversation_id, scheduled_end, followup_status, preferred_channel, prompt_count, last_prompted_at, confirmed_at, resolved_at, resolution, notes, created_at, updated_at"
+      )
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .not("resolved_at", "is", null)
+      .order("resolved_at", { ascending: false })
+      .limit(10);
+
+    if (recentResolvedPostFollowupsError) {
+      return {
+        ok: false,
+        error: "LOAD_RESOLVED_POST_FOLLOWUPS_FAILED",
+        message: recentResolvedPostFollowupsError.message,
+      };
+    }
+
+    const appointmentIds = Array.from(
+      new Set(
+        [
+          ...((pendingPostFollowupsData || []) as PostAppointmentFollowupRow[]),
+          ...((recentResolvedPostFollowupsData || []) as PostAppointmentFollowupRow[]),
+        ]
+          .map((item) => item.appointment_id)
+          .filter(Boolean)
+      )
+    );
+
+    const appointmentMap = new Map<string, AppointmentRow>();
+
+    if (appointmentIds.length > 0) {
+      const { data: followupAppointmentsData, error: followupAppointmentsError } = await supabase
+        .from("store_appointments")
+        .select(
+          "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+        )
+        .in("id", appointmentIds);
+
+      if (followupAppointmentsError) {
+        return {
+          ok: false,
+          error: "LOAD_POST_FOLLOWUP_APPOINTMENTS_FAILED",
+          message: followupAppointmentsError.message,
+        };
+      }
+
+      for (const item of (followupAppointmentsData || []) as AppointmentRow[]) {
+        appointmentMap.set(item.id, item);
+      }
+    }
+
     const systemPrompt = buildSystemPrompt({
       store,
       onboardingMap,
@@ -689,6 +891,9 @@ async function generateAssistantReply(params: {
       nextAppointments: (nextAppointmentsData || []) as AppointmentRow[],
       overdueAppointments: (overdueAppointmentsData || []) as AppointmentRow[],
       pendingNotifications: (pendingNotificationsData || []) as PendingNotificationRow[],
+      pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
+      recentResolvedPostFollowups: (recentResolvedPostFollowupsData || []) as PostAppointmentFollowupRow[],
+      appointmentMap,
       lastHumanMessage,
     });
 
@@ -703,7 +908,7 @@ async function generateAssistantReply(params: {
     const response = await openai.responses.create({
       model,
       input,
-      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 140 : 220,
+      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 140 : 240,
     });
 
     const aiText = cleanupAiText(String(response.output_text || "").trim(), {
@@ -718,17 +923,22 @@ async function generateAssistantReply(params: {
       };
     }
 
+    const isContextMessage =
+      asksAboutToday(lastHumanMessage) ||
+      asksAboutPostAppointment(lastHumanMessage);
+
     const { error: saveError } = await supabase.rpc("assistant_push_system_message", {
       p_organization_id: organizationId,
       p_store_id: storeId,
       p_content: aiText,
-      p_message_type: asksAboutToday(lastHumanMessage) ? "context" : "text",
+      p_message_type: isContextMessage ? "context" : "text",
       p_related_lead_id: null,
       p_related_conversation_id: null,
       p_related_appointment_id: null,
       p_metadata: {
         source: "assistant.reply.route",
         genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
+        postAppointmentContextUsed: true,
       },
     });
 
