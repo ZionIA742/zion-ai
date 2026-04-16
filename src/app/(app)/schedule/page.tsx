@@ -1228,8 +1228,11 @@ export default function SchedulePage() {
 
       const rpcPayload = isCompletingNow
         ? {
-            ...payload,
+            p_appointment_id: selectedItem.itemId,
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId,
             p_completion_outcome: completionOutcome,
+            p_completion_note: editForm.notes || null,
           }
         : payload;
 
