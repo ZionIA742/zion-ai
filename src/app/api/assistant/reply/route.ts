@@ -301,6 +301,33 @@ function buildNotificationsBlock(notifications: NotificationRow[]) {
     .join("\n");
 }
 
+
+function asksAboutMaterialsOrDocuments(text: string) {
+  const normalized = normalizeText(text);
+  return (
+    normalized.includes("material") ||
+    normalized.includes("materiais") ||
+    normalized.includes("documento") ||
+    normalized.includes("documentos") ||
+    normalized.includes("checklist") ||
+    normalized.includes("conferir antes") ||
+    normalized.includes("o que eu devo conferir") ||
+    normalized.includes("o que levar") ||
+    normalized.includes("o que preciso levar")
+  );
+}
+
+function buildRequestAnalysisBlock(lastHumanMessage: string) {
+  const materialRequest = asksAboutMaterialsOrDocuments(lastHumanMessage);
+
+  return [
+    `- pedido ligado a materiais/documentos/checklist: ${materialRequest ? "sim" : "não"}`,
+    materialRequest
+      ? "- quando responder isso, trate qualquer orientação de materiais ou documentos como sugestão genérica, nunca como procedimento confirmado da loja, a menos que exista base explícita no sistema"
+      : "- não há pedido direto sobre materiais ou documentos nesta mensagem",
+  ].join("\n");
+}
+
 function buildSystemPrompt(args: {
   store: StoreRow;
   onboardingMap: Record<string, string>;
@@ -310,6 +337,7 @@ function buildSystemPrompt(args: {
   overdueAppointments: AppointmentRow[];
   pendingNotifications: NotificationRow[];
   responsibleName: string;
+  lastHumanMessage: string;
 }) {
   const historyBlock = buildHistoryBlock(args.recentMessages);
   const storeBlock = buildStoreBlock(args.store, args.onboardingMap);
@@ -317,6 +345,7 @@ function buildSystemPrompt(args: {
   const weekBlock = buildWeekAgendaBlock(args.nextAppointments);
   const overdueBlock = buildOverdueBlock(args.overdueAppointments);
   const notificationsBlock = buildNotificationsBlock(args.pendingNotifications);
+  const requestAnalysisBlock = buildRequestAnalysisBlock(args.lastHumanMessage);
 
   return `
 Você é a assistente operacional interna do projeto ZION.
@@ -342,6 +371,7 @@ O QUE VOCÊ PODE FAZER HOJE
 - sugerir o que o responsável deve conferir
 - resumir pendências da fila da assistente
 - explicar com clareza o que merece atenção humana
+- quando faltar base específica da loja, oferecer apenas sugestão genérica e deixar isso explícito
 
 O QUE VOCÊ NÃO PODE DIZER COMO SE JÁ FIZESSE
 - "vou organizar os documentos"
@@ -360,6 +390,18 @@ SE O RESPONSÁVEL PEDIR ALGO QUE AINDA NÃO EXISTE
 Exemplo bom:
 "Hoje eu ainda não organizo documentos de forma automática, mas posso te resumir o que conferir antes da visita."
 
+REGRA CRÍTICA SOBRE FATOS VS SUGESTÕES
+- diferencie sempre o que é fato confirmado do sistema do que é só sugestão genérica
+- fatos confirmados: horário, cliente, telefone, endereço, observações, status, pendências e notificações que realmente vieram do sistema
+- sugestão genérica: materiais, documentos, EPIs, ferramentas, catálogos, contratos, formulários, amostras, manuais, checklists e preparações que não estejam cadastrados de forma estruturada no sistema
+- quando falar de sugestão genérica, use expressões como:
+  - "eu não tenho uma lista operacional cadastrada da sua loja"
+  - "posso te sugerir um checklist genérico"
+  - "como orientação geral"
+  - "vale conferir"
+- nunca fale sugestão genérica como se fosse padrão confirmado da loja
+- nunca diga ou insinue que a loja realmente usa aqueles materiais/documentos sem confirmação
+
 COMO RESPONDER
 - sempre em português do Brasil
 - natural, humana, clara e objetiva
@@ -374,6 +416,8 @@ ESTILO
 - quando houver pendências reais, destaque primeiro o que é mais importante
 - se existir compromisso hoje, priorize isso na resposta
 - quando ajudar com preparação, fale como sugestão textual, não como automação executada
+- quando a pergunta for sobre materiais, documentos ou checklist, deixe explícito que você está dando uma sugestão genérica se não houver base cadastrada
+- não monte lista específica demais como se conhecesse o procedimento interno da loja sem confirmação
 - pode usar listas curtas quando isso realmente ajudar
 - no máximo 1 pergunta final curta, e só se fizer sentido
 
@@ -381,11 +425,13 @@ EXEMPLOS BOAS RESPOSTAS
 - "Hoje você tem uma visita técnica às 12:30 com o cliente João. O principal é revisar endereço, observações e confirmar se ficou alguma pendência da visita anterior."
 - "Você tem dois compromissos em atraso que ainda precisam de baixa. O mais urgente parece ser o do dia 14/04."
 - "Hoje eu ainda não organizo documentos automaticamente, mas posso te dizer o que vale conferir antes da visita."
+- "Eu não tenho uma lista operacional cadastrada da sua loja para essa visita, mas posso te sugerir um checklist genérico de conferência."
 
 EXEMPLOS RUINS
 - "Quer que eu organize os documentos para você?"
 - "Posso preparar um checklist e deixar tudo pronto."
 - "Vou arrumar isso para a execução."
+- "Para essa visita, você precisa levar EPI, contrato, catálogo e formulário." (ruim se isso não estiver confirmado no sistema da loja)
 
 DADOS DA LOJA
 ${storeBlock}
@@ -407,6 +453,12 @@ ${overdueBlock}
 
 NOTIFICAÇÕES PENDENTES DA ASSISTENTE
 ${notificationsBlock}
+
+ANÁLISE DO PEDIDO ATUAL
+${requestAnalysisBlock}
+
+MENSAGEM MAIS RECENTE DO RESPONSÁVEL
+${args.lastHumanMessage}
 
 SAÍDA OBRIGATÓRIA
 - gere apenas a mensagem final da assistente
@@ -645,6 +697,7 @@ async function generateAssistantReply(params: {
       overdueAppointments,
       pendingNotifications,
       responsibleName,
+      lastHumanMessage,
     });
 
     const modelInput = [
