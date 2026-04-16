@@ -209,6 +209,10 @@ function formatPreferredChannel(value: string | null) {
   return value || "canal não definido";
 }
 
+function hasAnyTerm(text: string, terms: string[]) {
+  return terms.some((term) => text.includes(term));
+}
+
 function asksAboutToday(text: string) {
   const t = normalizeText(text);
   return (
@@ -238,70 +242,92 @@ function asksAboutMaterialsOrDocuments(text: string) {
 
 function asksAboutPostAppointment(text: string) {
   const t = normalizeText(text);
-  return (
-    t.includes("pos compromisso") ||
-    t.includes("pós compromisso") ||
-    t.includes("pos-compromisso") ||
-    t.includes("pós-compromisso") ||
-    t.includes("acompanhamento") ||
-    t.includes("retorno") ||
-    t.includes("depois da visita") ||
-    t.includes("depois do compromisso") ||
-    t.includes("o que ficou pendente") ||
-    t.includes("o que ainda preciso resolver") ||
-    t.includes("visitas pendentes") ||
-    t.includes("confirmacao") ||
-    t.includes("confirmação")
-  );
+
+  if (asksForMorningReport(t) || asksForEveningReport(t) || asksAboutNextVisit(t)) {
+    return false;
+  }
+
+  return hasAnyTerm(t, [
+    "pos compromisso",
+    "pos-compromisso",
+    "acompanhamento",
+    "retorno",
+    "depois da visita",
+    "depois do compromisso",
+    "o que ficou pendente",
+    "o que ainda preciso resolver",
+    "visitas pendentes",
+    "confirmacao",
+    "confirmar esse pos-compromisso",
+    "confirmar esse pos compromisso",
+    "confirmar o pos-compromisso",
+    "confirmar o pos compromisso",
+    "remarcacao",
+    "remarcado",
+    "cancelamento",
+    "cancelado",
+    "conclusao da visita",
+    "conclusao do compromisso",
+  ]);
 }
 
 function asksForMorningReport(text: string) {
   const t = normalizeText(text);
-  return (
-    t.includes("relatorio da manha") ||
-    t.includes("relatório da manhã") ||
-    t.includes("relatorio da manhã") ||
-    t.includes("relatório da manha") ||
-    t.includes("resumo da manha") ||
-    t.includes("resumo da manhã") ||
-    t.includes("me de o relatorio da manha") ||
-    t.includes("me de o relatório da manhã") ||
-    t.includes("me dê o relatorio da manha") ||
-    t.includes("me dê o relatório da manhã") ||
-    t.includes("inicio do dia") ||
-    t.includes("início do dia")
-  );
+  return hasAnyTerm(t, [
+    "relatorio da manha",
+    "resumo da manha",
+    "me de o relatorio da manha",
+    "inicio do dia",
+    "atualizacao da manha",
+    "atualizacao da manha",
+    "relatorio matinal",
+    "resumo matinal",
+  ]);
 }
 
 function asksForEveningReport(text: string) {
   const t = normalizeText(text);
-  return (
-    t.includes("relatorio do fim do dia") ||
-    t.includes("relatório do fim do dia") ||
-    t.includes("relatorio de fim do dia") ||
-    t.includes("relatório de fim do dia") ||
-    t.includes("resumo do fim do dia") ||
-    t.includes("fechamento do dia") ||
-    t.includes("encerramento do dia") ||
-    t.includes("fim do dia")
-  );
+  return hasAnyTerm(t, [
+    "relatorio do fim do dia",
+    "relatorio de fim do dia",
+    "resumo do fim do dia",
+    "fechamento do dia",
+    "encerramento do dia",
+    "relatorio da noite",
+    "fim do dia",
+  ]);
 }
 
 function asksAboutNextVisit(text: string) {
   const t = normalizeText(text);
-  return (
-    t.includes("proxima visita") ||
-    t.includes("próxima visita") ||
-    t.includes("proximo compromisso") ||
-    t.includes("próximo compromisso") ||
-    t.includes("o que eu preciso levar") ||
-    t.includes("o que eu tenho que levar") ||
-    t.includes("o que levar") ||
-    t.includes("usar nessa visita") ||
-    t.includes("levar na visita")
-  );
+  return hasAnyTerm(t, [
+    "proxima visita",
+    "proximo compromisso",
+    "o que eu preciso levar",
+    "o que eu tenho que levar",
+    "o que levar",
+    "usar nessa visita",
+    "levar na visita",
+    "materiais da proxima visita",
+    "checklist da proxima visita",
+    "documentos da proxima visita",
+  ]);
 }
 
+type AssistantIntent =
+  | "morning_report"
+  | "evening_report"
+  | "next_visit"
+  | "post_appointment"
+  | "general";
+
+function resolveAssistantIntent(text: string): AssistantIntent {
+  if (asksForMorningReport(text)) return "morning_report";
+  if (asksForEveningReport(text)) return "evening_report";
+  if (asksAboutNextVisit(text)) return "next_visit";
+  if (asksAboutPostAppointment(text)) return "post_appointment";
+  return "general";
+}
 
 function buildStoreBlock(onboardingMap: Record<string, string>, store: StoreRow) {
   const entries: Array<[string, string | null | undefined]> = [
@@ -662,9 +688,11 @@ function buildDeterministicNextVisitReply(nextAppointments: AppointmentRow[]) {
 function buildRequestAnalysisBlock(lastHumanMessage: string) {
   const materialRequest = asksAboutMaterialsOrDocuments(lastHumanMessage);
   const todayRequest = asksAboutToday(lastHumanMessage);
-  const postAppointmentRequest = asksAboutPostAppointment(lastHumanMessage);
-  const morningReportRequest = asksForMorningReport(lastHumanMessage);
-  const eveningReportRequest = asksForEveningReport(lastHumanMessage);
+  const intent = resolveAssistantIntent(lastHumanMessage);
+  const postAppointmentRequest = intent === "post_appointment";
+  const morningReportRequest = intent === "morning_report";
+  const eveningReportRequest = intent === "evening_report";
+  const nextVisitRequest = intent === "next_visit";
 
   return [
     `- pedido ligado a materiais/documentos/checklist: ${materialRequest ? "sim" : "não"}`,
@@ -675,6 +703,7 @@ function buildRequestAnalysisBlock(lastHumanMessage: string) {
     `- pedido ligado a pós-compromisso, retorno ou acompanhamento: ${postAppointmentRequest ? "sim" : "não"}`,
     `- pedido de relatório da manhã: ${morningReportRequest ? "sim" : "não"}`,
     `- pedido de relatório do fim do dia: ${eveningReportRequest ? "sim" : "não"}`,
+    `- pedido ligado à próxima visita ou ao que levar: ${nextVisitRequest ? "sim" : "não"}`,
   ].join("\n");
 }
 
@@ -1241,9 +1270,11 @@ async function generateAssistantReply(params: {
       ...buildModelInput(recentMessages),
     ];
 
-    const morningReportMode = asksForMorningReport(lastHumanMessage);
-    const eveningReportMode = asksForEveningReport(lastHumanMessage);
-    const nextVisitMode = asksAboutNextVisit(lastHumanMessage);
+    const detectedIntent = resolveAssistantIntent(lastHumanMessage);
+    const morningReportMode = detectedIntent === "morning_report";
+    const eveningReportMode = detectedIntent === "evening_report";
+    const nextVisitMode = detectedIntent === "next_visit";
+    const postAppointmentMode = detectedIntent === "post_appointment";
 
     let aiText = "";
 
@@ -1287,7 +1318,7 @@ async function generateAssistantReply(params: {
 
     const isContextMessage =
       asksAboutToday(lastHumanMessage) ||
-      asksAboutPostAppointment(lastHumanMessage) ||
+      postAppointmentMode ||
       nextVisitMode ||
       morningReportMode ||
       eveningReportMode;
@@ -1312,10 +1343,11 @@ async function generateAssistantReply(params: {
       p_metadata: {
         source: "assistant.reply.route",
         genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
-        postAppointmentContextUsed: true,
+        postAppointmentContextUsed: postAppointmentMode,
         morningReportMode,
         eveningReportMode,
         nextVisitMode,
+        detectedIntent,
       },
     });
 
