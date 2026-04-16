@@ -676,6 +676,7 @@ export default function SchedulePage() {
   const [blockEditForm, setBlockEditForm] = useState<BlockForm | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [saveErrorText, setSaveErrorText] = useState<string | null>(null);
+  const [completionDecisionOpen, setCompletionDecisionOpen] = useState(false);
 
   const [createBlockOpen, setCreateBlockOpen] = useState(false);
   const [blockForm, setBlockForm] = useState<BlockForm>(() =>
@@ -706,6 +707,10 @@ export default function SchedulePage() {
 
   useEffect(() => {
     editModeRef.current = editMode;
+
+    if (!editMode) {
+      setCompletionDecisionOpen(false);
+    }
   }, [editMode]);
 
   const canLoadSchedule = useMemo(() => {
@@ -1153,7 +1158,9 @@ export default function SchedulePage() {
     }));
   }
 
-  async function saveAppointmentEdit() {
+  async function saveAppointmentEdit(
+    completionOutcome?: "fully_completed" | "needs_followup"
+  ) {
     if (!selectedItem || selectedItem.itemKind !== "appointment" || !editForm) {
       return;
     }
@@ -1163,36 +1170,44 @@ export default function SchedulePage() {
       return;
     }
 
+    const startDate = new Date(editForm.scheduledStart);
+    const endDate = new Date(editForm.scheduledEnd);
+
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      setSaveErrorText("Preencha um período válido.");
+      return;
+    }
+
+    const originalStartIso = selectedItem.startAt
+      ? new Date(selectedItem.startAt).toISOString()
+      : null;
+    const originalEndIso = selectedItem.endAt
+      ? new Date(selectedItem.endAt).toISOString()
+      : null;
+
+    const timeChanged =
+      originalStartIso !== startDate.toISOString() ||
+      originalEndIso !== endDate.toISOString();
+
+    const nextStatus =
+      timeChanged && editForm.status === "scheduled"
+        ? "rescheduled"
+        : editForm.status;
+
+    const isCompletingNow =
+      nextStatus === "completed" && selectedItem.status !== "completed";
+
+    if (isCompletingNow && !completionOutcome) {
+      setSaveErrorText(null);
+      setCompletionDecisionOpen(true);
+      return;
+    }
+
     setSavingEdit(true);
     setSaveErrorText(null);
 
     try {
-      const startDate = new Date(editForm.scheduledStart);
-      const endDate = new Date(editForm.scheduledEnd);
-
-      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
-        setSaveErrorText("Preencha um período válido.");
-        setSavingEdit(false);
-        return;
-      }
-
-      const originalStartIso = selectedItem.startAt
-        ? new Date(selectedItem.startAt).toISOString()
-        : null;
-      const originalEndIso = selectedItem.endAt
-        ? new Date(selectedItem.endAt).toISOString()
-        : null;
-
-      const timeChanged =
-        originalStartIso !== startDate.toISOString() ||
-        originalEndIso !== endDate.toISOString();
-
-      const nextStatus =
-        timeChanged && editForm.status === "scheduled"
-          ? "rescheduled"
-          : editForm.status;
-
-      const { data, error } = await supabase.rpc("update_store_appointment", {
+      const payload = {
         p_appointment_id: selectedItem.itemId,
         p_organization_id: organizationId,
         p_store_id: activeStoreId,
@@ -1205,10 +1220,34 @@ export default function SchedulePage() {
         p_customer_phone: normalizePhoneForSave(editForm.customerPhone),
         p_address_text: editForm.addressText || null,
         p_notes: editForm.notes || null,
-      });
+      };
+
+      const rpcName = isCompletingNow
+        ? "complete_store_appointment_with_outcome"
+        : "update_store_appointment";
+
+      const rpcPayload = isCompletingNow
+        ? {
+            ...payload,
+            p_completion_outcome: completionOutcome,
+          }
+        : payload;
+
+      const { data, error } = await supabase.rpc(rpcName, rpcPayload);
 
       if (error) {
-        setSaveErrorText(error.message);
+        if (
+          isCompletingNow &&
+          (error.message.includes("complete_store_appointment_with_outcome") ||
+            error.message.includes("Could not find the function") ||
+            error.message.includes("does not exist"))
+        ) {
+          setSaveErrorText(
+            "Antes de concluir com essa nova regra, rode primeiro o SQL da função de conclusão com decisão final."
+          );
+        } else {
+          setSaveErrorText(error.message);
+        }
         setSavingEdit(false);
         return;
       }
@@ -1243,6 +1282,7 @@ export default function SchedulePage() {
         setEditForm(createAppointmentFormFromItem(updatedItem));
       }
 
+      setCompletionDecisionOpen(false);
       setEditMode(false);
       editModeRef.current = false;
 
@@ -2254,6 +2294,48 @@ export default function SchedulePage() {
                         Cancelar edição
                       </button>
                     </div>
+
+                    {completionDecisionOpen &&
+                    selectedItem.itemKind === "appointment" &&
+                    editForm.status === "completed" ? (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                        <div className="text-sm font-semibold text-amber-900">
+                          Esse atendimento terminou por completo?
+                        </div>
+                        <p className="mt-1 text-sm text-amber-800">
+                          Se já terminou tudo, o sistema encerra também o retorno ligado a esse atendimento. Se ainda falta falar com o cliente ou acompanhar algo, o retorno continua em aberto.
+                        </p>
+
+                        <div className="mt-4 flex flex-wrap gap-3">
+                          <button
+                            type="button"
+                            onClick={() => void saveAppointmentEdit("fully_completed")}
+                            disabled={savingEdit}
+                            className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Sim, terminou tudo
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void saveAppointmentEdit("needs_followup")}
+                            disabled={savingEdit}
+                            className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Não, ainda falta retorno
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setCompletionDecisionOpen(false)}
+                            disabled={savingEdit}
+                            className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Voltar
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 
