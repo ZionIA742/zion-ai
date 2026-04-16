@@ -213,7 +213,47 @@ function getMessageContent(message: AssistantMessageRow) {
   return String(message.content || "").trim();
 }
 
+function isSystemOrContextMessageType(message: AssistantMessageRow) {
+  const messageType = normalizeText(message.message_type);
+
+  return (
+    messageType === "context" ||
+    messageType === "system" ||
+    messageType === "report_morning" ||
+    messageType === "report_evening" ||
+    messageType === "notification"
+  );
+}
+
+function looksLikeAssistantGeneratedContentText(content: string) {
+  const t = normalizeText(content);
+
+  return (
+    t.startsWith("junior,") ||
+    t.startsWith("relatorio da manha:") ||
+    t.startsWith("fechamento do dia:") ||
+    t.startsWith("proxima visita:") ||
+    t.startsWith("nenhum outro acompanhamento pendente") ||
+    t.startsWith("foi resolvido recentemente:") ||
+    t.startsWith("resolvidos recentemente:") ||
+    t.startsWith("pendencias a resolver:") ||
+    t.startsWith("fora isso, nao ha outros acompanhamentos pendentes")
+  );
+}
+
+function messageLooksLikeDirectResponsibleRequest(content: string) {
+  return (
+    asksForMorningReport(content) ||
+    asksForEveningReport(content) ||
+    asksAboutNextVisit(content) ||
+    asksAboutPostAppointment(content) ||
+    asksAboutToday(content) ||
+    asksAboutMaterialsOrDocuments(content)
+  );
+}
+
 function isAssistantOperationalMessage(message: AssistantMessageRow) {
+  const content = getMessageContent(message);
   const role = normalizeText(message.sender_role);
   const sender = normalizeText(message.sender);
   const direction = normalizeText(message.direction);
@@ -223,26 +263,39 @@ function isAssistantOperationalMessage(message: AssistantMessageRow) {
     role === "assistant" ||
     sender.includes("assistant") ||
     sender.includes("assistente") ||
+    isSystemOrContextMessageType(message) ||
+    looksLikeAssistantGeneratedContentText(content) ||
     (direction === "outgoing" && role !== "store_responsible")
   );
 }
 
-function isLikelyResponsibleMessage(message: AssistantMessageRow) {
-  if (!getMessageContent(message)) return false;
-  if (isAssistantOperationalMessage(message)) return false;
+function getResponsibleMessageScore(message: AssistantMessageRow) {
+  const content = getMessageContent(message);
+  if (!content) return Number.NEGATIVE_INFINITY;
+  if (isAssistantOperationalMessage(message)) return Number.NEGATIVE_INFINITY;
 
   const role = normalizeText(message.sender_role);
   const sender = normalizeText(message.sender);
   const direction = normalizeText(message.direction);
   const messageType = normalizeText(message.message_type);
 
-  if (role === "store_responsible") return true;
-  if (sender === "user" || sender === "responsavel" || sender === "responsável") return true;
-  if (sender.includes("respons")) return true;
-  if (direction === "incoming" || direction === "inbound") return true;
-  if (messageType === "text" || messageType === "message") return true;
+  let score = 0;
 
-  return false;
+  if (role === "store_responsible") score += 120;
+  if (sender === "user" || sender === "responsavel" || sender === "responsável") score += 110;
+  if (sender.includes("respons")) score += 90;
+  if (direction === "incoming" || direction === "inbound") score += 100;
+  if (messageType === "text" || messageType === "message") score += 60;
+  if (messageLooksLikeDirectResponsibleRequest(content)) score += 140;
+
+  if (isSystemOrContextMessageType(message)) score -= 200;
+  if (looksLikeAssistantGeneratedContentText(content)) score -= 220;
+
+  return score;
+}
+
+function isLikelyResponsibleMessage(message: AssistantMessageRow) {
+  return getResponsibleMessageScore(message) >= 100;
 }
 
 function hasAnyTerm(text: string, terms: string[]) {
@@ -370,9 +423,14 @@ function resolveLatestResponsibleRequest(messages: AssistantMessageRow[]) {
 
   for (let index = ordered.length - 1; index >= 0; index -= 1) {
     const message = ordered[index];
-    if (!isLikelyResponsibleMessage(message)) continue;
-
     const content = getMessageContent(message);
+
+    if (!content) continue;
+    if (isAssistantOperationalMessage(message)) continue;
+
+    const score = getResponsibleMessageScore(message);
+    if (score < 100) continue;
+
     return {
       lastHumanMessage: content,
       detectedIntent: resolveAssistantIntent(content),
@@ -381,9 +439,27 @@ function resolveLatestResponsibleRequest(messages: AssistantMessageRow[]) {
 
   for (let index = ordered.length - 1; index >= 0; index -= 1) {
     const message = ordered[index];
-    if (isAssistantOperationalMessage(message)) continue;
-
     const content = getMessageContent(message);
+
+    if (!content) continue;
+    if (isAssistantOperationalMessage(message)) continue;
+    if (!messageLooksLikeDirectResponsibleRequest(content)) continue;
+
+    return {
+      lastHumanMessage: content,
+      detectedIntent: resolveAssistantIntent(content),
+    };
+  }
+
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const message = ordered[index];
+    const content = getMessageContent(message);
+
+    if (!content) continue;
+    if (isAssistantOperationalMessage(message)) continue;
+    if (isSystemOrContextMessageType(message)) continue;
+    if (looksLikeAssistantGeneratedContentText(content)) continue;
+
     return {
       lastHumanMessage: content,
       detectedIntent: resolveAssistantIntent(content),
