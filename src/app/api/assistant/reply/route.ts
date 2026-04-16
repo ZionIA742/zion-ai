@@ -1,3 +1,4 @@
+
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
@@ -143,6 +144,20 @@ function formatDateTime(value: string | null) {
   return date.toLocaleString("pt-BR");
 }
 
+function formatDateOnly(value: string | null) {
+  if (!value) return "sem data";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "sem data";
+  return date.toLocaleDateString("pt-BR");
+}
+
+function formatTimeOnly(value: string | null) {
+  if (!value) return "sem hora";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "sem hora";
+  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
 function formatAppointmentType(value: string | null) {
   const normalized = normalizeText(value);
 
@@ -237,6 +252,38 @@ function asksAboutPostAppointment(text: string) {
     t.includes("visitas pendentes") ||
     t.includes("confirmacao") ||
     t.includes("confirmação")
+  );
+}
+
+function asksForMorningReport(text: string) {
+  const t = normalizeText(text);
+  return (
+    t.includes("relatorio da manha") ||
+    t.includes("relatório da manhã") ||
+    t.includes("relatorio da manhã") ||
+    t.includes("relatório da manha") ||
+    t.includes("resumo da manha") ||
+    t.includes("resumo da manhã") ||
+    t.includes("me de o relatorio da manha") ||
+    t.includes("me de o relatório da manhã") ||
+    t.includes("me dê o relatorio da manha") ||
+    t.includes("me dê o relatório da manhã") ||
+    t.includes("inicio do dia") ||
+    t.includes("início do dia")
+  );
+}
+
+function asksForEveningReport(text: string) {
+  const t = normalizeText(text);
+  return (
+    t.includes("relatorio do fim do dia") ||
+    t.includes("relatório do fim do dia") ||
+    t.includes("relatorio de fim do dia") ||
+    t.includes("relatório de fim do dia") ||
+    t.includes("resumo do fim do dia") ||
+    t.includes("fechamento do dia") ||
+    t.includes("encerramento do dia") ||
+    t.includes("fim do dia")
   );
 }
 
@@ -388,10 +435,114 @@ function buildResolvedPostAppointmentBlock(
   return items.map((item) => buildFollowupLine(item, appointmentMap)).join("\n");
 }
 
+function countAppointmentsByStatus(items: AppointmentRow[], statuses: string[]) {
+  return items.filter((item) => statuses.includes(normalizeText(item.status))).length;
+}
+
+function buildMorningReportData(args: {
+  todayAppointments: AppointmentRow[];
+  overdueAppointments: AppointmentRow[];
+  pendingNotifications: PendingNotificationRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+}) {
+  const todayCount = args.todayAppointments.length;
+  const firstImportant =
+    args.todayAppointments.find((item) => {
+      const type = normalizeText(item.appointment_type);
+      return type === "technical_visit" || type === "installation";
+    }) || args.todayAppointments[0] || null;
+
+  const pendingToday = countAppointmentsByStatus(args.todayAppointments, ["scheduled", "rescheduled"]);
+  const overdueCount = args.overdueAppointments.length;
+  const notificationCount = args.pendingNotifications.length;
+  const pendingPostCount = args.pendingPostFollowups.length;
+
+  return {
+    todayCount,
+    firstImportant,
+    pendingToday,
+    overdueCount,
+    notificationCount,
+    pendingPostCount,
+  };
+}
+
+function buildEveningReportData(args: {
+  todayAppointments: AppointmentRow[];
+  overdueAppointments: AppointmentRow[];
+  pendingNotifications: PendingNotificationRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+}) {
+  const plannedToday = args.todayAppointments.length;
+  const completedToday = countAppointmentsByStatus(args.todayAppointments, ["completed"]);
+  const cancelledToday = countAppointmentsByStatus(args.todayAppointments, ["cancelled"]);
+  const stillOpenToday = countAppointmentsByStatus(args.todayAppointments, ["scheduled", "rescheduled"]);
+  const overdueCount = args.overdueAppointments.length;
+  const pendingPostCount = args.pendingPostFollowups.length;
+  const notificationCount = args.pendingNotifications.length;
+
+  return {
+    plannedToday,
+    completedToday,
+    cancelledToday,
+    stillOpenToday,
+    overdueCount,
+    pendingPostCount,
+    notificationCount,
+  };
+}
+
+function buildMorningReportBlock(args: {
+  todayAppointments: AppointmentRow[];
+  overdueAppointments: AppointmentRow[];
+  pendingNotifications: PendingNotificationRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+}) {
+  const data = buildMorningReportData(args);
+
+  const firstImportantLine = data.firstImportant
+    ? `- primeiro compromisso mais importante: ${formatAppointmentType(
+        data.firstImportant.appointment_type
+      )} às ${formatTimeOnly(data.firstImportant.scheduled_start)}${
+        data.firstImportant.customer_name ? ` com ${data.firstImportant.customer_name}` : ""
+      }`
+    : "- primeiro compromisso mais importante: nenhum compromisso crítico encontrado";
+
+  return [
+    `- compromissos de hoje: ${data.todayCount}`,
+    firstImportantLine,
+    `- compromissos de hoje ainda em aberto: ${data.pendingToday}`,
+    `- compromissos em atraso ou ainda não baixados: ${data.overdueCount}`,
+    `- pós-compromissos pendentes: ${data.pendingPostCount}`,
+    `- pendências internas da assistente: ${data.notificationCount}`,
+  ].join("\n");
+}
+
+function buildEveningReportBlock(args: {
+  todayAppointments: AppointmentRow[];
+  overdueAppointments: AppointmentRow[];
+  pendingNotifications: PendingNotificationRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+}) {
+  const data = buildEveningReportData(args);
+
+  return [
+    `- compromissos previstos para hoje: ${data.plannedToday}`,
+    `- concluídos hoje: ${data.completedToday}`,
+    `- cancelados hoje: ${data.cancelledToday}`,
+    `- ainda em aberto de hoje: ${data.stillOpenToday}`,
+    `- compromissos em atraso ou não baixados: ${data.overdueCount}`,
+    `- pós-compromissos ainda pendentes: ${data.pendingPostCount}`,
+    `- pendências internas da assistente: ${data.notificationCount}`,
+  ].join("\n");
+}
+
 function buildRequestAnalysisBlock(lastHumanMessage: string) {
   const materialRequest = asksAboutMaterialsOrDocuments(lastHumanMessage);
   const todayRequest = asksAboutToday(lastHumanMessage);
   const postAppointmentRequest = asksAboutPostAppointment(lastHumanMessage);
+  const morningReportRequest = asksForMorningReport(lastHumanMessage);
+  const eveningReportRequest = asksForEveningReport(lastHumanMessage);
 
   return [
     `- pedido ligado a materiais/documentos/checklist: ${materialRequest ? "sim" : "não"}`,
@@ -400,6 +551,8 @@ function buildRequestAnalysisBlock(lastHumanMessage: string) {
       : "- não há pedido direto sobre materiais ou documentos nesta mensagem",
     `- pedido ligado a agenda, urgência ou compromissos: ${todayRequest ? "sim" : "não"}`,
     `- pedido ligado a pós-compromisso, retorno ou acompanhamento: ${postAppointmentRequest ? "sim" : "não"}`,
+    `- pedido de relatório da manhã: ${morningReportRequest ? "sim" : "não"}`,
+    `- pedido de relatório do fim do dia: ${eveningReportRequest ? "sim" : "não"}`,
   ].join("\n");
 }
 
@@ -430,6 +583,7 @@ MISSÃO
 - responder dúvidas operacionais sobre clientes, compromissos e rotina
 - trazer contexto suficiente para ação humana
 - usar também a base de pós-compromisso quando ela existir
+- gerar relatório da manhã e relatório do fim do dia quando isso for pedido
 - ser honesta sobre o que sabe e o que não sabe
 
 REGRAS FIXAS
@@ -460,11 +614,22 @@ COMO RESPONDER SOBRE PÓS-COMPROMISSO
 - quando houver follow-up resolvido, trate como histórico recente, não como pendência aberta
 - se houver resolução completed, rescheduled ou cancelled, use isso como contexto operacional confiável
 - se faltar lead, conversation ou observação, deixe claro que essa parte não veio preenchida
-- no fechamento, não ofereça ações vagas como "organizar contato", "organizar isso", "cuidar disso" ou parecidos
-- prefira fechar com ofertas concretas e seguras, como:
-  - resumir os dados do pós-compromisso pendente
-  - separar o que está pendente e o que já foi resolvido
-  - mostrar os detalhes do compromisso que ainda precisa de confirmação
+
+COMO RESPONDER RELATÓRIO DA MANHÃ
+- quando pedirem relatório da manhã, faça um resumo operacional do início do dia
+- diga o total de compromissos de hoje
+- destaque o primeiro compromisso mais importante, se houver
+- diga o que está em aberto, em atraso e o que merece atenção hoje
+- se houver pós-compromisso pendente, isso deve entrar
+- mantenha curto, organizado e acionável
+
+COMO RESPONDER RELATÓRIO DO FIM DO DIA
+- quando pedirem relatório do fim do dia, faça um fechamento operacional
+- diga o que estava previsto para hoje
+- diga o que foi concluído, cancelado e o que ainda está em aberto
+- traga pendências que devem entrar no radar de amanhã
+- se houver pós-compromisso pendente, isso deve entrar
+- mantenha curto, organizado e acionável
 
 ANÁLISE DO PEDIDO ATUAL
 ${requestAnalysis}
@@ -477,6 +642,22 @@ ${buildHistoryBlock(args.recentMessages)}
 
 AGENDA DE HOJE
 ${buildTodayAppointmentsBlock(args.todayAppointments)}
+
+RESUMO OPERACIONAL DA MANHÃ
+${buildMorningReportBlock({
+  todayAppointments: args.todayAppointments,
+  overdueAppointments: args.overdueAppointments,
+  pendingNotifications: args.pendingNotifications,
+  pendingPostFollowups: args.pendingPostFollowups,
+})}
+
+RESUMO OPERACIONAL DO FIM DO DIA
+${buildEveningReportBlock({
+  todayAppointments: args.todayAppointments,
+  overdueAppointments: args.overdueAppointments,
+  pendingNotifications: args.pendingNotifications,
+  pendingPostFollowups: args.pendingPostFollowups,
+})}
 
 PRÓXIMOS COMPROMISSOS
 ${buildTodayAppointmentsBlock(args.nextAppointments)}
@@ -573,7 +754,8 @@ function cleanupAiText(
   text: string,
   options?: {
     genericMaterialMode?: boolean;
-    postAppointmentMode?: boolean;
+    morningReportMode?: boolean;
+    eveningReportMode?: boolean;
   }
 ) {
   let cleaned = String(text || "").trim();
@@ -608,23 +790,28 @@ function cleanupAiText(
     return compactParts.join("\n\n").trim();
   }
 
-  if (options?.postAppointmentMode === true) {
-    cleaned = cleaned
-      .replace(/\bPrecisa que eu te ajude a organizar o contato para esse pós-compromisso aberto\?/gi, "Se quiser, eu posso te resumir os dados desse pós-compromisso pendente.")
-      .replace(/\bPosso te ajudar a organizar o contato para esse pós-compromisso aberto\./gi, "Se quiser, eu posso te resumir os dados desse pós-compromisso pendente.")
-      .replace(/\bPosso te ajudar a organizar isso para voce\./gi, "Se quiser, eu separo o que está pendente e o que já foi resolvido.")
-      .replace(/\bPosso te ajudar a organizar isso para você\./gi, "Se quiser, eu separo o que está pendente e o que já foi resolvido.")
-      .replace(/\bQuer que eu organize o contato desse retorno\?/gi, "Se quiser, eu posso te mostrar os detalhes do compromisso que ainda precisa de confirmação.")
-      .replace(/\bQuer que eu organize isso para voce\?/gi, "Se quiser, eu separo o que está pendente e o que já foi resolvido.")
-      .replace(/\bQuer que eu organize isso para você\?/gi, "Se quiser, eu separo o que está pendente e o que já foi resolvido.");
+  const isReportMode = options?.morningReportMode === true || options?.eveningReportMode === true;
 
-    const paragraphs = cleaned
-      .split(/\n{2,}/)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .slice(0, 4);
+  if (isReportMode) {
+    const lines = cleaned
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
 
-    return paragraphs.join("\n\n").trim();
+    const compactLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("-")) {
+        compactLines.push(line);
+      } else if (compactLines.length === 0) {
+        compactLines.push(line);
+      }
+
+      if (compactLines.length >= 6) break;
+    }
+
+    if (compactLines.length > 0) {
+      return compactLines.join("\n").trim();
+    }
   }
 
   const paragraphs = cleaned
@@ -930,15 +1117,23 @@ async function generateAssistantReply(params: {
       ...buildModelInput(recentMessages),
     ];
 
+    const morningReportMode = asksForMorningReport(lastHumanMessage);
+    const eveningReportMode = asksForEveningReport(lastHumanMessage);
+
     const response = await openai.responses.create({
       model,
       input,
-      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 140 : 240,
+      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage)
+        ? 140
+        : morningReportMode || eveningReportMode
+          ? 200
+          : 240,
     });
 
     const aiText = cleanupAiText(String(response.output_text || "").trim(), {
       genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
-      postAppointmentMode: asksAboutPostAppointment(lastHumanMessage),
+      morningReportMode,
+      eveningReportMode,
     });
 
     if (!aiText) {
@@ -951,13 +1146,24 @@ async function generateAssistantReply(params: {
 
     const isContextMessage =
       asksAboutToday(lastHumanMessage) ||
-      asksAboutPostAppointment(lastHumanMessage);
+      asksAboutPostAppointment(lastHumanMessage) ||
+      morningReportMode ||
+      eveningReportMode;
+
+    const messageType =
+      morningReportMode
+        ? "report_morning"
+        : eveningReportMode
+          ? "report_evening"
+          : isContextMessage
+            ? "context"
+            : "text";
 
     const { error: saveError } = await supabase.rpc("assistant_push_system_message", {
       p_organization_id: organizationId,
       p_store_id: storeId,
       p_content: aiText,
-      p_message_type: isContextMessage ? "context" : "text",
+      p_message_type: messageType,
       p_related_lead_id: null,
       p_related_conversation_id: null,
       p_related_appointment_id: null,
@@ -965,6 +1171,8 @@ async function generateAssistantReply(params: {
         source: "assistant.reply.route",
         genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
         postAppointmentContextUsed: true,
+        morningReportMode,
+        eveningReportMode,
       },
     });
 
