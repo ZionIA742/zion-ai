@@ -322,16 +322,15 @@ REGRAS FIXAS
 - se algo não estiver confirmado no sistema, deixe isso explícito
 - se a pergunta for sobre materiais, documentos ou checklist e não houver base oficial da loja, trate como sugestão genérica curta
 - não entregue textão quando bastar uma resposta curta
-- quando estiver em terreno genérico, use no máximo 3 a 4 itens
+- quando estiver em terreno genérico, use no máximo 3 a 5 itens
 - prefira respostas curtas e úteis
 - no máximo uma pergunta curta no final, quando realmente ajudar
 
 COMO RESPONDER SOBRE MATERIAIS, DOCUMENTOS E CHECKLIST
 - se não houver base oficial da loja, diga claramente que é sugestão genérica
 - não diga que a loja usa isso com certeza
-- não entregue três listas separadas longas
-- se o responsável pedir muita coisa de uma vez, responda em um bloco curto só
-- se entrar em terreno genérico, foque em no máximo 3 ou 4 itens principais
+- não entregue lista longa demais
+- se o responsável pedir muita coisa de uma vez, responda de forma resumida e controlada
 
 ANÁLISE DO PEDIDO ATUAL
 ${requestAnalysis}
@@ -390,57 +389,58 @@ function cleanupAiText(
   cleaned = cleaned.replace(/[ \t]+\n/g, "\n");
   cleaned = cleaned.replace(/\u00A0/g, " ");
 
-  const isGenericMaterialReply = options?.genericMaterialMode === true;
+  const genericMarkers = [
+    "orientação genérica",
+    "checklist oficial",
+    "lista oficial",
+    "não tenho uma lista oficial",
+    "não tenho checklist oficial",
+    "não tenho uma lista operacional",
+    "sugestão genérica",
+  ];
+
+  const isGenericMaterialReply =
+    options?.genericMaterialMode === true &&
+    genericMarkers.some((marker) => cleaned.toLowerCase().includes(marker.toLowerCase()));
 
   if (isGenericMaterialReply) {
-    const normalized = cleaned
-      .replace(/\r/g, "")
-      .replace(/[ \t]{2,}/g, " ")
-      .trim();
+    const paragraphs = cleaned
+      .split(/\n{2,}/)
+      .map((item) => item.trim())
+      .filter(Boolean);
 
-    const splitWithInjectedBullets = normalized
-      .replace(/\s-\s/g, "\n- ")
-      .replace(/:\s+-\s/g, ":\n- ")
-      .replace(/(Documentos[^\n:]{0,40}:)\s*/gi, "$1\n")
-      .replace(/(Checklist[^\n:]{0,40}:)\s*/gi, "$1\n")
-      .replace(/(O que levar[^\n:]{0,40}:)\s*/gi, "$1\n");
-
-    const rawLines = splitWithInjectedBullets
+    const bullets = cleaned
       .split("\n")
       .map((line) => line.trim())
-      .filter(Boolean);
+      .filter((line) => line.startsWith("-"));
 
-    const introCandidates = rawLines.filter((line) => !line.startsWith("-"));
-    const bulletCandidates = rawLines
-      .filter((line) => line.startsWith("-"))
-      .map((line) => line.replace(/^-\s*/, "").trim())
-      .filter(Boolean);
+    let intro = paragraphs.find(
+      (p) =>
+        !/^o que levar:?$/i.test(p) &&
+        !/^documentos/i.test(p) &&
+        !/^checklist/i.test(p) &&
+        !p.startsWith("-")
+    );
 
-    const introText = introCandidates.length
-      ? introCandidates.join(" ")
-      : "Eu não tenho um checklist oficial cadastrado da sua loja para essa visita, então isso entra como sugestão genérica.";
-
-    const dedupedBullets: string[] = [];
-    for (const item of bulletCandidates) {
-      const normalizedItem = normalizeText(item)
-        .replace(/^documentos recomendados:?/, "")
-        .replace(/^checklist sugerido(?: para a visita)?:?/, "")
-        .replace(/^o que levar:?/, "")
-        .trim();
-
-      if (!normalizedItem) continue;
-      if (dedupedBullets.some((existing) => normalizeText(existing) === normalizedItem)) continue;
-      dedupedBullets.push(item);
-      if (dedupedBullets.length >= 4) break;
+    if (!intro) {
+      intro =
+        "Essa lista é uma sugestão genérica, porque eu não tenho um checklist oficial cadastrado da sua loja para essa visita.";
     }
 
-    const compactParts: string[] = [introText];
+    intro = intro
+      .replace(/\s+/g, " ")
+      .replace(/\s*:\s*/g, ": ")
+      .trim();
 
-    if (dedupedBullets.length > 0) {
-      compactParts.push(dedupedBullets.map((item) => `- ${item}`).join("\n"));
+    const conciseBullets = bullets.slice(0, 4).map((line) => line.replace(/\s+/g, " ").trim());
+
+    const compactParts: string[] = [intro];
+
+    if (conciseBullets.length > 0) {
+      compactParts.push(conciseBullets.join("\n"));
     }
 
-    compactParts.push("Se quiser, eu posso resumir isso em 3 itens principais.");
+    compactParts.push("Se quiser, eu resumo isso em 3 itens principais.");
 
     return compactParts.join("\n\n").trim();
   }
@@ -448,13 +448,10 @@ function cleanupAiText(
   const paragraphs = cleaned
     .split(/\n{2,}/)
     .map((item) => item.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, 4);
 
-  if (paragraphs.length > 4) {
-    cleaned = paragraphs.slice(0, 4).join("\n\n");
-  }
-
-  return cleaned.trim();
+  return paragraphs.join("\n\n").trim();
 }
 
 async function generateAssistantReply(params: {
@@ -679,7 +676,7 @@ async function generateAssistantReply(params: {
     const response = await openai.responses.create({
       model,
       input,
-      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 160 : 220,
+      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 180 : 220,
     });
 
     const aiText = cleanupAiText(String(response.output_text || "").trim(), {
