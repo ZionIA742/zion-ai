@@ -4,29 +4,13 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-type AssistantThreadRow = {
-  id: string;
-  organization_id: string;
-  store_id: string;
-  thread_type: string;
-  status: string;
-  title: string | null;
-  last_message_at: string | null;
-  last_message_preview: string | null;
-};
-
 type AssistantMessageRow = {
   id: string;
-  thread_id: string;
   sender: string;
   sender_role: string;
   direction: string;
   message_type: string;
   content: string;
-  related_lead_id: string | null;
-  related_conversation_id: string | null;
-  related_appointment_id: string | null;
-  metadata: Record<string, unknown> | null;
   created_at: string;
 };
 
@@ -48,13 +32,15 @@ type AppointmentRow = {
   status: string | null;
   scheduled_start: string | null;
   scheduled_end: string | null;
-  lead_id: string | null;
-  conversation_id: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
   address_text: string | null;
   notes: string | null;
+  lead_id: string | null;
+  conversation_id: string | null;
 };
 
-type NotificationRow = {
+type NotificationQueueRow = {
   id: string;
   notification_type: string;
   priority: string;
@@ -64,9 +50,29 @@ type NotificationRow = {
   related_lead_id: string | null;
   related_conversation_id: string | null;
   related_appointment_id: string | null;
-  created_at: string;
   available_at: string;
+  created_at: string;
 };
+
+type AssistantReplyRequestBody = {
+  organizationId?: string;
+  storeId?: string;
+};
+
+const ONBOARDING_KEYS = [
+  "store_display_name",
+  "responsible_name",
+  "responsible_whatsapp",
+  "store_services",
+  "city",
+  "state",
+  "offers_installation",
+  "offers_technical_visit",
+  "installation_available_days",
+  "technical_visit_available_days",
+  "important_limitations",
+  "responsible_notification_cases",
+] as const;
 
 function asText(value: unknown): string | null {
   if (value == null) return null;
@@ -78,8 +84,8 @@ function asText(value: unknown): string | null {
     return String(value);
   }
   if (Array.isArray(value)) {
-    const parts = value.map(asText).filter(Boolean) as string[];
-    return parts.length ? parts.join(", ") : null;
+    const items = value.map(asText).filter(Boolean) as string[];
+    return items.length ? items.join(", ") : null;
   }
   try {
     return JSON.stringify(value);
@@ -89,7 +95,11 @@ function asText(value: unknown): string | null {
 }
 
 function normalizeText(value: string | null | undefined): string {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 function formatDateTime(value: string | null | undefined): string {
@@ -99,154 +109,164 @@ function formatDateTime(value: string | null | undefined): string {
   return date.toLocaleString("pt-BR");
 }
 
-function startAndEndOfToday() {
-  const now = new Date();
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(now);
-  end.setHours(23, 59, 59, 999);
-  return {
-    startIso: start.toISOString(),
-    endIso: end.toISOString(),
-  };
+function formatItemType(value: string | null | undefined): string {
+  const normalized = normalizeText(value);
+  if (normalized === "technical_visit") return "Visita técnica";
+  if (normalized === "installation") return "Instalação";
+  if (normalized === "follow_up") return "Retorno";
+  if (normalized === "meeting") return "Reunião";
+  if (normalized === "measurement") return "Medição";
+  if (normalized === "maintenance") return "Manutenção";
+  if (normalized === "other") return "Outro";
+  return value || "-";
 }
 
-function buildRecentMessagesBlock(messages: AssistantMessageRow[]): string {
-  if (!messages.length) return "Sem mensagens anteriores na thread.";
+function formatStatus(value: string | null | undefined): string {
+  const normalized = normalizeText(value);
+  if (normalized === "scheduled") return "Agendado";
+  if (normalized === "rescheduled") return "Remarcado";
+  if (normalized === "completed") return "Concluído";
+  if (normalized === "cancelled") return "Cancelado";
+  if (normalized === "blocked") return "Bloqueado";
+  return value || "-";
+}
+
+function formatHistory(messages: AssistantMessageRow[]): string {
+  if (!messages.length) return "- sem histórico anterior";
 
   return messages
     .slice(-12)
     .map((message) => {
-      const role = message.sender_role === "assistant_operational" ? "Assistente" : "Responsável";
-      return `${role}: ${message.content}`;
+      const label = message.sender === "assistant" ? "Assistente" : message.sender === "human" ? "Responsável" : "Sistema";
+      return `${label}: ${message.content}`;
     })
     .join("\n");
 }
 
-function buildAgendaBlock(appointments: AppointmentRow[]): string {
-  if (!appointments.length) return "Nenhum compromisso encontrado para hoje.";
+function buildAppointmentsSection(title: string, items: AppointmentRow[]): string {
+  if (!items.length) return `${title}\n- nenhum`;
 
-  return appointments
-    .slice(0, 8)
-    .map((appointment) => {
-      return [
-        `- ${appointment.title || "Compromisso"}`,
-        appointment.appointment_type ? `tipo: ${appointment.appointment_type}` : null,
-        appointment.status ? `status: ${appointment.status}` : null,
-        appointment.scheduled_start ? `início: ${formatDateTime(appointment.scheduled_start)}` : null,
-        appointment.address_text ? `endereço: ${appointment.address_text}` : null,
-        appointment.notes ? `obs: ${appointment.notes}` : null,
-      ]
-        .filter(Boolean)
-        .join(" | ");
+  return `${title}\n${items
+    .map((item) => {
+      const parts = [
+        `- ${formatDateTime(item.scheduled_start)}`,
+        formatItemType(item.appointment_type),
+        formatStatus(item.status),
+        item.title || null,
+        item.customer_name ? `cliente: ${item.customer_name}` : null,
+        item.customer_phone ? `telefone: ${item.customer_phone}` : null,
+        item.address_text ? `endereço: ${item.address_text}` : null,
+        item.notes ? `notas: ${item.notes}` : null,
+      ].filter(Boolean);
+
+      return parts.join(" | ");
     })
-    .join("\n");
+    .join("\n")}`;
 }
 
-function buildNotificationsBlock(rows: NotificationRow[]): string {
-  if (!rows.length) return "Nenhuma pendência pendente na fila da assistente.";
+function buildNotificationsSection(items: NotificationQueueRow[]): string {
+  if (!items.length) return "PENDÊNCIAS DA ASSISTENTE\n- nenhuma pendência pendente na fila";
 
-  return rows
-    .slice(0, 6)
-    .map((row) => {
-      return [
-        `- ${row.title || row.notification_type}`,
-        `prioridade: ${row.priority}`,
-        `status: ${row.status}`,
-        `disponível em: ${formatDateTime(row.available_at)}`,
-        `texto: ${row.body}`,
-      ]
-        .filter(Boolean)
-        .join(" | ");
+  return `PENDÊNCIAS DA ASSISTENTE\n${items
+    .map((item) => {
+      const parts = [
+        `- ${item.notification_type}`,
+        `prioridade: ${item.priority}`,
+        item.title ? `título: ${item.title}` : null,
+        `disponível em: ${formatDateTime(item.available_at)}`,
+        item.related_appointment_id ? `appointment: ${item.related_appointment_id.slice(0, 8)}` : null,
+        item.related_lead_id ? `lead: ${item.related_lead_id.slice(0, 8)}` : null,
+        `texto: ${item.body}`,
+      ].filter(Boolean);
+
+      return parts.join(" | ");
     })
-    .join("\n");
+    .join("\n")}`;
 }
 
-function mapMessagesToInput(messages: AssistantMessageRow[]) {
-  return messages
-    .filter((message) => String(message.content || "").trim().length > 0)
-    .slice(-12)
-    .map((message) => ({
-      role: message.sender_role === "assistant_operational" ? ("assistant" as const) : ("user" as const),
-      content: message.content,
-    }));
-}
-
-function buildInstructions(args: {
-  storeName: string | null;
+function buildOperationalPrompt(args: {
+  responsibleName: string;
+  storeDisplayName: string;
   onboardingMap: Record<string, string>;
-  recentMessagesBlock: string;
-  agendaBlock: string;
-  notificationsBlock: string;
-  totalAppointmentsToday: number;
-  pendingNotifications: number;
+  historyText: string;
+  todayAppointmentsText: string;
+  upcomingAppointmentsText: string;
+  overdueAppointmentsText: string;
+  notificationsText: string;
+  latestHumanMessage: string;
 }) {
-  const storeLabel = args.onboardingMap.store_display_name || args.storeName || "a loja";
-  const responsibleName = args.onboardingMap.responsible_name || "responsável da loja";
-
   return `
-Você é a IA assistente operacional do projeto ZION atendendo internamente a loja ${storeLabel}.
-Você fala com o responsável da loja, não com o cliente final.
+Você é a assistente operacional interna da loja ${args.storeDisplayName} dentro do ZION.
+Você conversa com o responsável da loja, não com cliente final.
 
 MISSÃO
-- ajudar o responsável a entender a operação do dia
-- responder dúvidas operacionais com contexto e clareza
-- resumir o que importa
-- indicar próximos passos práticos
-- nunca deixar o humano perdido
+- ajudar a operação da loja no dia a dia
+- responder com clareza, contexto e objetividade
+- usar o contexto da agenda e das pendências abaixo
+- evitar deixar o responsável perdido
 
-REGRAS FIXAS
-- responda sempre em português do Brasil
-- seja humana, clara, direta e útil
-- não aja como IA comercial de cliente final
-- não tente vender
-- não invente fatos operacionais
-- se faltar base, diga isso claramente
-- quando houver risco, urgência ou dependência humana, destaque isso
-- prefira respostas curtas ou médias, bem organizadas e acionáveis
-- quando o responsável pedir um resumo, entregue resumo de verdade
-- quando houver pendência, deixe claro o que precisa ser feito agora
+COMO VOCÊ DEVE FALAR
+- em português do Brasil
+- humana, clara e direta
+- útil e acionável
+- sem parecer robô
+- sem falar como vendedora para cliente
+- sem inventar dados que não estão no contexto
 
-CONTEXTO DA LOJA
-- nome da loja: ${storeLabel}
-- responsável: ${responsibleName}
-- cidade: ${args.onboardingMap.city || "não informado"}
-- estado: ${args.onboardingMap.state || "não informado"}
-- regras para notificar responsável: ${args.onboardingMap.responsible_notification_cases || "não informado"}
-- limitações importantes: ${args.onboardingMap.important_limitations || "não informado"}
+REGRAS IMPORTANTES
+- você é a assistente operacional, não a IA vendedora
+- quando houver contexto suficiente, responda já com resumo e próximos passos
+- quando faltar dado, diga o que falta de forma simples
+- se houver algo urgente, destaque isso primeiro
+- quando citar compromisso, inclua contexto útil: horário, tipo, cliente, telefone, endereço e observação, quando houver
+- se a pergunta for sobre hoje, priorize agenda do dia, atrasos e pendências
+- se houver pendência na fila da assistente, considere isso na resposta
+- não invente status, compromissos, clientes ou notificações
+- não use markdown pesado
+- não use títulos exagerados
+- não escreva observações para o sistema
 
-AGENDA DE HOJE
-- total de compromissos hoje: ${args.totalAppointmentsToday}
-${args.agendaBlock}
+DADOS BÁSICOS DA LOJA
+- loja: ${args.storeDisplayName}
+- responsável: ${args.responsibleName}
+- cidade: ${args.onboardingMap.city || "-"}
+- estado: ${args.onboardingMap.state || "-"}
+- serviços: ${args.onboardingMap.store_services || "-"}
+- oferece instalação: ${args.onboardingMap.offers_installation || "-"}
+- oferece visita técnica: ${args.onboardingMap.offers_technical_visit || "-"}
+- dias de instalação: ${args.onboardingMap.installation_available_days || "-"}
+- dias de visita técnica: ${args.onboardingMap.technical_visit_available_days || "-"}
+- limitações importantes: ${args.onboardingMap.important_limitations || "-"}
+- casos para avisar responsável: ${args.onboardingMap.responsible_notification_cases || "-"}
 
-PENDÊNCIAS DA ASSISTENTE
-- pendências pendentes: ${args.pendingNotifications}
-${args.notificationsBlock}
+HISTÓRICO RECENTE DA CONVERSA INTERNA
+${args.historyText}
 
-HISTÓRICO RECENTE DA THREAD
-${args.recentMessagesBlock}
+${args.todayAppointmentsText}
 
-COMO RESPONDER
-- comece respondendo exatamente o pedido do responsável
-- se ele pedir resumo, entregue um resumo prático em blocos curtos
-- se ele fizer pergunta objetiva, responda primeiro e depois acrescente o que importa
-- quando existir ação recomendada, termine com o próximo passo mais útil
-- se não houver dados suficientes para responder tudo, deixe claro o que está faltando
+${args.upcomingAppointmentsText}
+
+${args.overdueAppointmentsText}
+
+${args.notificationsText}
+
+ÚLTIMA MENSAGEM DO RESPONSÁVEL
+${args.latestHumanMessage}
 
 SAÍDA OBRIGATÓRIA
-- gere apenas a mensagem final da assistente
-- não explique seu raciocínio
-- não use markdown pesado
-- não use títulos em excesso
-- não escreva observações para o sistema
+- responda como mensagem final para o responsável
+- seja útil e prática
+- se houver algo urgente hoje, comece por isso
+- se não houver urgência, responda normalmente e sugira o próximo passo útil quando fizer sentido
 `.trim();
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json().catch(() => null);
-    const organizationId = String(body?.organizationId || "").trim();
-    const storeId = String(body?.storeId || "").trim();
+    const body = (await request.json()) as AssistantReplyRequestBody;
+
+    const organizationId = String(body.organizationId || "").trim();
+    const storeId = String(body.storeId || "").trim();
 
     if (!organizationId || !storeId) {
       return NextResponse.json(
@@ -260,17 +280,16 @@ export async function POST(request: Request) {
     }
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     const openaiApiKey = process.env.OPENAI_API_KEY;
-    const model = process.env.ZION_AI_ASSISTANT_MODEL || "gpt-4.1-mini";
+    const model = process.env.ZION_ASSISTANT_MODEL || "gpt-4.1-mini";
 
-    if (!supabaseUrl || !supabaseServiceKey) {
+    if (!supabaseUrl || !supabaseServiceRoleKey) {
       return NextResponse.json(
         {
           ok: false,
           error: "SUPABASE_ENV_MISSING",
-          message:
-            "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variáveis de ambiente.",
+          message: "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.",
         },
         { status: 500 }
       );
@@ -281,35 +300,14 @@ export async function POST(request: Request) {
         {
           ok: false,
           error: "OPENAI_ENV_MISSING",
-          message: "Verifique OPENAI_API_KEY nas variáveis de ambiente.",
+          message: "Verifique OPENAI_API_KEY.",
         },
         { status: 500 }
       );
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
     const openai = new OpenAI({ apiKey: openaiApiKey });
-
-    const { data: threadData, error: threadError } = await supabase.rpc(
-      "assistant_get_or_create_primary_thread",
-      {
-        p_organization_id: organizationId,
-        p_store_id: storeId,
-      }
-    );
-
-    if (threadError || !threadData) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "THREAD_LOAD_FAILED",
-          message: threadError?.message || "Não foi possível carregar a thread da assistente.",
-        },
-        { status: 500 }
-      );
-    }
-
-    const thread = threadData as AssistantThreadRow;
 
     const { data: store, error: storeError } = await supabase
       .from("stores")
@@ -323,9 +321,28 @@ export async function POST(request: Request) {
         {
           ok: false,
           error: "STORE_NOT_FOUND",
-          message: storeError?.message || "Loja não encontrada para os dados informados.",
+          message: storeError?.message || "Loja não encontrada.",
         },
         { status: 404 }
+      );
+    }
+
+    const { data: thread, error: threadError } = await supabase.rpc(
+      "assistant_get_or_create_primary_thread",
+      {
+        p_organization_id: organizationId,
+        p_store_id: storeId,
+      }
+    );
+
+    if (threadError || !thread) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "ASSISTANT_THREAD_FAILED",
+          message: threadError?.message || "Não foi possível obter a thread da assistente.",
+        },
+        { status: 500 }
       );
     }
 
@@ -334,14 +351,7 @@ export async function POST(request: Request) {
       .select("question_key, answer")
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
-      .in("question_key", [
-        "store_display_name",
-        "responsible_name",
-        "city",
-        "state",
-        "important_limitations",
-        "responsible_notification_cases",
-      ]);
+      .in("question_key", [...ONBOARDING_KEYS]);
 
     if (onboardingError) {
       return NextResponse.json(
@@ -362,20 +372,18 @@ export async function POST(request: Request) {
 
     const { data: messagesData, error: messagesError } = await supabase
       .from("store_assistant_messages")
-      .select(
-        "id, thread_id, sender, sender_role, direction, message_type, content, related_lead_id, related_conversation_id, related_appointment_id, metadata, created_at"
-      )
+      .select("id, sender, sender_role, direction, message_type, content, created_at")
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
       .eq("thread_id", thread.id)
       .order("created_at", { ascending: true })
-      .limit(20);
+      .limit(30);
 
     if (messagesError) {
       return NextResponse.json(
         {
           ok: false,
-          error: "LOAD_MESSAGES_FAILED",
+          error: "LOAD_ASSISTANT_MESSAGES_FAILED",
           message: messagesError.message,
         },
         { status: 500 }
@@ -383,100 +391,144 @@ export async function POST(request: Request) {
     }
 
     const messages = (messagesData || []) as AssistantMessageRow[];
-    const lastHumanMessage = [...messages]
+    const latestHumanMessage = [...messages]
       .reverse()
-      .find(
-        (message) =>
-          normalizeText(message.sender_role) === "store_responsible" &&
-          normalizeText(message.direction) === "incoming" &&
-          String(message.content || "").trim().length > 0
-      );
+      .find((message) => message.sender === "human" && String(message.content || "").trim().length > 0)?.content;
 
-    if (!lastHumanMessage) {
+    if (!latestHumanMessage) {
       return NextResponse.json(
         {
           ok: false,
           error: "NO_HUMAN_MESSAGE",
-          message: "Não encontrei uma mensagem recente do responsável para responder.",
+          message: "Nenhuma mensagem recente do responsável encontrada.",
         },
         { status: 400 }
       );
     }
 
-    const { startIso, endIso } = startAndEndOfToday();
+    const now = new Date();
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(now);
+    dayEnd.setHours(23, 59, 59, 999);
 
-    const { data: appointmentsData, error: appointmentsError } = await supabase
+    const { data: todayAppointmentsData, error: todayAppointmentsError } = await supabase
       .from("store_appointments")
       .select(
-        "id, title, appointment_type, status, scheduled_start, scheduled_end, lead_id, conversation_id, address_text, notes"
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
       )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
-      .gte("scheduled_start", startIso)
-      .lte("scheduled_start", endIso)
-      .order("scheduled_start", { ascending: true })
-      .limit(12);
+      .gte("scheduled_start", dayStart.toISOString())
+      .lte("scheduled_start", dayEnd.toISOString())
+      .order("scheduled_start", { ascending: true });
 
-    if (appointmentsError) {
+    if (todayAppointmentsError) {
       return NextResponse.json(
         {
           ok: false,
-          error: "LOAD_APPOINTMENTS_FAILED",
-          message: appointmentsError.message,
+          error: "LOAD_TODAY_APPOINTMENTS_FAILED",
+          message: todayAppointmentsError.message,
         },
         { status: 500 }
       );
     }
 
-    const appointments = (appointmentsData || []) as AppointmentRow[];
+    const { data: upcomingAppointmentsData, error: upcomingAppointmentsError } = await supabase
+      .from("store_appointments")
+      .select(
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+      )
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .gte("scheduled_start", now.toISOString())
+      .in("status", ["scheduled", "rescheduled"])
+      .order("scheduled_start", { ascending: true })
+      .limit(5);
 
-    const { data: notificationRowsData, error: notificationsError } = await supabase
+    if (upcomingAppointmentsError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LOAD_UPCOMING_APPOINTMENTS_FAILED",
+          message: upcomingAppointmentsError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    const { data: overdueAppointmentsData, error: overdueAppointmentsError } = await supabase
+      .from("store_appointments")
+      .select(
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+      )
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .lt("scheduled_start", now.toISOString())
+      .in("status", ["scheduled", "rescheduled"])
+      .order("scheduled_start", { ascending: true })
+      .limit(5);
+
+    if (overdueAppointmentsError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LOAD_OVERDUE_APPOINTMENTS_FAILED",
+          message: overdueAppointmentsError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    const { data: notificationsData, error: notificationsError } = await supabase
       .from("store_assistant_notification_queue")
       .select(
-        "id, notification_type, priority, status, title, body, related_lead_id, related_conversation_id, related_appointment_id, created_at, available_at"
+        "id, notification_type, priority, status, title, body, related_lead_id, related_conversation_id, related_appointment_id, available_at, created_at"
       )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
       .eq("status", "pending")
       .order("available_at", { ascending: true })
-      .limit(10);
+      .limit(5);
 
     if (notificationsError) {
       return NextResponse.json(
         {
           ok: false,
-          error: "LOAD_NOTIFICATIONS_FAILED",
+          error: "LOAD_ASSISTANT_NOTIFICATIONS_FAILED",
           message: notificationsError.message,
         },
         { status: 500 }
       );
     }
 
-    const notificationRows = (notificationRowsData || []) as NotificationRow[];
+    const todayAppointments = (todayAppointmentsData || []) as AppointmentRow[];
+    const upcomingAppointments = (upcomingAppointmentsData || []) as AppointmentRow[];
+    const overdueAppointments = (overdueAppointmentsData || []) as AppointmentRow[];
+    const notifications = (notificationsData || []) as NotificationQueueRow[];
 
-    const instructions = buildInstructions({
-      storeName: store.name,
+    const instructions = buildOperationalPrompt({
+      responsibleName: onboardingMap.responsible_name || "responsável da loja",
+      storeDisplayName: onboardingMap.store_display_name || store.name || "loja",
       onboardingMap,
-      recentMessagesBlock: buildRecentMessagesBlock(messages),
-      agendaBlock: buildAgendaBlock(appointments),
-      notificationsBlock: buildNotificationsBlock(notificationRows),
-      totalAppointmentsToday: appointments.length,
-      pendingNotifications: notificationRows.length,
+      historyText: formatHistory(messages),
+      todayAppointmentsText: buildAppointmentsSection("AGENDA DE HOJE", todayAppointments),
+      upcomingAppointmentsText: buildAppointmentsSection("PRÓXIMOS COMPROMISSOS", upcomingAppointments),
+      overdueAppointmentsText: buildAppointmentsSection("COMPROMISSOS EM ATRASO OU AINDA NÃO BAIXADOS", overdueAppointments),
+      notificationsText: buildNotificationsSection(notifications),
+      latestHumanMessage,
     });
-
-    const input = [
-      ...mapMessagesToInput(messages),
-      {
-        role: "user" as const,
-        content: lastHumanMessage.content,
-      },
-    ];
 
     const response = await openai.responses.create({
       model,
       instructions,
-      input,
-      max_output_tokens: 260,
+      input: [
+        {
+          role: "user",
+          content: latestHumanMessage,
+        },
+      ],
+      max_output_tokens: 320,
     });
 
     const aiText = String(response.output_text || "").trim();
@@ -486,37 +538,41 @@ export async function POST(request: Request) {
         {
           ok: false,
           error: "EMPTY_AI_RESPONSE",
-          message: "A OpenAI não retornou texto utilizável para a assistente.",
+          message: "A assistente não retornou texto utilizável.",
         },
         { status: 500 }
       );
     }
 
-    const { data: savedMessage, error: saveError } = await supabase.rpc(
+    const metadata = {
+      source: "assistant_reply_route",
+      todayAppointmentsCount: todayAppointments.length,
+      upcomingAppointmentsCount: upcomingAppointments.length,
+      overdueAppointmentsCount: overdueAppointments.length,
+      pendingNotificationsCount: notifications.length,
+      generatedAt: new Date().toISOString(),
+    };
+
+    const { data: savedMessage, error: saveMessageError } = await supabase.rpc(
       "assistant_push_system_message",
       {
         p_organization_id: organizationId,
         p_store_id: storeId,
         p_content: aiText,
-        p_message_type: "text",
+        p_message_type: "context",
         p_related_lead_id: null,
         p_related_conversation_id: null,
-        p_related_appointment_id: null,
-        p_metadata: {
-          source: "assistant_reply_route",
-          responded_to_message_id: lastHumanMessage.id,
-          pending_notifications: notificationRows.length,
-          appointments_today: appointments.length,
-        },
+        p_related_appointment_id: overdueAppointments[0]?.id || upcomingAppointments[0]?.id || null,
+        p_metadata: metadata,
       }
     );
 
-    if (saveError) {
+    if (saveMessageError || !savedMessage) {
       return NextResponse.json(
         {
           ok: false,
           error: "SAVE_ASSISTANT_MESSAGE_FAILED",
-          message: saveError.message,
+          message: saveMessageError?.message || "Não foi possível salvar a resposta da assistente.",
         },
         { status: 500 }
       );
@@ -524,13 +580,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
-      threadId: thread.id,
       aiText,
-      savedMessage,
       context: {
-        storeName: onboardingMap.store_display_name || store.name,
-        pendingNotifications: notificationRows.length,
-        appointmentsToday: appointments.length,
+        todayAppointmentsCount: todayAppointments.length,
+        upcomingAppointmentsCount: upcomingAppointments.length,
+        overdueAppointmentsCount: overdueAppointments.length,
+        pendingNotificationsCount: notifications.length,
       },
     });
   } catch (error: any) {
