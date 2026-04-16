@@ -23,6 +23,7 @@ const items = [
   { label: "Dashboard", href: "/dashboard" },
   { label: "CRM", href: "/crm" },
   { label: "Inbox", href: "/inbox" },
+  { label: "Assistente", href: "/assistant" },
   { label: "Agenda", href: "/schedule" },
   { label: "Configurações", href: "/configuracoes" },
   { label: "Onboarding", href: "/onboarding" },
@@ -88,9 +89,7 @@ export default function Sidebar() {
 
       <nav className="flex-1 space-y-2 p-4">
         {items.map((item) => {
-          const isActive =
-            pathname === item.href || pathname.startsWith(`${item.href}/`);
-
+          const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
           const isInboxItem = item.href === "/inbox";
           const showInboxBadge = isInboxItem && pendingReplyCount > 0;
 
