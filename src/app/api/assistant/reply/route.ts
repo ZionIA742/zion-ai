@@ -287,6 +287,22 @@ function asksForEveningReport(text: string) {
   );
 }
 
+function asksAboutNextVisit(text: string) {
+  const t = normalizeText(text);
+  return (
+    t.includes("proxima visita") ||
+    t.includes("próxima visita") ||
+    t.includes("proximo compromisso") ||
+    t.includes("próximo compromisso") ||
+    t.includes("o que eu preciso levar") ||
+    t.includes("o que eu tenho que levar") ||
+    t.includes("o que levar") ||
+    t.includes("usar nessa visita") ||
+    t.includes("levar na visita")
+  );
+}
+
+
 function buildStoreBlock(onboardingMap: Record<string, string>, store: StoreRow) {
   const entries: Array<[string, string | null | undefined]> = [
     ["nome da loja", onboardingMap.store_display_name || store.name],
@@ -310,6 +326,14 @@ function buildStoreBlock(onboardingMap: Record<string, string>, store: StoreRow)
     .map(([label, value]) => `- ${label}: ${value}`);
 
   return lines.length ? lines.join("\n") : "- sem dados relevantes da loja";
+}
+
+function sortAssistantMessagesChronologically(messages: AssistantMessageRow[]) {
+  return [...messages].sort((a, b) => {
+    const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return ta - tb;
+  });
 }
 
 function buildHistoryBlock(messages: AssistantMessageRow[]) {
@@ -590,6 +614,51 @@ function buildDeterministicEveningReport(args: {
   return lines.join("\n");
 }
 
+
+function buildDeterministicNextVisitReply(nextAppointments: AppointmentRow[]) {
+  const nextAppointment = (nextAppointments || [])[0];
+
+  if (!nextAppointment) {
+    return [
+      "Próxima visita:",
+      "- não encontrei próximo compromisso agendado no sistema.",
+      "- se você quiser, posso te ajudar a revisar a agenda e as pendências abertas.",
+    ].join("\n");
+  }
+
+  const lines: string[] = [];
+  lines.push("Próxima visita:");
+  lines.push(
+    `- ${formatAppointmentType(nextAppointment.appointment_type)} ${formatAppointmentStatus(
+      nextAppointment.status
+    )} para ${formatDateOnly(nextAppointment.scheduled_start)} às ${formatTimeOnly(
+      nextAppointment.scheduled_start
+    )}`
+  );
+
+  if (nextAppointment.customer_name) {
+    lines.push(`- cliente: ${nextAppointment.customer_name}`);
+  }
+
+  if (nextAppointment.customer_phone) {
+    lines.push(`- contato: ${nextAppointment.customer_phone}`);
+  }
+
+  if (nextAppointment.address_text) {
+    lines.push(`- local: ${nextAppointment.address_text}`);
+  }
+
+  if (nextAppointment.notes) {
+    lines.push(`- observações do sistema: ${nextAppointment.notes}`);
+  }
+
+  lines.push(
+    "- materiais, documentos e checklist específicos só podem ser tratados como confirmados se estiverem descritos no sistema; sem isso, considere apenas uma revisão rápida do básico antes de sair."
+  );
+
+  return lines.join("\n");
+}
+
 function buildRequestAnalysisBlock(lastHumanMessage: string) {
   const materialRequest = asksAboutMaterialsOrDocuments(lastHumanMessage);
   const todayRequest = asksAboutToday(lastHumanMessage);
@@ -625,118 +694,118 @@ function buildSystemPrompt(args: {
   const storeName = args.onboardingMap.store_display_name || args.store.name || "a loja";
   const requestAnalysis = buildRequestAnalysisBlock(args.lastHumanMessage);
 
-  return `
-Você é a IA assistente operacional interna do projeto ZION.
-Você conversa com o responsável da loja ${storeName}.
-Você NÃO é a IA vendedora e NÃO fala com cliente final.
-
-MISSÃO
-- ajudar o responsável a não ficar perdido
-- resumir agenda, prioridades e pendências
-- responder dúvidas operacionais sobre clientes, compromissos e rotina
-- trazer contexto suficiente para ação humana
-- usar também a base de pós-compromisso quando ela existir
-- gerar relatório da manhã e relatório do fim do dia quando isso for pedido
-- ser honesta sobre o que sabe e o que não sabe
-
-REGRAS FIXAS
-- nunca invente fatos operacionais
-- nunca prometa ação automática que não existe
-- nunca diga que organizou, confirmou, enviou, separou ou preparou algo se isso não aconteceu de verdade
-- se algo não estiver confirmado no sistema, deixe isso explícito
-- quando houver pós-compromisso pendente, isso deve entrar como pendência operacional real
-- se a pergunta for sobre materiais, documentos ou checklist e não houver base oficial da loja, trate como sugestão genérica curta
-- não entregue textão quando bastar uma resposta curta
-- quando estiver em terreno genérico, use no máximo 3 a 5 itens
-- prefira respostas curtas e úteis
-- no máximo uma pergunta curta no final, quando realmente ajudar
-
-COMO RESPONDER SOBRE MATERIAIS, DOCUMENTOS E CHECKLIST
-- se não houver base oficial da loja, diga claramente que é sugestão genérica
-- não diga que a loja usa isso com certeza
-- não entregue lista longa demais
-- se o responsável pedir muita coisa de uma vez, responda de forma resumida e controlada
-- quando estiver nesse terreno genérico, prefira este formato:
-  1) uma frase curta dizendo que é sugestão genérica
-  2) até 4 itens práticos
-  3) uma pergunta curta no final, se ajudar
-
-COMO RESPONDER SOBRE PÓS-COMPROMISSO
-- trate follow-ups pendentes como pendências reais da operação
-- quando houver follow-up com status pendente ou prompt_sent, deixe isso claro
-- quando houver follow-up resolvido, trate como histórico recente, não como pendência aberta
-- se houver resolução completed, rescheduled ou cancelled, use isso como contexto operacional confiável
-- se faltar lead, conversation ou observação, deixe claro que essa parte não veio preenchida
-
-COMO RESPONDER RELATÓRIO DA MANHÃ
-- quando pedirem relatório da manhã, faça um resumo operacional do início do dia
-- diga o total de compromissos de hoje
-- destaque o primeiro compromisso mais importante, se houver
-- diga o que está em aberto, em atraso e o que merece atenção hoje
-- se houver pós-compromisso pendente, isso deve entrar
-- mantenha curto, organizado e acionável
-
-COMO RESPONDER RELATÓRIO DO FIM DO DIA
-- quando pedirem relatório do fim do dia, faça um fechamento operacional
-- diga o que estava previsto para hoje
-- diga o que foi concluído, cancelado e o que ainda está em aberto
-- traga pendências que devem entrar no radar de amanhã
-- se houver pós-compromisso pendente, isso deve entrar
-- mantenha curto, organizado e acionável
-
-ANÁLISE DO PEDIDO ATUAL
-${requestAnalysis}
-
-DADOS DA LOJA
-${buildStoreBlock(args.onboardingMap, args.store)}
-
-HISTÓRICO RECENTE DA THREAD
-${buildHistoryBlock(args.recentMessages)}
-
-AGENDA DE HOJE
-${buildTodayAppointmentsBlock(args.todayAppointments)}
-
-RESUMO OPERACIONAL DA MANHÃ
-${buildMorningReportBlock({
-  todayAppointments: args.todayAppointments,
-  overdueAppointments: args.overdueAppointments,
-  pendingNotifications: args.pendingNotifications,
-  pendingPostFollowups: args.pendingPostFollowups,
-})}
-
-RESUMO OPERACIONAL DO FIM DO DIA
-${buildEveningReportBlock({
-  todayAppointments: args.todayAppointments,
-  overdueAppointments: args.overdueAppointments,
-  pendingNotifications: args.pendingNotifications,
-  pendingPostFollowups: args.pendingPostFollowups,
-})}
-
-PRÓXIMOS COMPROMISSOS
-${buildTodayAppointmentsBlock(args.nextAppointments)}
-
-COMPROMISSOS EM ATRASO OU AINDA NÃO BAIXADOS
-${buildOverdueAppointmentsBlock(args.overdueAppointments)}
-
-PENDÊNCIAS DA ASSISTENTE
-${buildPendingNotificationsBlock(args.pendingNotifications)}
-
-PÓS-COMPROMISSO PENDENTE
-${buildPendingPostAppointmentBlock(args.pendingPostFollowups, args.appointmentMap)}
-
-PÓS-COMPROMISSO RESOLVIDO RECENTEMENTE
-${buildResolvedPostAppointmentBlock(args.recentResolvedPostFollowups, args.appointmentMap)}
-
-MENSAGEM MAIS RECENTE DO RESPONSÁVEL
-${args.lastHumanMessage}
-
-SAÍDA OBRIGATÓRIA
-- responda apenas com a mensagem final
-- sem markdown pesado
-- sem explicar raciocínio
-- sem dizer que consultou banco ou sistema
-- mantenha resposta enxuta
-`.trim();
+  return [
+    `Você é a IA assistente operacional interna do projeto ZION.`,
+    `Você conversa com o responsável da loja ${storeName}.`,
+    `Você NÃO é a IA vendedora e NÃO fala com cliente final.`,
+    "",
+    "MISSÃO",
+    "- ajudar o responsável a não ficar perdido",
+    "- resumir agenda, prioridades e pendências",
+    "- responder dúvidas operacionais sobre clientes, compromissos e rotina",
+    "- trazer contexto suficiente para ação humana",
+    "- usar também a base de pós-compromisso quando ela existir",
+    "- gerar relatório da manhã e relatório do fim do dia quando isso for pedido",
+    "- ser honesta sobre o que sabe e o que não sabe",
+    "",
+    "REGRAS FIXAS",
+    "- nunca invente fatos operacionais",
+    "- nunca prometa ação automática que não existe",
+    "- nunca diga que organizou, confirmou, enviou, separou ou preparou algo se isso não aconteceu de verdade",
+    "- se algo não estiver confirmado no sistema, deixe isso explícito",
+    "- quando houver pós-compromisso pendente, isso deve entrar como pendência operacional real",
+    "- se a pergunta for sobre materiais, documentos ou checklist e não houver base oficial da loja, trate como sugestão genérica curta",
+    "- não entregue textão quando bastar uma resposta curta",
+    "- quando estiver em terreno genérico, use no máximo 3 a 5 itens",
+    "- prefira respostas curtas e úteis",
+    "- no máximo uma pergunta curta no final, quando realmente ajudar",
+    "",
+    "COMO RESPONDER SOBRE MATERIAIS, DOCUMENTOS E CHECKLIST",
+    "- se não houver base oficial da loja, diga claramente que é sugestão genérica",
+    "- não diga que a loja usa isso com certeza",
+    "- não entregue lista longa demais",
+    "- se o responsável pedir muita coisa de uma vez, responda de forma resumida e controlada",
+    "- quando estiver nesse terreno genérico, prefira este formato:",
+    "  1) uma frase curta dizendo que é sugestão genérica",
+    "  2) até 4 itens práticos",
+    "  3) uma pergunta curta no final, se ajudar",
+    "",
+    "COMO RESPONDER SOBRE PÓS-COMPROMISSO",
+    "- trate follow-ups pendentes como pendências reais da operação",
+    "- quando houver follow-up com status pendente ou prompt_sent, deixe isso claro",
+    "- quando houver follow-up resolvido, trate como histórico recente, não como pendência aberta",
+    "- se houver resolução completed, rescheduled ou cancelled, use isso como contexto operacional confiável",
+    "- se faltar lead, conversation ou observação, deixe claro que essa parte não veio preenchida",
+    "",
+    "COMO RESPONDER RELATÓRIO DA MANHÃ",
+    "- quando pedirem relatório da manhã, faça um resumo operacional do início do dia",
+    "- diga o total de compromissos de hoje",
+    "- destaque o primeiro compromisso mais importante, se houver",
+    "- diga o que está em aberto, em atraso e o que merece atenção hoje",
+    "- se houver pós-compromisso pendente, isso deve entrar",
+    "- mantenha curto, organizado e acionável",
+    "",
+    "COMO RESPONDER RELATÓRIO DO FIM DO DIA",
+    "- quando pedirem relatório do fim do dia, faça um fechamento operacional",
+    "- diga o que estava previsto para hoje",
+    "- diga o que foi concluído, cancelado e o que ainda está em aberto",
+    "- traga pendências que devem entrar no radar de amanhã",
+    "- se houver pós-compromisso pendente, isso deve entrar",
+    "- mantenha curto, organizado e acionável",
+    "",
+    "ANÁLISE DO PEDIDO ATUAL",
+    requestAnalysis,
+    "",
+    "DADOS DA LOJA",
+    buildStoreBlock(args.onboardingMap, args.store),
+    "",
+    "HISTÓRICO RECENTE DA THREAD",
+    buildHistoryBlock(args.recentMessages),
+    "",
+    "AGENDA DE HOJE",
+    buildTodayAppointmentsBlock(args.todayAppointments),
+    "",
+    "RESUMO OPERACIONAL DA MANHÃ",
+    buildMorningReportBlock({
+      todayAppointments: args.todayAppointments,
+      overdueAppointments: args.overdueAppointments,
+      pendingNotifications: args.pendingNotifications,
+      pendingPostFollowups: args.pendingPostFollowups,
+    }),
+    "",
+    "RESUMO OPERACIONAL DO FIM DO DIA",
+    buildEveningReportBlock({
+      todayAppointments: args.todayAppointments,
+      overdueAppointments: args.overdueAppointments,
+      pendingNotifications: args.pendingNotifications,
+      pendingPostFollowups: args.pendingPostFollowups,
+    }),
+    "",
+    "PRÓXIMOS COMPROMISSOS",
+    buildTodayAppointmentsBlock(args.nextAppointments),
+    "",
+    "COMPROMISSOS EM ATRASO OU AINDA NÃO BAIXADOS",
+    buildOverdueAppointmentsBlock(args.overdueAppointments),
+    "",
+    "PENDÊNCIAS DA ASSISTENTE",
+    buildPendingNotificationsBlock(args.pendingNotifications),
+    "",
+    "PÓS-COMPROMISSO PENDENTE",
+    buildPendingPostAppointmentBlock(args.pendingPostFollowups, args.appointmentMap),
+    "",
+    "PÓS-COMPROMISSO RESOLVIDO RECENTEMENTE",
+    buildResolvedPostAppointmentBlock(args.recentResolvedPostFollowups, args.appointmentMap),
+    "",
+    "MENSAGEM MAIS RECENTE DO RESPONSÁVEL",
+    args.lastHumanMessage,
+    "",
+    "SAÍDA OBRIGATÓRIA",
+    "- responda apenas com a mensagem final",
+    "- sem markdown pesado",
+    "- sem explicar raciocínio",
+    "- sem dizer que consultou banco ou sistema",
+    "- mantenha resposta enxuta",
+  ].join("\n").trim();
 }
 
 function buildModelInput(messages: AssistantMessageRow[]) {
@@ -970,7 +1039,9 @@ async function generateAssistantReply(params: {
       };
     }
 
-    const recentMessages = (recentMessagesRaw || []) as AssistantMessageRow[];
+    const recentMessages = sortAssistantMessagesChronologically(
+      (recentMessagesRaw || []) as AssistantMessageRow[]
+    );
 
     const lastHumanMessage =
       [...recentMessages]
@@ -1172,6 +1243,7 @@ async function generateAssistantReply(params: {
 
     const morningReportMode = asksForMorningReport(lastHumanMessage);
     const eveningReportMode = asksForEveningReport(lastHumanMessage);
+    const nextVisitMode = asksAboutNextVisit(lastHumanMessage);
 
     let aiText = "";
 
@@ -1189,6 +1261,8 @@ async function generateAssistantReply(params: {
         pendingNotifications: (pendingNotificationsData || []) as PendingNotificationRow[],
         pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
       });
+    } else if (nextVisitMode) {
+      aiText = buildDeterministicNextVisitReply((nextAppointmentsData || []) as AppointmentRow[]);
     } else {
       const response = await openai.responses.create({
         model,
@@ -1197,7 +1271,7 @@ async function generateAssistantReply(params: {
       });
 
       aiText = cleanupAiText(String(response.output_text || "").trim(), {
-        genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
+        genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
         morningReportMode,
         eveningReportMode,
       });
@@ -1214,6 +1288,7 @@ async function generateAssistantReply(params: {
     const isContextMessage =
       asksAboutToday(lastHumanMessage) ||
       asksAboutPostAppointment(lastHumanMessage) ||
+      nextVisitMode ||
       morningReportMode ||
       eveningReportMode;
 
@@ -1236,10 +1311,11 @@ async function generateAssistantReply(params: {
       p_related_appointment_id: null,
       p_metadata: {
         source: "assistant.reply.route",
-        genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
+        genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
         postAppointmentContextUsed: true,
         morningReportMode,
         eveningReportMode,
+        nextVisitMode,
       },
     });
 
