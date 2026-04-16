@@ -1,19 +1,9 @@
 
-import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
-
-type AssistantMessageRow = {
-  id: string;
-  sender: string | null;
-  sender_role: string | null;
-  direction: string | null;
-  message_type: string | null;
-  content: string | null;
-  created_at: string | null;
-};
 
 type StoreRow = {
   id: string;
@@ -21,9 +11,18 @@ type StoreRow = {
   name: string | null;
 };
 
-type OnboardingAnswerRow = {
+type StoreAnswerRow = {
   question_key: string;
   answer: unknown;
+};
+
+type AssistantMessageRow = {
+  sender: string | null;
+  sender_role: string | null;
+  direction: string | null;
+  message_type: string | null;
+  content: string | null;
+  created_at: string | null;
 };
 
 type AppointmentRow = {
@@ -41,69 +40,76 @@ type AppointmentRow = {
   conversation_id: string | null;
 };
 
-type NotificationRow = {
+type PendingNotificationRow = {
   id: string;
   notification_type: string | null;
   priority: string | null;
-  status: string | null;
   title: string | null;
   body: string | null;
   created_at: string | null;
-  available_at: string | null;
+  related_lead_id: string | null;
+  related_conversation_id: string | null;
+  related_appointment_id: string | null;
 };
 
-type ReplySuccess = {
-  ok: true;
-  aiText: string;
-  savedMessageId: string | null;
-};
-
-type ReplyFailure = {
-  ok: false;
-  error: string;
-  message: string;
-};
-
-type ReplyResult = ReplySuccess | ReplyFailure;
+type AssistantReplyResult =
+  | {
+      ok: true;
+      aiText: string;
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    };
 
 const ONBOARDING_KEYS = [
   "store_display_name",
   "store_description",
   "responsible_name",
-  "important_limitations",
+  "responsible_whatsapp",
   "offers_installation",
   "offers_technical_visit",
-  "store_services",
-  "service_regions",
-  "service_region_notes",
   "accepted_payment_methods",
-  "responsible_notification_cases",
+  "store_services",
+  "important_limitations",
+  "technical_visit_rules",
+  "technical_visit_rules_selected",
+  "installation_process",
+  "service_regions",
+  "city",
+  "state",
 ] as const;
 
 function asText(value: unknown): string | null {
   if (value == null) return null;
+
   if (typeof value === "string") {
     const trimmed = value.trim();
     return trimmed.length ? trimmed : null;
   }
+
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
   }
+
   try {
     if (Array.isArray(value)) {
       const items = value.map((item) => asText(item)).filter(Boolean) as string[];
       return items.length ? items.join(", ") : null;
     }
+
     if (typeof value === "object") {
       return JSON.stringify(value);
     }
   } catch {
     return null;
   }
+
   return null;
 }
 
-function normalizeText(value: string | null | undefined) {
+function normalizeText(value: string | null | undefined): string {
   return String(value || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -112,219 +118,177 @@ function normalizeText(value: string | null | undefined) {
 }
 
 function formatDateTime(value: string | null) {
-  if (!value) return "-";
+  if (!value) return "sem data";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
+  if (Number.isNaN(date.getTime())) return "sem data";
   return date.toLocaleString("pt-BR");
-}
-
-function formatDateOnly(value: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleDateString("pt-BR");
-}
-
-function formatTimeOnly(value: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleTimeString("pt-BR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function formatAppointmentType(value: string | null) {
   const normalized = normalizeText(value);
+
   if (normalized === "technical_visit") return "visita técnica";
   if (normalized === "installation") return "instalação";
-  if (normalized === "follow_up") return "retorno";
+  if (normalized === "follow_up") return "follow-up";
   if (normalized === "meeting") return "reunião";
   if (normalized === "measurement") return "medição";
   if (normalized === "maintenance") return "manutenção";
-  if (normalized === "other") return "outro compromisso";
+  if (normalized === "other") return "outro";
   return value || "compromisso";
 }
 
-function formatStatus(value: string | null) {
+function formatAppointmentStatus(value: string | null) {
   const normalized = normalizeText(value);
+
   if (normalized === "scheduled") return "agendado";
   if (normalized === "rescheduled") return "remarcado";
   if (normalized === "completed") return "concluído";
   if (normalized === "cancelled") return "cancelado";
   if (normalized === "blocked") return "bloqueado";
-  return value || "-";
+  return value || "sem status";
 }
 
-function safeLeadName(name: string | null) {
-  const trimmed = String(name || "").trim();
-  return trimmed || "cliente sem nome";
-}
-
-function formatPhone(value: string | null) {
-  if (!value) return "-";
-  const digits = String(value).replace(/\D/g, "").slice(0, 11);
-  if (!digits) return "-";
-  if (digits.length <= 2) return `(${digits}`;
-  if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
-  if (digits.length <= 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
-  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
-}
-
-function isSameCalendarDay(a: Date, b: Date) {
+function asksAboutToday(text: string) {
+  const t = normalizeText(text);
   return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
+    t.includes("hoje") ||
+    t.includes("agenda") ||
+    t.includes("compromissos") ||
+    t.includes("urgente") ||
+    t.includes("pendente") ||
+    t.includes("o que eu tenho")
   );
 }
 
-function appointmentSort(a: AppointmentRow, b: AppointmentRow) {
-  const ad = new Date(a.scheduled_start || 0).getTime();
-  const bd = new Date(b.scheduled_start || 0).getTime();
-  return ad - bd;
+function asksAboutMaterialsOrDocuments(text: string) {
+  const t = normalizeText(text);
+  return (
+    t.includes("material") ||
+    t.includes("materiais") ||
+    t.includes("documento") ||
+    t.includes("documentos") ||
+    t.includes("checklist") ||
+    t.includes("levar") ||
+    t.includes("usar nessa visita") ||
+    t.includes("usar nessa visita") ||
+    t.includes("o que eu preciso levar") ||
+    t.includes("o que eu tenho que levar")
+  );
+}
+
+function buildStoreBlock(onboardingMap: Record<string, string>, store: StoreRow) {
+  const entries: Array<[string, string | null | undefined]> = [
+    ["nome da loja", onboardingMap.store_display_name || store.name],
+    ["descrição", onboardingMap.store_description],
+    ["serviços", onboardingMap.store_services],
+    ["cidade", onboardingMap.city],
+    ["estado", onboardingMap.state],
+    ["regiões", onboardingMap.service_regions],
+    ["oferece instalação", onboardingMap.offers_installation],
+    ["oferece visita técnica", onboardingMap.offers_technical_visit],
+    ["regras de visita técnica", onboardingMap.technical_visit_rules],
+    ["regras selecionadas de visita técnica", onboardingMap.technical_visit_rules_selected],
+    ["processo de instalação", onboardingMap.installation_process],
+    ["pagamentos aceitos", onboardingMap.accepted_payment_methods],
+    ["limitações importantes", onboardingMap.important_limitations],
+    ["nome do responsável", onboardingMap.responsible_name],
+  ];
+
+  const lines = entries
+    .filter(([, value]) => value && String(value).trim().length > 0)
+    .map(([label, value]) => `- ${label}: ${value}`);
+
+  return lines.length ? lines.join("\n") : "- sem dados relevantes da loja";
 }
 
 function buildHistoryBlock(messages: AssistantMessageRow[]) {
-  const recent = messages
+  const lines = messages
     .filter((msg) => String(msg.content || "").trim().length > 0)
-    .slice(-12)
+    .slice(-8)
     .map((msg) => {
-      const sender = normalizeText(msg.sender);
+      const role = normalizeText(msg.sender_role);
       const label =
-        sender === "assistant"
+        role === "assistant_operational"
           ? "Assistente"
-          : sender === "human"
-          ? "Responsável"
-          : "Sistema";
+          : role === "store_responsible"
+            ? "Responsável"
+            : "Sistema";
+
       return `${label}: ${String(msg.content || "").trim()}`;
     });
 
-  return recent.length ? recent.join("\n") : "Sem histórico recente.";
+  return lines.length ? lines.join("\n") : "Sem histórico recente.";
 }
 
-function buildStoreBlock(store: StoreRow, onboardingMap: Record<string, string>) {
-  const lines = [
-    `- loja: ${onboardingMap.store_display_name || store.name || "Loja sem nome"}`,
-    onboardingMap.store_description ? `- descrição: ${onboardingMap.store_description}` : null,
-    onboardingMap.store_services ? `- serviços: ${onboardingMap.store_services}` : null,
-    onboardingMap.offers_installation ? `- oferece instalação: ${onboardingMap.offers_installation}` : null,
-    onboardingMap.offers_technical_visit ? `- oferece visita técnica: ${onboardingMap.offers_technical_visit}` : null,
-    onboardingMap.service_regions ? `- regiões: ${onboardingMap.service_regions}` : null,
-    onboardingMap.service_region_notes ? `- observações de região: ${onboardingMap.service_region_notes}` : null,
-    onboardingMap.important_limitations ? `- limitações importantes: ${onboardingMap.important_limitations}` : null,
-  ].filter(Boolean);
-
-  return lines.length ? lines.join("\n") : "- sem dados adicionais da loja";
-}
-
-function buildTodayAgendaBlock(todayAppointments: AppointmentRow[]) {
-  if (!todayAppointments.length) {
-    return "Nenhum compromisso hoje.";
+function buildTodayAppointmentsBlock(items: AppointmentRow[]) {
+  if (!items.length) {
+    return "- nenhum compromisso para hoje";
   }
 
-  return todayAppointments
-    .slice(0, 10)
+  return items
     .map((item) => {
-      return [
-        `- ${formatAppointmentType(item.appointment_type)} às ${formatTimeOnly(item.scheduled_start)}`,
-        item.status ? `status ${formatStatus(item.status)}` : null,
+      const parts = [
+        `${formatAppointmentType(item.appointment_type)} ${formatAppointmentStatus(item.status)}`,
+        item.scheduled_start ? `início ${formatDateTime(item.scheduled_start)}` : null,
         item.customer_name ? `cliente ${item.customer_name}` : null,
-        item.customer_phone ? `telefone ${formatPhone(item.customer_phone)}` : null,
+        item.customer_phone ? `telefone ${item.customer_phone}` : null,
         item.address_text ? `endereço ${item.address_text}` : null,
-        item.notes ? `observações ${item.notes}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
+        item.title ? `título ${item.title}` : null,
+      ].filter(Boolean);
+
+      return `- ${parts.join(" • ")}`;
     })
     .join("\n");
 }
 
-function buildWeekAgendaBlock(nextAppointments: AppointmentRow[]) {
-  if (!nextAppointments.length) {
-    return "Nenhum próximo compromisso encontrado na janela analisada.";
+function buildOverdueAppointmentsBlock(items: AppointmentRow[]) {
+  if (!items.length) {
+    return "- nenhum compromisso em atraso detectado";
   }
 
-  return nextAppointments
-    .slice(0, 12)
+  return items
     .map((item) => {
-      return [
-        `- ${formatDateOnly(item.scheduled_start)} às ${formatTimeOnly(item.scheduled_start)}`,
-        formatAppointmentType(item.appointment_type),
-        item.status ? `status ${formatStatus(item.status)}` : null,
+      const parts = [
+        `${formatAppointmentType(item.appointment_type)} ${formatAppointmentStatus(item.status)}`,
+        item.scheduled_start ? `previsto para ${formatDateTime(item.scheduled_start)}` : null,
         item.customer_name ? `cliente ${item.customer_name}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
+        item.title ? `título ${item.title}` : null,
+      ].filter(Boolean);
+
+      return `- ${parts.join(" • ")}`;
     })
     .join("\n");
 }
 
-function buildOverdueBlock(overdueAppointments: AppointmentRow[]) {
-  if (!overdueAppointments.length) {
-    return "Nenhum compromisso vencido pendente encontrado.";
+function buildPendingNotificationsBlock(items: PendingNotificationRow[]) {
+  if (!items.length) {
+    return "- nenhuma pendência da assistente";
   }
 
-  return overdueAppointments
-    .slice(0, 10)
+  return items
     .map((item) => {
-      return [
-        `- ${formatDateOnly(item.scheduled_start)} às ${formatTimeOnly(item.scheduled_start)}`,
-        formatAppointmentType(item.appointment_type),
-        item.customer_name ? `cliente ${item.customer_name}` : null,
-        item.status ? `status ${formatStatus(item.status)}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-    })
-    .join("\n");
-}
-
-function buildNotificationsBlock(notifications: NotificationRow[]) {
-  if (!notifications.length) {
-    return "Nenhuma notificação pendente.";
-  }
-
-  return notifications
-    .slice(0, 10)
-    .map((item) => {
-      return [
-        `- tipo ${item.notification_type || "-"}`,
+      const parts = [
+        item.notification_type ? `tipo ${item.notification_type}` : null,
         item.priority ? `prioridade ${item.priority}` : null,
         item.title ? `título ${item.title}` : null,
-        item.body ? `texto ${item.body}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
+        item.body ? `corpo ${item.body}` : null,
+      ].filter(Boolean);
+
+      return `- ${parts.join(" • ")}`;
     })
     .join("\n");
-}
-
-
-function asksAboutMaterialsOrDocuments(text: string) {
-  const normalized = normalizeText(text);
-  return (
-    normalized.includes("material") ||
-    normalized.includes("materiais") ||
-    normalized.includes("documento") ||
-    normalized.includes("documentos") ||
-    normalized.includes("checklist") ||
-    normalized.includes("conferir antes") ||
-    normalized.includes("o que eu devo conferir") ||
-    normalized.includes("o que levar") ||
-    normalized.includes("o que preciso levar")
-  );
 }
 
 function buildRequestAnalysisBlock(lastHumanMessage: string) {
   const materialRequest = asksAboutMaterialsOrDocuments(lastHumanMessage);
+  const todayRequest = asksAboutToday(lastHumanMessage);
 
   return [
     `- pedido ligado a materiais/documentos/checklist: ${materialRequest ? "sim" : "não"}`,
     materialRequest
       ? "- quando responder isso, trate qualquer orientação de materiais ou documentos como sugestão genérica, nunca como procedimento confirmado da loja, a menos que exista base explícita no sistema"
       : "- não há pedido direto sobre materiais ou documentos nesta mensagem",
+    `- pedido ligado a agenda, urgência ou compromissos: ${todayRequest ? "sim" : "não"}`,
   ].join("\n");
 }
 
@@ -333,146 +297,175 @@ function buildSystemPrompt(args: {
   onboardingMap: Record<string, string>;
   recentMessages: AssistantMessageRow[];
   todayAppointments: AppointmentRow[];
-  nextAppointments: AppointmentRow[];
   overdueAppointments: AppointmentRow[];
-  pendingNotifications: NotificationRow[];
-  responsibleName: string;
+  nextAppointments: AppointmentRow[];
+  pendingNotifications: PendingNotificationRow[];
   lastHumanMessage: string;
 }) {
-  const historyBlock = buildHistoryBlock(args.recentMessages);
-  const storeBlock = buildStoreBlock(args.store, args.onboardingMap);
-  const todayBlock = buildTodayAgendaBlock(args.todayAppointments);
-  const weekBlock = buildWeekAgendaBlock(args.nextAppointments);
-  const overdueBlock = buildOverdueBlock(args.overdueAppointments);
-  const notificationsBlock = buildNotificationsBlock(args.pendingNotifications);
-  const requestAnalysisBlock = buildRequestAnalysisBlock(args.lastHumanMessage);
+  const storeName = args.onboardingMap.store_display_name || args.store.name || "a loja";
+  const requestAnalysis = buildRequestAnalysisBlock(args.lastHumanMessage);
 
   return `
-Você é a assistente operacional interna do projeto ZION.
-Você fala com o responsável da loja, nunca com o cliente final.
-Seu nome funcional neste canal é Assistente Operacional da Loja.
+Você é a IA assistente operacional interna do projeto ZION.
+Você conversa com o responsável da loja ${storeName}.
+Você NÃO é a IA vendedora e NÃO fala com cliente final.
 
-MISSÃO REAL
-- ajudar o responsável a entender o que está acontecendo na operação
-- resumir agenda, prioridades, pendências e contexto útil
-- lembrar dados objetivos de visitas, instalações, medições, manutenções e retornos
-- destacar atrasos, conflitos, pendências e próximos passos
-- responder de forma honesta, útil e prática
+MISSÃO
+- ajudar o responsável a não ficar perdido
+- resumir agenda, prioridades e pendências
+- responder dúvidas operacionais sobre clientes, compromissos e rotina
+- trazer contexto suficiente para ação humana
+- ser honesta sobre o que sabe e o que não sabe
 
-REGRA MÁXIMA
-Você NÃO pode prometer ações que ainda não executa de verdade no sistema.
+REGRAS FIXAS
+- nunca invente fatos operacionais
+- nunca prometa ação automática que não existe
+- nunca diga que organizou, confirmou, enviou, separou ou preparou algo se isso não aconteceu de verdade
+- se algo não estiver confirmado no sistema, deixe isso explícito
+- se a pergunta for sobre materiais, documentos ou checklist e não houver base oficial da loja, trate como sugestão genérica curta
+- não entregue textão quando bastar uma resposta curta
+- quando estiver em terreno genérico, use no máximo 3 a 5 itens
+- prefira respostas curtas e úteis
+- no máximo uma pergunta curta no final, quando realmente ajudar
 
-O QUE VOCÊ PODE FAZER HOJE
-- resumir a agenda do dia e da semana
-- listar compromissos próximos
-- apontar compromissos atrasados ou pendentes
-- lembrar horário, cliente, telefone, endereço e observações do compromisso
-- organizar prioridades em TEXTO
-- sugerir o que o responsável deve conferir
-- resumir pendências da fila da assistente
-- explicar com clareza o que merece atenção humana
-- quando faltar base específica da loja, oferecer apenas sugestão genérica e deixar isso explícito
-
-O QUE VOCÊ NÃO PODE DIZER COMO SE JÁ FIZESSE
-- "vou organizar os documentos"
-- "vou separar os materiais"
-- "vou preparar um checklist"
-- "vou arrumar isso para você"
-- "vou deixar pronto"
-- "vou enviar para a equipe"
-- "vou confirmar com o cliente"
-- qualquer automação operacional que não exista de verdade
-
-SE O RESPONSÁVEL PEDIR ALGO QUE AINDA NÃO EXISTE
-- seja honesta
-- diga que hoje você ainda não executa isso automaticamente
-- ofereça apenas ajuda real em texto
-Exemplo bom:
-"Hoje eu ainda não organizo documentos de forma automática, mas posso te resumir o que conferir antes da visita."
-
-REGRA CRÍTICA SOBRE FATOS VS SUGESTÕES
-- diferencie sempre o que é fato confirmado do sistema do que é só sugestão genérica
-- fatos confirmados: horário, cliente, telefone, endereço, observações, status, pendências e notificações que realmente vieram do sistema
-- sugestão genérica: materiais, documentos, EPIs, ferramentas, catálogos, contratos, formulários, amostras, manuais, checklists e preparações que não estejam cadastrados de forma estruturada no sistema
-- quando falar de sugestão genérica, use expressões como:
-  - "eu não tenho uma lista operacional cadastrada da sua loja"
-  - "posso te sugerir um checklist genérico"
-  - "como orientação geral"
-  - "vale conferir"
-- nunca fale sugestão genérica como se fosse padrão confirmado da loja
-- nunca diga ou insinue que a loja realmente usa aqueles materiais/documentos sem confirmação
-
-COMO RESPONDER
-- sempre em português do Brasil
-- natural, humana, clara e objetiva
-- sem parecer robô
-- sem frases burocráticas
-- sem markdown pesado
-- sem títulos desnecessários
-- sem inventar fatos
-
-ESTILO
-- quando a pergunta for simples, responda simples
-- quando houver pendências reais, destaque primeiro o que é mais importante
-- se existir compromisso hoje, priorize isso na resposta
-- quando ajudar com preparação, fale como sugestão textual, não como automação executada
-- quando a pergunta for sobre materiais, documentos ou checklist, deixe explícito que você está dando uma sugestão genérica se não houver base cadastrada
-- não monte lista específica demais como se conhecesse o procedimento interno da loja sem confirmação
-- pode usar listas curtas quando isso realmente ajudar
-- no máximo 1 pergunta final curta, e só se fizer sentido
-
-EXEMPLOS BOAS RESPOSTAS
-- "Hoje você tem uma visita técnica às 12:30 com o cliente João. O principal é revisar endereço, observações e confirmar se ficou alguma pendência da visita anterior."
-- "Você tem dois compromissos em atraso que ainda precisam de baixa. O mais urgente parece ser o do dia 14/04."
-- "Hoje eu ainda não organizo documentos automaticamente, mas posso te dizer o que vale conferir antes da visita."
-- "Eu não tenho uma lista operacional cadastrada da sua loja para essa visita, mas posso te sugerir um checklist genérico de conferência."
-
-EXEMPLOS RUINS
-- "Quer que eu organize os documentos para você?"
-- "Posso preparar um checklist e deixar tudo pronto."
-- "Vou arrumar isso para a execução."
-- "Para essa visita, você precisa levar EPI, contrato, catálogo e formulário." (ruim se isso não estiver confirmado no sistema da loja)
-
-DADOS DA LOJA
-${storeBlock}
-
-RESPONSÁVEL
-- nome: ${args.responsibleName}
-
-HISTÓRICO RECENTE DA THREAD
-${historyBlock}
-
-AGENDA DE HOJE
-${todayBlock}
-
-PRÓXIMOS COMPROMISSOS
-${weekBlock}
-
-COMPROMISSOS VENCIDOS / PENDENTES
-${overdueBlock}
-
-NOTIFICAÇÕES PENDENTES DA ASSISTENTE
-${notificationsBlock}
+COMO RESPONDER SOBRE MATERIAIS, DOCUMENTOS E CHECKLIST
+- se não houver base oficial da loja, diga claramente que é sugestão genérica
+- não diga que a loja usa isso com certeza
+- não entregue lista longa demais
+- se o responsável pedir muita coisa de uma vez, responda de forma resumida e controlada
 
 ANÁLISE DO PEDIDO ATUAL
-${requestAnalysisBlock}
+${requestAnalysis}
+
+DADOS DA LOJA
+${buildStoreBlock(args.onboardingMap, args.store)}
+
+HISTÓRICO RECENTE DA THREAD
+${buildHistoryBlock(args.recentMessages)}
+
+AGENDA DE HOJE
+${buildTodayAppointmentsBlock(args.todayAppointments)}
+
+PRÓXIMOS COMPROMISSOS
+${buildTodayAppointmentsBlock(args.nextAppointments)}
+
+COMPROMISSOS EM ATRASO OU AINDA NÃO BAIXADOS
+${buildOverdueAppointmentsBlock(args.overdueAppointments)}
+
+PENDÊNCIAS DA ASSISTENTE
+${buildPendingNotificationsBlock(args.pendingNotifications)}
 
 MENSAGEM MAIS RECENTE DO RESPONSÁVEL
 ${args.lastHumanMessage}
 
 SAÍDA OBRIGATÓRIA
-- gere apenas a mensagem final da assistente
-- não explique seu raciocínio
-- não diga que consultou banco, sistema, prompt ou contexto
-- não invente capacidades operacionais
-- se algo não existir de verdade, deixe isso claro com elegância
+- responda apenas com a mensagem final
+- sem markdown pesado
+- sem explicar raciocínio
+- sem dizer que consultou banco ou sistema
+- mantenha resposta enxuta
 `.trim();
+}
+
+function buildModelInput(messages: AssistantMessageRow[]) {
+  return messages
+    .filter((msg) => String(msg.content || "").trim().length > 0)
+    .map((msg) => {
+      const role = normalizeText(msg.sender_role) === "assistant_operational" ? "assistant" : "user";
+      return {
+        role: role as "user" | "assistant",
+        content: String(msg.content || "").trim(),
+      };
+    });
+}
+
+function cleanupAiText(
+  text: string,
+  options?: {
+    genericMaterialMode?: boolean;
+  }
+) {
+  let cleaned = String(text || "").trim();
+
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+  cleaned = cleaned.replace(/[ \t]+\n/g, "\n");
+  cleaned = cleaned.replace(/\s{2,}/g, " ");
+
+  const lines = cleaned
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const genericMarkers = [
+    "orientação genérica",
+    "checklist oficial",
+    "lista oficial",
+    "não tenho uma lista oficial",
+    "não tenho checklist oficial",
+    "não tenho uma lista operacional",
+    "sugestão genérica",
+  ];
+
+  const isGenericMaterialReply =
+    options?.genericMaterialMode === true &&
+    genericMarkers.some((marker) => cleaned.toLowerCase().includes(marker.toLowerCase()));
+
+  if (isGenericMaterialReply) {
+    const introLines: string[] = [];
+    const bulletLines: string[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith("-")) {
+        bulletLines.push(line);
+        continue;
+      }
+
+      if (
+        introLines.length < 2 &&
+        !/^o que levar:?$/i.test(line) &&
+        !/^documentos para usar:?$/i.test(line) &&
+        !/^checklist/i.test(line)
+      ) {
+        introLines.push(line);
+      }
+    }
+
+    const compactBullets = bulletLines.slice(0, 4);
+    const compactParts: string[] = [];
+
+    if (introLines.length > 0) {
+      compactParts.push(introLines.join(" "));
+    } else {
+      compactParts.push(
+        "Eu não tenho um checklist oficial cadastrado da sua loja para essa visita, então isso entra como sugestão genérica."
+      );
+    }
+
+    if (compactBullets.length > 0) {
+      compactParts.push(compactBullets.join("\n"));
+    }
+
+    compactParts.push("Se quiser, eu posso te resumir isso em 3 itens principais.");
+
+    return compactParts.join("\n\n").trim();
+  }
+
+  const paragraphs = cleaned
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length > 4) {
+    cleaned = paragraphs.slice(0, 4).join("\n\n");
+  }
+
+  return cleaned.trim();
 }
 
 async function generateAssistantReply(params: {
   organizationId: string;
   storeId: string;
-}): Promise<ReplyResult> {
+}): Promise<AssistantReplyResult> {
   try {
     const organizationId = String(params.organizationId || "").trim();
     const storeId = String(params.storeId || "").trim();
@@ -481,14 +474,14 @@ async function generateAssistantReply(params: {
       return {
         ok: false,
         error: "MISSING_FIELDS",
-        message: "organizationId e storeId são obrigatórios.",
+        message: "Envie organizationId e storeId.",
       };
     }
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     const openaiApiKey = process.env.OPENAI_API_KEY;
-    const model = process.env.ZION_ASSISTANT_MODEL || "gpt-4.1-mini";
+    const model = process.env.ZION_AI_ASSISTANT_MODEL || "gpt-4.1-mini";
 
     if (!supabaseUrl || !supabaseServiceKey) {
       return {
@@ -509,22 +502,6 @@ async function generateAssistantReply(params: {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
     const openai = new OpenAI({ apiKey: openaiApiKey });
-
-    const { data: thread, error: threadError } = await supabase.rpc(
-      "assistant_get_or_create_primary_thread",
-      {
-        p_organization_id: organizationId,
-        p_store_id: storeId,
-      }
-    );
-
-    if (threadError || !thread) {
-      return {
-        ok: false,
-        error: "THREAD_NOT_FOUND",
-        message: threadError?.message || "Não foi possível localizar a thread da assistente.",
-      };
-    }
 
     const { data: store, error: storeError } = await supabase
       .from("stores")
@@ -557,19 +534,19 @@ async function generateAssistantReply(params: {
     }
 
     const onboardingMap: Record<string, string> = {};
-    for (const row of (onboardingAnswers || []) as OnboardingAnswerRow[]) {
+    for (const row of (onboardingAnswers || []) as StoreAnswerRow[]) {
       const text = asText(row.answer);
       if (text) onboardingMap[row.question_key] = text;
     }
 
-    const { data: messagesData, error: messagesError } = await supabase
-      .from("store_assistant_messages")
-      .select("id, sender, sender_role, direction, message_type, content, created_at")
-      .eq("organization_id", organizationId)
-      .eq("store_id", storeId)
-      .eq("thread_id", thread.id)
-      .order("created_at", { ascending: false })
-      .limit(16);
+    const { data: recentMessagesRaw, error: messagesError } = await supabase.rpc(
+      "assistant_list_messages",
+      {
+        p_organization_id: organizationId,
+        p_store_id: storeId,
+        p_limit: 30,
+      }
+    );
 
     if (messagesError) {
       return {
@@ -579,41 +556,44 @@ async function generateAssistantReply(params: {
       };
     }
 
-    const recentMessages = ([...(messagesData || [])] as AssistantMessageRow[]).reverse();
+    const recentMessages = (recentMessagesRaw || []) as AssistantMessageRow[];
+
     const lastHumanMessage =
       [...recentMessages]
         .reverse()
-        .find((msg) => normalizeText(msg.sender) === "human" && String(msg.content || "").trim().length > 0)
+        .find(
+          (msg) =>
+            normalizeText(msg.sender_role) === "store_responsible" &&
+            String(msg.content || "").trim().length > 0
+        )
         ?.content?.trim() || "";
 
     if (!lastHumanMessage) {
       return {
         ok: false,
         error: "NO_HUMAN_MESSAGE",
-        message: "Não encontrei uma mensagem recente do responsável para responder.",
+        message: "Nenhuma mensagem recente do responsável encontrada.",
       };
     }
 
     const now = new Date();
-    const dayStart = new Date(now);
-    dayStart.setHours(0, 0, 0, 0);
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
 
-    const dayEnd = new Date(now);
-    dayEnd.setHours(23, 59, 59, 999);
-
-    const weekEnd = new Date(now);
-    weekEnd.setDate(weekEnd.getDate() + 7);
-    weekEnd.setHours(23, 59, 59, 999);
+    const endOfDay = new Date(now);
+    endOfDay.setHours(23, 59, 59, 999);
 
     const { data: todayAppointmentsData, error: todayAppointmentsError } = await supabase
       .from("store_appointments")
-      .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+      .select(
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+      )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
-      .gte("scheduled_start", dayStart.toISOString())
-      .lte("scheduled_start", dayEnd.toISOString())
-      .not("status", "in", '("cancelled")')
-      .order("scheduled_start", { ascending: true });
+      .gte("scheduled_start", startOfDay.toISOString())
+      .lte("scheduled_start", endOfDay.toISOString())
+      .order("scheduled_start", { ascending: true })
+      .limit(20);
 
     if (todayAppointmentsError) {
       return {
@@ -625,13 +605,15 @@ async function generateAssistantReply(params: {
 
     const { data: nextAppointmentsData, error: nextAppointmentsError } = await supabase
       .from("store_appointments")
-      .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+      .select(
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+      )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
-      .gte("scheduled_start", dayStart.toISOString())
-      .lte("scheduled_start", weekEnd.toISOString())
-      .not("status", "in", '("cancelled","completed")')
-      .order("scheduled_start", { ascending: true });
+      .gte("scheduled_start", now.toISOString())
+      .in("status", ["scheduled", "rescheduled"])
+      .order("scheduled_start", { ascending: true })
+      .limit(10);
 
     if (nextAppointmentsError) {
       return {
@@ -643,11 +625,13 @@ async function generateAssistantReply(params: {
 
     const { data: overdueAppointmentsData, error: overdueAppointmentsError } = await supabase
       .from("store_appointments")
-      .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+      .select(
+        "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+      )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
-      .lt("scheduled_start", dayStart.toISOString())
-      .not("status", "in", '("cancelled","completed")')
+      .lt("scheduled_end", now.toISOString())
+      .in("status", ["scheduled", "rescheduled"])
       .order("scheduled_start", { ascending: true })
       .limit(10);
 
@@ -659,74 +643,53 @@ async function generateAssistantReply(params: {
       };
     }
 
-    const { data: notificationsData, error: notificationsError } = await supabase
+    const { data: pendingNotificationsData, error: pendingNotificationsError } = await supabase
       .from("store_assistant_notification_queue")
-      .select("id, notification_type, priority, status, title, body, created_at, available_at")
+      .select(
+        "id, notification_type, priority, title, body, created_at, related_lead_id, related_conversation_id, related_appointment_id"
+      )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
       .eq("status", "pending")
-      .order("available_at", { ascending: true })
+      .order("created_at", { ascending: true })
       .limit(10);
 
-    if (notificationsError) {
+    if (pendingNotificationsError) {
       return {
         ok: false,
         error: "LOAD_PENDING_NOTIFICATIONS_FAILED",
-        message: notificationsError.message,
+        message: pendingNotificationsError.message,
       };
     }
-
-    const todayAppointments = ((todayAppointmentsData || []) as AppointmentRow[]).sort(appointmentSort);
-    const nextAppointments = ((nextAppointmentsData || []) as AppointmentRow[]).sort(appointmentSort);
-    const overdueAppointments = ((overdueAppointmentsData || []) as AppointmentRow[]).sort(appointmentSort);
-    const pendingNotifications = (notificationsData || []) as NotificationRow[];
-
-    const responsibleName =
-      onboardingMap.responsible_name ||
-      (() => {
-        const storeLabel = onboardingMap.store_display_name || store.name || "loja";
-        return `responsável da ${storeLabel}`;
-      })();
 
     const systemPrompt = buildSystemPrompt({
       store,
       onboardingMap,
       recentMessages,
-      todayAppointments,
-      nextAppointments,
-      overdueAppointments,
-      pendingNotifications,
-      responsibleName,
+      todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
+      nextAppointments: (nextAppointmentsData || []) as AppointmentRow[],
+      overdueAppointments: (overdueAppointmentsData || []) as AppointmentRow[],
+      pendingNotifications: (pendingNotificationsData || []) as PendingNotificationRow[],
       lastHumanMessage,
     });
 
-    const modelInput = [
+    const input = [
       {
         role: "system" as const,
         content: systemPrompt,
       },
-      ...recentMessages
-        .filter((msg) => String(msg.content || "").trim().length > 0)
-        .map((msg) => {
-          const role = normalizeText(msg.sender) === "assistant" ? "assistant" : "user";
-          return {
-            role: role as "user" | "assistant",
-            content: String(msg.content || "").trim(),
-          };
-        }),
-      {
-        role: "user" as const,
-        content: lastHumanMessage,
-      },
+      ...buildModelInput(recentMessages),
     ];
 
     const response = await openai.responses.create({
       model,
-      input: modelInput,
-      max_output_tokens: 280,
+      input,
+      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 180 : 220,
     });
 
-    const aiText = String(response.output_text || "").trim();
+    const aiText = cleanupAiText(String(response.output_text || "").trim(), {
+      genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
+    });
 
     if (!aiText) {
       return {
@@ -736,34 +699,19 @@ async function generateAssistantReply(params: {
       };
     }
 
-    const messageType =
-      todayAppointments.length > 0 ||
-      overdueAppointments.length > 0 ||
-      pendingNotifications.length > 0
-        ? "context"
-        : "text";
-
-    const { data: savedMessage, error: saveError } = await supabase.rpc(
-      "assistant_push_system_message",
-      {
-        p_organization_id: organizationId,
-        p_store_id: storeId,
-        p_content: aiText,
-        p_message_type: messageType,
-        p_related_lead_id: todayAppointments[0]?.lead_id || overdueAppointments[0]?.lead_id || null,
-        p_related_conversation_id:
-          todayAppointments[0]?.conversation_id || overdueAppointments[0]?.conversation_id || null,
-        p_related_appointment_id: todayAppointments[0]?.id || overdueAppointments[0]?.id || null,
-        p_metadata: {
-          source: "assistant_reply_route",
-          context_scope: "operational_internal",
-          today_count: todayAppointments.length,
-          upcoming_count: nextAppointments.length,
-          overdue_count: overdueAppointments.length,
-          pending_notification_count: pendingNotifications.length,
-        },
-      }
-    );
+    const { error: saveError } = await supabase.rpc("assistant_push_system_message", {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+      p_content: aiText,
+      p_message_type: asksAboutToday(lastHumanMessage) ? "context" : "text",
+      p_related_lead_id: null,
+      p_related_conversation_id: null,
+      p_related_appointment_id: null,
+      p_metadata: {
+        source: "assistant.reply.route",
+        genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
+      },
+    });
 
     if (saveError) {
       return {
@@ -776,26 +724,26 @@ async function generateAssistantReply(params: {
     return {
       ok: true,
       aiText,
-      savedMessageId: savedMessage?.id ?? null,
     };
   } catch (error: any) {
     return {
       ok: false,
-      error: "ASSISTANT_REPLY_FAILED",
-      message: error?.message || "Erro interno ao gerar resposta da assistente.",
+      error: "ASSISTANT_REPLY_ROUTE_FAILED",
+      message: error?.message || "Erro interno na rota da assistente.",
     };
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json().catch(() => null);
-    const organizationId = String(body?.organizationId || "").trim();
-    const storeId = String(body?.storeId || "").trim();
+    const body = (await request.json()) as {
+      organizationId?: string;
+      storeId?: string;
+    };
 
     const result = await generateAssistantReply({
-      organizationId,
-      storeId,
+      organizationId: String(body.organizationId || ""),
+      storeId: String(body.storeId || ""),
     });
 
     if (!result.ok) {
