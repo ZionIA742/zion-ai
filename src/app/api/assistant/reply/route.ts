@@ -209,6 +209,42 @@ function formatPreferredChannel(value: string | null) {
   return value || "canal não definido";
 }
 
+function getMessageContent(message: AssistantMessageRow) {
+  return String(message.content || "").trim();
+}
+
+function isAssistantOperationalMessage(message: AssistantMessageRow) {
+  const role = normalizeText(message.sender_role);
+  const sender = normalizeText(message.sender);
+  const direction = normalizeText(message.direction);
+
+  return (
+    role === "assistant_operational" ||
+    role === "assistant" ||
+    sender.includes("assistant") ||
+    sender.includes("assistente") ||
+    (direction === "outgoing" && role !== "store_responsible")
+  );
+}
+
+function isLikelyResponsibleMessage(message: AssistantMessageRow) {
+  if (!getMessageContent(message)) return false;
+  if (isAssistantOperationalMessage(message)) return false;
+
+  const role = normalizeText(message.sender_role);
+  const sender = normalizeText(message.sender);
+  const direction = normalizeText(message.direction);
+  const messageType = normalizeText(message.message_type);
+
+  if (role === "store_responsible") return true;
+  if (sender === "user" || sender === "responsavel" || sender === "responsável") return true;
+  if (sender.includes("respons")) return true;
+  if (direction === "incoming" || direction === "inbound") return true;
+  if (messageType === "text" || messageType === "message") return true;
+
+  return false;
+}
+
 function hasAnyTerm(text: string, terms: string[]) {
   return terms.some((term) => text.includes(term));
 }
@@ -329,6 +365,37 @@ function resolveAssistantIntent(text: string): AssistantIntent {
   return "general";
 }
 
+function resolveLatestResponsibleRequest(messages: AssistantMessageRow[]) {
+  const ordered = [...messages].filter((message) => getMessageContent(message).length > 0);
+
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const message = ordered[index];
+    if (!isLikelyResponsibleMessage(message)) continue;
+
+    const content = getMessageContent(message);
+    return {
+      lastHumanMessage: content,
+      detectedIntent: resolveAssistantIntent(content),
+    };
+  }
+
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const message = ordered[index];
+    if (isAssistantOperationalMessage(message)) continue;
+
+    const content = getMessageContent(message);
+    return {
+      lastHumanMessage: content,
+      detectedIntent: resolveAssistantIntent(content),
+    };
+  }
+
+  return {
+    lastHumanMessage: "",
+    detectedIntent: "general" as AssistantIntent,
+  };
+}
+
 function buildStoreBlock(onboardingMap: Record<string, string>, store: StoreRow) {
   const entries: Array<[string, string | null | undefined]> = [
     ["nome da loja", onboardingMap.store_display_name || store.name],
@@ -367,13 +434,11 @@ function buildHistoryBlock(messages: AssistantMessageRow[]) {
     .filter((msg) => String(msg.content || "").trim().length > 0)
     .slice(-8)
     .map((msg) => {
-      const role = normalizeText(msg.sender_role);
-      const label =
-        role === "assistant_operational"
-          ? "Assistente"
-          : role === "store_responsible"
-            ? "Responsável"
-            : "Sistema";
+      const label = isAssistantOperationalMessage(msg)
+        ? "Assistente"
+        : isLikelyResponsibleMessage(msg)
+          ? "Responsável"
+          : "Sistema";
 
       return `${label}: ${String(msg.content || "").trim()}`;
     });
@@ -839,12 +904,13 @@ function buildSystemPrompt(args: {
 
 function buildModelInput(messages: AssistantMessageRow[]) {
   return messages
-    .filter((msg) => String(msg.content || "").trim().length > 0)
+    .filter((msg) => getMessageContent(msg).length > 0)
+    .filter((msg) => isAssistantOperationalMessage(msg) || isLikelyResponsibleMessage(msg))
     .map((msg) => {
-      const role = normalizeText(msg.sender_role) === "assistant_operational" ? "assistant" : "user";
+      const role = isAssistantOperationalMessage(msg) ? "assistant" : "user";
       return {
         role: role as "user" | "assistant",
-        content: String(msg.content || "").trim(),
+        content: getMessageContent(msg),
       };
     });
 }
@@ -1072,15 +1138,8 @@ async function generateAssistantReply(params: {
       (recentMessagesRaw || []) as AssistantMessageRow[]
     );
 
-    const lastHumanMessage =
-      [...recentMessages]
-        .reverse()
-        .find(
-          (msg) =>
-            normalizeText(msg.sender_role) === "store_responsible" &&
-            String(msg.content || "").trim().length > 0
-        )
-        ?.content?.trim() || "";
+    const latestRequest = resolveLatestResponsibleRequest(recentMessages);
+    const lastHumanMessage = latestRequest.lastHumanMessage;
 
     if (!lastHumanMessage) {
       return {
@@ -1270,7 +1329,7 @@ async function generateAssistantReply(params: {
       ...buildModelInput(recentMessages),
     ];
 
-    const detectedIntent = resolveAssistantIntent(lastHumanMessage);
+    const detectedIntent = latestRequest.detectedIntent;
     const morningReportMode = detectedIntent === "morning_report";
     const eveningReportMode = detectedIntent === "evening_report";
     const nextVisitMode = detectedIntent === "next_visit";
