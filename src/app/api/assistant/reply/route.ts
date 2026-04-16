@@ -460,6 +460,11 @@ COMO RESPONDER SOBRE PÓS-COMPROMISSO
 - quando houver follow-up resolvido, trate como histórico recente, não como pendência aberta
 - se houver resolução completed, rescheduled ou cancelled, use isso como contexto operacional confiável
 - se faltar lead, conversation ou observação, deixe claro que essa parte não veio preenchida
+- no fechamento, não ofereça ações vagas como "organizar contato", "organizar isso", "cuidar disso" ou parecidos
+- prefira fechar com ofertas concretas e seguras, como:
+  - resumir os dados do pós-compromisso pendente
+  - separar o que está pendente e o que já foi resolvido
+  - mostrar os detalhes do compromisso que ainda precisa de confirmação
 
 ANÁLISE DO PEDIDO ATUAL
 ${requestAnalysis}
@@ -568,6 +573,7 @@ function cleanupAiText(
   text: string,
   options?: {
     genericMaterialMode?: boolean;
+    postAppointmentMode?: boolean;
   }
 ) {
   let cleaned = String(text || "").trim();
@@ -600,6 +606,25 @@ function cleanupAiText(
     ];
 
     return compactParts.join("\n\n").trim();
+  }
+
+  if (options?.postAppointmentMode === true) {
+    cleaned = cleaned
+      .replace(/\bPrecisa que eu te ajude a organizar o contato para esse pós-compromisso aberto\?/gi, "Se quiser, eu posso te resumir os dados desse pós-compromisso pendente.")
+      .replace(/\bPosso te ajudar a organizar o contato para esse pós-compromisso aberto\./gi, "Se quiser, eu posso te resumir os dados desse pós-compromisso pendente.")
+      .replace(/\bPosso te ajudar a organizar isso para voce\./gi, "Se quiser, eu separo o que está pendente e o que já foi resolvido.")
+      .replace(/\bPosso te ajudar a organizar isso para você\./gi, "Se quiser, eu separo o que está pendente e o que já foi resolvido.")
+      .replace(/\bQuer que eu organize o contato desse retorno\?/gi, "Se quiser, eu posso te mostrar os detalhes do compromisso que ainda precisa de confirmação.")
+      .replace(/\bQuer que eu organize isso para voce\?/gi, "Se quiser, eu separo o que está pendente e o que já foi resolvido.")
+      .replace(/\bQuer que eu organize isso para você\?/gi, "Se quiser, eu separo o que está pendente e o que já foi resolvido.");
+
+    const paragraphs = cleaned
+      .split(/\n{2,}/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 4);
+
+    return paragraphs.join("\n\n").trim();
   }
 
   const paragraphs = cleaned
@@ -913,6 +938,7 @@ async function generateAssistantReply(params: {
 
     const aiText = cleanupAiText(String(response.output_text || "").trim(), {
       genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
+      postAppointmentMode: asksAboutPostAppointment(lastHumanMessage),
     });
 
     if (!aiText) {
