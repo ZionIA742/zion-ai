@@ -537,6 +537,59 @@ function buildEveningReportBlock(args: {
   ].join("\n");
 }
 
+function buildDeterministicMorningReport(args: {
+  todayAppointments: AppointmentRow[];
+  overdueAppointments: AppointmentRow[];
+  pendingNotifications: PendingNotificationRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+}) {
+  const data = buildMorningReportData(args);
+
+  const lines: string[] = [];
+  lines.push("Relatório da manhã:");
+  lines.push(`- compromissos de hoje: ${data.todayCount}`);
+
+  if (data.firstImportant) {
+    lines.push(
+      `- destaque do dia: ${formatAppointmentType(
+        data.firstImportant.appointment_type
+      )} às ${formatTimeOnly(data.firstImportant.scheduled_start)}${
+        data.firstImportant.customer_name ? ` com ${data.firstImportant.customer_name}` : ""
+      }`
+    );
+  } else {
+    lines.push("- destaque do dia: nenhum compromisso crítico encontrado");
+  }
+
+  lines.push(`- em aberto hoje: ${data.pendingToday}`);
+  lines.push(`- em atraso: ${data.overdueCount}`);
+  lines.push(`- pós-compromissos pendentes: ${data.pendingPostCount}`);
+  lines.push(`- pendências internas: ${data.notificationCount}`);
+
+  return lines.join("\n");
+}
+
+function buildDeterministicEveningReport(args: {
+  todayAppointments: AppointmentRow[];
+  overdueAppointments: AppointmentRow[];
+  pendingNotifications: PendingNotificationRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+}) {
+  const data = buildEveningReportData(args);
+
+  const lines: string[] = [];
+  lines.push("Fechamento do dia:");
+  lines.push(`- previstos hoje: ${data.plannedToday}`);
+  lines.push(`- concluídos: ${data.completedToday}`);
+  lines.push(`- cancelados: ${data.cancelledToday}`);
+  lines.push(`- ainda em aberto: ${data.stillOpenToday}`);
+  lines.push(`- em atraso: ${data.overdueCount}`);
+  lines.push(`- pós-compromissos pendentes: ${data.pendingPostCount}`);
+  lines.push(`- pendências internas: ${data.notificationCount}`);
+
+  return lines.join("\n");
+}
+
 function buildRequestAnalysisBlock(lastHumanMessage: string) {
   const materialRequest = asksAboutMaterialsOrDocuments(lastHumanMessage);
   const todayRequest = asksAboutToday(lastHumanMessage);
@@ -1120,21 +1173,35 @@ async function generateAssistantReply(params: {
     const morningReportMode = asksForMorningReport(lastHumanMessage);
     const eveningReportMode = asksForEveningReport(lastHumanMessage);
 
-    const response = await openai.responses.create({
-      model,
-      input,
-      max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage)
-        ? 140
-        : morningReportMode || eveningReportMode
-          ? 200
-          : 240,
-    });
+    let aiText = "";
 
-    const aiText = cleanupAiText(String(response.output_text || "").trim(), {
-      genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
-      morningReportMode,
-      eveningReportMode,
-    });
+    if (morningReportMode) {
+      aiText = buildDeterministicMorningReport({
+        todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
+        overdueAppointments: (overdueAppointmentsData || []) as AppointmentRow[],
+        pendingNotifications: (pendingNotificationsData || []) as PendingNotificationRow[],
+        pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
+      });
+    } else if (eveningReportMode) {
+      aiText = buildDeterministicEveningReport({
+        todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
+        overdueAppointments: (overdueAppointmentsData || []) as AppointmentRow[],
+        pendingNotifications: (pendingNotificationsData || []) as PendingNotificationRow[],
+        pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
+      });
+    } else {
+      const response = await openai.responses.create({
+        model,
+        input,
+        max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 140 : 240,
+      });
+
+      aiText = cleanupAiText(String(response.output_text || "").trim(), {
+        genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage),
+        morningReportMode,
+        eveningReportMode,
+      });
+    }
 
     if (!aiText) {
       return {
