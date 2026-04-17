@@ -185,6 +185,7 @@ function formatAppointmentStatus(value: string | null) {
 function formatFollowupStatus(value: string | null) {
   const normalized = normalizeText(value);
 
+  if (normalized === "pending_confirmation") return "aguardando confirmação do responsável";
   if (normalized === "prompt_sent") return "aguardando confirmação do retorno";
   if (normalized === "confirmed_completed") return "confirmado como concluído";
   if (normalized === "confirmed_rescheduled") return "confirmado como remarcado";
@@ -845,13 +846,13 @@ function isOpenPostFollowup(item: PostAppointmentFollowupRow | null | undefined)
 
 function sortOpenPostFollowups(items: PostAppointmentFollowupRow[]) {
   return [...items].sort((a, b) => {
+    const aScheduled = a.scheduled_end ? new Date(a.scheduled_end).getTime() : Number.MAX_SAFE_INTEGER;
+    const bScheduled = b.scheduled_end ? new Date(b.scheduled_end).getTime() : Number.MAX_SAFE_INTEGER;
+    if (aScheduled !== bScheduled) return aScheduled - bScheduled;
+
     const aUpdated = a.updated_at ? new Date(a.updated_at).getTime() : 0;
     const bUpdated = b.updated_at ? new Date(b.updated_at).getTime() : 0;
-    if (aUpdated !== bUpdated) return bUpdated - aUpdated;
-
-    const aScheduled = a.scheduled_end ? new Date(a.scheduled_end).getTime() : 0;
-    const bScheduled = b.scheduled_end ? new Date(b.scheduled_end).getTime() : 0;
-    return bScheduled - aScheduled;
+    return bUpdated - aUpdated;
   });
 }
 
@@ -863,12 +864,25 @@ function buildFriendlyPostFollowupObservation(note?: string | null) {
     return "esse atendimento foi concluído, mas ainda falta retorno com o cliente.";
   }
 
+  if (normalized.includes("reabertura automatica pos-compromisso")) {
+    return "o compromisso passou do horário e voltou a precisar de confirmação sua.";
+  }
+
+  if (
+    normalized.includes("confirmacao manual de teste: compromisso concluido") ||
+    normalized.includes("confirmacao manual de teste: compromisso remarcado") ||
+    normalized.includes("confirmacao manual de teste: compromisso cancelado")
+  ) {
+    return "existe um histórico anterior nesse atendimento, mas ele voltou para a fila de confirmação.";
+  }
+
   if (normalized.includes("fechamento do atendimento")) {
     return "esse atendimento já foi encerrado por completo.";
   }
 
   const cleaned = (note || "")
     .replace(/\[[^\]]+\]\s*/g, "")
+    .replace(/Confirmação manual de teste:[^.]*\.?/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -885,7 +899,7 @@ function buildDeterministicPostAppointmentReply(args: {
   );
 
   if (!openItems.length) {
-    return "Não há retorno pendente no momento.";
+    return "Não há pós-compromisso pendente no momento.";
   }
 
   const current = openItems[0];
@@ -894,18 +908,20 @@ function buildDeterministicPostAppointmentReply(args: {
 
   lines.push(
     openItems.length === 1
-      ? "Sim, ainda falta 1 retorno desse atendimento."
-      : `Sim, ainda faltam ${openItems.length} retornos de atendimento.`
+      ? "Sim, hoje existe 1 pós-compromisso aguardando confirmação."
+      : `Sim, hoje existem ${openItems.length} pós-compromissos aguardando confirmação.`
   );
 
   if (appointment) {
     const timeLabel = appointment.scheduled_end || appointment.scheduled_start || current.scheduled_end;
     const appointmentTypeLabel = formatAppointmentType(appointment.appointment_type);
     lines.push(
-      `- mais urgente agora: ${appointmentTypeLabel}${appointment.title ? ` "${appointment.title}"` : ""} em ${formatDateOnly(
-        timeLabel
-      )} às ${formatTimeOnly(timeLabel)}`
+      `- mais urgente agora: ${appointmentTypeLabel}${appointment.title ? ` "${appointment.title}"` : ""}`
     );
+
+    if (timeLabel) {
+      lines.push(`- horário original: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+    }
 
     if (appointment.customer_name) {
       lines.push(`- cliente: ${appointment.customer_name}`);
@@ -914,19 +930,22 @@ function buildDeterministicPostAppointmentReply(args: {
     if (appointment.customer_phone) {
       lines.push(`- contato: ${appointment.customer_phone}`);
     }
+
+    lines.push(`- situação: ${formatFollowupStatus(current.followup_status)}`);
   } else if (current.scheduled_end) {
-    lines.push(`- o retorno pendente está ligado a um atendimento encerrado em ${formatDateTime(current.scheduled_end)}`);
+    lines.push(`- pendência mais urgente: atendimento encerrado em ${formatDateTime(current.scheduled_end)}`);
+    lines.push(`- situação: ${formatFollowupStatus(current.followup_status)}`);
   } else {
-    lines.push("- existe um retorno pendente ligado a um atendimento sem detalhes completos no sistema.");
+    lines.push("- existe uma pendência de pós-compromisso sem detalhes completos no sistema.");
   }
 
   const friendlyObservation = buildFriendlyPostFollowupObservation(current.notes);
   if (friendlyObservation) {
-    lines.push(`- observação: ${friendlyObservation}`);
+    lines.push(`- resumo: ${friendlyObservation}`);
   }
 
   if (openItems.length > 1) {
-    lines.push(`- além disso, existem mais ${openItems.length - 1} retorno(s) pendente(s).`);
+    lines.push(`- além desse, existem mais ${openItems.length - 1} pendência(s) de pós-compromisso.`);
   }
 
   const lastResolved = (args.recentResolvedPostFollowups || []).find(
@@ -938,6 +957,8 @@ function buildDeterministicPostAppointmentReply(args: {
       lines.push(`- último atendimento resolvido: ${resolvedAppointment.title}.`);
     }
   }
+
+  lines.push("- se quiser, eu posso te listar os próximos por ordem de urgência.");
 
   return lines.join("\n");
 }
@@ -1296,21 +1317,6 @@ async function generateAssistantReply(params: {
         error: "STORE_NOT_FOUND",
         message: storeError?.message || "Loja não encontrada.",
       };
-    }
-
-    const { error: overdueFollowupsError } = await supabase.rpc(
-      "create_overdue_post_appointment_followups",
-      {
-        p_organization_id: organizationId,
-        p_store_id: storeId,
-      }
-    );
-
-    if (overdueFollowupsError) {
-      console.error(
-        "create_overdue_post_appointment_followups failed",
-        overdueFollowupsError
-      );
     }
 
     const { data: onboardingAnswers, error: onboardingError } = await supabase
