@@ -1298,6 +1298,21 @@ async function generateAssistantReply(params: {
       };
     }
 
+    const { error: overdueFollowupsError } = await supabase.rpc(
+      "create_overdue_post_appointment_followups",
+      {
+        p_organization_id: organizationId,
+        p_store_id: storeId,
+      }
+    );
+
+    if (overdueFollowupsError) {
+      console.error(
+        "create_overdue_post_appointment_followups failed",
+        overdueFollowupsError
+      );
+    }
+
     const { data: onboardingAnswers, error: onboardingError } = await supabase
       .from("store_onboarding_answers")
       .select("question_key, answer")
