@@ -1318,8 +1318,10 @@ export default function SchedulePage() {
     setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
   }
 
-  function handleAppointmentLeadChange(nextLeadId: string) {
+  async function handleAppointmentLeadChange(nextLeadId: string) {
     const matchedLead = leadOptions.find((lead) => lead.leadId === nextLeadId) || null;
+
+    setAppointmentCreateErrorText(null);
 
     setAppointmentCreateForm((prev) => ({
       ...prev,
@@ -1342,10 +1344,69 @@ export default function SchedulePage() {
         : null
     );
 
-    setAppointmentCreateErrorText(null);
-    setLoadingLeadConversation(Boolean(nextLeadId && !matchedLead?.conversationId));
-  }
+    if (!nextLeadId) {
+      setLoadingLeadConversation(false);
+      return;
+    }
 
+    if (matchedLead?.conversationId) {
+      setLoadingLeadConversation(false);
+      return;
+    }
+
+    setLoadingLeadConversation(true);
+
+    try {
+      const fallbackConversation = await fetchLatestConversationForLead(nextLeadId);
+
+      setAppointmentCreateForm((prev) => {
+        if (prev.leadId !== nextLeadId) return prev;
+
+        return {
+          ...prev,
+          conversationId: fallbackConversation?.id || "",
+        };
+      });
+
+      setCreateLeadConversationMeta({
+        searchedLeadId: nextLeadId,
+        conversationStatus: fallbackConversation?.status || null,
+        isHumanActive: fallbackConversation?.is_human_active ?? null,
+        lastMessageAt: fallbackConversation?.last_message_at || null,
+      });
+
+      if (fallbackConversation?.id) {
+        setLeadOptions((prev) =>
+          prev.map((lead) =>
+            lead.leadId === nextLeadId
+              ? {
+                  ...lead,
+                  conversationId: fallbackConversation.id,
+                  conversationStatus: fallbackConversation.status || lead.conversationStatus,
+                  isHumanActive:
+                    fallbackConversation.is_human_active ?? lead.isHumanActive ?? null,
+                  lastMessageAt:
+                    fallbackConversation.last_message_at || lead.lastMessageAt || null,
+                }
+              : lead
+          )
+        );
+      }
+    } catch (error: any) {
+      console.error("[SchedulePage] create appointment conversation sync error:", error);
+      setAppointmentCreateErrorText(
+        error?.message || "Não consegui puxar a conversa mais recente desse lead."
+      );
+      setCreateLeadConversationMeta({
+        searchedLeadId: nextLeadId,
+        conversationStatus: null,
+        isHumanActive: null,
+        lastMessageAt: null,
+      });
+    } finally {
+      setLoadingLeadConversation(false);
+    }
+  }
 
   async function saveAppointmentEdit(
     completionOutcome?: "fully_completed" | "needs_followup"
