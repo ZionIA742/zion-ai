@@ -865,7 +865,7 @@ function buildFriendlyPostFollowupObservation(note?: string | null) {
   }
 
   if (normalized.includes("reabertura automatica pos-compromisso")) {
-    return "o compromisso passou do horário e voltou a precisar de confirmação sua.";
+    return "esse atendimento já passou do horário e ainda não foi confirmado.";
   }
 
   if (
@@ -911,12 +911,13 @@ function buildDeterministicPostAppointmentReply(args: {
       ? "Sim, hoje existe 1 pós-compromisso aguardando confirmação."
       : `Sim, hoje existem ${openItems.length} pós-compromissos aguardando confirmação.`
   );
+  lines.push("");
 
   if (appointment) {
     const timeLabel = appointment.scheduled_end || appointment.scheduled_start || current.scheduled_end;
     const appointmentTypeLabel = formatAppointmentType(appointment.appointment_type);
     lines.push(
-      `- mais urgente agora: ${appointmentTypeLabel}${appointment.title ? ` "${appointment.title}"` : ""}`
+      `O mais urgente agora é ${appointmentTypeLabel}${appointment.title ? ` "${appointment.title}"` : ""}.`
     );
 
     if (timeLabel) {
@@ -931,34 +932,26 @@ function buildDeterministicPostAppointmentReply(args: {
       lines.push(`- contato: ${appointment.customer_phone}`);
     }
 
-    lines.push(`- situação: ${formatFollowupStatus(current.followup_status)}`);
+    lines.push(`- situação atual: ${formatFollowupStatus(current.followup_status)}`);
   } else if (current.scheduled_end) {
-    lines.push(`- pendência mais urgente: atendimento encerrado em ${formatDateTime(current.scheduled_end)}`);
-    lines.push(`- situação: ${formatFollowupStatus(current.followup_status)}`);
+    lines.push(`O caso mais urgente agora é um atendimento encerrado em ${formatDateTime(current.scheduled_end)}.`);
+    lines.push(`- situação atual: ${formatFollowupStatus(current.followup_status)}`);
   } else {
-    lines.push("- existe uma pendência de pós-compromisso sem detalhes completos no sistema.");
+    lines.push("Existe uma pendência de pós-compromisso sem detalhes completos por aqui.");
   }
 
   const friendlyObservation = buildFriendlyPostFollowupObservation(current.notes);
   if (friendlyObservation) {
-    lines.push(`- resumo: ${friendlyObservation}`);
+    lines.push(`- contexto rápido: ${friendlyObservation}`);
   }
 
   if (openItems.length > 1) {
-    lines.push(`- além desse, existem mais ${openItems.length - 1} pendência(s) de pós-compromisso.`);
+    lines.push("");
+    lines.push(`Além desse caso, há mais ${openItems.length - 1} pós-compromissos aguardando confirmação.`);
   }
 
-  const lastResolved = (args.recentResolvedPostFollowups || []).find(
-    (item) => !isOpenPostFollowup(item) && item.resolved_at
-  );
-  if (lastResolved) {
-    const resolvedAppointment = args.appointmentMap.get(lastResolved.appointment_id);
-    if (resolvedAppointment?.title) {
-      lines.push(`- último atendimento resolvido: ${resolvedAppointment.title}.`);
-    }
-  }
-
-  lines.push("- se quiser, eu posso te listar os próximos por ordem de urgência.");
+  lines.push("");
+  lines.push("Se quiser, eu posso te listar os próximos por ordem de urgência.");
 
   return lines.join("\n");
 }
