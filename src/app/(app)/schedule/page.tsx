@@ -695,6 +695,7 @@ export default function SchedulePage() {
     useState<string | null>(null);
   const [leadOptions, setLeadOptions] = useState<LeadConversationOption[]>([]);
   const [loadingLeadOptions, setLoadingLeadOptions] = useState(false);
+  const [loadingLeadConversation, setLoadingLeadConversation] = useState(false);
 
   const lastKnownRealMonthRef = useRef<Date>(startOfMonth(new Date()));
   const selectedItemRef = useRef<ScheduleItem | null>(null);
@@ -919,10 +920,61 @@ export default function SchedulePage() {
     }
   }, [canLoadSchedule, organizationId, activeStoreId]);
 
+  const fetchLatestConversationForLead = useCallback(
+    async (leadId: string) => {
+      if (!organizationId || !leadId) {
+        return null;
+      }
+
+      const { data: fallbackConversation, error: fallbackConversationError } = await supabase
+        .from("conversations")
+        .select("id, status, is_human_active, last_message_at")
+        .eq("organization_id", organizationId)
+        .eq("lead_id", leadId)
+        .order("last_message_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (fallbackConversationError) {
+        throw fallbackConversationError;
+      }
+
+      return fallbackConversation || null;
+    },
+    [organizationId]
+  );
+
   useEffect(() => {
     if (!canLoadSchedule) return;
     void loadLeadOptions();
   }, [canLoadSchedule, loadLeadOptions]);
+
+  useEffect(() => {
+    if (!appointmentCreateForm.leadId) return;
+    if (appointmentCreateForm.conversationId) return;
+    if (loadingLeadOptions) return;
+
+    const matchedLead =
+      leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
+
+    if (!matchedLead?.conversationId) return;
+
+    setAppointmentCreateForm((prev) => {
+      if (prev.leadId !== matchedLead.leadId || prev.conversationId) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        conversationId: matchedLead.conversationId || "",
+      };
+    });
+  }, [
+    appointmentCreateForm.leadId,
+    appointmentCreateForm.conversationId,
+    leadOptions,
+    loadingLeadOptions,
+  ]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -1144,7 +1196,7 @@ export default function SchedulePage() {
     setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
   }
 
-  function handleAppointmentLeadChange(nextLeadId: string) {
+  async function handleAppointmentLeadChange(nextLeadId: string) {
     const matchedLead = leadOptions.find((lead) => lead.leadId === nextLeadId) || null;
 
     setAppointmentCreateForm((prev) => ({
@@ -1156,6 +1208,59 @@ export default function SchedulePage() {
         ? applyPhoneMask(matchedLead.leadPhone)
         : prev.customerPhone,
     }));
+
+    setAppointmentCreateErrorText(null);
+
+    if (!nextLeadId) {
+      setLoadingLeadConversation(false);
+      return;
+    }
+
+    if (matchedLead?.conversationId) {
+      setLoadingLeadConversation(false);
+      return;
+    }
+
+    try {
+      setLoadingLeadConversation(true);
+      const fallbackConversation = await fetchLatestConversationForLead(nextLeadId);
+
+      setAppointmentCreateForm((prev) => {
+        if (prev.leadId !== nextLeadId || prev.conversationId) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          conversationId: fallbackConversation?.id || "",
+        };
+      });
+
+      if (fallbackConversation?.id) {
+        setLeadOptions((prev) =>
+          prev.map((lead) =>
+            lead.leadId === nextLeadId
+              ? {
+                  ...lead,
+                  conversationId: fallbackConversation.id,
+                  conversationStatus: fallbackConversation.status || lead.conversationStatus,
+                  isHumanActive:
+                    fallbackConversation.is_human_active ?? lead.isHumanActive ?? null,
+                  lastMessageAt:
+                    fallbackConversation.last_message_at || lead.lastMessageAt || null,
+                }
+              : lead
+          )
+        );
+      }
+    } catch (error: any) {
+      console.error("[SchedulePage] handleAppointmentLeadChange fallback error:", error);
+      setAppointmentCreateErrorText(
+        error?.message || "Não consegui puxar a conversa mais recente desse lead."
+      );
+    } finally {
+      setLoadingLeadConversation(false);
+    }
   }
 
   async function saveAppointmentEdit(
@@ -2921,8 +3026,10 @@ export default function SchedulePage() {
                       <div className="mt-1 text-xs text-gray-500">
                         {loadingLeadOptions
                           ? "Carregando leads da loja..."
+                          : loadingLeadConversation
+                          ? "Buscando a conversa mais recente desse lead..."
                           : selectedLeadOption
-                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${selectedLeadOption.conversationId ? ` • Conversa: ${selectedLeadOption.conversationStatus || "sem status"}` : " • Sem conversa vinculada"}`
+                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${selectedLeadOption.conversationId ? ` • Conversa: ${selectedLeadOption.conversationStatus || "sem status"}` : " • Ainda não achei conversa vinculada para esse lead"}`
                           : "Opcional. Ao escolher um lead, nome e telefone podem ser preenchidos automaticamente."}
                       </div>
                     </div>
@@ -2938,11 +3045,15 @@ export default function SchedulePage() {
                         className="w-full rounded-xl border border-black/10 bg-gray-50 px-3 py-2 text-sm text-gray-600 outline-none"
                       />
                       <div className="mt-1 text-xs text-gray-500">
-                        {selectedLeadOption?.isHumanActive
+                        {loadingLeadConversation
+                          ? "Buscando a conversa mais recente desse lead..."
+                          : selectedLeadOption?.isHumanActive
                           ? "Conversa com humano ativo neste momento."
                           : selectedLeadOption?.lastMessageAt
                           ? `Última mensagem em ${formatDateTime(selectedLeadOption.lastMessageAt)}`
-                          : "Sem conversa recente vinculada."}
+                          : appointmentCreateForm.leadId
+                          ? "Ainda não achei conversa recente vinculada para esse lead."
+                          : "Será preenchida automaticamente quando o lead tiver conversa ligada."}
                       </div>
                     </div>
                   </div>
