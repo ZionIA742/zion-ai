@@ -75,6 +75,15 @@ type LeadConversationOption = {
   lastMessageAt: string | null;
 };
 
+type CreateLeadConversationState = {
+  leadId: string | null;
+  status: "idle" | "loading" | "resolved" | "not_found";
+  conversationId: string | null;
+  conversationStatus: string | null;
+  isHumanActive: boolean | null;
+  lastMessageAt: string | null;
+};
+
 type BlockForm = {
   title: string;
   blockType: string;
@@ -695,14 +704,15 @@ export default function SchedulePage() {
     useState<string | null>(null);
   const [leadOptions, setLeadOptions] = useState<LeadConversationOption[]>([]);
   const [loadingLeadOptions, setLoadingLeadOptions] = useState(false);
-  const [loadingLeadConversation, setLoadingLeadConversation] = useState(false);
-
-  const [createLeadConversationMeta, setCreateLeadConversationMeta] = useState<{
-    searchedLeadId: string | null;
-    conversationStatus: string | null;
-    isHumanActive: boolean | null;
-    lastMessageAt: string | null;
-  } | null>(null);
+  const [createLeadConversationState, setCreateLeadConversationState] =
+    useState<CreateLeadConversationState>({
+      leadId: null,
+      status: "idle",
+      conversationId: null,
+      conversationStatus: null,
+      isHumanActive: null,
+      lastMessageAt: null,
+    });
 
   const lastKnownRealMonthRef = useRef<Date>(startOfMonth(new Date()));
   const selectedItemRef = useRef<ScheduleItem | null>(null);
@@ -956,145 +966,8 @@ export default function SchedulePage() {
     void loadLeadOptions();
   }, [canLoadSchedule, loadLeadOptions]);
 
-  useEffect(() => {
-    if (!appointmentCreateForm.leadId) return;
-    if (appointmentCreateForm.conversationId) return;
-    if (loadingLeadOptions) return;
-
-    const matchedLead =
-      leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
-
-    if (!matchedLead?.conversationId) return;
-
-    setAppointmentCreateForm((prev) => {
-      if (prev.leadId !== matchedLead.leadId || prev.conversationId) {
-        return prev;
-      }
-
-      return {
-        ...prev,
-        conversationId: matchedLead.conversationId || "",
-      };
-    });
-  }, [
-    appointmentCreateForm.leadId,
-    appointmentCreateForm.conversationId,
-    leadOptions,
-    loadingLeadOptions,
-  ]);
 
 
-  useEffect(() => {
-    if (!createAppointmentOpen) return;
-
-    const leadId = appointmentCreateForm.leadId;
-
-    if (!leadId) {
-      setLoadingLeadConversation(false);
-      setCreateLeadConversationMeta(null);
-      return;
-    }
-
-    let cancelled = false;
-
-    const resolveConversation = async () => {
-      const matchedLead =
-        leadOptions.find((lead) => lead.leadId === leadId) || null;
-
-      if (matchedLead?.conversationId) {
-        if (cancelled) return;
-
-        setAppointmentCreateForm((prev) => {
-          if (prev.leadId !== leadId) return prev;
-          if (prev.conversationId === matchedLead.conversationId) return prev;
-
-          return {
-            ...prev,
-            conversationId: matchedLead.conversationId || "",
-          };
-        });
-
-        setCreateLeadConversationMeta({
-          searchedLeadId: leadId,
-          conversationStatus: matchedLead.conversationStatus || null,
-          isHumanActive: matchedLead.isHumanActive ?? null,
-          lastMessageAt: matchedLead.lastMessageAt || null,
-        });
-        setLoadingLeadConversation(false);
-        return;
-      }
-
-      setLoadingLeadConversation(true);
-
-      try {
-        const fallbackConversation = await fetchLatestConversationForLead(leadId);
-
-        if (cancelled) return;
-
-        setAppointmentCreateForm((prev) => {
-          if (prev.leadId !== leadId) return prev;
-
-          return {
-            ...prev,
-            conversationId: fallbackConversation?.id || "",
-          };
-        });
-
-        setCreateLeadConversationMeta({
-          searchedLeadId: leadId,
-          conversationStatus: fallbackConversation?.status || null,
-          isHumanActive: fallbackConversation?.is_human_active ?? null,
-          lastMessageAt: fallbackConversation?.last_message_at || null,
-        });
-
-        if (fallbackConversation?.id) {
-          setLeadOptions((prev) =>
-            prev.map((lead) =>
-              lead.leadId === leadId
-                ? {
-                    ...lead,
-                    conversationId: fallbackConversation.id,
-                    conversationStatus: fallbackConversation.status || lead.conversationStatus,
-                    isHumanActive:
-                      fallbackConversation.is_human_active ?? lead.isHumanActive ?? null,
-                    lastMessageAt:
-                      fallbackConversation.last_message_at || lead.lastMessageAt || null,
-                  }
-                : lead
-            )
-          );
-        }
-      } catch (error: any) {
-        if (cancelled) return;
-
-        console.error("[SchedulePage] create appointment conversation sync error:", error);
-        setAppointmentCreateErrorText(
-          error?.message || "Não consegui puxar a conversa mais recente desse lead."
-        );
-        setCreateLeadConversationMeta({
-          searchedLeadId: leadId,
-          conversationStatus: null,
-          isHumanActive: null,
-          lastMessageAt: null,
-        });
-      } finally {
-        if (!cancelled) {
-          setLoadingLeadConversation(false);
-        }
-      }
-    };
-
-    void resolveConversation();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    createAppointmentOpen,
-    appointmentCreateForm.leadId,
-    leadOptions,
-    fetchLatestConversationForLead,
-  ]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -1156,28 +1029,15 @@ export default function SchedulePage() {
   }, [leadOptions, appointmentCreateForm.leadId]);
 
   const effectiveCreateConversationId = useMemo(() => {
-    return appointmentCreateForm.conversationId || selectedLeadOption?.conversationId || "";
-  }, [appointmentCreateForm.conversationId, selectedLeadOption?.conversationId]);
-
-  const effectiveCreateConversationMeta = useMemo(() => {
-    if (createLeadConversationMeta?.searchedLeadId === appointmentCreateForm.leadId) {
-      return createLeadConversationMeta;
+    if (createLeadConversationState.leadId === appointmentCreateForm.leadId) {
+      return createLeadConversationState.conversationId || "";
     }
 
-    if (selectedLeadOption?.conversationId) {
-      return {
-        searchedLeadId: selectedLeadOption.leadId,
-        conversationStatus: selectedLeadOption.conversationStatus || null,
-        isHumanActive: selectedLeadOption.isHumanActive ?? null,
-        lastMessageAt: selectedLeadOption.lastMessageAt || null,
-      };
-    }
-
-    return null;
+    return "";
   }, [
-    createLeadConversationMeta,
+    createLeadConversationState.conversationId,
+    createLeadConversationState.leadId,
     appointmentCreateForm.leadId,
-    selectedLeadOption,
   ]);
 
   const selectedItemLeadOption = useMemo(() => {
@@ -1315,6 +1175,157 @@ export default function SchedulePage() {
     setSaveErrorText(null);
   }
 
+  const syncCreateConversationPreview = useCallback(
+    async (leadId: string, preferredLead?: LeadConversationOption | null) => {
+      if (!leadId) {
+        setCreateLeadConversationState({
+          leadId: null,
+          status: "idle",
+          conversationId: null,
+          conversationStatus: null,
+          isHumanActive: null,
+          lastMessageAt: null,
+        });
+        setAppointmentCreateForm((prev) => ({
+          ...prev,
+          conversationId: "",
+        }));
+        return;
+      }
+
+      const matchedLead =
+        preferredLead || leadOptions.find((lead) => lead.leadId === leadId) || null;
+
+      if (matchedLead?.conversationId) {
+        setCreateLeadConversationState({
+          leadId,
+          status: "resolved",
+          conversationId: matchedLead.conversationId,
+          conversationStatus: matchedLead.conversationStatus || null,
+          isHumanActive: matchedLead.isHumanActive ?? null,
+          lastMessageAt: matchedLead.lastMessageAt || null,
+        });
+        setAppointmentCreateForm((prev) => {
+          if (prev.leadId !== leadId && prev.leadId) return prev;
+          return {
+            ...prev,
+            conversationId: matchedLead.conversationId || "",
+          };
+        });
+        return;
+      }
+
+      setCreateLeadConversationState({
+        leadId,
+        status: "loading",
+        conversationId: null,
+        conversationStatus: null,
+        isHumanActive: null,
+        lastMessageAt: null,
+      });
+
+      try {
+        const fallbackConversation = await fetchLatestConversationForLead(leadId);
+
+        if (fallbackConversation?.id) {
+          setCreateLeadConversationState({
+            leadId,
+            status: "resolved",
+            conversationId: fallbackConversation.id,
+            conversationStatus: fallbackConversation.status || null,
+            isHumanActive: fallbackConversation.is_human_active ?? null,
+            lastMessageAt: fallbackConversation.last_message_at || null,
+          });
+
+          setAppointmentCreateForm((prev) => {
+            if (prev.leadId !== leadId) return prev;
+            return {
+              ...prev,
+              conversationId: fallbackConversation.id,
+            };
+          });
+
+          setLeadOptions((prev) =>
+            prev.map((lead) =>
+              lead.leadId === leadId
+                ? {
+                    ...lead,
+                    conversationId: fallbackConversation.id,
+                    conversationStatus: fallbackConversation.status || lead.conversationStatus,
+                    isHumanActive:
+                      fallbackConversation.is_human_active ?? lead.isHumanActive ?? null,
+                    lastMessageAt:
+                      fallbackConversation.last_message_at || lead.lastMessageAt || null,
+                  }
+                : lead
+            )
+          );
+          return;
+        }
+
+        setCreateLeadConversationState({
+          leadId,
+          status: "not_found",
+          conversationId: null,
+          conversationStatus: null,
+          isHumanActive: null,
+          lastMessageAt: null,
+        });
+        setAppointmentCreateForm((prev) => {
+          if (prev.leadId !== leadId) return prev;
+          return {
+            ...prev,
+            conversationId: "",
+          };
+        });
+      } catch (error: any) {
+        console.error("[SchedulePage] create appointment conversation sync error:", error);
+        setAppointmentCreateErrorText(
+          error?.message || "Não consegui puxar a conversa mais recente desse lead."
+        );
+        setCreateLeadConversationState({
+          leadId,
+          status: "not_found",
+          conversationId: null,
+          conversationStatus: null,
+          isHumanActive: null,
+          lastMessageAt: null,
+        });
+      }
+    },
+    [fetchLatestConversationForLead, leadOptions]
+  );
+
+  useEffect(() => {
+    if (!createAppointmentOpen) return;
+
+    const leadId = appointmentCreateForm.leadId;
+
+    if (!leadId) {
+      setCreateLeadConversationState({
+        leadId: null,
+        status: "idle",
+        conversationId: null,
+        conversationStatus: null,
+        isHumanActive: null,
+        lastMessageAt: null,
+      });
+      return;
+    }
+
+    if (createLeadConversationState.leadId === leadId) {
+      return;
+    }
+
+    void syncCreateConversationPreview(leadId, selectedLeadOption);
+  }, [
+    createAppointmentOpen,
+    appointmentCreateForm.leadId,
+    createLeadConversationState.leadId,
+    selectedLeadOption,
+    syncCreateConversationPreview,
+  ]);
+
   function openCreateBlockPanel() {
     setCreateBlockOpen(true);
     setBlockErrorText(null);
@@ -1331,6 +1342,14 @@ export default function SchedulePage() {
   function openCreateAppointmentPanel() {
     setCreateAppointmentOpen(true);
     setAppointmentCreateErrorText(null);
+    setCreateLeadConversationState({
+      leadId: null,
+      status: "idle",
+      conversationId: null,
+      conversationStatus: null,
+      isHumanActive: null,
+      lastMessageAt: null,
+    });
     setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
   }
 
@@ -1338,8 +1357,14 @@ export default function SchedulePage() {
     setCreateAppointmentOpen(false);
     setAppointmentCreateErrorText(null);
     setSavingAppointmentCreate(false);
-    setLoadingLeadConversation(false);
-    setCreateLeadConversationMeta(null);
+    setCreateLeadConversationState({
+      leadId: null,
+      status: "idle",
+      conversationId: null,
+      conversationStatus: null,
+      isHumanActive: null,
+      lastMessageAt: null,
+    });
     setAppointmentCreateForm(createDefaultAppointmentCreateForm(selectedDateKey));
   }
 
@@ -1358,79 +1383,7 @@ export default function SchedulePage() {
         : prev.customerPhone,
     }));
 
-    setCreateLeadConversationMeta(
-      matchedLead?.conversationId
-        ? {
-            searchedLeadId: nextLeadId,
-            conversationStatus: matchedLead.conversationStatus || null,
-            isHumanActive: matchedLead.isHumanActive ?? null,
-            lastMessageAt: matchedLead.lastMessageAt || null,
-          }
-        : null
-    );
-
-    if (!nextLeadId) {
-      setLoadingLeadConversation(false);
-      return;
-    }
-
-    if (matchedLead?.conversationId) {
-      setLoadingLeadConversation(false);
-      return;
-    }
-
-    setLoadingLeadConversation(true);
-
-    try {
-      const fallbackConversation = await fetchLatestConversationForLead(nextLeadId);
-
-      setAppointmentCreateForm((prev) => {
-        if (prev.leadId !== nextLeadId) return prev;
-
-        return {
-          ...prev,
-          conversationId: fallbackConversation?.id || "",
-        };
-      });
-
-      setCreateLeadConversationMeta({
-        searchedLeadId: nextLeadId,
-        conversationStatus: fallbackConversation?.status || null,
-        isHumanActive: fallbackConversation?.is_human_active ?? null,
-        lastMessageAt: fallbackConversation?.last_message_at || null,
-      });
-
-      if (fallbackConversation?.id) {
-        setLeadOptions((prev) =>
-          prev.map((lead) =>
-            lead.leadId === nextLeadId
-              ? {
-                  ...lead,
-                  conversationId: fallbackConversation.id,
-                  conversationStatus: fallbackConversation.status || lead.conversationStatus,
-                  isHumanActive:
-                    fallbackConversation.is_human_active ?? lead.isHumanActive ?? null,
-                  lastMessageAt:
-                    fallbackConversation.last_message_at || lead.lastMessageAt || null,
-                }
-              : lead
-          )
-        );
-      }
-    } catch (error: any) {
-      console.error("[SchedulePage] create appointment conversation sync error:", error);
-      setAppointmentCreateErrorText(
-        error?.message || "Não consegui puxar a conversa mais recente desse lead."
-      );
-      setCreateLeadConversationMeta({
-        searchedLeadId: nextLeadId,
-        conversationStatus: null,
-        isHumanActive: null,
-        lastMessageAt: null,
-      });
-    } finally {
-      setLoadingLeadConversation(false);
-    }
+    await syncCreateConversationPreview(nextLeadId, matchedLead);
   }
 
   async function saveAppointmentEdit(
@@ -3196,10 +3149,10 @@ export default function SchedulePage() {
                       <div className="mt-1 text-xs text-gray-500">
                         {loadingLeadOptions
                           ? "Carregando leads da loja..."
-                          : loadingLeadConversation
+                          : createLeadConversationState.status === "loading"
                           ? "Buscando a conversa mais recente desse lead..."
                           : selectedLeadOption
-                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${effectiveCreateConversationId ? " • Conversa conectada" : " • Ainda não achei conversa vinculada para esse lead"}`
+                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${createLeadConversationState.status === "resolved" ? " • Conversa conectada" : createLeadConversationState.status === "not_found" ? " • Ainda não achei conversa vinculada para esse lead" : ""}`
                           : "Opcional. Ao escolher um lead, nome e telefone podem ser preenchidos automaticamente."}
                       </div>
                     </div>
@@ -3215,15 +3168,15 @@ export default function SchedulePage() {
                         className="w-full rounded-xl border border-black/10 bg-gray-50 px-3 py-2 text-sm text-gray-600 outline-none"
                       />
                       <div className="mt-1 text-xs text-gray-500">
-                        {loadingLeadConversation
+                        {createLeadConversationState.status === "loading"
                           ? "Buscando a conversa mais recente desse lead..."
-                          : effectiveCreateConversationId
-                          ? effectiveCreateConversationMeta?.isHumanActive
+                          : createLeadConversationState.status === "resolved"
+                          ? createLeadConversationState.isHumanActive
                             ? "Conversa conectada com humano ativo neste momento."
-                            : effectiveCreateConversationMeta?.lastMessageAt
-                            ? `Conversa conectada • Última mensagem em ${formatDateTime(effectiveCreateConversationMeta.lastMessageAt)}`
+                            : createLeadConversationState.lastMessageAt
+                            ? `Conversa conectada • Última mensagem em ${formatDateTime(createLeadConversationState.lastMessageAt)}`
                             : "Conversa conectada."
-                          : appointmentCreateForm.leadId
+                          : createLeadConversationState.status === "not_found"
                           ? "Ainda não achei conversa recente vinculada para esse lead."
                           : "Será preenchida automaticamente quando o lead tiver conversa ligada."}
                       </div>
