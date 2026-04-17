@@ -392,6 +392,111 @@ function asksToListAllPostAppointments(text: string) {
   ]);
 }
 
+function resolvePostAppointmentDetailIndex(text: string, totalItems: number) {
+  const t = normalizeText(text);
+
+  if (!asksAboutPostAppointment(t) || totalItems <= 0) {
+    return null;
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "mais urgente",
+      "caso mais urgente",
+      "esse mais urgente",
+      "desse mais urgente",
+      "detalhe o mais urgente",
+      "me fale mais sobre esse mais urgente",
+      "quero mais contexto desse mais urgente",
+    ])
+  ) {
+    return 0;
+  }
+
+  const explicitNumberMatch = t.match(/(?:caso|item|pendencia|pendência|pos compromisso|pos-compromisso|atendimento)?\s*(\d{1,2})\b/);
+  if (explicitNumberMatch) {
+    const numericIndex = Number(explicitNumberMatch[1]);
+    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= totalItems) {
+      return numericIndex - 1;
+    }
+  }
+
+  const ordinalMap: Array<[string, number]> = [
+    ["primeiro", 0],
+    ["segunda", 1],
+    ["segundo", 1],
+    ["terceira", 2],
+    ["terceiro", 2],
+    ["quarta", 3],
+    ["quarto", 3],
+    ["quinta", 4],
+    ["quinto", 4],
+    ["sexta", 5],
+    ["sexto", 5],
+    ["setima", 6],
+    ["sétima", 6],
+    ["setimo", 6],
+    ["sétimo", 6],
+    ["oitava", 7],
+    ["oitavo", 7],
+    ["nona", 8],
+    ["nono", 8],
+    ["decima", 9],
+    ["décima", 9],
+    ["decimo", 9],
+    ["décimo", 9],
+  ];
+
+  for (const [term, index] of ordinalMap) {
+    if (t.includes(term) && index < totalItems) {
+      return index;
+    }
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "me fale mais sobre",
+      "me explica melhor",
+      "me explique melhor",
+      "detalhe",
+      "detalhar",
+      "quero mais contexto",
+      "qual é o telefone do",
+      "qual o telefone do",
+      "esse caso",
+      "esse é de visita",
+      "esse e de visita",
+      "esse é de instalação",
+      "esse e de instalacao",
+    ])
+  ) {
+    return 0;
+  }
+
+  return null;
+}
+
+function asksToDetailSpecificPostAppointment(text: string, totalItems: number) {
+  return resolvePostAppointmentDetailIndex(text, totalItems) !== null;
+}
+
+function formatPostAppointmentCurrentSituation(item: PostAppointmentFollowupRow) {
+  const status = normalizeText(item.followup_status);
+
+  if (status === "prompt_sent") {
+    return "ainda falta retorno após o atendimento";
+  }
+
+  return formatFollowupStatus(item.followup_status);
+}
+
+function buildPostAppointmentTypeAndTitle(appointment: AppointmentRow | undefined) {
+  if (!appointment) return "atendimento";
+  const typeLabel = formatAppointmentType(appointment.appointment_type);
+  const titleLabel = appointment.title ? ` ${appointment.title}` : "";
+  return `${typeLabel}${titleLabel}`.trim();
+}
+
 function asksForMorningReport(text: string) {
   const t = normalizeText(text);
   return hasAnyTerm(t, [
@@ -935,9 +1040,54 @@ function buildDeterministicPostAppointmentReply(args: {
   }
 
   const wantsFullList = asksToListAllPostAppointments(args.lastHumanMessage);
-  const current = openItems[0];
+  const detailIndex = resolvePostAppointmentDetailIndex(args.lastHumanMessage, openItems.length);
+  const wantsSpecificDetail = detailIndex !== null && !wantsFullList;
+  const current = openItems[Math.min(Math.max(detailIndex ?? 0, 0), openItems.length - 1)];
   const appointment = args.appointmentMap.get(current.appointment_id);
   const lines: string[] = [];
+
+  if (wantsSpecificDetail) {
+    const itemNumber = (detailIndex ?? 0) + 1;
+    lines.push(`Claro. Sobre o caso ${itemNumber}:`);
+    lines.push("");
+
+    lines.push(`- tipo: ${appointment ? formatAppointmentType(appointment.appointment_type) : "atendimento"}`);
+
+    if (appointment?.title) {
+      lines.push(`- título: ${appointment.title}`);
+    }
+
+    if (appointment?.customer_name) {
+      lines.push(`- cliente: ${appointment.customer_name}`);
+    }
+
+    if (appointment?.customer_phone) {
+      lines.push(`- contato: ${appointment.customer_phone}`);
+    }
+
+    if (appointment?.address_text) {
+      lines.push(`- endereço: ${appointment.address_text}`);
+    }
+
+    const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start || current.scheduled_end;
+    if (timeLabel) {
+      lines.push(`- horário original: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+    }
+
+    lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(current)}`);
+
+    const friendlyObservation = buildFriendlyPostFollowupObservation(current.notes);
+    if (friendlyObservation) {
+      lines.push(`- contexto rápido: ${friendlyObservation}`);
+    }
+
+    lines.push("");
+    lines.push(
+      "Se quiser, eu também posso te ajudar a marcar esse caso como concluído, cancelado, remarcado ou ainda pendente de retorno."
+    );
+
+    return lines.join("\n");
+  }
 
   lines.push(
     openItems.length === 1
@@ -949,21 +1099,22 @@ function buildDeterministicPostAppointmentReply(args: {
   if (wantsFullList) {
     openItems.forEach((item, index) => {
       const itemAppointment = args.appointmentMap.get(item.appointment_id);
-      const itemTypeLabel = itemAppointment
-        ? formatAppointmentType(itemAppointment.appointment_type)
-        : "atendimento";
-      const itemTitle = itemAppointment?.title ? ` "${itemAppointment.title}"` : "";
+      const itemTitle = buildPostAppointmentTypeAndTitle(itemAppointment);
       const itemTimeLabel = itemAppointment?.scheduled_end || itemAppointment?.scheduled_start || item.scheduled_end;
       const itemCustomer = itemAppointment?.customer_name || "cliente não identificado";
 
-      lines.push(`${index + 1}. ${itemTypeLabel.charAt(0).toUpperCase() + itemTypeLabel.slice(1)}${itemTitle}`);
+      lines.push(`${index + 1}. ${itemTitle.charAt(0).toUpperCase() + itemTitle.slice(1)}`);
       lines.push(`- cliente: ${itemCustomer}`);
+
+      if (itemAppointment?.customer_phone) {
+        lines.push(`- contato: ${itemAppointment.customer_phone}`);
+      }
 
       if (itemTimeLabel) {
         lines.push(`- horário original: ${formatDateOnly(itemTimeLabel)} às ${formatTimeOnly(itemTimeLabel)}`);
       }
 
-      lines.push(`- situação atual: ${formatFollowupStatus(item.followup_status)}`);
+      lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(item)}`);
 
       const itemObservation = buildFriendlyPostFollowupObservation(item.notes);
       if (itemObservation) {
@@ -984,7 +1135,7 @@ function buildDeterministicPostAppointmentReply(args: {
     const timeLabel = appointment.scheduled_end || appointment.scheduled_start || current.scheduled_end;
     const appointmentTypeLabel = formatAppointmentType(appointment.appointment_type);
     lines.push(
-      `O caso mais urgente agora é ${appointmentTypeLabel}${appointment.title ? ` "${appointment.title}"` : ""}.`
+      `O caso mais urgente agora é ${appointmentTypeLabel}${appointment.title ? ` ${appointment.title}` : ""}.`
     );
 
     if (timeLabel) {
@@ -999,10 +1150,10 @@ function buildDeterministicPostAppointmentReply(args: {
       lines.push(`- contato: ${appointment.customer_phone}`);
     }
 
-    lines.push(`- situação atual: ${formatFollowupStatus(current.followup_status)}`);
+    lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(current)}`);
   } else if (current.scheduled_end) {
     lines.push(`O caso mais urgente agora é um atendimento encerrado em ${formatDateTime(current.scheduled_end)}.`);
-    lines.push(`- situação atual: ${formatFollowupStatus(current.followup_status)}`);
+    lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(current)}`);
   } else {
     lines.push("Existe uma pendência de pós-compromisso sem detalhes completos por aqui.");
   }
