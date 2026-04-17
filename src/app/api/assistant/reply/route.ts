@@ -820,7 +820,7 @@ function buildDeterministicNextVisitReply(nextAppointments: AppointmentRow[]) {
   }
 
   lines.push(
-    "- materiais, documentos e checklist específicos só podem ser tratados como confirmados se estiverem descritos no sistema; sem isso, considere apenas uma revisão rápida do básico antes de sair."
+    "- materiais, documentos e checklist específicos só podem ser tratados como confirmados se estiverem registrados por aqui; sem isso, considere apenas uma revisão rápida do básico antes de sair."
   );
 
   return lines.join("\n");
@@ -998,12 +998,15 @@ function buildSystemPrompt(args: {
     "- nunca invente fatos operacionais",
     "- nunca prometa ação automática que não existe",
     "- nunca diga que organizou, confirmou, enviou, separou ou preparou algo se isso não aconteceu de verdade",
-    "- se algo não estiver confirmado no sistema, deixe isso explícito",
-    "- quando houver pós-compromisso pendente, isso deve entrar como pendência operacional real",
+    "- se algo não estiver confirmado, deixe isso explícito de forma simples e humana",
+    "- quando houver retorno pendente, isso deve entrar como pendência operacional real",
     "- se a pergunta for sobre materiais, documentos ou checklist e não houver base oficial da loja, trate como sugestão genérica curta",
+    "- não use termos técnicos, nomes de tabela, linguagem de banco, siglas estranhas ou texto com cara de campo interno",
+    '- quando faltar informação, prefira frases como "não achei um registro claro disso" ou "pelo que encontrei aqui, só consigo ver..."',
+    '- evite repetir "no sistema" toda hora; prefira "por aqui", "pelo que encontrei aqui" ou "no que foi registrado"',
     "- não entregue textão quando bastar uma resposta curta",
     "- quando estiver em terreno genérico, use no máximo 3 a 5 itens",
-    "- prefira respostas curtas e úteis",
+    "- prefira respostas curtas, úteis e humanas",
     "- no máximo uma pergunta curta no final, quando realmente ajudar",
     "",
     "COMO RESPONDER SOBRE MATERIAIS, DOCUMENTOS E CHECKLIST",
@@ -1172,6 +1175,13 @@ function cleanupAiText(
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
   cleaned = cleaned.replace(/[ \t]+\n/g, "\n");
   cleaned = cleaned.replace(/\u00A0/g, " ");
+  cleaned = cleaned.replace(/Não há registro específico no sistema sobre o interesse ou pedido do cliente/gi, "Não achei um registro claro dizendo exatamente o que o cliente");
+  cleaned = cleaned.replace(/Consigo registrar e informar o que está agendado, mas/gi, "Pelo que encontrei aqui, eu consigo ver o que está agendado, mas");
+  cleaned = cleaned.replace(/Pelo que está registrado no sistema/gi, "Pelo que encontrei aqui");
+  cleaned = cleaned.replace(/descritos no sistema/gi, "registrados por aqui");
+  cleaned = cleaned.replace(/detalhes completos no sistema/gi, "detalhes completos por aqui");
+  cleaned = cleaned.replace(/\bNo sistema,\s*/gi, "");
+  cleaned = cleaned.replace(/\bno sistema\b/gi, "por aqui");
 
   const genericMarkers = [
     "orientação genérica",
