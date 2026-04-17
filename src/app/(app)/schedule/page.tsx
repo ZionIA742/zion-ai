@@ -3176,7 +3176,7 @@ export default function SchedulePage() {
                             : createLeadConversationState.lastMessageAt
                             ? `Conversa conectada • Última mensagem em ${formatDateTime(createLeadConversationState.lastMessageAt)}`
                             : "Conversa conectada."
-                          : "Será preenchida automaticamente quando o lead tiver conversa ligada."}
+                          : ""}
                       </div>
                     </div>
                   </div>
