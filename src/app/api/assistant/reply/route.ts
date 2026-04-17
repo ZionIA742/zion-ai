@@ -361,6 +361,37 @@ function asksAboutPostAppointment(text: string) {
   ]);
 }
 
+function asksToListAllPostAppointments(text: string) {
+  const t = normalizeText(text);
+
+  if (!asksAboutPostAppointment(t)) {
+    return false;
+  }
+
+  return hasAnyTerm(t, [
+    "me mostra os proximos",
+    "me mostra os próximos",
+    "listar os proximos",
+    "listar os próximos",
+    "liste os proximos",
+    "liste os próximos",
+    "liste todos",
+    "listar todos",
+    "me mostra todos",
+    "me mostre todos",
+    "quais sao os outros",
+    "quais são os outros",
+    "quero ver todos",
+    "todos os pendentes",
+    "todos os pos-compromissos",
+    "todos os pos compromissos",
+    "por ordem de urgencia",
+    "por ordem de urgência",
+    "os proximos",
+    "os próximos",
+  ]);
+}
+
 function asksForMorningReport(text: string) {
   const t = normalizeText(text);
   return hasAnyTerm(t, [
@@ -893,6 +924,7 @@ function buildDeterministicPostAppointmentReply(args: {
   pendingPostFollowups: PostAppointmentFollowupRow[];
   recentResolvedPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
+  lastHumanMessage: string;
 }) {
   const openItems = sortOpenPostFollowups(
     (args.pendingPostFollowups || []).filter((item) => isOpenPostFollowup(item))
@@ -902,22 +934,57 @@ function buildDeterministicPostAppointmentReply(args: {
     return "Não há pós-compromisso pendente no momento.";
   }
 
+  const wantsFullList = asksToListAllPostAppointments(args.lastHumanMessage);
   const current = openItems[0];
   const appointment = args.appointmentMap.get(current.appointment_id);
   const lines: string[] = [];
 
   lines.push(
     openItems.length === 1
-      ? "Sim, hoje existe 1 pós-compromisso aguardando confirmação."
-      : `Sim, hoje existem ${openItems.length} pós-compromissos aguardando confirmação.`
+      ? "Hoje você tem 1 pós-compromisso aguardando confirmação."
+      : `Hoje você tem ${openItems.length} pós-compromissos aguardando confirmação.`
   );
   lines.push("");
+
+  if (wantsFullList) {
+    openItems.forEach((item, index) => {
+      const itemAppointment = args.appointmentMap.get(item.appointment_id);
+      const itemTypeLabel = itemAppointment
+        ? formatAppointmentType(itemAppointment.appointment_type)
+        : "atendimento";
+      const itemTitle = itemAppointment?.title ? ` "${itemAppointment.title}"` : "";
+      const itemTimeLabel = itemAppointment?.scheduled_end || itemAppointment?.scheduled_start || item.scheduled_end;
+      const itemCustomer = itemAppointment?.customer_name || "cliente não identificado";
+
+      lines.push(`${index + 1}. ${itemTypeLabel.charAt(0).toUpperCase() + itemTypeLabel.slice(1)}${itemTitle}`);
+      lines.push(`- cliente: ${itemCustomer}`);
+
+      if (itemTimeLabel) {
+        lines.push(`- horário original: ${formatDateOnly(itemTimeLabel)} às ${formatTimeOnly(itemTimeLabel)}`);
+      }
+
+      lines.push(`- situação atual: ${formatFollowupStatus(item.followup_status)}`);
+
+      const itemObservation = buildFriendlyPostFollowupObservation(item.notes);
+      if (itemObservation) {
+        lines.push(`- contexto rápido: ${itemObservation}`);
+      }
+
+      if (index < openItems.length - 1) {
+        lines.push("");
+      }
+    });
+
+    lines.push("");
+    lines.push("Se quiser, eu posso detalhar qualquer um deles.");
+    return lines.join("\n");
+  }
 
   if (appointment) {
     const timeLabel = appointment.scheduled_end || appointment.scheduled_start || current.scheduled_end;
     const appointmentTypeLabel = formatAppointmentType(appointment.appointment_type);
     lines.push(
-      `O mais urgente agora é ${appointmentTypeLabel}${appointment.title ? ` "${appointment.title}"` : ""}.`
+      `O caso mais urgente agora é ${appointmentTypeLabel}${appointment.title ? ` "${appointment.title}"` : ""}.`
     );
 
     if (timeLabel) {
@@ -1574,6 +1641,7 @@ async function generateAssistantReply(params: {
         pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
         recentResolvedPostFollowups: (recentResolvedPostFollowupsData || []) as PostAppointmentFollowupRow[],
         appointmentMap,
+        lastHumanMessage,
       });
     } else {
       const response = await openai.responses.create({
