@@ -3152,7 +3152,7 @@ export default function SchedulePage() {
                           : createLeadConversationState.status === "loading"
                           ? "Buscando a conversa mais recente desse lead..."
                           : selectedLeadOption
-                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${createLeadConversationState.status === "resolved" ? " • Conversa conectada" : createLeadConversationState.status === "not_found" ? " • Ainda não achei conversa vinculada para esse lead" : ""}`
+                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${createLeadConversationState.status === "resolved" ? " • Conversa conectada" : ""}`
                           : "Opcional. Ao escolher um lead, nome e telefone podem ser preenchidos automaticamente."}
                       </div>
                     </div>
@@ -3176,8 +3176,6 @@ export default function SchedulePage() {
                             : createLeadConversationState.lastMessageAt
                             ? `Conversa conectada • Última mensagem em ${formatDateTime(createLeadConversationState.lastMessageAt)}`
                             : "Conversa conectada."
-                          : createLeadConversationState.status === "not_found"
-                          ? "Ainda não achei conversa recente vinculada para esse lead."
                           : "Será preenchida automaticamente quando o lead tiver conversa ligada."}
                       </div>
                     </div>
