@@ -826,6 +826,101 @@ function buildDeterministicNextVisitReply(nextAppointments: AppointmentRow[]) {
   return lines.join("\n");
 }
 
+function isOpenPostFollowup(item: PostAppointmentFollowupRow | null | undefined) {
+  if (!item) return false;
+
+  const followupStatus = normalizeText(item.followup_status);
+  const resolution = normalizeText(item.resolution);
+
+  if (item.resolved_at) return false;
+  if (followupStatus === "confirmed_completed") return false;
+  if (followupStatus === "confirmed_rescheduled") return false;
+  if (followupStatus === "confirmed_cancelled") return false;
+  if (resolution === "completed") return false;
+  if (resolution === "rescheduled") return false;
+  if (resolution === "cancelled") return false;
+
+  return true;
+}
+
+function sortOpenPostFollowups(items: PostAppointmentFollowupRow[]) {
+  return [...items].sort((a, b) => {
+    const aUpdated = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+    const bUpdated = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+    if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+
+    const aScheduled = a.scheduled_end ? new Date(a.scheduled_end).getTime() : 0;
+    const bScheduled = b.scheduled_end ? new Date(b.scheduled_end).getTime() : 0;
+    return bScheduled - aScheduled;
+  });
+}
+
+function buildDeterministicPostAppointmentReply(args: {
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+  recentResolvedPostFollowups: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
+}) {
+  const openItems = sortOpenPostFollowups(
+    (args.pendingPostFollowups || []).filter((item) => isOpenPostFollowup(item))
+  );
+
+  if (!openItems.length) {
+    return "Não há retorno pendente no momento.";
+  }
+
+  const current = openItems[0];
+  const appointment = args.appointmentMap.get(current.appointment_id);
+  const lines: string[] = [];
+
+  lines.push(
+    openItems.length === 1
+      ? "Sim, há 1 retorno pendente no momento."
+      : `Sim, há ${openItems.length} retornos pendentes no momento.`
+  );
+
+  if (appointment) {
+    const timeLabel = appointment.scheduled_end || appointment.scheduled_start || current.scheduled_end;
+    const appointmentTypeLabel = formatAppointmentType(appointment.appointment_type);
+    lines.push(
+      `- mais urgente agora: ${appointmentTypeLabel}${appointment.title ? ` "${appointment.title}"` : ""} em ${formatDateOnly(
+        timeLabel
+      )} às ${formatTimeOnly(timeLabel)}`
+    );
+
+    if (appointment.customer_name) {
+      lines.push(`- cliente: ${appointment.customer_name}`);
+    }
+
+    if (appointment.customer_phone) {
+      lines.push(`- contato: ${appointment.customer_phone}`);
+    }
+  } else if (current.scheduled_end) {
+    lines.push(`- retorno pendente ligado a um compromisso que terminou em ${formatDateTime(current.scheduled_end)}`);
+  } else {
+    lines.push("- existe um retorno pendente ligado a um compromisso sem detalhes completos no sistema.");
+  }
+
+  if (current.notes) {
+    lines.push(`- observação: ${current.notes}`);
+  }
+
+  if (openItems.length > 1) {
+    lines.push(`- além disso, há mais ${openItems.length - 1} retorno(s) pendente(s) no sistema.`);
+  }
+
+  const lastResolved = (args.recentResolvedPostFollowups || []).find(
+    (item) => !isOpenPostFollowup(item) && item.resolved_at
+  );
+  if (lastResolved) {
+    const resolvedAppointment = args.appointmentMap.get(lastResolved.appointment_id);
+    if (resolvedAppointment?.title) {
+      lines.push(`- último retorno resolvido: ${resolvedAppointment.title}.`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function buildRequestAnalysisBlock(lastHumanMessage: string) {
   const materialRequest = asksAboutMaterialsOrDocuments(lastHumanMessage);
   const todayRequest = asksAboutToday(lastHumanMessage);
@@ -1429,6 +1524,12 @@ async function generateAssistantReply(params: {
       });
     } else if (nextVisitMode) {
       aiText = buildDeterministicNextVisitReply((nextAppointmentsData || []) as AppointmentRow[]);
+    } else if (postAppointmentMode) {
+      aiText = buildDeterministicPostAppointmentReply({
+        pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
+        recentResolvedPostFollowups: (recentResolvedPostFollowupsData || []) as PostAppointmentFollowupRow[],
+        appointmentMap,
+      });
     } else {
       const response = await openai.responses.create({
         model,
