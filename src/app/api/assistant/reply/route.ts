@@ -185,7 +185,7 @@ function formatAppointmentStatus(value: string | null) {
 function formatFollowupStatus(value: string | null) {
   const normalized = normalizeText(value);
 
-  if (normalized === "prompt_sent") return "aguardando confirmação pós-compromisso";
+  if (normalized === "prompt_sent") return "aguardando confirmação do retorno";
   if (normalized === "confirmed_completed") return "confirmado como concluído";
   if (normalized === "confirmed_rescheduled") return "confirmado como remarcado";
   if (normalized === "confirmed_cancelled") return "confirmado como cancelado";
@@ -704,8 +704,8 @@ function buildMorningReportBlock(args: {
     firstImportantLine,
     `- compromissos de hoje ainda em aberto: ${data.pendingToday}`,
     `- compromissos em atraso ou ainda não baixados: ${data.overdueCount}`,
-    `- pós-compromissos pendentes: ${data.pendingPostCount}`,
-    `- pendências internas da assistente: ${data.notificationCount}`,
+    `- retornos pendentes: ${data.pendingPostCount}`,
+    `- avisos internos: ${data.notificationCount}`,
   ].join("\n");
 }
 
@@ -723,8 +723,8 @@ function buildEveningReportBlock(args: {
     `- cancelados hoje: ${data.cancelledToday}`,
     `- ainda em aberto de hoje: ${data.stillOpenToday}`,
     `- compromissos em atraso ou não baixados: ${data.overdueCount}`,
-    `- pós-compromissos ainda pendentes: ${data.pendingPostCount}`,
-    `- pendências internas da assistente: ${data.notificationCount}`,
+    `- retornos pendentes: ${data.pendingPostCount}`,
+    `- avisos internos: ${data.notificationCount}`,
   ].join("\n");
 }
 
@@ -754,8 +754,8 @@ function buildDeterministicMorningReport(args: {
 
   lines.push(`- em aberto hoje: ${data.pendingToday}`);
   lines.push(`- em atraso: ${data.overdueCount}`);
-  lines.push(`- pós-compromissos pendentes: ${data.pendingPostCount}`);
-  lines.push(`- pendências internas: ${data.notificationCount}`);
+  lines.push(`- retornos pendentes: ${data.pendingPostCount}`);
+  lines.push(`- avisos internos: ${data.notificationCount}`);
 
   return lines.join("\n");
 }
@@ -775,8 +775,8 @@ function buildDeterministicEveningReport(args: {
   lines.push(`- cancelados: ${data.cancelledToday}`);
   lines.push(`- ainda em aberto: ${data.stillOpenToday}`);
   lines.push(`- em atraso: ${data.overdueCount}`);
-  lines.push(`- pós-compromissos pendentes: ${data.pendingPostCount}`);
-  lines.push(`- pendências internas: ${data.notificationCount}`);
+  lines.push(`- retornos pendentes: ${data.pendingPostCount}`);
+  lines.push(`- avisos internos: ${data.notificationCount}`);
 
   return lines.join("\n");
 }
