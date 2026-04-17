@@ -855,6 +855,26 @@ function sortOpenPostFollowups(items: PostAppointmentFollowupRow[]) {
   });
 }
 
+function buildFriendlyPostFollowupObservation(note?: string | null) {
+  const normalized = normalizeText(note);
+  if (!normalized) return null;
+
+  if (normalized.includes("apos a conclusao ainda falta retorno")) {
+    return "esse atendimento foi concluído, mas ainda falta retorno com o cliente.";
+  }
+
+  if (normalized.includes("fechamento do atendimento")) {
+    return "esse atendimento já foi encerrado por completo.";
+  }
+
+  const cleaned = (note || "")
+    .replace(/\[[^\]]+\]\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned || null;
+}
+
 function buildDeterministicPostAppointmentReply(args: {
   pendingPostFollowups: PostAppointmentFollowupRow[];
   recentResolvedPostFollowups: PostAppointmentFollowupRow[];
@@ -874,8 +894,8 @@ function buildDeterministicPostAppointmentReply(args: {
 
   lines.push(
     openItems.length === 1
-      ? "Sim, há 1 retorno pendente no momento."
-      : `Sim, há ${openItems.length} retornos pendentes no momento.`
+      ? "Sim, ainda falta 1 retorno desse atendimento."
+      : `Sim, ainda faltam ${openItems.length} retornos de atendimento.`
   );
 
   if (appointment) {
@@ -895,17 +915,18 @@ function buildDeterministicPostAppointmentReply(args: {
       lines.push(`- contato: ${appointment.customer_phone}`);
     }
   } else if (current.scheduled_end) {
-    lines.push(`- retorno pendente ligado a um compromisso que terminou em ${formatDateTime(current.scheduled_end)}`);
+    lines.push(`- o retorno pendente está ligado a um atendimento encerrado em ${formatDateTime(current.scheduled_end)}`);
   } else {
-    lines.push("- existe um retorno pendente ligado a um compromisso sem detalhes completos no sistema.");
+    lines.push("- existe um retorno pendente ligado a um atendimento sem detalhes completos no sistema.");
   }
 
-  if (current.notes) {
-    lines.push(`- observação: ${current.notes}`);
+  const friendlyObservation = buildFriendlyPostFollowupObservation(current.notes);
+  if (friendlyObservation) {
+    lines.push(`- observação: ${friendlyObservation}`);
   }
 
   if (openItems.length > 1) {
-    lines.push(`- além disso, há mais ${openItems.length - 1} retorno(s) pendente(s) no sistema.`);
+    lines.push(`- além disso, existem mais ${openItems.length - 1} retorno(s) pendente(s).`);
   }
 
   const lastResolved = (args.recentResolvedPostFollowups || []).find(
@@ -914,7 +935,7 @@ function buildDeterministicPostAppointmentReply(args: {
   if (lastResolved) {
     const resolvedAppointment = args.appointmentMap.get(lastResolved.appointment_id);
     if (resolvedAppointment?.title) {
-      lines.push(`- último retorno resolvido: ${resolvedAppointment.title}.`);
+      lines.push(`- último atendimento resolvido: ${resolvedAppointment.title}.`);
     }
   }
 
