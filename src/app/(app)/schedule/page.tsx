@@ -1155,6 +1155,31 @@ export default function SchedulePage() {
     return leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
   }, [leadOptions, appointmentCreateForm.leadId]);
 
+  const effectiveCreateConversationId = useMemo(() => {
+    return appointmentCreateForm.conversationId || selectedLeadOption?.conversationId || "";
+  }, [appointmentCreateForm.conversationId, selectedLeadOption?.conversationId]);
+
+  const effectiveCreateConversationMeta = useMemo(() => {
+    if (createLeadConversationMeta?.searchedLeadId === appointmentCreateForm.leadId) {
+      return createLeadConversationMeta;
+    }
+
+    if (selectedLeadOption?.conversationId) {
+      return {
+        searchedLeadId: selectedLeadOption.leadId,
+        conversationStatus: selectedLeadOption.conversationStatus || null,
+        isHumanActive: selectedLeadOption.isHumanActive ?? null,
+        lastMessageAt: selectedLeadOption.lastMessageAt || null,
+      };
+    }
+
+    return null;
+  }, [
+    createLeadConversationMeta,
+    appointmentCreateForm.leadId,
+    selectedLeadOption,
+  ]);
+
   const selectedItemLeadOption = useMemo(() => {
     if (!selectedItem?.leadId) return null;
     return leadOptions.find((lead) => lead.leadId === selectedItem.leadId) || null;
@@ -1832,7 +1857,7 @@ export default function SchedulePage() {
       }
 
       let resolvedConversationId =
-        appointmentCreateForm.conversationId || selectedLeadOption?.conversationId || null;
+        effectiveCreateConversationId || null;
 
       if (appointmentCreateForm.leadId && !resolvedConversationId) {
         const { data: fallbackConversation, error: fallbackConversationError } = await supabase
@@ -3174,7 +3199,7 @@ export default function SchedulePage() {
                           : loadingLeadConversation
                           ? "Buscando a conversa mais recente desse lead..."
                           : selectedLeadOption
-                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${appointmentCreateForm.conversationId ? " • Conversa conectada" : " • Ainda não achei conversa vinculada para esse lead"}`
+                          ? `Telefone: ${formatPhone(selectedLeadOption.leadPhone)}${effectiveCreateConversationId ? " • Conversa conectada" : " • Ainda não achei conversa vinculada para esse lead"}`
                           : "Opcional. Ao escolher um lead, nome e telefone podem ser preenchidos automaticamente."}
                       </div>
                     </div>
@@ -3184,7 +3209,7 @@ export default function SchedulePage() {
                         Conversa vinculada
                       </label>
                       <input
-                        value={appointmentCreateForm.conversationId}
+                        value={effectiveCreateConversationId}
                         readOnly
                         placeholder="Será preenchida automaticamente pelo lead"
                         className="w-full rounded-xl border border-black/10 bg-gray-50 px-3 py-2 text-sm text-gray-600 outline-none"
@@ -3192,11 +3217,11 @@ export default function SchedulePage() {
                       <div className="mt-1 text-xs text-gray-500">
                         {loadingLeadConversation
                           ? "Buscando a conversa mais recente desse lead..."
-                          : appointmentCreateForm.conversationId
-                          ? createLeadConversationMeta?.isHumanActive
+                          : effectiveCreateConversationId
+                          ? effectiveCreateConversationMeta?.isHumanActive
                             ? "Conversa conectada com humano ativo neste momento."
-                            : createLeadConversationMeta?.lastMessageAt
-                            ? `Conversa conectada • Última mensagem em ${formatDateTime(createLeadConversationMeta.lastMessageAt)}`
+                            : effectiveCreateConversationMeta?.lastMessageAt
+                            ? `Conversa conectada • Última mensagem em ${formatDateTime(effectiveCreateConversationMeta.lastMessageAt)}`
                             : "Conversa conectada."
                           : appointmentCreateForm.leadId
                           ? "Ainda não achei conversa recente vinculada para esse lead."
