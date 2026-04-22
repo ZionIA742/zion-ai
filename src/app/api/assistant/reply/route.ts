@@ -681,6 +681,146 @@ function buildPostAppointmentAmbiguityReply(args: {
   return lines.join("\n").trim();
 }
 
+function isOperationallyOpenAppointment(item: AppointmentRow | null | undefined) {
+  if (!item) return false;
+  const status = normalizeText(item.status);
+  return status === "scheduled" || status === "rescheduled";
+}
+
+function buildCustomerIdentityKey(appointment: AppointmentRow | null | undefined) {
+  if (!appointment) return "";
+
+  const phoneDigits = normalizeDigits(appointment.customer_phone);
+  if (phoneDigits.length >= 8) {
+    return `phone:${phoneDigits}`;
+  }
+
+  const customerName = normalizeText(appointment.customer_name);
+  if (customerName.length >= 3) {
+    return `name:${customerName}`;
+  }
+
+  return "";
+}
+
+function getAppointmentReferenceStrength(text: string, appointment: AppointmentRow | undefined) {
+  if (!appointment) return 0;
+
+  const normalizedText = normalizeText(text);
+  const digitText = normalizeDigits(text);
+  let score = 0;
+
+  const phoneDigits = normalizeDigits(appointment.customer_phone);
+  if (phoneDigits.length >= 8 && digitText.includes(phoneDigits)) {
+    score += 100;
+  }
+
+  const customerName = normalizeText(appointment.customer_name);
+  if (customerName && customerName.length >= 3 && normalizedText.includes(customerName)) {
+    score += 20;
+  }
+
+  const title = normalizeText(appointment.title);
+  if (title && title.length >= 3 && normalizedText.includes(title)) {
+    score += 50;
+  }
+
+  const typeLabel = normalizeText(formatAppointmentType(appointment.appointment_type));
+  if (typeLabel && normalizedText.includes(typeLabel)) {
+    score += 30;
+  }
+
+  const dateLabel = normalizeText(formatDateOnly(appointment.scheduled_start || appointment.scheduled_end));
+  if (dateLabel && dateLabel !== 'sem data' && normalizedText.includes(dateLabel)) {
+    score += 40;
+  }
+
+  const timeLabel = normalizeText(formatTimeOnly(appointment.scheduled_start || appointment.scheduled_end));
+  if (timeLabel && timeLabel !== 'sem hora' && normalizedText.includes(timeLabel)) {
+    score += 40;
+  }
+
+  return score;
+}
+
+function findOperationallyRelevantAppointmentsForSameCustomer(args: {
+  appointment: AppointmentRow | undefined;
+  relevantAppointments: AppointmentRow[];
+}) {
+  const identityKey = buildCustomerIdentityKey(args.appointment);
+  if (!identityKey) return [] as AppointmentRow[];
+
+  return args.relevantAppointments.filter((item) => {
+    if (!isOperationallyOpenAppointment(item)) return false;
+    return buildCustomerIdentityKey(item) === identityKey;
+  });
+}
+
+function buildOperationalCustomerAmbiguityReply(args: {
+  currentAppointment: AppointmentRow;
+  relatedAppointments: AppointmentRow[];
+}) {
+  const sorted = [...args.relatedAppointments].sort((a, b) => {
+    const at = a.scheduled_start ? new Date(a.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+    const bt = b.scheduled_start ? new Date(b.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+    return at - bt;
+  });
+
+  const customerName = args.currentAppointment.customer_name || 'esse cliente';
+  const lines: string[] = [];
+  lines.push(`Encontrei mais de um item ativo do cliente ${customerName}.`);
+  lines.push('Antes de atualizar, preciso te confirmar qual deles você quer mexer:');
+  lines.push('');
+
+  sorted.slice(0, 5).forEach((item, index) => {
+    const phoneDigits = normalizeDigits(item.customer_phone);
+    const phoneTail = phoneDigits.length >= 4 ? ` • final ${phoneDigits.slice(-4)}` : '';
+    lines.push(
+      `${index + 1}. ${formatAppointmentType(item.appointment_type)}${item.title ? ` ${item.title}` : ''} • ${formatDateOnly(item.scheduled_start || item.scheduled_end)} às ${formatTimeOnly(item.scheduled_start || item.scheduled_end)}${phoneTail}`
+    );
+  });
+
+  const hasFutureInstallation = sorted.some((item) => normalizeText(item.appointment_type) === 'installation');
+  const hasTechnicalVisit = sorted.some((item) => normalizeText(item.appointment_type) === 'technical_visit');
+
+  if (hasFutureInstallation && hasTechnicalVisit) {
+    lines.push('');
+    lines.push('O que parece mais provável agora é que a visita técnica anterior já tenha sido resolvida, porque já existe uma instalação marcada.');
+    lines.push('Se você quiser, eu posso marcar a visita técnica como concluída e manter a instalação como próxima etapa.');
+  }
+
+  lines.push('');
+  lines.push('Você pode responder, por exemplo: marque a visita técnica como concluída.');
+}
+
+function buildStageReconciliationSuggestionReply(args: {
+  currentAppointment: AppointmentRow;
+  relatedAppointments: AppointmentRow[];
+}) {
+  const currentType = normalizeText(args.currentAppointment.appointment_type);
+  if (currentType !== 'technical_visit') return null;
+
+  const futureInstallation = args.relatedAppointments
+    .filter((item) => item.id !== args.currentAppointment.id)
+    .filter((item) => normalizeText(item.appointment_type) === 'installation')
+    .sort((a, b) => {
+      const at = a.scheduled_start ? new Date(a.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+      const bt = b.scheduled_start ? new Date(b.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+      return at - bt;
+    })[0];
+
+  if (!futureInstallation) return null;
+
+  const customerName = args.currentAppointment.customer_name || 'esse cliente';
+  return [
+    'Encontrei um possível ajuste no sistema:',
+    `${customerName} já tem uma instalação marcada para ${formatDateOnly(futureInstallation.scheduled_start || futureInstallation.scheduled_end)} às ${formatTimeOnly(futureInstallation.scheduled_start || futureInstallation.scheduled_end)}.`,
+    `Então a visita técnica de ${formatDateOnly(args.currentAppointment.scheduled_start || args.currentAppointment.scheduled_end)} às ${formatTimeOnly(args.currentAppointment.scheduled_start || args.currentAppointment.scheduled_end)} provavelmente já foi concluída.`,
+    '',
+    'Posso marcar essa visita técnica como concluída?',
+  ].join("\n").trim();
+}
+
 function resolveTargetPostAppointmentIndex(args: {
   text: string;
   openItems: PostAppointmentFollowupRow[];
@@ -771,6 +911,7 @@ async function resolvePostAppointmentActionReply(args: {
   recentMessages: AssistantMessageRow[];
   pendingPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
+  relevantAppointments: AppointmentRow[];
 }) {
   const action = resolvePostAppointmentAction(args.lastHumanMessage);
   if (!action) {
@@ -812,6 +953,33 @@ async function resolvePostAppointmentActionReply(args: {
   const selectedFollowup = openItems[selectedIndex];
   const selectedAppointment = args.appointmentMap.get(selectedFollowup.appointment_id);
   const itemNumber = selectedIndex + 1;
+
+  if (selectedAppointment) {
+    const relatedAppointments = findOperationallyRelevantAppointmentsForSameCustomer({
+      appointment: selectedAppointment,
+      relevantAppointments: args.relevantAppointments || [],
+    }).filter((item) => item.id !== selectedAppointment.id);
+
+    const referenceStrength = getAppointmentReferenceStrength(args.lastHumanMessage, selectedAppointment);
+
+    if (relatedAppointments.length > 0 && referenceStrength < 30) {
+      return buildOperationalCustomerAmbiguityReply({
+        currentAppointment: selectedAppointment,
+        relatedAppointments: [selectedAppointment, ...relatedAppointments],
+      });
+    }
+
+    if (relatedAppointments.length > 0 && action === "complete" && referenceStrength < 80) {
+      const stageSuggestion = buildStageReconciliationSuggestionReply({
+        currentAppointment: selectedAppointment,
+        relatedAppointments: [selectedAppointment, ...relatedAppointments],
+      });
+
+      if (stageSuggestion) {
+        return stageSuggestion;
+      }
+    }
+  }
 
   if (!selectedAppointment && (action === "complete" || action === "cancel" || action === "needs_followup")) {
     return `Eu até identifiquei o caso ${itemNumber}, mas não achei os dados completos do compromisso para aplicar essa atualização com segurança.`;
@@ -2184,6 +2352,15 @@ async function generateAssistantReply(params: {
           recentMessages,
           pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
           appointmentMap,
+          relevantAppointments: Array.from(
+            new Map(
+              [
+                ...((todayAppointmentsData || []) as AppointmentRow[]),
+                ...((nextAppointmentsData || []) as AppointmentRow[]),
+                ...((overdueAppointmentsData || []) as AppointmentRow[]),
+              ].map((item) => [item.id, item])
+            ).values()
+          ),
         })
       : null;
 
