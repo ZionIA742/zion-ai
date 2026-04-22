@@ -356,14 +356,23 @@ function asksAboutPostAppointment(text: string) {
     "remarcado",
     "cancelamento",
     "cancelado",
-    "concluido",
-    "concluida",
-    "marque como concluido",
-    "marque como concluida",
-    "marca como concluido",
-    "marca como concluida",
     "conclusao da visita",
     "conclusao do compromisso",
+    "sobre o cliente",
+    "sobre o brian",
+    "esse caso foi",
+    "esse atendimento foi",
+    "marque como concluido",
+    "marque como concluído",
+    "marca como concluido",
+    "marca como concluído",
+    "marque como cancelado",
+    "marca como cancelado",
+    "marque como remarcado",
+    "marca como remarcado",
+    "conclua",
+    "cancele",
+    "remarque",
   ]);
 }
 
@@ -522,8 +531,11 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "foi concluído",
       "marcar como concluido",
       "marcar como concluído",
+      "marque como concluido",
+      "marque como concluído",
       "marca como concluido",
       "marca como concluído",
+      "conclua",
       "pode concluir",
       "pode marcar como concluido",
       "pode marcar como concluído",
@@ -541,7 +553,9 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "foi cancelado",
       "foi cancelada",
       "marcar como cancelado",
+      "marque como cancelado",
       "marca como cancelado",
+      "cancele",
       "pode cancelar",
       "pode marcar como cancelado",
       "ja foi cancelado",
@@ -559,7 +573,9 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "foi remarcado",
       "foi remarcada",
       "marcar como remarcado",
+      "marque como remarcado",
       "marca como remarcado",
+      "remarque",
       "pode remarcar",
       "pode marcar como remarcado",
       "ja foi remarcado",
@@ -617,37 +633,6 @@ function resolvePostAppointmentCandidateIndexesFromText(args: {
   if (customerMatches.length) return customerMatches;
   if (titleMatches.length) return titleMatches;
   return [] as number[];
-}
-
-function getNameOnlyPostAppointmentCustomerMatches(args: {
-  text: string;
-  openItems: PostAppointmentFollowupRow[];
-  appointmentMap: Map<string, AppointmentRow>;
-}) {
-  const normalizedText = normalizeText(args.text);
-  if (!normalizedText) return [] as number[];
-
-  const lowered = ` ${normalizedText} `;
-  const matches: number[] = [];
-
-  args.openItems.forEach((item, index) => {
-    const appointment = args.appointmentMap.get(item.appointment_id);
-    const customerName = normalizeText(appointment?.customer_name);
-    if (!customerName || customerName.length < 3) return;
-
-    const nameOnlyPatterns = [
-      ` cliente ${customerName} `,
-      ` ${customerName},`,
-      ` ${customerName}.`,
-      ` ${customerName} `,
-    ];
-
-    if (nameOnlyPatterns.some((pattern) => lowered.includes(pattern))) {
-      matches.push(index);
-    }
-  });
-
-  return Array.from(new Set(matches));
 }
 
 function inferPreviousPostAppointmentTarget(args: {
@@ -729,16 +714,6 @@ function resolveTargetPostAppointmentIndex(args: {
     return { type: "unique" as const, index: explicitIndex };
   }
 
-  const nameOnlyMatches = getNameOnlyPostAppointmentCustomerMatches({
-    text: args.text,
-    openItems: args.openItems,
-    appointmentMap: args.appointmentMap,
-  });
-
-  if (nameOnlyMatches.length > 1) {
-    return { type: "ambiguous" as const, candidateIndexes: nameOnlyMatches };
-  }
-
   const currentCandidates = resolvePostAppointmentCandidateIndexesFromText({
     text: args.text,
     openItems: args.openItems,
@@ -751,10 +726,6 @@ function resolveTargetPostAppointmentIndex(args: {
 
   if (currentCandidates.length > 1) {
     return { type: "ambiguous" as const, candidateIndexes: currentCandidates };
-  }
-
-  if (nameOnlyMatches.length === 1) {
-    return { type: "unique" as const, index: nameOnlyMatches[0] };
   }
 
   if (
