@@ -2006,9 +2006,10 @@ async function resolveBlockDayReply(args: {
     })
   );
 
-  const shouldProceedWithBlock = appointmentsOnDay.length === 0 || currentLooksLikeFollowup;
+  const rescheduleInstruction = parseRescheduleInstructionFromText(currentMessage, new Date());
+  const wantsCancel = currentLooksLikeFollowup && hasAnyTerm(normalizeText(currentMessage), ["cancela", "cancele", "cancelar"]);
 
-  if (appointmentsOnDay.length > 0 && !shouldProceedWithBlock) {
+  if (appointmentsOnDay.length > 0 && !currentLooksLikeFollowup) {
     const lines: string[] = [];
     lines.push(`Encontrei ${appointmentsOnDay.length === 1 ? "1 compromisso" : `${appointmentsOnDay.length} compromissos`} nesse dia.`);
     lines.push("Antes de bloquear, você quer que eu siga com o bloqueio mesmo assim?");
@@ -2026,8 +2027,67 @@ async function resolveBlockDayReply(args: {
       lines.push("");
     });
 
-    lines.push("Se você confirmar, eu bloqueio o dia e depois a gente decide quais desses compromissos precisam ser remarcados.");
+    lines.push("Se você confirmar, eu sigo com o bloqueio. Se quiser, você também pode me dizer o que fazer com os compromissos do dia, por exemplo: remarca para dia 24 ou cancela esse compromisso.");
     return lines.join("\n").trim();
+  }
+
+  if (appointmentsOnDay.length > 1 && currentLooksLikeFollowup) {
+    if (rescheduleInstruction) {
+      return `Encontrei ${appointmentsOnDay.length} compromissos nesse dia. Para eu remarcar e depois bloquear, preciso que você me diga qual deles devo mover primeiro.`;
+    }
+
+    if (wantsCancel) {
+      return `Encontrei ${appointmentsOnDay.length} compromissos nesse dia. Para eu cancelar e depois bloquear, preciso que você me diga qual deles devo cancelar primeiro.`;
+    }
+
+    return `Esse dia ainda tem ${appointmentsOnDay.length} compromissos em aberto. Para eu bloquear de verdade, primeiro preciso saber o que fazer com eles.`;
+  }
+
+  if (appointmentsOnDay.length === 1 && currentLooksLikeFollowup) {
+    const selectedAppointment = appointmentsOnDay[0];
+
+    if (rescheduleInstruction) {
+      const nextRange = buildRescheduledDateRangeFromAppointment({
+        appointment: selectedAppointment,
+        targetDate: rescheduleInstruction.dateParts,
+        hour: rescheduleInstruction.hour,
+        minute: rescheduleInstruction.minute,
+      });
+
+      const { error: updateError } = await args.supabase.rpc("update_store_appointment", {
+        p_appointment_id: selectedAppointment.id,
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_title: selectedAppointment.title || buildScheduleAppointmentReferenceLabel(selectedAppointment),
+        p_appointment_type: selectedAppointment.appointment_type || "other",
+        p_status: "rescheduled",
+        p_scheduled_start: nextRange.startIso,
+        p_scheduled_end: nextRange.endIso,
+        p_customer_name: selectedAppointment.customer_name,
+        p_customer_phone: selectedAppointment.customer_phone,
+        p_address_text: selectedAppointment.address_text,
+        p_notes: selectedAppointment.notes,
+      });
+
+      if (updateError) {
+        return `Tentei remarcar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}, mas encontrei um erro: ${updateError.message}`;
+      }
+    } else if (wantsCancel) {
+      const { error: cancelError } = await args.supabase.rpc("cancel_store_appointment", {
+        p_appointment_id: selectedAppointment.id,
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_cancel_reason: "Cancelado pela assistente operacional para liberar bloqueio solicitado pelo responsável da loja.",
+      });
+
+      if (cancelError) {
+        return `Tentei cancelar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}, mas encontrei um erro: ${cancelError.message}`;
+      }
+    } else if (!isSimplePositiveConfirmation(currentMessage)) {
+      return `Antes de eu bloquear ${formatDateOnly(startIso)}, me diga o que fazer com ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Exemplo: remarca para dia 24 ou cancela esse compromisso.`;
+    } else {
+      return `Antes de eu bloquear ${formatDateOnly(startIso)}, preciso saber o que fazer com ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Você quer que eu remarque ou cancele?`;
+    }
   }
 
   const existingBlockResponse = await args.supabase
@@ -2044,6 +2104,8 @@ async function resolveBlockDayReply(args: {
     return `Tentei verificar se esse dia já estava bloqueado, mas encontrei um erro: ${existingBlockResponse.error.message}`;
   }
 
+  let blockCreatedNow = false;
+
   if (!existingBlockResponse.data?.id) {
     const { error } = await args.supabase.rpc("create_store_schedule_block", {
       p_organization_id: args.organizationId,
@@ -2052,9 +2114,7 @@ async function resolveBlockDayReply(args: {
       p_block_type: "manual_block",
       p_start_at: startIso,
       p_end_at: endIso,
-      p_notes: appointmentsOnDay.length > 0
-        ? "Bloqueado pela assistente operacional a pedido do responsável da loja. Existem compromissos nesse dia e eles precisam ser tratados depois do bloqueio."
-        : "Bloqueado pela assistente operacional a pedido do responsável da loja.",
+      p_notes: "Bloqueado pela assistente operacional a pedido do responsável da loja.",
       p_source: "ai_operator",
       p_created_by_user_id: null,
     });
@@ -2062,45 +2122,15 @@ async function resolveBlockDayReply(args: {
     if (error) {
       return `Tentei bloquear esse dia, mas encontrei um erro: ${error.message}`;
     }
+
+    blockCreatedNow = true;
   }
 
-  const rescheduleInstruction = parseRescheduleInstructionFromText(currentMessage, new Date());
-  if (appointmentsOnDay.length === 1 && rescheduleInstruction) {
-    const selectedAppointment = appointmentsOnDay[0];
-    const nextRange = buildRescheduledDateRangeFromAppointment({
-      appointment: selectedAppointment,
-      targetDate: rescheduleInstruction.dateParts,
-      hour: rescheduleInstruction.hour,
-      minute: rescheduleInstruction.minute,
-    });
-
-    const { error: updateError } = await args.supabase.rpc("update_store_appointment", {
-      p_appointment_id: selectedAppointment.id,
-      p_organization_id: args.organizationId,
-      p_store_id: args.storeId,
-      p_title: selectedAppointment.title || buildScheduleAppointmentReferenceLabel(selectedAppointment),
-      p_appointment_type: selectedAppointment.appointment_type || "other",
-      p_status: "rescheduled",
-      p_scheduled_start: nextRange.startIso,
-      p_scheduled_end: nextRange.endIso,
-      p_customer_name: selectedAppointment.customer_name,
-      p_customer_phone: selectedAppointment.customer_phone,
-      p_address_text: selectedAppointment.address_text,
-      p_notes: selectedAppointment.notes,
-    });
-
-    if (updateError) {
-      return `Bloqueei o dia ${formatDateOnly(startIso)}, mas não consegui remarcar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}: ${updateError.message}`;
-    }
-
-    return `Certo. Bloqueei o dia ${formatDateOnly(startIso)} e remarquei ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} para ${formatDateOnly(nextRange.startIso)} às ${formatTimeOnly(nextRange.startIso)}.`;
+  if (appointmentsOnDay.length === 0) {
+    return `Certo. ${blockCreatedNow ? "Bloqueei" : "Esse dia já estava bloqueado"} o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`;
   }
 
-  if (appointmentsOnDay.length > 0) {
-    return `Certo. Bloqueei o dia ${formatDateOnly(startIso)}. Ainda existem compromissos marcados nesse dia, então o próximo passo é decidir quais deles precisam ser remarcados ou cancelados.`;
-  }
-
-  return `Certo. Bloqueei o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`;
+  return `Certo. ${blockCreatedNow ? "Bloqueei" : "Esse dia já estava bloqueado"} o dia ${formatDateOnly(startIso)}.`;
 }
 
 
