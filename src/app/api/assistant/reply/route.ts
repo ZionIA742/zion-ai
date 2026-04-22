@@ -358,38 +358,6 @@ function asksAboutPostAppointment(text: string) {
     "cancelado",
     "conclusao da visita",
     "conclusao do compromisso",
-    "deixar como concluido",
-    "deixar como concluída",
-    "deixar como concluida",
-    "deixa como concluido",
-    "deixa como concluida",
-    "deixa como concluída",
-    "pode deixar como concluido",
-    "pode deixar como concluida",
-    "pode deixar como concluída",
-    "marque como concluido",
-    "marque como concluida",
-    "marque como concluída",
-    "marca como concluido",
-    "marca como concluida",
-    "marca como concluída",
-    "pode marcar como concluido",
-    "pode marcar como concluida",
-    "pode marcar como concluída",
-    "quero atualizar",
-    "quero resolver",
-    "esse retorno",
-    "esse acompanhamento",
-    "retorno apos a instalacao",
-    "retorno após a instalação",
-    "retorno da instalacao",
-    "retorno da instalação",
-    "apos a instalacao",
-    "após a instalação",
-    "esse da instalacao",
-    "esse da instalação",
-    "esse da visita",
-    "sobre o cliente",
   ]);
 }
 
@@ -533,7 +501,6 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "continua aguardando",
       "manter pendente",
       "deixa pendente",
-      "pode deixar pendente",
       "ainda nao concluiu",
       "ainda não concluiu",
       "ainda nao terminou",
@@ -549,30 +516,13 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "foi concluído",
       "marcar como concluido",
       "marcar como concluído",
-      "marcar como concluida",
-      "marcar como concluída",
       "marca como concluido",
       "marca como concluído",
-      "marca como concluida",
-      "marca como concluída",
       "pode concluir",
       "pode marcar como concluido",
       "pode marcar como concluído",
-      "pode marcar como concluida",
-      "pode marcar como concluída",
-      "deixar como concluido",
-      "deixar como concluída",
-      "deixar como concluida",
-      "deixa como concluido",
-      "deixa como concluída",
-      "deixa como concluida",
-      "pode deixar como concluido",
-      "pode deixar como concluída",
-      "pode deixar como concluida",
       "ja foi concluido",
       "já foi concluído",
-      "quero atualizar",
-      "quero resolver",
       "terminou tudo",
       "terminou sim",
     ])
@@ -588,9 +538,6 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "marca como cancelado",
       "pode cancelar",
       "pode marcar como cancelado",
-      "deixar como cancelado",
-      "deixa como cancelado",
-      "pode deixar como cancelado",
       "ja foi cancelado",
       "já foi cancelado",
       "cancelou",
@@ -609,9 +556,6 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "marca como remarcado",
       "pode remarcar",
       "pode marcar como remarcado",
-      "deixar como remarcado",
-      "deixa como remarcado",
-      "pode deixar como remarcado",
       "ja foi remarcado",
       "já foi remarcado",
       "remarcou",
@@ -642,8 +586,6 @@ function resolvePostAppointmentCandidateIndexesFromText(args: {
   const phoneMatches: number[] = [];
   const customerMatches: number[] = [];
   const titleMatches: number[] = [];
-  const strongContextMatches: number[] = [];
-  const typeMatches: number[] = [];
 
   args.openItems.forEach((item, index) => {
     const appointment = args.appointmentMap.get(item.appointment_id);
@@ -663,87 +605,11 @@ function resolvePostAppointmentCandidateIndexesFromText(args: {
     if (title && title.length >= 3 && normalizedText.includes(title)) {
       titleMatches.push(index);
     }
-
-    const typeCode = normalizeText(appointment.appointment_type);
-    const typeLabel = normalizeText(formatAppointmentType(appointment.appointment_type));
-
-    const mentionsInstallation =
-      normalizedText.includes("instalacao") ||
-      normalizedText.includes("instalação");
-    const mentionsVisit =
-      normalizedText.includes("visita tecnica") ||
-      normalizedText.includes("visita técnica") ||
-      normalizedText.includes("visita");
-    const mentionsMaintenance = normalizedText.includes("manutencao") || normalizedText.includes("manutenção");
-    const mentionsReturn =
-      normalizedText.includes("retorno") ||
-      normalizedText.includes("acompanhamento") ||
-      normalizedText.includes("pos compromisso") ||
-      normalizedText.includes("pos-compromisso");
-
-    if (mentionsInstallation && (typeCode === "installation" || typeLabel.includes("instalacao") || typeLabel.includes("instalação"))) {
-      typeMatches.push(index);
-    }
-
-    if (mentionsVisit && (typeCode === "technical_visit" || typeLabel.includes("visita"))) {
-      typeMatches.push(index);
-    }
-
-    if (mentionsMaintenance && (typeCode === "maintenance" || typeLabel.includes("manutencao") || typeLabel.includes("manutenção"))) {
-      typeMatches.push(index);
-    }
-
-    if (
-      mentionsReturn &&
-      (
-        normalizedText.includes("apos a instalacao") ||
-        normalizedText.includes("após a instalação") ||
-        normalizedText.includes("retorno apos a instalacao") ||
-        normalizedText.includes("retorno após a instalação") ||
-        normalizedText.includes("retorno da instalacao") ||
-        normalizedText.includes("retorno da instalação")
-      ) &&
-      typeCode === "installation"
-    ) {
-      strongContextMatches.push(index);
-    }
-
-    if (
-      mentionsReturn &&
-      (
-        normalizedText.includes("apos a visita") ||
-        normalizedText.includes("após a visita") ||
-        normalizedText.includes("retorno da visita") ||
-        normalizedText.includes("retorno apos a visita") ||
-        normalizedText.includes("retorno após a visita")
-      ) &&
-      typeCode === "technical_visit"
-    ) {
-      strongContextMatches.push(index);
-    }
-
-    if (
-      mentionsReturn &&
-      customerName &&
-      customerName.length >= 3 &&
-      normalizedText.includes(customerName) &&
-      (normalizedText.includes("esse retorno") || normalizedText.includes("esse acompanhamento"))
-    ) {
-      strongContextMatches.push(index);
-    }
   });
 
-  const dedup = (values: number[]) => [...new Set(values)];
-
-  if (phoneMatches.length) return dedup(phoneMatches);
-  if (strongContextMatches.length) return dedup(strongContextMatches);
-  if (customerMatches.length && typeMatches.length) {
-    const intersection = dedup(customerMatches.filter((index) => typeMatches.includes(index)));
-    if (intersection.length) return intersection;
-  }
-  if (customerMatches.length) return dedup(customerMatches);
-  if (titleMatches.length) return dedup(titleMatches);
-  if (typeMatches.length) return dedup(typeMatches);
+  if (phoneMatches.length) return phoneMatches;
+  if (customerMatches.length) return customerMatches;
+  if (titleMatches.length) return titleMatches;
   return [] as number[];
 }
 
@@ -850,14 +716,6 @@ function resolveTargetPostAppointmentIndex(args: {
       "pode cancelar esse",
       "pode concluir esse",
       "pode deixar esse",
-      "esse retorno",
-      "esse acompanhamento",
-      "esse retorno apos a instalacao",
-      "esse retorno após a instalação",
-      "esse retorno da instalacao",
-      "esse retorno da instalação",
-      "esse da instalacao",
-      "esse da instalação",
       "marque como",
       "marca como",
       "marque o caso",
@@ -889,20 +747,28 @@ function buildPostAppointmentActionSuccessReply(args: {
   const typeLabel = args.appointment
     ? formatAppointmentType(args.appointment.appointment_type)
     : "atendimento";
+  const titleLabel = String(args.appointment?.title || "").trim();
+  const referenceLabel = titleLabel ? `${typeLabel} ${titleLabel}` : typeLabel;
 
   if (args.action === "complete") {
-    return `Certo. Marquei o caso ${args.itemNumber} como concluído.\n\nEsse ${typeLabel} de ${customerName} saiu da fila de pós-compromisso pendente.`;
+    return `Certo. Marquei como concluído ${referenceLabel} de ${customerName}.
+
+Esse item saiu da fila de pós-compromisso pendente.`;
   }
 
   if (args.action === "cancel") {
-    return `Certo. Marquei o caso ${args.itemNumber} como cancelado.\n\nEsse ${typeLabel} de ${customerName} saiu da fila de pós-compromisso pendente.`;
+    return `Certo. Marquei como cancelado ${referenceLabel} de ${customerName}.
+
+Esse item saiu da fila de pós-compromisso pendente.`;
   }
 
   if (args.action === "needs_followup") {
-    return `Certo. Mantive o caso ${args.itemNumber} como pendente de retorno.\n\nEsse ${typeLabel} de ${customerName} continua na fila de acompanhamento.`;
+    return `Certo. Mantive como pendente de retorno ${referenceLabel} de ${customerName}.
+
+Esse item continua na fila de acompanhamento.`;
   }
 
-  return `Para marcar o caso ${args.itemNumber} como remarcado, eu preciso que você me diga a nova data e o novo horário.`;
+  return `Para marcar como remarcado ${referenceLabel} de ${customerName}, eu preciso que você me diga a nova data e o novo horário.`;
 }
 
 async function resolvePostAppointmentActionReply(args: {
