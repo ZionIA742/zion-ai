@@ -2033,61 +2033,44 @@ async function resolveBlockDayReply(args: {
 
   if (appointmentsOnDay.length > 1 && currentLooksLikeFollowup) {
     if (rescheduleInstruction) {
-      return `Encontrei ${appointmentsOnDay.length} compromissos nesse dia. Para eu remarcar e depois bloquear, preciso que você me diga qual deles devo mover primeiro.`;
+      return `Encontrei ${appointmentsOnDay.length} compromissos nesse dia. Para bloquear ${formatDateOnly(startIso)} sem prometer algo que ainda não foi alinhado, eu preciso tratar cada remarcação com o cliente antes. Me diga qual compromisso devo colocar em andamento primeiro.`;
     }
 
     if (wantsCancel) {
-      return `Encontrei ${appointmentsOnDay.length} compromissos nesse dia. Para eu cancelar e depois bloquear, preciso que você me diga qual deles devo cancelar primeiro.`;
+      return `Encontrei ${appointmentsOnDay.length} compromissos nesse dia. Para bloquear ${formatDateOnly(startIso)} sem avisar errado, eu preciso alinhar cada cancelamento com o cliente antes. Me diga qual compromisso devo tratar primeiro.`;
     }
 
-    return `Esse dia ainda tem ${appointmentsOnDay.length} compromissos em aberto. Para eu bloquear de verdade, primeiro preciso saber o que fazer com eles.`;
+    return `Esse dia ainda tem ${appointmentsOnDay.length} compromissos em aberto. Eu só consigo bloquear de verdade depois que esses atendimentos forem resolvidos. Me diga qual deles você quer tratar primeiro.`;
   }
 
   if (appointmentsOnDay.length === 1 && currentLooksLikeFollowup) {
     const selectedAppointment = appointmentsOnDay[0];
+    const selectedLabel = buildScheduleAppointmentReferenceLabel(selectedAppointment);
+    const selectedCustomer = selectedAppointment.customer_name || "cliente não identificado";
 
     if (rescheduleInstruction) {
-      const nextRange = buildRescheduledDateRangeFromAppointment({
-        appointment: selectedAppointment,
-        targetDate: rescheduleInstruction.dateParts,
-        hour: rescheduleInstruction.hour,
-        minute: rescheduleInstruction.minute,
-      });
+      const nextDateLabel = formatDateOnly(new Date(
+        rescheduleInstruction.dateParts.year,
+        rescheduleInstruction.dateParts.month,
+        rescheduleInstruction.dateParts.day,
+        12,
+        0,
+        0,
+        0
+      ).toISOString());
 
-      const { error: updateError } = await args.supabase.rpc("update_store_appointment", {
-        p_appointment_id: selectedAppointment.id,
-        p_organization_id: args.organizationId,
-        p_store_id: args.storeId,
-        p_title: selectedAppointment.title || buildScheduleAppointmentReferenceLabel(selectedAppointment),
-        p_appointment_type: selectedAppointment.appointment_type || "other",
-        p_status: "rescheduled",
-        p_scheduled_start: nextRange.startIso,
-        p_scheduled_end: nextRange.endIso,
-        p_customer_name: selectedAppointment.customer_name,
-        p_customer_phone: selectedAppointment.customer_phone,
-        p_address_text: selectedAppointment.address_text,
-        p_notes: selectedAppointment.notes,
-      });
-
-      if (updateError) {
-        return `Tentei remarcar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}, mas encontrei um erro: ${updateError.message}`;
-      }
-    } else if (wantsCancel) {
-      const { error: cancelError } = await args.supabase.rpc("cancel_store_appointment", {
-        p_appointment_id: selectedAppointment.id,
-        p_organization_id: args.organizationId,
-        p_store_id: args.storeId,
-        p_cancel_reason: "Cancelado pela assistente operacional para liberar bloqueio solicitado pelo responsável da loja.",
-      });
-
-      if (cancelError) {
-        return `Tentei cancelar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}, mas encontrei um erro: ${cancelError.message}`;
-      }
-    } else if (!isSimplePositiveConfirmation(currentMessage)) {
-      return `Antes de eu bloquear ${formatDateOnly(startIso)}, me diga o que fazer com ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Exemplo: remarca para dia 24 ou cancela esse compromisso.`;
-    } else {
-      return `Antes de eu bloquear ${formatDateOnly(startIso)}, preciso saber o que fazer com ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Você quer que eu remarque ou cancele?`;
+      return `Entendi. Eu ainda não remarquei ${selectedLabel} de ${selectedCustomer}. Para fazer isso do jeito certo, preciso alinhar outro horário com o cliente primeiro. Depois que essa remarcação for confirmada, eu bloqueio ${formatDateOnly(startIso)}.`;
     }
+
+    if (wantsCancel) {
+      return `Entendi. Eu ainda não cancelei ${selectedLabel} de ${selectedCustomer}. Para cancelar do jeito certo, preciso alinhar isso com o cliente primeiro. Depois que isso estiver resolvido, eu bloqueio ${formatDateOnly(startIso)}.`;
+    }
+
+    if (!isSimplePositiveConfirmation(currentMessage)) {
+      return `Antes de eu bloquear ${formatDateOnly(startIso)}, preciso definir o que vai acontecer com ${selectedLabel} de ${selectedCustomer}. Se quiser, eu posso deixar em andamento a remarcação com o cliente ou o cancelamento desse compromisso.`;
+    }
+
+    return `Eu ainda não consigo bloquear ${formatDateOnly(startIso)} porque ${selectedLabel} de ${selectedCustomer} continua marcado nesse dia. Primeiro preciso alinhar com o cliente se esse compromisso vai ser remarcado ou cancelado.`;
   }
 
   const existingBlockResponse = await args.supabase
@@ -2193,7 +2176,7 @@ async function resolveAppointmentActionReply(args: {
   const selectedAppointment = openAppointments[selectedIndex];
 
   if (action === "reschedule") {
-    return `Para remarcar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} do jeito certo, eu preciso ver horários livres da loja e alinhar com o cliente antes. Se quiser, eu sigo com esse pedido agora.`;
+    return `Entendi o pedido. Eu ainda não remarquei ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Para fazer isso do jeito certo, preciso ver horários livres da loja e alinhar com o cliente antes.`;
   }
 
   if (action === "complete") {
@@ -2223,7 +2206,7 @@ async function resolveAppointmentActionReply(args: {
   }
 
   if (action === "cancel") {
-    return `Para cancelar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} do jeito certo, eu preciso alinhar isso com o cliente antes. Se quiser, eu sigo com esse pedido agora.`;
+    return `Entendi o pedido. Eu ainda não cancelei ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Para cancelar do jeito certo, preciso alinhar isso com o cliente antes.`;
   }
 
   return null;
