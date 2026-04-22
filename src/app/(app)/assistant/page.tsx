@@ -261,13 +261,8 @@ export default function AssistantPage() {
     const shouldAutoScroll = !firstLoadDoneRef.current || hasNewMessages;
 
     window.requestAnimationFrame(() => {
-      if (!chatScrollRef.current) {
+      if (!chatScrollRef.current || !shouldAutoScroll) {
         firstLoadDoneRef.current = true;
-        lastMessageCountRef.current = messages.length;
-        return;
-      }
-
-      if (!shouldAutoScroll) {
         lastMessageCountRef.current = messages.length;
         return;
       }
@@ -277,9 +272,9 @@ export default function AssistantPage() {
         behavior: firstLoadDoneRef.current ? "smooth" : "auto",
       });
 
+      shouldStickToBottomRef.current = true;
       firstLoadDoneRef.current = true;
       lastMessageCountRef.current = messages.length;
-      shouldStickToBottomRef.current = true;
     });
   }, [messages, loading, searchOpen]);
 
@@ -451,14 +446,16 @@ export default function AssistantPage() {
         ) : null}
 
         <section className="mb-4 rounded-3xl bg-white shadow-sm ring-1 ring-black/10 overflow-hidden">
-          <div className="border-b border-black/10 px-4 py-3 md:px-5">
-            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div>
+          <div className="px-4 py-3 md:px-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
                 <div className="text-base font-bold text-gray-900">Canal do responsável</div>
-                <div className="mt-0.5 text-xs text-gray-600">Conversa única da assistente com o administrador da loja.</div>
+                <div className="mt-1 inline-flex items-center rounded-full bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-black/5">
+                  Thread principal da assistente
+                </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 md:flex md:flex-wrap md:items-center">
+              <div className="grid grid-cols-3 gap-2 md:flex md:flex-wrap md:items-center">
                 <div className="rounded-2xl border border-black/10 bg-white px-3 py-2">
                   <div className="text-[10px] uppercase tracking-wide text-gray-500">Thread</div>
                   <div className="mt-1 text-sm font-semibold text-gray-900">{summary?.title || "Assistente da Loja"}</div>
@@ -474,10 +471,6 @@ export default function AssistantPage() {
                   <div className="mt-1 text-lg font-bold text-gray-900">{summary?.pending_notifications ?? 0}</div>
                 </div>
               </div>
-            </div>
-
-            <div className="mt-2 line-clamp-2 text-xs leading-5 text-gray-600">
-              {summary?.last_message_preview || "Ainda não há mensagens nesta thread."}
             </div>
           </div>
         </section>
