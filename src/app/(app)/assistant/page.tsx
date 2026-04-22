@@ -43,6 +43,31 @@ function formatDateTime(value: string | null) {
   return date.toLocaleString("pt-BR");
 }
 
+function formatTime(value: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDayDivider(value: string | null) {
+  if (!value) return "Sem data";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Sem data";
+  return date.toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function toDayKey(value: string | null) {
+  if (!value) return "sem-data";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "sem-data";
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+}
+
 function shortId(value: string | null | undefined) {
   if (!value) return "-";
   return value.slice(0, 8);
@@ -58,22 +83,62 @@ function formatMessageType(value: string | null | undefined) {
   return "Mensagem";
 }
 
-function bubbleClass(message: AssistantMessage) {
-  if (message.sender_role === "assistant_operational") {
-    return "ml-auto bg-black text-white";
-  }
-
-  if (message.sender_role === "store_responsible") {
-    return "ml-auto bg-blue-50 text-gray-900 ring-1 ring-blue-200";
-  }
-
-  return "bg-white text-gray-900 ring-1 ring-black/10";
-}
-
 function senderLabel(message: AssistantMessage) {
   if (message.sender_role === "assistant_operational") return "Assistente";
   if (message.sender_role === "store_responsible") return "Responsável";
   return "Sistema";
+}
+
+function isAssistantBubble(message: AssistantMessage) {
+  return message.sender_role === "assistant_operational";
+}
+
+function bubbleWrapperClass(message: AssistantMessage) {
+  if (isAssistantBubble(message)) {
+    return "justify-start";
+  }
+
+  if (message.sender_role === "store_responsible") {
+    return "justify-end";
+  }
+
+  return "justify-center";
+}
+
+function bubbleClass(message: AssistantMessage) {
+  if (isAssistantBubble(message)) {
+    return "bg-white text-gray-900 ring-1 ring-black/10 rounded-2xl rounded-bl-md";
+  }
+
+  if (message.sender_role === "store_responsible") {
+    return "bg-[#dcf8c6] text-gray-900 ring-1 ring-black/5 rounded-2xl rounded-br-md";
+  }
+
+  return "bg-gray-100 text-gray-800 ring-1 ring-black/5 rounded-2xl";
+}
+
+function normalizeText(value: string | null | undefined) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function matchesSearch(message: AssistantMessage, query: string) {
+  const q = normalizeText(query);
+  if (!q) return true;
+
+  const haystack = [
+    message.content,
+    senderLabel(message),
+    formatMessageType(message.message_type),
+    formatDateTime(message.created_at),
+  ]
+    .map((item) => normalizeText(item))
+    .join(" \n ");
+
+  return haystack.includes(q);
 }
 
 export default function AssistantPage() {
@@ -93,7 +158,9 @@ export default function AssistantPage() {
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState("");
-  const restoredScrollRef = useRef(false);
+  const [searchText, setSearchText] = useState("");
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const firstLoadDoneRef = useRef(false);
 
   const canLoad = useMemo(() => {
     return !storeLoading && !!organizationId && !!activeStoreId;
@@ -169,13 +236,16 @@ export default function AssistantPage() {
 
   useEffect(() => {
     if (loading) return;
-    if (restoredScrollRef.current) return;
 
     window.requestAnimationFrame(() => {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: "auto" });
-      restoredScrollRef.current = true;
+      if (!chatScrollRef.current) return;
+      chatScrollRef.current.scrollTo({
+        top: chatScrollRef.current.scrollHeight,
+        behavior: firstLoadDoneRef.current ? "smooth" : "auto",
+      });
+      firstLoadDoneRef.current = true;
     });
-  }, [loading]);
+  }, [messages, loading]);
 
   async function sendMessageToAssistant() {
     const text = newMessage.trim();
@@ -237,17 +307,42 @@ export default function AssistantPage() {
     }
   }
 
+  const filteredMessages = useMemo(() => {
+    return messages.filter((message) => matchesSearch(message, searchText));
+  }, [messages, searchText]);
+
+  const groupedMessages = useMemo(() => {
+    const groups: Array<{ dayKey: string; dayLabel: string; items: AssistantMessage[] }> = [];
+
+    filteredMessages.forEach((message) => {
+      const dayKey = toDayKey(message.created_at);
+      const existing = groups[groups.length - 1];
+      if (!existing || existing.dayKey !== dayKey) {
+        groups.push({
+          dayKey,
+          dayLabel: formatDayDivider(message.created_at),
+          items: [message],
+        });
+        return;
+      }
+
+      existing.items.push(message);
+    });
+
+    return groups;
+  }, [filteredMessages]);
+
   if (loading) {
     return <div className="p-6">Carregando assistente...</div>;
   }
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-gray-100">
-      <div className="mx-auto max-w-7xl overflow-x-hidden px-6 py-6">
-        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+    <div className="min-h-screen overflow-x-hidden bg-[#efeae2]">
+      <div className="mx-auto max-w-7xl px-4 py-4 md:px-6">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Assistente operacional</h1>
-            <div className="mt-2 text-xs text-gray-500">
+            <div className="mt-1 text-xs text-gray-500">
               {storeLoading
                 ? "Carregando contexto da loja..."
                 : storeError
@@ -256,9 +351,9 @@ export default function AssistantPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {refreshing ? (
-              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-black/10">
+              <div className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-black/10">
                 Atualizando...
               </div>
             ) : null}
@@ -285,89 +380,135 @@ export default function AssistantPage() {
           </div>
         ) : null}
 
-        <div className="mb-6 grid gap-4 md:grid-cols-3">
-          <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-            <div className="text-sm text-gray-500">Thread</div>
-            <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.title || "Assistente da Loja"}</div>
-            <div className="mt-2 text-xs text-gray-500">ID: {shortId(summary?.thread_id)}</div>
-          </div>
-
-          <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-            <div className="text-sm text-gray-500">Mensagens</div>
-            <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.total_messages ?? messages.length}</div>
-            <div className="mt-2 text-xs text-gray-500">
-              Última mensagem: {formatDateTime(summary?.last_message_at || null)}
+        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="rounded-3xl bg-[#f0f2f5] shadow-sm ring-1 ring-black/5 overflow-hidden">
+            <div className="border-b border-black/5 bg-[#008069] px-4 py-4 text-white">
+              <div className="text-lg font-bold">Canal do responsável</div>
+              <div className="mt-1 text-xs text-white/80">Conversa separada da Inbox comercial.</div>
             </div>
-          </div>
 
-          <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-            <div className="text-sm text-gray-500">Pendências da assistente</div>
-            <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.pending_notifications ?? 0}</div>
-            <div className="mt-2 text-xs text-gray-500">Status da thread: {summary?.status || "active"}</div>
-          </div>
-        </div>
-
-        <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-          <div className="border-b border-black/5 px-4 py-4">
-            <h2 className="text-lg font-semibold text-gray-900">Canal do responsável</h2>
-            <p className="mt-2 text-sm text-gray-600">
-              Esta aba é separada da Inbox comercial. Aqui o responsável fala com a assistente operacional da loja.
-            </p>
-          </div>
-
-          <div className="border-b border-black/5 p-4">
-            <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-              <div className="text-sm font-semibold text-gray-900">Último resumo</div>
-              <div className="mt-3 text-sm text-gray-700">
-                {summary?.last_message_preview || "Ainda não há mensagens nesta thread."}
+            <div className="space-y-4 p-4">
+              <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                <div className="text-xs uppercase tracking-wide text-gray-500">Thread</div>
+                <div className="mt-2 text-lg font-bold text-gray-900">{summary?.title || "Assistente da Loja"}</div>
+                <div className="mt-2 text-xs text-gray-500">ID: {shortId(summary?.thread_id)}</div>
               </div>
-            </div>
-          </div>
 
-          <div className="space-y-3 border-b border-black/5 p-4">
-            {messages.length === 0 ? (
-              <div className="rounded-xl bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/5">
-                Nenhuma mensagem ainda. Você já pode enviar a primeira mensagem para a assistente.
-              </div>
-            ) : (
-              messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`max-w-3xl rounded-2xl px-4 py-3 ${bubbleClass(message)}`}
-                >
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs opacity-80">
-                    <span className="font-semibold">{senderLabel(message)}</span>
-                    <span>•</span>
-                    <span>{formatMessageType(message.message_type)}</span>
-                    <span>•</span>
-                    <span>{formatDateTime(message.created_at)}</span>
-                  </div>
-
-                  <div className="mt-2 whitespace-pre-wrap break-words text-sm">{message.content}</div>
+              <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                <div className="text-xs uppercase tracking-wide text-gray-500">Resumo rápido</div>
+                <div className="mt-2 text-sm text-gray-700">
+                  {summary?.last_message_preview || "Ainda não há mensagens nesta thread."}
                 </div>
-              ))
-            )}
-          </div>
+              </div>
 
-          <div className="p-4">
-            <div className="mb-3 text-base font-semibold text-gray-900">Falar com a assistente</div>
-            <textarea
-              value={newMessage}
-              onChange={(event) => setNewMessage(event.target.value)}
-              placeholder="Ex.: Me atualize sobre os atendimentos mais urgentes de hoje."
-              className="min-h-[120px] w-full rounded-2xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-gray-400"
-            />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                  <div className="text-xs uppercase tracking-wide text-gray-500">Mensagens</div>
+                  <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.total_messages ?? messages.length}</div>
+                  <div className="mt-2 text-xs text-gray-500">Última: {formatDateTime(summary?.last_message_at || null)}</div>
+                </div>
 
-            <div className="mt-4 flex justify-end">
-              <button
-                onClick={() => void sendMessageToAssistant()}
-                disabled={sending || !newMessage.trim()}
-                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {sending ? "Enviando..." : "Enviar para assistente"}
-              </button>
+                <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
+                  <div className="text-xs uppercase tracking-wide text-gray-500">Pendências</div>
+                  <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.pending_notifications ?? 0}</div>
+                  <div className="mt-2 text-xs text-gray-500">Status: {summary?.status || "active"}</div>
+                </div>
+              </div>
             </div>
-          </div>
+          </aside>
+
+          <section className="min-w-0 rounded-3xl bg-[#efeae2] shadow-sm ring-1 ring-black/5 overflow-hidden">
+            <div className="border-b border-black/5 bg-[#f0f2f5] px-4 py-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-lg font-semibold text-gray-900">Assistente da loja</div>
+                  <div className="text-xs text-gray-500">Mensagens da assistente à esquerda e do responsável à direita.</div>
+                </div>
+
+                <div className="w-full md:max-w-sm">
+                  <label className="flex items-center gap-2 rounded-full bg-white px-4 py-2 ring-1 ring-black/10">
+                    <svg viewBox="0 0 24 24" className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m20 20-3.5-3.5" />
+                    </svg>
+                    <input
+                      value={searchText}
+                      onChange={(event) => setSearchText(event.target.value)}
+                      placeholder="Buscar mensagens nesta conversa"
+                      className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div
+              ref={chatScrollRef}
+              className="h-[58vh] overflow-y-auto px-3 py-4 md:px-5"
+              style={{ backgroundImage: "linear-gradient(rgba(239,234,226,0.96), rgba(239,234,226,0.96))" }}
+            >
+              {groupedMessages.length === 0 ? (
+                <div className="mx-auto max-w-md rounded-2xl bg-white px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/5">
+                  {searchText.trim()
+                    ? "Não achei nenhuma mensagem com esse termo."
+                    : "Nenhuma mensagem ainda. Você já pode enviar a primeira mensagem para a assistente."}
+                </div>
+              ) : (
+                groupedMessages.map((group) => (
+                  <div key={group.dayKey} className="mb-5">
+                    <div className="mb-4 flex justify-center">
+                      <div className="rounded-full bg-[#d9fdd3] px-3 py-1 text-xs font-medium text-gray-700 shadow-sm ring-1 ring-black/5">
+                        {group.dayLabel}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      {group.items.map((message) => (
+                        <div key={message.id} className={`flex ${bubbleWrapperClass(message)}`}>
+                          <div className={`max-w-[92%] md:max-w-[75%] px-4 py-3 shadow-sm ${bubbleClass(message)}`}>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-500">
+                              <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
+                              <span>•</span>
+                              <span>{formatMessageType(message.message_type)}</span>
+                              <span>•</span>
+                              <span>{formatTime(message.created_at)}</span>
+                            </div>
+
+                            <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-gray-900">
+                              {message.content}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="border-t border-black/5 bg-[#f0f2f5] p-3 md:p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                <div className="min-w-0 flex-1">
+                  <textarea
+                    value={newMessage}
+                    onChange={(event) => setNewMessage(event.target.value)}
+                    placeholder="Ex.: Me atualize sobre os atendimentos mais urgentes de hoje."
+                    className="min-h-[96px] w-full resize-none rounded-3xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400"
+                  />
+                </div>
+
+                <div className="flex justify-end md:pb-1">
+                  <button
+                    onClick={() => void sendMessageToAssistant()}
+                    disabled={sending || !newMessage.trim()}
+                    className="rounded-full bg-[#008069] px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {sending ? "Enviando..." : "Enviar"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </div>

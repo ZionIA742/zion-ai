@@ -573,6 +573,87 @@ function normalizeDigits(value: string | null | undefined) {
   return String(value || "").replace(/\D+/g, "");
 }
 
+function getPhoneTail(value: string | null | undefined) {
+  const digits = normalizeDigits(value);
+  if (!digits) return null;
+  return digits.slice(-4);
+}
+
+function getCustomerDuplicateCount(args: {
+  customerName: string | null | undefined;
+  openItems: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
+}) {
+  const targetName = normalizeText(args.customerName);
+  if (!targetName) return 0;
+
+  return args.openItems.filter((item) => {
+    const appointment = args.appointmentMap.get(item.appointment_id);
+    return normalizeText(appointment?.customer_name) === targetName;
+  }).length;
+}
+
+function getAppointmentStageRank(value: string | null | undefined) {
+  const normalized = normalizeText(value);
+  if (normalized === "technical_visit") return 1;
+  if (normalized === "measurement") return 2;
+  if (normalized === "meeting") return 3;
+  if (normalized === "follow_up") return 4;
+  if (normalized === "installation") return 5;
+  if (normalized === "maintenance") return 6;
+  return 0;
+}
+
+function inferPostAppointmentPrioritySuggestion(args: {
+  candidateIndexes: number[];
+  openItems: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
+}) {
+  const candidates = args.candidateIndexes
+    .map((candidateIndex) => {
+      const item = args.openItems[candidateIndex];
+      const appointment = args.appointmentMap.get(item.appointment_id);
+      return {
+        candidateIndex,
+        item,
+        appointment,
+        rank: getAppointmentStageRank(appointment?.appointment_type),
+      };
+    })
+    .filter((entry) => !!entry.appointment);
+
+  const technicalVisitCandidate = candidates.find(
+    (entry) => normalizeText(entry.appointment?.appointment_type) === "technical_visit"
+  );
+  const installationCandidate = candidates.find(
+    (entry) => normalizeText(entry.appointment?.appointment_type) === "installation"
+  );
+
+  if (technicalVisitCandidate && installationCandidate) {
+    return {
+      suggestedIndex: technicalVisitCandidate.candidateIndex,
+      reason:
+        "como já existe instalação ligada a esse cliente, o mais provável é que a visita técnica anterior já tenha acontecido e precise só ser baixada ou confirmada.",
+    };
+  }
+
+  const ordered = [...candidates].sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    const aTime = a.item.scheduled_end ? new Date(a.item.scheduled_end).getTime() : Number.MAX_SAFE_INTEGER;
+    const bTime = b.item.scheduled_end ? new Date(b.item.scheduled_end).getTime() : Number.MAX_SAFE_INTEGER;
+    return aTime - bTime;
+  });
+
+  const first = ordered[0];
+  if (!first) return null;
+
+  return {
+    suggestedIndex: first.candidateIndex,
+    reason:
+      "entre os itens possíveis, esse parece o ponto mais antigo e mais provável de precisar de atualização primeiro.",
+  };
+}
+
 function resolvePostAppointmentCandidateIndexesFromText(args: {
   text: string;
   openItems: PostAppointmentFollowupRow[];
@@ -657,8 +738,21 @@ function buildPostAppointmentAmbiguityReply(args: {
 }) {
   const lines: string[] = [];
   lines.push("Encontrei mais de um pós-compromisso possível para esse pedido.");
-  lines.push("Me diga qual deles você quer atualizar:");
+  lines.push("Antes de atualizar, preciso que você me diga qual deles quer resolver.");
   lines.push("");
+
+  const suggestion = inferPostAppointmentPrioritySuggestion({
+    candidateIndexes: args.candidateIndexes,
+    openItems: args.openItems,
+    appointmentMap: args.appointmentMap,
+  });
+
+  if (suggestion) {
+    lines.push(
+      `Sugestão de prioridade agora: item ${suggestion.suggestedIndex + 1}, ${suggestion.reason}`
+    );
+    lines.push("");
+  }
 
   args.candidateIndexes.slice(0, 5).forEach((candidateIndex) => {
     const item = args.openItems[candidateIndex];
@@ -666,14 +760,30 @@ function buildPostAppointmentAmbiguityReply(args: {
     const itemNumber = candidateIndex + 1;
     const typeAndTitle = buildPostAppointmentTypeAndTitle(appointment);
     const customer = appointment?.customer_name || "cliente não identificado";
+    const phoneTail = getPhoneTail(appointment?.customer_phone);
+    const duplicateCount = getCustomerDuplicateCount({
+      customerName: appointment?.customer_name,
+      openItems: args.openItems,
+      appointmentMap: args.appointmentMap,
+    });
     const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start || item.scheduled_end;
 
     lines.push(`${itemNumber}. ${typeAndTitle.charAt(0).toUpperCase() + typeAndTitle.slice(1)}`);
-    lines.push(`- cliente: ${customer}`);
+    lines.push(
+      duplicateCount > 1 && phoneTail
+        ? `- cliente: ${customer} • final ${phoneTail}`
+        : `- cliente: ${customer}`
+    );
     if (timeLabel) {
       lines.push(`- horário original: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
     }
     lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(item)}`);
+
+    const observation = buildFriendlyPostFollowupObservation(item.notes);
+    if (observation) {
+      lines.push(`- contexto rápido: ${observation}`);
+    }
+
     lines.push("");
   });
 
@@ -706,23 +816,39 @@ function resolveTargetPostAppointmentIndex(args: {
     return { type: "ambiguous" as const, candidateIndexes: currentCandidates };
   }
 
-  if (
-    hasAnyTerm(normalizeText(args.text), [
-      "esse foi",
-      "esse caso",
-      "esse atendimento",
-      "esse daqui",
-      "pode marcar esse",
-      "pode cancelar esse",
-      "pode concluir esse",
-      "pode deixar esse",
-      "marque como",
-      "marca como",
-      "marque o caso",
-      "cancele",
-      "conclua",
-    ])
-  ) {
+  const normalizedText = normalizeText(args.text);
+  const isLooseReference = hasAnyTerm(normalizedText, [
+    "esse foi",
+    "esse caso",
+    "esse atendimento",
+    "esse daqui",
+    "pode marcar esse",
+    "pode cancelar esse",
+    "pode concluir esse",
+    "pode deixar esse",
+    "marque como",
+    "marca como",
+    "marque o caso",
+    "cancele",
+    "conclua",
+  ]);
+
+  const mentionsSpecificCustomerOrTitle =
+    args.openItems.some((item) => {
+      const appointment = args.appointmentMap.get(item.appointment_id);
+      const customerName = normalizeText(appointment?.customer_name);
+      const title = normalizeText(appointment?.title);
+      return (
+        (customerName && customerName.length >= 3 && normalizedText.includes(customerName)) ||
+        (title && title.length >= 3 && normalizedText.includes(title))
+      );
+    }) || normalizeDigits(args.text).length >= 8;
+
+  if (mentionsSpecificCustomerOrTitle) {
+    return { type: "none" as const };
+  }
+
+  if (isLooseReference) {
     const previousTarget = inferPreviousPostAppointmentTarget({
       messages: args.recentMessages || [],
       currentHumanMessage: args.text,
