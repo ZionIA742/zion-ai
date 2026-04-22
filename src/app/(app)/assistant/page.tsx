@@ -94,14 +94,8 @@ function isAssistantBubble(message: AssistantMessage) {
 }
 
 function bubbleWrapperClass(message: AssistantMessage) {
-  if (isAssistantBubble(message)) {
-    return "justify-start";
-  }
-
-  if (message.sender_role === "store_responsible") {
-    return "justify-end";
-  }
-
+  if (isAssistantBubble(message)) return "justify-start";
+  if (message.sender_role === "store_responsible") return "justify-end";
   return "justify-center";
 }
 
@@ -111,13 +105,13 @@ function bubbleClass(message: AssistantMessage) {
   }
 
   if (message.sender_role === "store_responsible") {
-    return "bg-[#dcf8c6] text-gray-900 ring-1 ring-black/5 rounded-2xl rounded-br-md";
+    return "bg-[#f3f3f3] text-gray-900 ring-1 ring-black/10 rounded-2xl rounded-br-md";
   }
 
-  return "bg-gray-100 text-gray-800 ring-1 ring-black/5 rounded-2xl";
+  return "bg-[#f7f7f7] text-gray-800 ring-1 ring-black/8 rounded-2xl";
 }
 
-function normalizeText(value: string | null | undefined) {
+function normalizeText(value: string | null | undefined): string {
   return String(value || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -141,6 +135,30 @@ function matchesSearch(message: AssistantMessage, query: string) {
   return haystack.includes(q);
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function renderHighlightedText(text: string, query: string) {
+  if (!query.trim()) return text;
+
+  const safeQuery = escapeRegExp(query.trim());
+  if (!safeQuery) return text;
+
+  const parts = text.split(new RegExp(`(${safeQuery})`, "ig"));
+
+  return parts.map((part, index) => {
+    const isMatch = part.toLowerCase() === query.trim().toLowerCase();
+    if (!isMatch) return <span key={index}>{part}</span>;
+
+    return (
+      <mark key={index} className="rounded bg-black px-1 py-0.5 text-white">
+        {part}
+      </mark>
+    );
+  });
+}
+
 export default function AssistantPage() {
   const {
     loading: storeLoading,
@@ -159,8 +177,11 @@ export default function AssistantPage() {
   const [statusText, setStatusText] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState("");
   const [searchText, setSearchText] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const firstLoadDoneRef = useRef(false);
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const canLoad = useMemo(() => {
     return !storeLoading && !!organizationId && !!activeStoreId;
@@ -171,11 +192,8 @@ export default function AssistantPage() {
       if (!canLoad || !organizationId || !activeStoreId) return;
 
       const silent = options?.silent ?? false;
-      if (silent) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
-      }
+      if (silent) setRefreshing(true);
+      else setLoading(true);
 
       setErrorText(null);
 
@@ -235,7 +253,7 @@ export default function AssistantPage() {
   }, [canLoad, loadAssistant]);
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || searchOpen) return;
 
     window.requestAnimationFrame(() => {
       if (!chatScrollRef.current) return;
@@ -245,7 +263,12 @@ export default function AssistantPage() {
       });
       firstLoadDoneRef.current = true;
     });
-  }, [messages, loading]);
+  }, [messages, loading, searchOpen]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    window.requestAnimationFrame(() => searchInputRef.current?.focus());
+  }, [searchOpen]);
 
   async function sendMessageToAssistant() {
     const text = newMessage.trim();
@@ -307,37 +330,62 @@ export default function AssistantPage() {
     }
   }
 
-  const filteredMessages = useMemo(() => {
-    return messages.filter((message) => matchesSearch(message, searchText));
-  }, [messages, searchText]);
-
   const groupedMessages = useMemo(() => {
     const groups: Array<{ dayKey: string; dayLabel: string; items: AssistantMessage[] }> = [];
 
-    filteredMessages.forEach((message) => {
+    messages.forEach((message) => {
       const dayKey = toDayKey(message.created_at);
       const existing = groups[groups.length - 1];
       if (!existing || existing.dayKey !== dayKey) {
-        groups.push({
-          dayKey,
-          dayLabel: formatDayDivider(message.created_at),
-          items: [message],
-        });
+        groups.push({ dayKey, dayLabel: formatDayDivider(message.created_at), items: [message] });
         return;
       }
-
       existing.items.push(message);
     });
 
     return groups;
-  }, [filteredMessages]);
+  }, [messages]);
+
+  const searchResults = useMemo(() => {
+    const trimmed = searchText.trim();
+    if (!trimmed) return [] as Array<{ dayKey: string; dayLabel: string; items: AssistantMessage[] }>;
+
+    const filtered = messages.filter((message) => matchesSearch(message, trimmed));
+    const groups: Array<{ dayKey: string; dayLabel: string; items: AssistantMessage[] }> = [];
+
+    filtered.forEach((message) => {
+      const dayKey = toDayKey(message.created_at);
+      const existing = groups[groups.length - 1];
+      if (!existing || existing.dayKey !== dayKey) {
+        groups.push({ dayKey, dayLabel: formatDayDivider(message.created_at), items: [message] });
+        return;
+      }
+      existing.items.push(message);
+    });
+
+    return groups;
+  }, [messages, searchText]);
+
+  const jumpToMessage = useCallback((messageId: string) => {
+    setSearchOpen(false);
+
+    window.requestAnimationFrame(() => {
+      const node = messageRefs.current[messageId];
+      if (!node || !chatScrollRef.current) return;
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+      node.classList.add("ring-2", "ring-black");
+      window.setTimeout(() => {
+        node.classList.remove("ring-2", "ring-black");
+      }, 1800);
+    });
+  }, []);
 
   if (loading) {
     return <div className="p-6">Carregando assistente...</div>;
   }
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-[#efeae2]">
+    <div className="min-h-screen overflow-x-hidden bg-white">
       <div className="mx-auto max-w-7xl px-4 py-4 md:px-6">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -369,102 +417,100 @@ export default function AssistantPage() {
         </div>
 
         {errorText ? (
-          <div className="mb-4 rounded-xl bg-red-50 p-4 text-red-800 ring-1 ring-red-200">
-            {errorText}
-          </div>
+          <div className="mb-4 rounded-xl bg-red-50 p-4 text-red-800 ring-1 ring-red-200">{errorText}</div>
         ) : null}
 
         {statusText ? (
-          <div className="mb-4 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-200">
-            {statusText}
-          </div>
+          <div className="mb-4 rounded-xl bg-gray-100 p-4 text-sm text-gray-800 ring-1 ring-black/10">{statusText}</div>
         ) : null}
 
-        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="rounded-3xl bg-[#f0f2f5] shadow-sm ring-1 ring-black/5 overflow-hidden">
-            <div className="border-b border-black/5 bg-[#008069] px-4 py-4 text-white">
-              <div className="text-lg font-bold">Canal do responsável</div>
-              <div className="mt-1 text-xs text-white/80">Conversa separada da Inbox comercial.</div>
+        <section className="mb-4 rounded-3xl bg-white shadow-sm ring-1 ring-black/10 overflow-hidden">
+          <div className="border-b border-black/10 px-4 py-4 md:px-5">
+            <div className="text-lg font-bold text-gray-900">Canal do responsável</div>
+            <div className="mt-1 text-sm text-gray-600">Conversa única da assistente com o administrador da loja.</div>
+          </div>
+
+          <div className="grid gap-3 p-4 md:grid-cols-[minmax(0,1.5fr)_minmax(0,2fr)_repeat(2,minmax(160px,1fr))] md:p-5">
+            <div className="rounded-2xl border border-black/10 bg-white p-4">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Thread</div>
+              <div className="mt-2 text-lg font-bold text-gray-900">{summary?.title || "Assistente da Loja"}</div>
+              <div className="mt-2 text-xs text-gray-500">ID: {shortId(summary?.thread_id)}</div>
             </div>
 
-            <div className="space-y-4 p-4">
-              <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Thread</div>
-                <div className="mt-2 text-lg font-bold text-gray-900">{summary?.title || "Assistente da Loja"}</div>
-                <div className="mt-2 text-xs text-gray-500">ID: {shortId(summary?.thread_id)}</div>
-              </div>
-
-              <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Resumo rápido</div>
-                <div className="mt-2 text-sm text-gray-700">
-                  {summary?.last_message_preview || "Ainda não há mensagens nesta thread."}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
-                  <div className="text-xs uppercase tracking-wide text-gray-500">Mensagens</div>
-                  <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.total_messages ?? messages.length}</div>
-                  <div className="mt-2 text-xs text-gray-500">Última: {formatDateTime(summary?.last_message_at || null)}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 ring-1 ring-black/5">
-                  <div className="text-xs uppercase tracking-wide text-gray-500">Pendências</div>
-                  <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.pending_notifications ?? 0}</div>
-                  <div className="mt-2 text-xs text-gray-500">Status: {summary?.status || "active"}</div>
-                </div>
-              </div>
-            </div>
-          </aside>
-
-          <section className="min-w-0 rounded-3xl bg-[#efeae2] shadow-sm ring-1 ring-black/5 overflow-hidden">
-            <div className="border-b border-black/5 bg-[#f0f2f5] px-4 py-3">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <div className="text-lg font-semibold text-gray-900">Assistente da loja</div>
-                  <div className="text-xs text-gray-500">Mensagens da assistente à esquerda e do responsável à direita.</div>
-                </div>
-
-                <div className="w-full md:max-w-sm">
-                  <label className="flex items-center gap-2 rounded-full bg-white px-4 py-2 ring-1 ring-black/10">
-                    <svg viewBox="0 0 24 24" className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2">
-                      <circle cx="11" cy="11" r="7" />
-                      <path d="m20 20-3.5-3.5" />
-                    </svg>
-                    <input
-                      value={searchText}
-                      onChange={(event) => setSearchText(event.target.value)}
-                      placeholder="Buscar mensagens nesta conversa"
-                      className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
-                    />
-                  </label>
-                </div>
+            <div className="rounded-2xl border border-black/10 bg-white p-4">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Resumo rápido</div>
+              <div className="mt-2 text-sm leading-6 text-gray-700">
+                {summary?.last_message_preview || "Ainda não há mensagens nesta thread."}
               </div>
             </div>
 
+            <div className="rounded-2xl border border-black/10 bg-white p-4">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Mensagens</div>
+              <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.total_messages ?? messages.length}</div>
+              <div className="mt-2 text-xs text-gray-500">Última: {formatDateTime(summary?.last_message_at || null)}</div>
+            </div>
+
+            <div className="rounded-2xl border border-black/10 bg-white p-4">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Pendências</div>
+              <div className="mt-2 text-2xl font-bold text-gray-900">{summary?.pending_notifications ?? 0}</div>
+              <div className="mt-2 text-xs text-gray-500">Status: {summary?.status || "active"}</div>
+            </div>
+          </div>
+        </section>
+
+        <section className="min-w-0 rounded-3xl bg-white shadow-sm ring-1 ring-black/10 overflow-hidden">
+          <div className="border-b border-black/10 bg-white px-4 py-3 md:px-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-lg font-semibold text-gray-900">Assistente da loja</div>
+                <div className="text-xs text-gray-500">Mensagens da assistente à esquerda e do responsável à direita.</div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchOpen((current) => !current);
+                  if (searchOpen) setSearchText("");
+                }}
+                className="inline-flex items-center gap-2 self-start rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-800 ring-1 ring-black/10 hover:bg-gray-50"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m20 20-3.5-3.5" />
+                </svg>
+                Buscar na conversa
+              </button>
+            </div>
+          </div>
+
+          <div className="relative grid min-h-[68vh] grid-cols-1">
             <div
               ref={chatScrollRef}
-              className="h-[58vh] overflow-y-auto px-3 py-4 md:px-5"
-              style={{ backgroundImage: "linear-gradient(rgba(239,234,226,0.96), rgba(239,234,226,0.96))" }}
+              className={`overflow-y-auto px-3 py-4 md:px-5 ${searchOpen ? "md:pr-[380px]" : ""}`}
+              style={{ height: "58vh", background: "#f8f8f8" }}
             >
               {groupedMessages.length === 0 ? (
-                <div className="mx-auto max-w-md rounded-2xl bg-white px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/5">
-                  {searchText.trim()
-                    ? "Não achei nenhuma mensagem com esse termo."
-                    : "Nenhuma mensagem ainda. Você já pode enviar a primeira mensagem para a assistente."}
+                <div className="mx-auto max-w-md rounded-2xl bg-white px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/10">
+                  Nenhuma mensagem ainda. Você já pode enviar a primeira mensagem para a assistente.
                 </div>
               ) : (
                 groupedMessages.map((group) => (
                   <div key={group.dayKey} className="mb-5">
                     <div className="mb-4 flex justify-center">
-                      <div className="rounded-full bg-[#d9fdd3] px-3 py-1 text-xs font-medium text-gray-700 shadow-sm ring-1 ring-black/5">
+                      <div className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-black/10">
                         {group.dayLabel}
                       </div>
                     </div>
 
                     <div className="space-y-3">
                       {group.items.map((message) => (
-                        <div key={message.id} className={`flex ${bubbleWrapperClass(message)}`}>
+                        <div
+                          key={message.id}
+                          ref={(node) => {
+                            messageRefs.current[message.id] = node;
+                          }}
+                          className={`flex transition-shadow duration-200 ${bubbleWrapperClass(message)}`}
+                        >
                           <div className={`max-w-[92%] md:max-w-[75%] px-4 py-3 shadow-sm ${bubbleClass(message)}`}>
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-500">
                               <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
@@ -486,30 +532,124 @@ export default function AssistantPage() {
               )}
             </div>
 
-            <div className="border-t border-black/5 bg-[#f0f2f5] p-3 md:p-4">
-              <div className="flex flex-col gap-3 md:flex-row md:items-end">
-                <div className="min-w-0 flex-1">
-                  <textarea
-                    value={newMessage}
-                    onChange={(event) => setNewMessage(event.target.value)}
-                    placeholder="Ex.: Me atualize sobre os atendimentos mais urgentes de hoje."
-                    className="min-h-[96px] w-full resize-none rounded-3xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400"
-                  />
+            {searchOpen ? (
+              <aside className="absolute inset-y-0 right-0 z-10 flex w-full max-w-[360px] flex-col border-l border-black/10 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
+                <div className="flex items-center gap-3 border-b border-black/10 px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchOpen(false);
+                      setSearchText("");
+                    }}
+                    className="rounded-full p-2 text-gray-600 hover:bg-gray-100"
+                    aria-label="Fechar busca"
+                  >
+                    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M18 6 6 18" />
+                      <path d="m6 6 12 12" />
+                    </svg>
+                  </button>
+
+                  <div className="text-base font-semibold text-gray-900">Pesquisar mensagens</div>
                 </div>
 
-                <div className="flex justify-end md:pb-1">
-                  <button
-                    onClick={() => void sendMessageToAssistant()}
-                    disabled={sending || !newMessage.trim()}
-                    className="rounded-full bg-[#008069] px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {sending ? "Enviando..." : "Enviar"}
-                  </button>
+                <div className="border-b border-black/10 px-4 py-3">
+                  <label className="flex items-center gap-2 rounded-full bg-white px-4 py-2 ring-1 ring-black/15">
+                    <svg viewBox="0 0 24 24" className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m20 20-3.5-3.5" />
+                    </svg>
+                    <input
+                      ref={searchInputRef}
+                      value={searchText}
+                      onChange={(event) => setSearchText(event.target.value)}
+                      placeholder="Digite para buscar nesta conversa"
+                      className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                    />
+                    {searchText.trim() ? (
+                      <button
+                        type="button"
+                        onClick={() => setSearchText("")}
+                        className="rounded-full p-1 text-gray-500 hover:bg-gray-100"
+                        aria-label="Limpar busca"
+                      >
+                        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M18 6 6 18" />
+                          <path d="m6 6 12 12" />
+                        </svg>
+                      </button>
+                    ) : null}
+                  </label>
                 </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                  {!searchText.trim() ? (
+                    <div className="rounded-2xl border border-dashed border-black/10 p-4 text-sm text-gray-500">
+                      Procure por nome do cliente, telefone, data, compromisso ou qualquer palavra da conversa.
+                    </div>
+                  ) : searchResults.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-black/10 p-4 text-sm text-gray-500">
+                      Não encontrei resultados para essa busca.
+                    </div>
+                  ) : (
+                    <div className="space-y-5">
+                      {searchResults.map((group) => (
+                        <div key={group.dayKey}>
+                          <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            {group.dayLabel}
+                          </div>
+
+                          <div className="space-y-2">
+                            {group.items.map((message) => (
+                              <button
+                                key={message.id}
+                                type="button"
+                                onClick={() => jumpToMessage(message.id)}
+                                className="w-full rounded-2xl border border-black/10 bg-white p-3 text-left hover:bg-gray-50"
+                              >
+                                <div className="mb-1 flex items-center gap-2 text-[11px] text-gray-500">
+                                  <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
+                                  <span>•</span>
+                                  <span>{formatTime(message.created_at)}</span>
+                                </div>
+                                <div className="line-clamp-3 text-sm leading-6 text-gray-900">
+                                  {renderHighlightedText(message.content, searchText)}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </aside>
+            ) : null}
+          </div>
+
+          <div className="border-t border-black/10 bg-white p-3 md:p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-end">
+              <div className="min-w-0 flex-1">
+                <textarea
+                  value={newMessage}
+                  onChange={(event) => setNewMessage(event.target.value)}
+                  placeholder="Ex.: Me atualize sobre os atendimentos mais urgentes de hoje."
+                  className="min-h-[96px] w-full resize-none rounded-3xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400"
+                />
+              </div>
+
+              <div className="flex justify-end md:pb-1">
+                <button
+                  onClick={() => void sendMessageToAssistant()}
+                  disabled={sending || !newMessage.trim()}
+                  className="rounded-full bg-black px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {sending ? "Enviando..." : "Enviar"}
+                </button>
               </div>
             </div>
-          </section>
-        </div>
+          </div>
+        </section>
       </div>
     </div>
   );
