@@ -746,13 +746,19 @@ function getAppointmentReferenceStrength(text: string, appointment: AppointmentR
 function findOperationallyRelevantAppointmentsForSameCustomer(args: {
   appointment: AppointmentRow | undefined;
   relevantAppointments: AppointmentRow[];
+  openFollowupAppointmentIds?: Set<string>;
 }) {
   const identityKey = buildCustomerIdentityKey(args.appointment);
   if (!identityKey) return [] as AppointmentRow[];
 
   return args.relevantAppointments.filter((item) => {
-    if (!isOperationallyOpenAppointment(item)) return false;
-    return buildCustomerIdentityKey(item) === identityKey;
+    const sameCustomer = buildCustomerIdentityKey(item) === identityKey;
+    if (!sameCustomer) return false;
+
+    const hasOpenStageNow = isOperationallyOpenAppointment(item);
+    const hasOpenFollowupNow = Boolean(args.openFollowupAppointmentIds?.has(item.id));
+
+    return hasOpenStageNow || hasOpenFollowupNow;
   });
 }
 
@@ -955,21 +961,29 @@ async function resolvePostAppointmentActionReply(args: {
   const itemNumber = selectedIndex + 1;
 
   if (selectedAppointment) {
+    const openFollowupAppointmentIds = new Set(openItems.map((item) => item.appointment_id));
+    const allRelevantAppointments = Array.from(
+      new Map(
+        [...(args.relevantAppointments || []), ...Array.from(args.appointmentMap.values())].map((item) => [item.id, item])
+      ).values()
+    );
+
     const relatedAppointments = findOperationallyRelevantAppointmentsForSameCustomer({
       appointment: selectedAppointment,
-      relevantAppointments: args.relevantAppointments || [],
+      relevantAppointments: allRelevantAppointments,
+      openFollowupAppointmentIds,
     }).filter((item) => item.id !== selectedAppointment.id);
 
     const referenceStrength = getAppointmentReferenceStrength(args.lastHumanMessage, selectedAppointment);
 
-    if (relatedAppointments.length > 0 && referenceStrength < 30) {
+    if (relatedAppointments.length > 0 && referenceStrength < 50) {
       return buildOperationalCustomerAmbiguityReply({
         currentAppointment: selectedAppointment,
         relatedAppointments: [selectedAppointment, ...relatedAppointments],
       });
     }
 
-    if (relatedAppointments.length > 0 && action === "complete" && referenceStrength < 80) {
+    if (relatedAppointments.length > 0 && action === "complete" && referenceStrength < 90) {
       const stageSuggestion = buildStageReconciliationSuggestionReply({
         currentAppointment: selectedAppointment,
         relatedAppointments: [selectedAppointment, ...relatedAppointments],
