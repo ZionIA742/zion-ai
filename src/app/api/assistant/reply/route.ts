@@ -249,7 +249,8 @@ function messageLooksLikeDirectResponsibleRequest(content: string) {
     asksAboutNextVisit(content) ||
     asksAboutPostAppointment(content) ||
     asksAboutToday(content) ||
-    asksAboutMaterialsOrDocuments(content)
+    asksAboutMaterialsOrDocuments(content) ||
+    asksAboutScheduleManagement(content)
   );
 }
 
@@ -433,6 +434,41 @@ function asksAboutMaterialsOrDocuments(text: string) {
   );
 }
 
+function asksAboutScheduleManagement(text: string) {
+  const t = normalizeText(text);
+
+  return hasAnyTerm(t, [
+    "agendar",
+    "agenda",
+    "marcar compromisso",
+    "marcar visita",
+    "marcar instalacao",
+    "marcar instalação",
+    "criar compromisso",
+    "novo compromisso",
+    "nova visita",
+    "nova instalacao",
+    "nova instalação",
+    "cancelar compromisso",
+    "cancelar visita",
+    "cancelar instalacao",
+    "cancelar instalação",
+    "remarcar compromisso",
+    "remarcar visita",
+    "remarcar instalacao",
+    "remarcar instalação",
+    "concluir compromisso",
+    "concluir visita",
+    "concluir instalacao",
+    "concluir instalação",
+    "adicionar compromisso",
+    "adiciona um compromisso",
+    "adicione um compromisso",
+    "adicionar visita",
+    "adiciona uma visita",
+    "adicione uma visita",
+  ]);
+}
 
 function asksAboutPostAppointment(text: string) {
   const t = normalizeText(text);
@@ -447,20 +483,10 @@ function asksAboutPostAppointment(text: string) {
       "pos-compromisso",
       "acompanhamento",
       "retorno",
-      "retornos",
-      "pendencia de retorno",
-      "pendência de retorno",
-      "pendencias de retorno",
-      "pendências de retorno",
       "depois da visita",
       "depois do compromisso",
       "o que ficou pendente",
       "o que ainda preciso resolver",
-      "o que tem pendente",
-      "o que esta pendente",
-      "o que está pendente",
-      "tem algo pendente",
-      "tem alguma coisa pendente",
       "visitas pendentes",
       "confirmacao",
       "confirmar esse pos-compromisso",
@@ -562,7 +588,6 @@ function asksAboutPostAppointment(text: string) {
   return hasActionCue && hasReferenceCue;
 }
 
-
 function asksToListAllPostAppointments(text: string) {
   const t = normalizeText(text);
 
@@ -587,20 +612,12 @@ function asksToListAllPostAppointments(text: string) {
     "todos os pendentes",
     "todos os pos-compromissos",
     "todos os pos compromissos",
-    "todos os retornos",
-    "todos os retornos pendentes",
     "por ordem de urgencia",
     "por ordem de urgência",
     "os proximos",
     "os próximos",
-    "o que tem pendente",
-    "o que esta pendente",
-    "o que está pendente",
-    "me mostra o que tem pendente",
-    "me fala o que tem pendente",
   ]);
 }
-
 
 function resolvePostAppointmentDetailIndex(text: string, totalItems: number) {
   const t = normalizeText(text);
@@ -618,15 +635,12 @@ function resolvePostAppointmentDetailIndex(text: string, totalItems: number) {
       "detalhe o mais urgente",
       "me fale mais sobre esse mais urgente",
       "quero mais contexto desse mais urgente",
-      "esse primeiro",
-      "o primeiro",
-      "o de cima",
     ])
   ) {
     return 0;
   }
 
-  const explicitNumberMatch = t.match(/(?:caso|item|pendencia|pendência|retorno|atendimento)?\s*(\d{1,2})\b/);
+  const explicitNumberMatch = t.match(/(?:caso|item|pendencia|pendência|pos compromisso|pos-compromisso|atendimento)?\s*(\d{1,2})\b/);
   if (explicitNumberMatch) {
     const numericIndex = Number(explicitNumberMatch[1]);
     if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= totalItems) {
@@ -681,11 +695,6 @@ function resolvePostAppointmentDetailIndex(text: string, totalItems: number) {
       "esse e de visita",
       "esse é de instalação",
       "esse e de instalacao",
-      "esse da instalacao",
-      "esse da instalação",
-      "o da visita",
-      "o retorno da visita",
-      "o retorno da instalação",
     ])
   ) {
     return 0;
@@ -703,7 +712,6 @@ type PostAppointmentAction =
   | "cancel"
   | "reschedule"
   | "needs_followup";
-
 
 function resolvePostAppointmentAction(text: string): PostAppointmentAction | null {
   const t = normalizeText(text);
@@ -826,13 +834,20 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "deixar como cancelado",
       "deixa como cancelado",
       "pode deixar como cancelado",
+      "isso foi cancelado",
+      "esse foi cancelado",
+      "esse caso foi cancelado",
       "ja foi cancelado",
       "já foi cancelado",
-      "quero cancelar",
-      "cancela isso",
-      "cancelar isso",
-      "cancelado",
+      "cancelou",
       "cancelada",
+      "cancelado",
+      "cancela isso",
+      "quero cancelar isso",
+      "pode considerar cancelado",
+      "fecha isso como cancelado",
+      "cancela",
+      "cancelar",
     ])
   ) {
     return "cancel";
@@ -845,18 +860,22 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "marcar como remarcado",
       "marca como remarcado",
       "pode remarcar",
-      "pode remarcar esse caso",
-      "pode remarcar o caso",
       "pode marcar como remarcado",
       "deixar como remarcado",
       "deixa como remarcado",
       "pode deixar como remarcado",
+      "esse foi remarcado",
+      "isso foi remarcado",
       "ja foi remarcado",
       "já foi remarcado",
-      "quero remarcar",
-      "remarque isso",
-      "remarcado",
+      "remarcou",
       "remarcada",
+      "remarcado",
+      "remarque isso",
+      "quero remarcar isso",
+      "esse caso foi remarcado",
+      "remarca",
+      "remarcar",
     ])
   ) {
     return "reschedule";
@@ -1075,14 +1094,13 @@ function inferPreviousPostAppointmentTarget(args: {
   return null;
 }
 
-
 function buildPostAppointmentAmbiguityReply(args: {
   candidateIndexes: number[];
   openItems: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
 }) {
   const lines: string[] = [];
-  lines.push("Achei mais de um retorno que pode ser esse.");
+  lines.push("Encontrei mais de um item ativo para esse pedido.");
   lines.push("Me diga qual deles você quer atualizar:");
   lines.push("");
 
@@ -1097,16 +1115,15 @@ function buildPostAppointmentAmbiguityReply(args: {
     lines.push(`${itemNumber}. ${typeAndTitle.charAt(0).toUpperCase() + typeAndTitle.slice(1)}`);
     lines.push(`- cliente: ${customer}`);
     if (timeLabel) {
-      lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+      lines.push(`- horário original: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
     }
-    lines.push(`- situação: ${formatPostAppointmentCurrentSituation(item)}`);
+    lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(item)}`);
     lines.push("");
   });
 
-  lines.push('Você pode responder assim: "atualiza o item 1".');
+  lines.push('Você pode responder, por exemplo: "quero atualizar o item 1".');
   return lines.join("\n").trim();
 }
-
 
 function resolveTargetPostAppointmentIndex(args: {
   text: string;
@@ -1133,10 +1150,8 @@ function resolveTargetPostAppointmentIndex(args: {
     return { type: "ambiguous" as const, candidateIndexes: currentCandidates };
   }
 
-  const normalizedText = normalizeText(args.text);
-
   if (
-    hasAnyTerm(normalizedText, [
+    hasAnyTerm(normalizeText(args.text), [
       "esse foi",
       "esse caso",
       "esse atendimento",
@@ -1186,15 +1201,10 @@ function resolveTargetPostAppointmentIndex(args: {
     if (previousTarget) {
       return previousTarget;
     }
-
-    if (args.openItems.length > 0) {
-      return { type: "unique" as const, index: 0 };
-    }
   }
 
   return { type: "none" as const };
 }
-
 
 function buildPostAppointmentActionSuccessReply(args: {
   action: PostAppointmentAction;
@@ -1209,20 +1219,25 @@ function buildPostAppointmentActionSuccessReply(args: {
   const referenceLabel = titleLabel ? `${typeLabel} ${titleLabel}` : typeLabel;
 
   if (args.action === "complete") {
-    return `Certo. Marquei como concluído ${referenceLabel} de ${customerName}.`;
+    return `Certo. Marquei como concluído ${referenceLabel} de ${customerName}.
+
+Esse item saiu da fila de retorno pendente.`;
   }
 
   if (args.action === "cancel") {
-    return `Certo. Marquei como cancelado ${referenceLabel} de ${customerName}.`;
+    return `Certo. Marquei como cancelado ${referenceLabel} de ${customerName}.
+
+Esse item saiu da fila de retorno pendente.`;
   }
 
   if (args.action === "needs_followup") {
-    return `Certo. Mantive como pendente ${referenceLabel} de ${customerName}.`;
+    return `Certo. Mantive como pendente de retorno ${referenceLabel} de ${customerName}.
+
+Esse item continua na fila de acompanhamento.`;
   }
 
-  return `Certo. Posso remarcar ${referenceLabel} de ${customerName}, mas preciso da nova data e do novo horário.`;
+  return `Para marcar como remarcado ${referenceLabel} de ${customerName}, eu preciso que você me diga a nova data e o novo horário.`;
 }
-
 
 async function resolvePostAppointmentActionReply(args: {
   supabase: any;
@@ -1232,6 +1247,7 @@ async function resolvePostAppointmentActionReply(args: {
   recentMessages: AssistantMessageRow[];
   pendingPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
+  openAppointments: AppointmentRow[];
 }) {
   const action = resolvePostAppointmentAction(args.lastHumanMessage);
   if (!action) {
@@ -1243,7 +1259,14 @@ async function resolvePostAppointmentActionReply(args: {
   );
 
   if (!openItems.length) {
-    return "Hoje não encontrei nenhum retorno pendente para atualizar.";
+    return await resolveAppointmentActionReply({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      lastHumanMessage: args.lastHumanMessage,
+      recentMessages: args.recentMessages,
+      openAppointments: args.openAppointments,
+    });
   }
 
   const targetResolution = resolveTargetPostAppointmentIndex({
@@ -1262,7 +1285,20 @@ async function resolvePostAppointmentActionReply(args: {
   }
 
   if (targetResolution.type === "none") {
-    return "Eu vi que existem retornos pendentes, mas não ficou claro qual deles você quer atualizar. Pode me dizer o cliente, o título ou o número do item?";
+    const appointmentFallback = await resolveAppointmentActionReply({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      lastHumanMessage: args.lastHumanMessage,
+      recentMessages: args.recentMessages,
+      openAppointments: args.openAppointments,
+    });
+
+    if (appointmentFallback) {
+      return appointmentFallback;
+    }
+
+    return "Não consegui identificar qual item você quer atualizar. Se puder, me diga o cliente, o título ou o número da lista.";
   }
 
   const selectedIndex = Math.min(
@@ -1275,7 +1311,7 @@ async function resolvePostAppointmentActionReply(args: {
   const itemNumber = selectedIndex + 1;
 
   if (!selectedAppointment && (action === "complete" || action === "cancel" || action === "needs_followup")) {
-    return `Eu até identifiquei o item ${itemNumber}, mas não achei os dados completos dele para atualizar com segurança.`;
+    return `Eu até identifiquei o item ${itemNumber}, mas não achei os dados completos para aplicar essa atualização com segurança.`;
   }
 
   if (action === "reschedule") {
@@ -1296,7 +1332,7 @@ async function resolvePostAppointmentActionReply(args: {
     });
 
     if (error) {
-      return `Tentei marcar como concluído, mas apareceu um erro: ${error.message}`;
+      return `Tentei marcar como concluído, mas encontrei um erro: ${error.message}`;
     }
 
     return buildPostAppointmentActionSuccessReply({
@@ -1316,7 +1352,7 @@ async function resolvePostAppointmentActionReply(args: {
     });
 
     if (error) {
-      return `Tentei manter esse retorno como pendente, mas apareceu um erro: ${error.message}`;
+      return `Tentei manter como pendente, mas encontrei um erro: ${error.message}`;
     }
 
     return buildPostAppointmentActionSuccessReply({
@@ -1335,7 +1371,7 @@ async function resolvePostAppointmentActionReply(args: {
     });
 
     if (cancelError) {
-      return `Tentei marcar como cancelado, mas apareceu um erro: ${cancelError.message}`;
+      return `Tentei marcar como cancelado, mas encontrei um erro: ${cancelError.message}`;
     }
 
     const nextNotes = (selectedFollowup.notes ? `${selectedFollowup.notes}\n\n` : "") +
@@ -1356,7 +1392,7 @@ async function resolvePostAppointmentActionReply(args: {
       .eq("store_id", args.storeId);
 
     if (updateFollowupError) {
-      return `Eu cancelei o compromisso, mas não consegui fechar esse retorno direito: ${updateFollowupError.message}`;
+      return `O compromisso foi cancelado, mas eu não consegui encerrar o retorno corretamente: ${updateFollowupError.message}`;
     }
 
     return buildPostAppointmentActionSuccessReply({
@@ -1369,16 +1405,11 @@ async function resolvePostAppointmentActionReply(args: {
   return null;
 }
 
-
 function formatPostAppointmentCurrentSituation(item: PostAppointmentFollowupRow) {
   const status = normalizeText(item.followup_status);
 
   if (status === "prompt_sent") {
-    return "ainda falta retorno do cliente";
-  }
-
-  if (status === "pending_confirmation") {
-    return "ainda precisa de confirmação";
+    return "ainda falta retorno após o atendimento";
   }
 
   return formatFollowupStatus(item.followup_status);
@@ -1389,6 +1420,776 @@ function buildPostAppointmentTypeAndTitle(appointment: AppointmentRow | undefine
   const typeLabel = formatAppointmentType(appointment.appointment_type);
   const titleLabel = appointment.title ? ` ${appointment.title}` : "";
   return `${typeLabel}${titleLabel}`.trim();
+}
+
+
+function isOpenScheduleAppointment(item: AppointmentRow | null | undefined) {
+  if (!item) return false;
+  const status = normalizeText(item.status);
+  return status === "scheduled" || status === "rescheduled";
+}
+
+function sortOpenScheduleAppointments(items: AppointmentRow[]) {
+  const unique = new Map<string, AppointmentRow>();
+
+  for (const item of items || []) {
+    if (!item?.id) continue;
+    if (!isOpenScheduleAppointment(item)) continue;
+    unique.set(item.id, item);
+  }
+
+  return [...unique.values()].sort((a, b) => {
+    const nowTime = Date.now();
+    const aEnd = a.scheduled_end ? new Date(a.scheduled_end).getTime() : Number.MAX_SAFE_INTEGER;
+    const bEnd = b.scheduled_end ? new Date(b.scheduled_end).getTime() : Number.MAX_SAFE_INTEGER;
+    const aStart = a.scheduled_start ? new Date(a.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+    const bStart = b.scheduled_start ? new Date(b.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+
+    const aOverdue = Number.isFinite(aEnd) && aEnd < nowTime;
+    const bOverdue = Number.isFinite(bEnd) && bEnd < nowTime;
+
+    if (aOverdue !== bOverdue) return aOverdue ? -1 : 1;
+    if (aStart !== bStart) return aStart - bStart;
+    return String(a.title || "").localeCompare(String(b.title || ""), "pt-BR");
+  });
+}
+
+function buildScheduleAppointmentReferenceLabel(appointment?: AppointmentRow) {
+  if (!appointment) return "compromisso";
+  const typeLabel = formatAppointmentType(appointment.appointment_type);
+  const titleLabel = String(appointment.title || "").trim();
+  return titleLabel ? `${typeLabel} ${titleLabel}` : typeLabel;
+}
+
+function formatScheduleAppointmentCurrentSituation(appointment: AppointmentRow) {
+  const statusLabel = formatAppointmentStatus(appointment.status);
+  const endTime = appointment.scheduled_end || appointment.scheduled_start;
+
+  if (normalizeText(appointment.status) === "rescheduled") {
+    return endTime
+      ? `remarcado para ${formatDateOnly(endTime)} às ${formatTimeOnly(endTime)}`
+      : "remarcado";
+  }
+
+  if (appointment.scheduled_end && new Date(appointment.scheduled_end).getTime() < Date.now()) {
+    return "ainda está em aberto e já passou do horário";
+  }
+
+  if (endTime) {
+    return `em aberto para ${formatDateOnly(endTime)} às ${formatTimeOnly(endTime)}`;
+  }
+
+  return statusLabel;
+}
+
+function resolveAppointmentCandidateIndexesFromText(args: {
+  text: string;
+  openAppointments: AppointmentRow[];
+}) {
+  const normalizedText = normalizeText(args.text);
+  const digitText = normalizeDigits(args.text);
+
+  if (!normalizedText) return [] as number[];
+
+  const phoneMatches: number[] = [];
+  const customerMatches: number[] = [];
+  const titleMatches: number[] = [];
+  const strongContextMatches: number[] = [];
+  const typeMatches: number[] = [];
+
+  args.openAppointments.forEach((appointment, index) => {
+    const phoneDigits = normalizeDigits(appointment.customer_phone);
+    if (phoneDigits.length >= 8 && digitText && digitText.includes(phoneDigits)) {
+      phoneMatches.push(index);
+    }
+
+    const customerName = normalizeText(appointment.customer_name);
+    if (customerName && customerName.length >= 3 && normalizedText.includes(customerName)) {
+      customerMatches.push(index);
+    }
+
+    const title = normalizeText(appointment.title);
+    if (title && title.length >= 3 && normalizedText.includes(title)) {
+      titleMatches.push(index);
+    }
+
+    const typeCode = normalizeText(appointment.appointment_type);
+    const typeLabel = normalizeText(formatAppointmentType(appointment.appointment_type));
+
+    const mentionsInstallation =
+      normalizedText.includes("instalacao") ||
+      normalizedText.includes("instalação");
+    const mentionsVisit =
+      normalizedText.includes("visita tecnica") ||
+      normalizedText.includes("visita técnica") ||
+      normalizedText.includes("visita");
+    const mentionsMaintenance =
+      normalizedText.includes("manutencao") ||
+      normalizedText.includes("manutenção");
+    const mentionsMeeting =
+      normalizedText.includes("reuniao") ||
+      normalizedText.includes("reunião");
+    const mentionsMeasurement =
+      normalizedText.includes("medicao") ||
+      normalizedText.includes("medição");
+
+    if (mentionsInstallation && (typeCode === "installation" || typeLabel.includes("instalacao") || typeLabel.includes("instalação"))) {
+      typeMatches.push(index);
+    }
+
+    if (mentionsVisit && (typeCode === "technical_visit" || typeLabel.includes("visita"))) {
+      typeMatches.push(index);
+    }
+
+    if (mentionsMaintenance && (typeCode === "maintenance" || typeLabel.includes("manutencao") || typeLabel.includes("manutenção"))) {
+      typeMatches.push(index);
+    }
+
+    if (mentionsMeeting && (typeCode === "meeting" || typeLabel.includes("reuniao") || typeLabel.includes("reunião"))) {
+      typeMatches.push(index);
+    }
+
+    if (mentionsMeasurement && (typeCode === "measurement" || typeLabel.includes("medicao") || typeLabel.includes("medição"))) {
+      typeMatches.push(index);
+    }
+
+    if (
+      customerName &&
+      customerName.length >= 3 &&
+      (
+        normalizedText.includes(`sobre o cliente ${customerName}`) ||
+        normalizedText.includes(`sobre o ${customerName}`) ||
+        normalizedText.includes(`do cliente ${customerName}`) ||
+        normalizedText.includes(`do ${customerName}`) ||
+        normalizedText.includes(`esse do ${customerName}`) ||
+        normalizedText.includes(`a instalacao do ${customerName}`) ||
+        normalizedText.includes(`a instalação do ${customerName}`) ||
+        normalizedText.includes(`a visita do ${customerName}`) ||
+        normalizedText.includes(`visita tecnica do ${customerName}`) ||
+        normalizedText.includes(`visita técnica do ${customerName}`) ||
+        normalizedText.includes(`manutencao ${customerName}`) ||
+        normalizedText.includes(`manutenção ${customerName}`)
+      )
+    ) {
+      strongContextMatches.push(index);
+    }
+
+    if (
+      title &&
+      title.length >= 3 &&
+      (
+        normalizedText.includes(`quero atualizar ${title}`) ||
+        normalizedText.includes(`conclui ${title}`) ||
+        normalizedText.includes(`cancela ${title}`) ||
+        normalizedText.includes(`remarca ${title}`) ||
+        normalizedText.includes(`marque como concluido ${title}`) ||
+        normalizedText.includes(`marque como concluída ${title}`) ||
+        normalizedText.includes(`marque como concluida ${title}`) ||
+        normalizedText.includes(`marca como concluido ${title}`) ||
+        normalizedText.includes(`marca como concluída ${title}`) ||
+        normalizedText.includes(`marca como concluida ${title}`) ||
+        normalizedText.includes(`deixa como concluido ${title}`) ||
+        normalizedText.includes(`deixa como concluída ${title}`) ||
+        normalizedText.includes(`deixa como concluida ${title}`) ||
+        normalizedText.includes(title)
+      )
+    ) {
+      strongContextMatches.push(index);
+    }
+  });
+
+  const dedup = (values: number[]) => [...new Set(values)];
+
+  if (phoneMatches.length) return dedup(phoneMatches);
+  if (strongContextMatches.length) return dedup(strongContextMatches);
+  if (customerMatches.length && typeMatches.length) {
+    const intersection = dedup(customerMatches.filter((index) => typeMatches.includes(index)));
+    if (intersection.length) return intersection;
+  }
+  if (customerMatches.length) return dedup(customerMatches);
+  if (titleMatches.length) return dedup(titleMatches);
+  if (typeMatches.length) return dedup(typeMatches);
+  return [] as number[];
+}
+
+function inferPreviousAppointmentTarget(args: {
+  messages: AssistantMessageRow[];
+  currentHumanMessage: string;
+  openAppointments: AppointmentRow[];
+}) {
+  const ordered = [...args.messages]
+    .filter((message) => getMessageContent(message).length > 0)
+    .filter((message) => isLikelyResponsibleMessage(message))
+    .map((message) => getMessageContent(message))
+    .filter((content) => content !== args.currentHumanMessage);
+
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const content = ordered[index];
+    const explicitIndex = resolvePostAppointmentDetailIndex(content, args.openAppointments.length);
+    if (explicitIndex !== null) {
+      return { type: "unique" as const, index: explicitIndex };
+    }
+
+    const candidateIndexes = resolveAppointmentCandidateIndexesFromText({
+      text: content,
+      openAppointments: args.openAppointments,
+    });
+
+    if (candidateIndexes.length === 1) {
+      return { type: "unique" as const, index: candidateIndexes[0] };
+    }
+
+    if (candidateIndexes.length > 1) {
+      return { type: "ambiguous" as const, candidateIndexes };
+    }
+  }
+
+  return null;
+}
+
+function buildAppointmentAmbiguityReply(args: {
+  candidateIndexes: number[];
+  openAppointments: AppointmentRow[];
+}) {
+  const lines: string[] = [];
+  lines.push("Encontrei mais de um compromisso em aberto para esse pedido.");
+  lines.push("Me diga qual deles você quer atualizar:");
+  lines.push("");
+
+  args.candidateIndexes.slice(0, 5).forEach((candidateIndex, visibleIndex) => {
+    const appointment = args.openAppointments[candidateIndex];
+    const itemNumber = visibleIndex + 1;
+    const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
+    const customer = appointment?.customer_name || "cliente não identificado";
+    const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start;
+
+    lines.push(`${itemNumber}. ${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)}`);
+    lines.push(`- cliente: ${customer}`);
+    if (timeLabel) {
+      lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+    }
+    lines.push(`- situação atual: ${formatScheduleAppointmentCurrentSituation(appointment)}`);
+    lines.push("");
+  });
+
+  lines.push('Você pode responder, por exemplo: "quero atualizar o item 1".');
+  return lines.join("\n").trim();
+}
+
+function resolveTargetAppointmentIndex(args: {
+  text: string;
+  openAppointments: AppointmentRow[];
+  recentMessages?: AssistantMessageRow[];
+}) {
+  const explicitIndex = resolvePostAppointmentDetailIndex(args.text, args.openAppointments.length);
+  if (explicitIndex !== null) {
+    return { type: "unique" as const, index: explicitIndex };
+  }
+
+  const currentCandidates = resolveAppointmentCandidateIndexesFromText({
+    text: args.text,
+    openAppointments: args.openAppointments,
+  });
+
+  if (currentCandidates.length === 1) {
+    return { type: "unique" as const, index: currentCandidates[0] };
+  }
+
+  if (currentCandidates.length > 1) {
+    return { type: "ambiguous" as const, candidateIndexes: currentCandidates };
+  }
+
+  if (
+    hasAnyTerm(normalizeText(args.text), [
+      "esse foi",
+      "esse caso",
+      "esse atendimento",
+      "esse daqui",
+      "isso daqui",
+      "isso ai",
+      "isso aí",
+      "esse aqui",
+      "pode marcar esse",
+      "pode cancelar esse",
+      "pode concluir esse",
+      "pode deixar esse",
+      "esse da instalacao",
+      "esse da instalação",
+      "esse da visita",
+      "o da instalacao",
+      "o da instalação",
+      "o da visita",
+      "aquele que eu falei",
+      "o que eu acabei de citar",
+      "marque como",
+      "marca como",
+      "marque o caso",
+      "cancele",
+      "conclua",
+      "considerar concluido",
+      "considerar concluída",
+      "considerar concluida",
+    ])
+  ) {
+    const previousTarget = inferPreviousAppointmentTarget({
+      messages: args.recentMessages || [],
+      currentHumanMessage: args.text,
+      openAppointments: args.openAppointments,
+    });
+
+    if (previousTarget) {
+      return previousTarget;
+    }
+  }
+
+  return { type: "none" as const };
+}
+
+type ScheduleAction = "create" | PostAppointmentAction;
+
+function resolveScheduleAction(text: string): ScheduleAction | null {
+  const t = normalizeText(text);
+
+  if (
+    hasAnyTerm(t, [
+      "agendar",
+      "criar compromisso",
+      "novo compromisso",
+      "adicionar compromisso",
+      "adiciona um compromisso",
+      "adicione um compromisso",
+      "marcar visita para",
+      "marcar instalacao para",
+      "marcar instalação para",
+      "marcar manutencao para",
+      "marcar manutenção para",
+      "marcar reuniao para",
+      "marcar reunião para",
+      "nova visita",
+      "nova instalacao",
+      "nova instalação",
+      "nova manutencao",
+      "nova manutenção",
+      "novo atendimento",
+    ])
+  ) {
+    return "create";
+  }
+
+  return resolvePostAppointmentAction(text);
+}
+
+function inferAppointmentTypeFromText(text: string): string {
+  const t = normalizeText(text);
+  if (t.includes("visita tecnica") || t.includes("visita técnica")) return "technical_visit";
+  if (t.includes("instalacao") || t.includes("instalação")) return "installation";
+  if (t.includes("manutencao") || t.includes("manutenção")) return "maintenance";
+  if (t.includes("medicao") || t.includes("medição")) return "measurement";
+  if (t.includes("reuniao") || t.includes("reunião")) return "meeting";
+  if (t.includes("follow up") || t.includes("follow-up")) return "follow_up";
+  return "other";
+}
+
+function inferAppointmentTypeLabelFromCode(typeCode: string): string {
+  return formatAppointmentType(typeCode);
+}
+
+function safeCapitalize(value: string) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function extractCustomerNameFromText(text: string): string | null {
+  const patterns = [
+    /cliente\s+([a-zà-ÿ0-9][a-zà-ÿ0-9\s_-]{1,60}?)(?=\s+(?:dia|no dia|na data|as|às|para|com|endereco|endereço|telefone|contato)\b|$)/i,
+    /com\s+([a-zà-ÿ0-9][a-zà-ÿ0-9\s_-]{1,60}?)(?=\s+(?:dia|no dia|na data|as|às|para|endereco|endereço|telefone|contato)\b|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return safeCapitalize(match[1].trim());
+    }
+  }
+
+  return null;
+}
+
+function extractPhoneFromText(text: string): string | null {
+  const match = text.match(/(?:\+?\d[\d\s()\-]{7,}\d)/);
+  if (!match?.[0]) return null;
+  const digits = normalizeDigits(match[0]);
+  if (digits.length < 8) return null;
+  return match[0].trim();
+}
+
+function extractAddressFromText(text: string): string | null {
+  const patterns = [
+    /(?:endereco|endereço)\s+(.+?)(?=\s+(?:dia|no dia|na data|as|às|telefone|contato)\b|$)/i,
+    /(?:na rua|na avenida|na av\.?|na estrada)\s+(.+?)(?=\s+(?:dia|no dia|na data|as|às|telefone|contato)\b|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+function extractTitleFromText(text: string, typeCode: string, customerName?: string | null): string {
+  const quoted = text.match(/["“”']([^"“”']{2,80})["“”']/);
+  if (quoted?.[1]) {
+    return safeCapitalize(quoted[1].trim());
+  }
+
+  const patterns = [
+    /(?:titulo|título)\s+(.+?)(?=\s+(?:cliente|com|dia|no dia|na data|as|às|telefone|contato|endereco|endereço)\b|$)/i,
+    /(?:visita tecnica|visita técnica|instalacao|instalação|manutencao|manutenção|reuniao|reunião|medicao|medição|compromisso)\s+(.+?)(?=\s+(?:cliente|com|dia|no dia|na data|as|às|telefone|contato|endereco|endereço)\b|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const cleaned = match[1]
+        .replace(/^(de|do|da)\s+/i, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (cleaned) return safeCapitalize(cleaned);
+    }
+  }
+
+  const base = inferAppointmentTypeLabelFromCode(typeCode);
+  if (customerName) return `${safeCapitalize(base)} ${customerName}`;
+  return safeCapitalize(base);
+}
+
+function parseDateReferenceFromText(text: string, now: Date) {
+  const t = normalizeText(text);
+  const explicit = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+
+  if (explicit) {
+    let day = Number(explicit[1]);
+    let month = Number(explicit[2]) - 1;
+    let year = explicit[3] ? Number(explicit[3]) : now.getFullYear();
+    if (year < 100) year += 2000;
+    return { day, month, year };
+  }
+
+  const base = new Date(now);
+  base.setHours(0, 0, 0, 0);
+
+  if (t.includes("amanha") || t.includes("amanhã")) {
+    base.setDate(base.getDate() + 1);
+    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
+  }
+
+  if (t.includes("hoje")) {
+    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
+  }
+
+  return null;
+}
+
+function parseTimeRangeFromText(text: string) {
+  const rangeMatch = text.match(/\b(\d{1,2}:\d{2})\s*(?:ate|até|a|-)\s*(\d{1,2}:\d{2})\b/i);
+  if (rangeMatch) {
+    return { startTime: rangeMatch[1], endTime: rangeMatch[2] };
+  }
+
+  const singleMatch = text.match(/\b(\d{1,2}:\d{2})\b/);
+  if (singleMatch) {
+    return { startTime: singleMatch[1], endTime: null as string | null };
+  }
+
+  return null;
+}
+
+function buildIsoFromDateAndTime(dateParts: { day: number; month: number; year: number }, time: string) {
+  const [hour, minute] = time.split(":").map(Number);
+  const date = new Date(dateParts.year, dateParts.month, dateParts.day, hour || 0, minute || 0, 0, 0);
+  return date.toISOString();
+}
+
+function addMinutesToIso(iso: string, minutes: number) {
+  const date = new Date(iso);
+  date.setMinutes(date.getMinutes() + minutes);
+  return date.toISOString();
+}
+
+function extractCreateAppointmentPayload(text: string, now: Date) {
+  const dateParts = parseDateReferenceFromText(text, now);
+  const timeRange = parseTimeRangeFromText(text);
+  const appointmentType = inferAppointmentTypeFromText(text);
+  const customerName = extractCustomerNameFromText(text);
+  const customerPhone = extractPhoneFromText(text);
+  const addressText = extractAddressFromText(text);
+  const title = extractTitleFromText(text, appointmentType, customerName);
+
+  if (!dateParts || !timeRange?.startTime) {
+    return {
+      ok: false as const,
+      message: "Para eu criar o compromisso, me diga pelo menos o dia e a hora. Exemplo: agendar visita técnica amanhã às 14:00 para o cliente Brian.",
+    };
+  }
+
+  const scheduledStart = buildIsoFromDateAndTime(dateParts, timeRange.startTime);
+  const scheduledEnd = timeRange.endTime
+    ? buildIsoFromDateAndTime(dateParts, timeRange.endTime)
+    : addMinutesToIso(scheduledStart, 60);
+
+  return {
+    ok: true as const,
+    payload: {
+      title,
+      appointment_type: appointmentType,
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      address_text: addressText,
+      scheduled_start: scheduledStart,
+      scheduled_end: scheduledEnd,
+    },
+  };
+}
+
+function extractReschedulePayload(text: string, now: Date) {
+  const dateParts = parseDateReferenceFromText(text, now);
+  const timeRange = parseTimeRangeFromText(text);
+
+  if (!dateParts || !timeRange?.startTime) {
+    return {
+      ok: false as const,
+      message: "Para remarcar, me diga a nova data e a nova hora. Exemplo: remarca para 25/04 às 15:00.",
+    };
+  }
+
+  const scheduledStart = buildIsoFromDateAndTime(dateParts, timeRange.startTime);
+  const scheduledEnd = timeRange.endTime
+    ? buildIsoFromDateAndTime(dateParts, timeRange.endTime)
+    : addMinutesToIso(scheduledStart, 60);
+
+  return {
+    ok: true as const,
+    payload: {
+      scheduled_start: scheduledStart,
+      scheduled_end: scheduledEnd,
+    },
+  };
+}
+
+function buildAppointmentActionSuccessReply(args: {
+  action: ScheduleAction;
+  appointment?: AppointmentRow;
+  createdPayload?: {
+    title: string;
+    appointment_type: string;
+    customer_name: string | null;
+    scheduled_start: string;
+  } | null;
+}) {
+  if (args.action === "create") {
+    const createdType = formatAppointmentType(args.createdPayload?.appointment_type || null);
+    const createdTitle = String(args.createdPayload?.title || "").trim();
+    const createdCustomer = args.createdPayload?.customer_name || "cliente não identificado";
+    const createdReference = createdTitle ? `${createdType} ${createdTitle}` : createdType;
+    return `Certo. Agendei ${createdReference} para ${createdCustomer} em ${formatDateOnly(args.createdPayload?.scheduled_start || null)} às ${formatTimeOnly(args.createdPayload?.scheduled_start || null)}.`;
+  }
+
+  const customerName = args.appointment?.customer_name || "cliente não identificado";
+  const referenceLabel = buildScheduleAppointmentReferenceLabel(args.appointment);
+
+  if (args.action === "complete") {
+    return `Certo. Marquei como concluído ${referenceLabel} de ${customerName}.`;
+  }
+
+  if (args.action === "cancel") {
+    return `Certo. Marquei como cancelado ${referenceLabel} de ${customerName}.`;
+  }
+
+  if (args.action === "needs_followup") {
+    return `Certo. Mantive ${referenceLabel} de ${customerName} em aberto.`;
+  }
+
+  return `Certo. Remarquei ${referenceLabel} de ${customerName} para ${formatDateOnly(args.appointment?.scheduled_start || args.appointment?.scheduled_end || null)} às ${formatTimeOnly(args.appointment?.scheduled_start || args.appointment?.scheduled_end || null)}.`;
+}
+
+async function resolveAppointmentActionReply(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  lastHumanMessage: string;
+  recentMessages: AssistantMessageRow[];
+  openAppointments: AppointmentRow[];
+}) {
+  const action = resolveScheduleAction(args.lastHumanMessage);
+  if (!action) {
+    return null;
+  }
+
+  const now = new Date();
+  const openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
+
+  if (action === "create") {
+    const createPayload = extractCreateAppointmentPayload(args.lastHumanMessage, now);
+    if (!createPayload.ok) {
+      return createPayload.message;
+    }
+
+    const insertBody = {
+      organization_id: args.organizationId,
+      store_id: args.storeId,
+      title: createPayload.payload.title,
+      appointment_type: createPayload.payload.appointment_type,
+      status: "scheduled",
+      scheduled_start: createPayload.payload.scheduled_start,
+      scheduled_end: createPayload.payload.scheduled_end,
+      customer_name: createPayload.payload.customer_name,
+      customer_phone: createPayload.payload.customer_phone,
+      address_text: createPayload.payload.address_text,
+      notes: "Criado pela assistente operacional.",
+    };
+
+    const { error } = await args.supabase
+      .from("store_appointments")
+      .insert(insertBody);
+
+    if (error) {
+      return `Tentei criar o compromisso, mas encontrei um erro: ${error.message}`;
+    }
+
+    return buildAppointmentActionSuccessReply({
+      action,
+      createdPayload: {
+        title: createPayload.payload.title,
+        appointment_type: createPayload.payload.appointment_type,
+        customer_name: createPayload.payload.customer_name,
+        scheduled_start: createPayload.payload.scheduled_start,
+      },
+    });
+  }
+
+  if (!openAppointments.length) {
+    return "Hoje eu não encontrei compromisso em aberto para atualizar.";
+  }
+
+  const targetResolution = resolveTargetAppointmentIndex({
+    text: args.lastHumanMessage,
+    openAppointments,
+    recentMessages: args.recentMessages,
+  });
+
+  if (targetResolution.type === "ambiguous") {
+    return buildAppointmentAmbiguityReply({
+      candidateIndexes: targetResolution.candidateIndexes,
+      openAppointments,
+    });
+  }
+
+  if (targetResolution.type === "none") {
+    return "Não consegui identificar qual compromisso você quer atualizar. Me diga o cliente, o título ou o número da lista.";
+  }
+
+  const selectedIndex = Math.min(Math.max(targetResolution.index, 0), openAppointments.length - 1);
+  const selectedAppointment = openAppointments[selectedIndex];
+
+  if (action === "reschedule") {
+    const reschedulePayload = extractReschedulePayload(args.lastHumanMessage, now);
+    if (!reschedulePayload.ok) {
+      return reschedulePayload.message;
+    }
+
+    const { error } = await args.supabase
+      .from("store_appointments")
+      .update({
+        status: "rescheduled",
+        scheduled_start: reschedulePayload.payload.scheduled_start,
+        scheduled_end: reschedulePayload.payload.scheduled_end,
+        notes: ((selectedAppointment.notes ? `${selectedAppointment.notes}\n\n` : "") + "Remarcado pela assistente operacional.").trim(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", selectedAppointment.id)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId);
+
+    if (error) {
+      return `Tentei remarcar, mas encontrei um erro: ${error.message}`;
+    }
+
+    const updatedAppointment = {
+      ...selectedAppointment,
+      status: "rescheduled",
+      scheduled_start: reschedulePayload.payload.scheduled_start,
+      scheduled_end: reschedulePayload.payload.scheduled_end,
+    };
+
+    return buildAppointmentActionSuccessReply({
+      action,
+      appointment: updatedAppointment,
+    });
+  }
+
+  if (action === "complete") {
+    const { error } = await args.supabase.rpc("complete_store_appointment_with_outcome", {
+      p_appointment_id: selectedAppointment.id,
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_completion_outcome: "fully_completed",
+      p_completion_note: "Confirmado pelo responsável na assistente operacional.",
+    });
+
+    if (error) {
+      return `Tentei marcar como concluído, mas encontrei um erro: ${error.message}`;
+    }
+
+    return buildAppointmentActionSuccessReply({
+      action,
+      appointment: selectedAppointment,
+    });
+  }
+
+  if (action === "needs_followup") {
+    return buildAppointmentActionSuccessReply({
+      action,
+      appointment: selectedAppointment,
+    });
+  }
+
+  if (action === "cancel") {
+    const { error: cancelError } = await args.supabase.rpc("cancel_store_appointment", {
+      p_appointment_id: selectedAppointment.id,
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_cancel_reason: "Cancelado pelo responsável na assistente operacional.",
+    });
+
+    if (cancelError) {
+      return `Tentei marcar como cancelado, mas encontrei um erro: ${cancelError.message}`;
+    }
+
+    return buildAppointmentActionSuccessReply({
+      action,
+      appointment: selectedAppointment,
+    });
+  }
+
+  return null;
+}
+
+function buildOpenAppointmentLine(appointment: AppointmentRow) {
+  const parts = [
+    buildScheduleAppointmentReferenceLabel(appointment),
+    appointment.customer_name ? `cliente ${appointment.customer_name}` : null,
+    appointment.customer_phone ? `contato ${appointment.customer_phone}` : null,
+    appointment.scheduled_end || appointment.scheduled_start
+      ? `horário ${formatDateOnly(appointment.scheduled_end || appointment.scheduled_start)} às ${formatTimeOnly(appointment.scheduled_end || appointment.scheduled_start)}`
+      : null,
+    `situação ${formatScheduleAppointmentCurrentSituation(appointment)}`,
+  ].filter(Boolean);
+
+  return `- ${parts.join(" • ")}`;
 }
 
 function asksForMorningReport(text: string) {
@@ -1439,6 +2240,7 @@ type AssistantIntent =
   | "evening_report"
   | "next_visit"
   | "post_appointment"
+  | "schedule_management"
   | "general";
 
 function resolveAssistantIntent(text: string): AssistantIntent {
@@ -1446,6 +2248,7 @@ function resolveAssistantIntent(text: string): AssistantIntent {
   if (asksForEveningReport(text)) return "evening_report";
   if (asksAboutNextVisit(text)) return "next_visit";
   if (asksAboutPostAppointment(text)) return "post_appointment";
+  if (asksAboutScheduleManagement(text)) return "schedule_management";
   return "general";
 }
 
@@ -1886,17 +2689,16 @@ function sortOpenPostFollowups(items: PostAppointmentFollowupRow[]) {
   });
 }
 
-
 function buildFriendlyPostFollowupObservation(note?: string | null) {
   const normalized = normalizeText(note);
   if (!normalized) return null;
 
   if (normalized.includes("apos a conclusao ainda falta retorno")) {
-    return "o atendimento já aconteceu, mas ainda falta retorno do cliente.";
+    return "esse atendimento foi concluído, mas ainda falta retorno com o cliente.";
   }
 
   if (normalized.includes("reabertura automatica pos-compromisso")) {
-    return "esse atendimento passou do horário e ainda não foi confirmado.";
+    return "esse atendimento já passou do horário e ainda não foi confirmado.";
   }
 
   if (
@@ -1904,11 +2706,11 @@ function buildFriendlyPostFollowupObservation(note?: string | null) {
     normalized.includes("confirmacao manual de teste: compromisso remarcado") ||
     normalized.includes("confirmacao manual de teste: compromisso cancelado")
   ) {
-    return "já existe um histórico desse atendimento, mas ele voltou para a fila de retorno.";
+    return "existe um histórico anterior nesse atendimento, mas ele voltou para a fila de confirmação.";
   }
 
   if (normalized.includes("fechamento do atendimento")) {
-    return "esse atendimento já foi encerrado.";
+    return "esse atendimento já foi encerrado por completo.";
   }
 
   const cleaned = (note || "")
@@ -1920,30 +2722,135 @@ function buildFriendlyPostFollowupObservation(note?: string | null) {
   return cleaned || null;
 }
 
-
 function buildDeterministicPostAppointmentReply(args: {
   pendingPostFollowups: PostAppointmentFollowupRow[];
   recentResolvedPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
+  openAppointments: AppointmentRow[];
   lastHumanMessage: string;
 }) {
-  const openItems = sortOpenPostFollowups(
+  const openFollowups = sortOpenPostFollowups(
     (args.pendingPostFollowups || []).filter((item) => isOpenPostFollowup(item))
   );
 
-  if (!openItems.length) {
-    return "Hoje não há retorno pendente.";
+  const openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
+  const wantsFullList = asksToListAllPostAppointments(args.lastHumanMessage);
+
+  if (!openFollowups.length && !openAppointments.length) {
+    return "Hoje não há retorno pendente nem compromisso em aberto.";
   }
 
-  const wantsFullList = asksToListAllPostAppointments(args.lastHumanMessage);
-  const detailIndex = resolvePostAppointmentDetailIndex(args.lastHumanMessage, openItems.length);
+  if (!openFollowups.length && openAppointments.length) {
+    const detailIndex = resolvePostAppointmentDetailIndex(args.lastHumanMessage, openAppointments.length);
+    const wantsSpecificDetail = detailIndex !== null && !wantsFullList;
+    const current = openAppointments[Math.min(Math.max(detailIndex ?? 0, 0), openAppointments.length - 1)];
+
+    if (wantsSpecificDetail) {
+      const itemNumber = (detailIndex ?? 0) + 1;
+      const lines: string[] = [];
+      lines.push(`Claro. Sobre o item ${itemNumber}:`);
+      lines.push("");
+      lines.push(`- tipo: ${formatAppointmentType(current.appointment_type)}`);
+
+      if (current.title) {
+        lines.push(`- título: ${current.title}`);
+      }
+
+      if (current.customer_name) {
+        lines.push(`- cliente: ${current.customer_name}`);
+      }
+
+      if (current.customer_phone) {
+        lines.push(`- contato: ${current.customer_phone}`);
+      }
+
+      if (current.address_text) {
+        lines.push(`- endereço: ${current.address_text}`);
+      }
+
+      const timeLabel = current.scheduled_end || current.scheduled_start;
+      if (timeLabel) {
+        lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+      }
+
+      lines.push(`- situação atual: ${formatScheduleAppointmentCurrentSituation(current)}`);
+      lines.push("");
+      lines.push("Se quiser, eu posso te ajudar a concluir, cancelar ou remarcar esse item.");
+
+      return lines.join("\n");
+    }
+
+    const lines: string[] = [];
+    lines.push(
+      openAppointments.length === 1
+        ? "Hoje você tem 1 compromisso em aberto."
+        : `Hoje você tem ${openAppointments.length} compromissos em aberto.`
+    );
+    lines.push("");
+
+    if (wantsFullList) {
+      openAppointments.forEach((item, index) => {
+        lines.push(`${index + 1}. ${buildScheduleAppointmentReferenceLabel(item)}`);
+        if (item.customer_name) {
+          lines.push(`- cliente: ${item.customer_name}`);
+        }
+        if (item.customer_phone) {
+          lines.push(`- contato: ${item.customer_phone}`);
+        }
+        const timeLabel = item.scheduled_end || item.scheduled_start;
+        if (timeLabel) {
+          lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+        }
+        lines.push(`- situação atual: ${formatScheduleAppointmentCurrentSituation(item)}`);
+
+        if (index < openAppointments.length - 1) {
+          lines.push("");
+        }
+      });
+
+      lines.push("");
+      lines.push("Se quiser, eu posso detalhar qualquer um deles.");
+      return lines.join("\n");
+    }
+
+    const currentItem = openAppointments[0];
+    lines.push(`O item mais urgente agora é ${buildScheduleAppointmentReferenceLabel(currentItem)}.`);
+
+    if (currentItem.customer_name) {
+      lines.push(`- cliente: ${currentItem.customer_name}`);
+    }
+
+    if (currentItem.customer_phone) {
+      lines.push(`- contato: ${currentItem.customer_phone}`);
+    }
+
+    const currentTimeLabel = currentItem.scheduled_end || currentItem.scheduled_start;
+    if (currentTimeLabel) {
+      lines.push(`- horário: ${formatDateOnly(currentTimeLabel)} às ${formatTimeOnly(currentTimeLabel)}`);
+    }
+
+    lines.push(`- situação atual: ${formatScheduleAppointmentCurrentSituation(currentItem)}`);
+
+    if (openAppointments.length > 1) {
+      lines.push("");
+      lines.push(`Além desse item, há mais ${openAppointments.length - 1} compromissos em aberto.`);
+    }
+
+    lines.push("");
+    lines.push("Se quiser, eu posso listar os próximos.");
+
+    return lines.join("\n");
+  }
+
+  const detailIndex = resolvePostAppointmentDetailIndex(args.lastHumanMessage, openFollowups.length);
   const wantsSpecificDetail = detailIndex !== null && !wantsFullList;
-  const current = openItems[Math.min(Math.max(detailIndex ?? 0, 0), openItems.length - 1)];
+  const current = openFollowups[Math.min(Math.max(detailIndex ?? 0, 0), openFollowups.length - 1)];
   const appointment = args.appointmentMap.get(current.appointment_id);
   const lines: string[] = [];
 
   if (wantsSpecificDetail) {
-    lines.push("Claro. Encontrei isto:");
+    const itemNumber = (detailIndex ?? 0) + 1;
+    lines.push(`Claro. Sobre o item ${itemNumber}:`);
     lines.push("");
 
     lines.push(`- tipo: ${appointment ? formatAppointmentType(appointment.appointment_type) : "atendimento"}`);
@@ -1966,30 +2873,42 @@ function buildDeterministicPostAppointmentReply(args: {
 
     const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start || current.scheduled_end;
     if (timeLabel) {
-      lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+      lines.push(`- horário original: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
     }
 
-    lines.push(`- situação: ${formatPostAppointmentCurrentSituation(current)}`);
+    lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(current)}`);
 
     const friendlyObservation = buildFriendlyPostFollowupObservation(current.notes);
     if (friendlyObservation) {
-      lines.push(`- detalhe: ${friendlyObservation}`);
+      lines.push(`- detalhe rápido: ${friendlyObservation}`);
     }
 
     lines.push("");
-    lines.push("Se quiser, eu posso marcar isso como concluído, cancelado, remarcado ou pendente.");
+    lines.push(
+      "Se quiser, eu também posso te ajudar a marcar esse item como concluído, cancelado, remarcado ou ainda pendente."
+    );
+
     return lines.join("\n");
   }
 
   lines.push(
-    openItems.length === 1
+    openFollowups.length === 1
       ? "Hoje você tem 1 retorno pendente."
-      : `Hoje você tem ${openItems.length} retornos pendentes.`
+      : `Hoje você tem ${openFollowups.length} retornos pendentes.`
   );
+
+  if (openAppointments.length) {
+    lines.push(
+      openAppointments.length === 1
+        ? "Também há 1 compromisso em aberto."
+        : `Também há ${openAppointments.length} compromissos em aberto.`
+    );
+  }
+
   lines.push("");
 
   if (wantsFullList) {
-    openItems.forEach((item, index) => {
+    openFollowups.forEach((item, index) => {
       const itemAppointment = args.appointmentMap.get(item.appointment_id);
       const itemTitle = buildPostAppointmentTypeAndTitle(itemAppointment);
       const itemTimeLabel = itemAppointment?.scheduled_end || itemAppointment?.scheduled_start || item.scheduled_end;
@@ -2003,23 +2922,23 @@ function buildDeterministicPostAppointmentReply(args: {
       }
 
       if (itemTimeLabel) {
-        lines.push(`- horário: ${formatDateOnly(itemTimeLabel)} às ${formatTimeOnly(itemTimeLabel)}`);
+        lines.push(`- horário original: ${formatDateOnly(itemTimeLabel)} às ${formatTimeOnly(itemTimeLabel)}`);
       }
 
-      lines.push(`- situação: ${formatPostAppointmentCurrentSituation(item)}`);
+      lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(item)}`);
 
       const itemObservation = buildFriendlyPostFollowupObservation(item.notes);
       if (itemObservation) {
-        lines.push(`- detalhe: ${itemObservation}`);
+        lines.push(`- detalhe rápido: ${itemObservation}`);
       }
 
-      if (index < openItems.length - 1) {
+      if (index < openFollowups.length - 1) {
         lines.push("");
       }
     });
 
     lines.push("");
-    lines.push("Se quiser, eu posso atualizar qualquer um deles.");
+    lines.push("Se quiser, eu posso detalhar qualquer um deles.");
     return lines.join("\n");
   }
 
@@ -2027,11 +2946,11 @@ function buildDeterministicPostAppointmentReply(args: {
     const timeLabel = appointment.scheduled_end || appointment.scheduled_start || current.scheduled_end;
     const appointmentTypeLabel = formatAppointmentType(appointment.appointment_type);
     lines.push(
-      `O mais urgente agora é ${appointmentTypeLabel}${appointment.title ? ` ${appointment.title}` : ""}.`
+      `O retorno mais urgente agora é ${appointmentTypeLabel}${appointment.title ? ` ${appointment.title}` : ""}.`
     );
 
     if (timeLabel) {
-      lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+      lines.push(`- horário original: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
     }
 
     if (appointment.customer_name) {
@@ -2042,26 +2961,35 @@ function buildDeterministicPostAppointmentReply(args: {
       lines.push(`- contato: ${appointment.customer_phone}`);
     }
 
-    lines.push(`- situação: ${formatPostAppointmentCurrentSituation(current)}`);
+    lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(current)}`);
   } else if (current.scheduled_end) {
-    lines.push(`O mais urgente agora é um atendimento do dia ${formatDateOnly(current.scheduled_end)}.`);
-    lines.push(`- situação: ${formatPostAppointmentCurrentSituation(current)}`);
+    lines.push(`O retorno mais urgente agora é de um atendimento encerrado em ${formatDateTime(current.scheduled_end)}.`);
+    lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(current)}`);
   } else {
     lines.push("Existe um retorno pendente sem detalhes completos por aqui.");
   }
 
   const friendlyObservation = buildFriendlyPostFollowupObservation(current.notes);
   if (friendlyObservation) {
-    lines.push(`- detalhe: ${friendlyObservation}`);
+    lines.push(`- detalhe rápido: ${friendlyObservation}`);
   }
 
-  if (openItems.length > 1) {
+  if (openFollowups.length > 1) {
     lines.push("");
-    lines.push(`Além desse, há mais ${openItems.length - 1} retornos pendentes.`);
+    lines.push(`Além desse retorno, há mais ${openFollowups.length - 1} pendências de retorno.`);
+  }
+
+  if (openAppointments.length) {
+    lines.push("");
+    lines.push(
+      openAppointments.length === 1
+        ? "Também há 1 compromisso em aberto na agenda."
+        : `Também há ${openAppointments.length} compromissos em aberto na agenda.`
+    );
   }
 
   lines.push("");
-  lines.push("Se quiser, eu posso listar os outros por ordem de prioridade.");
+  lines.push("Se quiser, eu posso listar os próximos por ordem de urgência.");
 
   return lines.join("\n");
 }
@@ -2081,10 +3009,11 @@ function buildRequestAnalysisBlock(lastHumanMessage: string) {
       ? "- quando responder isso, trate qualquer orientação de materiais ou documentos como sugestão genérica, nunca como procedimento confirmado da loja, a menos que exista base explícita no sistema"
       : "- não há pedido direto sobre materiais ou documentos nesta mensagem",
     `- pedido ligado a agenda, urgência ou compromissos: ${todayRequest ? "sim" : "não"}`,
-    `- pedido ligado a retorno, pendência ou acompanhamento: ${postAppointmentRequest ? "sim" : "não"}`,
+    `- pedido ligado a retorno pendente ou acompanhamento: ${postAppointmentRequest ? "sim" : "não"}`,
     `- pedido de relatório da manhã: ${morningReportRequest ? "sim" : "não"}`,
     `- pedido de relatório do fim do dia: ${eveningReportRequest ? "sim" : "não"}`,
     `- pedido ligado à próxima visita ou ao que levar: ${nextVisitRequest ? "sim" : "não"}`,
+    `- pedido ligado a criar, cancelar, concluir ou remarcar compromisso: ${intent === "schedule_management" ? "sim" : "não"}`,
   ].join("\n");
 }
 
@@ -2114,7 +3043,7 @@ function buildSystemPrompt(args: {
     "- resumir agenda, prioridades e pendências",
     "- responder dúvidas operacionais sobre clientes, compromissos e rotina",
     "- trazer contexto suficiente para ação humana",
-    "- usar também a base de retornos quando ela existir",
+    "- usar também a base de retornos pendentes quando ela existir",
     "- gerar relatório da manhã e relatório do fim do dia quando isso for pedido",
     "- ser honesta sobre o que sabe e o que não sabe",
     "",
@@ -2143,7 +3072,7 @@ function buildSystemPrompt(args: {
     "  2) até 4 itens práticos",
     "  3) uma pergunta curta no final, se ajudar",
     "",
-    "COMO RESPONDER SOBRE PÓS-COMPROMISSO",
+    "COMO RESPONDER SOBRE RETORNO PENDENTE",
     "- trate follow-ups pendentes como pendências reais da operação",
     "- quando houver follow-up com status pendente ou prompt_sent, deixe isso claro",
     "- quando houver follow-up resolvido, trate como histórico recente, não como pendência aberta",
@@ -2203,10 +3132,10 @@ function buildSystemPrompt(args: {
     "PENDÊNCIAS DA ASSISTENTE",
     buildPendingNotificationsBlock(args.pendingNotifications),
     "",
-    "PÓS-COMPROMISSO PENDENTE",
+    "RETORNOS PENDENTES",
     buildPendingPostAppointmentBlock(args.pendingPostFollowups, args.appointmentMap),
     "",
-    "PÓS-COMPROMISSO RESOLVIDO RECENTEMENTE",
+    "RETORNOS RESOLVIDOS RECENTEMENTE",
     buildResolvedPostAppointmentBlock(args.recentResolvedPostFollowups, args.appointmentMap),
     "",
     "MENSAGEM MAIS RECENTE DO RESPONSÁVEL",
@@ -2638,6 +3567,12 @@ async function generateAssistantReply(params: {
     const eveningReportMode = detectedIntent === "evening_report";
     const nextVisitMode = detectedIntent === "next_visit";
     const postAppointmentMode = detectedIntent === "post_appointment";
+    const scheduleManagementMode = detectedIntent === "schedule_management";
+    const allOpenAppointments = [
+      ...((todayAppointmentsData || []) as AppointmentRow[]),
+      ...((nextAppointmentsData || []) as AppointmentRow[]),
+      ...((overdueAppointmentsData || []) as AppointmentRow[]),
+    ];
 
     const postAppointmentActionReply = postAppointmentMode
       ? await resolvePostAppointmentActionReply({
@@ -2648,6 +3583,18 @@ async function generateAssistantReply(params: {
           recentMessages,
           pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
           appointmentMap,
+          openAppointments: allOpenAppointments,
+        })
+      : null;
+
+    const scheduleActionReply = !postAppointmentMode
+      ? await resolveAppointmentActionReply({
+          supabase,
+          organizationId,
+          storeId,
+          lastHumanMessage,
+          recentMessages,
+          openAppointments: allOpenAppointments,
         })
       : null;
 
@@ -2677,6 +3624,8 @@ async function generateAssistantReply(params: {
 
     if (postAppointmentActionReply) {
       aiText = postAppointmentActionReply;
+    } else if (scheduleActionReply) {
+      aiText = scheduleActionReply;
     } else if (morningReportMode) {
       aiText = buildDeterministicMorningReport({
         todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
@@ -2698,6 +3647,7 @@ async function generateAssistantReply(params: {
         pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
         recentResolvedPostFollowups: (recentResolvedPostFollowupsData || []) as PostAppointmentFollowupRow[],
         appointmentMap,
+        openAppointments: allOpenAppointments,
         lastHumanMessage,
       });
     } else {
@@ -2725,6 +3675,7 @@ async function generateAssistantReply(params: {
     const isContextMessage =
       asksAboutToday(lastHumanMessage) ||
       postAppointmentMode ||
+      scheduleManagementMode ||
       nextVisitMode ||
       morningReportMode ||
       eveningReportMode;
@@ -2753,6 +3704,7 @@ async function generateAssistantReply(params: {
         morningReportMode,
         eveningReportMode,
         nextVisitMode,
+        scheduleManagementMode,
         detectedIntent,
       },
     });
