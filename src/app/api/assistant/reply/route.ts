@@ -303,6 +303,109 @@ function hasAnyTerm(text: string, terms: string[]) {
   return terms.some((term) => text.includes(term));
 }
 
+
+function hasLooseReferenceTerm(text: string) {
+  return hasAnyTerm(text, [
+    "esse",
+    "essa",
+    "isso",
+    "esse caso",
+    "essa visita",
+    "esse atendimento",
+    "esse retorno",
+    "esse acompanhamento",
+    "esse daqui",
+    "isso daqui",
+    "isso ai",
+    "isso aí",
+    "esse aqui",
+    "aquele que eu falei",
+    "o que eu acabei de citar",
+    "o da instalacao",
+    "o da instalação",
+    "o da visita",
+    "o retorno da instalacao",
+    "o retorno da instalação",
+    "o retorno da visita",
+  ]);
+}
+
+function containsStandaloneCompleteCue(text: string) {
+  return hasAnyTerm(text, [
+    "concluido",
+    "concluída",
+    "concluida",
+    "finalizado",
+    "finalizada",
+    "finalizar",
+    "finaliza",
+    "finalize",
+    "encerrado",
+    "encerrada",
+    "encerrar",
+    "encerra",
+    "encerre",
+    "terminou",
+    "terminado",
+    "resolvido",
+    "resolvida",
+    "resolver isso",
+    "fechar isso",
+    "fecha isso",
+    "baixar isso como concluido",
+    "baixar isso como concluída",
+    "baixar isso como concluida",
+    "considerar concluido",
+    "considerar concluída",
+    "considerar concluida",
+  ]);
+}
+
+function containsStandaloneCancelCue(text: string) {
+  return hasAnyTerm(text, [
+    "cancelado",
+    "cancelada",
+    "cancelar",
+    "cancela",
+    "cancele",
+    "considerar cancelado",
+    "fechar isso como cancelado",
+  ]);
+}
+
+function containsStandaloneRescheduleCue(text: string) {
+  return hasAnyTerm(text, [
+    "remarcado",
+    "remarcada",
+    "remarcar",
+    "remarca",
+    "remarque",
+    "considerar remarcado",
+  ]);
+}
+
+function containsStandalonePendingCue(text: string) {
+  return hasAnyTerm(text, [
+    "pendente",
+    "aguardando",
+    "ainda falta retorno",
+    "ainda falta resposta",
+    "ainda precisa retorno",
+    "ainda precisa resposta",
+    "ainda esta pendente",
+    "ainda está pendente",
+    "ainda nao concluiu",
+    "ainda não concluiu",
+    "ainda nao terminou",
+    "ainda não terminou",
+    "manter pendente",
+    "mantem pendente",
+    "mantém pendente",
+    "deixa pendente",
+    "deixar pendente",
+  ]);
+}
+
 function asksAboutToday(text: string) {
   const t = normalizeText(text);
   return (
@@ -337,28 +440,115 @@ function asksAboutPostAppointment(text: string) {
     return false;
   }
 
-  return hasAnyTerm(t, [
-    "pos compromisso",
-    "pos-compromisso",
-    "acompanhamento",
-    "retorno",
-    "depois da visita",
-    "depois do compromisso",
-    "o que ficou pendente",
-    "o que ainda preciso resolver",
-    "visitas pendentes",
-    "confirmacao",
-    "confirmar esse pos-compromisso",
-    "confirmar esse pos compromisso",
-    "confirmar o pos-compromisso",
-    "confirmar o pos compromisso",
-    "remarcacao",
-    "remarcado",
-    "cancelamento",
-    "cancelado",
-    "conclusao da visita",
-    "conclusao do compromisso",
-  ]);
+  if (
+    hasAnyTerm(t, [
+      "pos compromisso",
+      "pos-compromisso",
+      "acompanhamento",
+      "retorno",
+      "depois da visita",
+      "depois do compromisso",
+      "o que ficou pendente",
+      "o que ainda preciso resolver",
+      "visitas pendentes",
+      "confirmacao",
+      "confirmar esse pos-compromisso",
+      "confirmar esse pos compromisso",
+      "confirmar o pos-compromisso",
+      "confirmar o pos compromisso",
+      "remarcacao",
+      "remarcado",
+      "cancelamento",
+      "cancelado",
+      "conclusao da visita",
+      "conclusao do compromisso",
+      "deixar como concluido",
+      "deixar como concluída",
+      "deixar como concluida",
+      "deixa como concluido",
+      "deixa como concluida",
+      "deixa como concluída",
+      "pode deixar como concluido",
+      "pode deixar como concluida",
+      "pode deixar como concluída",
+      "marque como concluido",
+      "marque como concluida",
+      "marque como concluída",
+      "marca como concluido",
+      "marca como concluida",
+      "marca como concluída",
+      "pode marcar como concluido",
+      "pode marcar como concluida",
+      "pode marcar como concluída",
+      "quero atualizar",
+      "quero resolver",
+      "quero concluir",
+      "quero finalizar",
+      "pode finalizar",
+      "pode encerrar",
+      "pode considerar concluido",
+      "pode considerar concluida",
+      "pode considerar concluída",
+      "pode fechar isso",
+      "fecha isso",
+      "resolva isso",
+      "cancela isso",
+      "quero cancelar isso",
+      "pode considerar cancelado",
+      "fecha isso como cancelado",
+      "remarque isso",
+      "quero remarcar isso",
+      "ainda falta retorno",
+      "ainda falta resposta",
+      "continua pendente",
+      "continua aguardando",
+      "manter pendente",
+      "mantem pendente",
+      "mantém pendente",
+      "deixa pendente",
+      "deixar pendente",
+      "ainda precisa retorno",
+      "ainda precisa resposta",
+      "esse retorno",
+      "esse acompanhamento",
+      "retorno apos a instalacao",
+      "retorno após a instalação",
+      "retorno da instalacao",
+      "retorno da instalação",
+      "apos a instalacao",
+      "após a instalação",
+      "esse da instalacao",
+      "esse da instalação",
+      "esse da visita",
+      "sobre o cliente",
+    ])
+  ) {
+    return true;
+  }
+
+  const hasActionCue =
+    containsStandaloneCompleteCue(t) ||
+    containsStandaloneCancelCue(t) ||
+    containsStandaloneRescheduleCue(t) ||
+    containsStandalonePendingCue(t);
+
+  const hasReferenceCue =
+    hasLooseReferenceTerm(t) ||
+    hasAnyTerm(t, [
+      "cliente ",
+      "do cliente ",
+      "sobre o ",
+      "visita tecnica",
+      "visita técnica",
+      "instalacao",
+      "instalação",
+      "manutencao",
+      "manutenção",
+      "titulo",
+      "título",
+    ]);
+
+  return hasActionCue && hasReferenceCue;
 }
 
 function asksToListAllPostAppointments(text: string) {
@@ -500,11 +690,21 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "continua pendente",
       "continua aguardando",
       "manter pendente",
+      "mantem pendente",
+      "mantém pendente",
       "deixa pendente",
+      "deixar pendente",
+      "pode deixar pendente",
       "ainda nao concluiu",
       "ainda não concluiu",
       "ainda nao terminou",
       "ainda não terminou",
+      "ainda precisa retorno",
+      "ainda precisa resposta",
+      "esse caso ainda esta pendente",
+      "esse caso ainda está pendente",
+      "esse retorno ainda esta pendente",
+      "esse retorno ainda está pendente",
     ])
   ) {
     return "needs_followup";
@@ -514,17 +714,73 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
     hasAnyTerm(t, [
       "foi concluido",
       "foi concluído",
+      "foi concluida",
+      "foi concluída",
       "marcar como concluido",
       "marcar como concluído",
+      "marcar como concluida",
+      "marcar como concluída",
       "marca como concluido",
       "marca como concluído",
+      "marca como concluida",
+      "marca como concluída",
       "pode concluir",
       "pode marcar como concluido",
       "pode marcar como concluído",
+      "pode marcar como concluida",
+      "pode marcar como concluída",
+      "deixar como concluido",
+      "deixar como concluída",
+      "deixar como concluida",
+      "deixa como concluido",
+      "deixa como concluída",
+      "deixa como concluida",
+      "pode deixar como concluido",
+      "pode deixar como concluída",
+      "pode deixar como concluida",
       "ja foi concluido",
       "já foi concluído",
-      "terminou tudo",
+      "ja foi concluida",
+      "já foi concluída",
+      "isso foi concluido",
+      "isso foi concluído",
+      "esse ja foi concluido",
+      "esse já foi concluído",
+      "esse retorno ja foi concluido",
+      "esse retorno já foi concluído",
+      "quero atualizar",
+      "quero resolver",
+      "quero concluir isso",
+      "quero finalizar isso",
+      "pode finalizar",
+      "pode encerrar",
+      "isso ja terminou",
+      "isso já terminou",
+      "terminou",
       "terminou sim",
+      "terminou tudo",
+      "pode considerar concluido",
+      "pode considerar concluída",
+      "pode considerar concluida",
+      "pode considerar isso como concluido",
+      "pode considerar isso como concluída",
+      "pode considerar isso como concluida",
+      "pode baixar isso como concluido",
+      "pode baixar isso como concluída",
+      "pode baixar isso como concluida",
+      "pode fechar isso",
+      "fecha isso",
+      "quero atualizar isso como concluido",
+      "quero atualizar isso como concluída",
+      "quero atualizar isso como concluida",
+      "quero resolver isso",
+      "resolva isso como concluido",
+      "resolva isso como concluída",
+      "resolva isso como concluida",
+      "conclui",
+      "concluir",
+      "finaliza",
+      "encerra",
     ])
   ) {
     return "complete";
@@ -538,11 +794,23 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "marca como cancelado",
       "pode cancelar",
       "pode marcar como cancelado",
+      "deixar como cancelado",
+      "deixa como cancelado",
+      "pode deixar como cancelado",
+      "isso foi cancelado",
+      "esse foi cancelado",
+      "esse caso foi cancelado",
       "ja foi cancelado",
       "já foi cancelado",
       "cancelou",
       "cancelada",
       "cancelado",
+      "cancela isso",
+      "quero cancelar isso",
+      "pode considerar cancelado",
+      "fecha isso como cancelado",
+      "cancela",
+      "cancelar",
     ])
   ) {
     return "cancel";
@@ -556,11 +824,21 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "marca como remarcado",
       "pode remarcar",
       "pode marcar como remarcado",
+      "deixar como remarcado",
+      "deixa como remarcado",
+      "pode deixar como remarcado",
+      "esse foi remarcado",
+      "isso foi remarcado",
       "ja foi remarcado",
       "já foi remarcado",
       "remarcou",
       "remarcada",
       "remarcado",
+      "remarque isso",
+      "quero remarcar isso",
+      "esse caso foi remarcado",
+      "remarca",
+      "remarcar",
     ])
   ) {
     return "reschedule";
@@ -586,6 +864,8 @@ function resolvePostAppointmentCandidateIndexesFromText(args: {
   const phoneMatches: number[] = [];
   const customerMatches: number[] = [];
   const titleMatches: number[] = [];
+  const strongContextMatches: number[] = [];
+  const typeMatches: number[] = [];
 
   args.openItems.forEach((item, index) => {
     const appointment = args.appointmentMap.get(item.appointment_id);
@@ -605,11 +885,138 @@ function resolvePostAppointmentCandidateIndexesFromText(args: {
     if (title && title.length >= 3 && normalizedText.includes(title)) {
       titleMatches.push(index);
     }
+
+    const typeCode = normalizeText(appointment.appointment_type);
+    const typeLabel = normalizeText(formatAppointmentType(appointment.appointment_type));
+
+    const mentionsInstallation =
+      normalizedText.includes("instalacao") ||
+      normalizedText.includes("instalação");
+    const mentionsVisit =
+      normalizedText.includes("visita tecnica") ||
+      normalizedText.includes("visita técnica") ||
+      normalizedText.includes("visita");
+    const mentionsMaintenance =
+      normalizedText.includes("manutencao") ||
+      normalizedText.includes("manutenção");
+    const mentionsReturn =
+      normalizedText.includes("retorno") ||
+      normalizedText.includes("acompanhamento") ||
+      normalizedText.includes("pos compromisso") ||
+      normalizedText.includes("pos-compromisso");
+
+    if (mentionsInstallation && (typeCode === "installation" || typeLabel.includes("instalacao") || typeLabel.includes("instalação"))) {
+      typeMatches.push(index);
+    }
+
+    if (mentionsVisit && (typeCode === "technical_visit" || typeLabel.includes("visita"))) {
+      typeMatches.push(index);
+    }
+
+    if (mentionsMaintenance && (typeCode === "maintenance" || typeLabel.includes("manutencao") || typeLabel.includes("manutenção"))) {
+      typeMatches.push(index);
+    }
+
+    if (
+      mentionsReturn &&
+      (
+        normalizedText.includes("apos a instalacao") ||
+        normalizedText.includes("após a instalação") ||
+        normalizedText.includes("retorno apos a instalacao") ||
+        normalizedText.includes("retorno após a instalação") ||
+        normalizedText.includes("retorno da instalacao") ||
+        normalizedText.includes("retorno da instalação") ||
+        normalizedText.includes("esse da instalacao") ||
+        normalizedText.includes("esse da instalação") ||
+        normalizedText.includes("o da instalacao") ||
+        normalizedText.includes("o da instalação")
+      ) &&
+      typeCode === "installation"
+    ) {
+      strongContextMatches.push(index);
+    }
+
+    if (
+      mentionsReturn &&
+      (
+        normalizedText.includes("apos a visita") ||
+        normalizedText.includes("após a visita") ||
+        normalizedText.includes("retorno da visita") ||
+        normalizedText.includes("retorno apos a visita") ||
+        normalizedText.includes("retorno após a visita") ||
+        normalizedText.includes("esse da visita") ||
+        normalizedText.includes("o da visita")
+      ) &&
+      typeCode === "technical_visit"
+    ) {
+      strongContextMatches.push(index);
+    }
+
+    if (
+      mentionsReturn &&
+      customerName &&
+      customerName.length >= 3 &&
+      normalizedText.includes(customerName) &&
+      (normalizedText.includes("esse retorno") || normalizedText.includes("esse acompanhamento"))
+    ) {
+      strongContextMatches.push(index);
+    }
+
+    if (
+      customerName &&
+      customerName.length >= 3 &&
+      (
+        normalizedText.includes(`sobre o cliente ${customerName}`) ||
+        normalizedText.includes(`sobre o ${customerName}`) ||
+        normalizedText.includes(`do cliente ${customerName}`) ||
+        normalizedText.includes(`do ${customerName}`) ||
+        normalizedText.includes(`esse do ${customerName}`) ||
+        normalizedText.includes(`o retorno do ${customerName}`) ||
+        normalizedText.includes(`a instalacao do ${customerName}`) ||
+        normalizedText.includes(`a instalação do ${customerName}`) ||
+        normalizedText.includes(`a visita do ${customerName}`) ||
+        normalizedText.includes(`visita tecnica do ${customerName}`) ||
+        normalizedText.includes(`visita técnica do ${customerName}`)
+      )
+    ) {
+      strongContextMatches.push(index);
+    }
+
+    if (
+      title &&
+      title.length >= 3 &&
+      (
+        normalizedText.includes(`quero atualizar ${title}`) ||
+        normalizedText.includes(`conclui ${title}`) ||
+        normalizedText.includes(`cancela ${title}`) ||
+        normalizedText.includes(`remarca ${title}`) ||
+        normalizedText.includes(`marque como concluido ${title}`) ||
+        normalizedText.includes(`marque como concluída ${title}`) ||
+        normalizedText.includes(`marque como concluida ${title}`) ||
+        normalizedText.includes(`marca como concluido ${title}`) ||
+        normalizedText.includes(`marca como concluída ${title}`) ||
+        normalizedText.includes(`marca como concluida ${title}`) ||
+        normalizedText.includes(`deixa como concluido ${title}`) ||
+        normalizedText.includes(`deixa como concluída ${title}`) ||
+        normalizedText.includes(`deixa como concluida ${title}`) ||
+        normalizedText.includes(title)
+      )
+    ) {
+      strongContextMatches.push(index);
+    }
   });
 
-  if (phoneMatches.length) return phoneMatches;
-  if (customerMatches.length) return customerMatches;
-  if (titleMatches.length) return titleMatches;
+  const dedup = (values: number[]) => [...new Set(values)];
+
+  if (phoneMatches.length) return dedup(phoneMatches);
+  if (strongContextMatches.length) return dedup(strongContextMatches);
+  if (customerMatches.length && typeMatches.length) {
+    const intersection = dedup(customerMatches.filter((index) => typeMatches.includes(index)));
+    if (intersection.length) return intersection;
+  }
+  if (customerMatches.length) return dedup(customerMatches);
+  if (titleMatches.length) return dedup(titleMatches);
+  if (typeMatches.length) return dedup(typeMatches);
   return [] as number[];
 }
 
@@ -712,15 +1119,39 @@ function resolveTargetPostAppointmentIndex(args: {
       "esse caso",
       "esse atendimento",
       "esse daqui",
+      "isso daqui",
+      "isso ai",
+      "isso aí",
+      "esse aqui",
       "pode marcar esse",
       "pode cancelar esse",
       "pode concluir esse",
       "pode deixar esse",
+      "esse retorno",
+      "esse acompanhamento",
+      "esse retorno apos a instalacao",
+      "esse retorno após a instalação",
+      "esse retorno da instalacao",
+      "esse retorno da instalação",
+      "esse da instalacao",
+      "esse da instalação",
+      "esse da visita",
+      "o da instalacao",
+      "o da instalação",
+      "o da visita",
+      "o retorno da instalacao",
+      "o retorno da instalação",
+      "o retorno da visita",
+      "aquele que eu falei",
+      "o que eu acabei de citar",
       "marque como",
       "marca como",
       "marque o caso",
       "cancele",
       "conclua",
+      "considerar concluido",
+      "considerar concluída",
+      "considerar concluida",
     ])
   ) {
     const previousTarget = inferPreviousPostAppointmentTarget({
