@@ -358,21 +358,6 @@ function asksAboutPostAppointment(text: string) {
     "cancelado",
     "conclusao da visita",
     "conclusao do compromisso",
-    "sobre o cliente",
-    "sobre o brian",
-    "esse caso foi",
-    "esse atendimento foi",
-    "marque como concluido",
-    "marque como concluído",
-    "marca como concluido",
-    "marca como concluído",
-    "marque como cancelado",
-    "marca como cancelado",
-    "marque como remarcado",
-    "marca como remarcado",
-    "conclua",
-    "cancele",
-    "remarque",
   ]);
 }
 
@@ -531,11 +516,8 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "foi concluído",
       "marcar como concluido",
       "marcar como concluído",
-      "marque como concluido",
-      "marque como concluído",
       "marca como concluido",
       "marca como concluído",
-      "conclua",
       "pode concluir",
       "pode marcar como concluido",
       "pode marcar como concluído",
@@ -553,9 +535,7 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "foi cancelado",
       "foi cancelada",
       "marcar como cancelado",
-      "marque como cancelado",
       "marca como cancelado",
-      "cancele",
       "pode cancelar",
       "pode marcar como cancelado",
       "ja foi cancelado",
@@ -573,9 +553,7 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "foi remarcado",
       "foi remarcada",
       "marcar como remarcado",
-      "marque como remarcado",
       "marca como remarcado",
-      "remarque",
       "pode remarcar",
       "pode marcar como remarcado",
       "ja foi remarcado",
@@ -678,14 +656,14 @@ function buildPostAppointmentAmbiguityReply(args: {
   appointmentMap: Map<string, AppointmentRow>;
 }) {
   const lines: string[] = [];
-  lines.push("Encontrei mais de um pós-compromisso possível para esse pedido.");
+  lines.push("Encontrei mais de um item ativo para esse pedido.");
   lines.push("Me diga qual deles você quer atualizar:");
   lines.push("");
 
-  args.candidateIndexes.slice(0, 5).forEach((candidateIndex) => {
+  args.candidateIndexes.slice(0, 5).forEach((candidateIndex, visibleIndex) => {
     const item = args.openItems[candidateIndex];
     const appointment = args.appointmentMap.get(item.appointment_id);
-    const itemNumber = candidateIndex + 1;
+    const itemNumber = visibleIndex + 1;
     const typeAndTitle = buildPostAppointmentTypeAndTitle(appointment);
     const customer = appointment?.customer_name || "cliente não identificado";
     const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start || item.scheduled_end;
@@ -699,7 +677,7 @@ function buildPostAppointmentAmbiguityReply(args: {
     lines.push("");
   });
 
-  lines.push("Você pode responder, por exemplo: marca o 2 como concluído.");
+  lines.push('Você pode responder, por exemplo: "quero atualizar o item 1".');
   return lines.join("\n").trim();
 }
 
