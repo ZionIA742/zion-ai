@@ -480,6 +480,316 @@ function asksToDetailSpecificPostAppointment(text: string, totalItems: number) {
   return resolvePostAppointmentDetailIndex(text, totalItems) !== null;
 }
 
+type PostAppointmentAction =
+  | "complete"
+  | "cancel"
+  | "reschedule"
+  | "needs_followup";
+
+function resolvePostAppointmentAction(text: string): PostAppointmentAction | null {
+  const t = normalizeText(text);
+
+  if (!asksAboutPostAppointment(t)) {
+    return null;
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "ainda falta retorno",
+      "ainda falta resposta",
+      "continua pendente",
+      "continua aguardando",
+      "manter pendente",
+      "deixa pendente",
+      "ainda nao concluiu",
+      "ainda não concluiu",
+      "ainda nao terminou",
+      "ainda não terminou",
+    ])
+  ) {
+    return "needs_followup";
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "foi concluido",
+      "foi concluído",
+      "marcar como concluido",
+      "marcar como concluído",
+      "marca como concluido",
+      "marca como concluído",
+      "pode concluir",
+      "pode marcar como concluido",
+      "pode marcar como concluído",
+      "ja foi concluido",
+      "já foi concluído",
+      "terminou tudo",
+      "terminou sim",
+    ])
+  ) {
+    return "complete";
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "foi cancelado",
+      "foi cancelada",
+      "marcar como cancelado",
+      "marca como cancelado",
+      "pode cancelar",
+      "pode marcar como cancelado",
+      "ja foi cancelado",
+      "já foi cancelado",
+      "cancelou",
+      "cancelada",
+      "cancelado",
+    ])
+  ) {
+    return "cancel";
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "foi remarcado",
+      "foi remarcada",
+      "marcar como remarcado",
+      "marca como remarcado",
+      "pode remarcar",
+      "pode marcar como remarcado",
+      "ja foi remarcado",
+      "já foi remarcado",
+      "remarcou",
+      "remarcada",
+      "remarcado",
+    ])
+  ) {
+    return "reschedule";
+  }
+
+  return null;
+}
+
+function inferPreviousPostAppointmentFocusIndex(
+  messages: AssistantMessageRow[],
+  totalItems: number,
+  currentHumanMessage: string
+) {
+  if (totalItems <= 0) return null;
+
+  const ordered = [...messages]
+    .filter((message) => getMessageContent(message).length > 0)
+    .filter((message) => isLikelyResponsibleMessage(message))
+    .map((message) => getMessageContent(message))
+    .filter((content) => content !== currentHumanMessage);
+
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const content = ordered[index];
+    if (!asksAboutPostAppointment(content)) continue;
+
+    const resolvedIndex = resolvePostAppointmentDetailIndex(content, totalItems);
+    if (resolvedIndex !== null) {
+      return resolvedIndex;
+    }
+  }
+
+  return null;
+}
+
+function resolveTargetPostAppointmentIndex(args: {
+  text: string;
+  totalItems: number;
+  recentMessages?: AssistantMessageRow[];
+}) {
+  const explicitIndex = resolvePostAppointmentDetailIndex(args.text, args.totalItems);
+  if (explicitIndex !== null) {
+    return explicitIndex;
+  }
+
+  if (
+    hasAnyTerm(normalizeText(args.text), [
+      "esse foi",
+      "esse caso",
+      "esse atendimento",
+      "esse daqui",
+      "pode marcar esse",
+      "pode cancelar esse",
+      "pode concluir esse",
+      "pode deixar esse",
+    ])
+  ) {
+    const previousIndex = inferPreviousPostAppointmentFocusIndex(
+      args.recentMessages || [],
+      args.totalItems,
+      args.text
+    );
+
+    if (previousIndex !== null) {
+      return previousIndex;
+    }
+
+    return 0;
+  }
+
+  return null;
+}
+
+function buildPostAppointmentActionSuccessReply(args: {
+  action: PostAppointmentAction;
+  itemNumber: number;
+  appointment?: AppointmentRow;
+}) {
+  const customerName = args.appointment?.customer_name || "cliente não identificado";
+  const typeLabel = args.appointment
+    ? formatAppointmentType(args.appointment.appointment_type)
+    : "atendimento";
+
+  if (args.action === "complete") {
+    return `Certo. Marquei o caso ${args.itemNumber} como concluído.\n\nEsse ${typeLabel} de ${customerName} saiu da fila de pós-compromisso pendente.`;
+  }
+
+  if (args.action === "cancel") {
+    return `Certo. Marquei o caso ${args.itemNumber} como cancelado.\n\nEsse ${typeLabel} de ${customerName} saiu da fila de pós-compromisso pendente.`;
+  }
+
+  if (args.action === "needs_followup") {
+    return `Certo. Mantive o caso ${args.itemNumber} como pendente de retorno.\n\nEsse ${typeLabel} de ${customerName} continua na fila de acompanhamento.`;
+  }
+
+  return `Para marcar o caso ${args.itemNumber} como remarcado, eu preciso que você me diga a nova data e o novo horário.`;
+}
+
+async function resolvePostAppointmentActionReply(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  lastHumanMessage: string;
+  recentMessages: AssistantMessageRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
+}) {
+  const action = resolvePostAppointmentAction(args.lastHumanMessage);
+  if (!action) {
+    return null;
+  }
+
+  const openItems = sortOpenPostFollowups(
+    (args.pendingPostFollowups || []).filter((item) => isOpenPostFollowup(item))
+  );
+
+  if (!openItems.length) {
+    return "Não encontrei pós-compromisso pendente para atualizar agora.";
+  }
+
+  const targetIndex = resolveTargetPostAppointmentIndex({
+    text: args.lastHumanMessage,
+    totalItems: openItems.length,
+    recentMessages: args.recentMessages,
+  });
+
+  const selectedIndex = Math.min(
+    Math.max(targetIndex ?? 0, 0),
+    openItems.length - 1
+  );
+
+  const selectedFollowup = openItems[selectedIndex];
+  const selectedAppointment = args.appointmentMap.get(selectedFollowup.appointment_id);
+  const itemNumber = selectedIndex + 1;
+
+  if (!selectedAppointment && (action === "complete" || action === "cancel" || action === "needs_followup")) {
+    return `Eu até identifiquei o caso ${itemNumber}, mas não achei os dados completos do compromisso para aplicar essa atualização com segurança.`;
+  }
+
+  if (action === "reschedule") {
+    return buildPostAppointmentActionSuccessReply({
+      action,
+      itemNumber,
+      appointment: selectedAppointment,
+    });
+  }
+
+  if (action === "complete") {
+    const { error } = await args.supabase.rpc("complete_store_appointment_with_outcome", {
+      p_appointment_id: selectedFollowup.appointment_id,
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_completion_outcome: "fully_completed",
+      p_completion_note: "Confirmado pelo responsável na assistente operacional.",
+    });
+
+    if (error) {
+      return `Tentei marcar o caso ${itemNumber} como concluído, mas encontrei um erro: ${error.message}`;
+    }
+
+    return buildPostAppointmentActionSuccessReply({
+      action,
+      itemNumber,
+      appointment: selectedAppointment,
+    });
+  }
+
+  if (action === "needs_followup") {
+    const { error } = await args.supabase.rpc("complete_store_appointment_with_outcome", {
+      p_appointment_id: selectedFollowup.appointment_id,
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_completion_outcome: "needs_followup",
+      p_completion_note: "Mantido pendente pelo responsável na assistente operacional.",
+    });
+
+    if (error) {
+      return `Tentei manter o caso ${itemNumber} como pendente de retorno, mas encontrei um erro: ${error.message}`;
+    }
+
+    return buildPostAppointmentActionSuccessReply({
+      action,
+      itemNumber,
+      appointment: selectedAppointment,
+    });
+  }
+
+  if (action === "cancel") {
+    const { error: cancelError } = await args.supabase.rpc("cancel_store_appointment", {
+      p_appointment_id: selectedFollowup.appointment_id,
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_cancel_reason: "Cancelado pelo responsável na assistente operacional.",
+    });
+
+    if (cancelError) {
+      return `Tentei marcar o caso ${itemNumber} como cancelado, mas encontrei um erro: ${cancelError.message}`;
+    }
+
+    const nextNotes = (selectedFollowup.notes ? `${selectedFollowup.notes}\n\n` : "") +
+      "Confirmado como cancelado pelo responsável na assistente operacional.";
+
+    const { error: updateFollowupError } = await args.supabase
+      .from("schedule_post_appointment_followups")
+      .update({
+        followup_status: "confirmed_cancelled",
+        confirmed_at: new Date().toISOString(),
+        resolved_at: new Date().toISOString(),
+        resolution: "cancelled",
+        notes: nextNotes,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", selectedFollowup.id)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId);
+
+    if (updateFollowupError) {
+      return `O compromisso foi cancelado, mas eu não consegui encerrar o pós-compromisso corretamente: ${updateFollowupError.message}`;
+    }
+
+    return buildPostAppointmentActionSuccessReply({
+      action,
+      itemNumber,
+      appointment: selectedAppointment,
+    });
+  }
+
+  return null;
+}
+
 function formatPostAppointmentCurrentSituation(item: PostAppointmentFollowupRow) {
   const status = normalizeText(item.followup_status);
 
@@ -1741,6 +2051,24 @@ async function generateAssistantReply(params: {
       }
     }
 
+    const detectedIntent = latestRequest.detectedIntent;
+    const morningReportMode = detectedIntent === "morning_report";
+    const eveningReportMode = detectedIntent === "evening_report";
+    const nextVisitMode = detectedIntent === "next_visit";
+    const postAppointmentMode = detectedIntent === "post_appointment";
+
+    const postAppointmentActionReply = postAppointmentMode
+      ? await resolvePostAppointmentActionReply({
+          supabase,
+          organizationId,
+          storeId,
+          lastHumanMessage,
+          recentMessages,
+          pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
+          appointmentMap,
+        })
+      : null;
+
     const systemPrompt = buildSystemPrompt({
       store,
       onboardingMap,
@@ -1763,15 +2091,11 @@ async function generateAssistantReply(params: {
       ...buildModelInput(recentMessages),
     ];
 
-    const detectedIntent = latestRequest.detectedIntent;
-    const morningReportMode = detectedIntent === "morning_report";
-    const eveningReportMode = detectedIntent === "evening_report";
-    const nextVisitMode = detectedIntent === "next_visit";
-    const postAppointmentMode = detectedIntent === "post_appointment";
-
     let aiText = "";
 
-    if (morningReportMode) {
+    if (postAppointmentActionReply) {
+      aiText = postAppointmentActionReply;
+    } else if (morningReportMode) {
       aiText = buildDeterministicMorningReport({
         todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
         overdueAppointments: (overdueAppointmentsData || []) as AppointmentRow[],
