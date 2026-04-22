@@ -40,6 +40,12 @@ type AppointmentRow = {
   conversation_id: string | null;
 };
 
+type StoreScheduleSettingsRow = {
+  operating_days: string[] | null;
+  operating_hours: Record<string, { start?: string; end?: string }> | null;
+  timezone_name: string | null;
+};
+
 type PendingNotificationRow = {
   id: string;
   notification_type: string | null;
@@ -415,8 +421,38 @@ function asksAboutToday(text: string) {
     t.includes("compromissos") ||
     t.includes("urgente") ||
     t.includes("pendente") ||
-    t.includes("o que eu tenho")
+    t.includes("em aberto") ||
+    t.includes("o que eu tenho") ||
+    t.includes("o que tem pendente") ||
+    t.includes("o que esta pendente") ||
+    t.includes("o que está pendente")
   );
+}
+
+function asksAboutScheduleManagement(text: string) {
+  const t = normalizeText(text);
+  return hasAnyTerm(t, [
+    "agendar",
+    "marcar visita",
+    "marcar instalacao",
+    "marcar instalação",
+    "marcar manutencao",
+    "marcar manutenção",
+    "criar compromisso",
+    "novo compromisso",
+    "adicionar compromisso",
+    "remarcar",
+    "cancelar",
+    "concluir",
+    "nao vou abrir",
+    "não vou abrir",
+    "nao marque nada",
+    "não marque nada",
+    "bloqueia o dia",
+    "bloquear dia",
+    "fechar a loja",
+    "loja fechada",
+  ]);
 }
 
 function asksAboutMaterialsOrDocuments(text: string) {
@@ -432,42 +468,6 @@ function asksAboutMaterialsOrDocuments(text: string) {
     t.includes("o que eu preciso levar") ||
     t.includes("o que eu tenho que levar")
   );
-}
-
-function asksAboutScheduleManagement(text: string) {
-  const t = normalizeText(text);
-
-  return hasAnyTerm(t, [
-    "agendar",
-    "agenda",
-    "marcar compromisso",
-    "marcar visita",
-    "marcar instalacao",
-    "marcar instalação",
-    "criar compromisso",
-    "novo compromisso",
-    "nova visita",
-    "nova instalacao",
-    "nova instalação",
-    "cancelar compromisso",
-    "cancelar visita",
-    "cancelar instalacao",
-    "cancelar instalação",
-    "remarcar compromisso",
-    "remarcar visita",
-    "remarcar instalacao",
-    "remarcar instalação",
-    "concluir compromisso",
-    "concluir visita",
-    "concluir instalacao",
-    "concluir instalação",
-    "adicionar compromisso",
-    "adiciona um compromisso",
-    "adicione um compromisso",
-    "adicionar visita",
-    "adiciona uma visita",
-    "adicione uma visita",
-  ]);
 }
 
 function asksAboutPostAppointment(text: string) {
@@ -1745,259 +1745,10 @@ function resolveTargetAppointmentIndex(args: {
   return { type: "none" as const };
 }
 
-type ScheduleAction = "create" | PostAppointmentAction;
-
-function resolveScheduleAction(text: string): ScheduleAction | null {
-  const t = normalizeText(text);
-
-  if (
-    hasAnyTerm(t, [
-      "agendar",
-      "criar compromisso",
-      "novo compromisso",
-      "adicionar compromisso",
-      "adiciona um compromisso",
-      "adicione um compromisso",
-      "marcar visita para",
-      "marcar instalacao para",
-      "marcar instalação para",
-      "marcar manutencao para",
-      "marcar manutenção para",
-      "marcar reuniao para",
-      "marcar reunião para",
-      "nova visita",
-      "nova instalacao",
-      "nova instalação",
-      "nova manutencao",
-      "nova manutenção",
-      "novo atendimento",
-    ])
-  ) {
-    return "create";
-  }
-
-  return resolvePostAppointmentAction(text);
-}
-
-function inferAppointmentTypeFromText(text: string): string {
-  const t = normalizeText(text);
-  if (t.includes("visita tecnica") || t.includes("visita técnica")) return "technical_visit";
-  if (t.includes("instalacao") || t.includes("instalação")) return "installation";
-  if (t.includes("manutencao") || t.includes("manutenção")) return "maintenance";
-  if (t.includes("medicao") || t.includes("medição")) return "measurement";
-  if (t.includes("reuniao") || t.includes("reunião")) return "meeting";
-  if (t.includes("follow up") || t.includes("follow-up")) return "follow_up";
-  return "other";
-}
-
-function inferAppointmentTypeLabelFromCode(typeCode: string): string {
-  return formatAppointmentType(typeCode);
-}
-
-function safeCapitalize(value: string) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) return "";
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-}
-
-function extractCustomerNameFromText(text: string): string | null {
-  const patterns = [
-    /cliente\s+([a-zà-ÿ0-9][a-zà-ÿ0-9\s_-]{1,60}?)(?=\s+(?:dia|no dia|na data|as|às|para|com|endereco|endereço|telefone|contato)\b|$)/i,
-    /com\s+([a-zà-ÿ0-9][a-zà-ÿ0-9\s_-]{1,60}?)(?=\s+(?:dia|no dia|na data|as|às|para|endereco|endereço|telefone|contato)\b|$)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      return safeCapitalize(match[1].trim());
-    }
-  }
-
-  return null;
-}
-
-function extractPhoneFromText(text: string): string | null {
-  const match = text.match(/(?:\+?\d[\d\s()\-]{7,}\d)/);
-  if (!match?.[0]) return null;
-  const digits = normalizeDigits(match[0]);
-  if (digits.length < 8) return null;
-  return match[0].trim();
-}
-
-function extractAddressFromText(text: string): string | null {
-  const patterns = [
-    /(?:endereco|endereço)\s+(.+?)(?=\s+(?:dia|no dia|na data|as|às|telefone|contato)\b|$)/i,
-    /(?:na rua|na avenida|na av\.?|na estrada)\s+(.+?)(?=\s+(?:dia|no dia|na data|as|às|telefone|contato)\b|$)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      return match[1].trim();
-    }
-  }
-
-  return null;
-}
-
-function extractTitleFromText(text: string, typeCode: string, customerName?: string | null): string {
-  const quoted = text.match(/["“”']([^"“”']{2,80})["“”']/);
-  if (quoted?.[1]) {
-    return safeCapitalize(quoted[1].trim());
-  }
-
-  const patterns = [
-    /(?:titulo|título)\s+(.+?)(?=\s+(?:cliente|com|dia|no dia|na data|as|às|telefone|contato|endereco|endereço)\b|$)/i,
-    /(?:visita tecnica|visita técnica|instalacao|instalação|manutencao|manutenção|reuniao|reunião|medicao|medição|compromisso)\s+(.+?)(?=\s+(?:cliente|com|dia|no dia|na data|as|às|telefone|contato|endereco|endereço)\b|$)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      const cleaned = match[1]
-        .replace(/^(de|do|da)\s+/i, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (cleaned) return safeCapitalize(cleaned);
-    }
-  }
-
-  const base = inferAppointmentTypeLabelFromCode(typeCode);
-  if (customerName) return `${safeCapitalize(base)} ${customerName}`;
-  return safeCapitalize(base);
-}
-
-function parseDateReferenceFromText(text: string, now: Date) {
-  const t = normalizeText(text);
-  const explicit = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
-
-  if (explicit) {
-    let day = Number(explicit[1]);
-    let month = Number(explicit[2]) - 1;
-    let year = explicit[3] ? Number(explicit[3]) : now.getFullYear();
-    if (year < 100) year += 2000;
-    return { day, month, year };
-  }
-
-  const base = new Date(now);
-  base.setHours(0, 0, 0, 0);
-
-  if (t.includes("amanha") || t.includes("amanhã")) {
-    base.setDate(base.getDate() + 1);
-    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
-  }
-
-  if (t.includes("hoje")) {
-    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
-  }
-
-  return null;
-}
-
-function parseTimeRangeFromText(text: string) {
-  const rangeMatch = text.match(/\b(\d{1,2}:\d{2})\s*(?:ate|até|a|-)\s*(\d{1,2}:\d{2})\b/i);
-  if (rangeMatch) {
-    return { startTime: rangeMatch[1], endTime: rangeMatch[2] };
-  }
-
-  const singleMatch = text.match(/\b(\d{1,2}:\d{2})\b/);
-  if (singleMatch) {
-    return { startTime: singleMatch[1], endTime: null as string | null };
-  }
-
-  return null;
-}
-
-function buildIsoFromDateAndTime(dateParts: { day: number; month: number; year: number }, time: string) {
-  const [hour, minute] = time.split(":").map(Number);
-  const date = new Date(dateParts.year, dateParts.month, dateParts.day, hour || 0, minute || 0, 0, 0);
-  return date.toISOString();
-}
-
-function addMinutesToIso(iso: string, minutes: number) {
-  const date = new Date(iso);
-  date.setMinutes(date.getMinutes() + minutes);
-  return date.toISOString();
-}
-
-function extractCreateAppointmentPayload(text: string, now: Date) {
-  const dateParts = parseDateReferenceFromText(text, now);
-  const timeRange = parseTimeRangeFromText(text);
-  const appointmentType = inferAppointmentTypeFromText(text);
-  const customerName = extractCustomerNameFromText(text);
-  const customerPhone = extractPhoneFromText(text);
-  const addressText = extractAddressFromText(text);
-  const title = extractTitleFromText(text, appointmentType, customerName);
-
-  if (!dateParts || !timeRange?.startTime) {
-    return {
-      ok: false as const,
-      message: "Para eu criar o compromisso, me diga pelo menos o dia e a hora. Exemplo: agendar visita técnica amanhã às 14:00 para o cliente Brian.",
-    };
-  }
-
-  const scheduledStart = buildIsoFromDateAndTime(dateParts, timeRange.startTime);
-  const scheduledEnd = timeRange.endTime
-    ? buildIsoFromDateAndTime(dateParts, timeRange.endTime)
-    : addMinutesToIso(scheduledStart, 60);
-
-  return {
-    ok: true as const,
-    payload: {
-      title,
-      appointment_type: appointmentType,
-      customer_name: customerName,
-      customer_phone: customerPhone,
-      address_text: addressText,
-      scheduled_start: scheduledStart,
-      scheduled_end: scheduledEnd,
-    },
-  };
-}
-
-function extractReschedulePayload(text: string, now: Date) {
-  const dateParts = parseDateReferenceFromText(text, now);
-  const timeRange = parseTimeRangeFromText(text);
-
-  if (!dateParts || !timeRange?.startTime) {
-    return {
-      ok: false as const,
-      message: "Para remarcar, me diga a nova data e a nova hora. Exemplo: remarca para 25/04 às 15:00.",
-    };
-  }
-
-  const scheduledStart = buildIsoFromDateAndTime(dateParts, timeRange.startTime);
-  const scheduledEnd = timeRange.endTime
-    ? buildIsoFromDateAndTime(dateParts, timeRange.endTime)
-    : addMinutesToIso(scheduledStart, 60);
-
-  return {
-    ok: true as const,
-    payload: {
-      scheduled_start: scheduledStart,
-      scheduled_end: scheduledEnd,
-    },
-  };
-}
-
 function buildAppointmentActionSuccessReply(args: {
-  action: ScheduleAction;
+  action: PostAppointmentAction;
   appointment?: AppointmentRow;
-  createdPayload?: {
-    title: string;
-    appointment_type: string;
-    customer_name: string | null;
-    scheduled_start: string;
-  } | null;
 }) {
-  if (args.action === "create") {
-    const createdType = formatAppointmentType(args.createdPayload?.appointment_type || null);
-    const createdTitle = String(args.createdPayload?.title || "").trim();
-    const createdCustomer = args.createdPayload?.customer_name || "cliente não identificado";
-    const createdReference = createdTitle ? `${createdType} ${createdTitle}` : createdType;
-    return `Certo. Agendei ${createdReference} para ${createdCustomer} em ${formatDateOnly(args.createdPayload?.scheduled_start || null)} às ${formatTimeOnly(args.createdPayload?.scheduled_start || null)}.`;
-  }
-
   const customerName = args.appointment?.customer_name || "cliente não identificado";
   const referenceLabel = buildScheduleAppointmentReferenceLabel(args.appointment);
 
@@ -2013,7 +1764,223 @@ function buildAppointmentActionSuccessReply(args: {
     return `Certo. Mantive ${referenceLabel} de ${customerName} em aberto.`;
   }
 
-  return `Certo. Remarquei ${referenceLabel} de ${customerName} para ${formatDateOnly(args.appointment?.scheduled_start || args.appointment?.scheduled_end || null)} às ${formatTimeOnly(args.appointment?.scheduled_start || args.appointment?.scheduled_end || null)}.`;
+  return `Para remarcar ${referenceLabel} de ${customerName}, eu preciso que você me diga a nova data e o novo horário.`;
+}
+
+
+function parseScheduleDateFromText(text: string, now: Date) {
+  const normalized = normalizeText(text);
+
+  const numeric = normalized.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (numeric) {
+    let year = numeric[3] ? Number(numeric[3]) : now.getFullYear();
+    if (year < 100) year += 2000;
+    return {
+      day: Number(numeric[1]),
+      month: Number(numeric[2]) - 1,
+      year,
+    };
+  }
+
+  const monthMap: Record<string, number> = {
+    janeiro: 0,
+    fevereiro: 1,
+    marco: 2,
+    "março": 2,
+    abril: 3,
+    maio: 4,
+    junho: 5,
+    julho: 6,
+    agosto: 7,
+    setembro: 8,
+    outubro: 9,
+    novembro: 10,
+    dezembro: 11,
+  };
+
+  const written = normalized.match(/\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b/);
+  if (written) {
+    let year = written[3] ? Number(written[3]) : now.getFullYear();
+    const month = monthMap[written[2]];
+    const day = Number(written[1]);
+    const candidate = new Date(year, month, day);
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+    if (!written[3] && candidate.getTime() < today.getTime()) {
+      year += 1;
+    }
+    return { day, month, year };
+  }
+
+  const base = new Date(now);
+  base.setHours(0, 0, 0, 0);
+
+  if (normalized.includes("amanha") || normalized.includes("amanhã")) {
+    base.setDate(base.getDate() + 1);
+    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
+  }
+
+  if (normalized.includes("hoje")) {
+    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
+  }
+
+  return null;
+}
+
+function asksToBlockStoreDay(text: string) {
+  const t = normalizeText(text);
+  const blockCue =
+    t.includes("nao vou abrir") ||
+    t.includes("não vou abrir") ||
+    t.includes("nao marque nada") ||
+    t.includes("não marque nada") ||
+    t.includes("bloqueia o dia") ||
+    t.includes("bloquear dia") ||
+    t.includes("fechar a loja") ||
+    t.includes("loja fechada");
+
+  const hasDateCue =
+    t.includes("amanha") ||
+    t.includes("amanhã") ||
+    t.includes("hoje") ||
+    /\b\d{1,2}\/\d{1,2}/.test(t) ||
+    /\b\d{1,2}\s+de\s+/.test(t);
+
+  return blockCue && hasDateCue;
+}
+
+function isSimplePositiveConfirmation(text: string) {
+  const t = normalizeText(text);
+  return ["sim", "ok", "pode", "pode sim", "pode fazer", "segue", "faz isso"].includes(t);
+}
+
+function inferPreviousBlockDayRequest(messages: AssistantMessageRow[], currentHumanMessage: string) {
+  const ordered = [...messages]
+    .filter((message) => getMessageContent(message).length > 0)
+    .filter((message) => isLikelyResponsibleMessage(message))
+    .map((message) => getMessageContent(message))
+    .filter((content) => content !== currentHumanMessage);
+
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    if (asksToBlockStoreDay(ordered[index])) {
+      return ordered[index];
+    }
+  }
+
+  return null;
+}
+
+function getDayKeyFromDate(date: Date) {
+  const day = date.getDay();
+  if (day === 0) return "domingo";
+  if (day === 1) return "segunda";
+  if (day === 2) return "terca";
+  if (day === 3) return "quarta";
+  if (day === 4) return "quinta";
+  if (day === 5) return "sexta";
+  return "sabado";
+}
+
+function buildBlockDayRange(
+  dateParts: { day: number; month: number; year: number },
+  settings?: StoreScheduleSettingsRow | null
+) {
+  const localDate = new Date(dateParts.year, dateParts.month, dateParts.day, 12, 0, 0, 0);
+  const dayKey = getDayKeyFromDate(localDate);
+  const hours = settings?.operating_hours?.[dayKey];
+  const startText = hours?.start || "00:00";
+  const endText = hours?.end || "23:59";
+
+  const startDate = new Date(dateParts.year, dateParts.month, dateParts.day, Number(startText.split(":")[0] || 0), Number(startText.split(":")[1] || 0), 0, 0);
+  const endDate = new Date(dateParts.year, dateParts.month, dateParts.day, Number(endText.split(":")[0] || 23), Number(endText.split(":")[1] || 59), 0, 0);
+
+  return {
+    startIso: startDate.toISOString(),
+    endIso: endDate.toISOString(),
+  };
+}
+
+async function resolveBlockDayReply(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  lastHumanMessage: string;
+  recentMessages: AssistantMessageRow[];
+  openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  let sourceMessage = args.lastHumanMessage;
+
+  if (!asksToBlockStoreDay(sourceMessage) && isSimplePositiveConfirmation(sourceMessage)) {
+    const previousRequest = inferPreviousBlockDayRequest(args.recentMessages, args.lastHumanMessage);
+    if (previousRequest) {
+      sourceMessage = previousRequest;
+    }
+  }
+
+  if (!asksToBlockStoreDay(sourceMessage)) {
+    return null;
+  }
+
+  const dateParts = parseScheduleDateFromText(sourceMessage, new Date());
+  if (!dateParts) {
+    return "Para eu bloquear esse dia, me diga a data com clareza. Exemplo: dia 21/04 eu não vou abrir a loja.";
+  }
+
+  const { startIso, endIso } = buildBlockDayRange(dateParts, args.scheduleSettings || null);
+
+  const appointmentsOnDay = sortOpenScheduleAppointments(
+    (args.openAppointments || []).filter((appointment) => {
+      const value = appointment.scheduled_start || appointment.scheduled_end;
+      if (!value) return false;
+      const time = new Date(value).getTime();
+      return time >= new Date(startIso).getTime() && time <= new Date(endIso).getTime();
+    })
+  );
+
+  if (appointmentsOnDay.length > 0 && !isSimplePositiveConfirmation(args.lastHumanMessage)) {
+    const lines: string[] = [];
+    lines.push(`Encontrei ${appointmentsOnDay.length === 1 ? "1 compromisso" : `${appointmentsOnDay.length} compromissos`} nesse dia.`);
+    lines.push("Antes de bloquear, você quer que eu siga com o bloqueio mesmo assim?");
+    lines.push("");
+
+    appointmentsOnDay.slice(0, 5).forEach((appointment, index) => {
+      lines.push(`${index + 1}. ${buildScheduleAppointmentReferenceLabel(appointment)}`);
+      if (appointment.customer_name) {
+        lines.push(`- cliente: ${appointment.customer_name}`);
+      }
+      const timeLabel = appointment.scheduled_start || appointment.scheduled_end;
+      if (timeLabel) {
+        lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+      }
+      lines.push("");
+    });
+
+    lines.push("Se você confirmar, eu bloqueio o dia e depois a gente decide quais desses compromissos precisam ser remarcados.");
+    return lines.join("\n").trim();
+  }
+
+  const { error } = await args.supabase.rpc("create_store_schedule_block", {
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+    p_title: "Loja fechada",
+    p_block_type: "manual_block",
+    p_start_at: startIso,
+    p_end_at: endIso,
+    p_notes: "Bloqueado pela assistente operacional a pedido do responsável da loja.",
+    p_source: "ai_operator",
+    p_created_by_user_id: null,
+  });
+
+  if (error) {
+    return `Tentei bloquear esse dia, mas encontrei um erro: ${error.message}`;
+  }
+
+  if (appointmentsOnDay.length > 0) {
+    return `Certo. Bloqueei o dia ${formatDateOnly(startIso)}. Ainda existem compromissos marcados nesse dia, então o próximo passo é alinhar com os clientes quais deles precisam ser remarcados.`;
+  }
+
+  return `Certo. Bloqueei o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`;
 }
 
 async function resolveAppointmentActionReply(args: {
@@ -2023,56 +1990,31 @@ async function resolveAppointmentActionReply(args: {
   lastHumanMessage: string;
   recentMessages: AssistantMessageRow[];
   openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
 }) {
-  const action = resolveScheduleAction(args.lastHumanMessage);
+  const blockDayReply = await resolveBlockDayReply({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    lastHumanMessage: args.lastHumanMessage,
+    recentMessages: args.recentMessages,
+    openAppointments: args.openAppointments,
+    scheduleSettings: args.scheduleSettings || null,
+  });
+
+  if (blockDayReply) {
+    return blockDayReply;
+  }
+
+  const action = resolvePostAppointmentAction(args.lastHumanMessage);
   if (!action) {
     return null;
   }
 
-  const now = new Date();
   const openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
 
-  if (action === "create") {
-    const createPayload = extractCreateAppointmentPayload(args.lastHumanMessage, now);
-    if (!createPayload.ok) {
-      return createPayload.message;
-    }
-
-    const insertBody = {
-      organization_id: args.organizationId,
-      store_id: args.storeId,
-      title: createPayload.payload.title,
-      appointment_type: createPayload.payload.appointment_type,
-      status: "scheduled",
-      scheduled_start: createPayload.payload.scheduled_start,
-      scheduled_end: createPayload.payload.scheduled_end,
-      customer_name: createPayload.payload.customer_name,
-      customer_phone: createPayload.payload.customer_phone,
-      address_text: createPayload.payload.address_text,
-      notes: "Criado pela assistente operacional.",
-    };
-
-    const { error } = await args.supabase
-      .from("store_appointments")
-      .insert(insertBody);
-
-    if (error) {
-      return `Tentei criar o compromisso, mas encontrei um erro: ${error.message}`;
-    }
-
-    return buildAppointmentActionSuccessReply({
-      action,
-      createdPayload: {
-        title: createPayload.payload.title,
-        appointment_type: createPayload.payload.appointment_type,
-        customer_name: createPayload.payload.customer_name,
-        scheduled_start: createPayload.payload.scheduled_start,
-      },
-    });
-  }
-
   if (!openAppointments.length) {
-    return "Hoje eu não encontrei compromisso em aberto para atualizar.";
+    return null;
   }
 
   const targetResolution = resolveTargetAppointmentIndex({
@@ -2089,46 +2031,18 @@ async function resolveAppointmentActionReply(args: {
   }
 
   if (targetResolution.type === "none") {
-    return "Não consegui identificar qual compromisso você quer atualizar. Me diga o cliente, o título ou o número da lista.";
+    return "Não consegui identificar qual compromisso em aberto você quer atualizar. Se puder, me diga o cliente, o título ou o número da lista.";
   }
 
-  const selectedIndex = Math.min(Math.max(targetResolution.index, 0), openAppointments.length - 1);
+  const selectedIndex = Math.min(
+    Math.max(targetResolution.index, 0),
+    openAppointments.length - 1
+  );
+
   const selectedAppointment = openAppointments[selectedIndex];
 
   if (action === "reschedule") {
-    const reschedulePayload = extractReschedulePayload(args.lastHumanMessage, now);
-    if (!reschedulePayload.ok) {
-      return reschedulePayload.message;
-    }
-
-    const { error } = await args.supabase
-      .from("store_appointments")
-      .update({
-        status: "rescheduled",
-        scheduled_start: reschedulePayload.payload.scheduled_start,
-        scheduled_end: reschedulePayload.payload.scheduled_end,
-        notes: ((selectedAppointment.notes ? `${selectedAppointment.notes}\n\n` : "") + "Remarcado pela assistente operacional.").trim(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", selectedAppointment.id)
-      .eq("organization_id", args.organizationId)
-      .eq("store_id", args.storeId);
-
-    if (error) {
-      return `Tentei remarcar, mas encontrei um erro: ${error.message}`;
-    }
-
-    const updatedAppointment = {
-      ...selectedAppointment,
-      status: "rescheduled",
-      scheduled_start: reschedulePayload.payload.scheduled_start,
-      scheduled_end: reschedulePayload.payload.scheduled_end,
-    };
-
-    return buildAppointmentActionSuccessReply({
-      action,
-      appointment: updatedAppointment,
-    });
+    return `Para remarcar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} do jeito certo, eu preciso ver horários livres da loja e alinhar com o cliente antes. Se quiser, eu sigo com esse pedido agora.`;
   }
 
   if (action === "complete") {
@@ -2158,21 +2072,7 @@ async function resolveAppointmentActionReply(args: {
   }
 
   if (action === "cancel") {
-    const { error: cancelError } = await args.supabase.rpc("cancel_store_appointment", {
-      p_appointment_id: selectedAppointment.id,
-      p_organization_id: args.organizationId,
-      p_store_id: args.storeId,
-      p_cancel_reason: "Cancelado pelo responsável na assistente operacional.",
-    });
-
-    if (cancelError) {
-      return `Tentei marcar como cancelado, mas encontrei um erro: ${cancelError.message}`;
-    }
-
-    return buildAppointmentActionSuccessReply({
-      action,
-      appointment: selectedAppointment,
-    });
+    return `Para cancelar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} do jeito certo, eu preciso alinhar isso com o cliente antes. Se quiser, eu sigo com esse pedido agora.`;
   }
 
   return null;
@@ -3013,7 +2913,6 @@ function buildRequestAnalysisBlock(lastHumanMessage: string) {
     `- pedido de relatório da manhã: ${morningReportRequest ? "sim" : "não"}`,
     `- pedido de relatório do fim do dia: ${eveningReportRequest ? "sim" : "não"}`,
     `- pedido ligado à próxima visita ou ao que levar: ${nextVisitRequest ? "sim" : "não"}`,
-    `- pedido ligado a criar, cancelar, concluir ou remarcar compromisso: ${intent === "schedule_management" ? "sim" : "não"}`,
   ].join("\n");
 }
 
@@ -3562,13 +3461,21 @@ async function generateAssistantReply(params: {
       }
     }
 
+    const { data: scheduleSettingsData } = await supabase
+      .from("store_schedule_settings")
+      .select("operating_days, operating_hours, timezone_name")
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .maybeSingle();
+
     const detectedIntent = latestRequest.detectedIntent;
     const morningReportMode = detectedIntent === "morning_report";
     const eveningReportMode = detectedIntent === "evening_report";
     const nextVisitMode = detectedIntent === "next_visit";
     const postAppointmentMode = detectedIntent === "post_appointment";
     const scheduleManagementMode = detectedIntent === "schedule_management";
-    const allOpenAppointments = [
+
+    const mergedOpenAppointments = [
       ...((todayAppointmentsData || []) as AppointmentRow[]),
       ...((nextAppointmentsData || []) as AppointmentRow[]),
       ...((overdueAppointmentsData || []) as AppointmentRow[]),
@@ -3583,18 +3490,19 @@ async function generateAssistantReply(params: {
           recentMessages,
           pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
           appointmentMap,
-          openAppointments: allOpenAppointments,
+          openAppointments: mergedOpenAppointments,
         })
       : null;
 
-    const scheduleActionReply = !postAppointmentMode
+    const scheduleManagementReply = !postAppointmentActionReply && scheduleManagementMode
       ? await resolveAppointmentActionReply({
           supabase,
           organizationId,
           storeId,
           lastHumanMessage,
           recentMessages,
-          openAppointments: allOpenAppointments,
+          openAppointments: mergedOpenAppointments,
+          scheduleSettings: (scheduleSettingsData || null) as StoreScheduleSettingsRow | null,
         })
       : null;
 
@@ -3624,8 +3532,8 @@ async function generateAssistantReply(params: {
 
     if (postAppointmentActionReply) {
       aiText = postAppointmentActionReply;
-    } else if (scheduleActionReply) {
-      aiText = scheduleActionReply;
+    } else if (scheduleManagementReply) {
+      aiText = scheduleManagementReply;
     } else if (morningReportMode) {
       aiText = buildDeterministicMorningReport({
         todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
@@ -3647,7 +3555,11 @@ async function generateAssistantReply(params: {
         pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
         recentResolvedPostFollowups: (recentResolvedPostFollowupsData || []) as PostAppointmentFollowupRow[],
         appointmentMap,
-        openAppointments: allOpenAppointments,
+        openAppointments: [
+          ...((todayAppointmentsData || []) as AppointmentRow[]),
+          ...((nextAppointmentsData || []) as AppointmentRow[]),
+          ...((overdueAppointmentsData || []) as AppointmentRow[]),
+        ],
         lastHumanMessage,
       });
     } else {
@@ -3701,10 +3613,10 @@ async function generateAssistantReply(params: {
         source: "assistant.reply.route",
         genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
         postAppointmentContextUsed: postAppointmentMode,
+        scheduleManagementMode,
         morningReportMode,
         eveningReportMode,
         nextVisitMode,
-        scheduleManagementMode,
         detectedIntent,
       },
     });
