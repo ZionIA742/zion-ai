@@ -681,89 +681,152 @@ function buildPostAppointmentAmbiguityReply(args: {
   return lines.join("\n").trim();
 }
 
-function buildCustomerKeyFromAppointment(appointment: AppointmentRow | undefined) {
+function isOperationallyOpenAppointment(item: AppointmentRow | null | undefined) {
+  if (!item) return false;
+  const status = normalizeText(item.status);
+  return status === "scheduled" || status === "rescheduled";
+}
+
+function buildCustomerIdentityKey(appointment: AppointmentRow | null | undefined) {
   if (!appointment) return "";
 
   const phoneDigits = normalizeDigits(appointment.customer_phone);
-  if (phoneDigits.length >= 8) return `phone:${phoneDigits}`;
+  if (phoneDigits.length >= 8) {
+    return `phone:${phoneDigits}`;
+  }
 
   const customerName = normalizeText(appointment.customer_name);
-  if (customerName.length >= 3) return `name:${customerName}`;
+  if (customerName.length >= 3) {
+    return `name:${customerName}`;
+  }
 
   return "";
 }
 
-function hasStrongOperationalReference(text: string, appointment: AppointmentRow | undefined) {
-  if (!appointment) return false;
+function getAppointmentReferenceStrength(text: string, appointment: AppointmentRow | undefined) {
+  if (!appointment) return 0;
 
   const normalizedText = normalizeText(text);
   const digitText = normalizeDigits(text);
+  let score = 0;
 
   const phoneDigits = normalizeDigits(appointment.customer_phone);
-  if (phoneDigits.length >= 8 && digitText.includes(phoneDigits)) return true;
+  if (phoneDigits.length >= 8 && digitText.includes(phoneDigits)) {
+    score += 100;
+  }
+
+  const customerName = normalizeText(appointment.customer_name);
+  if (customerName && customerName.length >= 3 && normalizedText.includes(customerName)) {
+    score += 20;
+  }
 
   const title = normalizeText(appointment.title);
-  if (title && title.length >= 3 && normalizedText.includes(title)) return true;
+  if (title && title.length >= 3 && normalizedText.includes(title)) {
+    score += 50;
+  }
 
   const typeLabel = normalizeText(formatAppointmentType(appointment.appointment_type));
-  if (typeLabel && normalizedText.includes(typeLabel)) return true;
+  if (typeLabel && normalizedText.includes(typeLabel)) {
+    score += 30;
+  }
 
-  const timeTokens = [
-    formatDateOnly(appointment.scheduled_start),
-    formatDateOnly(appointment.scheduled_end),
-    formatTimeOnly(appointment.scheduled_start),
-    formatTimeOnly(appointment.scheduled_end),
-  ].map(normalizeText).filter(Boolean);
+  const dateLabel = normalizeText(formatDateOnly(appointment.scheduled_start || appointment.scheduled_end));
+  if (dateLabel && dateLabel !== 'sem data' && normalizedText.includes(dateLabel)) {
+    score += 40;
+  }
 
-  return timeTokens.some((token) => token && normalizedText.includes(token));
+  const timeLabel = normalizeText(formatTimeOnly(appointment.scheduled_start || appointment.scheduled_end));
+  if (timeLabel && timeLabel !== 'sem hora' && normalizedText.includes(timeLabel)) {
+    score += 40;
+  }
+
+  return score;
 }
 
-function buildOperationalAppointmentOptionLine(appointment: AppointmentRow) {
-  const typeLabel = formatAppointmentType(appointment.appointment_type);
-  const statusLabel = formatAppointmentStatus(appointment.status);
-  const when = appointment.scheduled_start || appointment.scheduled_end;
-  const timeLabel = when ? `${formatDateOnly(when)} às ${formatTimeOnly(when)}` : "sem horário";
-  return `${typeLabel} ${statusLabel} de ${timeLabel}`;
+function findOperationallyRelevantAppointmentsForSameCustomer(args: {
+  appointment: AppointmentRow | undefined;
+  relevantAppointments: AppointmentRow[];
+  appointmentsWithOpenFollowupIds?: Set<string>;
+}) {
+  const identityKey = buildCustomerIdentityKey(args.appointment);
+  if (!identityKey) return [] as AppointmentRow[];
+
+  return args.relevantAppointments.filter((item) => {
+    const sameCustomer = buildCustomerIdentityKey(item) === identityKey;
+    if (!sameCustomer) return false;
+
+    const hasOpenFollowup = args.appointmentsWithOpenFollowupIds?.has(item.id) === true;
+    if (!isOperationallyOpenAppointment(item) && !hasOpenFollowup) return false;
+
+    return true;
+  });
 }
 
 function buildOperationalCustomerAmbiguityReply(args: {
-  customerName: string;
-  appointments: AppointmentRow[];
+  currentAppointment: AppointmentRow;
+  relatedAppointments: AppointmentRow[];
 }) {
-  const lines: string[] = [];
-  lines.push(`Encontrei mais de um item ativo do cliente ${args.customerName}.`);
-  lines.push('Me diga qual deles você quer atualizar:');
-  lines.push('');
-
-  args.appointments.slice(0, 5).forEach((appointment, index) => {
-    lines.push(`${index + 1}. ${buildOperationalAppointmentOptionLine(appointment)}`);
+  const sorted = [...args.relatedAppointments].sort((a, b) => {
+    const at = a.scheduled_start ? new Date(a.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+    const bt = b.scheduled_start ? new Date(b.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+    return at - bt;
   });
 
+  const customerName = args.currentAppointment.customer_name || 'esse cliente';
+  const lines: string[] = [];
+  lines.push(`Encontrei mais de um item ativo do cliente ${customerName}.`);
+  lines.push('Antes de atualizar, preciso te confirmar qual deles você quer mexer:');
   lines.push('');
-  lines.push('Você pode responder, por exemplo: marque o item 1 como concluído.');
+
+  sorted.slice(0, 5).forEach((item, index) => {
+    const phoneDigits = normalizeDigits(item.customer_phone);
+    const phoneTail = phoneDigits.length >= 4 ? ` • final ${phoneDigits.slice(-4)}` : '';
+    lines.push(
+      `${index + 1}. ${formatAppointmentType(item.appointment_type)}${item.title ? ` ${item.title}` : ''} • ${formatDateOnly(item.scheduled_start || item.scheduled_end)} às ${formatTimeOnly(item.scheduled_start || item.scheduled_end)}${phoneTail}`
+    );
+  });
+
+  const hasFutureInstallation = sorted.some((item) => normalizeText(item.appointment_type) === 'installation');
+  const hasTechnicalVisit = sorted.some((item) => normalizeText(item.appointment_type) === 'technical_visit');
+
+  if (hasFutureInstallation && hasTechnicalVisit) {
+    lines.push('');
+    lines.push('O que parece mais provável agora é que a visita técnica anterior já tenha sido resolvida, porque já existe uma instalação marcada.');
+    lines.push('Se você quiser, eu posso marcar a visita técnica como concluída e manter a instalação como próxima etapa.');
+  }
+
+  lines.push('');
+  lines.push('Você pode responder, por exemplo: marque a visita técnica como concluída.');
+
   return lines.join("\n").trim();
 }
 
-function findRelevantOperationalAppointmentsForCustomer(args: {
-  selectedAppointment: AppointmentRow | undefined;
-  relevantAppointments: AppointmentRow[];
+function buildStageReconciliationSuggestionReply(args: {
+  currentAppointment: AppointmentRow;
+  relatedAppointments: AppointmentRow[];
 }) {
-  const customerKey = buildCustomerKeyFromAppointment(args.selectedAppointment);
-  if (!customerKey) return [] as AppointmentRow[];
+  const currentType = normalizeText(args.currentAppointment.appointment_type);
+  if (currentType !== 'technical_visit') return null;
 
-  const unique = new Map<string, AppointmentRow>();
+  const futureInstallation = args.relatedAppointments
+    .filter((item) => item.id !== args.currentAppointment.id)
+    .filter((item) => normalizeText(item.appointment_type) === 'installation')
+    .sort((a, b) => {
+      const at = a.scheduled_start ? new Date(a.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+      const bt = b.scheduled_start ? new Date(b.scheduled_start).getTime() : Number.MAX_SAFE_INTEGER;
+      return at - bt;
+    })[0];
 
-  for (const appointment of args.relevantAppointments || []) {
-    if (!appointment?.id) continue;
-    if (buildCustomerKeyFromAppointment(appointment) !== customerKey) continue;
-    unique.set(appointment.id, appointment);
-  }
+  if (!futureInstallation) return null;
 
-  return Array.from(unique.values()).sort((a, b) => {
-    const ta = new Date(a.scheduled_start || a.scheduled_end || 0).getTime() || 0;
-    const tb = new Date(b.scheduled_start || b.scheduled_end || 0).getTime() || 0;
-    return ta - tb;
-  });
+  const customerName = args.currentAppointment.customer_name || 'esse cliente';
+  return [
+    'Encontrei um possível ajuste no sistema:',
+    `${customerName} já tem uma instalação marcada para ${formatDateOnly(futureInstallation.scheduled_start || futureInstallation.scheduled_end)} às ${formatTimeOnly(futureInstallation.scheduled_start || futureInstallation.scheduled_end)}.`,
+    `Então a visita técnica de ${formatDateOnly(args.currentAppointment.scheduled_start || args.currentAppointment.scheduled_end)} às ${formatTimeOnly(args.currentAppointment.scheduled_start || args.currentAppointment.scheduled_end)} provavelmente já foi concluída.`,
+    '',
+    'Posso marcar essa visita técnica como concluída?',
+  ].join("\n").trim();
 }
 
 function resolveTargetPostAppointmentIndex(args: {
@@ -857,6 +920,7 @@ async function resolvePostAppointmentActionReply(args: {
   pendingPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
   relevantAppointments: AppointmentRow[];
+  appointmentsWithOpenFollowupIds?: Set<string>;
 }) {
   const action = resolvePostAppointmentAction(args.lastHumanMessage);
   if (!action) {
@@ -899,20 +963,32 @@ async function resolvePostAppointmentActionReply(args: {
   const selectedAppointment = args.appointmentMap.get(selectedFollowup.appointment_id);
   const itemNumber = selectedIndex + 1;
 
-  const sameCustomerAppointments = findRelevantOperationalAppointmentsForCustomer({
-    selectedAppointment,
-    relevantAppointments: args.relevantAppointments || [],
-  });
+  if (selectedAppointment) {
+    const relatedAppointments = findOperationallyRelevantAppointmentsForSameCustomer({
+      appointment: selectedAppointment,
+      relevantAppointments: args.relevantAppointments || [],
+      appointmentsWithOpenFollowupIds: args.appointmentsWithOpenFollowupIds,
+    }).filter((item: AppointmentRow) => item.id !== selectedAppointment.id);
 
-  if (
-    selectedAppointment &&
-    sameCustomerAppointments.length > 1 &&
-    !hasStrongOperationalReference(args.lastHumanMessage, selectedAppointment)
-  ) {
-    return buildOperationalCustomerAmbiguityReply({
-      customerName: selectedAppointment.customer_name || "cliente",
-      appointments: sameCustomerAppointments,
-    });
+    const referenceStrength = getAppointmentReferenceStrength(args.lastHumanMessage, selectedAppointment);
+
+    if (relatedAppointments.length > 0 && referenceStrength < 30) {
+      return buildOperationalCustomerAmbiguityReply({
+        currentAppointment: selectedAppointment,
+        relatedAppointments: [selectedAppointment, ...relatedAppointments],
+      });
+    }
+
+    if (relatedAppointments.length > 0 && action === "complete" && referenceStrength < 80) {
+      const stageSuggestion = buildStageReconciliationSuggestionReply({
+        currentAppointment: selectedAppointment,
+        relatedAppointments: [selectedAppointment, ...relatedAppointments],
+      });
+
+      if (stageSuggestion) {
+        return stageSuggestion;
+      }
+    }
   }
 
   if (!selectedAppointment && (action === "complete" || action === "cancel" || action === "needs_followup")) {
@@ -2277,17 +2353,6 @@ async function generateAssistantReply(params: {
     const nextVisitMode = detectedIntent === "next_visit";
     const postAppointmentMode = detectedIntent === "post_appointment";
 
-    const relevantAppointments = Array.from(
-      new Map<string, AppointmentRow>(
-        [
-          ...((todayAppointmentsData || []) as AppointmentRow[]),
-          ...((nextAppointmentsData || []) as AppointmentRow[]),
-          ...((overdueAppointmentsData || []) as AppointmentRow[]),
-          ...Array.from(appointmentMap.values()),
-        ].map((item) => [item.id, item])
-      ).values()
-    );
-
     const postAppointmentActionReply = postAppointmentMode
       ? await resolvePostAppointmentActionReply({
           supabase,
@@ -2297,7 +2362,21 @@ async function generateAssistantReply(params: {
           recentMessages,
           pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
           appointmentMap,
-          relevantAppointments,
+          relevantAppointments: Array.from(
+            new Map(
+              [
+                ...((todayAppointmentsData || []) as AppointmentRow[]),
+                ...((nextAppointmentsData || []) as AppointmentRow[]),
+                ...((overdueAppointmentsData || []) as AppointmentRow[]),
+                ...Array.from(appointmentMap.values()),
+              ].map((item) => [item.id, item])
+            ).values()
+          ),
+          appointmentsWithOpenFollowupIds: new Set(
+            ((pendingPostFollowupsData || []) as PostAppointmentFollowupRow[])
+              .filter((item) => isOpenPostFollowup(item))
+              .map((item) => item.appointment_id)
+          ),
         })
       : null;
 
