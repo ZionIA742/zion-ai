@@ -569,40 +569,141 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
   return null;
 }
 
-function inferPreviousPostAppointmentFocusIndex(
-  messages: AssistantMessageRow[],
-  totalItems: number,
-  currentHumanMessage: string
-) {
-  if (totalItems <= 0) return null;
+function normalizeDigits(value: string | null | undefined) {
+  return String(value || "").replace(/\D+/g, "");
+}
 
-  const ordered = [...messages]
+function resolvePostAppointmentCandidateIndexesFromText(args: {
+  text: string;
+  openItems: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
+}) {
+  const normalizedText = normalizeText(args.text);
+  const digitText = normalizeDigits(args.text);
+
+  if (!normalizedText) return [] as number[];
+
+  const phoneMatches: number[] = [];
+  const customerMatches: number[] = [];
+  const titleMatches: number[] = [];
+
+  args.openItems.forEach((item, index) => {
+    const appointment = args.appointmentMap.get(item.appointment_id);
+    if (!appointment) return;
+
+    const phoneDigits = normalizeDigits(appointment.customer_phone);
+    if (phoneDigits.length >= 8 && digitText && digitText.includes(phoneDigits)) {
+      phoneMatches.push(index);
+    }
+
+    const customerName = normalizeText(appointment.customer_name);
+    if (customerName && customerName.length >= 3 && normalizedText.includes(customerName)) {
+      customerMatches.push(index);
+    }
+
+    const title = normalizeText(appointment.title);
+    if (title && title.length >= 3 && normalizedText.includes(title)) {
+      titleMatches.push(index);
+    }
+  });
+
+  if (phoneMatches.length) return phoneMatches;
+  if (customerMatches.length) return customerMatches;
+  if (titleMatches.length) return titleMatches;
+  return [] as number[];
+}
+
+function inferPreviousPostAppointmentTarget(args: {
+  messages: AssistantMessageRow[];
+  currentHumanMessage: string;
+  openItems: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
+}) {
+  const ordered = [...args.messages]
     .filter((message) => getMessageContent(message).length > 0)
     .filter((message) => isLikelyResponsibleMessage(message))
     .map((message) => getMessageContent(message))
-    .filter((content) => content !== currentHumanMessage);
+    .filter((content) => content !== args.currentHumanMessage);
 
   for (let index = ordered.length - 1; index >= 0; index -= 1) {
     const content = ordered[index];
-    if (!asksAboutPostAppointment(content)) continue;
+    const explicitIndex = resolvePostAppointmentDetailIndex(content, args.openItems.length);
+    if (explicitIndex !== null) {
+      return { type: "unique" as const, index: explicitIndex };
+    }
 
-    const resolvedIndex = resolvePostAppointmentDetailIndex(content, totalItems);
-    if (resolvedIndex !== null) {
-      return resolvedIndex;
+    const candidateIndexes = resolvePostAppointmentCandidateIndexesFromText({
+      text: content,
+      openItems: args.openItems,
+      appointmentMap: args.appointmentMap,
+    });
+
+    if (candidateIndexes.length === 1) {
+      return { type: "unique" as const, index: candidateIndexes[0] };
+    }
+
+    if (candidateIndexes.length > 1) {
+      return { type: "ambiguous" as const, candidateIndexes };
     }
   }
 
   return null;
 }
 
+function buildPostAppointmentAmbiguityReply(args: {
+  candidateIndexes: number[];
+  openItems: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
+}) {
+  const lines: string[] = [];
+  lines.push("Encontrei mais de um pós-compromisso possível para esse pedido.");
+  lines.push("Me diga qual deles você quer atualizar:");
+  lines.push("");
+
+  args.candidateIndexes.slice(0, 5).forEach((candidateIndex) => {
+    const item = args.openItems[candidateIndex];
+    const appointment = args.appointmentMap.get(item.appointment_id);
+    const itemNumber = candidateIndex + 1;
+    const typeAndTitle = buildPostAppointmentTypeAndTitle(appointment);
+    const customer = appointment?.customer_name || "cliente não identificado";
+    const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start || item.scheduled_end;
+
+    lines.push(`${itemNumber}. ${typeAndTitle.charAt(0).toUpperCase() + typeAndTitle.slice(1)}`);
+    lines.push(`- cliente: ${customer}`);
+    if (timeLabel) {
+      lines.push(`- horário original: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+    }
+    lines.push(`- situação atual: ${formatPostAppointmentCurrentSituation(item)}`);
+    lines.push("");
+  });
+
+  lines.push("Você pode responder, por exemplo: marca o 2 como concluído.");
+  return lines.join("\n").trim();
+}
+
 function resolveTargetPostAppointmentIndex(args: {
   text: string;
-  totalItems: number;
+  openItems: PostAppointmentFollowupRow[];
+  appointmentMap: Map<string, AppointmentRow>;
   recentMessages?: AssistantMessageRow[];
 }) {
-  const explicitIndex = resolvePostAppointmentDetailIndex(args.text, args.totalItems);
+  const explicitIndex = resolvePostAppointmentDetailIndex(args.text, args.openItems.length);
   if (explicitIndex !== null) {
-    return explicitIndex;
+    return { type: "unique" as const, index: explicitIndex };
+  }
+
+  const currentCandidates = resolvePostAppointmentCandidateIndexesFromText({
+    text: args.text,
+    openItems: args.openItems,
+    appointmentMap: args.appointmentMap,
+  });
+
+  if (currentCandidates.length === 1) {
+    return { type: "unique" as const, index: currentCandidates[0] };
+  }
+
+  if (currentCandidates.length > 1) {
+    return { type: "ambiguous" as const, candidateIndexes: currentCandidates };
   }
 
   if (
@@ -615,22 +716,26 @@ function resolveTargetPostAppointmentIndex(args: {
       "pode cancelar esse",
       "pode concluir esse",
       "pode deixar esse",
+      "marque como",
+      "marca como",
+      "marque o caso",
+      "cancele",
+      "conclua",
     ])
   ) {
-    const previousIndex = inferPreviousPostAppointmentFocusIndex(
-      args.recentMessages || [],
-      args.totalItems,
-      args.text
-    );
+    const previousTarget = inferPreviousPostAppointmentTarget({
+      messages: args.recentMessages || [],
+      currentHumanMessage: args.text,
+      openItems: args.openItems,
+      appointmentMap: args.appointmentMap,
+    });
 
-    if (previousIndex !== null) {
-      return previousIndex;
+    if (previousTarget) {
+      return previousTarget;
     }
-
-    return 0;
   }
 
-  return null;
+  return { type: "none" as const };
 }
 
 function buildPostAppointmentActionSuccessReply(args: {
@@ -680,14 +785,27 @@ async function resolvePostAppointmentActionReply(args: {
     return "Não encontrei pós-compromisso pendente para atualizar agora.";
   }
 
-  const targetIndex = resolveTargetPostAppointmentIndex({
+  const targetResolution = resolveTargetPostAppointmentIndex({
     text: args.lastHumanMessage,
-    totalItems: openItems.length,
+    openItems,
+    appointmentMap: args.appointmentMap,
     recentMessages: args.recentMessages,
   });
 
+  if (targetResolution.type === "ambiguous") {
+    return buildPostAppointmentAmbiguityReply({
+      candidateIndexes: targetResolution.candidateIndexes,
+      openItems,
+      appointmentMap: args.appointmentMap,
+    });
+  }
+
+  if (targetResolution.type === "none") {
+    return "Para eu atualizar com segurança, me diga o número do pós-compromisso que você quer alterar. Exemplo: marca o 2 como concluído.";
+  }
+
   const selectedIndex = Math.min(
-    Math.max(targetIndex ?? 0, 0),
+    Math.max(targetResolution.index, 0),
     openItems.length - 1
   );
 
