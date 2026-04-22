@@ -746,7 +746,7 @@ function getAppointmentReferenceStrength(text: string, appointment: AppointmentR
 function findOperationallyRelevantAppointmentsForSameCustomer(args: {
   appointment: AppointmentRow | undefined;
   relevantAppointments: AppointmentRow[];
-  openFollowupAppointmentIds?: Set<string>;
+  appointmentsWithOpenFollowupIds?: Set<string>;
 }) {
   const identityKey = buildCustomerIdentityKey(args.appointment);
   if (!identityKey) return [] as AppointmentRow[];
@@ -755,10 +755,10 @@ function findOperationallyRelevantAppointmentsForSameCustomer(args: {
     const sameCustomer = buildCustomerIdentityKey(item) === identityKey;
     if (!sameCustomer) return false;
 
-    const hasOpenStageNow = isOperationallyOpenAppointment(item);
-    const hasOpenFollowupNow = Boolean(args.openFollowupAppointmentIds?.has(item.id));
+    const hasOpenFollowup = args.appointmentsWithOpenFollowupIds?.has(item.id) === true;
+    if (!isOperationallyOpenAppointment(item) && !hasOpenFollowup) return false;
 
-    return hasOpenStageNow || hasOpenFollowupNow;
+    return true;
   });
 }
 
@@ -918,6 +918,7 @@ async function resolvePostAppointmentActionReply(args: {
   pendingPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
   relevantAppointments: AppointmentRow[];
+  appointmentsWithOpenFollowupIds?: Set<string>;
 }) {
   const action = resolvePostAppointmentAction(args.lastHumanMessage);
   if (!action) {
@@ -961,29 +962,22 @@ async function resolvePostAppointmentActionReply(args: {
   const itemNumber = selectedIndex + 1;
 
   if (selectedAppointment) {
-    const openFollowupAppointmentIds = new Set(openItems.map((item) => item.appointment_id));
-    const allRelevantAppointments = Array.from(
-      new Map(
-        [...(args.relevantAppointments || []), ...Array.from(args.appointmentMap.values())].map((item) => [item.id, item])
-      ).values()
-    );
-
     const relatedAppointments = findOperationallyRelevantAppointmentsForSameCustomer({
       appointment: selectedAppointment,
-      relevantAppointments: allRelevantAppointments,
-      openFollowupAppointmentIds,
+      relevantAppointments: args.relevantAppointments || [],
+      appointmentsWithOpenFollowupIds: args.appointmentsWithOpenFollowupIds,
     }).filter((item) => item.id !== selectedAppointment.id);
 
     const referenceStrength = getAppointmentReferenceStrength(args.lastHumanMessage, selectedAppointment);
 
-    if (relatedAppointments.length > 0 && referenceStrength < 50) {
+    if (relatedAppointments.length > 0 && referenceStrength < 30) {
       return buildOperationalCustomerAmbiguityReply({
         currentAppointment: selectedAppointment,
         relatedAppointments: [selectedAppointment, ...relatedAppointments],
       });
     }
 
-    if (relatedAppointments.length > 0 && action === "complete" && referenceStrength < 90) {
+    if (relatedAppointments.length > 0 && action === "complete" && referenceStrength < 80) {
       const stageSuggestion = buildStageReconciliationSuggestionReply({
         currentAppointment: selectedAppointment,
         relatedAppointments: [selectedAppointment, ...relatedAppointments],
@@ -2372,8 +2366,14 @@ async function generateAssistantReply(params: {
                 ...((todayAppointmentsData || []) as AppointmentRow[]),
                 ...((nextAppointmentsData || []) as AppointmentRow[]),
                 ...((overdueAppointmentsData || []) as AppointmentRow[]),
+                ...Array.from(appointmentMap.values()),
               ].map((item) => [item.id, item])
             ).values()
+          ),
+          appointmentsWithOpenFollowupIds: new Set(
+            ((pendingPostFollowupsData || []) as PostAppointmentFollowupRow[])
+              .filter((item) => isOpenPostFollowup(item))
+              .map((item) => item.appointment_id)
           ),
         })
       : null;
