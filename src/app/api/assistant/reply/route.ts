@@ -2006,10 +2006,9 @@ async function resolveBlockDayReply(args: {
     })
   );
 
-  const rescheduleInstruction = parseRescheduleInstructionFromText(currentMessage, new Date());
-  const wantsCancel = currentLooksLikeFollowup && hasAnyTerm(normalizeText(currentMessage), ["cancela", "cancele", "cancelar"]);
+  const shouldProceedWithBlock = appointmentsOnDay.length === 0 || currentLooksLikeFollowup;
 
-  if (appointmentsOnDay.length > 0 && !currentLooksLikeFollowup) {
+  if (appointmentsOnDay.length > 0 && !shouldProceedWithBlock) {
     const lines: string[] = [];
     lines.push(`Encontrei ${appointmentsOnDay.length === 1 ? "1 compromisso" : `${appointmentsOnDay.length} compromissos`} nesse dia.`);
     lines.push("Antes de bloquear, você quer que eu siga com o bloqueio mesmo assim?");
@@ -2027,50 +2026,8 @@ async function resolveBlockDayReply(args: {
       lines.push("");
     });
 
-    lines.push("Se você confirmar, eu sigo com o bloqueio. Se quiser, você também pode me dizer o que fazer com os compromissos do dia, por exemplo: remarca para dia 24 ou cancela esse compromisso.");
+    lines.push("Se você confirmar, eu deixo esse bloqueio pronto para seguir. Mas, como existem compromissos nesse dia, antes eu preciso alinhar com os clientes o que será remarcado ou cancelado.");
     return lines.join("\n").trim();
-  }
-
-  if (appointmentsOnDay.length > 1 && currentLooksLikeFollowup) {
-    if (rescheduleInstruction) {
-      return `Encontrei ${appointmentsOnDay.length} compromissos nesse dia. Para bloquear ${formatDateOnly(startIso)} sem prometer algo que ainda não foi alinhado, eu preciso tratar cada remarcação com o cliente antes. Me diga qual compromisso devo colocar em andamento primeiro.`;
-    }
-
-    if (wantsCancel) {
-      return `Encontrei ${appointmentsOnDay.length} compromissos nesse dia. Para bloquear ${formatDateOnly(startIso)} sem avisar errado, eu preciso alinhar cada cancelamento com o cliente antes. Me diga qual compromisso devo tratar primeiro.`;
-    }
-
-    return `Esse dia ainda tem ${appointmentsOnDay.length} compromissos em aberto. Eu só consigo bloquear de verdade depois que esses atendimentos forem resolvidos. Me diga qual deles você quer tratar primeiro.`;
-  }
-
-  if (appointmentsOnDay.length === 1 && currentLooksLikeFollowup) {
-    const selectedAppointment = appointmentsOnDay[0];
-    const selectedLabel = buildScheduleAppointmentReferenceLabel(selectedAppointment);
-    const selectedCustomer = selectedAppointment.customer_name || "cliente não identificado";
-
-    if (rescheduleInstruction) {
-      const nextDateLabel = formatDateOnly(new Date(
-        rescheduleInstruction.dateParts.year,
-        rescheduleInstruction.dateParts.month,
-        rescheduleInstruction.dateParts.day,
-        12,
-        0,
-        0,
-        0
-      ).toISOString());
-
-      return `Entendi. Eu ainda não remarquei ${selectedLabel} de ${selectedCustomer}. Para fazer isso do jeito certo, preciso alinhar outro horário com o cliente primeiro. Depois que essa remarcação for confirmada, eu bloqueio ${formatDateOnly(startIso)}.`;
-    }
-
-    if (wantsCancel) {
-      return `Entendi. Eu ainda não cancelei ${selectedLabel} de ${selectedCustomer}. Para cancelar do jeito certo, preciso alinhar isso com o cliente primeiro. Depois que isso estiver resolvido, eu bloqueio ${formatDateOnly(startIso)}.`;
-    }
-
-    if (!isSimplePositiveConfirmation(currentMessage)) {
-      return `Antes de eu bloquear ${formatDateOnly(startIso)}, preciso definir o que vai acontecer com ${selectedLabel} de ${selectedCustomer}. Se quiser, eu posso deixar em andamento a remarcação com o cliente ou o cancelamento desse compromisso.`;
-    }
-
-    return `Eu ainda não consigo bloquear ${formatDateOnly(startIso)} porque ${selectedLabel} de ${selectedCustomer} continua marcado nesse dia. Primeiro preciso alinhar com o cliente se esse compromisso vai ser remarcado ou cancelado.`;
   }
 
   const existingBlockResponse = await args.supabase
@@ -2087,8 +2044,6 @@ async function resolveBlockDayReply(args: {
     return `Tentei verificar se esse dia já estava bloqueado, mas encontrei um erro: ${existingBlockResponse.error.message}`;
   }
 
-  let blockCreatedNow = false;
-
   if (!existingBlockResponse.data?.id) {
     const { error } = await args.supabase.rpc("create_store_schedule_block", {
       p_organization_id: args.organizationId,
@@ -2097,7 +2052,9 @@ async function resolveBlockDayReply(args: {
       p_block_type: "manual_block",
       p_start_at: startIso,
       p_end_at: endIso,
-      p_notes: "Bloqueado pela assistente operacional a pedido do responsável da loja.",
+      p_notes: appointmentsOnDay.length > 0
+        ? "Bloqueado pela assistente operacional a pedido do responsável da loja. Existem compromissos nesse dia e eles precisam ser tratados depois do bloqueio."
+        : "Bloqueado pela assistente operacional a pedido do responsável da loja.",
       p_source: "ai_operator",
       p_created_by_user_id: null,
     });
@@ -2105,15 +2062,21 @@ async function resolveBlockDayReply(args: {
     if (error) {
       return `Tentei bloquear esse dia, mas encontrei um erro: ${error.message}`;
     }
-
-    blockCreatedNow = true;
   }
 
-  if (appointmentsOnDay.length === 0) {
-    return `Certo. ${blockCreatedNow ? "Bloqueei" : "Esse dia já estava bloqueado"} o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`;
+  const rescheduleInstruction = parseRescheduleInstructionFromText(currentMessage, new Date());
+  if (appointmentsOnDay.length === 1 && rescheduleInstruction) {
+    const selectedAppointment = appointmentsOnDay[0];
+    const targetDateLabel = formatDateOnly(buildBlockDayRange(rescheduleInstruction.dateParts, args.scheduleSettings || null).startIso);
+
+    return `Entendi. Ainda não remarquei ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Para fazer isso do jeito certo, eu preciso alinhar um novo horário com o cliente antes. Posso colocar essa remarcação em andamento e, depois que isso estiver resolvido, eu bloqueio o dia ${formatDateOnly(startIso)}. Referência de nova data: ${targetDateLabel}.`;
   }
 
-  return `Certo. ${blockCreatedNow ? "Bloqueei" : "Esse dia já estava bloqueado"} o dia ${formatDateOnly(startIso)}.`;
+  if (appointmentsOnDay.length > 0) {
+    return `Entendi. Ainda não bloqueei o dia ${formatDateOnly(startIso)} porque existem compromissos marcados nele. Primeiro eu preciso alinhar com os clientes o que vai ser remarcado ou cancelado. Depois disso, eu sigo com o bloqueio.`;
+  }
+
+  return `Certo. Bloqueei o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`;
 }
 
 
@@ -2176,7 +2139,7 @@ async function resolveAppointmentActionReply(args: {
   const selectedAppointment = openAppointments[selectedIndex];
 
   if (action === "reschedule") {
-    return `Entendi o pedido. Eu ainda não remarquei ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Para fazer isso do jeito certo, preciso ver horários livres da loja e alinhar com o cliente antes.`;
+    return `Para remarcar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} do jeito certo, eu preciso ver horários livres da loja e alinhar com o cliente antes. Se quiser, eu sigo com esse pedido agora.`;
   }
 
   if (action === "complete") {
@@ -2206,7 +2169,7 @@ async function resolveAppointmentActionReply(args: {
   }
 
   if (action === "cancel") {
-    return `Entendi o pedido. Eu ainda não cancelei ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Para cancelar do jeito certo, preciso alinhar isso com o cliente antes.`;
+    return `Para cancelar ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} do jeito certo, eu preciso alinhar isso com o cliente antes. Se quiser, eu sigo com esse pedido agora.`;
   }
 
   return null;
