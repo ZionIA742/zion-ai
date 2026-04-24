@@ -164,6 +164,117 @@ function formatTimeOnly(value: string | null) {
   return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
 
+function getScheduleTimezone(settings?: StoreScheduleSettingsRow | null) {
+  const configuredTimezone = String(settings?.timezone_name || "").trim();
+  return configuredTimezone || "America/Sao_Paulo";
+}
+
+function padTwoDigits(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function isValidTimeZone(timeZone: string) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeScheduleTimezone(timeZone: string) {
+  return isValidTimeZone(timeZone) ? timeZone : "America/Sao_Paulo";
+}
+
+function formatDateOnlyInTimeZone(value: string | null, timeZone: string) {
+  if (!value) return "sem data";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "sem data";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: safeScheduleTimezone(timeZone),
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatTimeOnlyInTimeZone(value: string | null, timeZone: string) {
+  if (!value) return "sem hora";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "sem hora";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: safeScheduleTimezone(timeZone),
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function getTimeZoneOffsetMinutes(timeZone: string, date: Date) {
+  const safeTimeZone = safeScheduleTimezone(timeZone);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: safeTimeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const values: Record<string, number> = {};
+
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      values[part.type] = Number(part.value);
+    }
+  }
+
+  const asUtc = Date.UTC(
+    values.year,
+    (values.month || 1) - 1,
+    values.day || 1,
+    values.hour === 24 ? 0 : values.hour || 0,
+    values.minute || 0,
+    values.second || 0,
+    0
+  );
+
+  return Math.round((asUtc - date.getTime()) / 60000);
+}
+
+function localScheduleDateTimeToUtcIso(args: {
+  dateParts: { day: number; month: number; year: number };
+  hour: number;
+  minute: number;
+  timeZone: string;
+}) {
+  const safeTimeZone = safeScheduleTimezone(args.timeZone);
+  const localUtcMs = Date.UTC(
+    args.dateParts.year,
+    args.dateParts.month,
+    args.dateParts.day,
+    args.hour,
+    args.minute,
+    0,
+    0
+  );
+
+  let utcMs = localUtcMs;
+
+  for (let i = 0; i < 3; i += 1) {
+    const offsetMinutes = getTimeZoneOffsetMinutes(safeTimeZone, new Date(utcMs));
+    const nextUtcMs = localUtcMs - offsetMinutes * 60 * 1000;
+    if (Math.abs(nextUtcMs - utcMs) < 1000) {
+      utcMs = nextUtcMs;
+      break;
+    }
+    utcMs = nextUtcMs;
+  }
+
+  return new Date(utcMs).toISOString();
+}
+
 function formatAppointmentType(value: string | null) {
   const normalized = normalizeText(value);
 
@@ -4002,34 +4113,20 @@ function buildBlockDayRange(
   dateParts: { day: number; month: number; year: number },
   settings?: StoreScheduleSettingsRow | null
 ) {
+  const timeZone = getScheduleTimezone(settings);
   const localDate = new Date(dateParts.year, dateParts.month, dateParts.day, 12, 0, 0, 0);
   const dayKey = getDayKeyFromDate(localDate);
   const hours = settings?.operating_hours?.[dayKey];
   const startText = hours?.start || "00:00";
   const endText = hours?.end || "23:59";
-
-  const startDate = new Date(
-    dateParts.year,
-    dateParts.month,
-    dateParts.day,
-    Number(startText.split(":")[0] || 0),
-    Number(startText.split(":")[1] || 0),
-    0,
-    0
-  );
-  const endDate = new Date(
-    dateParts.year,
-    dateParts.month,
-    dateParts.day,
-    Number(endText.split(":")[0] || 23),
-    Number(endText.split(":")[1] || 59),
-    0,
-    0
-  );
+  const startHour = Number(startText.split(":")[0] || 0);
+  const startMinute = Number(startText.split(":")[1] || 0);
+  const endHour = Number(endText.split(":")[0] || 23);
+  const endMinute = Number(endText.split(":")[1] || 59);
 
   return {
-    startIso: startDate.toISOString(),
-    endIso: endDate.toISOString(),
+    startIso: localScheduleDateTimeToUtcIso({ dateParts, hour: startHour, minute: startMinute, timeZone }),
+    endIso: localScheduleDateTimeToUtcIso({ dateParts, hour: endHour, minute: endMinute, timeZone }),
   };
 }
 
@@ -4049,10 +4146,8 @@ function parseBlockTimeWindow(
   settings?: StoreScheduleSettingsRow | null
 ) {
   const normalized = normalizeText(text);
+  const timeZone = getScheduleTimezone(settings);
   const baseRange = buildBlockDayRange(dateParts, settings);
-
-  const dayStart = new Date(baseRange.startIso);
-  const dayEnd = new Date(baseRange.endIso);
 
   const between = normalized.match(/\bdas?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\s*(?:as|às)\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b/);
   if (between) {
@@ -4060,12 +4155,12 @@ function parseBlockTimeWindow(
     const startMinute = between[2] ? Number(between[2]) : 0;
     const endHour = Number(between[3]);
     const endMinute = between[4] ? Number(between[4]) : 0;
-    const start = new Date(dateParts.year, dateParts.month, dateParts.day, startHour, startMinute, 0, 0);
-    const end = new Date(dateParts.year, dateParts.month, dateParts.day, endHour, endMinute, 0, 0);
+    const startIso = localScheduleDateTimeToUtcIso({ dateParts, hour: startHour, minute: startMinute, timeZone });
+    const endIso = localScheduleDateTimeToUtcIso({ dateParts, hour: endHour, minute: endMinute, timeZone });
     return {
-      startIso: start.toISOString(),
-      endIso: end.toISOString(),
-      label: `das ${formatTimeOnly(start.toISOString())} às ${formatTimeOnly(end.toISOString())}`,
+      startIso,
+      endIso,
+      label: `das ${padTwoDigits(startHour)}:${padTwoDigits(startMinute)} às ${padTwoDigits(endHour)}:${padTwoDigits(endMinute)}`,
       partial: true,
     };
   }
@@ -4074,11 +4169,11 @@ function parseBlockTimeWindow(
   if (until) {
     const endHour = Number(until[1]);
     const endMinute = until[2] ? Number(until[2]) : 0;
-    const end = new Date(dateParts.year, dateParts.month, dateParts.day, endHour, endMinute, 0, 0);
+    const endIso = localScheduleDateTimeToUtcIso({ dateParts, hour: endHour, minute: endMinute, timeZone });
     return {
-      startIso: dayStart.toISOString(),
-      endIso: end.toISOString(),
-      label: `até ${formatTimeOnly(end.toISOString())}`,
+      startIso: baseRange.startIso,
+      endIso,
+      label: `até ${padTwoDigits(endHour)}:${padTwoDigits(endMinute)}`,
       partial: true,
     };
   }
@@ -4087,11 +4182,11 @@ function parseBlockTimeWindow(
   if (from) {
     const startHour = Number(from[1]);
     const startMinute = from[2] ? Number(from[2]) : 0;
-    const start = new Date(dateParts.year, dateParts.month, dateParts.day, startHour, startMinute, 0, 0);
+    const startIso = localScheduleDateTimeToUtcIso({ dateParts, hour: startHour, minute: startMinute, timeZone });
     return {
-      startIso: start.toISOString(),
-      endIso: dayEnd.toISOString(),
-      label: `a partir de ${formatTimeOnly(start.toISOString())}`,
+      startIso,
+      endIso: baseRange.endIso,
+      label: `a partir de ${padTwoDigits(startHour)}:${padTwoDigits(startMinute)}`,
       partial: true,
     };
   }
@@ -4104,14 +4199,20 @@ function parseBlockTimeWindow(
   };
 }
 
-function buildBlockRangeNaturalLabel(startIso: string, endIso: string, partial: boolean, partialLabel?: string | null) {
+function buildBlockRangeNaturalLabel(
+  startIso: string,
+  endIso: string,
+  partial: boolean,
+  timeZone: string,
+  partialLabel?: string | null
+) {
   if (partial) {
     if (partialLabel) {
-      return `${formatDateOnly(startIso)} ${partialLabel}`;
+      return `${formatDateOnlyInTimeZone(startIso, timeZone)} ${partialLabel}`;
     }
-    return `${formatDateOnly(startIso)} das ${formatTimeOnly(startIso)} às ${formatTimeOnly(endIso)}`;
+    return `${formatDateOnlyInTimeZone(startIso, timeZone)} das ${formatTimeOnlyInTimeZone(startIso, timeZone)} às ${formatTimeOnlyInTimeZone(endIso, timeZone)}`;
   }
-  return formatDateOnly(startIso);
+  return formatDateOnlyInTimeZone(startIso, timeZone);
 }
 
 function extractCreatedScheduleBlockId(data: unknown): string | null {
@@ -4174,6 +4275,7 @@ async function resolveBlockDayReply(args: {
 
   const parsedRange = parseBlockTimeWindow(sourceMessage, dateParts, args.scheduleSettings || null);
   const { startIso, endIso, partial, label: partialLabel } = parsedRange;
+  const scheduleTimezone = getScheduleTimezone(args.scheduleSettings || null);
 
   const blockStartMs = new Date(startIso).getTime();
   const blockEndMs = new Date(endIso).getTime();
@@ -4182,7 +4284,7 @@ async function resolveBlockDayReply(args: {
     return "Eu não consegui entender corretamente o período desse bloqueio. Me fala de novo o dia e o horário.";
   }
 
-  const blockLabel = buildBlockRangeNaturalLabel(startIso, endIso, partial, partialLabel);
+  const blockLabel = buildBlockRangeNaturalLabel(startIso, endIso, partial, scheduleTimezone, partialLabel);
 
   const appointmentsOnDay = sortOpenScheduleAppointments(
     (args.openAppointments || []).filter((appointment) => {
@@ -4225,8 +4327,8 @@ async function resolveBlockDayReply(args: {
         p_organization_id: args.organizationId,
         p_store_id: args.storeId,
         p_title: partial
-          ? `Loja fechada em ${formatDateOnly(startIso)} (${partialLabel || `${formatTimeOnly(startIso)}-${formatTimeOnly(endIso)}`})`
-          : `Loja fechada em ${formatDateOnly(startIso)}`,
+          ? `Loja fechada em ${formatDateOnlyInTimeZone(startIso, scheduleTimezone)} (${partialLabel || `${formatTimeOnlyInTimeZone(startIso, scheduleTimezone)}-${formatTimeOnlyInTimeZone(endIso, scheduleTimezone)}`})`
+          : `Loja fechada em ${formatDateOnlyInTimeZone(startIso, scheduleTimezone)}`,
         p_block_type: "manual_block",
         p_start_at: startIso,
         p_end_at: endIso,
