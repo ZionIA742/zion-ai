@@ -292,14 +292,25 @@ type SendAiMessageToCustomerConversationResult =
   | { ok: true; messageId: string | null }
   | { ok: false; error: string };
 
-function buildCustomerRescheduleMessage(args: { appointment: AppointmentRow }) {
+function buildCustomerRescheduleMessage(args: {
+  appointment: AppointmentRow;
+  proposedStartIso?: string | null;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
   const appointment = args.appointment;
   const customerName = String(appointment.customer_name || '').trim() || 'tudo bem';
   const appointmentTypeLabel = formatAppointmentType(appointment.appointment_type);
-  const scheduledDate = formatDateOnly(appointment.scheduled_start);
-  const scheduledTime = formatTimeOnly(appointment.scheduled_start);
+  const timeZone = getScheduleTimezone(args.scheduleSettings || null);
+  const scheduledDate = formatDateOnlyInTimeZone(appointment.scheduled_start, timeZone);
+  const scheduledTime = formatTimeOnlyInTimeZone(appointment.scheduled_start, timeZone);
 
-  return `Oi, ${customerName}. Passando aqui porque eu preciso remarcar a sua ${appointmentTypeLabel} que estava prevista para ${scheduledDate} às ${scheduledTime}. Me fala qual dia e horário ficam melhores para você que eu vou organizando por aqui.`;
+  if (args.proposedStartIso) {
+    const proposedDate = formatDateOnlyInTimeZone(args.proposedStartIso, timeZone);
+    const proposedTime = formatTimeOnlyInTimeZone(args.proposedStartIso, timeZone);
+    return `Oi, ${customerName}. Passando aqui porque preciso remarcar a sua ${appointmentTypeLabel}, que estava prevista para ${scheduledDate} às ${scheduledTime}. Podemos ajustar para ${proposedDate} às ${proposedTime}?`;
+  }
+
+  return `Oi, ${customerName}. Passando aqui porque preciso remarcar a sua ${appointmentTypeLabel}, que estava prevista para ${scheduledDate} às ${scheduledTime}. Me fala qual dia e horário ficam melhores para você que eu vou organizando por aqui.`;
 }
 
 async function sendAiMessageToCustomerConversation(args: {
@@ -2140,6 +2151,92 @@ function addMinutesToIso(iso: string, minutes: number) {
   return date.toISOString();
 }
 
+function getScheduleParsingNow(settings?: StoreScheduleSettingsRow | null) {
+  const timeZone = safeScheduleTimezone(getScheduleTimezone(settings || null));
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const values: Record<string, number> = {};
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      values[part.type] = Number(part.value);
+    }
+  }
+
+  return new Date(
+    values.year || new Date().getFullYear(),
+    (values.month || 1) - 1,
+    values.day || 1,
+    values.hour === 24 ? 0 : values.hour || 0,
+    values.minute || 0,
+    values.second || 0,
+    0
+  );
+}
+
+function isClientFacingRescheduleRequest(text: string) {
+  const t = normalizeText(text);
+
+  const rescheduleCue =
+    t.includes("remarca") ||
+    t.includes("remarque") ||
+    t.includes("remarcar") ||
+    t.includes("reagenda") ||
+    t.includes("reagende") ||
+    t.includes("reagendar") ||
+    t.includes("muda a visita") ||
+    t.includes("mude a visita") ||
+    t.includes("mudar a visita") ||
+    t.includes("muda a instalacao") ||
+    t.includes("mude a instalacao") ||
+    t.includes("mudar a instalacao") ||
+    t.includes("muda a instalação") ||
+    t.includes("mude a instalação") ||
+    t.includes("mudar a instalação");
+
+  if (!rescheduleCue) return false;
+
+  return (
+    t.includes("cliente") ||
+    t.includes("visita") ||
+    t.includes("instalacao") ||
+    t.includes("instalação") ||
+    t.includes("medicao") ||
+    t.includes("medição") ||
+    t.includes("manutencao") ||
+    t.includes("manutenção") ||
+    /\bdo\s+[a-z0-9]/.test(t) ||
+    /\bda\s+[a-z0-9]/.test(t)
+  );
+}
+
+function buildResponsibleRescheduleContactReply(args: {
+  appointment: AppointmentRow;
+  targetStartIso: string;
+  customerMessageSent: boolean;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const customerName = String(args.appointment.customer_name || "cliente").trim() || "cliente";
+  const appointmentTypeLabel = formatAppointmentType(args.appointment.appointment_type);
+  const timeZone = getScheduleTimezone(args.scheduleSettings || null);
+  const targetDate = formatDateOnlyInTimeZone(args.targetStartIso, timeZone);
+  const targetTime = formatTimeOnlyInTimeZone(args.targetStartIso, timeZone);
+
+  if (args.customerMessageSent) {
+    return `Certo. Entrei em contato com ${customerName} para alinhar a remarcação da ${appointmentTypeLabel} para ${targetDate} às ${targetTime}. Assim que o cliente confirmar, eu atualizo a agenda e te aviso por aqui.`;
+  }
+
+  return `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas não encontrei uma conversa vinculada para falar com o cliente automaticamente. A agenda ainda não foi alterada. Confirme o novo horário com o cliente e, depois disso, eu atualizo a agenda para ${targetDate} às ${targetTime}.`;
+}
+
 function extractCreateAppointmentPayload(text: string, now: Date, settings?: StoreScheduleSettingsRow | null) {
   const dateParts = parseDateReferenceFromText(text, now);
   const timeRange = parseTimeRangeFromText(text);
@@ -2250,7 +2347,7 @@ async function resolveAppointmentActionReply(args: {
     return null;
   }
 
-  const now = new Date();
+  const now = getScheduleParsingNow(args.scheduleSettings || null);
   const openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
 
   if (action === "create") {
@@ -2322,7 +2419,33 @@ async function resolveAppointmentActionReply(args: {
       return reschedulePayload.message;
     }
 
-    const { error } = await args.supabase
+    if (isClientFacingRescheduleRequest(args.lastHumanMessage)) {
+      let customerMessageSent = false;
+
+      if (selectedAppointment.conversation_id) {
+        const customerMessage = buildCustomerRescheduleMessage({
+          appointment: selectedAppointment,
+          proposedStartIso: reschedulePayload.payload.scheduled_start,
+          scheduleSettings: args.scheduleSettings || null,
+        });
+        const sendResult = await sendAiMessageToCustomerConversation({
+          supabase: args.supabase,
+          conversationId: selectedAppointment.conversation_id,
+          text: customerMessage,
+        });
+
+        customerMessageSent = sendResult.ok;
+      }
+
+      return buildResponsibleRescheduleContactReply({
+        appointment: selectedAppointment,
+        targetStartIso: reschedulePayload.payload.scheduled_start,
+        customerMessageSent,
+        scheduleSettings: args.scheduleSettings || null,
+      });
+    }
+
+    const { data: updatedRows, error } = await args.supabase
       .from("store_appointments")
       .update({
         status: "rescheduled",
@@ -2333,25 +2456,23 @@ async function resolveAppointmentActionReply(args: {
       })
       .eq("id", selectedAppointment.id)
       .eq("organization_id", args.organizationId)
-      .eq("store_id", args.storeId);
+      .eq("store_id", args.storeId)
+      .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+      .maybeSingle();
 
     if (error) {
       return `Tentei remarcar, mas encontrei um erro: ${error.message}`;
     }
 
-    const updatedAppointment = {
-      ...selectedAppointment,
-      status: "rescheduled",
-      scheduled_start: reschedulePayload.payload.scheduled_start,
-      scheduled_end: reschedulePayload.payload.scheduled_end,
-    };
+    if (!updatedRows?.id) {
+      return "Eu tentei remarcar o compromisso, mas não consegui confirmar a alteração real na agenda.";
+    }
 
     return buildAppointmentActionSuccessReply({
       action,
-      appointment: updatedAppointment,
+      appointment: updatedRows as AppointmentRow,
     });
   }
-
   if (action === "complete") {
     const { error } = await args.supabase.rpc("complete_store_appointment_with_outcome", {
       p_appointment_id: selectedAppointment.id,
