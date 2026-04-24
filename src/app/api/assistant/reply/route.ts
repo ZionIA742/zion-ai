@@ -2006,12 +2006,9 @@ async function resolveBlockDayReply(args: {
     })
   );
 
-  const shouldProceedWithBlock = appointmentsOnDay.length === 0 || currentLooksLikeFollowup;
-
-  if (appointmentsOnDay.length > 0 && !shouldProceedWithBlock) {
+  if (appointmentsOnDay.length > 0) {
     const lines: string[] = [];
     lines.push(`Encontrei ${appointmentsOnDay.length === 1 ? "1 compromisso" : `${appointmentsOnDay.length} compromissos`} nesse dia.`);
-    lines.push("Antes de bloquear, você quer que eu siga com o bloqueio mesmo assim?");
     lines.push("");
 
     appointmentsOnDay.slice(0, 5).forEach((appointment, index) => {
@@ -2026,8 +2023,19 @@ async function resolveBlockDayReply(args: {
       lines.push("");
     });
 
-    lines.push("Se você confirmar, eu deixo esse bloqueio pronto para seguir. Mas, como existem compromissos nesse dia, antes eu preciso alinhar com os clientes o que será remarcado ou cancelado.");
-    return lines.join("\n").trim();
+    if (!currentLooksLikeFollowup) {
+      lines.push(`Eu ainda não vou bloquear ${formatDateOnly(startIso)} agora, porque esse dia tem compromisso marcado.`);
+      lines.push("Antes disso, eu preciso alinhar com os clientes o que será remarcado ou cancelado.");
+      lines.push("Se quiser, eu posso deixar esse bloqueio em andamento e seguir para o próximo passo com você.");
+      return lines.join("\n").trim();
+    }
+
+    if (appointmentsOnDay.length === 1) {
+      const label = buildScheduleAppointmentReferenceLabel(appointmentsOnDay[0]);
+      return `Entendi. Mas eu ainda não posso bloquear ${formatDateOnly(startIso)} nem remarcar ${label} como se isso já estivesse resolvido. Antes disso, eu preciso alinhar com o cliente a nova data ou confirmar o cancelamento. Depois que isso estiver combinado, eu sigo com o bloqueio.`;
+    }
+
+    return `Entendi. Mas eu ainda não posso bloquear ${formatDateOnly(startIso)} nem mexer nesses compromissos como se isso já estivesse resolvido. Antes disso, eu preciso alinhar com os clientes quais horários vão mudar ou o que será cancelado. Depois que isso estiver combinado, eu sigo com o bloqueio.`;
   }
 
   const existingBlockResponse = await args.supabase
@@ -2052,9 +2060,7 @@ async function resolveBlockDayReply(args: {
       p_block_type: "manual_block",
       p_start_at: startIso,
       p_end_at: endIso,
-      p_notes: appointmentsOnDay.length > 0
-        ? "Bloqueado pela assistente operacional a pedido do responsável da loja. Existem compromissos nesse dia e eles precisam ser tratados depois do bloqueio."
-        : "Bloqueado pela assistente operacional a pedido do responsável da loja.",
+      p_notes: "Bloqueado pela assistente operacional a pedido do responsável da loja.",
       p_source: "ai_operator",
       p_created_by_user_id: null,
     });
@@ -2064,21 +2070,8 @@ async function resolveBlockDayReply(args: {
     }
   }
 
-  const rescheduleInstruction = parseRescheduleInstructionFromText(currentMessage, new Date());
-  if (appointmentsOnDay.length === 1 && rescheduleInstruction) {
-    const selectedAppointment = appointmentsOnDay[0];
-    const targetDateLabel = formatDateOnly(buildBlockDayRange(rescheduleInstruction.dateParts, args.scheduleSettings || null).startIso);
-
-    return `Entendi. Ainda não remarquei ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}. Para fazer isso do jeito certo, eu preciso alinhar um novo horário com o cliente antes. Posso colocar essa remarcação em andamento e, depois que isso estiver resolvido, eu bloqueio o dia ${formatDateOnly(startIso)}. Referência de nova data: ${targetDateLabel}.`;
-  }
-
-  if (appointmentsOnDay.length > 0) {
-    return `Entendi. Ainda não bloqueei o dia ${formatDateOnly(startIso)} porque existem compromissos marcados nele. Primeiro eu preciso alinhar com os clientes o que vai ser remarcado ou cancelado. Depois disso, eu sigo com o bloqueio.`;
-  }
-
   return `Certo. Bloqueei o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`;
 }
-
 
 async function resolveAppointmentActionReply(args: {
   supabase: any;
