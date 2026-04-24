@@ -1321,25 +1321,9 @@ async function resolvePostAppointmentActionReply(args: {
   }
 
   if (action === "reschedule") {
-    if (!selectedAppointment?.conversation_id) {
-      return "Eu identifiquei qual compromisso precisa ser remarcado, mas não achei a conversa do cliente para mandar a mensagem agora.";
-    }
-
-    const customerMessage = buildCustomerRescheduleMessage({
-      appointment: selectedAppointment,
-    });
-
-    const sendResult = await sendAiMessageToCustomerConversation({
-      supabase: args.supabase,
-      conversationId: selectedAppointment.conversation_id,
-      text: customerMessage,
-    });
-
-    if (!sendResult.ok) {
-      return `Eu tentei falar com o cliente para remarcar, mas encontrei um erro no envio: ${sendResult.error}`;
-    }
-
-    return buildResponsibleRescheduleReply({
+    return buildPostAppointmentActionSuccessReply({
+      action,
+      itemNumber,
       appointment: selectedAppointment,
     });
   }
@@ -1442,70 +1426,6 @@ function buildPostAppointmentTypeAndTitle(appointment: AppointmentRow | undefine
   const typeLabel = formatAppointmentType(appointment.appointment_type);
   const titleLabel = appointment.title ? ` ${appointment.title}` : "";
   return `${typeLabel}${titleLabel}`.trim();
-}
-
-
-function buildAppointmentDateReferenceLabel(appointment: AppointmentRow | undefined) {
-  if (!appointment) return "sem data definida";
-
-  const dateLabel = formatDateOnly(appointment.scheduled_start || appointment.scheduled_end || null);
-  const timeLabel = formatTimeOnly(appointment.scheduled_start || appointment.scheduled_end || null);
-
-  if (dateLabel === "sem data") {
-    return "sem data definida";
-  }
-
-  if (timeLabel === "sem hora") {
-    return dateLabel;
-  }
-
-  return `${dateLabel} às ${timeLabel}`;
-}
-
-function buildCustomerRescheduleMessage(args: {
-  appointment: AppointmentRow | undefined;
-}) {
-  const customerName = String(args.appointment?.customer_name || "").trim() || "tudo bem";
-  const typeLabel = formatAppointmentType(args.appointment?.appointment_type || null);
-  const dateReference = buildAppointmentDateReferenceLabel(args.appointment);
-
-  return `Oi, ${customerName}. Passando aqui porque eu preciso remarcar a sua ${typeLabel} que estava prevista para ${dateReference}. Me fala qual dia e horário ficam melhores para você que eu vou organizando por aqui.`;
-}
-
-function buildResponsibleRescheduleReply(args: {
-  appointment: AppointmentRow | undefined;
-}) {
-  const customerName = String(args.appointment?.customer_name || "").trim() || "o cliente";
-  const typeLabel = formatAppointmentType(args.appointment?.appointment_type || null);
-
-  return `Entrei em contato com ${customerName} para alinhar uma nova data da ${typeLabel}. Assim que a resposta chegar, eu atualizo a agenda e te aviso por aqui.`;
-}
-
-async function sendAiMessageToCustomerConversation(args: {
-  supabase: any;
-  conversationId: string;
-  text: string;
-}) {
-  const { data, error } = await args.supabase.rpc("panel_send_message", {
-    p_conversation_id: args.conversationId,
-    p_text: args.text,
-    p_sender: "ai",
-    p_external_message_id: null,
-  });
-
-  if (error) {
-    return {
-      ok: false as const,
-      error: error.message,
-      messageId: null as string | null,
-    };
-  }
-
-  return {
-    ok: true as const,
-    error: null,
-    messageId: data ? String(data) : null,
-  };
 }
 
 
@@ -2182,26 +2102,38 @@ async function resolveAppointmentActionReply(args: {
   const selectedAppointment = openAppointments[selectedIndex];
 
   if (action === "reschedule") {
-    if (!selectedAppointment.conversation_id) {
-      return "Eu identifiquei qual compromisso precisa ser remarcado, mas não achei a conversa do cliente para mandar a mensagem agora.";
+    const reschedulePayload = extractReschedulePayload(args.lastHumanMessage, now);
+    if (!reschedulePayload.ok) {
+      return reschedulePayload.message;
     }
 
-    const customerMessage = buildCustomerRescheduleMessage({
-      appointment: selectedAppointment,
-    });
+    const { error } = await args.supabase
+      .from("store_appointments")
+      .update({
+        status: "rescheduled",
+        scheduled_start: reschedulePayload.payload.scheduled_start,
+        scheduled_end: reschedulePayload.payload.scheduled_end,
+        notes: ((selectedAppointment.notes ? `${selectedAppointment.notes}\n\n` : "") + "Remarcado pela assistente operacional.").trim(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", selectedAppointment.id)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId);
 
-    const sendResult = await sendAiMessageToCustomerConversation({
-      supabase: args.supabase,
-      conversationId: selectedAppointment.conversation_id,
-      text: customerMessage,
-    });
-
-    if (!sendResult.ok) {
-      return `Eu tentei falar com o cliente para remarcar, mas encontrei um erro no envio: ${sendResult.error}`;
+    if (error) {
+      return `Tentei remarcar, mas encontrei um erro: ${error.message}`;
     }
 
-    return buildResponsibleRescheduleReply({
-      appointment: selectedAppointment,
+    const updatedAppointment = {
+      ...selectedAppointment,
+      status: "rescheduled",
+      scheduled_start: reschedulePayload.payload.scheduled_start,
+      scheduled_end: reschedulePayload.payload.scheduled_end,
+    };
+
+    return buildAppointmentActionSuccessReply({
+      action,
+      appointment: updatedAppointment,
     });
   }
 
@@ -3820,20 +3752,55 @@ function parseScheduleDateFromText(text: string, now: Date) {
   }
 
   const monthMap: Record<string, number> = {
-    janeiro: 0, fevereiro: 1, marco: 2, "março": 2, abril: 3, maio: 4, junho: 5,
-    julho: 6, agosto: 7, setembro: 8, outubro: 9, novembro: 10, dezembro: 11,
+    janeiro: 0,
+    fevereiro: 1,
+    marco: 2,
+    "março": 2,
+    abril: 3,
+    maio: 4,
+    junho: 5,
+    julho: 6,
+    agosto: 7,
+    setembro: 8,
+    outubro: 9,
+    novembro: 10,
+    dezembro: 11,
   };
 
-  const written = normalized.match(/\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b/);
+  const written = normalized.match(
+    /\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b/
+  );
   if (written) {
     let year = written[3] ? Number(written[3]) : now.getFullYear();
     const month = monthMap[written[2]];
     const day = Number(written[1]);
-    const candidate = new Date(year, month, day);
+    let candidate = new Date(year, month, day);
     const today = new Date(now);
     today.setHours(0, 0, 0, 0);
-    if (!written[3] && candidate.getTime() < today.getTime()) year += 1;
+    if (!written[3] && candidate.getTime() < today.getTime()) {
+      year += 1;
+      candidate = new Date(year, month, day);
+    }
     return { day, month, year };
+  }
+
+  const bareDay = normalized.match(/\bdia\s+(\d{1,2})(?!\d)/);
+  if (bareDay) {
+    const day = Number(bareDay[1]);
+    let month = now.getMonth();
+    let year = now.getFullYear();
+    let candidate = new Date(year, month, day);
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+    if (candidate.getTime() < today.getTime()) {
+      month += 1;
+      if (month > 11) {
+        month = 0;
+        year += 1;
+      }
+      candidate = new Date(year, month, day);
+    }
+    return { day: candidate.getDate(), month: candidate.getMonth(), year: candidate.getFullYear() };
   }
 
   const base = new Date(now);
@@ -3853,24 +3820,42 @@ function parseScheduleDateFromText(text: string, now: Date) {
 
 function asksToBlockStoreDay(text: string) {
   const t = normalizeText(text);
+
   const blockCue =
     t.includes("nao vou abrir") ||
     t.includes("não vou abrir") ||
     t.includes("nao marque nada") ||
     t.includes("não marque nada") ||
     t.includes("bloqueia o dia") ||
+    t.includes("bloqueie o dia") ||
+    t.includes("bloquear o dia") ||
     t.includes("bloquear dia") ||
+    t.includes("quero que voce bloqueie") ||
+    t.includes("quero que você bloqueie") ||
+    t.includes("fecha a loja") ||
     t.includes("fechar a loja") ||
-    t.includes("loja fechada");
+    t.includes("vou fechar a loja") ||
+    t.includes("loja fechada") ||
+    t.includes("nao vou atender") ||
+    t.includes("não vou atender") ||
+    t.includes("nao vou trabalhar") ||
+    t.includes("não vou trabalhar");
 
   const hasDateCue =
     t.includes("amanha") ||
     t.includes("amanhã") ||
     t.includes("hoje") ||
     /\b\d{1,2}\/\d{1,2}/.test(t) ||
-    /\b\d{1,2}\s+de\s+/.test(t);
+    /\b\d{1,2}\s+de\s+/.test(t) ||
+    /\bdia\s+\d{1,2}\b/.test(t);
 
-  return blockCue && hasDateCue;
+  const hasTimeCue =
+    /\bate\s+as?\s+\d{1,2}/.test(t) ||
+    /\baté\s+as?\s+\d{1,2}/.test(t) ||
+    /\bdas\s+\d{1,2}/.test(t) ||
+    /\ba partir das?\s+\d{1,2}/.test(t);
+
+  return blockCue && (hasDateCue || hasTimeCue);
 }
 
 function isSimplePositiveConfirmation(text: string) {
@@ -3932,8 +3917,24 @@ function buildBlockDayRange(
   const startText = hours?.start || "00:00";
   const endText = hours?.end || "23:59";
 
-  const startDate = new Date(dateParts.year, dateParts.month, dateParts.day, Number(startText.split(":")[0] || 0), Number(startText.split(":")[1] || 0), 0, 0);
-  const endDate = new Date(dateParts.year, dateParts.month, dateParts.day, Number(endText.split(":")[0] || 23), Number(endText.split(":")[1] || 59), 0, 0);
+  const startDate = new Date(
+    dateParts.year,
+    dateParts.month,
+    dateParts.day,
+    Number(startText.split(":")[0] || 0),
+    Number(startText.split(":")[1] || 0),
+    0,
+    0
+  );
+  const endDate = new Date(
+    dateParts.year,
+    dateParts.month,
+    dateParts.day,
+    Number(endText.split(":")[0] || 23),
+    Number(endText.split(":")[1] || 59),
+    0,
+    0
+  );
 
   return {
     startIso: startDate.toISOString(),
@@ -3941,33 +3942,86 @@ function buildBlockDayRange(
   };
 }
 
-export async function POST(request: Request) {
-  try {
-    const body = (await request.json()) as {
-      organizationId?: string;
-      storeId?: string;
+function extractHourMinute(text: string) {
+  const direct = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*h?\b/);
+  if (!direct) return null;
+  const hour = Number(direct[1]);
+  const minute = direct[2] ? Number(direct[2]) : 0;
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return null;
+  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
+
+function parseBlockTimeWindow(
+  text: string,
+  dateParts: { day: number; month: number; year: number },
+  settings?: StoreScheduleSettingsRow | null
+) {
+  const normalized = normalizeText(text);
+  const baseRange = buildBlockDayRange(dateParts, settings);
+
+  const dayStart = new Date(baseRange.startIso);
+  const dayEnd = new Date(baseRange.endIso);
+
+  const between = normalized.match(/\bdas?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\s*(?:as|às)\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b/);
+  if (between) {
+    const startHour = Number(between[1]);
+    const startMinute = between[2] ? Number(between[2]) : 0;
+    const endHour = Number(between[3]);
+    const endMinute = between[4] ? Number(between[4]) : 0;
+    const start = new Date(dateParts.year, dateParts.month, dateParts.day, startHour, startMinute, 0, 0);
+    const end = new Date(dateParts.year, dateParts.month, dateParts.day, endHour, endMinute, 0, 0);
+    return {
+      startIso: start.toISOString(),
+      endIso: end.toISOString(),
+      label: `das ${formatTimeOnly(start.toISOString())} às ${formatTimeOnly(end.toISOString())}`,
+      partial: true,
     };
-
-    const result = await generateAssistantReply({
-      organizationId: String(body.organizationId || ""),
-      storeId: String(body.storeId || ""),
-    });
-
-    if (!result.ok) {
-      return NextResponse.json(result, { status: 400 });
-    }
-
-    return NextResponse.json(result);
-  } catch (error: any) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "ASSISTANT_REPLY_ROUTE_FAILED",
-        message: error?.message || "Erro interno na rota da assistente.",
-      },
-      { status: 500 }
-    );
   }
+
+  const until = normalized.match(/\b(?:ate|até)\s+as?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b/);
+  if (until) {
+    const endHour = Number(until[1]);
+    const endMinute = until[2] ? Number(until[2]) : 0;
+    const end = new Date(dateParts.year, dateParts.month, dateParts.day, endHour, endMinute, 0, 0);
+    return {
+      startIso: dayStart.toISOString(),
+      endIso: end.toISOString(),
+      label: `até ${formatTimeOnly(end.toISOString())}`,
+      partial: true,
+    };
+  }
+
+  const from = normalized.match(/\ba\s+partir\s+das?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b/);
+  if (from) {
+    const startHour = Number(from[1]);
+    const startMinute = from[2] ? Number(from[2]) : 0;
+    const start = new Date(dateParts.year, dateParts.month, dateParts.day, startHour, startMinute, 0, 0);
+    return {
+      startIso: start.toISOString(),
+      endIso: dayEnd.toISOString(),
+      label: `a partir de ${formatTimeOnly(start.toISOString())}`,
+      partial: true,
+    };
+  }
+
+  return {
+    startIso: baseRange.startIso,
+    endIso: baseRange.endIso,
+    label: null,
+    partial: false,
+  };
+}
+
+function buildBlockRangeNaturalLabel(startIso: string, endIso: string, partial: boolean, partialLabel?: string | null) {
+  if (partial) {
+    if (partialLabel) {
+      return `${formatDateOnly(startIso)} ${partialLabel}`;
+    }
+    return `${formatDateOnly(startIso)} das ${formatTimeOnly(startIso)} às ${formatTimeOnly(endIso)}`;
+  }
+  return formatDateOnly(startIso);
+}
 
 async function resolveBlockDayReply(args: {
   supabase: any;
@@ -3995,12 +4049,20 @@ async function resolveBlockDayReply(args: {
 
   const dateParts = parseScheduleDateFromText(sourceMessage, new Date());
   if (!dateParts) {
-    return "Para eu bloquear esse dia, me diga a data com clareza. Exemplo: dia 21/04 eu não vou abrir a loja.";
+    return "Para eu bloquear esse período, me diga a data com clareza. Exemplo: dia 21/04 eu não vou abrir a loja.";
   }
 
-  const { startIso, endIso } = buildBlockDayRange(dateParts, args.scheduleSettings || null);
+  const parsedRange = parseBlockTimeWindow(sourceMessage, dateParts, args.scheduleSettings || null);
+  const { startIso, endIso, partial, label: partialLabel } = parsedRange;
+
   const blockStartMs = new Date(startIso).getTime();
   const blockEndMs = new Date(endIso).getTime();
+
+  if (!Number.isFinite(blockStartMs) || !Number.isFinite(blockEndMs) || blockEndMs <= blockStartMs) {
+    return "Eu não consegui entender corretamente o período desse bloqueio. Me fala de novo o dia e o horário.";
+  }
+
+  const blockLabel = buildBlockRangeNaturalLabel(startIso, endIso, partial, partialLabel);
 
   const appointmentsOnDay = sortOpenScheduleAppointments(
     (args.openAppointments || []).filter((appointment) => {
@@ -4023,39 +4085,47 @@ async function resolveBlockDayReply(args: {
     .order("start_at", { ascending: true });
 
   if (existingBlocksResponse.error) {
-    return `Tentei verificar os bloqueios desse dia, mas encontrei um erro: ${existingBlocksResponse.error.message}`;
+    return `Tentei verificar os bloqueios desse período, mas encontrei um erro: ${existingBlocksResponse.error.message}`;
   }
 
-  const existingBlocks = Array.isArray(existingBlocksResponse.data)
-    ? existingBlocksResponse.data
-    : [];
+  const existingBlocks = Array.isArray(existingBlocksResponse.data) ? existingBlocksResponse.data : [];
 
-  const dayAlreadyBlocked = existingBlocks.some((block: any) => {
+  const alreadyBlocked = existingBlocks.some((block: any) => {
     const startMs = new Date(block.start_at).getTime();
     const endMs = new Date(block.end_at).getTime();
     return Number.isFinite(startMs) && Number.isFinite(endMs) && startMs <= blockStartMs && endMs >= blockEndMs;
   });
 
-  let createdBlock = false;
+  let createdBlockId: string | null = null;
 
-  if (!dayAlreadyBlocked) {
-    const { error } = await args.supabase.rpc("create_store_schedule_block_allow_existing_appointments", {
-      p_organization_id: args.organizationId,
-      p_store_id: args.storeId,
-      p_title: `Loja fechada em ${formatDateOnly(startIso)}`,
-      p_block_type: "manual_block",
-      p_start_at: startIso,
-      p_end_at: endIso,
-      p_notes: "Bloqueado pela assistente operacional a pedido do responsável da loja.",
-      p_source: "ai_operator",
-      p_created_by_user_id: null,
-    });
+  if (!alreadyBlocked) {
+    const { data, error } = await args.supabase.rpc(
+      "create_store_schedule_block_allow_existing_appointments",
+      {
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_title: partial
+          ? `Loja fechada em ${formatDateOnly(startIso)} (${partialLabel || `${formatTimeOnly(startIso)}-${formatTimeOnly(endIso)}`})`
+          : `Loja fechada em ${formatDateOnly(startIso)}`,
+        p_block_type: "manual_block",
+        p_start_at: startIso,
+        p_end_at: endIso,
+        p_notes: "Bloqueado pela assistente operacional a pedido do responsável da loja.",
+        p_source: "ai_operator",
+        p_created_by_user_id: null,
+      }
+    );
 
     if (error) {
-      return `Tentei bloquear esse dia, mas encontrei um erro: ${error.message}`;
+      return `Tentei bloquear ${blockLabel}, mas encontrei um erro: ${error.message}`;
     }
 
-    createdBlock = true;
+    const row = Array.isArray(data) ? data[0] : data;
+    createdBlockId = row?.id || null;
+
+    if (!createdBlockId) {
+      return `Eu tentei bloquear ${blockLabel}, mas não consegui confirmar o registro desse bloqueio na agenda.`;
+    }
   }
 
   let contactedCustomers = 0;
@@ -4085,13 +4155,17 @@ async function resolveBlockDayReply(args: {
 
   if (appointmentsOnDay.length > 0) {
     const lines: string[] = [];
+
     lines.push(
-      createdBlock || dayAlreadyBlocked
-        ? `Certo. Já deixei ${formatDateOnly(startIso)} bloqueado para não entrarem novos compromissos nesse dia.`
-        : `Ainda não consegui deixar ${formatDateOnly(startIso)} bloqueado para novos compromissos.`
+      alreadyBlocked || createdBlockId
+        ? `Certo. Já deixei ${blockLabel} bloqueado para não entrarem novos compromissos nesse período.`
+        : `Ainda não consegui deixar ${blockLabel} bloqueado para novos compromissos.`
     );
+
     lines.push("");
-    lines.push(`Encontrei ${appointmentsOnDay.length === 1 ? "1 compromisso" : `${appointmentsOnDay.length} compromissos`} marcado${appointmentsOnDay.length === 1 ? "" : "s"} nesse período.`);
+    lines.push(
+      `Encontrei ${appointmentsOnDay.length === 1 ? "1 compromisso marcado" : `${appointmentsOnDay.length} compromissos marcados`} nesse período.`
+    );
 
     appointmentsOnDay.slice(0, 5).forEach((appointment, index) => {
       lines.push("");
@@ -4127,9 +4201,36 @@ async function resolveBlockDayReply(args: {
     return lines.join("\n").trim();
   }
 
-  return createdBlock || dayAlreadyBlocked
-    ? `Certo. Bloqueei o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`
-    : `Ainda não consegui bloquear o dia ${formatDateOnly(startIso)}.`;
+  return alreadyBlocked || createdBlockId
+    ? `Certo. Bloqueei ${blockLabel} para não entrar nenhum compromisso novo.`
+    : `Ainda não consegui bloquear ${blockLabel}.`;
 }
 
+export async function POST(request: Request) {
+  try {
+    const body = (await request.json()) as {
+      organizationId?: string;
+      storeId?: string;
+    };
+
+    const result = await generateAssistantReply({
+      organizationId: String(body.organizationId || ""),
+      storeId: String(body.storeId || ""),
+    });
+
+    if (!result.ok) {
+      return NextResponse.json(result, { status: 400 });
+    }
+
+    return NextResponse.json(result);
+  } catch (error: any) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "ASSISTANT_REPLY_ROUTE_FAILED",
+        message: error?.message || "Erro interno na rota da assistente.",
+      },
+      { status: 500 }
+    );
+  }
 }
