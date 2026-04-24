@@ -599,6 +599,53 @@ function asksAboutMaterialsOrDocuments(text: string) {
   );
 }
 
+function hasExplicitAppointmentManagementCommand(text: string) {
+  const t = normalizeText(text);
+
+  return hasAnyTerm(t, [
+    "remarque",
+    "remarca",
+    "remarcar",
+    "reagende",
+    "reagenda",
+    "reagendar",
+    "mude a visita",
+    "muda a visita",
+    "mudar a visita",
+    "mude o compromisso",
+    "muda o compromisso",
+    "mudar o compromisso",
+    "mude a instalacao",
+    "mude a instalação",
+    "muda a instalacao",
+    "muda a instalação",
+    "cancelar compromisso",
+    "cancelar visita",
+    "cancelar instalacao",
+    "cancelar instalação",
+    "cancele o compromisso",
+    "cancele a visita",
+    "cancele a instalacao",
+    "cancele a instalação",
+    "concluir compromisso",
+    "concluir visita",
+    "concluir instalacao",
+    "concluir instalação",
+    "conclua o compromisso",
+    "conclua a visita",
+    "conclua a instalacao",
+    "conclua a instalação",
+    "visita do",
+    "visita da",
+    "compromisso do",
+    "compromisso da",
+    "instalacao do",
+    "instalação do",
+    "instalacao da",
+    "instalação da",
+  ]);
+}
+
 function asksAboutScheduleManagement(text: string) {
   const t = normalizeText(text);
 
@@ -1415,6 +1462,7 @@ async function resolvePostAppointmentActionReply(args: {
   pendingPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
   openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
 }) {
   const action = resolvePostAppointmentAction(args.lastHumanMessage);
   if (!action) {
@@ -1433,6 +1481,7 @@ async function resolvePostAppointmentActionReply(args: {
       lastHumanMessage: args.lastHumanMessage,
       recentMessages: args.recentMessages,
       openAppointments: args.openAppointments,
+      scheduleSettings: args.scheduleSettings || null,
     });
   }
 
@@ -1459,6 +1508,7 @@ async function resolvePostAppointmentActionReply(args: {
       lastHumanMessage: args.lastHumanMessage,
       recentMessages: args.recentMessages,
       openAppointments: args.openAppointments,
+      scheduleSettings: args.scheduleSettings || null,
     });
 
     if (appointmentFallback) {
@@ -2035,50 +2085,53 @@ function extractTitleFromText(text: string, typeCode: string, customerName?: str
 }
 
 function parseDateReferenceFromText(text: string, now: Date) {
-  const t = normalizeText(text);
-  const explicit = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  return parseScheduleDateFromText(text, now);
+}
 
-  if (explicit) {
-    let day = Number(explicit[1]);
-    let month = Number(explicit[2]) - 1;
-    let year = explicit[3] ? Number(explicit[3]) : now.getFullYear();
-    if (year < 100) year += 2000;
-    return { day, month, year };
-  }
-
-  const base = new Date(now);
-  base.setHours(0, 0, 0, 0);
-
-  if (t.includes("amanha") || t.includes("amanhã")) {
-    base.setDate(base.getDate() + 1);
-    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
-  }
-
-  if (t.includes("hoje")) {
-    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
-  }
-
-  return null;
+function normalizeScheduleTimeText(hourText: string, minuteText?: string | null) {
+  const hour = Number(hourText);
+  const minute = minuteText ? Number(minuteText) : 0;
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return null;
+  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
+  return `${padTwoDigits(hour)}:${padTwoDigits(minute)}`;
 }
 
 function parseTimeRangeFromText(text: string) {
-  const rangeMatch = text.match(/\b(\d{1,2}:\d{2})\s*(?:ate|até|a|-)\s*(\d{1,2}:\d{2})\b/i);
+  const rangeMatch = text.match(/\b(?:das?|de|do)?\s*(\d{1,2})(?::(\d{2}))?\s*h?\s*(?:ate|até|as|às|a|-)\s*(?:as?\s*)?(\d{1,2})(?::(\d{2}))?\s*h?\b/i);
   if (rangeMatch) {
-    return { startTime: rangeMatch[1], endTime: rangeMatch[2] };
+    const startTime = normalizeScheduleTimeText(rangeMatch[1], rangeMatch[2]);
+    const endTime = normalizeScheduleTimeText(rangeMatch[3], rangeMatch[4]);
+    if (startTime && endTime) return { startTime, endTime };
   }
 
-  const singleMatch = text.match(/\b(\d{1,2}:\d{2})\b/);
+  const singleMatch = text.match(/\b(?:as|às|para|pra)?\s*(\d{1,2})(?::(\d{2}))?\s*h\b/i) ||
+    text.match(/\b(?:as|às|para|pra)\s+(\d{1,2})(?::(\d{2}))?\b/i) ||
+    text.match(/\b(\d{1,2}:\d{2})\b/);
   if (singleMatch) {
-    return { startTime: singleMatch[1], endTime: null as string | null };
+    if (singleMatch[1]?.includes(":")) {
+      const [hour, minute] = singleMatch[1].split(":");
+      const startTime = normalizeScheduleTimeText(hour, minute);
+      if (startTime) return { startTime, endTime: null as string | null };
+    }
+    const startTime = normalizeScheduleTimeText(singleMatch[1], singleMatch[2]);
+    if (startTime) return { startTime, endTime: null as string | null };
   }
 
   return null;
 }
 
-function buildIsoFromDateAndTime(dateParts: { day: number; month: number; year: number }, time: string) {
+function buildIsoFromDateAndTime(
+  dateParts: { day: number; month: number; year: number },
+  time: string,
+  settings?: StoreScheduleSettingsRow | null
+) {
   const [hour, minute] = time.split(":").map(Number);
-  const date = new Date(dateParts.year, dateParts.month, dateParts.day, hour || 0, minute || 0, 0, 0);
-  return date.toISOString();
+  return localScheduleDateTimeToUtcIso({
+    dateParts,
+    hour: Number.isFinite(hour) ? hour : 0,
+    minute: Number.isFinite(minute) ? minute : 0,
+    timeZone: getScheduleTimezone(settings || null),
+  });
 }
 
 function addMinutesToIso(iso: string, minutes: number) {
@@ -2087,7 +2140,7 @@ function addMinutesToIso(iso: string, minutes: number) {
   return date.toISOString();
 }
 
-function extractCreateAppointmentPayload(text: string, now: Date) {
+function extractCreateAppointmentPayload(text: string, now: Date, settings?: StoreScheduleSettingsRow | null) {
   const dateParts = parseDateReferenceFromText(text, now);
   const timeRange = parseTimeRangeFromText(text);
   const appointmentType = inferAppointmentTypeFromText(text);
@@ -2103,9 +2156,9 @@ function extractCreateAppointmentPayload(text: string, now: Date) {
     };
   }
 
-  const scheduledStart = buildIsoFromDateAndTime(dateParts, timeRange.startTime);
+  const scheduledStart = buildIsoFromDateAndTime(dateParts, timeRange.startTime, settings || null);
   const scheduledEnd = timeRange.endTime
-    ? buildIsoFromDateAndTime(dateParts, timeRange.endTime)
+    ? buildIsoFromDateAndTime(dateParts, timeRange.endTime, settings || null)
     : addMinutesToIso(scheduledStart, 60);
 
   return {
@@ -2122,7 +2175,7 @@ function extractCreateAppointmentPayload(text: string, now: Date) {
   };
 }
 
-function extractReschedulePayload(text: string, now: Date) {
+function extractReschedulePayload(text: string, now: Date, settings?: StoreScheduleSettingsRow | null) {
   const dateParts = parseDateReferenceFromText(text, now);
   const timeRange = parseTimeRangeFromText(text);
 
@@ -2133,9 +2186,9 @@ function extractReschedulePayload(text: string, now: Date) {
     };
   }
 
-  const scheduledStart = buildIsoFromDateAndTime(dateParts, timeRange.startTime);
+  const scheduledStart = buildIsoFromDateAndTime(dateParts, timeRange.startTime, settings || null);
   const scheduledEnd = timeRange.endTime
-    ? buildIsoFromDateAndTime(dateParts, timeRange.endTime)
+    ? buildIsoFromDateAndTime(dateParts, timeRange.endTime, settings || null)
     : addMinutesToIso(scheduledStart, 60);
 
   return {
@@ -2190,6 +2243,7 @@ async function resolveAppointmentActionReply(args: {
   lastHumanMessage: string;
   recentMessages: AssistantMessageRow[];
   openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
 }) {
   const action = resolveScheduleAction(args.lastHumanMessage);
   if (!action) {
@@ -2200,7 +2254,7 @@ async function resolveAppointmentActionReply(args: {
   const openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
 
   if (action === "create") {
-    const createPayload = extractCreateAppointmentPayload(args.lastHumanMessage, now);
+    const createPayload = extractCreateAppointmentPayload(args.lastHumanMessage, now, args.scheduleSettings || null);
     if (!createPayload.ok) {
       return createPayload.message;
     }
@@ -2263,7 +2317,7 @@ async function resolveAppointmentActionReply(args: {
   const selectedAppointment = openAppointments[selectedIndex];
 
   if (action === "reschedule") {
-    const reschedulePayload = extractReschedulePayload(args.lastHumanMessage, now);
+    const reschedulePayload = extractReschedulePayload(args.lastHumanMessage, now, args.scheduleSettings || null);
     if (!reschedulePayload.ok) {
       return reschedulePayload.message;
     }
@@ -3758,16 +3812,20 @@ async function generateAssistantReply(params: {
 
     const scheduleSettings = (scheduleSettingsData || null) as StoreScheduleSettingsRow | null;
 
-    const blockAdjustmentReply = await resolveScheduleBlockAdjustmentReply({
-      supabase,
-      organizationId,
-      storeId,
-      lastHumanMessage,
-      recentMessages,
-      scheduleSettings,
-    });
+    const appointmentManagementRequest = hasExplicitAppointmentManagementCommand(lastHumanMessage);
 
-    const blockDayReply = !blockAdjustmentReply
+    const blockAdjustmentReply = !appointmentManagementRequest
+      ? await resolveScheduleBlockAdjustmentReply({
+          supabase,
+          organizationId,
+          storeId,
+          lastHumanMessage,
+          recentMessages,
+          scheduleSettings,
+        })
+      : null;
+
+    const blockDayReply = !appointmentManagementRequest && !blockAdjustmentReply
       ? await resolveBlockDayReply({
           supabase,
           organizationId,
@@ -3789,6 +3847,7 @@ async function generateAssistantReply(params: {
           pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
           appointmentMap,
           openAppointments: allOpenAppointments,
+          scheduleSettings,
         })
       : null;
 
@@ -3800,6 +3859,7 @@ async function generateAssistantReply(params: {
           lastHumanMessage,
           recentMessages,
           openAppointments: allOpenAppointments,
+          scheduleSettings,
         })
       : null;
 
@@ -4044,6 +4104,10 @@ function hasBlockTimeCueFromNormalized(text: string) {
 function asksToBlockStoreDay(text: string) {
   const t = normalizeText(text);
 
+  if (hasExplicitAppointmentManagementCommand(text)) {
+    return false;
+  }
+
   const blockCue =
     t.includes("nao vou abrir") ||
     t.includes("nao abre") ||
@@ -4081,6 +4145,7 @@ function isSimplePositiveConfirmation(text: string) {
 
 function isBlockDayFollowupInstruction(text: string) {
   const t = normalizeText(text);
+  if (hasExplicitAppointmentManagementCommand(text)) return false;
   return (
     isSimplePositiveConfirmation(t) ||
     t.includes("remarca") ||
