@@ -1096,8 +1096,24 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "remarcou",
       "remarcada",
       "remarcado",
+      "remarque",
       "remarque isso",
       "quero remarcar isso",
+      "reagende",
+      "reagenda",
+      "reagendar",
+      "mude a visita",
+      "muda a visita",
+      "mudar a visita",
+      "mude o compromisso",
+      "muda o compromisso",
+      "mudar o compromisso",
+      "mude a instalacao",
+      "muda a instalacao",
+      "mudar a instalacao",
+      "mude a instalação",
+      "muda a instalação",
+      "mudar a instalação",
       "esse caso foi remarcado",
       "remarca",
       "remarcar",
@@ -4016,6 +4032,8 @@ async function generateAssistantReply(params: {
       aiText = postAppointmentActionReply;
     } else if (scheduleActionReply) {
       aiText = scheduleActionReply;
+    } else if (appointmentManagementRequest) {
+      aiText = "Entendi que você quer mexer em um compromisso da agenda, mas não consegui confirmar com segurança qual ação devo executar. Me diga o cliente, o dia e o horário desejado. Se envolver cliente, eu não vou alterar a agenda antes de alinhar com ele.";
     } else if (morningReportMode) {
       aiText = buildDeterministicMorningReport({
         todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
