@@ -109,6 +109,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function coerceBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1 ? true : value === 0 ? false : null;
+  if (typeof value !== "string") return null;
+
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes", "sim"].includes(normalized)) return true;
+  if (["false", "0", "no", "nao", "não"].includes(normalized)) return false;
+  return null;
+}
+
 function normalizePhone(raw: string): string {
   return raw.replace(/[^\d]/g, "");
 }
@@ -161,6 +172,20 @@ function extractMessageId(row: PendingExternalMessageRow): string | null {
   return trimmed || null;
 }
 
+function shouldSkipExternalSend(metadata: Record<string, unknown>): string | null {
+  const internalOnly = coerceBoolean(metadata.internal_only);
+  if (internalOnly === true) {
+    return "Mensagem marcada como interna e não deve sair no WhatsApp.";
+  }
+
+  const sendExternal = coerceBoolean(metadata.send_external);
+  if (sendExternal === false) {
+    return "Mensagem marcada para não enviar externamente.";
+  }
+
+  return null;
+}
+
 function normalizePendingMessage(
   row: PendingExternalMessageRow,
 ): PendingExternalMessage {
@@ -186,6 +211,7 @@ function normalizePendingMessage(
 
   const content = String(row.content || "").trim();
   const mediaUrl = row.media_url?.trim() || null;
+  const metadata = normalizeMetadata(row.metadata);
 
   if (messageType === "text" && !content) {
     throw new Error(`Mensagem ${messageId} do tipo text sem conteúdo`);
@@ -209,7 +235,7 @@ function normalizePendingMessage(
     content,
     messageType,
     mediaUrl,
-    metadata: normalizeMetadata(row.metadata),
+    metadata,
   };
 }
 
@@ -456,6 +482,17 @@ export async function processWhatsappPendingMessages(
   let failed = 0;
 
   for (const message of selected) {
+    const skipReason = shouldSkipExternalSend(message.metadata);
+
+    if (skipReason) {
+      results.push({
+        messageId: message.id,
+        status: "skipped",
+        detail: skipReason,
+      });
+      continue;
+    }
+
     try {
       const whatsappMessageId = await sendSinglePendingMessage(
         integration,

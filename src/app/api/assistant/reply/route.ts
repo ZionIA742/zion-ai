@@ -1321,9 +1321,25 @@ async function resolvePostAppointmentActionReply(args: {
   }
 
   if (action === "reschedule") {
-    return buildPostAppointmentActionSuccessReply({
-      action,
-      itemNumber,
+    if (!selectedAppointment?.conversation_id) {
+      return "Eu identifiquei qual compromisso precisa ser remarcado, mas não achei a conversa do cliente para mandar a mensagem agora.";
+    }
+
+    const customerMessage = buildCustomerRescheduleMessage({
+      appointment: selectedAppointment,
+    });
+
+    const sendResult = await sendAiMessageToCustomerConversation({
+      supabase: args.supabase,
+      conversationId: selectedAppointment.conversation_id,
+      text: customerMessage,
+    });
+
+    if (!sendResult.ok) {
+      return `Eu tentei falar com o cliente para remarcar, mas encontrei um erro no envio: ${sendResult.error}`;
+    }
+
+    return buildResponsibleRescheduleReply({
       appointment: selectedAppointment,
     });
   }
@@ -1426,6 +1442,70 @@ function buildPostAppointmentTypeAndTitle(appointment: AppointmentRow | undefine
   const typeLabel = formatAppointmentType(appointment.appointment_type);
   const titleLabel = appointment.title ? ` ${appointment.title}` : "";
   return `${typeLabel}${titleLabel}`.trim();
+}
+
+
+function buildAppointmentDateReferenceLabel(appointment: AppointmentRow | undefined) {
+  if (!appointment) return "sem data definida";
+
+  const dateLabel = formatDateOnly(appointment.scheduled_start || appointment.scheduled_end || null);
+  const timeLabel = formatTimeOnly(appointment.scheduled_start || appointment.scheduled_end || null);
+
+  if (dateLabel === "sem data") {
+    return "sem data definida";
+  }
+
+  if (timeLabel === "sem hora") {
+    return dateLabel;
+  }
+
+  return `${dateLabel} às ${timeLabel}`;
+}
+
+function buildCustomerRescheduleMessage(args: {
+  appointment: AppointmentRow | undefined;
+}) {
+  const customerName = String(args.appointment?.customer_name || "").trim() || "tudo bem";
+  const typeLabel = formatAppointmentType(args.appointment?.appointment_type || null);
+  const dateReference = buildAppointmentDateReferenceLabel(args.appointment);
+
+  return `Oi, ${customerName}. Passando aqui porque eu preciso remarcar a sua ${typeLabel} que estava prevista para ${dateReference}. Me fala qual dia e horário ficam melhores para você que eu vou organizando por aqui.`;
+}
+
+function buildResponsibleRescheduleReply(args: {
+  appointment: AppointmentRow | undefined;
+}) {
+  const customerName = String(args.appointment?.customer_name || "").trim() || "o cliente";
+  const typeLabel = formatAppointmentType(args.appointment?.appointment_type || null);
+
+  return `Entrei em contato com ${customerName} para alinhar uma nova data da ${typeLabel}. Assim que a resposta chegar, eu atualizo a agenda e te aviso por aqui.`;
+}
+
+async function sendAiMessageToCustomerConversation(args: {
+  supabase: any;
+  conversationId: string;
+  text: string;
+}) {
+  const { data, error } = await args.supabase.rpc("panel_send_message", {
+    p_conversation_id: args.conversationId,
+    p_text: args.text,
+    p_sender: "ai",
+    p_external_message_id: null,
+  });
+
+  if (error) {
+    return {
+      ok: false as const,
+      error: error.message,
+      messageId: null as string | null,
+    };
+  }
+
+  return {
+    ok: true as const,
+    error: null,
+    messageId: data ? String(data) : null,
+  };
 }
 
 
@@ -2102,38 +2182,26 @@ async function resolveAppointmentActionReply(args: {
   const selectedAppointment = openAppointments[selectedIndex];
 
   if (action === "reschedule") {
-    const reschedulePayload = extractReschedulePayload(args.lastHumanMessage, now);
-    if (!reschedulePayload.ok) {
-      return reschedulePayload.message;
+    if (!selectedAppointment.conversation_id) {
+      return "Eu identifiquei qual compromisso precisa ser remarcado, mas não achei a conversa do cliente para mandar a mensagem agora.";
     }
 
-    const { error } = await args.supabase
-      .from("store_appointments")
-      .update({
-        status: "rescheduled",
-        scheduled_start: reschedulePayload.payload.scheduled_start,
-        scheduled_end: reschedulePayload.payload.scheduled_end,
-        notes: ((selectedAppointment.notes ? `${selectedAppointment.notes}\n\n` : "") + "Remarcado pela assistente operacional.").trim(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", selectedAppointment.id)
-      .eq("organization_id", args.organizationId)
-      .eq("store_id", args.storeId);
+    const customerMessage = buildCustomerRescheduleMessage({
+      appointment: selectedAppointment,
+    });
 
-    if (error) {
-      return `Tentei remarcar, mas encontrei um erro: ${error.message}`;
+    const sendResult = await sendAiMessageToCustomerConversation({
+      supabase: args.supabase,
+      conversationId: selectedAppointment.conversation_id,
+      text: customerMessage,
+    });
+
+    if (!sendResult.ok) {
+      return `Eu tentei falar com o cliente para remarcar, mas encontrei um erro no envio: ${sendResult.error}`;
     }
 
-    const updatedAppointment = {
-      ...selectedAppointment,
-      status: "rescheduled",
-      scheduled_start: reschedulePayload.payload.scheduled_start,
-      scheduled_end: reschedulePayload.payload.scheduled_end,
-    };
-
-    return buildAppointmentActionSuccessReply({
-      action,
-      appointment: updatedAppointment,
+    return buildResponsibleRescheduleReply({
+      appointment: selectedAppointment,
     });
   }
 
