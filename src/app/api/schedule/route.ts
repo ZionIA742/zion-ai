@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type ScheduleItemRow = {
   item_kind: string;
@@ -26,6 +27,18 @@ type ScheduleItemRow = {
   updated_at: string;
 };
 
+function buildJsonResponse(body: unknown, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+      Vary: "*",
+    },
+  });
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
@@ -40,46 +53,46 @@ export async function GET(request: Request) {
     const end = String(url.searchParams.get("end") || "").trim();
 
     if (!organizationId) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "MISSING_ORGANIZATION_ID",
           message: "organizationId não informado.",
         },
-        { status: 400 }
+        400
       );
     }
 
     if (!storeId) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "MISSING_STORE_ID",
           message: "storeId não informado.",
         },
-        { status: 400 }
+        400
       );
     }
 
     if (!start) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "MISSING_START",
           message: "Parâmetro start não informado.",
         },
-        { status: 400 }
+        400
       );
     }
 
     if (!end) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "MISSING_END",
           message: "Parâmetro end não informado.",
         },
-        { status: 400 }
+        400
       );
     }
 
@@ -87,35 +100,35 @@ export async function GET(request: Request) {
     const endDate = new Date(end);
 
     if (Number.isNaN(startDate.getTime())) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "INVALID_START",
           message: "Parâmetro start inválido.",
         },
-        { status: 400 }
+        400
       );
     }
 
     if (Number.isNaN(endDate.getTime())) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "INVALID_END",
           message: "Parâmetro end inválido.",
         },
-        { status: 400 }
+        400
       );
     }
 
     if (endDate <= startDate) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "INVALID_RANGE",
           message: "O parâmetro end deve ser maior que start.",
         },
-        { status: 400 }
+        400
       );
     }
 
@@ -123,14 +136,14 @@ export async function GET(request: Request) {
     const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!supabaseUrl || !supabaseServiceRoleKey) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "SUPABASE_ENV_MISSING",
           message:
             "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variáveis de ambiente.",
         },
-        { status: 500 }
+        500
       );
     }
 
@@ -144,13 +157,13 @@ export async function GET(request: Request) {
     });
 
     if (error) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "LOAD_SCHEDULE_FAILED",
           message: error.message,
         },
-        { status: 500 }
+        500
       );
     }
 
@@ -176,7 +189,7 @@ export async function GET(request: Request) {
       updatedAt: item.updated_at,
     }));
 
-    return NextResponse.json({
+    return buildJsonResponse({
       ok: true,
       organizationId,
       storeId,
@@ -186,13 +199,13 @@ export async function GET(request: Request) {
       items,
     });
   } catch (error: any) {
-    return NextResponse.json(
+    return buildJsonResponse(
       {
         ok: false,
         error: "SCHEDULE_ROUTE_FAILED",
         message: error?.message || "Erro interno ao carregar agenda.",
       },
-      { status: 500 }
+      500
     );
   }
 }

@@ -1757,7 +1757,7 @@ export default function SchedulePage() {
         return;
       }
 
-      const { error } = await supabase.rpc("create_store_schedule_block", {
+      const { error } = await supabase.rpc("create_store_schedule_block_allow_existing_appointments", {
         p_organization_id: organizationId,
         p_store_id: activeStoreId,
         p_title: blockForm.title.trim(),

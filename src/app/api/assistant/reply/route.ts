@@ -4030,129 +4030,16 @@ async function resolveBlockDayReply(args: {
     ? existingBlocksResponse.data
     : [];
 
-  const occupiedRanges = [
-    ...appointmentsOnDay.map((appointment) => ({
-      startMs: new Date(appointment.scheduled_start || appointment.scheduled_end || startIso).getTime(),
-      endMs: new Date(appointment.scheduled_end || appointment.scheduled_start || endIso).getTime(),
-    })),
-    ...existingBlocks.map((block: any) => ({
-      startMs: new Date(block.start_at).getTime(),
-      endMs: new Date(block.end_at).getTime(),
-    })),
-  ]
-    .filter((range) => Number.isFinite(range.startMs) && Number.isFinite(range.endMs) && range.endMs > range.startMs)
-    .sort((a, b) => a.startMs - b.startMs);
-
-  const mergedOccupied: Array<{ startMs: number; endMs: number }> = [];
-  for (const range of occupiedRanges) {
-    if (!mergedOccupied.length) {
-      mergedOccupied.push({ ...range });
-      continue;
-    }
-
-    const last = mergedOccupied[mergedOccupied.length - 1];
-    if (range.startMs <= last.endMs) {
-      last.endMs = Math.max(last.endMs, range.endMs);
-    } else {
-      mergedOccupied.push({ ...range });
-    }
-  }
-
-  const protectionRanges: Array<{ startIso: string; endIso: string }> = [];
-  let cursor = blockStartMs;
-
-  for (const range of mergedOccupied) {
-    const clippedStart = Math.max(range.startMs, blockStartMs);
-    const clippedEnd = Math.min(range.endMs, blockEndMs);
-
-    if (clippedEnd <= blockStartMs || clippedStart >= blockEndMs) {
-      continue;
-    }
-
-    if (clippedStart > cursor) {
-      protectionRanges.push({
-        startIso: new Date(cursor).toISOString(),
-        endIso: new Date(clippedStart).toISOString(),
-      });
-    }
-
-    cursor = Math.max(cursor, clippedEnd);
-  }
-
-  if (cursor < blockEndMs) {
-    protectionRanges.push({
-      startIso: new Date(cursor).toISOString(),
-      endIso: new Date(blockEndMs).toISOString(),
-    });
-  }
-
-  const validProtectionRanges = protectionRanges.filter((range) => {
-    const startMs = new Date(range.startIso).getTime();
-    const endMs = new Date(range.endIso).getTime();
-    return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs - startMs >= 60 * 1000;
+  const dayAlreadyBlocked = existingBlocks.some((block: any) => {
+    const startMs = new Date(block.start_at).getTime();
+    const endMs = new Date(block.end_at).getTime();
+    return Number.isFinite(startMs) && Number.isFinite(endMs) && startMs <= blockStartMs && endMs >= blockEndMs;
   });
 
-  let createdBlocks = 0;
+  let createdBlock = false;
 
-  for (const range of validProtectionRanges) {
-    const { error } = await args.supabase.rpc("create_store_schedule_block", {
-      p_organization_id: args.organizationId,
-      p_store_id: args.storeId,
-      p_title: `Loja fechada em ${formatDateOnly(startIso)}`,
-      p_block_type: "manual_block",
-      p_start_at: range.startIso,
-      p_end_at: range.endIso,
-      p_notes: "Bloqueado pela assistente operacional a pedido do responsável da loja.",
-      p_source: "ai_operator",
-      p_created_by_user_id: null,
-    });
-
-    if (error) {
-      const message = normalizeText(error.message || "");
-      if (!message.includes("existe compromisso ativo nesse horario")) {
-        return `Tentei bloquear esse dia, mas encontrei um erro: ${error.message}`;
-      }
-    } else {
-      createdBlocks += 1;
-    }
-  }
-
-  if (appointmentsOnDay.length > 0) {
-    const lines: string[] = [];
-    lines.push(`Encontrei ${appointmentsOnDay.length === 1 ? "1 compromisso" : `${appointmentsOnDay.length} compromissos`} nesse dia.`);
-    lines.push("");
-
-    appointmentsOnDay.slice(0, 5).forEach((appointment, index) => {
-      lines.push(`${index + 1}. ${buildScheduleAppointmentReferenceLabel(appointment)}`);
-      if (appointment.customer_name) {
-        lines.push(`- cliente: ${appointment.customer_name}`);
-      }
-      const timeLabel = appointment.scheduled_start || appointment.scheduled_end;
-      if (timeLabel) {
-        lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
-      }
-      lines.push("");
-    });
-
-    lines.push(
-      createdBlocks > 0 || existingBlocks.length > 0
-        ? `Certo. Já deixei ${formatDateOnly(startIso)} bloqueado para não entrarem novos compromissos nesse dia.`
-        : `Ainda não consegui deixar ${formatDateOnly(startIso)} bloqueado para novos compromissos.`
-    );
-    lines.push("O que já está marcado nesse dia continua precisando de alinhamento com o cliente antes de remarcar ou cancelar.");
-
-    if (currentLooksLikeFollowup) {
-      lines.push("Eu ainda não remarquei nem cancelei nada.");
-      lines.push("Quando você quiser, eu posso seguir com você no próximo passo para tratar esses compromissos.");
-    } else {
-      lines.push("Se quiser, no próximo passo eu posso te ajudar a decidir como tratar os compromissos que já estão marcados.");
-    }
-
-    return lines.join("\n").trim();
-  }
-
-  if (createdBlocks === 0 && existingBlocks.length === 0) {
-    const { error } = await args.supabase.rpc("create_store_schedule_block", {
+  if (!dayAlreadyBlocked) {
+    const { error } = await args.supabase.rpc("create_store_schedule_block_allow_existing_appointments", {
       p_organization_id: args.organizationId,
       p_store_id: args.storeId,
       p_title: `Loja fechada em ${formatDateOnly(startIso)}`,
@@ -4168,10 +4055,81 @@ async function resolveBlockDayReply(args: {
       return `Tentei bloquear esse dia, mas encontrei um erro: ${error.message}`;
     }
 
-    createdBlocks = 1;
+    createdBlock = true;
   }
 
-  return `Certo. Bloqueei o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`;
+  let contactedCustomers = 0;
+  let missingConversationCount = 0;
+
+  for (const appointment of appointmentsOnDay) {
+    const conversationId = String(appointment.conversation_id || "").trim();
+    if (!conversationId) {
+      missingConversationCount += 1;
+      continue;
+    }
+
+    const customerMessage = buildCustomerRescheduleMessage({
+      appointment,
+    });
+
+    const sendResult = await sendAiMessageToCustomerConversation({
+      supabase: args.supabase,
+      conversationId,
+      text: customerMessage,
+    });
+
+    if (sendResult.ok) {
+      contactedCustomers += 1;
+    }
+  }
+
+  if (appointmentsOnDay.length > 0) {
+    const lines: string[] = [];
+    lines.push(
+      createdBlock || dayAlreadyBlocked
+        ? `Certo. Já deixei ${formatDateOnly(startIso)} bloqueado para não entrarem novos compromissos nesse dia.`
+        : `Ainda não consegui deixar ${formatDateOnly(startIso)} bloqueado para novos compromissos.`
+    );
+    lines.push("");
+    lines.push(`Encontrei ${appointmentsOnDay.length === 1 ? "1 compromisso" : `${appointmentsOnDay.length} compromissos`} marcado${appointmentsOnDay.length === 1 ? "" : "s"} nesse período.`);
+
+    appointmentsOnDay.slice(0, 5).forEach((appointment, index) => {
+      lines.push("");
+      lines.push(`${index + 1}. ${buildScheduleAppointmentReferenceLabel(appointment)}`);
+      if (appointment.customer_name) {
+        lines.push(`- cliente: ${appointment.customer_name}`);
+      }
+      const timeLabel = appointment.scheduled_start || appointment.scheduled_end;
+      if (timeLabel) {
+        lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
+      }
+    });
+
+    lines.push("");
+
+    if (contactedCustomers === 1) {
+      lines.push("Já entrei em contato com o cliente desse compromisso para alinhar uma nova data.");
+    } else if (contactedCustomers > 1) {
+      lines.push(`Já entrei em contato com ${contactedCustomers} clientes para alinhar novas datas.`);
+    } else {
+      lines.push("Ainda não consegui iniciar o contato automático com os clientes afetados.");
+    }
+
+    if (missingConversationCount > 0) {
+      lines.push(
+        missingConversationCount === 1
+          ? "Tem 1 compromisso sem conversa ligada automaticamente, então esse vai precisar de atenção manual."
+          : `Tem ${missingConversationCount} compromissos sem conversa ligada automaticamente, então esses vão precisar de atenção manual.`
+      );
+    }
+
+    lines.push("Assim que as respostas chegarem, eu atualizo a agenda e te aviso por aqui.");
+    return lines.join("\n").trim();
+  }
+
+  return createdBlock || dayAlreadyBlocked
+    ? `Certo. Bloqueei o dia ${formatDateOnly(startIso)} para não entrar nenhum compromisso novo.`
+    : `Ainda não consegui bloquear o dia ${formatDateOnly(startIso)}.`;
 }
 
 }
