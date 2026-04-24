@@ -4457,7 +4457,7 @@ async function resolveScheduleBlockAdjustmentReply(args: {
     return "Eu tentei ajustar o bloqueio, mas não consegui confirmar a alteração real na agenda.";
   }
 
-  return `Desculpe pelo erro. Agora ajustei o bloqueio de verdade para ${blockLabel}.`;
+  return `Pronto. Ajustei o bloqueio para ${blockLabel}.`;
 }
 
 async function resolveBlockDayReply(args: {
