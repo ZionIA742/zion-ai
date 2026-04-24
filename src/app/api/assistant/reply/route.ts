@@ -3758,17 +3758,28 @@ async function generateAssistantReply(params: {
 
     const scheduleSettings = (scheduleSettingsData || null) as StoreScheduleSettingsRow | null;
 
-    const blockDayReply = await resolveBlockDayReply({
+    const blockAdjustmentReply = await resolveScheduleBlockAdjustmentReply({
       supabase,
       organizationId,
       storeId,
       lastHumanMessage,
       recentMessages,
-      openAppointments: allOpenAppointments,
       scheduleSettings,
     });
 
-    const postAppointmentActionReply = !blockDayReply && postAppointmentMode
+    const blockDayReply = !blockAdjustmentReply
+      ? await resolveBlockDayReply({
+          supabase,
+          organizationId,
+          storeId,
+          lastHumanMessage,
+          recentMessages,
+          openAppointments: allOpenAppointments,
+          scheduleSettings,
+        })
+      : null;
+
+    const postAppointmentActionReply = !blockAdjustmentReply && !blockDayReply && postAppointmentMode
       ? await resolvePostAppointmentActionReply({
           supabase,
           organizationId,
@@ -3781,7 +3792,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const scheduleActionReply = !blockDayReply && !postAppointmentMode
+    const scheduleActionReply = !blockAdjustmentReply && !blockDayReply && !postAppointmentMode
       ? await resolveAppointmentActionReply({
           supabase,
           organizationId,
@@ -3816,7 +3827,9 @@ async function generateAssistantReply(params: {
 
     let aiText = "";
 
-    if (blockDayReply) {
+    if (blockAdjustmentReply) {
+      aiText = blockAdjustmentReply;
+    } else if (blockDayReply) {
       aiText = blockDayReply;
     } else if (postAppointmentActionReply) {
       aiText = postAppointmentActionReply;
@@ -3901,6 +3914,7 @@ async function generateAssistantReply(params: {
         eveningReportMode,
         nextVisitMode,
         scheduleManagementMode,
+        blockAdjustmentMode: Boolean(blockAdjustmentReply),
         blockDayMode: Boolean(blockDayReply),
         detectedIntent,
       },
@@ -4149,7 +4163,9 @@ function parseBlockTimeWindow(
   const timeZone = getScheduleTimezone(settings);
   const baseRange = buildBlockDayRange(dateParts, settings);
 
-  const between = normalized.match(/\bdas?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\s*(?:as|às)\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b/);
+  const between =
+    normalized.match(/\b(?:das?|do|de)\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\s*(?:as|às|ate|até)\s*(?:as?\s*)?(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b/) ||
+    normalized.match(/\b(\d{1,2})(?::(\d{2}))?\s*(?:h)?\s*(?:as|às|ate|até)\s*(?:as?\s*)?(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b/);
   if (between) {
     const startHour = Number(between[1]);
     const startMinute = between[2] ? Number(between[2]) : 0;
@@ -4231,6 +4247,217 @@ function extractCreatedScheduleBlockId(data: unknown): string | null {
   }
 
   return null;
+}
+
+function hasExplicitBlockRangeCueFromNormalized(text: string) {
+  return (
+    /\b(?:das?|do|de)\s+\d{1,2}(?::\d{2})?\s*(?:h)?\s*(?:as|às|ate|até)\s*(?:as?\s*)?\d{1,2}(?::\d{2})?\s*(?:h)?\b/.test(text) ||
+    /\b\d{1,2}(?::\d{2})?\s*(?:h)?\s*(?:as|às|ate|até)\s*(?:as?\s*)?\d{1,2}(?::\d{2})?\s*(?:h)?\b/.test(text)
+  );
+}
+
+function asksToAdjustScheduleBlock(text: string) {
+  const t = normalizeText(text);
+  const adjustmentCue =
+    t.includes("ajuste") ||
+    t.includes("ajusta") ||
+    t.includes("corrija") ||
+    t.includes("corrige") ||
+    t.includes("corrigir") ||
+    t.includes("edite") ||
+    t.includes("editar") ||
+    t.includes("altere") ||
+    t.includes("alterar") ||
+    t.includes("mude") ||
+    t.includes("mudar") ||
+    t.includes("eu pedi") ||
+    t.includes("nao era") ||
+    t.includes("não era") ||
+    t.includes("nao das") ||
+    t.includes("não das") ||
+    t.includes("ficar das") ||
+    t.includes("ficar do");
+
+  const scheduleBlockCue =
+    t.includes("bloqueio") ||
+    t.includes("bloqueado") ||
+    t.includes("bloqueei") ||
+    t.includes("bloqueie") ||
+    t.includes("bloqueia") ||
+    t.includes("agenda") ||
+    t.includes("loja fechada") ||
+    t.includes("nao marque") ||
+    t.includes("não marque");
+
+  return adjustmentCue && (scheduleBlockCue || hasExplicitBlockRangeCueFromNormalized(t)) && (hasBlockDateCueFromNormalized(t) || hasExplicitBlockRangeCueFromNormalized(t));
+}
+
+function inferPreviousScheduleBlockDateRequest(messages: AssistantMessageRow[], currentHumanMessage: string) {
+  const ordered = [...messages]
+    .filter((message) => getMessageContent(message).length > 0)
+    .filter((message) => isLikelyResponsibleMessage(message))
+    .map((message) => getMessageContent(message))
+    .filter((content) => content !== currentHumanMessage);
+
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const content = ordered[index];
+    if (asksToBlockStoreDay(content) || asksToAdjustScheduleBlock(content)) {
+      const parsed = parseScheduleDateFromText(content, new Date());
+      if (parsed) return parsed;
+    }
+  }
+
+  return null;
+}
+
+function buildLocalDayQueryRange(
+  dateParts: { day: number; month: number; year: number },
+  timeZone: string
+) {
+  const nextDate = new Date(dateParts.year, dateParts.month, dateParts.day, 12, 0, 0, 0);
+  nextDate.setDate(nextDate.getDate() + 1);
+
+  return {
+    startIso: localScheduleDateTimeToUtcIso({ dateParts, hour: 0, minute: 0, timeZone }),
+    endIso: localScheduleDateTimeToUtcIso({
+      dateParts: {
+        day: nextDate.getDate(),
+        month: nextDate.getMonth(),
+        year: nextDate.getFullYear(),
+      },
+      hour: 0,
+      minute: 0,
+      timeZone,
+    }),
+  };
+}
+
+function buildScheduleBlockTitle(
+  startIso: string,
+  endIso: string,
+  partial: boolean,
+  partialLabel: string | null | undefined,
+  timeZone: string
+) {
+  return partial
+    ? `Loja fechada em ${formatDateOnlyInTimeZone(startIso, timeZone)} (${partialLabel || `${formatTimeOnlyInTimeZone(startIso, timeZone)}-${formatTimeOnlyInTimeZone(endIso, timeZone)}`})`
+    : `Loja fechada em ${formatDateOnlyInTimeZone(startIso, timeZone)}`;
+}
+
+async function resolveScheduleBlockAdjustmentReply(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  lastHumanMessage: string;
+  recentMessages: AssistantMessageRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  if (!asksToAdjustScheduleBlock(args.lastHumanMessage)) {
+    return null;
+  }
+
+  const scheduleTimezone = getScheduleTimezone(args.scheduleSettings || null);
+  const dateParts =
+    parseScheduleDateFromText(args.lastHumanMessage, new Date()) ||
+    inferPreviousScheduleBlockDateRequest(args.recentMessages, args.lastHumanMessage);
+
+  if (!dateParts) {
+    return "Eu entendi que você quer ajustar um bloqueio, mas não consegui identificar a data. Me diga o dia e o horário certinho.";
+  }
+
+  const parsedRange = parseBlockTimeWindow(args.lastHumanMessage, dateParts, args.scheduleSettings || null);
+
+  if (!parsedRange.partial) {
+    return "Eu entendi que você quer ajustar um bloqueio, mas não consegui identificar o novo horário. Exemplo: ajustar para das 12:00 às 14:00.";
+  }
+
+  const blockStartMs = new Date(parsedRange.startIso).getTime();
+  const blockEndMs = new Date(parsedRange.endIso).getTime();
+
+  if (!Number.isFinite(blockStartMs) || !Number.isFinite(blockEndMs) || blockEndMs <= blockStartMs) {
+    return "Eu não consegui entender corretamente o novo período desse bloqueio. Me fala de novo o dia e o horário.";
+  }
+
+  const dayRange = buildLocalDayQueryRange(dateParts, scheduleTimezone);
+  const existingBlocksResponse = await args.supabase
+    .from("store_schedule_blocks")
+    .select("id, title, start_at, end_at, notes, created_at")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .lt("start_at", dayRange.endIso)
+    .gt("end_at", dayRange.startIso)
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  if (existingBlocksResponse.error) {
+    return `Tentei procurar o bloqueio desse dia, mas encontrei um erro: ${existingBlocksResponse.error.message}`;
+  }
+
+  const existingBlocks = Array.isArray(existingBlocksResponse.data) ? existingBlocksResponse.data : [];
+
+  if (existingBlocks.length === 0) {
+    return "Eu procurei esse bloqueio na agenda, mas não encontrei um bloqueio desse dia para ajustar.";
+  }
+
+  const targetBlock =
+    existingBlocks.find((block: any) => {
+      const startMs = new Date(block.start_at).getTime();
+      const endMs = new Date(block.end_at).getTime();
+      return Number.isFinite(startMs) && Number.isFinite(endMs) && startMs < blockEndMs && endMs > blockStartMs;
+    }) || existingBlocks[0];
+
+  const blockLabel = buildBlockRangeNaturalLabel(
+    parsedRange.startIso,
+    parsedRange.endIso,
+    true,
+    scheduleTimezone,
+    parsedRange.label
+  );
+  const nextTitle = buildScheduleBlockTitle(
+    parsedRange.startIso,
+    parsedRange.endIso,
+    true,
+    parsedRange.label,
+    scheduleTimezone
+  );
+  const previousNotes = String((targetBlock as any).notes || "").trim();
+  const nextNotes = previousNotes
+    ? `${previousNotes}\nAjustado pela assistente operacional a pedido do responsável da loja.`
+    : "Ajustado pela assistente operacional a pedido do responsável da loja.";
+
+  const { data: updatedBlock, error: updateError } = await args.supabase
+    .from("store_schedule_blocks")
+    .update({
+      title: nextTitle,
+      start_at: parsedRange.startIso,
+      end_at: parsedRange.endIso,
+      notes: nextNotes,
+    })
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("id", (targetBlock as any).id)
+    .select("id, title, start_at, end_at")
+    .maybeSingle();
+
+  if (updateError) {
+    return `Tentei ajustar o bloqueio, mas encontrei um erro: ${updateError.message}`;
+  }
+
+  const confirmedId = typeof updatedBlock?.id === "string" ? updatedBlock.id.trim() : "";
+  const confirmedStartMs = new Date(updatedBlock?.start_at || "").getTime();
+  const confirmedEndMs = new Date(updatedBlock?.end_at || "").getTime();
+
+  if (
+    !confirmedId ||
+    !Number.isFinite(confirmedStartMs) ||
+    !Number.isFinite(confirmedEndMs) ||
+    Math.abs(confirmedStartMs - blockStartMs) > 1000 ||
+    Math.abs(confirmedEndMs - blockEndMs) > 1000
+  ) {
+    return "Eu tentei ajustar o bloqueio, mas não consegui confirmar a alteração real na agenda.";
+  }
+
+  return `Desculpe pelo erro. Agora ajustei o bloqueio de verdade para ${blockLabel}.`;
 }
 
 async function resolveBlockDayReply(args: {
@@ -4326,9 +4553,7 @@ async function resolveBlockDayReply(args: {
       {
         p_organization_id: args.organizationId,
         p_store_id: args.storeId,
-        p_title: partial
-          ? `Loja fechada em ${formatDateOnlyInTimeZone(startIso, scheduleTimezone)} (${partialLabel || `${formatTimeOnlyInTimeZone(startIso, scheduleTimezone)}-${formatTimeOnlyInTimeZone(endIso, scheduleTimezone)}`})`
-          : `Loja fechada em ${formatDateOnlyInTimeZone(startIso, scheduleTimezone)}`,
+        p_title: buildScheduleBlockTitle(startIso, endIso, partial, partialLabel, scheduleTimezone),
         p_block_type: "manual_block",
         p_start_at: startIso,
         p_end_at: endIso,
