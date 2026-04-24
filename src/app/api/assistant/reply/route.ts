@@ -442,8 +442,13 @@ function asksAboutScheduleManagement(text: string) {
     "novo compromisso",
     "adicionar compromisso",
     "remarcar",
+    "remarque",
+    "remarca",
     "cancelar",
+    "cancele",
+    "cancela",
     "concluir",
+    "conclua",
     "nao vou abrir",
     "não vou abrir",
     "nao marque nada",
@@ -2238,7 +2243,7 @@ function resolveAssistantIntent(text: string): AssistantIntent {
   if (asksForEveningReport(text)) return "evening_report";
   if (asksAboutNextVisit(text)) return "next_visit";
   if (asksAboutPostAppointment(text)) return "post_appointment";
-  if (asksAboutScheduleManagement(text)) return "schedule_management";
+  if (asksAboutScheduleManagement(text) || isBlockDayFollowupInstruction(text)) return "schedule_management";
   return "general";
 }
 
