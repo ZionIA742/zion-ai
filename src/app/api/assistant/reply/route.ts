@@ -177,6 +177,54 @@ function formatAppointmentType(value: string | null) {
   return value || "compromisso";
 }
 
+type SendAiMessageToCustomerConversationResult =
+  | { ok: true; messageId: string | null }
+  | { ok: false; error: string };
+
+function buildCustomerRescheduleMessage(args: { appointment: AppointmentRow }) {
+  const appointment = args.appointment;
+  const customerName = String(appointment.customer_name || '').trim() || 'tudo bem';
+  const appointmentTypeLabel = formatAppointmentType(appointment.appointment_type);
+  const scheduledDate = formatDateOnly(appointment.scheduled_start);
+  const scheduledTime = formatTimeOnly(appointment.scheduled_start);
+
+  return `Oi, ${customerName}. Passando aqui porque eu preciso remarcar a sua ${appointmentTypeLabel} que estava prevista para ${scheduledDate} às ${scheduledTime}. Me fala qual dia e horário ficam melhores para você que eu vou organizando por aqui.`;
+}
+
+async function sendAiMessageToCustomerConversation(args: {
+  supabase: any;
+  conversationId: string;
+  text: string;
+}): Promise<SendAiMessageToCustomerConversationResult> {
+  const conversationId = String(args.conversationId || '').trim();
+  const text = String(args.text || '').trim();
+
+  if (!conversationId) {
+    return { ok: false, error: 'CONVERSATION_ID_MISSING' };
+  }
+
+  if (!text) {
+    return { ok: false, error: 'TEXT_MISSING' };
+  }
+
+  const { data, error } = await args.supabase.rpc('panel_send_message', {
+    p_conversation_id: conversationId,
+    p_text: text,
+    p_sender: 'ai',
+    p_external_message_id: null,
+  });
+
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+
+  return {
+    ok: true,
+    messageId: typeof data === 'string' ? data : data?.id ?? null,
+  };
+}
+
+
 function formatAppointmentStatus(value: string | null) {
   const normalized = normalizeText(value);
 
