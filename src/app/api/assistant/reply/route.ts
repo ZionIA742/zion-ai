@@ -491,6 +491,8 @@ function asksAboutMaterialsOrDocuments(text: string) {
 function asksAboutScheduleManagement(text: string) {
   const t = normalizeText(text);
 
+  if (asksToBlockStoreDay(text)) return true;
+
   return hasAnyTerm(t, [
     "agendar",
     "agenda",
@@ -3628,7 +3630,34 @@ async function generateAssistantReply(params: {
       ...((overdueAppointmentsData || []) as AppointmentRow[]),
     ];
 
-    const postAppointmentActionReply = postAppointmentMode
+    const { data: scheduleSettingsData, error: scheduleSettingsError } = await supabase
+      .from("store_schedule_settings")
+      .select("operating_days, operating_hours, timezone_name")
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .maybeSingle();
+
+    if (scheduleSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_SCHEDULE_SETTINGS_FAILED",
+        message: scheduleSettingsError.message,
+      };
+    }
+
+    const scheduleSettings = (scheduleSettingsData || null) as StoreScheduleSettingsRow | null;
+
+    const blockDayReply = await resolveBlockDayReply({
+      supabase,
+      organizationId,
+      storeId,
+      lastHumanMessage,
+      recentMessages,
+      openAppointments: allOpenAppointments,
+      scheduleSettings,
+    });
+
+    const postAppointmentActionReply = !blockDayReply && postAppointmentMode
       ? await resolvePostAppointmentActionReply({
           supabase,
           organizationId,
@@ -3641,7 +3670,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const scheduleActionReply = !postAppointmentMode
+    const scheduleActionReply = !blockDayReply && !postAppointmentMode
       ? await resolveAppointmentActionReply({
           supabase,
           organizationId,
@@ -3676,7 +3705,9 @@ async function generateAssistantReply(params: {
 
     let aiText = "";
 
-    if (postAppointmentActionReply) {
+    if (blockDayReply) {
+      aiText = blockDayReply;
+    } else if (postAppointmentActionReply) {
       aiText = postAppointmentActionReply;
     } else if (scheduleActionReply) {
       aiText = scheduleActionReply;
@@ -3759,6 +3790,7 @@ async function generateAssistantReply(params: {
         eveningReportMode,
         nextVisitMode,
         scheduleManagementMode,
+        blockDayMode: Boolean(blockDayReply),
         detectedIntent,
       },
     });
@@ -3866,44 +3898,55 @@ function parseScheduleDateFromText(text: string, now: Date) {
   return null;
 }
 
+function hasBlockDateCueFromNormalized(text: string) {
+  return (
+    text.includes("amanha") ||
+    text.includes("hoje") ||
+    /\b\d{1,2}\/\d{1,2}/.test(text) ||
+    /\b\d{1,2}\s+de\s+/.test(text) ||
+    /\bdia\s+\d{1,2}\b/.test(text)
+  );
+}
+
+function hasBlockTimeCueFromNormalized(text: string) {
+  return (
+    /\bate\s+as?\s+\d{1,2}/.test(text) ||
+    /\bdas?\s+\d{1,2}/.test(text) ||
+    /\ba partir das?\s+\d{1,2}/.test(text)
+  );
+}
+
 function asksToBlockStoreDay(text: string) {
   const t = normalizeText(text);
 
   const blockCue =
     t.includes("nao vou abrir") ||
-    t.includes("não vou abrir") ||
+    t.includes("nao abre") ||
     t.includes("nao marque nada") ||
-    t.includes("não marque nada") ||
+    t.includes("nao agenda nada") ||
+    t.includes("nao agende nada") ||
+    t.includes("nao coloque nada") ||
     t.includes("bloqueia o dia") ||
     t.includes("bloqueie o dia") ||
     t.includes("bloquear o dia") ||
     t.includes("bloquear dia") ||
+    t.includes("bloqueia a agenda") ||
+    t.includes("bloqueie a agenda") ||
+    t.includes("bloquear a agenda") ||
+    t.includes("trava a agenda") ||
+    t.includes("trave a agenda") ||
+    t.includes("travar a agenda") ||
     t.includes("quero que voce bloqueie") ||
-    t.includes("quero que você bloqueie") ||
+    t.includes("pode bloquear") ||
+    t.includes("pode bloquear sim") ||
     t.includes("fecha a loja") ||
     t.includes("fechar a loja") ||
     t.includes("vou fechar a loja") ||
     t.includes("loja fechada") ||
     t.includes("nao vou atender") ||
-    t.includes("não vou atender") ||
-    t.includes("nao vou trabalhar") ||
-    t.includes("não vou trabalhar");
+    t.includes("nao vou trabalhar");
 
-  const hasDateCue =
-    t.includes("amanha") ||
-    t.includes("amanhã") ||
-    t.includes("hoje") ||
-    /\b\d{1,2}\/\d{1,2}/.test(t) ||
-    /\b\d{1,2}\s+de\s+/.test(t) ||
-    /\bdia\s+\d{1,2}\b/.test(t);
-
-  const hasTimeCue =
-    /\bate\s+as?\s+\d{1,2}/.test(t) ||
-    /\baté\s+as?\s+\d{1,2}/.test(t) ||
-    /\bdas\s+\d{1,2}/.test(t) ||
-    /\ba partir das?\s+\d{1,2}/.test(t);
-
-  return blockCue && (hasDateCue || hasTimeCue);
+  return blockCue && (hasBlockDateCueFromNormalized(t) || hasBlockTimeCueFromNormalized(t));
 }
 
 function isSimplePositiveConfirmation(text: string) {
@@ -4071,6 +4114,24 @@ function buildBlockRangeNaturalLabel(startIso: string, endIso: string, partial: 
   return formatDateOnly(startIso);
 }
 
+function extractCreatedScheduleBlockId(data: unknown): string | null {
+  const row = Array.isArray(data) ? data[0] : data;
+
+  if (typeof row === "string") {
+    const trimmed = row.trim();
+    return trimmed.length ? trimmed : null;
+  }
+
+  if (row && typeof row === "object") {
+    const directId = (row as { id?: unknown }).id;
+    if (typeof directId === "string" && directId.trim()) {
+      return directId.trim();
+    }
+  }
+
+  return null;
+}
+
 async function resolveBlockDayReply(args: {
   supabase: any;
   organizationId: string;
@@ -4095,7 +4156,18 @@ async function resolveBlockDayReply(args: {
     return null;
   }
 
-  const dateParts = parseScheduleDateFromText(sourceMessage, new Date());
+  const normalizedSourceMessage = normalizeText(sourceMessage);
+  let dateParts = parseScheduleDateFromText(sourceMessage, new Date());
+
+  if (!dateParts && hasBlockTimeCueFromNormalized(normalizedSourceMessage)) {
+    const today = new Date();
+    dateParts = {
+      day: today.getDate(),
+      month: today.getMonth(),
+      year: today.getFullYear(),
+    };
+  }
+
   if (!dateParts) {
     return "Para eu bloquear esse período, me diga a data com clareza. Exemplo: dia 21/04 eu não vou abrir a loja.";
   }
@@ -4168,8 +4240,7 @@ async function resolveBlockDayReply(args: {
       return `Tentei bloquear ${blockLabel}, mas encontrei um erro: ${error.message}`;
     }
 
-    const row = Array.isArray(data) ? data[0] : data;
-    createdBlockId = row?.id || null;
+    createdBlockId = extractCreatedScheduleBlockId(data);
 
     if (!createdBlockId) {
       return `Eu tentei bloquear ${blockLabel}, mas não consegui confirmar o registro desse bloqueio na agenda.`;
