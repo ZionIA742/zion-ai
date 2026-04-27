@@ -2228,6 +2228,52 @@ function parseDateKeyToScheduleDateParts(dateKey: string | null | undefined) {
   return { year, month: month - 1, day };
 }
 
+
+function extractExplicitAppointmentTitleCandidateFromCommand(text: string) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const patterns = [
+    /\bcompromisso\s+(.+?)\s+(?:do|da|de)\s+dia\b/i,
+    /\bcompromisso\s+(.+?)\s+(?:marcado|agendado|previsto)\b/i,
+    /\bvisita\s+(.+?)\s+(?:do|da|de)\s+dia\b/i,
+    /\binstala(?:c|ç)(?:a|ã)o\s+(.+?)\s+(?:do|da|de)\s+dia\b/i,
+    /\bmanuten(?:c|ç)(?:a|ã)o\s+(.+?)\s+(?:do|da|de)\s+dia\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    const candidate = match?.[1]?.replace(/\s+/g, " ").trim();
+    if (candidate && candidate.length >= 3) return candidate;
+  }
+
+  return null;
+}
+
+function appointmentTitleMatchesCommandTitle(appointmentTitle: string | null | undefined, commandTitle: string | null | undefined) {
+  const appointment = normalizeText(appointmentTitle || "");
+  const command = normalizeText(commandTitle || "");
+  if (!appointment || !command || appointment.length < 3 || command.length < 3) return false;
+  return appointment === command || appointment.includes(command) || command.includes(appointment);
+}
+
+function hasExplicitAppointmentTitleAndOriginalScheduleReference(args: {
+  text: string;
+  now: Date;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const titleCandidate = extractExplicitAppointmentTitleCandidateFromCommand(args.text);
+  if (!titleCandidate) return false;
+
+  const originalReference = extractOriginalScheduleReferenceFromRescheduleText({
+    text: args.text,
+    now: args.now,
+    settings: args.scheduleSettings || null,
+  });
+
+  return Boolean(originalReference?.dateKey || originalReference?.startTime);
+}
+
 async function loadExplicitAppointmentMatchesFromCommand(args: {
   supabase: any;
   organizationId: string;
@@ -2269,6 +2315,8 @@ async function loadExplicitAppointmentMatchesFromCommand(args: {
   const { data, error } = await query.order("scheduled_start", { ascending: true }).limit(50);
   if (error) return [] as AppointmentRow[];
 
+  const explicitTitleCandidate = extractExplicitAppointmentTitleCandidateFromCommand(args.text);
+
   const candidates = ((data || []) as AppointmentRow[]).filter((appointment) => {
     const appointmentStart = appointment.scheduled_start || appointment.scheduled_end;
     if (!appointmentStart) return false;
@@ -2288,14 +2336,56 @@ async function loadExplicitAppointmentMatchesFromCommand(args: {
     const phoneDigits = normalizeDigits(appointment.customer_phone);
     const textDigits = normalizeDigits(args.text);
 
-    const hasExplicitTitle = Boolean(title && title.length >= 3 && normalizedText.includes(title));
+    const hasExplicitTitle = Boolean(
+      (title && title.length >= 3 && normalizedText.includes(title)) ||
+      appointmentTitleMatchesCommandTitle(appointment.title, explicitTitleCandidate)
+    );
     const hasExplicitCustomer = Boolean(customerName && customerName.length >= 3 && normalizedText.includes(customerName));
     const hasExplicitPhone = Boolean(phoneDigits.length >= 8 && textDigits.includes(phoneDigits));
 
     return hasExplicitTitle || hasExplicitCustomer || hasExplicitPhone;
   });
 
-  return candidates;
+  if (candidates.length) return candidates;
+
+  // Blindagem extra: quando o comando menciona título exato + horário original,
+  // buscamos pelo dia/horário e pelo título extraído, sem depender do contexto ativo anterior.
+  if (explicitTitleCandidate && originalReference?.dateKey) {
+    const datePartsForFallback = parseDateKeyToScheduleDateParts(originalReference.dateKey);
+    if (datePartsForFallback) {
+      const dayStartIso = buildIsoFromDateAndTime(datePartsForFallback, "00:00", args.scheduleSettings || null);
+      const dayEndIso = buildIsoFromDateAndTime(datePartsForFallback, "23:59", args.scheduleSettings || null);
+
+      const fallbackResponse = await args.supabase
+        .from("store_appointments")
+        .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+        .eq("organization_id", args.organizationId)
+        .eq("store_id", args.storeId)
+        .in("status", ["scheduled", "rescheduled"])
+        .gte("scheduled_start", dayStartIso)
+        .lte("scheduled_start", dayEndIso)
+        .order("scheduled_start", { ascending: true })
+        .limit(100);
+
+      if (!fallbackResponse.error) {
+        const fallbackCandidates = ((fallbackResponse.data || []) as AppointmentRow[]).filter((appointment) => {
+          const appointmentStart = appointment.scheduled_start || appointment.scheduled_end;
+          if (!appointmentStart) return false;
+
+          if (originalReference?.startTime) {
+            const appointmentTime = formatTimeOnlyInTimeZone(appointmentStart, getScheduleTimezone(args.scheduleSettings || null));
+            if (appointmentTime !== originalReference.startTime) return false;
+          }
+
+          return appointmentTitleMatchesCommandTitle(appointment.title, explicitTitleCandidate);
+        });
+
+        if (fallbackCandidates.length) return fallbackCandidates;
+      }
+    }
+  }
+
+  return [] as AppointmentRow[];
 }
 
 function resolveAppointmentIndexFromAssistantContext(args: {
@@ -2738,6 +2828,18 @@ function resolveTargetAppointmentIndex(args: {
 
   if (refinedCandidates.length > 1) {
     return { type: "ambiguous" as const, candidateIndexes: refinedCandidates };
+  }
+
+  const hasExplicitTitleAndOriginalSchedule = hasExplicitAppointmentTitleAndOriginalScheduleReference({
+    text: args.text,
+    now: args.now || getScheduleParsingNow(args.scheduleSettings || null),
+    scheduleSettings: args.scheduleSettings || null,
+  });
+
+  // Se o responsável passou título do compromisso + data/hora original,
+  // não podemos cair no contexto anterior. Melhor pedir esclarecimento do que falar com cliente errado.
+  if (hasExplicitTitleAndOriginalSchedule) {
+    return { type: "none" as const };
   }
 
   const contextIndex = resolveAppointmentIndexFromAssistantContext({
