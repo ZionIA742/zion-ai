@@ -146,6 +146,113 @@ function formatLocalDateTime(value: string | null | undefined, timezoneName = "A
   }
 }
 
+type LocalDateTimeParts = {
+  day: number;
+  month: number;
+  year: number;
+  hour: number;
+  minute: number;
+};
+
+function getLocalDateTimeParts(
+  value: string | null | undefined,
+  timezoneName = "America/Sao_Paulo"
+): LocalDateTimeParts | null {
+  if (!value) return null;
+
+  try {
+    const parts = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: timezoneName || "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(value));
+
+    const read = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value || "0");
+
+    return {
+      day: read("day"),
+      month: read("month"),
+      year: read("year"),
+      hour: read("hour"),
+      minute: read("minute"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractCustomerSuggestedDateTimeParts(content: string, target: LocalDateTimeParts) {
+  const rawText = String(content || "").trim();
+  const normalized = normalizeText(rawText);
+
+  const explicitDateMatch = normalized.match(/(\d{1,2})\s*[\/\-]\s*(\d{1,2})(?:\s*[\/\-]\s*(\d{2,4}))?/);
+  const dayOnlyMatch = normalized.match(/dia\s+(\d{1,2})/);
+
+  let day: number | null = null;
+  let month: number | null = null;
+  let year: number | null = null;
+
+  if (explicitDateMatch) {
+    day = Number(explicitDateMatch[1]);
+    month = Number(explicitDateMatch[2]);
+    year = explicitDateMatch[3] ? Number(explicitDateMatch[3]) : target.year;
+    if (year < 100) year += 2000;
+  } else if (dayOnlyMatch) {
+    day = Number(dayOnlyMatch[1]);
+    month = target.month;
+    year = target.year;
+  }
+
+  const preferredHourMatch =
+    normalized.match(/(?:as|a|para|pra|por volta de|depois das|antes das)\s+(\d{1,2})(?:\s*[:h]\s*(\d{1,2}))?\s*h?/) ||
+    normalized.match(/(\d{1,2})\s*h\s*(\d{1,2})?/);
+
+  if (!preferredHourMatch) {
+    return null;
+  }
+
+  const hour = Number(preferredHourMatch[1]);
+  const minute = preferredHourMatch[2] ? Number(preferredHourMatch[2]) : 0;
+
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23 || !Number.isFinite(minute) || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  return {
+    day,
+    month,
+    year,
+    hour,
+    minute,
+    hasExplicitDate: day !== null && month !== null && year !== null,
+  };
+}
+
+function customerSuggestedDifferentTimeFromTarget(args: {
+  content: string;
+  targetStartAt: string | null | undefined;
+  timezoneName?: string | null;
+}) {
+  const target = getLocalDateTimeParts(args.targetStartAt, args.timezoneName || "America/Sao_Paulo");
+  if (!target) return false;
+
+  const suggestion = extractCustomerSuggestedDateTimeParts(args.content, target);
+  if (!suggestion) return false;
+
+  const dateDiffers =
+    suggestion.hasExplicitDate &&
+    (suggestion.day !== target.day || suggestion.month !== target.month || suggestion.year !== target.year);
+
+  const timeDiffers = suggestion.hour !== target.hour || suggestion.minute !== target.minute;
+
+  return dateDiffers || timeDiffers;
+}
+
 function appendTaskPayload(existing: Record<string, any> | null | undefined, patch: Record<string, any>) {
   return {
     ...(existing && typeof existing === "object" ? existing : {}),
@@ -188,7 +295,7 @@ async function processQueueItem(args: {
   const { supabase, queue } = args;
 
   const customerMessage = String(queue.payload?.customer_message || "").trim();
-  const decision = classifyCustomerReply(customerMessage);
+  let decision = classifyCustomerReply(customerMessage);
 
   const { data: taskRow, error: taskError } = await supabase
     .from("store_assistant_operational_tasks")
@@ -244,6 +351,21 @@ async function processQueueItem(args: {
   }
 
   const timezoneName = task.timezone_name || "America/Sao_Paulo";
+
+  if (
+    decision.type !== "rejected" &&
+    customerSuggestedDifferentTimeFromTarget({
+      content: customerMessage,
+      targetStartAt: task.target_start_at,
+      timezoneName,
+    })
+  ) {
+    decision = {
+      type: "suggested_other_time",
+      reason: "customer_suggested_different_time_from_target",
+      rawText: customerMessage,
+    };
+  }
 
   if (decision.type === "confirmed") {
     if (!task.target_start_at || !task.target_end_at) {
