@@ -105,6 +105,35 @@ type StoreAssistantContextStateRow = {
   updated_at: string;
 };
 
+type StoreAssistantOperationalTaskRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  thread_id: string | null;
+  task_type: string;
+  status: string;
+  priority: string;
+  title: string;
+  description: string | null;
+  related_lead_id: string | null;
+  related_conversation_id: string | null;
+  related_appointment_id: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  target_date: string | null;
+  target_time: string | null;
+  target_start_at: string | null;
+  target_end_at: string | null;
+  timezone_name: string | null;
+  task_payload: unknown;
+  last_action_at: string | null;
+  resolved_at: string | null;
+  cancelled_at: string | null;
+  error_text: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type AssistantCandidateOption = {
   option_number: number;
   source_index: number;
@@ -635,6 +664,32 @@ function asksAboutToday(text: string) {
     t.includes("pendente") ||
     t.includes("o que eu tenho")
   );
+}
+
+function isGeneralTodayOverviewRequest(text: string) {
+  const t = normalizeText(text);
+
+  if (hasExplicitAppointmentManagementCommand(text) || asksToBlockStoreDay(text)) {
+    return false;
+  }
+
+  return hasAnyTerm(t, [
+    "o que tem pra hoje",
+    "o que tem para hoje",
+    "o que tem hoje",
+    "agenda de hoje",
+    "como esta hoje",
+    "como está hoje",
+    "como esta a agenda hoje",
+    "como está a agenda hoje",
+    "compromissos de hoje",
+    "atendimentos de hoje",
+    "visitas de hoje",
+    "instalacoes de hoje",
+    "instalações de hoje",
+    "me atualize sobre hoje",
+    "resumo de hoje",
+  ]);
 }
 
 function asksAboutMaterialsOrDocuments(text: string) {
@@ -2209,6 +2264,34 @@ function isoDateToLocalDateForDb(iso: string | null | undefined, timeZone: strin
   return values.year && values.month && values.day ? `${values.year}-${values.month}-${values.day}` : null;
 }
 
+function getLocalDatePartsForSchedule(settings?: StoreScheduleSettingsRow | null, date = new Date()) {
+  const timeZone = safeScheduleTimezone(getScheduleTimezone(settings || null));
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values: Record<string, number> = {};
+  for (const part of parts) {
+    if (part.type !== "literal") values[part.type] = Number(part.value);
+  }
+  return {
+    year: values.year || date.getFullYear(),
+    month: values.month || date.getMonth() + 1,
+    day: values.day || date.getDate(),
+  };
+}
+
+function buildStoreLocalDayRangeIso(settings?: StoreScheduleSettingsRow | null, date = new Date()) {
+  const dateParts = getLocalDatePartsForSchedule(settings || null, date);
+  return {
+    startIso: buildIsoFromDateAndTime(dateParts, "00:00", settings || null),
+    endIso: buildIsoFromDateAndTime(dateParts, "23:59", settings || null),
+    dateKey: `${dateParts.year}-${padTwoDigits(dateParts.month)}-${padTwoDigits(dateParts.day)}`,
+  };
+}
+
 async function createAssistantOperationalTask(args: { supabase: any; organizationId: string; storeId: string; threadId: string | null; taskType: string; status: string; priority?: string; title: string; description?: string | null; appointment?: AppointmentRow | null; targetStartIso?: string | null; targetEndIso?: string | null; timezoneName: string; taskPayload?: Record<string, unknown>; }) {
   const appointment = args.appointment || null;
   const { error } = await args.supabase.from("store_assistant_operational_tasks").insert({
@@ -2333,6 +2416,35 @@ function shouldCoordinateRescheduleWithCustomer(text: string, appointment: Appoi
   if (!hasCustomerContext) return isClientFacingRescheduleRequest(text);
 
   return true;
+}
+
+function asksAssistantToFindCustomerAvailability(text: string) {
+  const t = normalizeText(text);
+  return hasAnyTerm(t, [
+    "veja com o cliente",
+    "ver com o cliente",
+    "fale com o cliente",
+    "fala com o cliente",
+    "confere com o cliente",
+    "confirme com o cliente",
+    "alinhe com o cliente",
+    "pergunte para o cliente",
+    "pergunta para o cliente",
+    "ver um horario",
+    "ver um horário",
+    "horario bom",
+    "horário bom",
+    "horario que ele consiga",
+    "horário que ele consiga",
+    "horario disponivel",
+    "horário disponível",
+    "quando ele pode",
+    "quando ela pode",
+    "melhor horario para ele",
+    "melhor horário para ele",
+    "melhor horario para ela",
+    "melhor horário para ela",
+  ]);
 }
 
 function resolveExplicitAppointmentItemIndex(text: string, totalItems: number) {
@@ -2790,10 +2902,30 @@ function buildResponsibleRescheduleContactReply(args: {
   const targetTime = formatTimeOnlyInTimeZone(args.targetStartIso, timeZone);
 
   if (args.customerMessageSent) {
-    return `Certo. Entrei em contato com ${customerName} para alinhar a remarcação da ${appointmentTypeLabel} para ${targetDate} às ${targetTime}. Assim que o cliente confirmar, eu atualizo a agenda e te aviso por aqui.`;
+    return `Certo. Enviei uma mensagem para ${customerName} para alinhar a remarcação da ${appointmentTypeLabel} para ${targetDate} às ${targetTime}. A agenda ainda não foi alterada; assim que o cliente confirmar, eu atualizo e te aviso por aqui.`;
   }
 
   return `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas não encontrei uma conversa vinculada para falar com o cliente automaticamente. A agenda ainda não foi alterada. Confirme o novo horário com o cliente e, depois disso, eu atualizo a agenda para ${targetDate} às ${targetTime}.`;
+}
+
+function buildCustomerAvailabilityQuestion(args: { appointment: AppointmentRow; scheduleSettings?: StoreScheduleSettingsRow | null }) {
+  const customerName = String(args.appointment.customer_name || "cliente").trim() || "cliente";
+  const appointmentTypeLabel = formatAppointmentType(args.appointment.appointment_type);
+  const timeZone = getScheduleTimezone(args.scheduleSettings || null);
+  const currentDate = formatDateOnlyInTimeZone(args.appointment.scheduled_start || args.appointment.scheduled_end, timeZone);
+  const currentTime = formatTimeOnlyInTimeZone(args.appointment.scheduled_start || args.appointment.scheduled_end, timeZone);
+  return `Oi, ${customerName}. Passando aqui para alinhar a remarcação da sua ${appointmentTypeLabel}, que está prevista para ${currentDate} às ${currentTime}. Quais horários ficam bons para você? Assim que você me responder, eu confirmo com a loja e atualizo a agenda.`;
+}
+
+function buildResponsibleAvailabilityRequestReply(args: { appointment: AppointmentRow; customerMessageSent: boolean }) {
+  const customerName = String(args.appointment.customer_name || "cliente").trim() || "cliente";
+  const appointmentTypeLabel = formatAppointmentType(args.appointment.appointment_type);
+
+  if (args.customerMessageSent) {
+    return `Certo. Enviei uma mensagem para ${customerName} para verificar um novo horário para a ${appointmentTypeLabel}. A agenda ainda não foi alterada; quando o cliente responder, eu atualizo o caso e te aviso por aqui.`;
+  }
+
+  return `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas não consegui enviar mensagem automática para o cliente porque não encontrei conversa vinculada. A agenda ainda não foi alterada.`;
 }
 
 function extractCreateAppointmentPayload(text: string, now: Date, settings?: StoreScheduleSettingsRow | null) {
@@ -3046,7 +3178,98 @@ async function resolveAppointmentActionReply(args: {
   if (action === "reschedule") {
     const reschedulePayload = extractReschedulePayload(args.lastHumanMessage, now, args.scheduleSettings || null);
     if (!reschedulePayload.ok) {
-      return reschedulePayload.message;
+      if (args.threadId) {
+        await upsertAssistantContextState({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          threadId: args.threadId,
+          currentContextState: args.assistantContextState || null,
+          patch: {
+            active_topic: "appointment_reschedule",
+            active_intent: "reschedule",
+            active_status: "active",
+            active_customer_name: selectedAppointment.customer_name || null,
+            active_customer_phone: selectedAppointment.customer_phone || null,
+            active_lead_id: selectedAppointment.lead_id || null,
+            active_conversation_id: selectedAppointment.conversation_id || null,
+            active_appointment_id: selectedAppointment.id,
+            timezone_name: scheduleTimezone,
+            candidate_options: [],
+            context_payload: { reason: "selected_appointment_waiting_for_reschedule_time", selected_appointment_title: selectedAppointment.title || null },
+            last_user_message: args.lastHumanMessage,
+          },
+        });
+      }
+
+      if (asksAssistantToFindCustomerAvailability(args.lastHumanMessage)) {
+        let customerMessageSent = false;
+
+        if (selectedAppointment.conversation_id) {
+          const customerMessage = buildCustomerAvailabilityQuestion({
+            appointment: selectedAppointment,
+            scheduleSettings: args.scheduleSettings || null,
+          });
+          const sendResult = await sendAiMessageToCustomerConversation({
+            supabase: args.supabase,
+            conversationId: selectedAppointment.conversation_id,
+            text: customerMessage,
+          });
+          customerMessageSent = sendResult.ok;
+        }
+
+        let taskResult = { ok: true, error: null as string | null };
+        if (args.threadId) {
+          taskResult = await createAssistantOperationalTask({
+            supabase: args.supabase,
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            threadId: args.threadId,
+            taskType: "appointment_reschedule_find_customer_availability",
+            status: customerMessageSent ? "waiting_customer_response" : "open",
+            priority: "normal",
+            title: `Verificar novo horário com ${selectedAppointment.customer_name || "cliente"}`,
+            description: customerMessageSent
+              ? "A assistente enviou mensagem ao cliente para verificar disponibilidade. A agenda ainda não foi alterada."
+              : "A assistente identificou o compromisso, mas não conseguiu enviar mensagem automática ao cliente.",
+            appointment: selectedAppointment,
+            timezoneName: scheduleTimezone,
+            taskPayload: { customer_message_sent: customerMessageSent, source: "assistant.reply.route", original_user_message: args.lastHumanMessage, agenda_updated: false },
+          });
+
+          await upsertAssistantContextState({
+            supabase: args.supabase,
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            threadId: args.threadId,
+            currentContextState: args.assistantContextState || null,
+            patch: {
+              active_topic: "appointment_reschedule",
+              active_intent: "find_customer_availability",
+              active_status: customerMessageSent ? "waiting_customer_response" : "active",
+              active_customer_name: selectedAppointment.customer_name || null,
+              active_customer_phone: selectedAppointment.customer_phone || null,
+              active_lead_id: selectedAppointment.lead_id || null,
+              active_conversation_id: selectedAppointment.conversation_id || null,
+              active_appointment_id: selectedAppointment.id,
+              timezone_name: scheduleTimezone,
+              candidate_options: [],
+              context_payload: { customer_message_sent: customerMessageSent, agenda_updated: false, reason: "waiting_customer_availability_before_reschedule", task_created: taskResult.ok },
+              last_user_message: args.lastHumanMessage,
+            },
+          });
+        }
+
+        if (!taskResult.ok) {
+          return `Encontrei o compromisso, mas não consegui registrar a tratativa operacional: ${taskResult.error}. A agenda ainda não foi alterada.`;
+        }
+
+        return buildResponsibleAvailabilityRequestReply({ appointment: selectedAppointment, customerMessageSent });
+      }
+
+      return `${reschedulePayload.message}
+
+Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}${selectedAppointment.customer_name ? ` de ${selectedAppointment.customer_name}` : ""}.`;
     }
 
     if (shouldCoordinateRescheduleWithCustomer(args.lastHumanMessage, selectedAppointment)) {
@@ -3067,8 +3290,9 @@ async function resolveAppointmentActionReply(args: {
         customerMessageSent = sendResult.ok;
       }
 
+      let taskResult = { ok: true, error: null as string | null };
       if (args.threadId) {
-        await createAssistantOperationalTask({
+        taskResult = await createAssistantOperationalTask({
           supabase: args.supabase,
           organizationId: args.organizationId,
           storeId: args.storeId,
@@ -3108,10 +3332,14 @@ async function resolveAppointmentActionReply(args: {
             target_time: formatTimeOnlyInTimeZone(reschedulePayload.payload.scheduled_start, scheduleTimezone),
             timezone_name: scheduleTimezone,
             candidate_options: [],
-            context_payload: { customer_message_sent: customerMessageSent, agenda_updated: false, reason: "waiting_customer_confirmation_before_reschedule" },
+            context_payload: { customer_message_sent: customerMessageSent, agenda_updated: false, reason: "waiting_customer_confirmation_before_reschedule", task_created: taskResult.ok },
             last_user_message: args.lastHumanMessage,
           },
         });
+      }
+
+      if (!taskResult.ok) {
+        return `Encontrei o compromisso, mas não consegui registrar a tratativa operacional: ${taskResult.error}. A agenda ainda não foi alterada.`;
       }
 
       return buildResponsibleRescheduleContactReply({
@@ -3406,6 +3634,94 @@ function buildTodayAppointmentsBlock(items: AppointmentRow[]) {
       return `- ${parts.join(" • ")}`;
     })
     .join("\n");
+}
+
+function formatAppointmentCompactLine(item: AppointmentRow, scheduleSettings?: StoreScheduleSettingsRow | null) {
+  const timeZone = getScheduleTimezone(scheduleSettings || null);
+  const start = item.scheduled_start || item.scheduled_end;
+  const end = item.scheduled_end;
+  const timeLabel = start
+    ? `${formatTimeOnlyInTimeZone(start, timeZone)}${end ? ` às ${formatTimeOnlyInTimeZone(end, timeZone)}` : ""}`
+    : "sem horário";
+  const title = item.title ? ` — ${item.title}` : "";
+  const customer = item.customer_name ? ` — ${item.customer_name}` : "";
+  return `${timeLabel} — ${formatAppointmentType(item.appointment_type)}${title}${customer} (${formatAppointmentStatus(item.status)})`;
+}
+
+function appointmentMatchesAssistantContext(item: AppointmentRow, contextState?: StoreAssistantContextStateRow | null) {
+  if (!contextState) return false;
+  const activeLeadId = contextState.active_lead_id;
+  const activeConversationId = contextState.active_conversation_id;
+  const activeAppointmentId = contextState.active_appointment_id;
+  const activeCustomerName = normalizeText(contextState.active_customer_name || "");
+  const customerName = normalizeText(item.customer_name || "");
+
+  return Boolean(
+    (activeAppointmentId && item.id === activeAppointmentId) ||
+    (activeLeadId && item.lead_id === activeLeadId) ||
+    (activeConversationId && item.conversation_id === activeConversationId) ||
+    (activeCustomerName && customerName && customerName.includes(activeCustomerName))
+  );
+}
+
+function buildAssistantOperationalTasksBlock(tasks: StoreAssistantOperationalTaskRow[]) {
+  const openTasks = (tasks || []).filter((task) =>
+    ["open", "waiting_user_choice", "waiting_customer_response", "ready_to_execute", "in_progress"].includes(String(task.status || ""))
+  );
+
+  if (!openTasks.length) return "- sem tarefa operacional aberta da assistente";
+
+  return openTasks
+    .slice(0, 8)
+    .map((task) => {
+      const pieces = [
+        task.title,
+        task.customer_name ? `cliente ${task.customer_name}` : null,
+        task.status ? `status ${task.status}` : null,
+        task.target_date ? `data alvo ${task.target_date}` : null,
+        task.target_time ? `hora alvo ${task.target_time}` : null,
+      ].filter(Boolean);
+      return `- ${pieces.join(" • ")}`;
+    })
+    .join("\n");
+}
+
+function buildDeterministicTodayOverviewReply(args: {
+  todayAppointments: AppointmentRow[];
+  pendingNotifications: PendingNotificationRow[];
+  pendingPostFollowups: PostAppointmentFollowupRow[];
+  openOperationalTasks: StoreAssistantOperationalTaskRow[];
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const todayAppointments = sortOpenScheduleAppointments(args.todayAppointments || []);
+  const activeContextItems = todayAppointments.filter((item) => appointmentMatchesAssistantContext(item, args.assistantContextState || null));
+  const lines: string[] = [];
+
+  if (activeContextItems.length && args.assistantContextState?.active_customer_name) {
+    lines.push(`No assunto que estava aberto, hoje encontrei ${activeContextItems.length} compromisso(s) ligado(s) a ${args.assistantContextState.active_customer_name}:`);
+    activeContextItems.slice(0, 5).forEach((item) => lines.push(`- ${formatAppointmentCompactLine(item, args.scheduleSettings || null)}`));
+    lines.push("");
+  }
+
+  lines.push(todayAppointments.length === 1 ? "Agenda geral da loja hoje: 1 compromisso." : `Agenda geral da loja hoje: ${todayAppointments.length} compromissos.`);
+  if (todayAppointments.length) {
+    todayAppointments.slice(0, 8).forEach((item, index) => lines.push(`${index + 1}. ${formatAppointmentCompactLine(item, args.scheduleSettings || null)}`));
+    if (todayAppointments.length > 8) lines.push(`- e mais ${todayAppointments.length - 8} compromisso(s).`);
+  } else {
+    lines.push("- não encontrei compromisso marcado para hoje.");
+  }
+
+  const openTasks = (args.openOperationalTasks || []).filter((task) => ["open", "waiting_user_choice", "waiting_customer_response", "ready_to_execute", "in_progress"].includes(String(task.status || "")));
+  if (openTasks.length || args.pendingNotifications.length || args.pendingPostFollowups.length) {
+    lines.push("");
+    lines.push("Pendências operacionais no radar:");
+    if (openTasks.length) openTasks.slice(0, 4).forEach((task) => lines.push(`- ${task.title}${task.status ? ` (${task.status})` : ""}`));
+    if (args.pendingNotifications.length) lines.push(`- ${args.pendingNotifications.length} aviso(s) interno(s) pendente(s).`);
+    if (args.pendingPostFollowups.length) lines.push(`- ${args.pendingPostFollowups.length} acompanhamento(s) pós-compromisso pendente(s).`);
+  }
+
+  return lines.join("\n").trim();
 }
 
 function buildOverdueAppointmentsBlock(items: AppointmentRow[]) {
@@ -4363,6 +4679,7 @@ function buildSystemPrompt(args: {
   recentResolvedPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
   assistantContextState?: StoreAssistantContextStateRow | null;
+  openOperationalTasks?: StoreAssistantOperationalTaskRow[];
   lastHumanMessage: string;
 }) {
   const storeName = args.onboardingMap.store_display_name || args.store.name || "a loja";
@@ -4459,6 +4776,9 @@ function buildSystemPrompt(args: {
     "",
     "MEMÓRIA OPERACIONAL ATIVA",
     buildAssistantContextBlock(args.assistantContextState || null),
+    "",
+    "TAREFAS OPERACIONAIS ABERTAS DA ASSISTENTE",
+    buildAssistantOperationalTasksBlock(args.openOperationalTasks || []),
     "",
     "AGENDA DE HOJE",
     buildTodayAppointmentsBlock(args.todayAppointments),
@@ -4775,12 +5095,24 @@ async function generateAssistantReply(params: {
 
     const assistantContextState = assistantContextResult.contextState;
 
-    const now = new Date();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
+    const { data: scheduleSettingsData, error: scheduleSettingsError } = await supabase
+      .from("store_schedule_settings")
+      .select("operating_days, operating_hours, timezone_name")
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .maybeSingle();
 
-    const endOfDay = new Date(now);
-    endOfDay.setHours(23, 59, 59, 999);
+    if (scheduleSettingsError) {
+      return {
+        ok: false,
+        error: "LOAD_SCHEDULE_SETTINGS_FAILED",
+        message: scheduleSettingsError.message,
+      };
+    }
+
+    const scheduleSettings = (scheduleSettingsData || null) as StoreScheduleSettingsRow | null;
+    const now = new Date();
+    const todayRange = buildStoreLocalDayRangeIso(scheduleSettings, now);
 
     const { data: todayAppointmentsData, error: todayAppointmentsError } = await supabase
       .from("store_appointments")
@@ -4789,8 +5121,8 @@ async function generateAssistantReply(params: {
       )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)
-      .gte("scheduled_start", startOfDay.toISOString())
-      .lte("scheduled_start", endOfDay.toISOString())
+      .gte("scheduled_start", todayRange.startIso)
+      .lte("scheduled_start", todayRange.endIso)
       .order("scheduled_start", { ascending: true })
       .limit(20);
 
@@ -4933,34 +5265,39 @@ async function generateAssistantReply(params: {
       }
     }
 
+    const { data: operationalTasksData, error: operationalTasksError } = await supabase
+      .from("store_assistant_operational_tasks")
+      .select(
+        "id, organization_id, store_id, thread_id, task_type, status, priority, title, description, related_lead_id, related_conversation_id, related_appointment_id, customer_name, customer_phone, target_date, target_time, target_start_at, target_end_at, timezone_name, task_payload, last_action_at, resolved_at, cancelled_at, error_text, created_at, updated_at"
+      )
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .in("status", ["open", "waiting_user_choice", "waiting_customer_response", "ready_to_execute", "in_progress"])
+      .order("updated_at", { ascending: false })
+      .limit(12);
+
+    if (operationalTasksError) {
+      return {
+        ok: false,
+        error: "LOAD_ASSISTANT_OPERATIONAL_TASKS_FAILED",
+        message: operationalTasksError.message,
+      };
+    }
+
+    const openOperationalTasks = (operationalTasksData || []) as StoreAssistantOperationalTaskRow[];
+
     const detectedIntent = latestRequest.detectedIntent;
     const morningReportMode = detectedIntent === "morning_report";
     const eveningReportMode = detectedIntent === "evening_report";
     const nextVisitMode = detectedIntent === "next_visit";
     const postAppointmentMode = detectedIntent === "post_appointment";
     const scheduleManagementMode = detectedIntent === "schedule_management";
+    const generalTodayOverviewMode = isGeneralTodayOverviewRequest(lastHumanMessage);
     const allOpenAppointments = [
       ...((todayAppointmentsData || []) as AppointmentRow[]),
       ...((nextAppointmentsData || []) as AppointmentRow[]),
       ...((overdueAppointmentsData || []) as AppointmentRow[]),
     ];
-
-    const { data: scheduleSettingsData, error: scheduleSettingsError } = await supabase
-      .from("store_schedule_settings")
-      .select("operating_days, operating_hours, timezone_name")
-      .eq("organization_id", organizationId)
-      .eq("store_id", storeId)
-      .maybeSingle();
-
-    if (scheduleSettingsError) {
-      return {
-        ok: false,
-        error: "LOAD_SCHEDULE_SETTINGS_FAILED",
-        message: scheduleSettingsError.message,
-      };
-    }
-
-    const scheduleSettings = (scheduleSettingsData || null) as StoreScheduleSettingsRow | null;
 
     const appointmentManagementRequest = hasExplicitAppointmentManagementCommand(lastHumanMessage);
 
@@ -5029,6 +5366,7 @@ async function generateAssistantReply(params: {
       recentResolvedPostFollowups: (recentResolvedPostFollowupsData || []) as PostAppointmentFollowupRow[],
       appointmentMap,
       assistantContextState,
+      openOperationalTasks,
       lastHumanMessage,
     });
 
@@ -5050,6 +5388,15 @@ async function generateAssistantReply(params: {
       aiText = postAppointmentActionReply;
     } else if (scheduleActionReply) {
       aiText = scheduleActionReply;
+    } else if (generalTodayOverviewMode) {
+      aiText = buildDeterministicTodayOverviewReply({
+        todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
+        pendingNotifications: (pendingNotificationsData || []) as PendingNotificationRow[],
+        pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
+        openOperationalTasks,
+        assistantContextState,
+        scheduleSettings,
+      });
     } else if (morningReportMode) {
       aiText = buildDeterministicMorningReport({
         todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
@@ -5129,6 +5476,7 @@ async function generateAssistantReply(params: {
         eveningReportMode,
         nextVisitMode,
         scheduleManagementMode,
+        generalTodayOverviewMode,
         blockAdjustmentMode: Boolean(blockAdjustmentReply),
         blockDayMode: Boolean(blockDayReply),
         activeContextId: assistantContextState?.id || null,
