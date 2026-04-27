@@ -1096,24 +1096,8 @@ function resolvePostAppointmentAction(text: string): PostAppointmentAction | nul
       "remarcou",
       "remarcada",
       "remarcado",
-      "remarque",
       "remarque isso",
       "quero remarcar isso",
-      "reagende",
-      "reagenda",
-      "reagendar",
-      "mude a visita",
-      "muda a visita",
-      "mudar a visita",
-      "mude o compromisso",
-      "muda o compromisso",
-      "mudar o compromisso",
-      "mude a instalacao",
-      "muda a instalacao",
-      "mudar a instalacao",
-      "mude a instalação",
-      "muda a instalação",
-      "mudar a instalação",
       "esse caso foi remarcado",
       "remarca",
       "remarcar",
@@ -1726,6 +1710,73 @@ function formatScheduleAppointmentCurrentSituation(appointment: AppointmentRow) 
   return statusLabel;
 }
 
+function getLocalDateKeyFromIso(iso: string | null | undefined, settings?: StoreScheduleSettingsRow | null) {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const timeZone = safeScheduleTimezone(getScheduleTimezone(settings || null));
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const values: Record<string, string> = {};
+  for (const part of parts) {
+    if (part.type !== "literal") values[part.type] = part.value;
+  }
+
+  if (!values.year || !values.month || !values.day) return null;
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getDateKeyFromParts(dateParts: { day: number; month: number; year: number } | null | undefined) {
+  if (!dateParts) return null;
+  return `${dateParts.year}-${padTwoDigits(dateParts.month + 1)}-${padTwoDigits(dateParts.day)}`;
+}
+
+function formatDatePartsForHuman(dateParts: { day: number; month: number; year: number } | null | undefined) {
+  if (!dateParts) return "essa data";
+  return `${padTwoDigits(dateParts.day)}/${padTwoDigits(dateParts.month + 1)}/${dateParts.year}`;
+}
+
+function buildAppointmentDateMismatchAlternativesReply(args: {
+  requestedDateParts: { day: number; month: number; year: number };
+  requestedTimeLabel?: string | null;
+  candidateIndexes: number[];
+  openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const lines: string[] = [];
+  const requestedDateLabel = formatDatePartsForHuman(args.requestedDateParts);
+  const targetTime = args.requestedTimeLabel ? ` às ${args.requestedTimeLabel}` : "";
+
+  lines.push(`Não encontrei uma visita ou compromisso desse cliente marcado para ${requestedDateLabel}.`);
+  lines.push("");
+  lines.push("Encontrei estes compromissos próximos na agenda:");
+
+  args.candidateIndexes.slice(0, 5).forEach((candidateIndex, visibleIndex) => {
+    const appointment = args.openAppointments[candidateIndex];
+    const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
+    const customer = appointment?.customer_name || "cliente não identificado";
+    const start = appointment?.scheduled_start || appointment?.scheduled_end;
+    const end = appointment?.scheduled_end;
+    const timeRange = start
+      ? `${formatDateOnly(start)} das ${formatTimeOnly(start)}${end ? ` às ${formatTimeOnly(end)}` : ""}`
+      : "sem horário carregado";
+
+    lines.push(`${visibleIndex + 1}. ${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)} — ${customer} — ${timeRange}`);
+  });
+
+  lines.push("");
+  lines.push(`Qual deles você quer que eu tente remarcar para ${requestedDateLabel}${targetTime}?`);
+  lines.push("Depois que você escolher, eu falo com o cliente antes de alterar a agenda.");
+
+  return lines.join("\n").trim();
+}
+
 function resolveAppointmentCandidateIndexesFromText(args: {
   text: string;
   openAppointments: AppointmentRow[];
@@ -2018,6 +2069,63 @@ function resolveScheduleAction(text: string): ScheduleAction | null {
     ])
   ) {
     return "create";
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "remarque",
+      "remarca",
+      "remarcar",
+      "reagende",
+      "reagenda",
+      "reagendar",
+      "mude a visita",
+      "muda a visita",
+      "mudar a visita",
+      "mude o compromisso",
+      "muda o compromisso",
+      "mudar o compromisso",
+      "mude a instalacao",
+      "mude a instalação",
+      "muda a instalacao",
+      "muda a instalação",
+    ])
+  ) {
+    return "reschedule";
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "cancelar compromisso",
+      "cancelar visita",
+      "cancelar instalacao",
+      "cancelar instalação",
+      "cancele o compromisso",
+      "cancele a visita",
+      "cancele a instalacao",
+      "cancele a instalação",
+    ])
+  ) {
+    return "cancel";
+  }
+
+  if (
+    hasAnyTerm(t, [
+      "concluir compromisso",
+      "concluir visita",
+      "concluir instalacao",
+      "concluir instalação",
+      "conclua o compromisso",
+      "conclua a visita",
+      "conclua a instalacao",
+      "conclua a instalação",
+      "foi concluido",
+      "foi concluído",
+      "foi concluida",
+      "foi concluída",
+    ])
+  ) {
+    return "complete";
   }
 
   return resolvePostAppointmentAction(text);
@@ -2416,6 +2524,26 @@ async function resolveAppointmentActionReply(args: {
   });
 
   if (targetResolution.type === "ambiguous") {
+    const requestedDateParts = parseDateReferenceFromText(args.lastHumanMessage, now);
+    const requestedDateKey = getDateKeyFromParts(requestedDateParts);
+    const matchedOnRequestedDate = requestedDateKey
+      ? targetResolution.candidateIndexes.some((candidateIndex) => {
+          const candidate = openAppointments[candidateIndex];
+          return getLocalDateKeyFromIso(candidate?.scheduled_start || candidate?.scheduled_end, args.scheduleSettings || null) === requestedDateKey;
+        })
+      : true;
+
+    if (requestedDateParts && !matchedOnRequestedDate) {
+      const requestedTime = parseTimeRangeFromText(args.lastHumanMessage)?.startTime || null;
+      return buildAppointmentDateMismatchAlternativesReply({
+        requestedDateParts,
+        requestedTimeLabel: requestedTime,
+        candidateIndexes: targetResolution.candidateIndexes,
+        openAppointments,
+        scheduleSettings: args.scheduleSettings || null,
+      });
+    }
+
     return buildAppointmentAmbiguityReply({
       candidateIndexes: targetResolution.candidateIndexes,
       openAppointments,
@@ -4032,8 +4160,6 @@ async function generateAssistantReply(params: {
       aiText = postAppointmentActionReply;
     } else if (scheduleActionReply) {
       aiText = scheduleActionReply;
-    } else if (appointmentManagementRequest) {
-      aiText = "Entendi que você quer mexer em um compromisso da agenda, mas não consegui confirmar com segurança qual ação devo executar. Me diga o cliente, o dia e o horário desejado. Se envolver cliente, eu não vou alterar a agenda antes de alinhar com ele.";
     } else if (morningReportMode) {
       aiText = buildDeterministicMorningReport({
         todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
