@@ -2111,6 +2111,113 @@ function readAssistantCandidateOptions(contextState?: StoreAssistantContextState
   return Array.isArray(raw) ? (raw as AssistantCandidateOption[]) : [];
 }
 
+function getRescheduleTargetTextSegment(text: string) {
+  const raw = String(text || "");
+  const normalized = normalizeText(raw);
+
+  if (!(normalized.includes("remarca") || normalized.includes("remarque") || normalized.includes("remarcar") || normalized.includes("reagenda") || normalized.includes("reagende") || normalized.includes("reagendar"))) {
+    return raw;
+  }
+
+  const matches = Array.from(raw.matchAll(/\b(?:para|pra)\b/gi));
+  if (!matches.length) return raw;
+
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    const match = matches[index];
+    const markerIndex = typeof match.index === "number" ? match.index : -1;
+    if (markerIndex < 0) continue;
+
+    const afterMarker = raw.slice(markerIndex + match[0].length).trim();
+    if (!afterMarker) continue;
+
+    const hasDateCue =
+      /\b\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/.test(afterMarker) ||
+      /\b(?:hoje|amanha|amanhã|depois de amanha|depois de amanhã|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingo)\b/i.test(afterMarker) ||
+      /\b(?:dia|data)\s+\d{1,2}\b/i.test(afterMarker);
+    const hasTimeCue =
+      /\b\d{1,2}(?::\d{2})?\s*h\b/i.test(afterMarker) ||
+      /\b(?:as|às)\s+\d{1,2}(?::\d{2})?\b/i.test(afterMarker) ||
+      /\b\d{1,2}:\d{2}\b/.test(afterMarker);
+
+    if (hasDateCue || hasTimeCue) return afterMarker;
+  }
+
+  return raw;
+}
+
+function extractOriginalScheduleReferenceFromRescheduleText(args: {
+  text: string;
+  now: Date;
+  settings?: StoreScheduleSettingsRow | null;
+}) {
+  const raw = String(args.text || "");
+  const normalized = normalizeText(raw);
+
+  if (!(normalized.includes("remarca") || normalized.includes("remarque") || normalized.includes("remarcar") || normalized.includes("reagenda") || normalized.includes("reagende") || normalized.includes("reagendar"))) {
+    return null;
+  }
+
+  const matches = Array.from(raw.matchAll(/\b(?:para|pra)\b/gi));
+  if (!matches.length) return null;
+
+  const lastMarker = matches[matches.length - 1];
+  const markerIndex = typeof lastMarker.index === "number" ? lastMarker.index : -1;
+  if (markerIndex <= 0) return null;
+
+  const beforeTarget = raw.slice(0, markerIndex).trim();
+  if (!beforeTarget) return null;
+
+  const dateParts = parseDateReferenceFromText(beforeTarget, args.now);
+  const dateKey = getDateKeyFromParts(dateParts);
+  const timeRange = parseTimeRangeFromText(beforeTarget);
+  const startTime = timeRange?.startTime || null;
+
+  if (!dateKey && !startTime) return null;
+
+  return {
+    dateKey,
+    startTime,
+  };
+}
+
+function refineAppointmentCandidateIndexesByOriginalSchedule(args: {
+  text: string;
+  openAppointments: AppointmentRow[];
+  candidateIndexes: number[];
+  now: Date;
+  settings?: StoreScheduleSettingsRow | null;
+}) {
+  const originalReference = extractOriginalScheduleReferenceFromRescheduleText({
+    text: args.text,
+    now: args.now,
+    settings: args.settings || null,
+  });
+
+  if (!originalReference) return args.candidateIndexes;
+
+  const refined = args.candidateIndexes.filter((candidateIndex) => {
+    const appointment = args.openAppointments[candidateIndex];
+    if (!appointment) return false;
+
+    const appointmentStart = appointment.scheduled_start || appointment.scheduled_end;
+    if (!appointmentStart) return false;
+
+    if (originalReference.dateKey) {
+      const appointmentDateKey = getLocalDateKeyFromIso(appointmentStart, args.settings || null);
+      if (appointmentDateKey !== originalReference.dateKey) return false;
+    }
+
+    if (originalReference.startTime) {
+      const appointmentTime = formatTimeOnlyInTimeZone(appointmentStart, getScheduleTimezone(args.settings || null));
+      if (appointmentTime !== originalReference.startTime) return false;
+    }
+
+    return true;
+  });
+
+  return refined.length ? refined : args.candidateIndexes;
+}
+
 function resolveAppointmentIndexFromAssistantContext(args: {
   text: string;
   openAppointments: AppointmentRow[];
@@ -2517,17 +2624,9 @@ function resolveTargetAppointmentIndex(args: {
   openAppointments: AppointmentRow[];
   recentMessages?: AssistantMessageRow[];
   assistantContextState?: StoreAssistantContextStateRow | null;
+  now?: Date;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
 }) {
-  const contextIndex = resolveAppointmentIndexFromAssistantContext({
-    text: args.text,
-    openAppointments: args.openAppointments,
-    contextState: args.assistantContextState || null,
-  });
-
-  if (contextIndex !== null) {
-    return { type: "unique" as const, index: contextIndex };
-  }
-
   const explicitScheduleIndex = resolveExplicitAppointmentItemIndex(args.text, args.openAppointments.length);
   if (explicitScheduleIndex !== null) {
     return { type: "unique" as const, index: explicitScheduleIndex };
@@ -2543,12 +2642,32 @@ function resolveTargetAppointmentIndex(args: {
     openAppointments: args.openAppointments,
   });
 
-  if (currentCandidates.length === 1) {
-    return { type: "unique" as const, index: currentCandidates[0] };
+  const refinedCandidates = currentCandidates.length > 1
+    ? refineAppointmentCandidateIndexesByOriginalSchedule({
+        text: args.text,
+        openAppointments: args.openAppointments,
+        candidateIndexes: currentCandidates,
+        now: args.now || getScheduleParsingNow(args.scheduleSettings || null),
+        settings: args.scheduleSettings || null,
+      })
+    : currentCandidates;
+
+  if (refinedCandidates.length === 1) {
+    return { type: "unique" as const, index: refinedCandidates[0] };
   }
 
-  if (currentCandidates.length > 1) {
-    return { type: "ambiguous" as const, candidateIndexes: currentCandidates };
+  if (refinedCandidates.length > 1) {
+    return { type: "ambiguous" as const, candidateIndexes: refinedCandidates };
+  }
+
+  const contextIndex = resolveAppointmentIndexFromAssistantContext({
+    text: args.text,
+    openAppointments: args.openAppointments,
+    contextState: args.assistantContextState || null,
+  });
+
+  if (contextIndex !== null) {
+    return { type: "unique" as const, index: contextIndex };
   }
 
   if (
@@ -3094,8 +3213,9 @@ function extractCreateAppointmentPayload(text: string, now: Date, settings?: Sto
 }
 
 function extractReschedulePayload(text: string, now: Date, settings?: StoreScheduleSettingsRow | null) {
-  const dateParts = parseDateReferenceFromText(text, now);
-  const timeRange = parseTimeRangeFromText(text);
+  const targetText = getRescheduleTargetTextSegment(text);
+  const dateParts = parseDateReferenceFromText(targetText, now);
+  const timeRange = parseTimeRangeFromText(targetText);
 
   if (!dateParts || !timeRange?.startTime) {
     return {
@@ -3296,6 +3416,8 @@ async function resolveAppointmentActionReply(args: {
     openAppointments,
     recentMessages: args.recentMessages,
     assistantContextState: args.assistantContextState || null,
+    now,
+    scheduleSettings: args.scheduleSettings || null,
   });
 
   if (targetResolution.type === "ambiguous") {
