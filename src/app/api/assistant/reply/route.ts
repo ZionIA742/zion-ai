@@ -1329,10 +1329,10 @@ function buildPostAppointmentAmbiguityReply(args: {
   lines.push("Me diga qual deles você quer atualizar:");
   lines.push("");
 
-  args.candidateIndexes.slice(0, 5).forEach((candidateIndex, visibleIndex) => {
+  args.candidateIndexes.slice(0, 5).forEach((candidateIndex) => {
     const item = args.openItems[candidateIndex];
     const appointment = args.appointmentMap.get(item.appointment_id);
-    const itemNumber = visibleIndex + 1;
+    const itemNumber = candidateIndex + 1;
     const typeAndTitle = buildPostAppointmentTypeAndTitle(appointment);
     const customer = appointment?.customer_name || "cliente não identificado";
     const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start || item.scheduled_end;
@@ -1346,7 +1346,7 @@ function buildPostAppointmentAmbiguityReply(args: {
     lines.push("");
   });
 
-  lines.push('Você pode responder, por exemplo: "quero atualizar o item 1".');
+  lines.push('Você pode responder, por exemplo: "remarque o item 2 para amanhã às 15:00".');
   return lines.join("\n").trim();
 }
 
@@ -1757,7 +1757,7 @@ function buildAppointmentDateMismatchAlternativesReply(args: {
   lines.push("");
   lines.push("Encontrei estes compromissos próximos na agenda:");
 
-  args.candidateIndexes.slice(0, 5).forEach((candidateIndex, visibleIndex) => {
+  args.candidateIndexes.slice(0, 5).forEach((candidateIndex) => {
     const appointment = args.openAppointments[candidateIndex];
     const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
     const customer = appointment?.customer_name || "cliente não identificado";
@@ -1767,11 +1767,11 @@ function buildAppointmentDateMismatchAlternativesReply(args: {
       ? `${formatDateOnly(start)} das ${formatTimeOnly(start)}${end ? ` às ${formatTimeOnly(end)}` : ""}`
       : "sem horário carregado";
 
-    lines.push(`${visibleIndex + 1}. ${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)} — ${customer} — ${timeRange}`);
+    lines.push(`${candidateIndex + 1}. ${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)} — ${customer} — ${timeRange}`);
   });
 
   lines.push("");
-  lines.push(`Qual deles você quer que eu tente remarcar para ${requestedDateLabel}${targetTime}?`);
+  lines.push(`Me diga o número do item da lista que você quer tentar remarcar para ${requestedDateLabel}${targetTime}.`);
   lines.push("Depois que você escolher, eu falo com o cliente antes de alterar a agenda.");
 
   return lines.join("\n").trim();
@@ -1951,9 +1951,9 @@ function buildAppointmentAmbiguityReply(args: {
   lines.push("Me diga qual deles você quer atualizar:");
   lines.push("");
 
-  args.candidateIndexes.slice(0, 5).forEach((candidateIndex, visibleIndex) => {
+  args.candidateIndexes.slice(0, 5).forEach((candidateIndex) => {
     const appointment = args.openAppointments[candidateIndex];
-    const itemNumber = visibleIndex + 1;
+    const itemNumber = candidateIndex + 1;
     const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
     const customer = appointment?.customer_name || "cliente não identificado";
     const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start;
@@ -1967,8 +1967,107 @@ function buildAppointmentAmbiguityReply(args: {
     lines.push("");
   });
 
-  lines.push('Você pode responder, por exemplo: "quero atualizar o item 1".');
+  lines.push('Você pode responder, por exemplo: "remarque o item 2 para amanhã às 15:00".');
   return lines.join("\n").trim();
+}
+
+function buildProfessionalAppointmentClarificationReply(args: {
+  action: ScheduleAction;
+  text: string;
+  openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const sorted = sortOpenScheduleAppointments(args.openAppointments || []);
+  const currentMatches = resolveAppointmentCandidateIndexesFromText({
+    text: args.text,
+    openAppointments: sorted,
+  });
+
+  const candidateIndexes = currentMatches.length
+    ? currentMatches
+    : sorted.map((_, index) => index).slice(0, 6);
+
+  if (!candidateIndexes.length) {
+    return "Não encontrei compromisso em aberto para mexer agora. Me diga o cliente, o título ou a data do compromisso que você quer alterar.";
+  }
+
+  const actionLabel = args.action === "cancel"
+    ? "cancelar"
+    : args.action === "complete"
+      ? "marcar como concluído"
+      : args.action === "reschedule"
+        ? "tentar remarcar"
+        : "atualizar";
+
+  const reschedulePayload = args.action === "reschedule"
+    ? extractReschedulePayload(args.text, getScheduleParsingNow(args.scheduleSettings || null), args.scheduleSettings || null)
+    : null;
+
+  const targetLabel = reschedulePayload?.ok
+    ? ` para ${formatDateOnlyInTimeZone(reschedulePayload.payload.scheduled_start, getScheduleTimezone(args.scheduleSettings || null))} às ${formatTimeOnlyInTimeZone(reschedulePayload.payload.scheduled_start, getScheduleTimezone(args.scheduleSettings || null))}`
+    : "";
+
+  const lines: string[] = [];
+  lines.push(`Entendi que você quer ${actionLabel} um compromisso${targetLabel}, mas preciso saber qual item da agenda é.`);
+  lines.push("");
+  lines.push("Encontrei estas opções mais prováveis:");
+
+  candidateIndexes.slice(0, 6).forEach((candidateIndex) => {
+    const appointment = sorted[candidateIndex];
+    const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
+    const customer = appointment?.customer_name || "cliente não identificado";
+    const start = appointment?.scheduled_start || appointment?.scheduled_end;
+    const end = appointment?.scheduled_end;
+    const timeRange = start
+      ? `${formatDateOnlyInTimeZone(start, getScheduleTimezone(args.scheduleSettings || null))} das ${formatTimeOnlyInTimeZone(start, getScheduleTimezone(args.scheduleSettings || null))}${end ? ` às ${formatTimeOnlyInTimeZone(end, getScheduleTimezone(args.scheduleSettings || null))}` : ""}`
+      : "sem horário carregado";
+
+    lines.push(`${candidateIndex + 1}. ${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)} — ${customer} — ${timeRange}`);
+  });
+
+  lines.push("");
+  if (args.action === "reschedule") {
+    lines.push(`Me diga o número do item. Exemplo: "remarque o item ${candidateIndexes[0] + 1}${targetLabel}".`);
+    lines.push("Se envolver cliente, eu falo com ele antes de alterar a agenda.");
+  } else {
+    lines.push(`Me diga o número do item. Exemplo: "${actionLabel} o item ${candidateIndexes[0] + 1}".`);
+  }
+
+  return lines.join("\n").trim();
+}
+
+function hasCustomerConfirmedRescheduleWithResponsible(text: string) {
+  const t = normalizeText(text);
+  return hasAnyTerm(t, [
+    "cliente confirmou",
+    "cliente ja confirmou",
+    "cliente já confirmou",
+    "ja combinei com o cliente",
+    "já combinei com o cliente",
+    "ja falei com o cliente",
+    "já falei com o cliente",
+    "confirmado com o cliente",
+    "pode atualizar a agenda",
+    "atualize a agenda",
+    "altere a agenda",
+    "mude na agenda",
+  ]);
+}
+
+function shouldCoordinateRescheduleWithCustomer(text: string, appointment: AppointmentRow | null | undefined) {
+  if (!appointment) return isClientFacingRescheduleRequest(text);
+  if (hasCustomerConfirmedRescheduleWithResponsible(text)) return false;
+
+  const hasCustomerContext = Boolean(
+    appointment.customer_name ||
+    appointment.customer_phone ||
+    appointment.conversation_id ||
+    appointment.lead_id
+  );
+
+  if (!hasCustomerContext) return isClientFacingRescheduleRequest(text);
+
+  return true;
 }
 
 function resolveTargetAppointmentIndex(args: {
@@ -2551,7 +2650,12 @@ async function resolveAppointmentActionReply(args: {
   }
 
   if (targetResolution.type === "none") {
-    return "Não consegui identificar qual compromisso você quer atualizar. Me diga o cliente, o título ou o número da lista.";
+    return buildProfessionalAppointmentClarificationReply({
+      action,
+      text: args.lastHumanMessage,
+      openAppointments,
+      scheduleSettings: args.scheduleSettings || null,
+    });
   }
 
   const selectedIndex = Math.min(Math.max(targetResolution.index, 0), openAppointments.length - 1);
@@ -2563,7 +2667,7 @@ async function resolveAppointmentActionReply(args: {
       return reschedulePayload.message;
     }
 
-    if (isClientFacingRescheduleRequest(args.lastHumanMessage)) {
+    if (shouldCoordinateRescheduleWithCustomer(args.lastHumanMessage, selectedAppointment)) {
       let customerMessageSent = false;
 
       if (selectedAppointment.conversation_id) {
@@ -3547,6 +3651,16 @@ function buildSystemPrompt(args: {
     "- quando estiver em terreno genérico, use no máximo 3 a 5 itens",
     "- prefira respostas curtas, úteis e humanas",
     "- no máximo uma pergunta curta no final, quando realmente ajudar",
+    "",
+    "COMPORTAMENTO PROFISSIONAL DA ASSISTENTE",
+    "- pense como uma assistente operacional da loja: entenda o objetivo, organize as opções e indique o próximo passo útil",
+    "- quando o pedido estiver ambíguo, não responda genérico; mostre as opções reais encontradas e peça a escolha pelo número, cliente, título ou horário",
+    "- quando houver uma ação sensível de agenda envolvendo cliente, explique que vai alinhar com o cliente antes de alterar a agenda",
+    "- quando houver uma ação normal já executada com sucesso, confirme de forma direta: Pronto, ajustei / criei / cancelei / marquei",
+    "- peça desculpas somente quando houver erro real, falha de execução ou quando o responsável apontar que você entendeu errado",
+    "- seja proativa com segurança: sugira o próximo passo, mas não finja execução nem force automações fora do que existe",
+    "- se houver lista de compromissos, cite data, hora, cliente e título de forma curta para o responsável conseguir escolher rápido",
+    "- se a pessoa responder de forma curta depois de uma lista, use o contexto recente da conversa antes de pedir tudo de novo",
     "",
     "COMO RESPONDER SOBRE MATERIAIS, DOCUMENTOS E CHECKLIST",
     "- se não houver base oficial da loja, diga claramente que é sugestão genérica",
