@@ -3548,7 +3548,13 @@ async function resolveAppointmentActionReply(args: {
 
   const now = getScheduleParsingNow(args.scheduleSettings || null);
   const scheduleTimezone = getScheduleTimezone(args.scheduleSettings || null);
-  const openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
+  const explicitAppointmentTitleCandidate = extractExplicitAppointmentTitleCandidateFromCommand(args.lastHumanMessage);
+  const commandHasExplicitTitleAndOriginalSchedule = hasExplicitAppointmentTitleAndOriginalScheduleReference({
+    text: args.lastHumanMessage,
+    now,
+    scheduleSettings: args.scheduleSettings || null,
+  });
+  let openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
 
   if (action === "create") {
     const createPayload = extractCreateAppointmentPayload(args.lastHumanMessage, now, args.scheduleSettings || null);
@@ -3587,6 +3593,41 @@ async function resolveAppointmentActionReply(args: {
         scheduled_start: createPayload.payload.scheduled_start,
       },
     });
+  }
+
+  if (commandHasExplicitTitleAndOriginalSchedule) {
+    const explicitMatches = await loadExplicitAppointmentMatchesFromCommand({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      text: args.lastHumanMessage,
+      now,
+      scheduleSettings: args.scheduleSettings || null,
+    });
+
+    if (explicitMatches.length === 1) {
+      const explicitAppointment = explicitMatches[0];
+      openAppointments = [
+        explicitAppointment,
+        ...openAppointments.filter((appointment) => appointment.id !== explicitAppointment.id),
+      ];
+    }
+
+    if (explicitMatches.length > 1) {
+      const candidateIndexes = explicitMatches.map((explicitAppointment) => {
+        const existingIndex = openAppointments.findIndex((appointment) => appointment.id === explicitAppointment.id);
+        return existingIndex >= 0 ? existingIndex : -1;
+      }).filter((index) => index >= 0);
+
+      if (candidateIndexes.length > 1) {
+        return buildAppointmentAmbiguityReply({
+          candidateIndexes,
+          openAppointments,
+        });
+      }
+
+      return "Encontrei mais de um compromisso parecido com esse título e horário. Me diga o cliente ou o número do item para eu não remarcar a pessoa errada.";
+    }
   }
 
   if (!openAppointments.length) {
@@ -3693,8 +3734,37 @@ async function resolveAppointmentActionReply(args: {
     });
   }
 
-  const selectedIndex = Math.min(Math.max(targetResolution.index, 0), openAppointments.length - 1);
-  const selectedAppointment = openAppointments[selectedIndex];
+  let selectedIndex = Math.min(Math.max(targetResolution.index, 0), openAppointments.length - 1);
+  let selectedAppointment = openAppointments[selectedIndex];
+
+  if (commandHasExplicitTitleAndOriginalSchedule && explicitAppointmentTitleCandidate) {
+    const selectedMatchesExplicitTitle = appointmentTitleMatchesCommandTitle(
+      selectedAppointment?.title,
+      explicitAppointmentTitleCandidate
+    );
+
+    if (!selectedMatchesExplicitTitle) {
+      const explicitMatches = await loadExplicitAppointmentMatchesFromCommand({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        text: args.lastHumanMessage,
+        now,
+        scheduleSettings: args.scheduleSettings || null,
+      });
+
+      if (explicitMatches.length === 1) {
+        selectedAppointment = explicitMatches[0];
+        const existingIndex = openAppointments.findIndex((appointment) => appointment.id === selectedAppointment.id);
+        selectedIndex = existingIndex >= 0 ? existingIndex : 0;
+        if (existingIndex < 0) {
+          openAppointments = [selectedAppointment, ...openAppointments];
+        }
+      } else {
+        return "Encontrei um compromisso no contexto, mas ele não bate com o título informado. Para evitar mandar mensagem para a pessoa errada, me confirme o cliente ou repita o compromisso com o nome do cliente.";
+      }
+    }
+  }
 
   if (action === "reschedule") {
     const reschedulePayload = extractContextAwareReschedulePayload({
