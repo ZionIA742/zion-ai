@@ -2294,29 +2294,39 @@ function buildStoreLocalDayRangeIso(settings?: StoreScheduleSettingsRow | null, 
 
 async function createAssistantOperationalTask(args: { supabase: any; organizationId: string; storeId: string; threadId: string | null; taskType: string; status: string; priority?: string; title: string; description?: string | null; appointment?: AppointmentRow | null; targetStartIso?: string | null; targetEndIso?: string | null; timezoneName: string; taskPayload?: Record<string, unknown>; }) {
   const appointment = args.appointment || null;
-  const { error } = await args.supabase.from("store_assistant_operational_tasks").insert({
-    organization_id: args.organizationId,
-    store_id: args.storeId,
-    thread_id: args.threadId,
-    task_type: args.taskType,
-    status: args.status,
-    priority: args.priority || "normal",
-    title: args.title,
-    description: args.description || null,
-    related_lead_id: appointment?.lead_id || null,
-    related_conversation_id: appointment?.conversation_id || null,
-    related_appointment_id: appointment?.id || null,
-    customer_name: appointment?.customer_name || null,
-    customer_phone: appointment?.customer_phone || null,
-    target_date: isoDateToLocalDateForDb(args.targetStartIso, args.timezoneName),
-    target_time: args.targetStartIso ? formatTimeOnlyInTimeZone(args.targetStartIso, args.timezoneName) : null,
-    target_start_at: args.targetStartIso || null,
-    target_end_at: args.targetEndIso || null,
-    timezone_name: args.timezoneName,
-    task_payload: args.taskPayload || {},
-    last_action_at: new Date().toISOString(),
-  });
-  return { ok: !error, error: error?.message || null };
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .insert({
+      organization_id: args.organizationId,
+      store_id: args.storeId,
+      thread_id: args.threadId,
+      task_type: args.taskType,
+      status: args.status,
+      priority: args.priority || "normal",
+      title: args.title,
+      description: args.description || null,
+      related_lead_id: appointment?.lead_id || null,
+      related_conversation_id: appointment?.conversation_id || null,
+      related_appointment_id: appointment?.id || null,
+      customer_name: appointment?.customer_name || null,
+      customer_phone: appointment?.customer_phone || null,
+      target_date: isoDateToLocalDateForDb(args.targetStartIso, args.timezoneName),
+      target_time: args.targetStartIso ? formatTimeOnlyInTimeZone(args.targetStartIso, args.timezoneName) : null,
+      target_start_at: args.targetStartIso || null,
+      target_end_at: args.targetEndIso || null,
+      timezone_name: args.timezoneName,
+      task_payload: args.taskPayload || {},
+      last_action_at: new Date().toISOString(),
+    })
+    .select("id")
+    .maybeSingle();
+
+  const taskId = typeof data?.id === "string" ? data.id : null;
+  return {
+    ok: !error && Boolean(taskId),
+    error: error?.message || (!taskId ? "TASK_INSERT_NOT_CONFIRMED" : null),
+    taskId,
+  };
 }
 
 function buildProfessionalAppointmentClarificationReply(args: {
@@ -2928,6 +2938,126 @@ function buildResponsibleAvailabilityRequestReply(args: { appointment: Appointme
   return `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas não consegui enviar mensagem automática para o cliente porque não encontrei conversa vinculada. A agenda ainda não foi alterada.`;
 }
 
+
+async function resolveCustomerAvailabilityRequestFromContext(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  lastHumanMessage: string;
+  openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  if (!asksAssistantToFindCustomerAvailability(args.lastHumanMessage)) return null;
+
+  const scheduleTimezone = getScheduleTimezone(args.scheduleSettings || null);
+  const openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
+  const contextAppointmentId = args.assistantContextState?.active_appointment_id || null;
+  const appointment = contextAppointmentId
+    ? openAppointments.find((item) => item.id === contextAppointmentId) || null
+    : null;
+
+  if (!appointment) {
+    return "Entendi que você quer falar com o cliente, mas não encontrei um compromisso ativo no contexto. Me diga o cliente ou escolha um item da lista antes de eu registrar essa tratativa.";
+  }
+
+  let customerMessageSent = false;
+  if (appointment.conversation_id) {
+    const customerMessage = buildCustomerAvailabilityQuestion({
+      appointment,
+      scheduleSettings: args.scheduleSettings || null,
+    });
+    const sendResult = await sendAiMessageToCustomerConversation({
+      supabase: args.supabase,
+      conversationId: appointment.conversation_id,
+      text: customerMessage,
+    });
+    customerMessageSent = sendResult.ok;
+  }
+
+  if (!args.threadId) {
+    return "Encontrei o compromisso, mas não consegui registrar a tratativa porque a conversa da assistente não foi identificada. A agenda ainda não foi alterada.";
+  }
+
+  const taskResult = await createAssistantOperationalTask({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    taskType: "appointment_reschedule_find_customer_availability",
+    status: customerMessageSent ? "waiting_customer_response" : "open",
+    priority: "normal",
+    title: `Verificar novo horário com ${appointment.customer_name || "cliente"}`,
+    description: customerMessageSent
+      ? "A assistente enviou mensagem ao cliente para verificar disponibilidade. A agenda ainda não foi alterada."
+      : "A assistente registrou a tratativa para verificar disponibilidade com o cliente. A agenda ainda não foi alterada.",
+    appointment,
+    targetStartIso: args.assistantContextState?.target_start_at || null,
+    targetEndIso: args.assistantContextState?.target_end_at || null,
+    timezoneName: scheduleTimezone,
+    taskPayload: {
+      source: "assistant.reply.route",
+      original_user_message: args.lastHumanMessage,
+      customer_message_sent: customerMessageSent,
+      agenda_updated: false,
+      active_context_id: args.assistantContextState?.id || null,
+      requested_action: "find_customer_availability",
+    },
+  });
+
+  if (!taskResult.ok) {
+    return `Encontrei o compromisso, mas não consegui registrar a tratativa operacional: ${taskResult.error}. A agenda ainda não foi alterada.`;
+  }
+
+  await upsertAssistantContextState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    currentContextState: args.assistantContextState || null,
+    patch: {
+      active_topic: "appointment_reschedule",
+      active_intent: "find_customer_availability",
+      active_status: customerMessageSent ? "waiting_customer_response" : "active",
+      active_customer_name: appointment.customer_name || args.assistantContextState?.active_customer_name || null,
+      active_customer_phone: appointment.customer_phone || args.assistantContextState?.active_customer_phone || null,
+      active_lead_id: appointment.lead_id || args.assistantContextState?.active_lead_id || null,
+      active_conversation_id: appointment.conversation_id || args.assistantContextState?.active_conversation_id || null,
+      active_appointment_id: appointment.id,
+      target_date: args.assistantContextState?.target_date || null,
+      target_time: args.assistantContextState?.target_time || null,
+      target_start_at: args.assistantContextState?.target_start_at || null,
+      target_end_at: args.assistantContextState?.target_end_at || null,
+      timezone_name: scheduleTimezone,
+      candidate_options: [],
+      context_payload: {
+        reason: "waiting_customer_availability_before_reschedule",
+        customer_message_sent: customerMessageSent,
+        task_created: true,
+        task_id: taskResult.taskId,
+        agenda_updated: false,
+      },
+      last_user_message: args.lastHumanMessage,
+      last_assistant_message: buildTaskRegisteredReply({
+        appointment,
+        taskId: taskResult.taskId,
+        targetStartIso: args.assistantContextState?.target_start_at || null,
+        customerMessageSent,
+        scheduleSettings: args.scheduleSettings || null,
+      }),
+    },
+  });
+
+  return buildTaskRegisteredReply({
+    appointment,
+    taskId: taskResult.taskId,
+    targetStartIso: args.assistantContextState?.target_start_at || null,
+    customerMessageSent,
+    scheduleSettings: args.scheduleSettings || null,
+  });
+}
+
 function extractCreateAppointmentPayload(text: string, now: Date, settings?: StoreScheduleSettingsRow | null) {
   const dateParts = parseDateReferenceFromText(text, now);
   const timeRange = parseTimeRangeFromText(text);
@@ -2986,6 +3116,80 @@ function extractReschedulePayload(text: string, now: Date, settings?: StoreSched
       scheduled_end: scheduledEnd,
     },
   };
+}
+
+
+function parseDbDateKeyToScheduleParts(dateKey: string | null | undefined) {
+  const raw = String(dateKey || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  return { year, month, day };
+}
+
+function extractContextAwareReschedulePayload(args: {
+  text: string;
+  now: Date;
+  settings?: StoreScheduleSettingsRow | null;
+  contextState?: StoreAssistantContextStateRow | null;
+}) {
+  const directPayload = extractReschedulePayload(args.text, args.now, args.settings || null);
+  if (directPayload.ok) return directPayload;
+
+  const dateParts =
+    parseDateReferenceFromText(args.text, args.now) ||
+    parseDbDateKeyToScheduleParts(args.contextState?.target_date) ||
+    (args.contextState?.target_start_at
+      ? parseDbDateKeyToScheduleParts(isoDateToLocalDateForDb(args.contextState.target_start_at, getScheduleTimezone(args.settings || null)))
+      : null);
+
+  const timeRange = parseTimeRangeFromText(args.text);
+  const contextTime = typeof args.contextState?.target_time === "string"
+    ? args.contextState.target_time.slice(0, 5)
+    : null;
+  const startTime = timeRange?.startTime || contextTime;
+  const endTime = timeRange?.endTime || null;
+
+  if (!dateParts || !startTime) {
+    return directPayload;
+  }
+
+  const scheduledStart = buildIsoFromDateAndTime(dateParts, startTime, args.settings || null);
+  const scheduledEnd = endTime
+    ? buildIsoFromDateAndTime(dateParts, endTime, args.settings || null)
+    : addMinutesToIso(scheduledStart, 60);
+
+  return {
+    ok: true as const,
+    payload: {
+      scheduled_start: scheduledStart,
+      scheduled_end: scheduledEnd,
+    },
+    source: "context_aware" as const,
+  };
+}
+
+function buildTaskRegisteredReply(args: {
+  appointment: AppointmentRow;
+  taskId: string | null;
+  targetStartIso?: string | null;
+  customerMessageSent: boolean;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const customerName = String(args.appointment.customer_name || "cliente").trim() || "cliente";
+  const referenceLabel = buildScheduleAppointmentReferenceLabel(args.appointment);
+  const timeZone = getScheduleTimezone(args.scheduleSettings || null);
+  const targetLabel = args.targetStartIso
+    ? ` para ${formatDateOnlyInTimeZone(args.targetStartIso, timeZone)} às ${formatTimeOnlyInTimeZone(args.targetStartIso, timeZone)}`
+    : "";
+  const contactLabel = args.customerMessageSent
+    ? `Enviei uma mensagem para ${customerName}`
+    : `Registrei a tratativa para falar com ${customerName}`;
+
+  return `${contactLabel} sobre a remarcação de ${referenceLabel}${targetLabel}. A agenda ainda não foi alterada. Assim que houver confirmação do cliente, eu atualizo o caso e te aviso por aqui.`;
 }
 
 function buildAppointmentActionSuccessReply(args: {
@@ -3097,7 +3301,16 @@ async function resolveAppointmentActionReply(args: {
   if (targetResolution.type === "ambiguous") {
     const requestedDateParts = parseDateReferenceFromText(args.lastHumanMessage, now);
     const requestedDateKey = getDateKeyFromParts(requestedDateParts);
-    const requestedTimeLabel = parseTimeRangeFromText(args.lastHumanMessage)?.startTime || null;
+    const requestedTimeRange = parseTimeRangeFromText(args.lastHumanMessage);
+    const requestedTimeLabel = requestedTimeRange?.startTime || null;
+    const requestedTargetStartIso = requestedDateParts && requestedTimeLabel
+      ? buildIsoFromDateAndTime(requestedDateParts, requestedTimeLabel, args.scheduleSettings || null)
+      : null;
+    const requestedTargetEndIso = requestedTargetStartIso
+      ? (requestedTimeRange?.endTime
+        ? buildIsoFromDateAndTime(requestedDateParts!, requestedTimeRange.endTime, args.scheduleSettings || null)
+        : addMinutesToIso(requestedTargetStartIso, 60))
+      : null;
     const candidateOptions = buildAppointmentCandidateOptions({ candidateIndexes: targetResolution.candidateIndexes, openAppointments });
 
     if (args.threadId) {
@@ -3116,8 +3329,12 @@ async function resolveAppointmentActionReply(args: {
           active_lead_id: candidateOptions[0]?.lead_id || args.assistantContextState?.active_lead_id || null,
           active_conversation_id: candidateOptions[0]?.conversation_id || args.assistantContextState?.active_conversation_id || null,
           active_appointment_id: null,
+          target_date: requestedTargetStartIso ? isoDateToLocalDateForDb(requestedTargetStartIso, scheduleTimezone) : (requestedDateKey || args.assistantContextState?.target_date || null),
+          target_time: requestedTimeLabel || args.assistantContextState?.target_time || null,
+          target_start_at: requestedTargetStartIso || args.assistantContextState?.target_start_at || null,
+          target_end_at: requestedTargetEndIso || args.assistantContextState?.target_end_at || null,
           candidate_options: candidateOptions,
-          context_payload: { reason: "appointment_ambiguity", action, requested_date: requestedDateKey, requested_time: requestedTimeLabel },
+          context_payload: { reason: "appointment_ambiguity", action, requested_date: requestedDateKey, requested_time: requestedTimeLabel, target_preserved_from_context: !requestedTimeLabel && Boolean(args.assistantContextState?.target_time) },
           last_user_message: args.lastHumanMessage,
           timezone_name: scheduleTimezone,
         },
@@ -3176,7 +3393,12 @@ async function resolveAppointmentActionReply(args: {
   const selectedAppointment = openAppointments[selectedIndex];
 
   if (action === "reschedule") {
-    const reschedulePayload = extractReschedulePayload(args.lastHumanMessage, now, args.scheduleSettings || null);
+    const reschedulePayload = extractContextAwareReschedulePayload({
+      text: args.lastHumanMessage,
+      now,
+      settings: args.scheduleSettings || null,
+      contextState: args.assistantContextState || null,
+    });
     if (!reschedulePayload.ok) {
       if (args.threadId) {
         await upsertAssistantContextState({
@@ -3194,9 +3416,13 @@ async function resolveAppointmentActionReply(args: {
             active_lead_id: selectedAppointment.lead_id || null,
             active_conversation_id: selectedAppointment.conversation_id || null,
             active_appointment_id: selectedAppointment.id,
+            target_date: args.assistantContextState?.target_date || null,
+            target_time: args.assistantContextState?.target_time || null,
+            target_start_at: args.assistantContextState?.target_start_at || null,
+            target_end_at: args.assistantContextState?.target_end_at || null,
             timezone_name: scheduleTimezone,
             candidate_options: [],
-            context_payload: { reason: "selected_appointment_waiting_for_reschedule_time", selected_appointment_title: selectedAppointment.title || null },
+            context_payload: { reason: "selected_appointment_waiting_for_reschedule_time", selected_appointment_title: selectedAppointment.title || null, target_preserved_from_context: Boolean(args.assistantContextState?.target_date || args.assistantContextState?.target_time) },
             last_user_message: args.lastHumanMessage,
           },
         });
@@ -5340,7 +5566,20 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const scheduleActionReply = !blockAdjustmentReply && !blockDayReply && (!postAppointmentMode || appointmentManagementRequest)
+    const customerAvailabilityContextReply = !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
+      ? await resolveCustomerAvailabilityRequestFromContext({
+          supabase,
+          organizationId,
+          storeId,
+          threadId: assistantThreadId,
+          assistantContextState,
+          lastHumanMessage,
+          openAppointments: allOpenAppointments,
+          scheduleSettings,
+        })
+      : null;
+
+    const scheduleActionReply = !blockAdjustmentReply && !blockDayReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
       ? await resolveAppointmentActionReply({
           supabase,
           organizationId,
@@ -5386,6 +5625,8 @@ async function generateAssistantReply(params: {
       aiText = blockDayReply;
     } else if (postAppointmentActionReply) {
       aiText = postAppointmentActionReply;
+    } else if (customerAvailabilityContextReply) {
+      aiText = customerAvailabilityContextReply;
     } else if (scheduleActionReply) {
       aiText = scheduleActionReply;
     } else if (generalTodayOverviewMode) {
@@ -5479,6 +5720,7 @@ async function generateAssistantReply(params: {
         generalTodayOverviewMode,
         blockAdjustmentMode: Boolean(blockAdjustmentReply),
         blockDayMode: Boolean(blockDayReply),
+        customerAvailabilityContextMode: Boolean(customerAvailabilityContextReply),
         activeContextId: assistantContextState?.id || null,
         activeContextStatus: assistantContextState?.active_status || null,
         activeContextTopic: assistantContextState?.active_topic || null,
