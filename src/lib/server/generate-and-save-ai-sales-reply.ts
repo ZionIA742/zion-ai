@@ -20,6 +20,7 @@ type GenerateAndSaveAiSalesReplyResult =
       error: string;
       message: string;
       aiText?: string;
+      context?: any;
     };
 
 type ConversationRow = {
@@ -27,6 +28,96 @@ type ConversationRow = {
   organization_id: string;
   is_human_active: boolean | null;
 };
+
+type OperationalTaskGuardResult =
+  | {
+      blocked: false;
+    }
+  | {
+      blocked: true;
+      reason: "open_operational_task" | "pending_operational_queue";
+      taskId?: string | null;
+      queueId?: string | null;
+      taskType?: string | null;
+      taskStatus?: string | null;
+      queueStatus?: string | null;
+    };
+
+async function detectOpenAssistantOperationalFlow(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}): Promise<OperationalTaskGuardResult> {
+  const { supabase, organizationId, storeId, conversationId } = args;
+
+  const openTaskStatuses = [
+    "open",
+    "waiting_user_choice",
+    "waiting_customer_response",
+    "ready_to_execute",
+    "in_progress",
+  ];
+
+  const { data: openTask, error: openTaskError } = await supabase
+    .from("store_assistant_operational_tasks")
+    .select("id, task_type, status")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("related_conversation_id", conversationId)
+    .in("status", openTaskStatuses)
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (openTaskError) {
+    throw new Error(
+      `Falha ao verificar tarefas operacionais abertas: ${openTaskError.message}`
+    );
+  }
+
+  if (openTask) {
+    return {
+      blocked: true,
+      reason: "open_operational_task",
+      taskId: openTask.id || null,
+      taskType: openTask.task_type || null,
+      taskStatus: openTask.status || null,
+    };
+  }
+
+  const { data: pendingQueue, error: pendingQueueError } = await supabase
+    .from("store_assistant_operational_task_queue")
+    .select("id, task_id, status")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("conversation_id", conversationId)
+    .in("status", ["pending", "processing"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (pendingQueueError) {
+    throw new Error(
+      `Falha ao verificar fila operacional pendente: ${pendingQueueError.message}`
+    );
+  }
+
+  if (pendingQueue) {
+    return {
+      blocked: true,
+      reason: "pending_operational_queue",
+      queueId: pendingQueue.id || null,
+      taskId: pendingQueue.task_id || null,
+      queueStatus: pendingQueue.status || null,
+    };
+  }
+
+  return {
+    blocked: false,
+  };
+}
 
 export async function generateAndSaveAiSalesReply(
   params: GenerateAndSaveAiSalesReplyParams
@@ -89,6 +180,25 @@ export async function generateAndSaveAiSalesReply(
         error: "HUMAN_HANDOFF_ACTIVE",
         message:
           "A conversa está com humano ativo. A IA não deve responder automaticamente.",
+      };
+    }
+
+    const operationalGuard = await detectOpenAssistantOperationalFlow({
+      supabase,
+      organizationId,
+      storeId,
+      conversationId,
+    });
+
+    if (operationalGuard.blocked) {
+      return {
+        ok: false,
+        error: "OPERATIONAL_TASK_ACTIVE_FOR_CONVERSATION",
+        message:
+          "Existe uma tarefa operacional da assistente ativa para esta conversa. A IA vendedora não deve responder automaticamente enquanto a assistente operacional conduz essa tratativa.",
+        context: {
+          guard: operationalGuard,
+        },
       };
     }
 
