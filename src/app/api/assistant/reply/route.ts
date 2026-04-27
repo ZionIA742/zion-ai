@@ -2218,6 +2218,86 @@ function refineAppointmentCandidateIndexesByOriginalSchedule(args: {
   return refined.length ? refined : args.candidateIndexes;
 }
 
+
+function parseDateKeyToScheduleDateParts(dateKey: string | null | undefined) {
+  const parts = String(dateKey || "").split("-").map((part) => Number(part));
+  if (parts.length !== 3) return null;
+  const [year, month, day] = parts;
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { year, month: month - 1, day };
+}
+
+async function loadExplicitAppointmentMatchesFromCommand(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  text: string;
+  now: Date;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const normalizedText = normalizeText(args.text);
+  if (!normalizedText) return [] as AppointmentRow[];
+
+  const isAppointmentCommand = hasExplicitAppointmentManagementCommand(args.text);
+  if (!isAppointmentCommand) return [] as AppointmentRow[];
+
+  const originalReference = extractOriginalScheduleReferenceFromRescheduleText({
+    text: args.text,
+    now: args.now,
+    settings: args.scheduleSettings || null,
+  });
+
+  if (!originalReference?.dateKey && !originalReference?.startTime) return [] as AppointmentRow[];
+
+  const query = args.supabase
+    .from("store_appointments")
+    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .in("status", ["scheduled", "rescheduled"]);
+
+  const dateParts = parseDateKeyToScheduleDateParts(originalReference?.dateKey || null);
+  if (dateParts) {
+    const dayStartIso = buildIsoFromDateAndTime(dateParts, "00:00", args.scheduleSettings || null);
+    const dayEndIso = buildIsoFromDateAndTime(dateParts, "23:59", args.scheduleSettings || null);
+    query.gte("scheduled_start", dayStartIso).lte("scheduled_start", dayEndIso);
+  } else {
+    query.gte("scheduled_start", args.now.toISOString()).limit(50);
+  }
+
+  const { data, error } = await query.order("scheduled_start", { ascending: true }).limit(50);
+  if (error) return [] as AppointmentRow[];
+
+  const candidates = ((data || []) as AppointmentRow[]).filter((appointment) => {
+    const appointmentStart = appointment.scheduled_start || appointment.scheduled_end;
+    if (!appointmentStart) return false;
+
+    if (originalReference?.dateKey) {
+      const appointmentDateKey = getLocalDateKeyFromIso(appointmentStart, args.scheduleSettings || null);
+      if (appointmentDateKey !== originalReference.dateKey) return false;
+    }
+
+    if (originalReference?.startTime) {
+      const appointmentTime = formatTimeOnlyInTimeZone(appointmentStart, getScheduleTimezone(args.scheduleSettings || null));
+      if (appointmentTime !== originalReference.startTime) return false;
+    }
+
+    const title = normalizeText(appointment.title);
+    const customerName = normalizeText(appointment.customer_name);
+    const phoneDigits = normalizeDigits(appointment.customer_phone);
+    const textDigits = normalizeDigits(args.text);
+
+    const hasExplicitTitle = Boolean(title && title.length >= 3 && normalizedText.includes(title));
+    const hasExplicitCustomer = Boolean(customerName && customerName.length >= 3 && normalizedText.includes(customerName));
+    const hasExplicitPhone = Boolean(phoneDigits.length >= 8 && textDigits.includes(phoneDigits));
+
+    return hasExplicitTitle || hasExplicitCustomer || hasExplicitPhone;
+  });
+
+  return candidates;
+}
+
 function resolveAppointmentIndexFromAssistantContext(args: {
   text: string;
   openAppointments: AppointmentRow[];
@@ -5641,13 +5721,29 @@ async function generateAssistantReply(params: {
     const postAppointmentMode = detectedIntent === "post_appointment";
     const scheduleManagementMode = detectedIntent === "schedule_management";
     const generalTodayOverviewMode = isGeneralTodayOverviewRequest(lastHumanMessage);
-    const allOpenAppointments = [
+    const baseOpenAppointments = [
       ...((todayAppointmentsData || []) as AppointmentRow[]),
       ...((nextAppointmentsData || []) as AppointmentRow[]),
       ...((overdueAppointmentsData || []) as AppointmentRow[]),
     ];
 
     const appointmentManagementRequest = hasExplicitAppointmentManagementCommand(lastHumanMessage);
+
+    const explicitCommandAppointments = appointmentManagementRequest
+      ? await loadExplicitAppointmentMatchesFromCommand({
+          supabase,
+          organizationId,
+          storeId,
+          text: lastHumanMessage,
+          now,
+          scheduleSettings,
+        })
+      : [];
+
+    const allOpenAppointments = [
+      ...explicitCommandAppointments,
+      ...baseOpenAppointments,
+    ];
 
     const blockAdjustmentReply = !appointmentManagementRequest
       ? await resolveScheduleBlockAdjustmentReply({
