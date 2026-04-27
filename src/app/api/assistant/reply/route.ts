@@ -78,6 +78,48 @@ type PostAppointmentFollowupRow = {
   updated_at: string | null;
 };
 
+type StoreAssistantContextStateRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  thread_id: string;
+  active_topic: string | null;
+  active_intent: string | null;
+  active_status: string;
+  active_customer_name: string | null;
+  active_customer_phone: string | null;
+  active_lead_id: string | null;
+  active_conversation_id: string | null;
+  active_appointment_id: string | null;
+  target_date: string | null;
+  target_time: string | null;
+  target_start_at: string | null;
+  target_end_at: string | null;
+  timezone_name: string;
+  candidate_options: unknown;
+  context_payload: unknown;
+  last_user_message: string | null;
+  last_assistant_message: string | null;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type AssistantCandidateOption = {
+  option_number: number;
+  source_index: number;
+  appointment_id: string;
+  title: string | null;
+  appointment_type: string | null;
+  status: string | null;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  lead_id: string | null;
+  conversation_id: string | null;
+};
+
 type AssistantReplyResult =
   | {
       ok: true;
@@ -1473,6 +1515,8 @@ async function resolvePostAppointmentActionReply(args: {
   supabase: any;
   organizationId: string;
   storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
   lastHumanMessage: string;
   recentMessages: AssistantMessageRow[];
   pendingPostFollowups: PostAppointmentFollowupRow[];
@@ -1498,6 +1542,8 @@ async function resolvePostAppointmentActionReply(args: {
       recentMessages: args.recentMessages,
       openAppointments: args.openAppointments,
       scheduleSettings: args.scheduleSettings || null,
+      threadId: args.threadId || null,
+      assistantContextState: args.assistantContextState || null,
     });
   }
 
@@ -1525,6 +1571,8 @@ async function resolvePostAppointmentActionReply(args: {
       recentMessages: args.recentMessages,
       openAppointments: args.openAppointments,
       scheduleSettings: args.scheduleSettings || null,
+      threadId: args.threadId || null,
+      assistantContextState: args.assistantContextState || null,
     });
 
     if (appointmentFallback) {
@@ -1980,6 +2028,214 @@ function buildAppointmentAmbiguityReply(args: {
   return lines.join("\n").trim();
 }
 
+function buildAppointmentCandidateOptions(args: {
+  candidateIndexes: number[];
+  openAppointments: AppointmentRow[];
+}) {
+  return args.candidateIndexes.slice(0, 8).map((candidateIndex, visibleIndex) => {
+    const appointment = args.openAppointments[candidateIndex];
+    return {
+      option_number: visibleIndex + 1,
+      source_index: candidateIndex,
+      appointment_id: appointment?.id || "",
+      title: appointment?.title || null,
+      appointment_type: appointment?.appointment_type || null,
+      status: appointment?.status || null,
+      scheduled_start: appointment?.scheduled_start || null,
+      scheduled_end: appointment?.scheduled_end || null,
+      customer_name: appointment?.customer_name || null,
+      customer_phone: appointment?.customer_phone || null,
+      lead_id: appointment?.lead_id || null,
+      conversation_id: appointment?.conversation_id || null,
+    } satisfies AssistantCandidateOption;
+  }).filter((item) => item.appointment_id);
+}
+
+function readAssistantCandidateOptions(contextState?: StoreAssistantContextStateRow | null) {
+  const raw = contextState?.candidate_options;
+  return Array.isArray(raw) ? (raw as AssistantCandidateOption[]) : [];
+}
+
+function resolveAppointmentIndexFromAssistantContext(args: {
+  text: string;
+  openAppointments: AppointmentRow[];
+  contextState?: StoreAssistantContextStateRow | null;
+}) {
+  const options = readAssistantCandidateOptions(args.contextState);
+  const explicitIndex = resolvePostAppointmentDetailIndex(args.text, Math.max(options.length, args.openAppointments.length, 1));
+
+  if (explicitIndex !== null && options.length > 0) {
+    const optionNumber = explicitIndex + 1;
+    const matchedOption = options.find((option) => Number(option.option_number) === optionNumber);
+    const matchedIndex = matchedOption?.appointment_id
+      ? args.openAppointments.findIndex((appointment) => appointment.id === matchedOption.appointment_id)
+      : -1;
+    if (matchedIndex >= 0) return matchedIndex;
+  }
+
+  const normalizedText = normalizeText(args.text);
+  const keepsCurrentContext = hasAnyTerm(normalizedText, [
+    "esse item", "esse compromisso", "essa visita", "essa instalacao", "essa instalação",
+    "esse caso", "esse atendimento", "ele", "ela", "esse", "essa", "isso",
+    "o mesmo", "a mesma", "remarque esse", "remarque essa", "cancele esse",
+    "conclua esse", "pode fazer", "pode seguir",
+  ]);
+
+  if (keepsCurrentContext && args.contextState?.active_appointment_id) {
+    const activeIndex = args.openAppointments.findIndex((appointment) => appointment.id === args.contextState?.active_appointment_id);
+    if (activeIndex >= 0) return activeIndex;
+  }
+
+  if (keepsCurrentContext && options.length === 1) {
+    const onlyIndex = args.openAppointments.findIndex((appointment) => appointment.id === options[0].appointment_id);
+    if (onlyIndex >= 0) return onlyIndex;
+  }
+
+  return null;
+}
+
+function buildAssistantContextBlock(contextState?: StoreAssistantContextStateRow | null) {
+  if (!contextState || normalizeText(contextState.active_status) === "resolved") {
+    return "- nenhum assunto ativo salvo";
+  }
+
+  const lines = [
+    contextState.active_topic ? `- assunto ativo: ${contextState.active_topic}` : null,
+    contextState.active_intent ? `- intenção ativa: ${contextState.active_intent}` : null,
+    contextState.active_status ? `- estado: ${contextState.active_status}` : null,
+    contextState.active_customer_name ? `- cliente em foco: ${contextState.active_customer_name}` : null,
+    contextState.active_customer_phone ? `- telefone em foco: ${contextState.active_customer_phone}` : null,
+    contextState.target_date ? `- data alvo: ${contextState.target_date}` : null,
+    contextState.target_time ? `- horário alvo: ${contextState.target_time}` : null,
+    contextState.active_appointment_id ? `- compromisso em foco: ${contextState.active_appointment_id}` : null,
+  ].filter(Boolean) as string[];
+
+  const options = readAssistantCandidateOptions(contextState);
+  if (options.length) {
+    lines.push("- opções recentes listadas:");
+    options.slice(0, 8).forEach((option) => {
+      const label = [
+        `${option.option_number}.`,
+        option.appointment_type ? formatAppointmentType(option.appointment_type) : "compromisso",
+        option.title || null,
+        option.customer_name ? `de ${option.customer_name}` : null,
+        option.scheduled_start ? `${formatDateOnly(option.scheduled_start)} às ${formatTimeOnly(option.scheduled_start)}` : null,
+      ].filter(Boolean).join(" ");
+      lines.push(`  ${label}`);
+    });
+  }
+
+  return lines.length ? lines.join("\n") : "- nenhum assunto ativo salvo";
+}
+
+async function getOrCreateAssistantThread(args: { supabase: any; organizationId: string; storeId: string; }) {
+  const { data: existingThread, error: findError } = await args.supabase
+    .from("store_assistant_threads")
+    .select("id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (findError) return { ok: false as const, error: findError.message, threadId: null as string | null };
+  const existingThreadId = typeof existingThread?.id === "string" ? existingThread.id.trim() : "";
+  if (existingThreadId) return { ok: true as const, threadId: existingThreadId };
+
+  const { data: createdThread, error: createError } = await args.supabase
+    .from("store_assistant_threads")
+    .insert({ organization_id: args.organizationId, store_id: args.storeId, thread_type: "primary", status: "active", title: "Assistente operacional", created_by: "system" })
+    .select("id")
+    .maybeSingle();
+
+  if (createError || !createdThread?.id) {
+    return { ok: false as const, error: createError?.message || "Não consegui criar a thread da assistente.", threadId: null as string | null };
+  }
+  return { ok: true as const, threadId: String(createdThread.id) };
+}
+
+async function loadAssistantContextState(args: { supabase: any; organizationId: string; storeId: string; threadId: string; }) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_context_state")
+    .select("*")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("thread_id", args.threadId)
+    .in("active_status", ["active", "waiting_user_choice", "waiting_customer_response"])
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) return { ok: false as const, error: error.message, contextState: null as StoreAssistantContextStateRow | null };
+  return { ok: true as const, contextState: (data || null) as StoreAssistantContextStateRow | null };
+}
+
+async function upsertAssistantContextState(args: { supabase: any; organizationId: string; storeId: string; threadId: string; currentContextState?: StoreAssistantContextStateRow | null; patch: Record<string, unknown>; }) {
+  const payload = { organization_id: args.organizationId, store_id: args.storeId, thread_id: args.threadId, updated_at: new Date().toISOString(), ...args.patch };
+  if (args.currentContextState?.id) {
+    const { data, error } = await args.supabase
+      .from("store_assistant_context_state")
+      .update(payload)
+      .eq("id", args.currentContextState.id)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .select("*")
+      .maybeSingle();
+    return { ok: !error, error: error?.message || null, contextState: (data || null) as StoreAssistantContextStateRow | null };
+  }
+  const { data, error } = await args.supabase
+    .from("store_assistant_context_state")
+    .insert({ ...payload, active_status: args.patch.active_status || "active", candidate_options: args.patch.candidate_options || [], context_payload: args.patch.context_payload || {} })
+    .select("*")
+    .maybeSingle();
+  return { ok: !error, error: error?.message || null, contextState: (data || null) as StoreAssistantContextStateRow | null };
+}
+
+async function resolveAssistantContextState(args: { supabase: any; organizationId: string; storeId: string; threadId: string; currentContextState?: StoreAssistantContextStateRow | null; lastUserMessage: string; lastAssistantMessage?: string | null; }) {
+  return upsertAssistantContextState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    currentContextState: args.currentContextState,
+    patch: { active_status: "resolved", last_user_message: args.lastUserMessage, last_assistant_message: args.lastAssistantMessage || args.currentContextState?.last_assistant_message || null, candidate_options: [], context_payload: { resolved_reason: "action_completed_or_context_closed" } },
+  });
+}
+
+function isoDateToLocalDateForDb(iso: string | null | undefined, timeZone: string) {
+  if (!iso) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: safeScheduleTimezone(timeZone), year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(iso));
+  const values: Record<string, string> = {};
+  for (const part of parts) if (part.type !== "literal") values[part.type] = part.value;
+  return values.year && values.month && values.day ? `${values.year}-${values.month}-${values.day}` : null;
+}
+
+async function createAssistantOperationalTask(args: { supabase: any; organizationId: string; storeId: string; threadId: string | null; taskType: string; status: string; priority?: string; title: string; description?: string | null; appointment?: AppointmentRow | null; targetStartIso?: string | null; targetEndIso?: string | null; timezoneName: string; taskPayload?: Record<string, unknown>; }) {
+  const appointment = args.appointment || null;
+  const { error } = await args.supabase.from("store_assistant_operational_tasks").insert({
+    organization_id: args.organizationId,
+    store_id: args.storeId,
+    thread_id: args.threadId,
+    task_type: args.taskType,
+    status: args.status,
+    priority: args.priority || "normal",
+    title: args.title,
+    description: args.description || null,
+    related_lead_id: appointment?.lead_id || null,
+    related_conversation_id: appointment?.conversation_id || null,
+    related_appointment_id: appointment?.id || null,
+    customer_name: appointment?.customer_name || null,
+    customer_phone: appointment?.customer_phone || null,
+    target_date: isoDateToLocalDateForDb(args.targetStartIso, args.timezoneName),
+    target_time: args.targetStartIso ? formatTimeOnlyInTimeZone(args.targetStartIso, args.timezoneName) : null,
+    target_start_at: args.targetStartIso || null,
+    target_end_at: args.targetEndIso || null,
+    timezone_name: args.timezoneName,
+    task_payload: args.taskPayload || {},
+    last_action_at: new Date().toISOString(),
+  });
+  return { ok: !error, error: error?.message || null };
+}
+
 function buildProfessionalAppointmentClarificationReply(args: {
   action: ScheduleAction;
   text: string;
@@ -2138,7 +2394,18 @@ function resolveTargetAppointmentIndex(args: {
   text: string;
   openAppointments: AppointmentRow[];
   recentMessages?: AssistantMessageRow[];
+  assistantContextState?: StoreAssistantContextStateRow | null;
 }) {
+  const contextIndex = resolveAppointmentIndexFromAssistantContext({
+    text: args.text,
+    openAppointments: args.openAppointments,
+    contextState: args.assistantContextState || null,
+  });
+
+  if (contextIndex !== null) {
+    return { type: "unique" as const, index: contextIndex };
+  }
+
   const explicitScheduleIndex = resolveExplicitAppointmentItemIndex(args.text, args.openAppointments.length);
   if (explicitScheduleIndex !== null) {
     return { type: "unique" as const, index: explicitScheduleIndex };
@@ -2629,6 +2896,8 @@ async function resolveAppointmentActionReply(args: {
   supabase: any;
   organizationId: string;
   storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
   lastHumanMessage: string;
   recentMessages: AssistantMessageRow[];
   openAppointments: AppointmentRow[];
@@ -2640,6 +2909,7 @@ async function resolveAppointmentActionReply(args: {
   }
 
   const now = getScheduleParsingNow(args.scheduleSettings || null);
+  const scheduleTimezone = getScheduleTimezone(args.scheduleSettings || null);
   const openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
 
   if (action === "create") {
@@ -2689,11 +2959,39 @@ async function resolveAppointmentActionReply(args: {
     text: args.lastHumanMessage,
     openAppointments,
     recentMessages: args.recentMessages,
+    assistantContextState: args.assistantContextState || null,
   });
 
   if (targetResolution.type === "ambiguous") {
     const requestedDateParts = parseDateReferenceFromText(args.lastHumanMessage, now);
     const requestedDateKey = getDateKeyFromParts(requestedDateParts);
+    const requestedTimeLabel = parseTimeRangeFromText(args.lastHumanMessage)?.startTime || null;
+    const candidateOptions = buildAppointmentCandidateOptions({ candidateIndexes: targetResolution.candidateIndexes, openAppointments });
+
+    if (args.threadId) {
+      await upsertAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        patch: {
+          active_topic: "appointment_management",
+          active_intent: action,
+          active_status: "waiting_user_choice",
+          active_customer_name: candidateOptions[0]?.customer_name || args.assistantContextState?.active_customer_name || null,
+          active_customer_phone: candidateOptions[0]?.customer_phone || args.assistantContextState?.active_customer_phone || null,
+          active_lead_id: candidateOptions[0]?.lead_id || args.assistantContextState?.active_lead_id || null,
+          active_conversation_id: candidateOptions[0]?.conversation_id || args.assistantContextState?.active_conversation_id || null,
+          active_appointment_id: null,
+          candidate_options: candidateOptions,
+          context_payload: { reason: "appointment_ambiguity", action, requested_date: requestedDateKey, requested_time: requestedTimeLabel },
+          last_user_message: args.lastHumanMessage,
+          timezone_name: scheduleTimezone,
+        },
+      });
+    }
+
     const matchedOnRequestedDate = requestedDateKey
       ? targetResolution.candidateIndexes.some((candidateIndex) => {
           const candidate = openAppointments[candidateIndex];
@@ -2719,6 +3017,21 @@ async function resolveAppointmentActionReply(args: {
   }
 
   if (targetResolution.type === "none") {
+    const contextOptions = readAssistantCandidateOptions(args.assistantContextState || null);
+    if (contextOptions.length) {
+      const lines = [
+        "Ainda estamos falando dos compromissos que listei antes, mas não consegui ligar sua última mensagem a um item específico.",
+        "",
+        "Me diga o número do item que você quer atualizar:",
+      ];
+      contextOptions.slice(0, 8).forEach((option) => {
+        lines.push(`${option.option_number}. ${formatAppointmentType(option.appointment_type)}${option.title ? ` ${option.title}` : ""}`);
+        if (option.customer_name) lines.push(`- cliente: ${option.customer_name}`);
+        if (option.scheduled_start) lines.push(`- horário: ${formatDateOnly(option.scheduled_start)} às ${formatTimeOnly(option.scheduled_start)}`);
+      });
+      return lines.join("\n").trim();
+    }
+
     return buildProfessionalAppointmentClarificationReply({
       action,
       text: args.lastHumanMessage,
@@ -2754,6 +3067,53 @@ async function resolveAppointmentActionReply(args: {
         customerMessageSent = sendResult.ok;
       }
 
+      if (args.threadId) {
+        await createAssistantOperationalTask({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          threadId: args.threadId,
+          taskType: "appointment_reschedule_with_customer",
+          status: customerMessageSent ? "waiting_customer_response" : "open",
+          priority: "normal",
+          title: `Remarcação de ${buildScheduleAppointmentReferenceLabel(selectedAppointment)}${selectedAppointment.customer_name ? ` - ${selectedAppointment.customer_name}` : ""}`,
+          description: customerMessageSent
+            ? "A assistente já iniciou contato com o cliente. A agenda ainda não foi alterada."
+            : "A assistente identificou a remarcação, mas não conseguiu iniciar contato automático com o cliente.",
+          appointment: selectedAppointment,
+          targetStartIso: reschedulePayload.payload.scheduled_start,
+          targetEndIso: reschedulePayload.payload.scheduled_end,
+          timezoneName: scheduleTimezone,
+          taskPayload: { customer_message_sent: customerMessageSent, source: "assistant.reply.route", original_user_message: args.lastHumanMessage },
+        });
+
+        await upsertAssistantContextState({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          threadId: args.threadId,
+          currentContextState: args.assistantContextState || null,
+          patch: {
+            active_topic: "appointment_reschedule",
+            active_intent: "reschedule",
+            active_status: customerMessageSent ? "waiting_customer_response" : "active",
+            active_customer_name: selectedAppointment.customer_name || null,
+            active_customer_phone: selectedAppointment.customer_phone || null,
+            active_lead_id: selectedAppointment.lead_id || null,
+            active_conversation_id: selectedAppointment.conversation_id || null,
+            active_appointment_id: selectedAppointment.id,
+            target_start_at: reschedulePayload.payload.scheduled_start,
+            target_end_at: reschedulePayload.payload.scheduled_end,
+            target_date: isoDateToLocalDateForDb(reschedulePayload.payload.scheduled_start, scheduleTimezone),
+            target_time: formatTimeOnlyInTimeZone(reschedulePayload.payload.scheduled_start, scheduleTimezone),
+            timezone_name: scheduleTimezone,
+            candidate_options: [],
+            context_payload: { customer_message_sent: customerMessageSent, agenda_updated: false, reason: "waiting_customer_confirmation_before_reschedule" },
+            last_user_message: args.lastHumanMessage,
+          },
+        });
+      }
+
       return buildResponsibleRescheduleContactReply({
         appointment: selectedAppointment,
         targetStartIso: reschedulePayload.payload.scheduled_start,
@@ -2783,6 +3143,18 @@ async function resolveAppointmentActionReply(args: {
 
     if (!updatedRows?.id) {
       return "Eu tentei remarcar o compromisso, mas não consegui confirmar a alteração real na agenda.";
+    }
+
+    if (args.threadId) {
+      await resolveAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        lastUserMessage: args.lastHumanMessage,
+        lastAssistantMessage: `Compromisso remarcado para ${formatDateOnly((updatedRows as AppointmentRow).scheduled_start)} às ${formatTimeOnly((updatedRows as AppointmentRow).scheduled_start)}.`,
+      });
     }
 
     return buildAppointmentActionSuccessReply({
@@ -3990,6 +4362,7 @@ function buildSystemPrompt(args: {
   pendingPostFollowups: PostAppointmentFollowupRow[];
   recentResolvedPostFollowups: PostAppointmentFollowupRow[];
   appointmentMap: Map<string, AppointmentRow>;
+  assistantContextState?: StoreAssistantContextStateRow | null;
   lastHumanMessage: string;
 }) {
   const storeName = args.onboardingMap.store_display_name || args.store.name || "a loja";
@@ -4083,6 +4456,9 @@ function buildSystemPrompt(args: {
     "",
     "HISTÓRICO RECENTE DA THREAD",
     buildHistoryBlock(args.recentMessages),
+    "",
+    "MEMÓRIA OPERACIONAL ATIVA",
+    buildAssistantContextBlock(args.assistantContextState || null),
     "",
     "AGENDA DE HOJE",
     buildTodayAppointmentsBlock(args.todayAppointments),
@@ -4384,6 +4760,21 @@ async function generateAssistantReply(params: {
       };
     }
 
+    const assistantThreadResult = await getOrCreateAssistantThread({ supabase, organizationId, storeId });
+
+    if (!assistantThreadResult.ok || !assistantThreadResult.threadId) {
+      return { ok: false, error: "ASSISTANT_THREAD_NOT_READY", message: assistantThreadResult.error || "Não consegui preparar a thread da assistente." };
+    }
+
+    const assistantThreadId = assistantThreadResult.threadId;
+    const assistantContextResult = await loadAssistantContextState({ supabase, organizationId, storeId, threadId: assistantThreadId });
+
+    if (!assistantContextResult.ok) {
+      return { ok: false, error: "LOAD_ASSISTANT_CONTEXT_FAILED", message: assistantContextResult.error || "Não consegui carregar a memória operacional da assistente." };
+    }
+
+    const assistantContextState = assistantContextResult.contextState;
+
     const now = new Date();
     const startOfDay = new Date(now);
     startOfDay.setHours(0, 0, 0, 0);
@@ -4601,6 +4992,8 @@ async function generateAssistantReply(params: {
           supabase,
           organizationId,
           storeId,
+          threadId: assistantThreadId,
+          assistantContextState,
           lastHumanMessage,
           recentMessages,
           pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
@@ -4615,6 +5008,8 @@ async function generateAssistantReply(params: {
           supabase,
           organizationId,
           storeId,
+          threadId: assistantThreadId,
+          assistantContextState,
           lastHumanMessage,
           recentMessages,
           openAppointments: allOpenAppointments,
@@ -4633,6 +5028,7 @@ async function generateAssistantReply(params: {
       pendingPostFollowups: (pendingPostFollowupsData || []) as PostAppointmentFollowupRow[],
       recentResolvedPostFollowups: (recentResolvedPostFollowupsData || []) as PostAppointmentFollowupRow[],
       appointmentMap,
+      assistantContextState,
       lastHumanMessage,
     });
 
@@ -4735,6 +5131,9 @@ async function generateAssistantReply(params: {
         scheduleManagementMode,
         blockAdjustmentMode: Boolean(blockAdjustmentReply),
         blockDayMode: Boolean(blockDayReply),
+        activeContextId: assistantContextState?.id || null,
+        activeContextStatus: assistantContextState?.active_status || null,
+        activeContextTopic: assistantContextState?.active_topic || null,
         detectedIntent,
       },
     });
