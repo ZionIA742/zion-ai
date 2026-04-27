@@ -90,37 +90,32 @@ function normalizeText(value: string | null | undefined) {
 function classifyCustomerReply(content: string): CustomerReplyDecision {
   const text = normalizeText(content);
 
-  const hasConfirmation =
-    /\b(sim|pode|pode ser|confirmado|confirmo|fechado|combinado|ok|blz|beleza|esta bom|ta bom|serve|da certo|dá certo|pode marcar|marca|marcar nesse horario|esse horario serve)\b/i.test(
-      text
-    );
-
   const hasRejection =
-    /\b(nao|não|nao posso|não posso|nao consigo|não consigo|nesse horario nao|nesse horário não|outro dia|outro horario|outro horário|melhor nao|melhor não)\b/i.test(
+    /(?:^|\s)(nao|não|nao posso|não posso|nao consigo|não consigo|nesse horario nao|nesse horário não|outro dia|outro horario|outro horário|melhor nao|melhor não)(?:\s|$|[.!?,])/i.test(
       text
     );
 
-  const suggestsOtherTime =
-    /\b(amanha|amanhã|hoje|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo|\d{1,2}[h:]\d{0,2})\b/i.test(
+  const hasConfirmation =
+    /(?:^|\s)(sim|confirmado|confirmo|fechado|combinado|ok|blz|beleza|esta bom|ta bom|serve|da certo|dá certo|pode marcar|marca|marcar nesse horario|esse horario serve)(?:\s|$|[.!?,])/i.test(
       text
-    ) &&
-    /\b(pode ser|seria|prefiro|melhor|as|às|a partir|depois|antes)\b/i.test(text) &&
-    !hasConfirmation;
+    ) || /(?:^|\s)pode ser(?:\s|$|[.!?,])/i.test(text);
 
-  if (hasConfirmation && !hasRejection) {
-    return { type: "confirmed", reason: "customer_confirmed_target_time" };
+  const hasPossibleAlternativeTime = hasCustomerSuggestedExplicitDateOrTime(content);
+
+  if (hasRejection) {
+    return { type: "rejected", reason: "customer_rejected_target_time" };
   }
 
-  if (suggestsOtherTime) {
+  if (hasPossibleAlternativeTime && /(?:pode ser|seria|prefiro|melhor|às|as|a partir|depois|antes|dia)/i.test(text)) {
     return {
       type: "suggested_other_time",
-      reason: "customer_suggested_another_time",
+      reason: "customer_suggested_possible_alternative_time",
       rawText: content,
     };
   }
 
-  if (hasRejection) {
-    return { type: "rejected", reason: "customer_rejected_target_time" };
+  if (hasConfirmation) {
+    return { type: "confirmed", reason: "customer_confirmed_target_time" };
   }
 
   return { type: "ambiguous", reason: "customer_reply_not_clear_enough" };
@@ -152,6 +147,15 @@ type LocalDateTimeParts = {
   year: number;
   hour: number;
   minute: number;
+};
+
+type CustomerSuggestedDateTimeParts = {
+  day: number | null;
+  month: number | null;
+  year: number | null;
+  hour: number;
+  minute: number;
+  hasExplicitDate: boolean;
 };
 
 function getLocalDateTimeParts(
@@ -186,12 +190,27 @@ function getLocalDateTimeParts(
   }
 }
 
-function extractCustomerSuggestedDateTimeParts(content: string, target: LocalDateTimeParts) {
-  const rawText = String(content || "").trim();
-  const normalized = normalizeText(rawText);
+function hasCustomerSuggestedExplicitDateOrTime(content: string) {
+  const text = normalizeText(content);
 
-  const explicitDateMatch = normalized.match(/(\d{1,2})\s*[\/\-]\s*(\d{1,2})(?:\s*[\/\-]\s*(\d{2,4}))?/);
-  const dayOnlyMatch = normalized.match(/dia\s+(\d{1,2})/);
+  return (
+    /(?:^|\s)dia\s+\d{1,2}(?:\s|$|[.!?,])/i.test(text) ||
+    /(?:^|\s)\d{1,2}\s*[\/\-]\s*\d{1,2}(?:\s*[\/\-]\s*\d{2,4})?(?:\s|$|[.!?,])/i.test(text) ||
+    /(?:^|\s)(?:as|a|para|pra|por volta de|depois das|antes das)\s+\d{1,2}(?:\s*[:h]\s*\d{1,2})?\s*h?(?:\s|$|[.!?,])/i.test(text) ||
+    /(?:^|\s)\d{1,2}\s*h\s*\d{0,2}(?:\s|$|[.!?,])/i.test(text)
+  );
+}
+
+function extractCustomerSuggestedDateTimeParts(
+  content: string,
+  target: LocalDateTimeParts
+): CustomerSuggestedDateTimeParts | null {
+  const text = normalizeText(content);
+
+  const explicitDateMatch = text.match(
+    /(?:^|\s)(\d{1,2})\s*[\/\-]\s*(\d{1,2})(?:\s*[\/\-]\s*(\d{2,4}))?(?:\s|$|[.!?,])/i
+  );
+  const dayOnlyMatch = text.match(/(?:^|\s)dia\s+(\d{1,2})(?:\s|$|[.!?,])/i);
 
   let day: number | null = null;
   let month: number | null = null;
@@ -209,8 +228,9 @@ function extractCustomerSuggestedDateTimeParts(content: string, target: LocalDat
   }
 
   const preferredHourMatch =
-    normalized.match(/(?:as|a|para|pra|por volta de|depois das|antes das)\s+(\d{1,2})(?:\s*[:h]\s*(\d{1,2}))?\s*h?/) ||
-    normalized.match(/(\d{1,2})\s*h\s*(\d{1,2})?/);
+    text.match(
+      /(?:^|\s)(?:as|a|para|pra|por volta de|depois das|antes das)\s+(\d{1,2})(?:\s*[:h]\s*(\d{1,2}))?\s*h?(?:\s|$|[.!?,])/i
+    ) || text.match(/(?:^|\s)(\d{1,2})\s*h\s*(\d{1,2})?(?:\s|$|[.!?,])/i);
 
   if (!preferredHourMatch) {
     return null;
@@ -219,7 +239,14 @@ function extractCustomerSuggestedDateTimeParts(content: string, target: LocalDat
   const hour = Number(preferredHourMatch[1]);
   const minute = preferredHourMatch[2] ? Number(preferredHourMatch[2]) : 0;
 
-  if (!Number.isFinite(hour) || hour < 0 || hour > 23 || !Number.isFinite(minute) || minute < 0 || minute > 59) {
+  if (
+    !Number.isFinite(hour) ||
+    hour < 0 ||
+    hour > 23 ||
+    !Number.isFinite(minute) ||
+    minute < 0 ||
+    minute > 59
+  ) {
     return null;
   }
 
@@ -352,14 +379,13 @@ async function processQueueItem(args: {
 
   const timezoneName = task.timezone_name || "America/Sao_Paulo";
 
-  if (
-    decision.type !== "rejected" &&
-    customerSuggestedDifferentTimeFromTarget({
-      content: customerMessage,
-      targetStartAt: task.target_start_at,
-      timezoneName,
-    })
-  ) {
+  const suggestedDifferentTimeFromTarget = customerSuggestedDifferentTimeFromTarget({
+    content: customerMessage,
+    targetStartAt: task.target_start_at,
+    timezoneName,
+  });
+
+  if (suggestedDifferentTimeFromTarget) {
     decision = {
       type: "suggested_other_time",
       reason: "customer_suggested_different_time_from_target",
@@ -536,7 +562,7 @@ async function processQueueItem(args: {
     return {
       ok: true,
       decision,
-      action: "customer_did_not_confirm_target_time",
+      action: decision.type === "suggested_other_time" ? "customer_suggested_other_time" : "customer_did_not_confirm_target_time",
       appointmentId: appointment.id,
       taskId: task.id,
     };
