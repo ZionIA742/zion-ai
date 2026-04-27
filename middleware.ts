@@ -8,8 +8,16 @@ export async function middleware(req: NextRequest) {
     path === "/login" ||
     path.startsWith("/_next") ||
     path.startsWith("/favicon") ||
+
+    // Rotas internas protegidas por segredo próprio.
+    // Elas não podem depender de sessão/login, porque são chamadas por worker, cron ou integrações.
     path === "/api/internal/ai-sales-reply" ||
-    path === "/api/internal/whatsapp/process-pending";
+    path === "/api/internal/whatsapp/process-pending" ||
+    path === "/api/internal/assistant-operational-tasks/process" ||
+
+    // Rotas de cron da Vercel.
+    // A autenticação delas é feita dentro da própria rota via CRON_SECRET.
+    path === "/api/cron/assistant-operational-tasks";
 
   if (isPublic) {
     return NextResponse.next();
