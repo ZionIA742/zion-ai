@@ -2606,6 +2606,151 @@ async function createAssistantOperationalTask(args: { supabase: any; organizatio
   };
 }
 
+function getOperationalTaskPayload(task: StoreAssistantOperationalTaskRow | null | undefined) {
+  const payload = task?.task_payload;
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, any>) : {};
+}
+
+function isResponsibleApprovalForSuggestedTime(text: string) {
+  const normalized = normalizeText(text);
+  return /\b(sim|pode|pode sim|confirmo|confirmado|confirma|confirmar|pode confirmar|pode atualizar|atualiza|fechado|combinado|ok|beleza|ta bom|está bom)\b/.test(normalized) &&
+    !/\b(nao|não|nao pode|não pode|cancela|cancelar|melhor nao|melhor não)\b/.test(normalized);
+}
+
+function isResponsibleRejectingSuggestedTime(text: string) {
+  return /\b(nao|não|nao pode|não pode|nao confirma|não confirma|melhor nao|melhor não|nao atualiza|não atualiza)\b/.test(normalizeText(text));
+}
+
+function findSuggestedTimeApprovalTask(tasks: StoreAssistantOperationalTaskRow[]) {
+  return (tasks || []).find((task) => {
+    const payload = getOperationalTaskPayload(task);
+    return task.task_type === "appointment_reschedule_with_customer" &&
+      task.status === "waiting_customer_response" &&
+      Boolean(payload.needs_responsible_approval) &&
+      typeof payload.suggested_start_at === "string" &&
+      typeof payload.suggested_end_at === "string" &&
+      Boolean(task.related_appointment_id);
+  }) || null;
+}
+
+async function checkSuggestedTimeApprovalAvailability(args: { supabase: any; organizationId: string; storeId: string; appointmentId: string; startIso: string; endIso: string; }) {
+  const { data: blocks, error: blocksError } = await args.supabase
+    .from("store_schedule_blocks")
+    .select("id, title, start_at, end_at")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .lt("start_at", args.endIso)
+    .gt("end_at", args.startIso)
+    .limit(5);
+  if (blocksError) return { available: false, reason: `Erro ao verificar bloqueios: ${blocksError.message}` };
+  const blockRows = Array.isArray(blocks) ? blocks : [];
+  if (blockRows.length > 0) return { available: false, reason: `Existe bloqueio de agenda nesse horário: ${(blockRows[0] as any)?.title || "bloqueio sem título"}` };
+
+  const { data: appointments, error: appointmentsError } = await args.supabase
+    .from("store_appointments")
+    .select("id, title, customer_name, scheduled_start, scheduled_end, status")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .in("status", ["scheduled", "rescheduled"])
+    .neq("id", args.appointmentId)
+    .lt("scheduled_start", args.endIso)
+    .gt("scheduled_end", args.startIso)
+    .limit(5);
+  if (appointmentsError) return { available: false, reason: `Erro ao verificar compromissos: ${appointmentsError.message}` };
+  const appointmentRows = Array.isArray(appointments) ? appointments : [];
+  if (appointmentRows.length > 0) {
+    const first = appointmentRows[0] as any;
+    return { available: false, reason: `Já existe compromisso nesse horário: ${first?.title || first?.customer_name || "compromisso sem título"}` };
+  }
+  return { available: true, reason: null as string | null };
+}
+
+function formatSuggestedDateTimeForResponsible(value: string, timezoneName: string) {
+  return `${formatDateOnlyInTimeZone(value, timezoneName)} às ${formatTimeOnlyInTimeZone(value, timezoneName)}`;
+}
+
+function buildCustomerConfirmationTextForSuggestedTime(args: { appointment: AppointmentRow; suggestedStartIso: string; timezoneName: string; }) {
+  const customerName = args.appointment.customer_name || "tudo bem";
+  const appointmentTypeLabel = formatAppointmentType(args.appointment.appointment_type || "compromisso").toLowerCase();
+  const suggestedDate = formatDateOnlyInTimeZone(args.suggestedStartIso, args.timezoneName);
+  const suggestedTime = formatTimeOnlyInTimeZone(args.suggestedStartIso, args.timezoneName);
+  return `Oi, ${customerName}. Confirmado então: sua ${appointmentTypeLabel} ficou para ${suggestedDate} às ${suggestedTime}. Qualquer coisa, é só me avisar.`;
+}
+
+async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organizationId: string; storeId: string; threadId: string; assistantContextState?: StoreAssistantContextStateRow | null; openOperationalTasks: StoreAssistantOperationalTaskRow[]; lastHumanMessage: string; }) {
+  const task = findSuggestedTimeApprovalTask(args.openOperationalTasks || []);
+  if (!task) return null;
+  const payload = getOperationalTaskPayload(task);
+  const suggestedStartIso = String(payload.suggested_start_at || "").trim();
+  const suggestedEndIso = String(payload.suggested_end_at || "").trim();
+  const timezoneName = task.timezone_name || "America/Sao_Paulo";
+  const customerName = task.customer_name || "O cliente";
+
+  if (isResponsibleRejectingSuggestedTime(args.lastHumanMessage)) {
+    await args.supabase.from("store_assistant_operational_tasks").update({
+      task_payload: { ...payload, needs_responsible_approval: false, responsible_declined_suggested_time: true, responsible_declined_suggested_time_at: new Date().toISOString(), last_responsible_reply: args.lastHumanMessage },
+      last_action_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      description: "Responsável não aprovou o horário sugerido. A agenda ainda não foi alterada.",
+    }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
+    return `Certo. Não alterei a agenda. ${customerName} tinha sugerido ${payload.suggested_label || "outro horário"}. Me diga qual horário você quer sugerir para eu continuar a remarcação.`;
+  }
+  if (!isResponsibleApprovalForSuggestedTime(args.lastHumanMessage)) return null;
+  if (!suggestedStartIso || !suggestedEndIso) return `Entendi que você quer confirmar o horário sugerido por ${customerName}, mas não encontrei a data e hora sugeridas com segurança. A agenda não foi alterada.`;
+
+  const { data: appointmentRow, error: appointmentError } = await args.supabase
+    .from("store_appointments").select("*").eq("id", task.related_appointment_id).eq("organization_id", args.organizationId).eq("store_id", args.storeId).maybeSingle();
+  const appointment = appointmentRow as AppointmentRow | null;
+  if (appointmentError || !appointment) return `Entendi a aprovação, mas não consegui encontrar o compromisso ligado a essa remarcação. A agenda não foi alterada.`;
+
+  const availability = await checkSuggestedTimeApprovalAvailability({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, appointmentId: appointment.id, startIso: suggestedStartIso, endIso: suggestedEndIso });
+  if (!availability.available) {
+    await args.supabase.from("store_assistant_operational_tasks").update({
+      task_payload: { ...payload, needs_responsible_approval: true, suggested_time_available: false, suggested_time_unavailable_reason: availability.reason, suggested_time_checked_at: new Date().toISOString(), last_responsible_reply: args.lastHumanMessage },
+      last_action_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      description: "Horário sugerido pelo cliente não está disponível. A agenda ainda não foi alterada.",
+    }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
+    return `Antes de confirmar com ${customerName}, verifiquei de novo a agenda e esse horário não está livre: ${availability.reason || "encontrei conflito"}. A agenda não foi alterada.`;
+  }
+
+  const customerMessageResult = appointment.conversation_id
+    ? await sendAiMessageToCustomerConversation({ supabase: args.supabase, conversationId: appointment.conversation_id, text: buildCustomerConfirmationTextForSuggestedTime({ appointment, suggestedStartIso, timezoneName }) })
+    : null;
+  if (!customerMessageResult?.ok) return `Tentei confirmar o horário com ${customerName}, mas não consegui enviar a mensagem ao cliente. A agenda não foi alterada. ${customerMessageResult?.error ? `Erro: ${customerMessageResult.error}` : "Conversa do cliente não encontrada."}`;
+
+  const { data: updatedAppointment, error: updateError } = await args.supabase.rpc("update_store_appointment", {
+    p_appointment_id: appointment.id,
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+    p_title: appointment.title,
+    p_appointment_type: appointment.appointment_type,
+    p_status: "rescheduled",
+    p_scheduled_start: suggestedStartIso,
+    p_scheduled_end: suggestedEndIso,
+    p_customer_name: appointment.customer_name,
+    p_customer_phone: appointment.customer_phone,
+    p_address_text: appointment.address_text,
+    p_notes: appointment.notes,
+  });
+  if (updateError) {
+    await args.supabase.from("store_assistant_operational_tasks").update({
+      status: "failed", error_text: updateError.message,
+      task_payload: { ...payload, last_responsible_reply: args.lastHumanMessage, responsible_approved_suggested_time: true, customer_confirmation_message_sent: true, customer_confirmation_message_id: customerMessageResult.messageId || null, appointment_update_attempted: true, appointment_update_succeeded: false, last_execution_error: updateError.message, updated_by_assistant_route_at: new Date().toISOString() },
+      last_action_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
+    return `Consegui mandar a confirmação para ${customerName}, mas não consegui atualizar a agenda: ${updateError.message}`;
+  }
+
+  const resolvedPayload = { ...payload, needs_responsible_approval: false, responsible_approved_suggested_time: true, responsible_approved_suggested_time_at: new Date().toISOString(), last_responsible_reply: args.lastHumanMessage, customer_confirmation_message_sent: true, customer_confirmation_message_id: customerMessageResult.messageId || null, appointment_update_attempted: true, appointment_update_succeeded: true, updated_appointment: updatedAppointment, updated_by_assistant_route_at: new Date().toISOString() };
+  const { error: taskUpdateError } = await args.supabase.from("store_assistant_operational_tasks").update({
+    status: "resolved", resolved_at: new Date().toISOString(), task_payload: resolvedPayload,
+    last_action_at: new Date().toISOString(), description: "Responsável aprovou o horário sugerido pelo cliente. Cliente avisado e agenda atualizada.", updated_at: new Date().toISOString(),
+  }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
+  if (taskUpdateError) return `Atualizei a agenda e avisei ${customerName}, mas não consegui finalizar a tarefa operacional: ${taskUpdateError.message}`;
+
+  await resolveAssistantContextState({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId, currentContextState: args.assistantContextState || null, lastUserMessage: args.lastHumanMessage, lastAssistantMessage: `${customerName} confirmado em ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.` });
+  return `Pronto. Confirmei com ${customerName} e atualizei ${appointment.title} para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.`;
+}
+
 function buildProfessionalAppointmentClarificationReply(args: {
   action: ScheduleAction;
   text: string;
@@ -5917,7 +6062,17 @@ async function generateAssistantReply(params: {
       ...baseOpenAppointments,
     ];
 
-    const blockAdjustmentReply = !appointmentManagementRequest
+    const suggestedTimeApprovalReply = await resolveSuggestedTimeApprovalReply({
+      supabase,
+      organizationId,
+      storeId,
+      threadId: assistantThreadId,
+      assistantContextState,
+      openOperationalTasks,
+      lastHumanMessage,
+    });
+
+    const blockAdjustmentReply = !suggestedTimeApprovalReply && !appointmentManagementRequest
       ? await resolveScheduleBlockAdjustmentReply({
           supabase,
           organizationId,
@@ -5928,7 +6083,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const blockDayReply = !appointmentManagementRequest && !blockAdjustmentReply
+    const blockDayReply = !suggestedTimeApprovalReply && !appointmentManagementRequest && !blockAdjustmentReply
       ? await resolveBlockDayReply({
           supabase,
           organizationId,
@@ -5940,7 +6095,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const postAppointmentActionReply = !blockAdjustmentReply && !blockDayReply && postAppointmentMode && !appointmentManagementRequest
+    const postAppointmentActionReply = !suggestedTimeApprovalReply && !blockAdjustmentReply && !blockDayReply && postAppointmentMode && !appointmentManagementRequest
       ? await resolvePostAppointmentActionReply({
           supabase,
           organizationId,
@@ -5956,7 +6111,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const customerAvailabilityContextReply = !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
+    const customerAvailabilityContextReply = !suggestedTimeApprovalReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
       ? await resolveCustomerAvailabilityRequestFromContext({
           supabase,
           organizationId,
@@ -5969,7 +6124,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const scheduleActionReply = !blockAdjustmentReply && !blockDayReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
+    const scheduleActionReply = !suggestedTimeApprovalReply && !blockAdjustmentReply && !blockDayReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
       ? await resolveAppointmentActionReply({
           supabase,
           organizationId,
@@ -6009,7 +6164,9 @@ async function generateAssistantReply(params: {
 
     let aiText = "";
 
-    if (blockAdjustmentReply) {
+    if (suggestedTimeApprovalReply) {
+      aiText = suggestedTimeApprovalReply;
+    } else if (blockAdjustmentReply) {
       aiText = blockAdjustmentReply;
     } else if (blockDayReply) {
       aiText = blockDayReply;
@@ -6078,6 +6235,7 @@ async function generateAssistantReply(params: {
       asksAboutToday(lastHumanMessage) ||
       postAppointmentMode ||
       scheduleManagementMode ||
+      Boolean(suggestedTimeApprovalReply) ||
       nextVisitMode ||
       morningReportMode ||
       eveningReportMode;
@@ -6111,6 +6269,7 @@ async function generateAssistantReply(params: {
         blockAdjustmentMode: Boolean(blockAdjustmentReply),
         blockDayMode: Boolean(blockDayReply),
         customerAvailabilityContextMode: Boolean(customerAvailabilityContextReply),
+        suggestedTimeApprovalMode: Boolean(suggestedTimeApprovalReply),
         activeContextId: assistantContextState?.id || null,
         activeContextStatus: assistantContextState?.active_status || null,
         activeContextTopic: assistantContextState?.active_topic || null,

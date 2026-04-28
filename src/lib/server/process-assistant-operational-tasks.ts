@@ -280,6 +280,176 @@ function customerSuggestedDifferentTimeFromTarget(args: {
   return dateDiffers || timeDiffers;
 }
 
+function getTimeZoneOffsetMinutes(timeZone: string, date: Date) {
+  const safeTimeZone = timeZone || "America/Sao_Paulo";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: safeTimeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+
+  const values: Record<string, number> = {};
+  for (const part of parts) {
+    if (part.type !== "literal") values[part.type] = Number(part.value);
+  }
+
+  const localAsUtc = Date.UTC(
+    values.year || date.getUTCFullYear(),
+    (values.month || 1) - 1,
+    values.day || 1,
+    values.hour || 0,
+    values.minute || 0,
+    values.second || 0
+  );
+
+  return Math.round((localAsUtc - date.getTime()) / 60000);
+}
+
+function localDateTimePartsToUtcIso(args: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  timezoneName?: string | null;
+}) {
+  const timezoneName = args.timezoneName || "America/Sao_Paulo";
+  const approximateUtc = new Date(Date.UTC(args.year, args.month - 1, args.day, args.hour, args.minute, 0));
+  const offsetMinutes = getTimeZoneOffsetMinutes(timezoneName, approximateUtc);
+  return new Date(approximateUtc.getTime() - offsetMinutes * 60000).toISOString();
+}
+
+function formatLocalDateOnly(value: string, timezoneName = "America/Sao_Paulo") {
+  try {
+    return new Intl.DateTimeFormat("pt-BR", {
+      timeZone: timezoneName || "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function formatLocalTimeOnly(value: string, timezoneName = "America/Sao_Paulo") {
+  try {
+    return new Intl.DateTimeFormat("pt-BR", {
+      timeZone: timezoneName || "America/Sao_Paulo",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function buildSuggestedRescheduleWindow(args: {
+  content: string;
+  targetStartAt: string | null | undefined;
+  targetEndAt: string | null | undefined;
+  timezoneName?: string | null;
+}) {
+  const timezoneName = args.timezoneName || "America/Sao_Paulo";
+  const target = getLocalDateTimeParts(args.targetStartAt, timezoneName);
+  if (!target) return null;
+
+  const suggestion = extractCustomerSuggestedDateTimeParts(args.content, target);
+  if (!suggestion) return null;
+
+  const startIso = localDateTimePartsToUtcIso({
+    year: suggestion.year || target.year,
+    month: suggestion.month || target.month,
+    day: suggestion.day || target.day,
+    hour: suggestion.hour,
+    minute: suggestion.minute,
+    timezoneName,
+  });
+
+  const targetStartMs = args.targetStartAt ? new Date(args.targetStartAt).getTime() : Number.NaN;
+  const targetEndMs = args.targetEndAt ? new Date(args.targetEndAt).getTime() : Number.NaN;
+  const durationMinutes =
+    Number.isFinite(targetStartMs) && Number.isFinite(targetEndMs) && targetEndMs > targetStartMs
+      ? Math.round((targetEndMs - targetStartMs) / 60000)
+      : 60;
+
+  const endIso = new Date(new Date(startIso).getTime() + durationMinutes * 60000).toISOString();
+
+  return {
+    startIso,
+    endIso,
+    suggestedDate: formatLocalDateOnly(startIso, timezoneName),
+    suggestedTime: formatLocalTimeOnly(startIso, timezoneName),
+    suggestedLabel: formatLocalDateTime(startIso, timezoneName),
+    durationMinutes,
+  };
+}
+
+async function checkSuggestedRescheduleAvailability(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  appointmentId: string;
+  startIso: string;
+  endIso: string;
+}) {
+  const { data: blocks, error: blocksError } = await args.supabase
+    .from("store_schedule_blocks")
+    .select("id, title, start_at, end_at")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .lt("start_at", args.endIso)
+    .gt("end_at", args.startIso)
+    .limit(5);
+
+  if (blocksError) {
+    return { available: false, reason: `Erro ao verificar bloqueios: ${blocksError.message}`, blocks: [], appointments: [] };
+  }
+
+  const overlappingBlocks = Array.isArray(blocks) ? blocks : [];
+  if (overlappingBlocks.length > 0) {
+    return {
+      available: false,
+      reason: `Existe bloqueio de agenda nesse horário: ${overlappingBlocks[0]?.title || "bloqueio sem título"}`,
+      blocks: overlappingBlocks,
+      appointments: [],
+    };
+  }
+
+  const { data: appointments, error: appointmentsError } = await args.supabase
+    .from("store_appointments")
+    .select("id, title, customer_name, scheduled_start, scheduled_end, status")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .in("status", ["scheduled", "rescheduled"])
+    .neq("id", args.appointmentId)
+    .lt("scheduled_start", args.endIso)
+    .gt("scheduled_end", args.startIso)
+    .limit(5);
+
+  if (appointmentsError) {
+    return { available: false, reason: `Erro ao verificar compromissos: ${appointmentsError.message}`, blocks: [], appointments: [] };
+  }
+
+  const overlappingAppointments = Array.isArray(appointments) ? appointments : [];
+  if (overlappingAppointments.length > 0) {
+    const first = overlappingAppointments[0] as any;
+    return {
+      available: false,
+      reason: `Já existe compromisso nesse horário: ${first?.title || first?.customer_name || "compromisso sem título"}`,
+      blocks: [],
+      appointments: overlappingAppointments,
+    };
+  }
+
+  return { available: true, reason: null as string | null, blocks: [], appointments: [] };
+}
+
 function appendTaskPayload(existing: Record<string, any> | null | undefined, patch: Record<string, any>) {
   return {
     ...(existing && typeof existing === "object" ? existing : {}),
@@ -510,6 +680,27 @@ async function processQueueItem(args: {
   }
 
   if (decision.type === "rejected" || decision.type === "suggested_other_time") {
+    const suggestedWindow =
+      decision.type === "suggested_other_time"
+        ? buildSuggestedRescheduleWindow({
+            content: customerMessage,
+            targetStartAt: task.target_start_at,
+            targetEndAt: task.target_end_at,
+            timezoneName,
+          })
+        : null;
+
+    const suggestedAvailability = suggestedWindow
+      ? await checkSuggestedRescheduleAvailability({
+          supabase,
+          organizationId: queue.organization_id,
+          storeId: queue.store_id,
+          appointmentId: appointment.id,
+          startIso: suggestedWindow.startIso,
+          endIso: suggestedWindow.endIso,
+        })
+      : null;
+
     const updatedPayload = appendTaskPayload(task.task_payload, {
       last_customer_reply: customerMessage,
       last_customer_reply_message_id: queue.message_id,
@@ -517,6 +708,16 @@ async function processQueueItem(args: {
       appointment_update_attempted: false,
       appointment_update_succeeded: false,
       needs_new_time_negotiation: true,
+      needs_responsible_approval: decision.type === "suggested_other_time" && Boolean(suggestedWindow),
+      suggested_start_at: suggestedWindow?.startIso || null,
+      suggested_end_at: suggestedWindow?.endIso || null,
+      suggested_date: suggestedWindow?.suggestedDate || null,
+      suggested_time: suggestedWindow?.suggestedTime || null,
+      suggested_label: suggestedWindow?.suggestedLabel || null,
+      suggested_duration_minutes: suggestedWindow?.durationMinutes || null,
+      suggested_time_available: suggestedAvailability?.available ?? null,
+      suggested_time_unavailable_reason: suggestedAvailability?.available === false ? suggestedAvailability.reason : null,
+      suggested_time_checked_at: suggestedWindow ? new Date().toISOString() : null,
     });
 
     const { error: taskUpdateError } = await supabase
@@ -539,13 +740,24 @@ async function processQueueItem(args: {
       throw new Error(taskUpdateError.message);
     }
 
+    const suggestedApprovalText = (() => {
+      if (decision.type !== "suggested_other_time") return null;
+      if (!suggestedWindow) {
+        return `${task.customer_name || "O cliente"} sugeriu outro horário: “${customerMessage}”. Não consegui transformar essa sugestão em data e hora com segurança. A agenda ainda não foi alterada.`;
+      }
+      if (suggestedAvailability?.available) {
+        return `${task.customer_name || "O cliente"} sugeriu ${suggestedWindow.suggestedLabel}. Esse horário está livre na agenda. Quer que eu confirme com o cliente e atualize a agenda?`;
+      }
+      return `${task.customer_name || "O cliente"} sugeriu ${suggestedWindow.suggestedLabel}, mas esse horário não está livre: ${suggestedAvailability?.reason || "encontrei conflito na agenda"}. A agenda ainda não foi alterada.`;
+    })();
+
     await pushAssistantSystemMessage({
       supabase,
       organizationId: queue.organization_id,
       storeId: queue.store_id,
       content:
         decision.type === "suggested_other_time"
-          ? `${task.customer_name || "O cliente"} sugeriu outro horário: “${customerMessage}”. A agenda ainda não foi alterada.`
+          ? suggestedApprovalText || `${task.customer_name || "O cliente"} sugeriu outro horário: “${customerMessage}”. A agenda ainda não foi alterada.`
           : `${task.customer_name || "O cliente"} não confirmou o horário sugerido. A agenda continua como estava.`,
       relatedLeadId: task.related_lead_id,
       relatedConversationId: task.related_conversation_id,
@@ -556,6 +768,8 @@ async function processQueueItem(args: {
         task_id: task.id,
         appointment_id: appointment.id,
         decision,
+        suggested_window: suggestedWindow,
+        suggested_availability: suggestedAvailability,
       },
     });
 
@@ -565,6 +779,8 @@ async function processQueueItem(args: {
       action: decision.type === "suggested_other_time" ? "customer_suggested_other_time" : "customer_did_not_confirm_target_time",
       appointmentId: appointment.id,
       taskId: task.id,
+      suggestedWindow,
+      suggestedAvailability,
     };
   }
 
