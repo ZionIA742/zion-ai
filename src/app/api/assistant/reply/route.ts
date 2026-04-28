@@ -1957,12 +1957,87 @@ function buildAppointmentDateMismatchAlternativesReply(args: {
   return lines.join("\n").trim();
 }
 
+function splitNormalizedWords(value: string | null | undefined) {
+  return normalizeText(value)
+    .split(/[^a-z0-9]+/g)
+    .map((word) => word.trim())
+    .filter(Boolean);
+}
+
+function normalizedWordsContainSequence(textWords: string[], phraseWords: string[]) {
+  if (!phraseWords.length || phraseWords.length > textWords.length) return false;
+  for (let index = 0; index <= textWords.length - phraseWords.length; index += 1) {
+    let matches = true;
+    for (let offset = 0; offset < phraseWords.length; offset += 1) {
+      if (textWords[index + offset] !== phraseWords[offset]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
+}
+
+function isGenericAppointmentReference(value: string | null | undefined) {
+  const words = splitNormalizedWords(value);
+  if (!words.length) return true;
+  if (words.length > 1) return false;
+  const only = words[0];
+  return ["teste", "test", "visita", "compromisso", "agendamento", "atendimento"].includes(only) || only.length < 4;
+}
+
+function hasExactPhraseByWords(text: string | null | undefined, phrase: string | null | undefined) {
+  const textWords = splitNormalizedWords(text);
+  const phraseWords = splitNormalizedWords(phrase);
+  return normalizedWordsContainSequence(textWords, phraseWords);
+}
+
+function isSafeCustomerMentionInText(text: string, customerName: string | null | undefined) {
+  const customerWords = splitNormalizedWords(customerName);
+  if (!customerWords.length) return false;
+  const textWords = splitNormalizedWords(text);
+
+  if (!normalizedWordsContainSequence(textWords, customerWords)) return false;
+
+  // Nome com duas ou mais palavras precisa aparecer exatamente como sequência.
+  // Isso permite "Cliente Recusa Teste 2" e impede que o cliente genérico "teste"
+  // capture uma mensagem que menciona outro cliente contendo a palavra teste.
+  if (customerWords.length >= 2) return true;
+
+  const only = customerWords[0];
+  const normalized = normalizeText(text);
+  if (isGenericAppointmentReference(only)) {
+    return normalized === only || normalized.includes(`cliente ${only}`) || normalized.includes(`do cliente ${only}`);
+  }
+
+  return true;
+}
+
+function isSafeTitleMentionInText(text: string, title: string | null | undefined) {
+  const titleWords = splitNormalizedWords(title);
+  if (!titleWords.length) return false;
+  const textWords = splitNormalizedWords(text);
+  if (!normalizedWordsContainSequence(textWords, titleWords)) return false;
+
+  if (titleWords.length >= 2) return true;
+
+  const only = titleWords[0];
+  const normalized = normalizeText(text);
+  if (isGenericAppointmentReference(only)) {
+    return normalized === only || normalized.includes(`titulo ${only}`) || normalized.includes(`título ${only}`);
+  }
+
+  return true;
+}
+
 function resolveAppointmentCandidateIndexesFromText(args: {
   text: string;
   openAppointments: AppointmentRow[];
 }) {
-  const normalizedText = normalizeText(args.text);
-  const digitText = normalizeDigits(args.text);
+  const rawText = String(args.text || "").trim();
+  const normalizedText = normalizeText(rawText);
+  const digitText = normalizeDigits(rawText);
 
   if (!normalizedText) return [] as number[];
 
@@ -1978,13 +2053,17 @@ function resolveAppointmentCandidateIndexesFromText(args: {
       phoneMatches.push(index);
     }
 
-    const customerName = normalizeText(appointment.customer_name);
-    if (customerName && customerName.length >= 3 && normalizedText.includes(customerName)) {
+    const customerName = appointment.customer_name || "";
+    const customerNameNormalized = normalizeText(customerName);
+    const safeCustomerMention = isSafeCustomerMentionInText(rawText, customerName);
+    if (customerNameNormalized && safeCustomerMention) {
       customerMatches.push(index);
     }
 
-    const title = normalizeText(appointment.title);
-    if (title && title.length >= 3 && normalizedText.includes(title)) {
+    const title = appointment.title || "";
+    const titleNormalized = normalizeText(title);
+    const safeTitleMention = isSafeTitleMentionInText(rawText, title);
+    if (titleNormalized && safeTitleMention) {
       titleMatches.push(index);
     }
 
@@ -2029,46 +2108,23 @@ function resolveAppointmentCandidateIndexesFromText(args: {
     }
 
     if (
-      customerName &&
-      customerName.length >= 3 &&
+      customerNameNormalized &&
+      safeCustomerMention &&
       (
-        normalizedText.includes(`sobre o cliente ${customerName}`) ||
-        normalizedText.includes(`sobre o ${customerName}`) ||
-        normalizedText.includes(`do cliente ${customerName}`) ||
-        normalizedText.includes(`do ${customerName}`) ||
-        normalizedText.includes(`esse do ${customerName}`) ||
-        normalizedText.includes(`a instalacao do ${customerName}`) ||
-        normalizedText.includes(`a instalação do ${customerName}`) ||
-        normalizedText.includes(`a visita do ${customerName}`) ||
-        normalizedText.includes(`visita tecnica do ${customerName}`) ||
-        normalizedText.includes(`visita técnica do ${customerName}`) ||
-        normalizedText.includes(`manutencao ${customerName}`) ||
-        normalizedText.includes(`manutenção ${customerName}`)
+        normalizedText.includes("cliente") ||
+        normalizedText.includes("visita") ||
+        normalizedText.includes("compromisso") ||
+        normalizedText.includes("agendamento") ||
+        normalizedText.includes("instalacao") ||
+        normalizedText.includes("instalação") ||
+        normalizedText.includes("manutencao") ||
+        normalizedText.includes("manutenção")
       )
     ) {
       strongContextMatches.push(index);
     }
 
-    if (
-      title &&
-      title.length >= 3 &&
-      (
-        normalizedText.includes(`quero atualizar ${title}`) ||
-        normalizedText.includes(`conclui ${title}`) ||
-        normalizedText.includes(`cancela ${title}`) ||
-        normalizedText.includes(`remarca ${title}`) ||
-        normalizedText.includes(`marque como concluido ${title}`) ||
-        normalizedText.includes(`marque como concluída ${title}`) ||
-        normalizedText.includes(`marque como concluida ${title}`) ||
-        normalizedText.includes(`marca como concluido ${title}`) ||
-        normalizedText.includes(`marca como concluída ${title}`) ||
-        normalizedText.includes(`marca como concluida ${title}`) ||
-        normalizedText.includes(`deixa como concluido ${title}`) ||
-        normalizedText.includes(`deixa como concluída ${title}`) ||
-        normalizedText.includes(`deixa como concluida ${title}`) ||
-        normalizedText.includes(title)
-      )
-    ) {
+    if (titleNormalized && safeTitleMention) {
       strongContextMatches.push(index);
     }
   });
@@ -2620,6 +2676,119 @@ async function resolveCancellationTargetSelectionAfterUnsafePrompt(args: {
     scheduleSettings: args.scheduleSettings || null,
     reasonText: extractCancellationReasonFromDecision(previousCancellationRequest) || extractCancellationReasonFromDecision(args.lastHumanMessage),
   });
+}
+
+
+function isAwaitingCancellationTargetClarification(contextState?: StoreAssistantContextStateRow | null) {
+  const payload = readAssistantContextPayload(contextState || null);
+  return normalizeText(contextState?.active_topic || "") === "appointment_management" &&
+    normalizeText(contextState?.active_intent || "") === "cancel" &&
+    normalizeText(contextState?.active_status || "") === "waiting_user_choice" &&
+    normalizeText(String(payload.phase || payload.decision_step || "")) === "awaiting_cancel_target";
+}
+
+function isCorrectionAboutWrongAppointment(text: string) {
+  const normalized = normalizeText(text);
+  return hasAnyTerm(normalized, [
+    "nao era esse", "não era esse", "nao e esse", "não é esse", "era o outro", "e o outro", "é o outro",
+    "esse nao", "esse não", "o compromisso certo", "o cliente certo", "nao queria esse", "não queria esse",
+  ]);
+}
+
+async function loadOpenAppointmentsForAssistantTargetLookup(args: { supabase: any; organizationId: string; storeId: string; }) {
+  const { data, error } = await args.supabase
+    .from("store_appointments")
+    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .in("status", ["scheduled", "rescheduled"])
+    .order("scheduled_start", { ascending: true })
+    .limit(250);
+
+  if (error) return [] as AppointmentRow[];
+  return (data || []) as AppointmentRow[];
+}
+
+async function resolvePendingCancellationTargetClarificationReply(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  lastHumanMessage: string;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const contextState = args.assistantContextState || null;
+  if (!isAwaitingCancellationTargetClarification(contextState)) return null;
+
+  const text = String(args.lastHumanMessage || "").trim();
+  if (!text) return buildUnsafeCancellationWithoutTargetReply();
+
+  if (isCorrectionAboutWrongAppointment(text)) {
+    const reply = "Tudo bem, não alterei mais nada. Me diga qual compromisso você quer cancelar, informando o nome completo do cliente, o título, a data/horário ou escolhendo um item da lista.";
+    if (args.threadId) await upsertAssistantContextState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      currentContextState: contextState,
+      patch: { last_user_message: args.lastHumanMessage, last_assistant_message: reply },
+    });
+    return reply;
+  }
+
+  const openAppointments = await loadOpenAppointmentsForAssistantTargetLookup({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId });
+  const candidateIndexes = resolveAppointmentCandidateIndexesFromText({ text, openAppointments });
+
+  if (candidateIndexes.length === 1) {
+    const appointment = openAppointments[candidateIndexes[0]];
+    return startCustomerAppointmentCancelDecision({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId || null,
+      assistantContextState: contextState,
+      lastHumanMessage: args.lastHumanMessage,
+      appointment,
+      scheduleSettings: args.scheduleSettings || null,
+    });
+  }
+
+  if (candidateIndexes.length > 1) {
+    const candidateOptions = buildAppointmentCandidateOptions({ candidateIndexes, openAppointments });
+    if (args.threadId) await upsertAssistantContextState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      currentContextState: contextState,
+      patch: {
+        active_topic: "appointment_management",
+        active_intent: "cancel",
+        active_status: "waiting_user_choice",
+        candidate_options: candidateOptions,
+        context_payload: {
+          ...readAssistantContextPayload(contextState),
+          phase: "awaiting_cancel_target",
+          reason: "cancel_target_ambiguity",
+          original_cancel_request: readAssistantContextPayload(contextState).original_cancel_request || contextState?.last_user_message || null,
+        },
+        last_user_message: args.lastHumanMessage,
+      },
+    });
+    return buildAppointmentAmbiguityReply({ candidateIndexes, openAppointments, scheduleSettings: args.scheduleSettings || null });
+  }
+
+  const reply = "Não encontrei esse compromisso com segurança. Me diga o nome completo do cliente, o título do compromisso ou a data e o horário. Não alterei nada na agenda.";
+  if (args.threadId) await upsertAssistantContextState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    currentContextState: contextState,
+    patch: { last_user_message: args.lastHumanMessage, last_assistant_message: reply },
+  });
+  return reply;
 }
 
 function extractCancellationReasonFromDecision(text: string) {
@@ -4690,7 +4859,40 @@ async function resolveAppointmentActionReply(args: {
       contextState: args.assistantContextState || null,
     })
   ) {
-    return buildUnsafeCancellationWithoutTargetReply();
+    const reply = buildUnsafeCancellationWithoutTargetReply();
+    if (args.threadId) {
+      await upsertAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        patch: {
+          active_topic: "appointment_management",
+          active_intent: "cancel",
+          active_status: "waiting_user_choice",
+          active_customer_name: null,
+          active_customer_phone: null,
+          active_lead_id: null,
+          active_conversation_id: null,
+          active_appointment_id: null,
+          target_date: null,
+          target_time: null,
+          target_start_at: null,
+          target_end_at: null,
+          candidate_options: [],
+          context_payload: {
+            reason: "cancel_missing_target",
+            phase: "awaiting_cancel_target",
+            original_cancel_request: args.lastHumanMessage,
+            cancellation_reason_text: extractCancellationReasonFromDecision(args.lastHumanMessage),
+          },
+          last_user_message: args.lastHumanMessage,
+          last_assistant_message: reply,
+        },
+      });
+    }
+    return reply;
   }
 
   const commandHasExplicitTitleOnly = Boolean(explicitAppointmentTitleCandidate) && !commandHasExplicitTitleAndOriginalSchedule;
@@ -7172,7 +7374,19 @@ async function generateAssistantReply(params: {
       scheduleSettings,
     });
 
-    const blockAdjustmentReply = !suggestedTimeApprovalReply && !appointmentManagementRequest
+    const pendingCancellationTargetReply = !suggestedTimeApprovalReply
+      ? await resolvePendingCancellationTargetClarificationReply({
+          supabase,
+          organizationId,
+          storeId,
+          threadId: assistantThreadId,
+          assistantContextState,
+          lastHumanMessage,
+          scheduleSettings,
+        })
+      : null;
+
+    const blockAdjustmentReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !appointmentManagementRequest
       ? await resolveScheduleBlockAdjustmentReply({
           supabase,
           organizationId,
@@ -7183,7 +7397,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const blockDayReply = !suggestedTimeApprovalReply && !appointmentManagementRequest && !blockAdjustmentReply
+    const blockDayReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !appointmentManagementRequest && !blockAdjustmentReply
       ? await resolveBlockDayReply({
           supabase,
           organizationId,
@@ -7195,7 +7409,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const postAppointmentActionReply = !suggestedTimeApprovalReply && !blockAdjustmentReply && !blockDayReply && postAppointmentMode && !appointmentManagementRequest
+    const postAppointmentActionReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && postAppointmentMode && !appointmentManagementRequest
       ? await resolvePostAppointmentActionReply({
           supabase,
           organizationId,
@@ -7211,7 +7425,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const customerAvailabilityContextReply = !suggestedTimeApprovalReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
+    const customerAvailabilityContextReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
       ? await resolveCustomerAvailabilityRequestFromContext({
           supabase,
           organizationId,
@@ -7224,7 +7438,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const scheduleActionReply = !suggestedTimeApprovalReply && !blockAdjustmentReply && !blockDayReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
+    const scheduleActionReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
       ? await resolveAppointmentActionReply({
           supabase,
           organizationId,
@@ -7266,6 +7480,8 @@ async function generateAssistantReply(params: {
 
     if (suggestedTimeApprovalReply) {
       aiText = suggestedTimeApprovalReply;
+    } else if (pendingCancellationTargetReply) {
+      aiText = pendingCancellationTargetReply;
     } else if (blockAdjustmentReply) {
       aiText = blockAdjustmentReply;
     } else if (blockDayReply) {
@@ -7366,6 +7582,7 @@ async function generateAssistantReply(params: {
         nextVisitMode,
         scheduleManagementMode,
         generalTodayOverviewMode,
+        pendingCancellationTargetMode: Boolean(pendingCancellationTargetReply),
         blockAdjustmentMode: Boolean(blockAdjustmentReply),
         blockDayMode: Boolean(blockDayReply),
         customerAvailabilityContextMode: Boolean(customerAvailabilityContextReply),
