@@ -2477,6 +2477,151 @@ function buildUnsafeCancellationWithoutTargetReply() {
   return "Me diga qual compromisso você quer cancelar, informando o nome do cliente, o título, a data/horário ou escolhendo um item da lista. Assim eu evito alterar o compromisso errado.";
 }
 
+
+function assistantRecentlyAskedForCancellationTarget(args: { recentMessages: AssistantMessageRow[]; currentHumanMessage: string }) {
+  const current = String(args.currentHumanMessage || "").trim();
+  let skippedCurrent = false;
+
+  for (let index = (args.recentMessages || []).length - 1; index >= 0; index -= 1) {
+    const message = args.recentMessages[index];
+    const content = getMessageContent(message).trim();
+    if (!content) continue;
+
+    const isHuman = isLikelyResponsibleMessage(message);
+    if (!skippedCurrent && isHuman && content === current) {
+      skippedCurrent = true;
+      continue;
+    }
+
+    if (isAssistantOperationalMessage(message)) {
+      const normalized = normalizeText(content);
+      return normalized.includes("qual compromisso voce quer cancelar") ||
+        normalized.includes("qual compromisso você quer cancelar") ||
+        normalized.includes("evito alterar o compromisso errado");
+    }
+  }
+
+  return false;
+}
+
+function findRecentHumanCancellationRequestBeforeCurrent(args: { recentMessages: AssistantMessageRow[]; currentHumanMessage: string }) {
+  const current = String(args.currentHumanMessage || "").trim();
+  let skippedCurrent = false;
+
+  for (let index = (args.recentMessages || []).length - 1; index >= 0; index -= 1) {
+    const message = args.recentMessages[index];
+    const content = getMessageContent(message).trim();
+    if (!content || !isLikelyResponsibleMessage(message)) continue;
+
+    if (!skippedCurrent && content === current) {
+      skippedCurrent = true;
+      continue;
+    }
+
+    if (resolveScheduleAction(content) === "cancel" || wantsToCancelAfterPrompt(content)) {
+      return content;
+    }
+  }
+
+  return null as string | null;
+}
+
+function scoreAppointmentTargetSelectionFromText(args: { text: string; appointment: AppointmentRow; scheduleSettings?: StoreScheduleSettingsRow | null }) {
+  const text = normalizeText(args.text);
+  if (!text) return 0;
+
+  const appointment = args.appointment;
+  let score = 0;
+
+  const title = normalizeText(appointment.title || "");
+  if (title && title.length >= 3 && text.includes(title)) score += 10;
+
+  const customerName = normalizeText(appointment.customer_name || "");
+  if (customerName && customerName.length >= 3 && text.includes(customerName)) score += 6;
+
+  const phoneDigits = normalizeDigits(appointment.customer_phone || "");
+  const textDigits = normalizeDigits(args.text);
+  if (phoneDigits.length >= 8 && textDigits.includes(phoneDigits)) score += 6;
+
+  const start = appointment.scheduled_start || appointment.scheduled_end || null;
+  if (start) {
+    const timezone = getScheduleTimezone(args.scheduleSettings || null);
+    const dateLabel = normalizeText(formatDateOnlyInTimeZone(start, timezone));
+    const startTime = normalizeText(formatTimeOnlyInTimeZone(start, timezone));
+    if (dateLabel && text.includes(dateLabel)) score += 3;
+    if (startTime && text.includes(startTime)) score += 3;
+  }
+
+  const typeLabel = normalizeText(formatAppointmentType(appointment.appointment_type));
+  if (typeLabel && text.includes(typeLabel)) score += 1;
+
+  return score;
+}
+
+function resolveAppointmentTargetFromSelectionText(args: { text: string; openAppointments: AppointmentRow[]; scheduleSettings?: StoreScheduleSettingsRow | null }) {
+  const ranked = (args.openAppointments || [])
+    .filter((appointment) => appointment && ["scheduled", "rescheduled"].includes(normalizeText(appointment.status || "")))
+    .map((appointment) => ({
+      appointment,
+      score: scoreAppointmentTargetSelectionFromText({ text: args.text, appointment, scheduleSettings: args.scheduleSettings || null }),
+    }))
+    .filter((item) => item.score >= 10)
+    .sort((a, b) => b.score - a.score);
+
+  if (!ranked.length) return null as AppointmentRow | null;
+  if (ranked.length === 1) return ranked[0].appointment;
+  if (ranked[0].score > ranked[1].score) return ranked[0].appointment;
+  return null as AppointmentRow | null;
+}
+
+async function resolveCancellationTargetSelectionAfterUnsafePrompt(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  lastHumanMessage: string;
+  recentMessages: AssistantMessageRow[];
+  openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const previousCancellationRequest = findRecentHumanCancellationRequestBeforeCurrent({
+    recentMessages: args.recentMessages || [],
+    currentHumanMessage: args.lastHumanMessage,
+  });
+
+  if (!previousCancellationRequest) return null;
+
+  const assistantAskedForTarget = assistantRecentlyAskedForCancellationTarget({
+    recentMessages: args.recentMessages || [],
+    currentHumanMessage: args.lastHumanMessage,
+  });
+
+  if (!assistantAskedForTarget) return null;
+
+  const selectedAppointment = resolveAppointmentTargetFromSelectionText({
+    text: args.lastHumanMessage,
+    openAppointments: args.openAppointments || [],
+    scheduleSettings: args.scheduleSettings || null,
+  });
+
+  if (!selectedAppointment) {
+    return buildUnsafeCancellationWithoutTargetReply();
+  }
+
+  return executeConfirmedCustomerAppointmentCancellation({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId || null,
+    assistantContextState: args.assistantContextState || null,
+    lastHumanMessage: args.lastHumanMessage,
+    appointment: selectedAppointment,
+    scheduleSettings: args.scheduleSettings || null,
+    reasonText: extractCancellationReasonFromDecision(previousCancellationRequest) || extractCancellationReasonFromDecision(args.lastHumanMessage),
+  });
+}
+
 function extractCancellationReasonFromDecision(text: string) {
   const raw = String(text || "").trim();
   const normalized = normalizeText(raw);
@@ -4480,6 +4625,19 @@ async function resolveAppointmentActionReply(args: {
 }) {
   const pendingCancelDecisionReply = await handlePendingCustomerCancelDecision({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId || null, assistantContextState: args.assistantContextState || null, lastHumanMessage: args.lastHumanMessage, scheduleSettings: args.scheduleSettings || null });
   if (pendingCancelDecisionReply) return pendingCancelDecisionReply;
+
+  const cancellationTargetSelectionReply = await resolveCancellationTargetSelectionAfterUnsafePrompt({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId || null,
+    assistantContextState: args.assistantContextState || null,
+    lastHumanMessage: args.lastHumanMessage,
+    recentMessages: args.recentMessages || [],
+    openAppointments: args.openAppointments || [],
+    scheduleSettings: args.scheduleSettings || null,
+  });
+  if (cancellationTargetSelectionReply) return cancellationTargetSelectionReply;
 
   let action = resolveScheduleAction(args.lastHumanMessage);
   if (!action && isPlainAssistantOptionChoice(args.lastHumanMessage)) {
