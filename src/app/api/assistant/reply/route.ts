@@ -2182,6 +2182,149 @@ function readAssistantCandidateOptions(contextState?: StoreAssistantContextState
   return Array.isArray(raw) ? (raw as AssistantCandidateOption[]) : [];
 }
 
+async function loadAppointmentByIdForAssistantAction(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  appointmentId: string;
+}) {
+  const appointmentId = String(args.appointmentId || "").trim();
+  if (!appointmentId) return null as AppointmentRow | null;
+
+  const { data, error } = await args.supabase
+    .from("store_appointments")
+    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("id", appointmentId)
+    .maybeSingle();
+
+  if (error || !data) return null as AppointmentRow | null;
+  return data as AppointmentRow;
+}
+
+function getSelectedAssistantCandidateOption(args: {
+  text: string;
+  contextState?: StoreAssistantContextStateRow | null;
+}) {
+  const contextStatus = normalizeText(args.contextState?.active_status || "");
+  const contextTopic = normalizeText(args.contextState?.active_topic || "");
+  if (contextTopic !== "appointment_management" || contextStatus !== "waiting_user_choice") return null;
+
+  const options = readAssistantCandidateOptions(args.contextState);
+  if (!options.length) return null;
+
+  const selectedIndex = resolveExplicitAppointmentItemIndex(args.text, options.length);
+  if (selectedIndex === null) return null;
+
+  const optionNumber = selectedIndex + 1;
+  return options.find((option) => Number(option.option_number) === optionNumber) || null;
+}
+
+async function executeSelectedAppointmentOptionAction(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  lastHumanMessage: string;
+  action: ScheduleAction;
+  option: AssistantCandidateOption;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  if (!args.option?.appointment_id) {
+    return "Não consegui identificar qual compromisso você escolheu. Me diga o número novamente ou informe cliente, data e horário.";
+  }
+
+  const selectedAppointment = await loadAppointmentByIdForAssistantAction({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    appointmentId: args.option.appointment_id,
+  });
+
+  if (!selectedAppointment) {
+    return "Não encontrei mais esse compromisso na agenda. Atualize a tela ou me diga o cliente, data e horário para eu procurar de novo.";
+  }
+
+  if (["cancelled", "completed"].includes(normalizeText(selectedAppointment.status || ""))) {
+    return `Esse compromisso já está como ${formatScheduleAppointmentCurrentSituation(selectedAppointment)}. Não alterei nada na agenda.`;
+  }
+
+  if (args.action === "cancel") {
+    const { error: cancelError } = await args.supabase.rpc("cancel_store_appointment", {
+      p_appointment_id: selectedAppointment.id,
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_cancel_reason: "Cancelado pelo responsável na assistente operacional.",
+    });
+
+    if (cancelError) {
+      return `Tentei cancelar esse compromisso, mas encontrei um erro: ${cancelError.message}`;
+    }
+
+    if (args.threadId) {
+      await resolveAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        lastUserMessage: args.lastHumanMessage,
+        lastAssistantMessage: `${buildScheduleAppointmentReferenceLabel(selectedAppointment)} de ${selectedAppointment.customer_name || "cliente não identificado"} cancelado.`,
+      });
+    }
+
+    return `Pronto. Cancelei ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} de ${selectedAppointment.customer_name || "cliente não identificado"} agendada para ${formatAppointmentStartInTimeZone({ value: selectedAppointment.scheduled_start || selectedAppointment.scheduled_end || null, scheduleSettings: args.scheduleSettings || null, timezoneName: args.assistantContextState?.timezone_name || null })}.`;
+  }
+
+  if (args.action === "complete") {
+    const { error } = await args.supabase.rpc("complete_store_appointment_with_outcome", {
+      p_appointment_id: selectedAppointment.id,
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_completion_outcome: "fully_completed",
+      p_completion_note: "Confirmado pelo responsável na assistente operacional.",
+    });
+
+    if (error) {
+      return `Tentei marcar esse compromisso como concluído, mas encontrei um erro: ${error.message}`;
+    }
+
+    if (args.threadId) {
+      await resolveAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        lastUserMessage: args.lastHumanMessage,
+        lastAssistantMessage: `${buildScheduleAppointmentReferenceLabel(selectedAppointment)} de ${selectedAppointment.customer_name || "cliente não identificado"} concluído.`,
+      });
+    }
+
+    return `Pronto. Marquei como concluído ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} de ${selectedAppointment.customer_name || "cliente não identificado"}.`;
+  }
+
+  if (args.action === "needs_followup") {
+    if (args.threadId) {
+      await resolveAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        lastUserMessage: args.lastHumanMessage,
+        lastAssistantMessage: `${buildScheduleAppointmentReferenceLabel(selectedAppointment)} mantido em aberto.`,
+      });
+    }
+
+    return `Certo. Mantive ${buildScheduleAppointmentReferenceLabel(selectedAppointment)} de ${selectedAppointment.customer_name || "cliente não identificado"} em aberto.`;
+  }
+
+  return null;
+}
+
 function getRescheduleTargetTextSegment(text: string) {
   const raw = String(text || "");
   const normalized = normalizeText(raw);
@@ -2598,7 +2741,7 @@ function buildAssistantContextBlock(contextState?: StoreAssistantContextStateRow
         option.appointment_type ? formatAppointmentType(option.appointment_type) : "compromisso",
         option.title || null,
         option.customer_name ? `de ${option.customer_name}` : null,
-        option.scheduled_start ? `${formatDateOnly(option.scheduled_start)} às ${formatTimeOnly(option.scheduled_start)}` : null,
+        option.scheduled_start ? formatAppointmentStartInTimeZone({ value: option.scheduled_start, scheduleSettings: null, timezoneName: contextState?.timezone_name || null }) : null,
       ].filter(Boolean).join(" ");
       lines.push(`  ${label}`);
     });
@@ -3107,6 +3250,14 @@ function asksAssistantToFindCustomerAvailability(text: string) {
 function resolveExplicitAppointmentItemIndex(text: string, totalItems: number) {
   const t = normalizeText(text);
   if (totalItems <= 0) return null;
+
+  const plainNumberMatch = String(text || "").trim().match(/^\s*(\d{1,2})\s*[.)]?\s*$/);
+  if (plainNumberMatch) {
+    const numericIndex = Number(plainNumberMatch[1]);
+    if (Number.isInteger(numericIndex) && numericIndex >= 1 && numericIndex <= totalItems) {
+      return numericIndex - 1;
+    }
+  }
 
   const patterns = [
     /\b(?:item|opcao|opção|numero|número|n|compromisso|visita|agenda)\s*(?:de\s*)?(?:numero|número|n)?\s*(\d{1,2})\b/,
@@ -3926,6 +4077,25 @@ async function resolveAppointmentActionReply(args: {
     return null;
   }
 
+  const selectedContextOption = getSelectedAssistantCandidateOption({
+    text: args.lastHumanMessage,
+    contextState: args.assistantContextState || null,
+  });
+
+  if (selectedContextOption && ["cancel", "complete", "needs_followup"].includes(action)) {
+    return executeSelectedAppointmentOptionAction({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId || null,
+      assistantContextState: args.assistantContextState || null,
+      lastHumanMessage: args.lastHumanMessage,
+      action,
+      option: selectedContextOption,
+      scheduleSettings: args.scheduleSettings || null,
+    });
+  }
+
   const now = getScheduleParsingNow(args.scheduleSettings || null);
   const scheduleTimezone = getScheduleTimezone(args.scheduleSettings || null);
   const explicitAppointmentTitleCandidate = extractExplicitAppointmentTitleCandidateFromCommand(args.lastHumanMessage);
@@ -4169,7 +4339,7 @@ async function resolveAppointmentActionReply(args: {
       contextOptions.slice(0, 8).forEach((option) => {
         lines.push(`${option.option_number}. ${formatAppointmentType(option.appointment_type)}${option.title ? ` ${option.title}` : ""}`);
         if (option.customer_name) lines.push(`- cliente: ${option.customer_name}`);
-        if (option.scheduled_start) lines.push(`- horário: ${formatDateOnly(option.scheduled_start)} às ${formatTimeOnly(option.scheduled_start)}`);
+        if (option.scheduled_start) lines.push(`- horário: ${formatAppointmentStartInTimeZone({ value: option.scheduled_start, scheduleSettings: args.scheduleSettings || null, timezoneName: args.assistantContextState?.timezone_name || null })}`);
       });
       return lines.join("\n").trim();
     }
@@ -4459,6 +4629,18 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
       return `Tentei marcar como concluído, mas encontrei um erro: ${error.message}`;
     }
 
+    if (args.threadId) {
+      await resolveAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        lastUserMessage: args.lastHumanMessage,
+        lastAssistantMessage: `${buildScheduleAppointmentReferenceLabel(selectedAppointment)} de ${selectedAppointment.customer_name || "cliente não identificado"} concluído.`,
+      });
+    }
+
     return buildAppointmentActionSuccessReply({
       action,
       appointment: selectedAppointment,
@@ -4486,6 +4668,18 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
       return `Tentei marcar como cancelado, mas encontrei um erro: ${cancelError.message}`;
     }
 
+    if (args.threadId) {
+      await resolveAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        lastUserMessage: args.lastHumanMessage,
+        lastAssistantMessage: `${buildScheduleAppointmentReferenceLabel(selectedAppointment)} de ${selectedAppointment.customer_name || "cliente não identificado"} cancelado.`,
+      });
+    }
+
     return buildAppointmentActionSuccessReply({
       action,
       appointment: selectedAppointment,
@@ -4502,7 +4696,7 @@ function buildOpenAppointmentLine(appointment: AppointmentRow) {
     appointment.customer_name ? `cliente ${appointment.customer_name}` : null,
     appointment.customer_phone ? `contato ${appointment.customer_phone}` : null,
     appointment.scheduled_end || appointment.scheduled_start
-      ? `horário ${formatDateOnly(appointment.scheduled_end || appointment.scheduled_start)} às ${formatTimeOnly(appointment.scheduled_end || appointment.scheduled_start)}`
+      ? `horário ${formatAppointmentStartInTimeZone({ value: appointment.scheduled_start || appointment.scheduled_end || null, scheduleSettings: null })}`
       : null,
     `situação ${formatScheduleAppointmentCurrentSituation(appointment)}`,
   ].filter(Boolean);
