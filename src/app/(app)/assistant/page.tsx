@@ -196,14 +196,11 @@ export default function AssistantPage() {
       const node = chatScrollRef.current;
       if (!node) return;
 
+      // Importante: rola somente a caixa interna do chat.
+      // Não usamos scrollIntoView aqui, porque ele pode mover a página inteira da Assistente.
       node.scrollTo({
         top: node.scrollHeight,
         behavior,
-      });
-
-      chatBottomRef.current?.scrollIntoView({
-        behavior,
-        block: "end",
       });
     });
   }, []);
