@@ -2388,6 +2388,13 @@ async function executeConfirmedCustomerAppointmentCancellation(args: { supabase:
 async function handlePendingCustomerCancelDecision(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; scheduleSettings?: StoreScheduleSettingsRow | null; }) {
   const contextState = args.assistantContextState || null;
   if (!isWaitingForCustomerCancelDecision(contextState)) return null;
+
+  // Proteção forte contra contexto antigo: se a nova mensagem cita explicitamente
+  // outro compromisso pelo nome/título, não podemos continuar usando o
+  // appointment_id salvo no contexto anterior. Deixamos o fluxo principal
+  // resolver pelo título informado na mensagem atual.
+  const explicitTitleFromCurrentMessage = extractExplicitAppointmentTitleCandidateFromCommand(args.lastHumanMessage);
+  if (explicitTitleFromCurrentMessage) return null;
   const appointmentId = String(contextState?.active_appointment_id || readAssistantContextPayload(contextState).appointment_id || "").trim();
   if (!appointmentId) return "Eu estava aguardando sua decisão sobre cancelamento, mas perdi a referência do compromisso. Me diga o nome, cliente, data ou horário para eu procurar de novo.";
 

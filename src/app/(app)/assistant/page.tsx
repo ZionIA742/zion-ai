@@ -179,15 +179,34 @@ export default function AssistantPage() {
   const [searchText, setSearchText] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const firstLoadDoneRef = useRef(false);
   const shouldStickToBottomRef = useRef(true);
+  const forceScrollToBottomRef = useRef(false);
   const lastMessageCountRef = useRef(0);
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const canLoad = useMemo(() => {
     return !storeLoading && !!organizationId && !!activeStoreId;
   }, [storeLoading, organizationId, activeStoreId]);
+
+  const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    window.requestAnimationFrame(() => {
+      const node = chatScrollRef.current;
+      if (!node) return;
+
+      node.scrollTo({
+        top: node.scrollHeight,
+        behavior,
+      });
+
+      chatBottomRef.current?.scrollIntoView({
+        behavior,
+        block: "end",
+      });
+    });
+  }, []);
 
   const loadAssistant = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -258,7 +277,7 @@ export default function AssistantPage() {
     if (loading || searchOpen) return;
 
     const hasNewMessages = messages.length > lastMessageCountRef.current;
-    const shouldAutoScroll = !firstLoadDoneRef.current || hasNewMessages;
+    const shouldAutoScroll = !firstLoadDoneRef.current || hasNewMessages || forceScrollToBottomRef.current;
 
     window.requestAnimationFrame(() => {
       if (!chatScrollRef.current || !shouldAutoScroll) {
@@ -267,16 +286,14 @@ export default function AssistantPage() {
         return;
       }
 
-      chatScrollRef.current.scrollTo({
-        top: chatScrollRef.current.scrollHeight,
-        behavior: firstLoadDoneRef.current ? "smooth" : "auto",
-      });
+      scrollChatToBottom(firstLoadDoneRef.current ? "smooth" : "auto");
 
+      forceScrollToBottomRef.current = false;
       shouldStickToBottomRef.current = true;
       firstLoadDoneRef.current = true;
       lastMessageCountRef.current = messages.length;
     });
-  }, [messages, loading, searchOpen]);
+  }, [messages, loading, searchOpen, scrollChatToBottom]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -317,8 +334,10 @@ export default function AssistantPage() {
     }
 
     setNewMessage("");
+    forceScrollToBottomRef.current = true;
     setStatusText("Mensagem enviada. Gerando resposta da assistente...");
     await loadAssistant({ silent: true });
+    scrollChatToBottom("smooth");
 
     try {
       const response = await fetch("/api/assistant/reply", {
@@ -343,11 +362,15 @@ export default function AssistantPage() {
 
       setStatusText("Assistente respondeu com sucesso.");
       setSending(false);
+      forceScrollToBottomRef.current = true;
       await loadAssistant({ silent: true });
+      scrollChatToBottom("smooth");
     } catch (error: any) {
       setErrorText(error?.message || "Erro inesperado ao gerar resposta da assistente.");
       setSending(false);
+      forceScrollToBottomRef.current = true;
       await loadAssistant({ silent: true });
+      scrollChatToBottom("smooth");
     }
   }
 
@@ -548,6 +571,7 @@ export default function AssistantPage() {
                   </div>
                 ))
               )}
+              <div ref={chatBottomRef} aria-hidden="true" />
             </div>
 
             {searchOpen ? (
