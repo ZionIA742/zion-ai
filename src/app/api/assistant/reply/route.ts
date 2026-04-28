@@ -2252,10 +2252,28 @@ function buildCancelOrRescheduleDecisionPrompt(args: { appointment: AppointmentR
   return `Encontrei este compromisso:\n\n${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)}\nCliente: ${appointment.customer_name || "cliente não identificado"}\nData e horário: ${timeLabel}\n\nAntes de alterar a agenda, me diga como prefere seguir:\n\n1. Cancelar esse compromisso.\n2. Remarcar para outro dia ou horário.\n\nSe a escolha for cancelar, quer que eu explique algum motivo ao cliente ou envio apenas um aviso simples de cancelamento?`;
 }
 
+function isWaitingForCustomerCancelDecision(contextState?: StoreAssistantContextStateRow | null) {
+  const contextTopic = normalizeText(contextState?.active_topic || "");
+  const contextIntent = normalizeText(contextState?.active_intent || "");
+  const contextStatus = normalizeText(contextState?.active_status || "");
+  const payload = readAssistantContextPayload(contextState);
+  const payloadReason = normalizeText(String(payload.reason || ""));
+  const payloadPhase = normalizeText(String(payload.phase || payload.decision_step || ""));
+
+  return contextTopic === "appointment_management" &&
+    contextIntent === "cancel" &&
+    (contextStatus === "waiting_cancel_decision" || contextStatus === "waiting_user_choice") &&
+    (
+      payloadReason === "cancel_requires_reschedule_or_customer_notice_decision" ||
+      payloadPhase === "cancel_or_reschedule_decision" ||
+      Boolean(contextState?.active_appointment_id || payload.appointment_id)
+    );
+}
+
 function wantsToCancelAfterPrompt(text: string) {
   const t = normalizeText(String(text || "").trim());
   if (/^1(?:\D|$)/.test(t)) return true;
-  return hasAnyTerm(t, ["cancelar", "cancela", "cancele", "apenas cancelar", "so cancelar", "só cancelar", "cancelar definitivamente"]) && !hasAnyTerm(t, ["remarcar", "remarque", "reagendar", "reagende"]);
+  return hasAnyTerm(t, ["cancelar", "cancela", "cancele", "cancelado", "apenas cancelar", "so cancelar", "só cancelar", "cancelar definitivamente", "pode cancelar"]) && !hasAnyTerm(t, ["remarcar", "remarque", "reagendar", "reagende"]);
 }
 
 function wantsToRescheduleAfterPrompt(text: string) {
@@ -2279,7 +2297,7 @@ async function startCustomerAppointmentCancelDecision(args: { supabase: any; org
     supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId,
     currentContextState: args.assistantContextState || null,
     patch: {
-      active_topic: "appointment_management", active_intent: "cancel", active_status: "waiting_cancel_decision",
+      active_topic: "appointment_management", active_intent: "cancel", active_status: "waiting_user_choice",
       active_customer_name: args.appointment.customer_name || null, active_customer_phone: args.appointment.customer_phone || null,
       active_lead_id: args.appointment.lead_id || null, active_conversation_id: args.appointment.conversation_id || null,
       active_appointment_id: args.appointment.id,
@@ -2287,7 +2305,20 @@ async function startCustomerAppointmentCancelDecision(args: { supabase: any; org
       target_time: args.appointment.scheduled_start ? formatTimeOnlyInTimeZone(args.appointment.scheduled_start, scheduleTimezone) : null,
       target_start_at: args.appointment.scheduled_start || null, target_end_at: args.appointment.scheduled_end || null,
       timezone_name: scheduleTimezone, candidate_options: [],
-      context_payload: { reason: "cancel_requires_reschedule_or_customer_notice_decision", appointment_id: args.appointment.id, appointment_title: args.appointment.title || null, conversation_id: args.appointment.conversation_id || null },
+      context_payload: {
+        reason: "cancel_requires_reschedule_or_customer_notice_decision",
+        phase: "cancel_or_reschedule_decision",
+        appointment_id: args.appointment.id,
+        appointment_title: args.appointment.title || null,
+        appointment_type: args.appointment.appointment_type || null,
+        customer_name: args.appointment.customer_name || null,
+        customer_phone: args.appointment.customer_phone || null,
+        lead_id: args.appointment.lead_id || null,
+        conversation_id: args.appointment.conversation_id || null,
+        scheduled_start: args.appointment.scheduled_start || null,
+        scheduled_end: args.appointment.scheduled_end || null,
+        timezone_name: scheduleTimezone,
+      },
       last_user_message: args.lastHumanMessage, last_assistant_message: prompt,
     },
   });
@@ -2319,7 +2350,7 @@ async function executeConfirmedCustomerAppointmentCancellation(args: { supabase:
 
 async function handlePendingCustomerCancelDecision(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; scheduleSettings?: StoreScheduleSettingsRow | null; }) {
   const contextState = args.assistantContextState || null;
-  if (normalizeText(contextState?.active_topic || "") !== "appointment_management" || normalizeText(contextState?.active_intent || "") !== "cancel" || normalizeText(contextState?.active_status || "") !== "waiting_cancel_decision") return null;
+  if (!isWaitingForCustomerCancelDecision(contextState)) return null;
   const appointmentId = String(contextState?.active_appointment_id || readAssistantContextPayload(contextState).appointment_id || "").trim();
   if (!appointmentId) return "Eu estava aguardando sua decisão sobre cancelamento, mas perdi a referência do compromisso. Me diga o nome, cliente, data ou horário para eu procurar de novo.";
 
@@ -2336,7 +2367,7 @@ async function handlePendingCustomerCancelDecision(args: { supabase: any; organi
 
   if (wantsToCancelAfterPrompt(args.lastHumanMessage)) return executeConfirmedCustomerAppointmentCancellation({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId || null, assistantContextState: contextState, lastHumanMessage: args.lastHumanMessage, appointment, scheduleSettings: args.scheduleSettings || null, reasonText: extractCancellationReasonFromDecision(args.lastHumanMessage) });
 
-  return "Antes de eu alterar a agenda, preciso que você escolha uma opção:\n\n1. Cancelar esse compromisso.\n2. Remarcar para outro dia ou horário.\n\nSe for cancelar, também pode me dizer se devo explicar algum motivo ao cliente ou enviar apenas um aviso simples.";
+  return "Antes de eu alterar a agenda, preciso que você escolha uma opção:\n\n1. Cancelar esse compromisso.\n2. Remarcar para outro dia ou horário.\n\nSe for cancelar, você pode responder só ‘1’, ‘cancelar com aviso simples’ ou ‘cancele e explique que...’.";
 }
 
 async function executeSelectedAppointmentOptionAction(args: {
