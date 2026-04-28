@@ -280,6 +280,48 @@ function formatTimeOnlyInTimeZone(value: string | null, timeZone: string) {
   }).format(date);
 }
 
+
+function formatAppointmentRangeInTimeZone(args: {
+  appointment?: Pick<AppointmentRow, "scheduled_start" | "scheduled_end"> | null;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+  timezoneName?: string | null;
+}) {
+  const timeZone = args.timezoneName || getScheduleTimezone(args.scheduleSettings || null);
+  const start = args.appointment?.scheduled_start || args.appointment?.scheduled_end || null;
+  const end = args.appointment?.scheduled_end || null;
+
+  if (!start) return "sem horário carregado";
+
+  const dateLabel = formatDateOnlyInTimeZone(start, timeZone);
+  const startLabel = formatTimeOnlyInTimeZone(start, timeZone);
+  const endLabel = end ? formatTimeOnlyInTimeZone(end, timeZone) : null;
+
+  return `${dateLabel} das ${startLabel}${endLabel ? ` às ${endLabel}` : ""}`;
+}
+
+function formatAppointmentStartInTimeZone(args: {
+  value: string | null | undefined;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+  timezoneName?: string | null;
+}) {
+  const timeZone = args.timezoneName || getScheduleTimezone(args.scheduleSettings || null);
+  const value = args.value || null;
+  if (!value) return "sem horário carregado";
+  return `${formatDateOnlyInTimeZone(value, timeZone)} às ${formatTimeOnlyInTimeZone(value, timeZone)}`;
+}
+
+function isPlainAssistantOptionChoice(text: string) {
+  return /^\s*(?:op(?:ç|c)(?:a|ã)o\s*)?\d{1,2}\s*[.)]?\s*$/i.test(String(text || ""));
+}
+
+function getContextScheduleAction(contextState?: StoreAssistantContextStateRow | null): ScheduleAction | null {
+  const activeIntent = normalizeText(contextState?.active_intent || "");
+  if (["cancel", "complete", "needs_followup", "reschedule", "create"].includes(activeIntent)) {
+    return activeIntent as ScheduleAction;
+  }
+  return null;
+}
+
 function getTimeZoneOffsetMinutes(timeZone: string, date: Date) {
   const safeTimeZone = safeScheduleTimezone(timeZone);
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -2087,6 +2129,7 @@ function inferPreviousAppointmentTarget(args: {
 function buildAppointmentAmbiguityReply(args: {
   candidateIndexes: number[];
   openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
 }) {
   const lines: string[] = [];
   lines.push("Encontrei mais de um compromisso em aberto para esse pedido.");
@@ -2098,13 +2141,11 @@ function buildAppointmentAmbiguityReply(args: {
     const itemNumber = candidateIndex + 1;
     const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
     const customer = appointment?.customer_name || "cliente não identificado";
-    const timeLabel = appointment?.scheduled_end || appointment?.scheduled_start;
+    const timeLabel = formatAppointmentRangeInTimeZone({ appointment, scheduleSettings: args.scheduleSettings || null });
 
     lines.push(`${itemNumber}. ${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)}`);
     lines.push(`- cliente: ${customer}`);
-    if (timeLabel) {
-      lines.push(`- horário: ${formatDateOnly(timeLabel)} às ${formatTimeOnly(timeLabel)}`);
-    }
+    lines.push(`- horário: ${timeLabel}`);
     lines.push(`- situação atual: ${formatScheduleAppointmentCurrentSituation(appointment)}`);
     lines.push("");
   });
@@ -2321,7 +2362,7 @@ function appointmentTitleMatchesCommandTitle(appointmentTitle: string | null | u
 }
 
 
-function buildExplicitAppointmentMatchAmbiguityReply(matches: AppointmentRow[]) {
+function buildExplicitAppointmentMatchAmbiguityReply(matches: AppointmentRow[], scheduleSettings?: StoreScheduleSettingsRow | null) {
   const lines = [
     "Encontrei mais de um compromisso com esse nome.",
     "Para eu não alterar o compromisso errado, me diga qual deles você quer atualizar:",
@@ -2331,11 +2372,7 @@ function buildExplicitAppointmentMatchAmbiguityReply(matches: AppointmentRow[]) 
   matches.slice(0, 8).forEach((appointment, index) => {
     const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
     const customer = appointment.customer_name || "cliente não identificado";
-    const start = appointment.scheduled_start || appointment.scheduled_end;
-    const end = appointment.scheduled_end;
-    const timeRange = start
-      ? `${formatDateOnly(start)} das ${formatTimeOnly(start)}${end ? ` às ${formatTimeOnly(end)}` : ""}`
-      : "sem horário carregado";
+    const timeRange = formatAppointmentRangeInTimeZone({ appointment, scheduleSettings: scheduleSettings || null });
     lines.push(`${index + 1}. ${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)} — ${customer} — ${timeRange}`);
   });
 
@@ -3830,6 +3867,7 @@ function buildTaskRegisteredReply(args: {
 function buildAppointmentActionSuccessReply(args: {
   action: ScheduleAction;
   appointment?: AppointmentRow;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
   createdPayload?: {
     title: string;
     appointment_type: string;
@@ -3842,7 +3880,7 @@ function buildAppointmentActionSuccessReply(args: {
     const createdTitle = String(args.createdPayload?.title || "").trim();
     const createdCustomer = args.createdPayload?.customer_name || "cliente não identificado";
     const createdReference = createdTitle ? `${createdType} ${createdTitle}` : createdType;
-    return `Certo. Agendei ${createdReference} para ${createdCustomer} em ${formatDateOnly(args.createdPayload?.scheduled_start || null)} às ${formatTimeOnly(args.createdPayload?.scheduled_start || null)}.`;
+    return `Certo. Agendei ${createdReference} para ${createdCustomer} em ${formatAppointmentStartInTimeZone({ value: args.createdPayload?.scheduled_start || null, scheduleSettings: args.scheduleSettings || null })}.`;
   }
 
   const customerName = args.appointment?.customer_name || "cliente não identificado";
@@ -3860,7 +3898,7 @@ function buildAppointmentActionSuccessReply(args: {
     return `Certo. Mantive ${referenceLabel} de ${customerName} em aberto.`;
   }
 
-  return `Certo. Remarquei ${referenceLabel} de ${customerName} para ${formatDateOnly(args.appointment?.scheduled_start || args.appointment?.scheduled_end || null)} às ${formatTimeOnly(args.appointment?.scheduled_start || args.appointment?.scheduled_end || null)}.`;
+  return `Certo. Remarquei ${referenceLabel} de ${customerName} para ${formatAppointmentStartInTimeZone({ value: args.appointment?.scheduled_start || args.appointment?.scheduled_end || null, scheduleSettings: args.scheduleSettings || null })}.`;
 }
 
 async function resolveAppointmentActionReply(args: {
@@ -3874,7 +3912,16 @@ async function resolveAppointmentActionReply(args: {
   openAppointments: AppointmentRow[];
   scheduleSettings?: StoreScheduleSettingsRow | null;
 }) {
-  const action = resolveScheduleAction(args.lastHumanMessage);
+  let action = resolveScheduleAction(args.lastHumanMessage);
+  if (!action && isPlainAssistantOptionChoice(args.lastHumanMessage)) {
+    const contextAction = getContextScheduleAction(args.assistantContextState || null);
+    const contextStatus = normalizeText(args.assistantContextState?.active_status || "");
+    const contextTopic = normalizeText(args.assistantContextState?.active_topic || "");
+    if (contextAction && contextTopic === "appointment_management" && contextStatus === "waiting_user_choice") {
+      action = contextAction;
+    }
+  }
+
   if (!action) {
     return null;
   }
@@ -3905,7 +3952,50 @@ async function resolveAppointmentActionReply(args: {
         ...openAppointments.filter((appointment) => appointment.id !== explicitAppointment.id),
       ];
     } else if (explicitTitleMatches.length > 1) {
-      return buildExplicitAppointmentMatchAmbiguityReply(explicitTitleMatches);
+      if (args.threadId) {
+        const candidateOptions = explicitTitleMatches.slice(0, 8).map((appointment, index) => ({
+          option_number: index + 1,
+          source_index: index,
+          appointment_id: appointment.id || "",
+          title: appointment.title || null,
+          appointment_type: appointment.appointment_type || null,
+          status: appointment.status || null,
+          customer_name: appointment.customer_name || null,
+          customer_phone: appointment.customer_phone || null,
+          lead_id: appointment.lead_id || null,
+          conversation_id: appointment.conversation_id || null,
+          scheduled_start: appointment.scheduled_start || null,
+          scheduled_end: appointment.scheduled_end || null,
+        }));
+
+        await upsertAssistantContextState({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          threadId: args.threadId,
+          currentContextState: args.assistantContextState || null,
+          patch: {
+            active_topic: "appointment_management",
+            active_intent: action,
+            active_status: "waiting_user_choice",
+            active_customer_name: null,
+            active_customer_phone: null,
+            active_lead_id: null,
+            active_conversation_id: null,
+            active_appointment_id: null,
+            target_date: null,
+            target_time: null,
+            target_start_at: null,
+            target_end_at: null,
+            timezone_name: scheduleTimezone,
+            candidate_options: candidateOptions,
+            context_payload: { reason: "explicit_title_ambiguity", action, explicit_title: explicitAppointmentTitleCandidate },
+            last_user_message: args.lastHumanMessage,
+          },
+        });
+      }
+
+      return buildExplicitAppointmentMatchAmbiguityReply(explicitTitleMatches, args.scheduleSettings || null);
     } else if (action === "cancel" || action === "complete") {
       return `Não encontrei nenhum compromisso em aberto com o nome "${explicitAppointmentTitleCandidate}". Para evitar alterar o compromisso errado, me diga o cliente, a data ou o horário.`;
     }
@@ -3941,6 +4031,7 @@ async function resolveAppointmentActionReply(args: {
 
     return buildAppointmentActionSuccessReply({
       action,
+      scheduleSettings: args.scheduleSettings || null,
       createdPayload: {
         title: createPayload.payload.title,
         appointment_type: createPayload.payload.appointment_type,
@@ -3978,6 +4069,7 @@ async function resolveAppointmentActionReply(args: {
         return buildAppointmentAmbiguityReply({
           candidateIndexes,
           openAppointments,
+          scheduleSettings: args.scheduleSettings || null,
         });
       }
 
@@ -4062,6 +4154,7 @@ async function resolveAppointmentActionReply(args: {
     return buildAppointmentAmbiguityReply({
       candidateIndexes: targetResolution.candidateIndexes,
       openAppointments,
+      scheduleSettings: args.scheduleSettings || null,
     });
   }
 
@@ -4343,13 +4436,14 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
         threadId: args.threadId,
         currentContextState: args.assistantContextState || null,
         lastUserMessage: args.lastHumanMessage,
-        lastAssistantMessage: `Compromisso remarcado para ${formatDateOnly((updatedRows as AppointmentRow).scheduled_start)} às ${formatTimeOnly((updatedRows as AppointmentRow).scheduled_start)}.`,
+        lastAssistantMessage: `Compromisso remarcado para ${formatAppointmentStartInTimeZone({ value: (updatedRows as AppointmentRow).scheduled_start, scheduleSettings: args.scheduleSettings || null })}.`,
       });
     }
 
     return buildAppointmentActionSuccessReply({
       action,
       appointment: updatedRows as AppointmentRow,
+      scheduleSettings: args.scheduleSettings || null,
     });
   }
   if (action === "complete") {
@@ -4368,6 +4462,7 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
     return buildAppointmentActionSuccessReply({
       action,
       appointment: selectedAppointment,
+      scheduleSettings: args.scheduleSettings || null,
     });
   }
 
@@ -4375,6 +4470,7 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
     return buildAppointmentActionSuccessReply({
       action,
       appointment: selectedAppointment,
+      scheduleSettings: args.scheduleSettings || null,
     });
   }
 
@@ -4393,6 +4489,7 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
     return buildAppointmentActionSuccessReply({
       action,
       appointment: selectedAppointment,
+      scheduleSettings: args.scheduleSettings || null,
     });
   }
 
