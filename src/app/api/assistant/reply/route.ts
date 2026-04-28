@@ -795,6 +795,13 @@ function asksAboutScheduleManagement(text: string) {
 function asksAboutPostAppointment(text: string) {
   const t = normalizeText(text);
 
+  // Segurança: comandos explícitos de agenda (cancelar, concluir, remarcar ou criar compromisso)
+  // não podem cair no fluxo de pós-compromisso. Esse fluxo pode usar contexto anterior
+  // e, em ações sensíveis, isso abre risco de alterar o compromisso errado.
+  if (hasExplicitAppointmentManagementCommand(text)) {
+    return false;
+  }
+
   if (asksForMorningReport(t) || asksForEveningReport(t) || asksAboutNextVisit(t)) {
     return false;
   }
@@ -1452,6 +1459,13 @@ function resolveTargetPostAppointmentIndex(args: {
   appointmentMap: Map<string, AppointmentRow>;
   recentMessages?: AssistantMessageRow[];
 }) {
+  // Segurança: se o responsável citou explicitamente um compromisso/visita pelo comando de agenda,
+  // não reaproveitar item antigo da fila de retorno. Cancelamento/conclusão/remarcação devem ir
+  // para o fluxo de agenda, que valida título, cliente e compromisso antes de alterar o banco.
+  if (hasExplicitAppointmentManagementCommand(args.text) || extractExplicitAppointmentTitleCandidateFromCommand(args.text)) {
+    return { type: "none" as const };
+  }
+
   const explicitIndex = resolvePostAppointmentDetailIndex(args.text, args.openItems.length);
   if (explicitIndex !== null) {
     return { type: "unique" as const, index: explicitIndex };
@@ -1582,6 +1596,22 @@ async function resolvePostAppointmentActionReply(args: {
   const action = resolvePostAppointmentAction(args.lastHumanMessage);
   if (!action) {
     return null;
+  }
+
+  // Segurança extra: se a frase é comando explícito de agenda, não executar ação usando
+  // uma pendência/retorno anterior. Isso evita cancelar ou concluir o compromisso errado.
+  if (hasExplicitAppointmentManagementCommand(args.lastHumanMessage) || extractExplicitAppointmentTitleCandidateFromCommand(args.lastHumanMessage)) {
+    return await resolveAppointmentActionReply({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      lastHumanMessage: args.lastHumanMessage,
+      recentMessages: args.recentMessages,
+      openAppointments: args.openAppointments,
+      scheduleSettings: args.scheduleSettings || null,
+      threadId: args.threadId || null,
+      assistantContextState: args.assistantContextState || null,
+    });
   }
 
   const openItems = sortOpenPostFollowups(
@@ -2229,22 +2259,55 @@ function parseDateKeyToScheduleDateParts(dateKey: string | null | undefined) {
 }
 
 
+function cleanExplicitAppointmentTitleCandidate(value: string | null | undefined) {
+  const cleaned = String(value || "")
+    .replace(/[?.!,;:]+$/g, "")
+    .replace(/^['"“”‘’]+|['"“”‘’]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned || cleaned.length < 3) return null;
+
+  const normalized = normalizeText(cleaned);
+  const unsafeGeneric = new Set([
+    "o compromisso",
+    "a visita",
+    "a instalacao",
+    "a instalação",
+    "a manutencao",
+    "a manutenção",
+    "esse compromisso",
+    "essa visita",
+    "isso",
+    "esse",
+    "essa",
+  ]);
+  if (unsafeGeneric.has(normalized)) return null;
+
+  return cleaned;
+}
+
 function extractExplicitAppointmentTitleCandidateFromCommand(text: string) {
   const raw = String(text || "").trim();
   if (!raw) return null;
 
   const patterns = [
+    // Comandos com data/horário, usados principalmente em remarcações.
     /\bcompromisso\s+(.+?)\s+(?:do|da|de)\s+dia\b/i,
     /\bcompromisso\s+(.+?)\s+(?:marcado|agendado|previsto)\b/i,
     /\bvisita\s+(.+?)\s+(?:do|da|de)\s+dia\b/i,
     /\binstala(?:c|ç)(?:a|ã)o\s+(.+?)\s+(?:do|da|de)\s+dia\b/i,
     /\bmanuten(?:c|ç)(?:a|ã)o\s+(.+?)\s+(?:do|da|de)\s+dia\b/i,
+
+    // Comandos diretos e sensíveis, como: "Cancele o compromisso TESTE RECUSA PILAR 6.".
+    /\b(?:cancele|cancelar|cancela|conclua|concluir|conclui|finalize|finalizar|encerre|encerrar|remarque|remarcar|remarca|reagende|reagendar|reagenda)\s+(?:o\s+|a\s+)?(?:compromisso|agendamento|visita|visita\s+t[eé]cnica|instala(?:c|ç)(?:a|ã)o|manuten(?:c|ç)(?:a|ã)o)\s+(.+?)(?:\s+(?:do|da|de)\s+dia\b|\s+(?:marcado|agendado|previsto)\b|[?.!,;:]?$)/i,
+    /\b(?:compromisso|agendamento|visita|visita\s+t[eé]cnica|instala(?:c|ç)(?:a|ã)o|manuten(?:c|ç)(?:a|ã)o)\s+(.+?)\s+(?:deve|pode|precisa)\s+(?:ser\s+)?(?:cancelado|cancelada|conclu[ií]do|conclu[ií]da|remarcado|remarcada)\b/i,
   ];
 
   for (const pattern of patterns) {
     const match = raw.match(pattern);
-    const candidate = match?.[1]?.replace(/\s+/g, " ").trim();
-    if (candidate && candidate.length >= 3) return candidate;
+    const candidate = cleanExplicitAppointmentTitleCandidate(match?.[1]);
+    if (candidate) return candidate;
   }
 
   return null;
@@ -2255,6 +2318,53 @@ function appointmentTitleMatchesCommandTitle(appointmentTitle: string | null | u
   const command = normalizeText(commandTitle || "");
   if (!appointment || !command || appointment.length < 3 || command.length < 3) return false;
   return appointment === command || appointment.includes(command) || command.includes(appointment);
+}
+
+
+function buildExplicitAppointmentMatchAmbiguityReply(matches: AppointmentRow[]) {
+  const lines = [
+    "Encontrei mais de um compromisso com esse nome.",
+    "Para eu não alterar o compromisso errado, me diga qual deles você quer atualizar:",
+    "",
+  ];
+
+  matches.slice(0, 8).forEach((appointment, index) => {
+    const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
+    const customer = appointment.customer_name || "cliente não identificado";
+    const start = appointment.scheduled_start || appointment.scheduled_end;
+    const end = appointment.scheduled_end;
+    const timeRange = start
+      ? `${formatDateOnly(start)} das ${formatTimeOnly(start)}${end ? ` às ${formatTimeOnly(end)}` : ""}`
+      : "sem horário carregado";
+    lines.push(`${index + 1}. ${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)} — ${customer} — ${timeRange}`);
+  });
+
+  return lines.join("\n").trim();
+}
+
+async function loadExplicitAppointmentTitleOnlyMatchesFromCommand(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  text: string;
+}) {
+  const explicitTitleCandidate = extractExplicitAppointmentTitleCandidateFromCommand(args.text);
+  if (!explicitTitleCandidate) return [] as AppointmentRow[];
+
+  const { data, error } = await args.supabase
+    .from("store_appointments")
+    .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .in("status", ["scheduled", "rescheduled"])
+    .order("scheduled_start", { ascending: true })
+    .limit(200);
+
+  if (error) return [] as AppointmentRow[];
+
+  return ((data || []) as AppointmentRow[]).filter((appointment) =>
+    appointmentTitleMatchesCommandTitle(appointment.title, explicitTitleCandidate)
+  );
 }
 
 function hasExplicitAppointmentTitleAndOriginalScheduleReference(args: {
@@ -3779,6 +3889,28 @@ async function resolveAppointmentActionReply(args: {
   });
   let openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
 
+  const commandHasExplicitTitleOnly = Boolean(explicitAppointmentTitleCandidate) && !commandHasExplicitTitleAndOriginalSchedule;
+  if (commandHasExplicitTitleOnly && ["cancel", "complete", "needs_followup", "reschedule"].includes(action)) {
+    const explicitTitleMatches = await loadExplicitAppointmentTitleOnlyMatchesFromCommand({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      text: args.lastHumanMessage,
+    });
+
+    if (explicitTitleMatches.length === 1) {
+      const explicitAppointment = explicitTitleMatches[0];
+      openAppointments = [
+        explicitAppointment,
+        ...openAppointments.filter((appointment) => appointment.id !== explicitAppointment.id),
+      ];
+    } else if (explicitTitleMatches.length > 1) {
+      return buildExplicitAppointmentMatchAmbiguityReply(explicitTitleMatches);
+    } else if (action === "cancel" || action === "complete") {
+      return `Não encontrei nenhum compromisso em aberto com o nome "${explicitAppointmentTitleCandidate}". Para evitar alterar o compromisso errado, me diga o cliente, a data ou o horário.`;
+    }
+  }
+
   if (action === "create") {
     const createPayload = extractCreateAppointmentPayload(args.lastHumanMessage, now, args.scheduleSettings || null);
     if (!createPayload.ok) {
@@ -3960,21 +4092,28 @@ async function resolveAppointmentActionReply(args: {
   let selectedIndex = Math.min(Math.max(targetResolution.index, 0), openAppointments.length - 1);
   let selectedAppointment = openAppointments[selectedIndex];
 
-  if (commandHasExplicitTitleAndOriginalSchedule && explicitAppointmentTitleCandidate) {
+  if ((commandHasExplicitTitleAndOriginalSchedule || commandHasExplicitTitleOnly) && explicitAppointmentTitleCandidate) {
     const selectedMatchesExplicitTitle = appointmentTitleMatchesCommandTitle(
       selectedAppointment?.title,
       explicitAppointmentTitleCandidate
     );
 
     if (!selectedMatchesExplicitTitle) {
-      const explicitMatches = await loadExplicitAppointmentMatchesFromCommand({
-        supabase: args.supabase,
-        organizationId: args.organizationId,
-        storeId: args.storeId,
-        text: args.lastHumanMessage,
-        now,
-        scheduleSettings: args.scheduleSettings || null,
-      });
+      const explicitMatches = commandHasExplicitTitleAndOriginalSchedule
+        ? await loadExplicitAppointmentMatchesFromCommand({
+            supabase: args.supabase,
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            text: args.lastHumanMessage,
+            now,
+            scheduleSettings: args.scheduleSettings || null,
+          })
+        : await loadExplicitAppointmentTitleOnlyMatchesFromCommand({
+            supabase: args.supabase,
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            text: args.lastHumanMessage,
+          });
 
       if (explicitMatches.length === 1) {
         selectedAppointment = explicitMatches[0];
@@ -3984,7 +4123,7 @@ async function resolveAppointmentActionReply(args: {
           openAppointments = [selectedAppointment, ...openAppointments];
         }
       } else {
-        return "Encontrei um compromisso no contexto, mas ele não bate com o título informado. Para evitar mandar mensagem para a pessoa errada, me confirme o cliente ou repita o compromisso com o nome do cliente.";
+        return "Encontrei um compromisso no contexto, mas ele não bate com o título informado. Para evitar alterar o compromisso errado, me confirme o cliente ou repita o compromisso com o nome do cliente.";
       }
     }
   }
