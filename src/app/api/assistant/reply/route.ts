@@ -2270,15 +2270,174 @@ function isWaitingForCustomerCancelDecision(contextState?: StoreAssistantContext
     );
 }
 
-function wantsToCancelAfterPrompt(text: string) {
+function isHumanCancellationAbortOrHold(text: string) {
   const t = normalizeText(String(text || "").trim());
+  if (!t) return null as null | "abort" | "hold";
+
+  if (hasAnyTerm(t, [
+    "nao cancela",
+    "não cancela",
+    "nao cancelar",
+    "não cancelar",
+    "nao cancele",
+    "não cancele",
+    "nao mexe",
+    "não mexe",
+    "nao altera",
+    "não altera",
+    "nao altere",
+    "não altere",
+    "deixa quieto",
+    "deixe quieto",
+    "deixa como esta",
+    "deixa como está",
+    "mantem como esta",
+    "mantém como está",
+    "mantem na agenda",
+    "mantém na agenda",
+    "esquece",
+    "deixa pra la",
+    "deixa pra lá",
+  ])) return "abort";
+
+  if (hasAnyTerm(t, [
+    "espera",
+    "espere",
+    "calma",
+    "ainda nao",
+    "ainda não",
+    "por enquanto nao",
+    "por enquanto não",
+    "depois eu vejo",
+    "depois confirmo",
+    "vou ver",
+    "preciso confirmar",
+    "segura",
+    "pausa",
+    "aguarda",
+    "aguarde",
+  ])) return "hold";
+
+  return null;
+}
+
+function wantsToCancelAfterPrompt(text: string) {
+  const raw = String(text || "").trim();
+  const t = normalizeText(raw);
+  if (!t) return false;
+  if (isHumanCancellationAbortOrHold(raw)) return false;
   if (/^1(?:\D|$)/.test(t)) return true;
-  return hasAnyTerm(t, ["cancelar", "cancela", "cancele", "cancelado", "apenas cancelar", "so cancelar", "só cancelar", "cancelar definitivamente", "pode cancelar"]) && !hasAnyTerm(t, ["remarcar", "remarque", "reagendar", "reagende"]);
+
+  const hasCancelIntent = hasAnyTerm(t, [
+    "cancelar",
+    "cancela",
+    "cancele",
+    "cancelado",
+    "cancelamento",
+    "apenas cancelar",
+    "so cancelar",
+    "só cancelar",
+    "cancelar definitivamente",
+    "pode cancelar",
+    "pode cancelar sim",
+    "pode sim cancelar",
+    "cancela sim",
+    "cancele sim",
+    "confirmo o cancelamento",
+    "autorizo o cancelamento",
+    "faz o cancelamento",
+    "fazer o cancelamento",
+    "segue com o cancelamento",
+    "pode seguir com o cancelamento",
+    "cancela e avisa",
+    "cancele e avise",
+    "cancela e fala",
+    "cancele e fale",
+    "cancela e explica",
+    "cancele e explique",
+    "diga que foi cancelado",
+    "avisa que foi cancelado",
+    "avise que foi cancelado",
+    "nao vamos atender",
+    "não vamos atender",
+    "nao vamos fazer",
+    "não vamos fazer",
+    "nao vamos mais atender",
+    "não vamos mais atender",
+    "nao vamos mais fazer negocio",
+    "não vamos mais fazer negocio",
+    "não vamos mais fazer negócio",
+    "deixa pra la esse atendimento",
+    "deixa pra lá esse atendimento",
+    "encerra esse atendimento",
+  ]);
+
+  const hasRescheduleIntent = hasAnyTerm(t, [
+    "remarcar",
+    "remarque",
+    "remarca",
+    "reagendar",
+    "reagende",
+    "reagenda",
+    "outro horario",
+    "outro horário",
+    "novo horario",
+    "novo horário",
+    "mudar horario",
+    "mudar horário",
+    "muda pra",
+    "mudar para",
+  ]);
+
+  return hasCancelIntent && !hasRescheduleIntent;
 }
 
 function wantsToRescheduleAfterPrompt(text: string) {
-  const t = normalizeText(String(text || "").trim());
-  return /^2(?:\D|$)/.test(t) || hasAnyTerm(t, ["remarcar", "remarque", "reagendar", "reagende", "outro horario", "outro horário"]);
+  const raw = String(text || "").trim();
+  const t = normalizeText(raw);
+  if (!t) return false;
+  if (isHumanCancellationAbortOrHold(raw)) return false;
+  if (/^2(?:\D|$)/.test(t)) return true;
+
+  const hasRescheduleIntent = hasAnyTerm(t, [
+    "remarcar",
+    "remarque",
+    "remarca",
+    "reagendar",
+    "reagende",
+    "reagenda",
+    "outro horario",
+    "outro horário",
+    "novo horario",
+    "novo horário",
+    "mudar horario",
+    "mudar horário",
+    "muda pra",
+    "mudar para",
+    "trocar horario",
+    "trocar horário",
+    "tenta outro dia",
+    "pergunta outro dia",
+    "pergunta se pode",
+    "ve se pode",
+    "vê se pode",
+    "nao cancela remarca",
+    "não cancela remarca",
+    "melhor remarcar",
+  ]);
+
+  const hasCancelOnlyIntent = hasAnyTerm(t, [
+    "cancelar definitivamente",
+    "apenas cancelar",
+    "so cancelar",
+    "só cancelar",
+    "cancela e avisa",
+    "cancele e avise",
+    "cancela e fala",
+    "cancele e fale",
+  ]);
+
+  return hasRescheduleIntent && !hasCancelOnlyIntent;
 }
 
 
@@ -2321,10 +2480,37 @@ function buildUnsafeCancellationWithoutTargetReply() {
 function extractCancellationReasonFromDecision(text: string) {
   const raw = String(text || "").trim();
   const normalized = normalizeText(raw);
-  if (!raw || hasAnyTerm(normalized, ["sem motivo", "aviso simples", "simples", "sem explicar", "nao precisa", "não precisa", "apenas avise", "so avise", "só avise"])) return null;
-  const explicit = raw.match(/(?:motivo|porque|pois|explique que|diga que)\s*[:\-]?\s*(.+)$/i);
+  if (!raw || hasAnyTerm(normalized, [
+    "sem motivo",
+    "aviso simples",
+    "simples",
+    "sem explicar",
+    "nao precisa",
+    "não precisa",
+    "nao precisa explicar",
+    "não precisa explicar",
+    "sem detalhes",
+    "sem dar detalhes",
+    "apenas avise",
+    "so avise",
+    "só avise",
+    "avisa simples",
+    "avise simples",
+  ])) return null;
+
+  const explicit = raw.match(/(?:motivo|porque|pois|explique que|diga que|fale que|fala que|informe que|avise que|explica que)\s*[:\-]?\s*(.+)$/i);
   const value = explicit?.[1]?.trim().replace(/[.\s]+$/, "") || null;
-  return value || null;
+  if (value) return value;
+
+  const normalizedHasCancel = wantsToCancelAfterPrompt(raw);
+  if (!normalizedHasCancel) return null;
+
+  const afterComma = raw.split(/[,;:]/).slice(1).join(" ").trim().replace(/[.\s]+$/, "");
+  if (afterComma && afterComma.length >= 8 && !hasAnyTerm(normalizeText(afterComma), ["aviso simples", "sem explicar", "sem motivo"])) {
+    return afterComma;
+  }
+
+  return null;
 }
 
 async function startCustomerAppointmentCancelDecision(args: { supabase: any; organizationId: string; storeId: string; threadId?: string | null; assistantContextState?: StoreAssistantContextStateRow | null; lastHumanMessage: string; appointment: AppointmentRow; scheduleSettings?: StoreScheduleSettingsRow | null; }) {
@@ -2389,17 +2575,49 @@ async function handlePendingCustomerCancelDecision(args: { supabase: any; organi
   const contextState = args.assistantContextState || null;
   if (!isWaitingForCustomerCancelDecision(contextState)) return null;
 
-  // Proteção forte contra contexto antigo: se a nova mensagem cita explicitamente
-  // outro compromisso pelo nome/título, não podemos continuar usando o
-  // appointment_id salvo no contexto anterior. Deixamos o fluxo principal
-  // resolver pelo título informado na mensagem atual.
-  const explicitTitleFromCurrentMessage = extractExplicitAppointmentTitleCandidateFromCommand(args.lastHumanMessage);
-  if (explicitTitleFromCurrentMessage) return null;
   const appointmentId = String(contextState?.active_appointment_id || readAssistantContextPayload(contextState).appointment_id || "").trim();
   if (!appointmentId) return "Eu estava aguardando sua decisão sobre cancelamento, mas perdi a referência do compromisso. Me diga o nome, cliente, data ou horário para eu procurar de novo.";
 
   const appointment = await loadAppointmentByIdForAssistantAction({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, appointmentId });
   if (!appointment) return "Não encontrei mais esse compromisso na agenda. Atualize a tela ou me diga o cliente, data e horário para eu procurar de novo.";
+
+  // Proteção forte contra contexto antigo: se a nova mensagem cita explicitamente
+  // outro compromisso pelo nome/título, não podemos continuar usando o
+  // appointment_id salvo no contexto anterior. Se o título citado for o mesmo
+  // compromisso que está no contexto, a resposta continua sendo tratada como
+  // continuação segura da decisão pendente.
+  const explicitTitleFromCurrentMessage = extractExplicitAppointmentTitleCandidateFromCommand(args.lastHumanMessage);
+  if (explicitTitleFromCurrentMessage && !appointmentTitleMatchesCommandTitle(appointment.title, explicitTitleFromCurrentMessage)) return null;
+
+  const abortOrHoldDecision = isHumanCancellationAbortOrHold(args.lastHumanMessage);
+  if (abortOrHoldDecision === "abort") {
+    const reply = `Certo, não alterei a agenda. Mantive ${buildScheduleAppointmentReferenceLabel(appointment)} de ${appointment.customer_name || "cliente não identificado"} como está.`;
+    if (args.threadId) await resolveAssistantContextState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      currentContextState: contextState,
+      lastUserMessage: args.lastHumanMessage,
+      lastAssistantMessage: reply,
+    });
+    return reply;
+  }
+
+  if (abortOrHoldDecision === "hold") {
+    if (args.threadId) await upsertAssistantContextState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      threadId: args.threadId,
+      currentContextState: contextState,
+      patch: {
+        last_user_message: args.lastHumanMessage,
+        last_assistant_message: "Tudo bem. Não alterei a agenda. Quando quiser seguir, me diga se é para cancelar ou remarcar esse compromisso.",
+      },
+    });
+    return "Tudo bem. Não alterei a agenda. Quando quiser seguir, me diga se é para cancelar ou remarcar esse compromisso.";
+  }
 
   if (wantsToRescheduleAfterPrompt(args.lastHumanMessage)) {
     if (args.threadId) await upsertAssistantContextState({
