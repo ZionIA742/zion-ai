@@ -4724,6 +4724,235 @@ function extractContextAwareReschedulePayload(args: {
   };
 }
 
+function isRescheduleChoiceWithDateTime(text: string) {
+  const normalized = normalizeText(text);
+  const hasRescheduleCue = hasAnyTerm(normalized, [
+    "remarcar",
+    "remarca",
+    "remarque",
+    "reagendar",
+    "reagenda",
+    "reagende",
+    "mudar horario",
+    "mudar horário",
+    "trocar horario",
+    "trocar horário",
+    "melhor remarcar",
+    "melhor reagendar",
+  ]);
+
+  if (!hasRescheduleCue) return false;
+
+  const hasDateCue =
+    /\b\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/.test(text) ||
+    /\b(?:hoje|amanha|amanhã|depois de amanha|depois de amanhã|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingo)\b/i.test(text) ||
+    /\b(?:dia|data)\s+\d{1,2}\b/i.test(text);
+  const hasTimeCue =
+    /\b\d{1,2}(?::\d{2})?\s*h\b/i.test(text) ||
+    /\b(?:as|às)\s+\d{1,2}(?::\d{2})?\b/i.test(text) ||
+    /\b\d{1,2}:\d{2}\b/.test(text);
+
+  return hasDateCue && hasTimeCue;
+}
+
+async function resolveRescheduleChoiceWithTargetFromContext(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  threadId?: string | null;
+  assistantContextState?: StoreAssistantContextStateRow | null;
+  lastHumanMessage: string;
+  openAppointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const contextState = args.assistantContextState || null;
+  const contextTopic = normalizeText(contextState?.active_topic || "");
+  const contextIntent = normalizeText(contextState?.active_intent || "");
+  const contextStatus = normalizeText(contextState?.active_status || "");
+  const appointmentId = String(contextState?.active_appointment_id || "").trim();
+
+  const isRelevantContext =
+    Boolean(appointmentId) &&
+    (
+      (contextTopic === "appointment_management" && ["cancel", "reschedule"].includes(contextIntent) && ["waiting_user_choice", "active"].includes(contextStatus)) ||
+      (contextTopic === "appointment_reschedule" && contextIntent === "reschedule" && ["active", "waiting_user_choice"].includes(contextStatus))
+    );
+
+  if (!isRelevantContext) return null;
+  if (!isRescheduleChoiceWithDateTime(args.lastHumanMessage)) return null;
+
+  const now = getScheduleParsingNow(args.scheduleSettings || null);
+  const scheduleTimezone = getScheduleTimezone(args.scheduleSettings || null);
+  const reschedulePayload = extractContextAwareReschedulePayload({
+    text: args.lastHumanMessage,
+    now,
+    settings: args.scheduleSettings || null,
+    contextState,
+  });
+
+  if (!reschedulePayload.ok) return null;
+
+  let appointment = (args.openAppointments || []).find((item) => item.id === appointmentId) || null;
+  if (!appointment) {
+    const { data, error } = await args.supabase
+      .from("store_appointments")
+      .select("id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id")
+      .eq("id", appointmentId)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .maybeSingle();
+
+    if (error || !data?.id) {
+      return "Entendi que você quer remarcar, mas não consegui encontrar o compromisso ativo com segurança. A agenda não foi alterada.";
+    }
+    appointment = data as AppointmentRow;
+  }
+
+  const targetStartIso = reschedulePayload.payload.scheduled_start;
+  const targetEndIso = reschedulePayload.payload.scheduled_end;
+  const availability = await checkSuggestedTimeApprovalAvailability({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    appointmentId: appointment.id,
+    startIso: targetStartIso,
+    endIso: targetEndIso,
+    scheduleSettings: args.scheduleSettings || null,
+    timezoneName: scheduleTimezone,
+  });
+
+  if (!availability.available) {
+    if (args.threadId) {
+      await upsertAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: contextState,
+        patch: {
+          active_topic: "appointment_reschedule",
+          active_intent: "reschedule",
+          active_status: "active",
+          active_customer_name: appointment.customer_name || null,
+          active_customer_phone: appointment.customer_phone || null,
+          active_lead_id: appointment.lead_id || null,
+          active_conversation_id: appointment.conversation_id || null,
+          active_appointment_id: appointment.id,
+          target_date: isoDateToLocalDateForDb(targetStartIso, scheduleTimezone),
+          target_time: formatTimeOnlyInTimeZone(targetStartIso, scheduleTimezone),
+          target_start_at: targetStartIso,
+          target_end_at: targetEndIso,
+          timezone_name: scheduleTimezone,
+          candidate_options: [],
+          context_payload: {
+            reason: "reschedule_choice_target_unavailable",
+            availability_reason: availability.reason,
+            agenda_updated: false,
+          },
+          last_user_message: args.lastHumanMessage,
+          last_assistant_message: `Verifiquei ${formatDateOnlyInTimeZone(targetStartIso, scheduleTimezone)} às ${formatTimeOnlyInTimeZone(targetStartIso, scheduleTimezone)}, mas esse horário não está livre.`,
+        },
+      });
+    }
+
+    return `Entendi que você prefere remarcar ${buildScheduleAppointmentReferenceLabel(appointment)} de ${appointment.customer_name || "cliente não identificado"} para ${formatDateOnlyInTimeZone(targetStartIso, scheduleTimezone)} às ${formatTimeOnlyInTimeZone(targetStartIso, scheduleTimezone)}, mas esse horário não está livre: ${availability.reason || "encontrei conflito"}. A agenda não foi alterada.`;
+  }
+
+  let customerMessageSent = false;
+  if (appointment.conversation_id) {
+    const customerMessage = buildCustomerRescheduleMessage({
+      appointment,
+      proposedStartIso: targetStartIso,
+      scheduleSettings: args.scheduleSettings || null,
+    });
+    const sendResult = await sendAiMessageToCustomerConversation({
+      supabase: args.supabase,
+      conversationId: appointment.conversation_id,
+      text: customerMessage,
+    });
+    customerMessageSent = sendResult.ok;
+  }
+
+  if (!args.threadId) {
+    return "Encontrei o compromisso e o horário sugerido, mas não consegui registrar a tratativa porque a conversa da assistente não foi identificada. A agenda ainda não foi alterada.";
+  }
+
+  const taskResult = await createAssistantOperationalTask({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    taskType: "appointment_reschedule_with_customer",
+    status: customerMessageSent ? "waiting_customer_response" : "open",
+    priority: "normal",
+    title: `Remarcação de ${buildScheduleAppointmentReferenceLabel(appointment)}${appointment.customer_name ? ` - ${appointment.customer_name}` : ""}`,
+    description: customerMessageSent
+      ? "A assistente iniciou contato com o cliente para confirmar o novo horário. A agenda ainda não foi alterada."
+      : "A assistente identificou a remarcação, mas não conseguiu iniciar contato automático com o cliente.",
+    appointment,
+    targetStartIso,
+    targetEndIso,
+    timezoneName: scheduleTimezone,
+    taskPayload: {
+      customer_message_sent: customerMessageSent,
+      source: "assistant.reply.route",
+      original_user_message: args.lastHumanMessage,
+      source_context_id: contextState?.id || null,
+      source_context_reason: "cancel_prompt_reschedule_choice_with_target",
+    },
+  });
+
+  await upsertAssistantContextState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    threadId: args.threadId,
+    currentContextState: contextState,
+    patch: {
+      active_topic: "appointment_reschedule",
+      active_intent: "reschedule",
+      active_status: customerMessageSent ? "waiting_customer_response" : "active",
+      active_customer_name: appointment.customer_name || null,
+      active_customer_phone: appointment.customer_phone || null,
+      active_lead_id: appointment.lead_id || null,
+      active_conversation_id: appointment.conversation_id || null,
+      active_appointment_id: appointment.id,
+      target_date: isoDateToLocalDateForDb(targetStartIso, scheduleTimezone),
+      target_time: formatTimeOnlyInTimeZone(targetStartIso, scheduleTimezone),
+      target_start_at: targetStartIso,
+      target_end_at: targetEndIso,
+      timezone_name: scheduleTimezone,
+      candidate_options: [],
+      context_payload: {
+        customer_message_sent: customerMessageSent,
+        agenda_updated: false,
+        reason: "waiting_customer_confirmation_before_reschedule",
+        task_created: taskResult.ok,
+        task_id: taskResult.taskId,
+        source_context_reason: "cancel_prompt_reschedule_choice_with_target",
+      },
+      last_user_message: args.lastHumanMessage,
+      last_assistant_message: buildResponsibleRescheduleContactReply({
+        appointment,
+        targetStartIso,
+        customerMessageSent,
+        scheduleSettings: args.scheduleSettings || null,
+      }),
+    },
+  });
+
+  if (!taskResult.ok) {
+    return `Encontrei o compromisso e o horário sugerido, mas não consegui registrar a tratativa operacional: ${taskResult.error}. A agenda ainda não foi alterada.`;
+  }
+
+  return buildResponsibleRescheduleContactReply({
+    appointment,
+    targetStartIso,
+    customerMessageSent,
+    scheduleSettings: args.scheduleSettings || null,
+  });
+}
+
 function buildTaskRegisteredReply(args: {
   appointment: AppointmentRow;
   taskId: string | null;
@@ -7425,7 +7654,20 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const customerAvailabilityContextReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
+    const rescheduleChoiceWithTargetReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
+      ? await resolveRescheduleChoiceWithTargetFromContext({
+          supabase,
+          organizationId,
+          storeId,
+          threadId: assistantThreadId,
+          assistantContextState,
+          lastHumanMessage,
+          openAppointments: allOpenAppointments,
+          scheduleSettings,
+        })
+      : null;
+
+    const customerAvailabilityContextReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !rescheduleChoiceWithTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
       ? await resolveCustomerAvailabilityRequestFromContext({
           supabase,
           organizationId,
@@ -7438,7 +7680,7 @@ async function generateAssistantReply(params: {
         })
       : null;
 
-    const scheduleActionReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
+    const scheduleActionReply = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !rescheduleChoiceWithTargetReply && !blockAdjustmentReply && !blockDayReply && !customerAvailabilityContextReply && (!postAppointmentMode || appointmentManagementRequest)
       ? await resolveAppointmentActionReply({
           supabase,
           organizationId,
