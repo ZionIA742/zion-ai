@@ -2281,6 +2281,43 @@ function wantsToRescheduleAfterPrompt(text: string) {
   return /^2(?:\D|$)/.test(t) || hasAnyTerm(t, ["remarcar", "remarque", "reagendar", "reagende", "outro horario", "outro horário"]);
 }
 
+
+
+function cancellationCommandHasSpecificAppointmentTarget(args: {
+  text: string;
+  openAppointments: AppointmentRow[];
+  contextState?: StoreAssistantContextStateRow | null;
+}) {
+  const raw = String(args.text || "").trim();
+  const normalized = normalizeText(raw);
+  if (!normalized) return false;
+
+  if (isWaitingForCustomerCancelDecision(args.contextState || null)) return true;
+  if (isPlainAssistantOptionChoice(raw)) return true;
+  if (resolveExplicitAppointmentItemIndex(raw, Math.max(args.openAppointments.length, 1)) !== null) return true;
+  if (resolvePostAppointmentDetailIndex(raw, Math.max(args.openAppointments.length, 1)) !== null) return true;
+  if (extractExplicitAppointmentTitleCandidateFromCommand(raw)) return true;
+
+  const dateParts = parseDateReferenceFromText(raw, getScheduleParsingNow(null));
+  const timeRange = parseTimeRangeFromText(raw);
+  if (dateParts || timeRange?.startTime) return true;
+
+  const digitText = normalizeDigits(raw);
+  if (digitText.length >= 8) return true;
+
+  const directMatches = resolveAppointmentCandidateIndexesFromText({
+    text: raw,
+    openAppointments: args.openAppointments || [],
+  });
+  if (directMatches.length > 0) return true;
+
+  return false;
+}
+
+function buildUnsafeCancellationWithoutTargetReply() {
+  return "Me diga qual compromisso você quer cancelar, informando o nome do cliente, o título, a data/horário ou escolhendo um item da lista. Assim eu evito alterar o compromisso errado.";
+}
+
 function extractCancellationReasonFromDecision(text: string) {
   const raw = String(text || "").trim();
   const normalized = normalizeText(raw);
@@ -4261,6 +4298,17 @@ async function resolveAppointmentActionReply(args: {
     scheduleSettings: args.scheduleSettings || null,
   });
   let openAppointments = sortOpenScheduleAppointments(args.openAppointments || []);
+
+  if (
+    action === "cancel" &&
+    !cancellationCommandHasSpecificAppointmentTarget({
+      text: args.lastHumanMessage,
+      openAppointments,
+      contextState: args.assistantContextState || null,
+    })
+  ) {
+    return buildUnsafeCancellationWithoutTargetReply();
+  }
 
   const commandHasExplicitTitleOnly = Boolean(explicitAppointmentTitleCandidate) && !commandHasExplicitTitleAndOriginalSchedule;
   if (commandHasExplicitTitleOnly && ["cancel", "complete", "needs_followup", "reschedule"].includes(action)) {
