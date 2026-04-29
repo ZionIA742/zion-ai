@@ -127,16 +127,6 @@ function classifyCustomerReply(content: string): CustomerReplyDecision {
   return { type: "ambiguous", reason: "customer_reply_not_clear_enough" };
 }
 
-function customerReplyLooksLikeTargetConfirmation(content: string) {
-  const text = normalizeText(content);
-
-  return (
-    /(?:^|\s)(sim|confirmado|confirmo|fechado|combinado|ok|blz|beleza|esta bom|ta bom|serve|da certo|dá certo|pode marcar|marca|marcar nesse horario|esse horario serve)(?:\s|$|[.!?,])/i.test(text) ||
-    /(?:^|\s)pode ser(?:\s|$|[.!?,])/i.test(text) ||
-    /(?:^|\s)(esse horario|esse horário|esse dia|essa data)\s+(serve|esta bom|ta bom|da certo|dá certo)(?:\s|$|[.!?,])/i.test(text)
-  );
-}
-
 function formatLocalDateTime(value: string | null | undefined, timezoneName = "America/Sao_Paulo") {
   if (!value) return "horário não definido";
 
@@ -595,6 +585,120 @@ async function pushAssistantSystemMessage(args: {
   }
 }
 
+
+function formatAppointmentTypeForCustomer(value: string | null | undefined) {
+  const normalized = normalizeText(value);
+
+  if (normalized === "technical_visit") return "visita técnica";
+  if (normalized === "installation") return "instalação";
+  if (normalized === "maintenance") return "manutenção";
+
+  return "compromisso";
+}
+
+function formatDateOnlyInTimeZone(value: string | null | undefined, timezoneName = "America/Sao_Paulo") {
+  if (!value) return "data não definida";
+
+  try {
+    return new Intl.DateTimeFormat("pt-BR", {
+      timeZone: timezoneName || "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function formatTimeOnlyInTimeZone(value: string | null | undefined, timezoneName = "America/Sao_Paulo") {
+  if (!value) return "horário não definido";
+
+  try {
+    return new Intl.DateTimeFormat("pt-BR", {
+      timeZone: timezoneName || "America/Sao_Paulo",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+function buildCustomerRescheduleConfirmationMessage(args: {
+  appointment: AppointmentRow;
+  startIso: string;
+  timezoneName: string;
+}) {
+  const customerName = args.appointment.customer_name || "tudo bem";
+  const appointmentTypeLabel = formatAppointmentTypeForCustomer(args.appointment.appointment_type).toLowerCase();
+  const dateLabel = formatDateOnlyInTimeZone(args.startIso, args.timezoneName);
+  const timeLabel = formatTimeOnlyInTimeZone(args.startIso, args.timezoneName);
+
+  return `Oi, ${customerName}. Confirmado então: sua ${appointmentTypeLabel} ficou para ${dateLabel} às ${timeLabel}. Qualquer coisa, é só me avisar.`;
+}
+
+async function sendCustomerRescheduleConfirmationMessage(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  task: OperationalTaskRow;
+  appointment: AppointmentRow;
+  startIso: string;
+  timezoneName: string;
+  queueId: string;
+}) {
+  const alreadySent = Boolean(args.task.task_payload?.customer_confirmation_message_sent);
+  const existingMessageId = String(args.task.task_payload?.customer_confirmation_message_id || "").trim();
+
+  if (alreadySent && existingMessageId) {
+    return { sent: false, messageId: existingMessageId };
+  }
+
+  const conversationId = args.task.related_conversation_id || args.appointment.conversation_id;
+
+  if (!conversationId) {
+    throw new Error("Agenda atualizada, mas não encontrei conversa do cliente para enviar confirmação.");
+  }
+
+  const content = buildCustomerRescheduleConfirmationMessage({
+    appointment: args.appointment,
+    startIso: args.startIso,
+    timezoneName: args.timezoneName,
+  });
+
+  const { data, error } = await args.supabase
+    .from("messages")
+    .insert({
+      organization_id: args.organizationId,
+      store_id: args.storeId,
+      conversation_id: conversationId,
+      lead_id: args.task.related_lead_id || args.appointment.lead_id || null,
+      sender: "ai",
+      direction: "outgoing",
+      message_type: "text",
+      content,
+      metadata: {
+        source: "panel",
+        channel: "panel",
+        generated_by: "assistant_operational_task_worker",
+        queue_id: args.queueId,
+        task_id: args.task.id,
+        appointment_id: args.appointment.id,
+        confirmation_type: "reschedule_confirmed_after_customer_reply",
+      },
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    throw new Error(`Agenda atualizada, mas falhou ao avisar o cliente: ${error.message}`);
+  }
+
+  return { sent: true, messageId: data?.id || null };
+}
+
 async function processQueueItem(args: {
   supabase: any;
   queue: QueueRow;
@@ -672,11 +776,6 @@ async function processQueueItem(args: {
       reason: "customer_suggested_different_time_from_target",
       rawText: customerMessage,
     };
-  } else if (decision.type === "suggested_other_time" && customerReplyLooksLikeTargetConfirmation(customerMessage)) {
-    decision = {
-      type: "confirmed",
-      reason: "customer_confirmed_target_time_with_same_time_mentioned",
-    };
   }
 
   if (decision.type === "confirmed") {
@@ -742,6 +841,17 @@ async function processQueueItem(args: {
       throw new Error(updateError.message);
     }
 
+    const customerConfirmation = await sendCustomerRescheduleConfirmationMessage({
+      supabase,
+      organizationId: queue.organization_id,
+      storeId: queue.store_id,
+      task,
+      appointment,
+      startIso: task.target_start_at,
+      timezoneName,
+      queueId: queue.id,
+    });
+
     const resolvedPayload = appendTaskPayload(task.task_payload, {
       last_customer_reply: customerMessage,
       last_customer_reply_message_id: queue.message_id,
@@ -749,6 +859,8 @@ async function processQueueItem(args: {
       appointment_update_attempted: true,
       appointment_update_succeeded: true,
       updated_appointment: updatedAppointment,
+      customer_confirmation_message_sent: Boolean(customerConfirmation.messageId),
+      customer_confirmation_message_id: customerConfirmation.messageId || null,
     });
 
     const { error: taskUpdateError } = await supabase
