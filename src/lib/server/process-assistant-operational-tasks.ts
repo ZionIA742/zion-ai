@@ -668,35 +668,33 @@ async function sendCustomerRescheduleConfirmationMessage(args: {
     timezoneName: args.timezoneName,
   });
 
-  const { data, error } = await args.supabase
-    .from("messages")
-    .insert({
-      organization_id: args.organizationId,
-      store_id: args.storeId,
-      conversation_id: conversationId,
-      lead_id: args.task.related_lead_id || args.appointment.lead_id || null,
-      sender: "ai",
-      direction: "outgoing",
-      message_type: "text",
-      content,
-      metadata: {
-        source: "panel",
-        channel: "panel",
-        generated_by: "assistant_operational_task_worker",
-        queue_id: args.queueId,
-        task_id: args.task.id,
-        appointment_id: args.appointment.id,
-        confirmation_type: "reschedule_confirmed_after_customer_reply",
-      },
-    })
-    .select("id")
-    .single();
+  const metadata = {
+    source: "panel",
+    channel: "panel",
+    generated_by: "assistant_operational_task_worker",
+    queue_id: args.queueId,
+    task_id: args.task.id,
+    appointment_id: args.appointment.id,
+    confirmation_type: "reschedule_confirmed_after_customer_reply",
+  };
+
+  const { data, error } = await args.supabase.rpc("insert_message", {
+    p_conversation_id: conversationId,
+    p_sender: "ai",
+    p_direction: "outgoing",
+    p_message_type: "text",
+    p_content: content,
+    p_media_url: null,
+    p_external_message_id: null,
+    p_metadata: metadata,
+  });
 
   if (error) {
-    throw new Error(`Agenda atualizada, mas falhou ao avisar o cliente: ${error.message}`);
+    throw new Error(`Agenda atualizada, mas falhou ao avisar o cliente via insert_message(): ${error.message}`);
   }
 
-  return { sent: true, messageId: data?.id || null };
+  const insertedMessage = Array.isArray(data) ? data[0] : data;
+  return { sent: true, messageId: insertedMessage?.id || null };
 }
 
 async function processQueueItem(args: {
