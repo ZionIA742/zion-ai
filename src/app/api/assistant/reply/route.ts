@@ -734,6 +734,41 @@ function isGeneralTodayOverviewRequest(text: string) {
   ]);
 }
 
+function resolveSpecificScheduleQueryDateParts(text: string, now: Date) {
+  const t = normalizeText(text);
+
+  // Consulta pura de agenda deve ser lida pela tabela store_appointments atual.
+  // Nunca usar histórico de remarcação, tarefas antigas ou contexto ativo como fonte de verdade.
+  if (!t) return null;
+  if (hasExplicitAppointmentManagementCommand(text) || asksToBlockStoreDay(text)) return null;
+  if (hasAnyTerm(t, ["remarca", "remarque", "remarcar", "reagenda", "reagende", "reagendar", "cancele", "cancelar", "cancela", "conclua", "concluir", "finalize", "finalizar"])) return null;
+
+  const asksSchedule = hasAnyTerm(t, [
+    "agenda",
+    "compromisso",
+    "compromissos",
+    "atendimento",
+    "atendimentos",
+    "visita",
+    "visitas",
+    "instalacao",
+    "instalação",
+    "instalacoes",
+    "instalações",
+    "o que tenho",
+    "o que eu tenho",
+    "quais tenho",
+  ]);
+
+  if (!asksSchedule) return null;
+
+  const dateParts = parseScheduleDateFromText(text, now);
+  if (!dateParts) return null;
+
+  return dateParts;
+}
+
+
 function asksAboutMaterialsOrDocuments(text: string) {
   const t = normalizeText(text);
   return (
@@ -5787,6 +5822,57 @@ function formatAppointmentCompactLine(item: AppointmentRow, scheduleSettings?: S
   return `${timeLabel} — ${formatAppointmentType(item.appointment_type)}${title}${customer} (${formatAppointmentStatus(item.status)})`;
 }
 
+function buildAppointmentLineForSpecificDayQuery(appointment: AppointmentRow, scheduleSettings?: StoreScheduleSettingsRow | null) {
+  const timeZone = getScheduleTimezone(scheduleSettings || null);
+  const start = appointment.scheduled_start || appointment.scheduled_end;
+  const end = appointment.scheduled_end;
+  const timeLabel = start
+    ? `${formatTimeOnlyInTimeZone(start, timeZone)}${end ? ` às ${formatTimeOnlyInTimeZone(end, timeZone)}` : ""}`
+    : "sem horário";
+
+  const typeLabel = formatAppointmentType(appointment.appointment_type);
+  const titleLabel = String(appointment.title || "").trim();
+  const customerLabel = String(appointment.customer_name || "").trim();
+  const status = normalizeText(appointment.status);
+  const statusSuffix = status === "rescheduled" ? " (remarcado)" : status && status !== "scheduled" ? ` (${formatAppointmentStatus(appointment.status)})` : "";
+
+  const subject = `${typeLabel}${titleLabel ? ` ${titleLabel}` : ""}`.trim();
+  const customer = customerLabel ? ` com ${customerLabel}` : "";
+
+  return `${subject}${customer} das ${timeLabel}${statusSuffix}`;
+}
+
+function buildDeterministicSpecificDayScheduleReply(args: {
+  dateParts: { day: number; month: number; year: number };
+  appointments: AppointmentRow[];
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const dateLabel = formatDatePartsForHuman(args.dateParts);
+  const appointments = sortOpenScheduleAppointments(args.appointments || []);
+
+  if (!appointments.length) {
+    return `No dia ${dateLabel}, não encontrei compromisso agendado no sistema.`;
+  }
+
+  const lines: string[] = [];
+  lines.push(`No dia ${dateLabel} você tem:`);
+  lines.push("");
+
+  appointments.slice(0, 20).forEach((appointment, index) => {
+    lines.push(`${index + 1}. ${buildAppointmentLineForSpecificDayQuery(appointment, args.scheduleSettings || null)}`);
+  });
+
+  if (appointments.length > 20) {
+    lines.push(`- e mais ${appointments.length - 20} compromisso(s).`);
+  }
+
+  lines.push("");
+  lines.push("Quer detalhes de algum?");
+
+  return lines.join("\n");
+}
+
+
 function appointmentMatchesAssistantContext(item: AppointmentRow, contextState?: StoreAssistantContextStateRow | null) {
   if (!contextState) return false;
   const activeLeadId = contextState.active_lead_id;
@@ -7273,6 +7359,37 @@ async function generateAssistantReply(params: {
       };
     }
 
+    const specificScheduleQueryDateParts = resolveSpecificScheduleQueryDateParts(lastHumanMessage, now);
+    let specificDayAppointmentsData: AppointmentRow[] = [];
+
+    if (specificScheduleQueryDateParts) {
+      const specificDayStartIso = buildIsoFromDateAndTime(specificScheduleQueryDateParts, "00:00", scheduleSettings);
+      const specificDayEndIso = buildIsoFromDateAndTime(specificScheduleQueryDateParts, "23:59", scheduleSettings);
+
+      const { data: specificDayAppointmentsRaw, error: specificDayAppointmentsError } = await supabase
+        .from("store_appointments")
+        .select(
+          "id, title, appointment_type, status, scheduled_start, scheduled_end, customer_name, customer_phone, address_text, notes, lead_id, conversation_id"
+        )
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .in("status", ["scheduled", "rescheduled"])
+        .gte("scheduled_start", specificDayStartIso)
+        .lte("scheduled_start", specificDayEndIso)
+        .order("scheduled_start", { ascending: true })
+        .limit(100);
+
+      if (specificDayAppointmentsError) {
+        return {
+          ok: false,
+          error: "LOAD_SPECIFIC_DAY_APPOINTMENTS_FAILED",
+          message: specificDayAppointmentsError.message,
+        };
+      }
+
+      specificDayAppointmentsData = (specificDayAppointmentsRaw || []) as AppointmentRow[];
+    }
+
     const { data: nextAppointmentsData, error: nextAppointmentsError } = await supabase
       .from("store_appointments")
       .select(
@@ -7432,6 +7549,7 @@ async function generateAssistantReply(params: {
     const postAppointmentMode = detectedIntent === "post_appointment";
     const scheduleManagementMode = detectedIntent === "schedule_management";
     const generalTodayOverviewMode = isGeneralTodayOverviewRequest(lastHumanMessage);
+    const specificDayScheduleMode = Boolean(specificScheduleQueryDateParts);
     const baseOpenAppointments = [
       ...((todayAppointmentsData || []) as AppointmentRow[]),
       ...((nextAppointmentsData || []) as AppointmentRow[]),
@@ -7585,6 +7703,12 @@ async function generateAssistantReply(params: {
       aiText = customerAvailabilityContextReply;
     } else if (scheduleActionReply) {
       aiText = scheduleActionReply;
+    } else if (specificDayScheduleMode && specificScheduleQueryDateParts) {
+      aiText = buildDeterministicSpecificDayScheduleReply({
+        dateParts: specificScheduleQueryDateParts,
+        appointments: specificDayAppointmentsData,
+        scheduleSettings,
+      });
     } else if (generalTodayOverviewMode) {
       aiText = buildDeterministicTodayOverviewReply({
         todayAppointments: (todayAppointmentsData || []) as AppointmentRow[],
