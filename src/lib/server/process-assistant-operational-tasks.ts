@@ -127,6 +127,16 @@ function classifyCustomerReply(content: string): CustomerReplyDecision {
   return { type: "ambiguous", reason: "customer_reply_not_clear_enough" };
 }
 
+function customerReplyLooksLikeTargetConfirmation(content: string) {
+  const text = normalizeText(content);
+
+  return (
+    /(?:^|\s)(sim|confirmado|confirmo|fechado|combinado|ok|blz|beleza|esta bom|ta bom|serve|da certo|dá certo|pode marcar|marca|marcar nesse horario|esse horario serve)(?:\s|$|[.!?,])/i.test(text) ||
+    /(?:^|\s)pode ser(?:\s|$|[.!?,])/i.test(text) ||
+    /(?:^|\s)(esse horario|esse horário|esse dia|essa data)\s+(serve|esta bom|ta bom|da certo|dá certo)(?:\s|$|[.!?,])/i.test(text)
+  );
+}
+
 function formatLocalDateTime(value: string | null | undefined, timezoneName = "America/Sao_Paulo") {
   if (!value) return "horário não definido";
 
@@ -661,6 +671,11 @@ async function processQueueItem(args: {
       type: "suggested_other_time",
       reason: "customer_suggested_different_time_from_target",
       rawText: customerMessage,
+    };
+  } else if (decision.type === "suggested_other_time" && customerReplyLooksLikeTargetConfirmation(customerMessage)) {
+    decision = {
+      type: "confirmed",
+      reason: "customer_confirmed_target_time_with_same_time_mentioned",
     };
   }
 
