@@ -4245,6 +4245,12 @@ function buildResponsibleAvailabilityRequestReply(args: { appointment: Appointme
 }
 
 
+type CustomerRescheduleWorkflowDeps = {
+  sendAiMessageToCustomerConversation: typeof sendAiMessageToCustomerConversation;
+  createAssistantOperationalTask: typeof createAssistantOperationalTask;
+  upsertAssistantContextState: typeof upsertAssistantContextState;
+};
+
 async function resolveCustomerRescheduleWorkflow(args: {
   supabase: any;
   organizationId: string;
@@ -4256,7 +4262,9 @@ async function resolveCustomerRescheduleWorkflow(args: {
   scheduleSettings?: StoreScheduleSettingsRow | null;
   recentMessages: AssistantMessageRow[];
   now: Date;
+  deps: CustomerRescheduleWorkflowDeps;
 }): Promise<CustomerRescheduleWorkflowResult> {
+  const deps = args.deps;
   const contextState = args.assistantContextState || null;
   const contextPayload = readAssistantContextPayload(contextState);
   const contextTopic = normalizeText(contextState?.active_topic || "");
@@ -4374,7 +4382,7 @@ async function resolveCustomerRescheduleWorkflow(args: {
     proposedStartIso: targetStartIso,
     scheduleSettings: args.scheduleSettings || null,
   });
-  const sendResult = await sendAiMessageToCustomerConversation({
+  const sendResult = await deps.sendAiMessageToCustomerConversation({
     supabase: args.supabase,
     conversationId: selectedAppointment.conversation_id,
     text: customerMessage,
@@ -4388,7 +4396,7 @@ async function resolveCustomerRescheduleWorkflow(args: {
     };
   }
 
-  const taskResult = await createAssistantOperationalTask({
+  const taskResult = await deps.createAssistantOperationalTask({
     supabase: args.supabase,
     organizationId: args.organizationId,
     storeId: args.storeId,
@@ -4414,7 +4422,7 @@ async function resolveCustomerRescheduleWorkflow(args: {
   }
 
   if (args.threadId) {
-    await upsertAssistantContextState({
+    await deps.upsertAssistantContextState({
       supabase: args.supabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
@@ -7696,6 +7704,12 @@ async function generateAssistantReply(params: {
         })
       : null;
 
+    const customerRescheduleWorkflowDeps: CustomerRescheduleWorkflowDeps = {
+      sendAiMessageToCustomerConversation,
+      createAssistantOperationalTask,
+      upsertAssistantContextState,
+    };
+
     const customerRescheduleWorkflowResult = !suggestedTimeApprovalReply && !pendingCancellationTargetReply && !blockAdjustmentReply && !blockDayReply && !postAppointmentActionReply
       ? await resolveCustomerRescheduleWorkflow({
           supabase,
@@ -7708,6 +7722,7 @@ async function generateAssistantReply(params: {
           openAppointments: allOpenAppointments,
           scheduleSettings,
           now,
+          deps: customerRescheduleWorkflowDeps,
         })
       : ({ type: "not_applicable" } as CustomerRescheduleWorkflowResult);
 
