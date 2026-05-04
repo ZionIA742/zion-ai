@@ -2315,6 +2315,47 @@ function readAssistantCandidateOptions(contextState?: StoreAssistantContextState
   return Array.isArray(raw) ? (raw as AssistantCandidateOption[]) : [];
 }
 
+function resolveAppointmentSelectionFromContextFirst(args: {
+  text: string;
+  openAppointments: AppointmentRow[];
+  contextState?: StoreAssistantContextStateRow | null;
+}) {
+  const contextStatus = normalizeText(args.contextState?.active_status || "");
+  const contextTopic = normalizeText(args.contextState?.active_topic || "");
+  const options = readAssistantCandidateOptions(args.contextState);
+
+  if (
+    contextStatus !== "waiting_user_choice" ||
+    !["appointment_management", "appointment_reschedule"].includes(contextTopic) ||
+    !options.length
+  ) {
+    return { type: "not_applicable" as const };
+  }
+
+  const selectedOptionIndex = resolveExplicitAppointmentItemIndex(args.text, options.length);
+  if (selectedOptionIndex !== null) {
+    const optionNumber = selectedOptionIndex + 1;
+    const matchedOption = options.find((option) => Number(option.option_number) === optionNumber);
+    const appointmentId = String(matchedOption?.appointment_id || "").trim();
+    const matchedIndex = appointmentId
+      ? args.openAppointments.findIndex((appointment) => appointment.id === appointmentId)
+      : -1;
+
+    if (matchedIndex >= 0) {
+      return { type: "unique" as const, index: matchedIndex };
+    }
+
+    return { type: "invalid_choice" as const };
+  }
+
+  const requestedOptionIndex = resolveExplicitAppointmentItemIndex(args.text, Math.max(options.length, 99));
+  if (requestedOptionIndex !== null) {
+    return { type: "invalid_choice" as const };
+  }
+
+  return { type: "not_applicable" as const };
+}
+
 async function loadAppointmentByIdForAssistantAction(args: {
   supabase: any;
   organizationId: string;
@@ -4329,6 +4370,20 @@ function resolveTargetAppointmentIndex(args: {
   now?: Date;
   scheduleSettings?: StoreScheduleSettingsRow | null;
 }) {
+  const contextSelection = resolveAppointmentSelectionFromContextFirst({
+    text: args.text,
+    openAppointments: args.openAppointments,
+    contextState: args.assistantContextState || null,
+  });
+
+  if (contextSelection.type === "unique") {
+    return { type: "unique" as const, index: contextSelection.index };
+  }
+
+  if (contextSelection.type === "invalid_choice") {
+    return { type: "none" as const };
+  }
+
   const explicitScheduleIndex = resolveExplicitAppointmentItemIndex(args.text, args.openAppointments.length);
   if (explicitScheduleIndex !== null) {
     return { type: "unique" as const, index: explicitScheduleIndex };
