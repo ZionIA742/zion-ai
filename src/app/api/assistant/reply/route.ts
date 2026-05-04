@@ -3596,9 +3596,17 @@ function resolveAppointmentIndexFromAssistantContext(args: {
 
   const normalizedText = normalizeText(args.text);
   const activeAppointmentId = args.contextState?.active_appointment_id || null;
-  const action = resolveScheduleAction(args.text);
   const contextTopic = normalizeText(args.contextState?.active_topic || "");
   const contextStatus = normalizeText(args.contextState?.active_status || "");
+  const contextPayload = readAssistantContextPayload(args.contextState || null);
+  const action = resolveScheduleAction(args.text) ||
+    (
+      contextTopic === "appointment_reschedule" &&
+      Boolean(contextPayload.requested_date || args.contextState?.target_date) &&
+      parseTimeRangeFromText(args.text)?.startTime
+        ? "reschedule"
+        : null
+    );
   const canReuseActiveAppointment =
     Boolean(activeAppointmentId) &&
     ["reschedule", "cancel", "complete", "needs_followup"].includes(action || "") &&
@@ -5036,6 +5044,20 @@ async function resolveAppointmentActionReply(args: {
       action = contextAction;
     }
   }
+  if (!action) {
+    const contextAction = getContextScheduleAction(args.assistantContextState || null);
+    const contextTopic = normalizeText(args.assistantContextState?.active_topic || "");
+    const contextPayload = readAssistantContextPayload(args.assistantContextState || null);
+    const currentRequestTimeRange = parseTimeRangeFromText(args.lastHumanMessage);
+    if (
+      contextAction === "reschedule" &&
+      contextTopic === "appointment_reschedule" &&
+      Boolean(contextPayload.requested_date || args.assistantContextState?.target_date) &&
+      currentRequestTimeRange?.startTime
+    ) {
+      action = "reschedule";
+    }
+  }
 
   if (!action) {
     return null;
@@ -5611,23 +5633,33 @@ Eu já deixei este compromisso como assunto ativo: ${buildScheduleAppointmentRef
     }
 
     if (shouldCoordinateRescheduleWithCustomer(args.lastHumanMessage, selectedAppointment)) {
-      let customerMessageSent = false;
+      const targetDateLabel = formatDateOnlyInTimeZone(reschedulePayload.payload.scheduled_start, scheduleTimezone);
+      const targetTimeLabel = formatTimeOnlyInTimeZone(reschedulePayload.payload.scheduled_start, scheduleTimezone);
 
-      if (selectedAppointment.conversation_id) {
-        const customerMessage = buildCustomerRescheduleMessage({
-          appointment: selectedAppointment,
-          proposedStartIso: reschedulePayload.payload.scheduled_start,
-          scheduleSettings: args.scheduleSettings || null,
-        });
-        const sendResult = await sendAiMessageToCustomerConversation({
-          supabase: args.supabase,
-          conversationId: selectedAppointment.conversation_id,
-          text: customerMessage,
-        });
-
-        customerMessageSent = sendResult.ok;
+      if (!selectedAppointment.conversation_id) {
+        const appointmentTypeLabel = formatAppointmentType(selectedAppointment.appointment_type);
+        const customerName = selectedAppointment.customer_name || "cliente";
+        return `Encontrei a ${appointmentTypeLabel} de ${customerName} e o horário ${targetDateLabel} às ${targetTimeLabel}, mas não achei uma conversa vinculada para enviar mensagem automaticamente. A agenda não foi alterada.`;
       }
 
+      const customerMessage = buildCustomerRescheduleMessage({
+        appointment: selectedAppointment,
+        proposedStartIso: reschedulePayload.payload.scheduled_start,
+        scheduleSettings: args.scheduleSettings || null,
+      });
+      const sendResult = await sendAiMessageToCustomerConversation({
+        supabase: args.supabase,
+        conversationId: selectedAppointment.conversation_id,
+        text: customerMessage,
+      });
+
+      if (!sendResult.ok) {
+        const appointmentTypeLabel = formatAppointmentType(selectedAppointment.appointment_type);
+        const customerName = selectedAppointment.customer_name || "cliente";
+        return `Encontrei a ${appointmentTypeLabel} de ${customerName} e o horário ${targetDateLabel} às ${targetTimeLabel}, mas não consegui enviar a mensagem para ela agora. A agenda não foi alterada.`;
+      }
+
+      const customerMessageSent = true;
       let taskResult = { ok: true, error: null as string | null };
       if (args.threadId) {
         taskResult = await createAssistantOperationalTask({
