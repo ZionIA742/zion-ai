@@ -3595,6 +3595,40 @@ function resolveAppointmentIndexFromAssistantContext(args: {
   }
 
   const normalizedText = normalizeText(args.text);
+  const activeAppointmentId = args.contextState?.active_appointment_id || null;
+  const action = resolveScheduleAction(args.text);
+  const contextTopic = normalizeText(args.contextState?.active_topic || "");
+  const contextStatus = normalizeText(args.contextState?.active_status || "");
+  const canReuseActiveAppointment =
+    Boolean(activeAppointmentId) &&
+    ["reschedule", "cancel", "complete", "needs_followup"].includes(action || "") &&
+    ["appointment_management", "appointment_reschedule"].includes(contextTopic) &&
+    ["active", "waiting_user_choice", "waiting_customer_response"].includes(contextStatus);
+
+  if (canReuseActiveAppointment && activeAppointmentId) {
+    const activeIndex = args.openAppointments.findIndex((appointment) => appointment.id === activeAppointmentId);
+    if (activeIndex >= 0) {
+      const directMatches = resolveAppointmentCandidateIndexesFromText({
+        text: args.text,
+        openAppointments: args.openAppointments,
+      });
+      const mentionsActiveAppointment = directMatches.some((index) => args.openAppointments[index]?.id === activeAppointmentId);
+      const mentionsAnotherAppointment = directMatches.some((index) => {
+        const appointmentId = args.openAppointments[index]?.id;
+        return Boolean(appointmentId && appointmentId !== activeAppointmentId);
+      });
+      const hasExplicitTarget = Boolean(
+        extractExplicitAppointmentTitleCandidateFromCommand(args.text) ||
+        extractCustomerNameFromText(args.text) ||
+        extractPhoneFromText(args.text)
+      );
+
+      if (!mentionsAnotherAppointment && (!hasExplicitTarget || mentionsActiveAppointment)) {
+        return activeIndex;
+      }
+    }
+  }
+
   const keepsCurrentContext = hasAnyTerm(normalizedText, [
     "esse item", "esse compromisso", "essa visita", "essa instalacao", "essa instalação",
     "esse caso", "esse atendimento", "ele", "ela", "esse", "essa", "isso",
@@ -5291,7 +5325,7 @@ async function resolveAppointmentActionReply(args: {
     const contextOptions = readAssistantCandidateOptions(args.assistantContextState || null);
     if (contextOptions.length) {
       const lines = [
-        "Ainda estamos falando dos compromissos que listei antes, mas não consegui ligar sua última mensagem a um item específico.",
+        "Ainda estamos falando dos compromissos que listei antes, mas não consegui associar sua última mensagem a um item específico.",
         "",
         "Me diga o número do item que você quer atualizar:",
       ];
@@ -5358,6 +5392,9 @@ async function resolveAppointmentActionReply(args: {
       contextState: args.assistantContextState || null,
     });
     if (!reschedulePayload.ok) {
+      const requestedDatePartsForContext = parseDateReferenceFromText(args.lastHumanMessage, now);
+      const requestedDateKeyForContext = getDateKeyFromParts(requestedDatePartsForContext);
+      const requestedTimeRangeForContext = parseTimeRangeFromText(args.lastHumanMessage);
       if (args.threadId) {
         await upsertAssistantContextState({
           supabase: args.supabase,
@@ -5374,13 +5411,13 @@ async function resolveAppointmentActionReply(args: {
             active_lead_id: selectedAppointment.lead_id || null,
             active_conversation_id: selectedAppointment.conversation_id || null,
             active_appointment_id: selectedAppointment.id,
-            target_date: args.assistantContextState?.target_date || null,
+            target_date: requestedDateKeyForContext || args.assistantContextState?.target_date || null,
             target_time: args.assistantContextState?.target_time || null,
             target_start_at: args.assistantContextState?.target_start_at || null,
             target_end_at: args.assistantContextState?.target_end_at || null,
             timezone_name: scheduleTimezone,
             candidate_options: [],
-            context_payload: { reason: "selected_appointment_waiting_for_reschedule_time", selected_appointment_title: selectedAppointment.title || null, target_preserved_from_context: Boolean(args.assistantContextState?.target_date || args.assistantContextState?.target_time) },
+            context_payload: { reason: "selected_appointment_waiting_for_reschedule_time", selected_appointment_title: selectedAppointment.title || null, requested_date: requestedDateKeyForContext, target_preserved_from_context: Boolean(args.assistantContextState?.target_date || args.assistantContextState?.target_time) },
             last_user_message: args.lastHumanMessage,
           },
         });
@@ -5449,6 +5486,13 @@ async function resolveAppointmentActionReply(args: {
         }
 
         return buildResponsibleAvailabilityRequestReply({ appointment: selectedAppointment, customerMessageSent });
+      }
+
+      if (requestedDatePartsForContext && !requestedTimeRangeForContext?.startTime) {
+        const targetLabel = selectedAppointment.customer_name
+          ? `o compromisso de ${selectedAppointment.customer_name}`
+          : buildScheduleAppointmentReferenceLabel(selectedAppointment);
+        return `Certo, vou considerar ${targetLabel}. Para qual horário do dia ${formatDatePartsForHuman(requestedDatePartsForContext)} você quer tentar remarcar?`;
       }
 
       return `${reschedulePayload.message}
@@ -7026,6 +7070,7 @@ function buildSystemPrompt(args: {
     "- quando estiver em terreno genérico, use no máximo 3 a 5 itens",
     "- prefira respostas curtas, úteis e humanas",
     "- no máximo uma pergunta curta no final, quando realmente ajudar",
+    "- nunca diga que vai ligar, telefonar ou fazer ligação para cliente; quando precisar contato com cliente, diga que pode enviar mensagem pelo canal disponível ou orientar o responsável",
     "",
     "COMPORTAMENTO PROFISSIONAL DA ASSISTENTE",
     "- pense como uma assistente operacional da loja: entenda o objetivo, organize as opções e indique o próximo passo útil",
