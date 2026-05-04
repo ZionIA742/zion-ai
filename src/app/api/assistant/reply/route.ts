@@ -4755,7 +4755,7 @@ type CustomerRescheduleWorkflowResult =
   | { type: "message_sent"; reply: string; messageId: string | null; taskId: string | null };
 
 async function resolveCustomerRescheduleWorkflow(args: {
-  supabase: ReturnType<typeof createClient>;
+  supabase: any;
   organizationId: string;
   storeId: string;
   threadId?: string | null;
