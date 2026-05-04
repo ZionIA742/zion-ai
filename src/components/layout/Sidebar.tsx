@@ -19,6 +19,10 @@ type InboxRow = {
   last_message_sender: string | null;
 };
 
+type AssistantThreadSummary = {
+  pending_notifications?: number | null;
+};
+
 const items = [
   { label: "Dashboard", href: "/dashboard" },
   { label: "CRM", href: "/crm" },
@@ -38,10 +42,15 @@ export default function Sidebar() {
   const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
 
   const [pendingReplyCount, setPendingReplyCount] = useState(0);
+  const [assistantPendingCount, setAssistantPendingCount] = useState(0);
 
   const canLoadInboxCounter = useMemo(() => {
     return !storeLoading && !!organizationId;
   }, [storeLoading, organizationId]);
+
+  const canLoadAssistantCounter = useMemo(() => {
+    return !storeLoading && !!organizationId && !!activeStoreId;
+  }, [storeLoading, organizationId, activeStoreId]);
 
   const loadInboxCounter = useCallback(async () => {
     if (!canLoadInboxCounter || !organizationId) return;
@@ -63,22 +72,50 @@ export default function Sidebar() {
     setPendingReplyCount(count);
   }, [canLoadInboxCounter, organizationId, activeStoreId]);
 
-  useEffect(() => {
-    if (!canLoadInboxCounter) return;
-    void loadInboxCounter();
-  }, [canLoadInboxCounter, loadInboxCounter]);
+  const loadAssistantCounter = useCallback(async () => {
+    if (!canLoadAssistantCounter || !organizationId || !activeStoreId) return;
+
+    const { data, error } = await supabase.rpc("assistant_get_thread_summary", {
+      p_organization_id: organizationId,
+      p_store_id: activeStoreId,
+    });
+
+    if (error) {
+      console.warn("[Sidebar] assistant_get_thread_summary error:", error);
+      setAssistantPendingCount(0);
+      return;
+    }
+
+    const summary = (Array.isArray(data) ? data[0] : data) as AssistantThreadSummary | null;
+    const count = Number(summary?.pending_notifications || 0);
+    setAssistantPendingCount(Number.isFinite(count) && count > 0 ? count : 0);
+  }, [canLoadAssistantCounter, organizationId, activeStoreId]);
 
   useEffect(() => {
-    if (!canLoadInboxCounter) return;
+    if (!canLoadInboxCounter && !canLoadAssistantCounter) return;
+
+    const timeout = window.setTimeout(() => {
+      if (canLoadInboxCounter) void loadInboxCounter();
+      if (canLoadAssistantCounter) void loadAssistantCounter();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [canLoadInboxCounter, canLoadAssistantCounter, loadInboxCounter, loadAssistantCounter]);
+
+  useEffect(() => {
+    if (!canLoadInboxCounter && !canLoadAssistantCounter) return;
 
     const interval = window.setInterval(() => {
-      void loadInboxCounter();
+      if (canLoadInboxCounter) void loadInboxCounter();
+      if (canLoadAssistantCounter) void loadAssistantCounter();
     }, 10000);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [canLoadInboxCounter, loadInboxCounter]);
+  }, [canLoadInboxCounter, canLoadAssistantCounter, loadInboxCounter, loadAssistantCounter]);
 
   return (
     <aside className="flex h-screen w-64 flex-col border-r border-gray-200 bg-white">
@@ -91,7 +128,10 @@ export default function Sidebar() {
         {items.map((item) => {
           const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
           const isInboxItem = item.href === "/inbox";
+          const isAssistantItem = item.href === "/assistant";
           const showInboxBadge = isInboxItem && pendingReplyCount > 0;
+          const showAssistantBadge = isAssistantItem && assistantPendingCount > 0;
+          const badgeCount = showInboxBadge ? pendingReplyCount : showAssistantBadge ? assistantPendingCount : 0;
 
           return (
             <Link
@@ -106,9 +146,9 @@ export default function Sidebar() {
             >
               <span>{item.label}</span>
 
-              {showInboxBadge ? (
-                <span className="inline-flex min-w-[24px] items-center justify-center rounded-full bg-amber-500 px-2 py-0.5 text-xs font-bold text-white">
-                  {pendingReplyCount}
+              {badgeCount > 0 ? (
+                <span className="inline-flex min-w-[24px] shrink-0 items-center justify-center rounded-full bg-amber-500 px-2 py-0.5 text-xs font-bold text-white">
+                  {badgeCount}
                 </span>
               ) : null}
             </Link>
