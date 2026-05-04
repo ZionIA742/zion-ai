@@ -585,6 +585,45 @@ async function pushAssistantSystemMessage(args: {
   }
 }
 
+async function pushAssistantInternalNotification(args: {
+  supabase: {
+    rpc: (fn: string, params: Record<string, unknown>) => Promise<{ error?: { message?: string } | null }>;
+  };
+  organizationId: string;
+  storeId: string;
+  notificationType: string;
+  title: string;
+  body: string;
+  priority: "low" | "normal" | "high" | "urgent";
+  context: Record<string, unknown>;
+  relatedLeadId?: string | null;
+  relatedConversationId?: string | null;
+  relatedAppointmentId?: string | null;
+  eventKey: string;
+}) {
+  try {
+    const { error } = await args.supabase.rpc("assistant_enqueue_internal_notification", {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_notification_type: args.notificationType,
+      p_title: args.title,
+      p_body: args.body,
+      p_priority: args.priority,
+      p_context: args.context || {},
+      p_related_lead_id: args.relatedLeadId || null,
+      p_related_conversation_id: args.relatedConversationId || null,
+      p_related_appointment_id: args.relatedAppointmentId || null,
+      p_event_key: args.eventKey,
+    });
+
+    if (error) {
+      console.warn("[assistant_operational_task_worker] assistant_enqueue_internal_notification error:", error);
+    }
+  } catch (error) {
+    console.warn("[assistant_operational_task_worker] assistant_enqueue_internal_notification exception:", error);
+  }
+}
+
 
 function formatAppointmentTypeForCustomer(value: string | null | undefined) {
   const normalized = normalizeText(value);
@@ -998,6 +1037,37 @@ async function processQueueItem(args: {
         suggested_availability: suggestedAvailability,
       },
     });
+
+    if (decision.type === "suggested_other_time" && suggestedWindow && suggestedAvailability?.available) {
+      const body = suggestedWindow.suggestedLabel
+        ? `O cliente sugeriu ${suggestedWindow.suggestedLabel} para a visita. Esse horÃ¡rio parece estar livre, mas a agenda ainda nÃ£o foi alterada. Entre na Assistente para aprovar ou recusar a remarcaÃ§Ã£o.`
+        : "O cliente sugeriu um novo horÃ¡rio para a visita. Esse horÃ¡rio parece estar livre, mas a agenda ainda nÃ£o foi alterada. Entre na Assistente para aprovar ou recusar a remarcaÃ§Ã£o.";
+
+      await pushAssistantInternalNotification({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        notificationType: "important_alert",
+        title: "AprovaÃ§Ã£o necessÃ¡ria para novo horÃ¡rio",
+        body,
+        priority: "urgent",
+        context: {
+          source: "assistant_operational_task_worker",
+          reason: "customer_suggested_available_time_requires_approval",
+          queue_id: queue.id,
+          task_id: task.id,
+          classification: "suggested_other_time",
+          suggested_label: suggestedWindow.suggestedLabel ?? null,
+          suggested_date: suggestedWindow.suggestedDate ?? null,
+          suggested_time: suggestedWindow.suggestedTime ?? null,
+          suggested_available: true,
+        },
+        relatedLeadId: task.related_lead_id,
+        relatedConversationId: task.related_conversation_id,
+        relatedAppointmentId: task.related_appointment_id,
+        eventKey: `operational_task:${task.id}:queue:${queue.id}:suggested_other_time:approval_required`,
+      });
+    }
 
     return {
       ok: true,
