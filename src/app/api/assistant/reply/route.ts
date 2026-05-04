@@ -5895,6 +5895,9 @@ function buildScheduleBlockLineForSpecificDayQuery(block: StoreScheduleBlockRow,
   const rawTitle = String(block.title || "").trim();
   const blockType = normalizeText(block.block_type || "");
   const label = rawTitle || (blockType.includes("holiday") ? "Feriado/fechamento" : "Bloqueio da agenda");
+  const labelHasTimeRange = /\b(?:das?\s*)?\d{1,2}(?::\d{2})?\s*h?\s*(?:as|a|-|ate)\s*(?:as?\s*)?\d{1,2}(?::\d{2})?\s*h?\b/.test(normalizeText(label));
+
+  if (labelHasTimeRange) return label;
 
   return `${label} das ${timeLabel}`;
 }
