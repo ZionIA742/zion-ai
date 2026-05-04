@@ -4202,6 +4202,33 @@ function buildUnsafeCustomerContactSuccessClaimFallback(args: {
   return `Encontrei o contexto de ${customerName}${targetLabel}, mas não consegui confirmar um envio real de mensagem para o cliente agora. A agenda não foi alterada.`;
 }
 
+function parseCompleteScheduleDateFromText(text: string, now: Date) {
+  const raw = String(text || "");
+  const numeric = raw.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?\b/);
+  if (numeric) {
+    const day = Number(numeric[1]);
+    const month = Number(numeric[2]);
+    let year = numeric[3] ? Number(numeric[3]) : now.getFullYear();
+    if (year < 100) year += 2000;
+    if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+    return { day, month: month - 1, year };
+  }
+
+  const normalized = normalizeText(raw);
+  if (/\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|marÃ§o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/.test(normalized)) {
+    return parseDateReferenceFromText(raw, now);
+  }
+
+  return null;
+}
+
+function hasAmbiguousBareDayDateReference(text: string) {
+  const normalized = normalizeText(text);
+  const hasCompleteNumericDate = /\b\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/.test(normalized);
+  const hasWrittenMonth = /\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|marÃ§o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/.test(normalized);
+  return !hasCompleteNumericDate && !hasWrittenMonth && /\b(?:dia|data)\s+\d{1,2}\b/.test(normalized);
+}
+
 function asksAssistantToFindCustomerAvailability(text: string) {
   const t = normalizeText(text);
   return hasAnyTerm(t, [
@@ -4826,8 +4853,18 @@ async function resolveCustomerRescheduleWorkflow(args: {
     return { type: "needs_target", reply: "Entendi a remarcaÃ§Ã£o, mas nÃ£o consegui confirmar o compromisso alvo. Me diga o cliente ou escolha um item da lista." };
   }
 
+  if (hasAmbiguousBareDayDateReference(args.lastHumanMessage)) {
+    const bareDay = String(args.lastHumanMessage).match(/\b(?:dia|data)\s+(\d{1,2})\b/i)?.[1] || "";
+    const timeLabel = currentTimeRange?.startTime ? " o horÃ¡rio" : "";
+    return {
+      type: "needs_date",
+      reply: `Entendi${timeLabel}, mas preciso confirmar a data antes de falar com ${selectedAppointment.customer_name || "o cliente"}. Quando vocÃª diz dia ${bareDay}, Ã© dia de qual mÃªs?`,
+    };
+  }
+
+  const explicitDateParts = parseCompleteScheduleDateFromText(args.lastHumanMessage, args.now);
   const dateParts =
-    parseDateReferenceFromText(args.lastHumanMessage, args.now) ||
+    explicitDateParts ||
     parseDbDateKeyToScheduleParts(String(contextPayload.requested_date || contextState?.target_date || "")) ||
     (contextState?.target_start_at
       ? parseDbDateKeyToScheduleParts(isoDateToLocalDateForDb(contextState.target_start_at, getScheduleTimezone(args.scheduleSettings || null)))
@@ -4841,7 +4878,7 @@ async function resolveCustomerRescheduleWorkflow(args: {
   }
 
   const contextTime = typeof contextState?.target_time === "string" ? contextState.target_time.slice(0, 5) : null;
-  const startTime = currentTimeRange?.startTime || contextTime;
+  const startTime = currentTimeRange?.startTime || (!explicitDateParts ? contextTime : null);
   const endTime = currentTimeRange?.endTime || null;
 
   if (!startTime) {
@@ -5137,7 +5174,7 @@ function parseDbDateKeyToScheduleParts(dateKey: string | null | undefined) {
   const month = Number(match[2]);
   const day = Number(match[3]);
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  return { year, month, day };
+  return { year, month: month - 1, day };
 }
 
 function extractContextAwareReschedulePayload(args: {
