@@ -37,7 +37,20 @@ export function buildAppointmentCandidateOptions(args: {
 
 export function readAssistantCandidateOptions(contextState?: StoreAssistantContextStateRow | null) {
   const raw = contextState?.candidate_options;
-  return Array.isArray(raw) ? (raw as AssistantCandidateOption[]) : [];
+  if (!Array.isArray(raw)) return [];
+
+  return (raw as AssistantCandidateOption[]).filter((option) => {
+    const optionNumber = Number(option?.option_number);
+    const sourceIndex = Number(option?.source_index);
+    const appointmentId = String(option?.appointment_id || "").trim();
+    return (
+      Number.isInteger(optionNumber) &&
+      optionNumber >= 1 &&
+      Number.isInteger(sourceIndex) &&
+      sourceIndex >= 0 &&
+      Boolean(appointmentId)
+    );
+  });
 }
 
 export function resolveExplicitAppointmentItemIndex(text: string, totalItems: number) {
@@ -148,6 +161,19 @@ export function resolveAppointmentSelectionFromContextFirst(args: {
   return { type: "not_applicable" as const };
 }
 
+function resolveAssistantCandidateOptionNumber(args: {
+  text: string;
+  options: AssistantCandidateOption[];
+}) {
+  const highestOptionNumber = args.options.reduce((max, option) => {
+    const optionNumber = Number(option.option_number);
+    return Number.isFinite(optionNumber) ? Math.max(max, optionNumber) : max;
+  }, args.options.length);
+
+  const selectedOptionIndex = resolveExplicitAppointmentItemIndex(args.text, highestOptionNumber);
+  return selectedOptionIndex !== null ? selectedOptionIndex + 1 : null;
+}
+
 export function getSelectedAssistantCandidateOption(args: {
   text: string;
   contextState?: StoreAssistantContextStateRow | null;
@@ -159,9 +185,11 @@ export function getSelectedAssistantCandidateOption(args: {
   const options = readAssistantCandidateOptions(args.contextState);
   if (!options.length) return null;
 
-  const selectedIndex = resolveExplicitAppointmentItemIndex(args.text, options.length);
-  if (selectedIndex === null) return null;
+  const optionNumber = resolveAssistantCandidateOptionNumber({
+    text: args.text,
+    options,
+  });
+  if (optionNumber === null) return null;
 
-  const optionNumber = selectedIndex + 1;
   return options.find((option) => Number(option.option_number) === optionNumber) || null;
 }
