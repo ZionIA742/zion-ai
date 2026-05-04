@@ -4159,6 +4159,49 @@ function shouldCoordinateRescheduleWithCustomer(text: string, appointment: Appoi
   return true;
 }
 
+function hasUnsupportedCustomerContactSuccessClaim(text: string) {
+  const t = normalizeText(text);
+  return hasAnyTerm(t, [
+    "vou alinhar com",
+    "ja estou alinhando com",
+    "já estou alinhando com",
+    "estou alinhando com",
+    "vou enviar mensagem",
+    "enviei mensagem",
+    "enviei uma mensagem",
+    "ja enviei mensagem",
+    "já enviei mensagem",
+    "vou avisar o cliente",
+    "avisei o cliente",
+    "vou falar com",
+    "falei com",
+    "vou combinar com",
+    "estou combinando com",
+    "assim que ela confirmar",
+    "assim que ele confirmar",
+    "assim que o cliente confirmar",
+  ]);
+}
+
+function buildUnsafeCustomerContactSuccessClaimFallback(args: {
+  contextState?: StoreAssistantContextStateRow | null;
+  scheduleSettings?: StoreScheduleSettingsRow | null;
+}) {
+  const customerName = args.contextState?.active_customer_name || "o cliente";
+  const timeZone = getScheduleTimezone(args.scheduleSettings || null);
+  const targetDate = args.contextState?.target_start_at
+    ? formatDateOnlyInTimeZone(args.contextState.target_start_at, timeZone)
+    : args.contextState?.target_date
+      ? formatDatePartsForHuman(parseDbDateKeyToScheduleParts(args.contextState.target_date))
+      : null;
+  const targetTime = args.contextState?.target_start_at
+    ? formatTimeOnlyInTimeZone(args.contextState.target_start_at, timeZone)
+    : args.contextState?.target_time || null;
+  const targetLabel = targetDate && targetTime ? ` e o horário ${targetDate} às ${targetTime}` : "";
+
+  return `Encontrei o contexto de ${customerName}${targetLabel}, mas não consegui confirmar um envio real de mensagem para o cliente agora. A agenda não foi alterada.`;
+}
+
 function asksAssistantToFindCustomerAvailability(text: string) {
   const t = normalizeText(text);
   return hasAnyTerm(t, [
@@ -7994,6 +8037,7 @@ async function generateAssistantReply(params: {
     ];
 
     let aiText = "";
+    let aiTextFromModel = false;
 
     if (suggestedTimeApprovalReply) {
       aiText = suggestedTimeApprovalReply;
@@ -8057,6 +8101,7 @@ async function generateAssistantReply(params: {
         max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 140 : 240,
       });
 
+      aiTextFromModel = true;
       aiText = cleanupAiText(String(response.output_text || "").trim(), {
         genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
         morningReportMode,
@@ -8070,6 +8115,13 @@ async function generateAssistantReply(params: {
         error: "EMPTY_AI_RESPONSE",
         message: "A OpenAI não retornou texto utilizável.",
       };
+    }
+
+    if (aiTextFromModel && hasUnsupportedCustomerContactSuccessClaim(aiText)) {
+      aiText = buildUnsafeCustomerContactSuccessClaimFallback({
+        contextState: assistantContextState,
+        scheduleSettings,
+      });
     }
 
     const isContextMessage =
