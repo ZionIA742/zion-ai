@@ -5017,7 +5017,22 @@ async function resolveAppointmentActionReply(args: {
     const contextAction = getContextScheduleAction(args.assistantContextState || null);
     const contextStatus = normalizeText(args.assistantContextState?.active_status || "");
     const contextTopic = normalizeText(args.assistantContextState?.active_topic || "");
-    if (contextAction && contextTopic === "appointment_management" && contextStatus === "waiting_user_choice") {
+    const contextPayload = readAssistantContextPayload(args.assistantContextState || null);
+    const contextReason = normalizeText(String(contextPayload.reason || ""));
+    const contextIndicatesReschedule =
+      contextAction === "reschedule" &&
+      (
+        contextTopic === "appointment_reschedule" ||
+        contextReason === "selected_appointment_waiting_for_reschedule_time" ||
+        Boolean(contextPayload.requested_date || args.assistantContextState?.target_date)
+      );
+    if (
+      contextAction &&
+      (
+        (contextTopic === "appointment_management" && contextStatus === "waiting_user_choice") ||
+        contextIndicatesReschedule
+      )
+    ) {
       action = contextAction;
     }
   }
