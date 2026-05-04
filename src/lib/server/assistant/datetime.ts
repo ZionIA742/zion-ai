@@ -242,7 +242,7 @@ export function parseScheduleDateFromText(text: string, now: Date) {
     janeiro: 0,
     fevereiro: 1,
     marco: 2,
-    "marÃ§o": 2,
+    "março": 2,
     abril: 3,
     maio: 4,
     junho: 5,
@@ -255,7 +255,7 @@ export function parseScheduleDateFromText(text: string, now: Date) {
   };
 
   const written = normalized.match(
-    /\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|marÃ§o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b/
+    /\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b/
   );
   if (written) {
     let year = written[3] ? Number(written[3]) : now.getFullYear();
@@ -293,7 +293,7 @@ export function parseScheduleDateFromText(text: string, now: Date) {
   const base = new Date(now);
   base.setHours(0, 0, 0, 0);
 
-  if (normalized.includes("amanha") || normalized.includes("amanhÃ£")) {
+  if (normalized.includes("amanha") || normalized.includes("amanhã")) {
     base.setDate(base.getDate() + 1);
     return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
   }
@@ -322,7 +322,7 @@ export function parseCompleteScheduleDateFromText(text: string, now: Date) {
   }
 
   const normalized = normalizeDateTimeText(raw);
-  if (/\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|marÃƒÂ§o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/.test(normalized)) {
+  if (/\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/.test(normalized)) {
     return parseDateReferenceFromText(raw, now);
   }
 
@@ -332,7 +332,7 @@ export function parseCompleteScheduleDateFromText(text: string, now: Date) {
 export function hasAmbiguousBareDayDateReference(text: string) {
   const normalized = normalizeDateTimeText(text);
   const hasCompleteNumericDate = /\b\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/.test(normalized);
-  const hasWrittenMonth = /\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|marÃƒÂ§o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/.test(normalized);
+  const hasWrittenMonth = /\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/.test(normalized);
   return !hasCompleteNumericDate && !hasWrittenMonth && /\b(?:dia|data)\s+\d{1,2}\b/.test(normalized);
 }
 
@@ -345,16 +345,20 @@ export function normalizeScheduleTimeText(hourText: string, minuteText?: string 
 }
 
 export function parseTimeRangeFromText(text: string) {
-  const rangeMatch = text.match(/\b(?:das?|de|do)?\s*(\d{1,2})(?::(\d{2}))?\s*h?\s*(?:ate|atÃ©|as|Ã s|a|-)\s*(?:as?\s*)?(\d{1,2})(?::(\d{2}))?\s*h?\b/i);
+  const normalized = normalizeDateTimeText(text)
+    .replace(/\b\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/g, " ")
+    .replace(/\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+\d{2,4})?\b/g, " ");
+
+  const rangeMatch = normalized.match(/\b(?:das?|de|do)?\s*(\d{1,2})(?::(\d{2}))?\s*h?\s*(?:ate|as|a|-)\s*(?:as?\s*)?(\d{1,2})(?::(\d{2}))?\s*h?\b/i);
   if (rangeMatch) {
     const startTime = normalizeScheduleTimeText(rangeMatch[1], rangeMatch[2]);
     const endTime = normalizeScheduleTimeText(rangeMatch[3], rangeMatch[4]);
     if (startTime && endTime) return { startTime, endTime };
   }
 
-  const singleMatch = text.match(/\b(?:as|Ã s|para|pra)?\s*(\d{1,2})(?::(\d{2}))?\s*h\b/i) ||
-    text.match(/\b(?:as|Ã s|para|pra)\s+(\d{1,2})(?::(\d{2}))?\b/i) ||
-    text.match(/\b(\d{1,2}:\d{2})\b/);
+  const singleMatch = normalized.match(/\b(?:as|para|pra)?\s*(\d{1,2})(?::(\d{2}))?\s*h\b/i) ||
+    normalized.match(/\b(?:as|para|pra)\s+(\d{1,2})(?::(\d{2}))?\b/i) ||
+    normalized.match(/\b(\d{1,2}:\d{2})\b/);
   if (singleMatch) {
     if (singleMatch[1]?.includes(":")) {
       const [hour, minute] = singleMatch[1].split(":");
