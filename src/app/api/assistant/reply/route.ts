@@ -46,6 +46,16 @@ type StoreScheduleSettingsRow = {
   timezone_name: string | null;
 };
 
+type StoreScheduleBlockRow = {
+  id: string;
+  title: string | null;
+  block_type: string | null;
+  start_at: string | null;
+  end_at: string | null;
+  source: string | null;
+  notes: string | null;
+};
+
 type PendingNotificationRow = {
   id: string;
   notification_type: string | null;
@@ -766,6 +776,38 @@ function resolveSpecificScheduleQueryDateParts(text: string, now: Date) {
   if (!dateParts) return null;
 
   return dateParts;
+}
+
+function shouldIncludeScheduleBlocksInSpecificDayQuery(text: string) {
+  const t = normalizeText(text);
+
+  const explicitlyOnlyAppointments = hasAnyTerm(t, [
+    "compromisso",
+    "compromissos",
+    "atendimento",
+    "atendimentos",
+    "visita",
+    "visitas",
+    "instalacao",
+    "instalação",
+    "instalacoes",
+    "instalações",
+  ]) && !t.includes("agenda");
+
+  if (explicitlyOnlyAppointments) return false;
+
+  return hasAnyTerm(t, [
+    "agenda",
+    "o que tenho no dia",
+    "o que eu tenho no dia",
+    "o que tenho para o dia",
+    "o que eu tenho para o dia",
+    "como esta meu dia",
+    "como está meu dia",
+    "como esta o dia",
+    "como está o dia",
+    "meu dia",
+  ]);
 }
 
 
@@ -2340,7 +2382,7 @@ function buildCancelOrRescheduleDecisionPrompt(args: { appointment: AppointmentR
   const appointment = args.appointment;
   const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
   const timeLabel = formatAppointmentStartInTimeZone({ value: appointment.scheduled_start || appointment.scheduled_end || null, scheduleSettings: args.scheduleSettings || null });
-  return `Encontrei este compromisso:\n\n${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)}\nCliente: ${appointment.customer_name || "cliente não identificado"}\nData e horário: ${timeLabel}\n\nAntes de alterar a agenda, me diga como prefere seguir:\n\n1. Cancelar esse compromisso.\n2. Remarcar para outro dia ou horário.\n\nSe for cancelar, quer que eu explique algum motivo ao cliente ou envio apenas um aviso simples de cancelamento?`;
+  return `Encontrei este compromisso:\n\n${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)}\nCliente: ${appointment.customer_name || "cliente não identificado"}\nData e horário: ${timeLabel}\n\nAntes de alterar a agenda, me diga como prefere seguir:\n\n1. Cancelar esse compromisso.\n2. Remarcar para outro dia ou horário.\n\nSe a escolha for cancelar, quer que eu explique algum motivo ao cliente ou envio apenas um aviso simples de cancelamento?`;
 }
 
 function isWaitingForCustomerCancelDecision(contextState?: StoreAssistantContextStateRow | null) {
@@ -5842,28 +5884,71 @@ function buildAppointmentLineForSpecificDayQuery(appointment: AppointmentRow, sc
   return `${subject}${customer} das ${timeLabel}${statusSuffix}`;
 }
 
+function buildScheduleBlockLineForSpecificDayQuery(block: StoreScheduleBlockRow, scheduleSettings?: StoreScheduleSettingsRow | null) {
+  const timeZone = getScheduleTimezone(scheduleSettings || null);
+  const start = block.start_at || block.end_at;
+  const end = block.end_at;
+  const timeLabel = start
+    ? `${formatTimeOnlyInTimeZone(start, timeZone)}${end ? ` às ${formatTimeOnlyInTimeZone(end, timeZone)}` : ""}`
+    : "sem horário";
+
+  const rawTitle = String(block.title || "").trim();
+  const blockType = normalizeText(block.block_type || "");
+  const label = rawTitle || (blockType.includes("holiday") ? "Feriado/fechamento" : "Bloqueio da agenda");
+
+  return `${label} das ${timeLabel}`;
+}
+
+function sortScheduleBlocksForReply(blocks: StoreScheduleBlockRow[]) {
+  return [...(blocks || [])].sort((a, b) => {
+    const aTime = new Date(a.start_at || a.end_at || 0).getTime();
+    const bTime = new Date(b.start_at || b.end_at || 0).getTime();
+    return (Number.isFinite(aTime) ? aTime : 0) - (Number.isFinite(bTime) ? bTime : 0);
+  });
+}
+
 function buildDeterministicSpecificDayScheduleReply(args: {
   dateParts: { day: number; month: number; year: number };
   appointments: AppointmentRow[];
+  blocks?: StoreScheduleBlockRow[];
+  includeBlocks?: boolean;
   scheduleSettings?: StoreScheduleSettingsRow | null;
 }) {
   const dateLabel = formatDatePartsForHuman(args.dateParts);
   const appointments = sortOpenScheduleAppointments(args.appointments || []);
+  const blocks = args.includeBlocks ? sortScheduleBlocksForReply(args.blocks || []) : [];
 
-  if (!appointments.length) {
-    return `No dia ${dateLabel}, não encontrei compromisso agendado no sistema.`;
+  if (!appointments.length && !blocks.length) {
+    return args.includeBlocks
+      ? `No dia ${dateLabel}, não encontrei compromisso ou bloqueio na agenda.`
+      : `No dia ${dateLabel}, não encontrei compromisso agendado no sistema.`;
   }
 
   const lines: string[] = [];
   lines.push(`No dia ${dateLabel} você tem:`);
   lines.push("");
 
-  appointments.slice(0, 20).forEach((appointment, index) => {
-    lines.push(`${index + 1}. ${buildAppointmentLineForSpecificDayQuery(appointment, args.scheduleSettings || null)}`);
-  });
+  if (appointments.length) {
+    appointments.slice(0, 20).forEach((appointment, index) => {
+      lines.push(`${index + 1}. ${buildAppointmentLineForSpecificDayQuery(appointment, args.scheduleSettings || null)}`);
+    });
+  } else {
+    lines.push("- nenhum compromisso agendado no sistema.");
+  }
 
   if (appointments.length > 20) {
     lines.push(`- e mais ${appointments.length - 20} compromisso(s).`);
+  }
+
+  if (blocks.length) {
+    lines.push("");
+    lines.push("Bloqueios/fechamentos:");
+    blocks.slice(0, 20).forEach((block, index) => {
+      lines.push(`${index + 1}. ${buildScheduleBlockLineForSpecificDayQuery(block, args.scheduleSettings || null)}`);
+    });
+    if (blocks.length > 20) {
+      lines.push(`- e mais ${blocks.length - 20} bloqueio(s)/fechamento(s).`);
+    }
   }
 
   lines.push("");
@@ -7360,7 +7445,11 @@ async function generateAssistantReply(params: {
     }
 
     const specificScheduleQueryDateParts = resolveSpecificScheduleQueryDateParts(lastHumanMessage, now);
+    const includeScheduleBlocksInSpecificDayQuery = Boolean(
+      specificScheduleQueryDateParts && shouldIncludeScheduleBlocksInSpecificDayQuery(lastHumanMessage)
+    );
     let specificDayAppointmentsData: AppointmentRow[] = [];
+    let specificDayScheduleBlocksData: StoreScheduleBlockRow[] = [];
 
     if (specificScheduleQueryDateParts) {
       const specificDayStartIso = buildIsoFromDateAndTime(specificScheduleQueryDateParts, "00:00", scheduleSettings);
@@ -7388,6 +7477,33 @@ async function generateAssistantReply(params: {
       }
 
       specificDayAppointmentsData = (specificDayAppointmentsRaw || []) as AppointmentRow[];
+
+      if (includeScheduleBlocksInSpecificDayQuery) {
+        const specificDayBlockRange = buildLocalDayQueryRange(
+          specificScheduleQueryDateParts,
+          getScheduleTimezone(scheduleSettings)
+        );
+
+        const { data: specificDayBlocksRaw, error: specificDayBlocksError } = await supabase
+          .from("store_schedule_blocks")
+          .select("id, title, block_type, start_at, end_at, source, notes")
+          .eq("organization_id", organizationId)
+          .eq("store_id", storeId)
+          .lt("start_at", specificDayBlockRange.endIso)
+          .gt("end_at", specificDayBlockRange.startIso)
+          .order("start_at", { ascending: true })
+          .limit(100);
+
+        if (specificDayBlocksError) {
+          return {
+            ok: false,
+            error: "LOAD_SPECIFIC_DAY_BLOCKS_FAILED",
+            message: specificDayBlocksError.message,
+          };
+        }
+
+        specificDayScheduleBlocksData = (specificDayBlocksRaw || []) as StoreScheduleBlockRow[];
+      }
     }
 
     const { data: nextAppointmentsData, error: nextAppointmentsError } = await supabase
@@ -7707,6 +7823,8 @@ async function generateAssistantReply(params: {
       aiText = buildDeterministicSpecificDayScheduleReply({
         dateParts: specificScheduleQueryDateParts,
         appointments: specificDayAppointmentsData,
+        blocks: specificDayScheduleBlocksData,
+        includeBlocks: includeScheduleBlocksInSpecificDayQuery,
         scheduleSettings,
       });
     } else if (generalTodayOverviewMode) {
