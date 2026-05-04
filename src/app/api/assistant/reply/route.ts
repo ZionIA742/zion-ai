@@ -2,173 +2,40 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
+import type {
+  AppointmentRow,
+  AssistantCandidateOption,
+  AssistantMessageRow,
+  AssistantReplyResult,
+  CustomerRescheduleWorkflowResult,
+  PendingNotificationRow,
+  PostAppointmentFollowupRow,
+  StoreAnswerRow,
+  StoreAssistantContextStateRow,
+  StoreAssistantOperationalTaskRow,
+  StoreRow,
+  StoreScheduleBlockRow,
+  StoreScheduleSettingsRow,
+} from "@/lib/server/assistant/types";
+import {
+  buildStoreLocalDayRangeIso,
+  formatDateOnly,
+  formatDateOnlyInTimeZone,
+  formatDatePartsForHuman,
+  formatDateTime,
+  formatTimeOnly,
+  formatTimeOnlyInTimeZone,
+  getDateKeyFromParts,
+  getLocalDateKeyFromIso,
+  getLocalDatePartsForSchedule,
+  getScheduleTimezone,
+  isoDateToLocalDateForDb,
+  localScheduleDateTimeToUtcIso,
+  padTwoDigits,
+  safeScheduleTimezone,
+} from "@/lib/server/assistant/datetime";
 
 export const runtime = "nodejs";
-
-type StoreRow = {
-  id: string;
-  organization_id: string;
-  name: string | null;
-};
-
-type StoreAnswerRow = {
-  question_key: string;
-  answer: unknown;
-};
-
-type AssistantMessageRow = {
-  sender: string | null;
-  sender_role: string | null;
-  direction: string | null;
-  message_type: string | null;
-  content: string | null;
-  created_at: string | null;
-};
-
-type AppointmentRow = {
-  id: string;
-  title: string | null;
-  appointment_type: string | null;
-  status: string | null;
-  scheduled_start: string | null;
-  scheduled_end: string | null;
-  customer_name: string | null;
-  customer_phone: string | null;
-  address_text: string | null;
-  notes: string | null;
-  lead_id: string | null;
-  conversation_id: string | null;
-};
-
-type StoreScheduleSettingsRow = {
-  operating_days: string[] | null;
-  operating_hours: Record<string, { start?: string; end?: string }> | null;
-  timezone_name: string | null;
-};
-
-type StoreScheduleBlockRow = {
-  id: string;
-  title: string | null;
-  block_type: string | null;
-  start_at: string | null;
-  end_at: string | null;
-  source: string | null;
-  notes: string | null;
-};
-
-type PendingNotificationRow = {
-  id: string;
-  notification_type: string | null;
-  priority: string | null;
-  title: string | null;
-  body: string | null;
-  created_at: string | null;
-  related_lead_id: string | null;
-  related_conversation_id: string | null;
-  related_appointment_id: string | null;
-};
-
-type PostAppointmentFollowupRow = {
-  id: string;
-  organization_id: string;
-  store_id: string;
-  appointment_id: string;
-  lead_id: string | null;
-  conversation_id: string | null;
-  scheduled_end: string | null;
-  followup_status: string | null;
-  preferred_channel: string | null;
-  prompt_count: number | null;
-  last_prompted_at: string | null;
-  confirmed_at: string | null;
-  resolved_at: string | null;
-  resolution: string | null;
-  notes: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-};
-
-type StoreAssistantContextStateRow = {
-  id: string;
-  organization_id: string;
-  store_id: string;
-  thread_id: string;
-  active_topic: string | null;
-  active_intent: string | null;
-  active_status: string;
-  active_customer_name: string | null;
-  active_customer_phone: string | null;
-  active_lead_id: string | null;
-  active_conversation_id: string | null;
-  active_appointment_id: string | null;
-  target_date: string | null;
-  target_time: string | null;
-  target_start_at: string | null;
-  target_end_at: string | null;
-  timezone_name: string;
-  candidate_options: unknown;
-  context_payload: unknown;
-  last_user_message: string | null;
-  last_assistant_message: string | null;
-  expires_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type StoreAssistantOperationalTaskRow = {
-  id: string;
-  organization_id: string;
-  store_id: string;
-  thread_id: string | null;
-  task_type: string;
-  status: string;
-  priority: string;
-  title: string;
-  description: string | null;
-  related_lead_id: string | null;
-  related_conversation_id: string | null;
-  related_appointment_id: string | null;
-  customer_name: string | null;
-  customer_phone: string | null;
-  target_date: string | null;
-  target_time: string | null;
-  target_start_at: string | null;
-  target_end_at: string | null;
-  timezone_name: string | null;
-  task_payload: unknown;
-  last_action_at: string | null;
-  resolved_at: string | null;
-  cancelled_at: string | null;
-  error_text: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type AssistantCandidateOption = {
-  option_number: number;
-  source_index: number;
-  appointment_id: string;
-  title: string | null;
-  appointment_type: string | null;
-  status: string | null;
-  scheduled_start: string | null;
-  scheduled_end: string | null;
-  customer_name: string | null;
-  customer_phone: string | null;
-  lead_id: string | null;
-  conversation_id: string | null;
-};
-
-type AssistantReplyResult =
-  | {
-      ok: true;
-      aiText: string;
-    }
-  | {
-      ok: false;
-      error: string;
-      message: string;
-    };
 
 const ONBOARDING_KEYS = [
   "store_display_name",
@@ -224,73 +91,6 @@ function normalizeText(value: string | null | undefined): string {
     .trim();
 }
 
-function formatDateTime(value: string | null) {
-  if (!value) return "sem data";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "sem data";
-  return date.toLocaleString("pt-BR");
-}
-
-function formatDateOnly(value: string | null) {
-  if (!value) return "sem data";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "sem data";
-  return date.toLocaleDateString("pt-BR");
-}
-
-function formatTimeOnly(value: string | null) {
-  if (!value) return "sem hora";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "sem hora";
-  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-}
-
-function getScheduleTimezone(settings?: StoreScheduleSettingsRow | null) {
-  const configuredTimezone = String(settings?.timezone_name || "").trim();
-  return configuredTimezone || "America/Sao_Paulo";
-}
-
-function padTwoDigits(value: number) {
-  return String(value).padStart(2, "0");
-}
-
-function isValidTimeZone(timeZone: string) {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function safeScheduleTimezone(timeZone: string) {
-  return isValidTimeZone(timeZone) ? timeZone : "America/Sao_Paulo";
-}
-
-function formatDateOnlyInTimeZone(value: string | null, timeZone: string) {
-  if (!value) return "sem data";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "sem data";
-  return new Intl.DateTimeFormat("pt-BR", {
-    timeZone: safeScheduleTimezone(timeZone),
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(date);
-}
-
-function formatTimeOnlyInTimeZone(value: string | null, timeZone: string) {
-  if (!value) return "sem hora";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "sem hora";
-  return new Intl.DateTimeFormat("pt-BR", {
-    timeZone: safeScheduleTimezone(timeZone),
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
-
 function formatAppointmentRangeInTimeZone(args: {
   appointment?: Pick<AppointmentRow, "scheduled_start" | "scheduled_end"> | null;
   scheduleSettings?: StoreScheduleSettingsRow | null;
@@ -330,72 +130,6 @@ function getContextScheduleAction(contextState?: StoreAssistantContextStateRow |
     return activeIntent as ScheduleAction;
   }
   return null;
-}
-
-function getTimeZoneOffsetMinutes(timeZone: string, date: Date) {
-  const safeTimeZone = safeScheduleTimezone(timeZone);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: safeTimeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
-
-  const values: Record<string, number> = {};
-
-  for (const part of parts) {
-    if (part.type !== "literal") {
-      values[part.type] = Number(part.value);
-    }
-  }
-
-  const asUtc = Date.UTC(
-    values.year,
-    (values.month || 1) - 1,
-    values.day || 1,
-    values.hour === 24 ? 0 : values.hour || 0,
-    values.minute || 0,
-    values.second || 0,
-    0
-  );
-
-  return Math.round((asUtc - date.getTime()) / 60000);
-}
-
-function localScheduleDateTimeToUtcIso(args: {
-  dateParts: { day: number; month: number; year: number };
-  hour: number;
-  minute: number;
-  timeZone: string;
-}) {
-  const safeTimeZone = safeScheduleTimezone(args.timeZone);
-  const localUtcMs = Date.UTC(
-    args.dateParts.year,
-    args.dateParts.month,
-    args.dateParts.day,
-    args.hour,
-    args.minute,
-    0,
-    0
-  );
-
-  let utcMs = localUtcMs;
-
-  for (let i = 0; i < 3; i += 1) {
-    const offsetMinutes = getTimeZoneOffsetMinutes(safeTimeZone, new Date(utcMs));
-    const nextUtcMs = localUtcMs - offsetMinutes * 60 * 1000;
-    if (Math.abs(nextUtcMs - utcMs) < 1000) {
-      utcMs = nextUtcMs;
-      break;
-    }
-    utcMs = nextUtcMs;
-  }
-
-  return new Date(utcMs).toISOString();
 }
 
 function formatAppointmentType(value: string | null) {
@@ -1965,38 +1699,6 @@ function formatScheduleAppointmentCurrentSituation(appointment: AppointmentRow) 
   }
 
   return statusLabel;
-}
-
-function getLocalDateKeyFromIso(iso: string | null | undefined, settings?: StoreScheduleSettingsRow | null) {
-  if (!iso) return null;
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return null;
-
-  const timeZone = safeScheduleTimezone(getScheduleTimezone(settings || null));
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-
-  const values: Record<string, string> = {};
-  for (const part of parts) {
-    if (part.type !== "literal") values[part.type] = part.value;
-  }
-
-  if (!values.year || !values.month || !values.day) return null;
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
-function getDateKeyFromParts(dateParts: { day: number; month: number; year: number } | null | undefined) {
-  if (!dateParts) return null;
-  return `${dateParts.year}-${padTwoDigits(dateParts.month + 1)}-${padTwoDigits(dateParts.day)}`;
-}
-
-function formatDatePartsForHuman(dateParts: { day: number; month: number; year: number } | null | undefined) {
-  if (!dateParts) return "essa data";
-  return `${padTwoDigits(dateParts.day)}/${padTwoDigits(dateParts.month + 1)}/${dateParts.year}`;
 }
 
 function buildAppointmentDateMismatchAlternativesReply(args: {
@@ -3809,42 +3511,6 @@ async function resolveAssistantContextState(args: { supabase: any; organizationI
   });
 }
 
-function isoDateToLocalDateForDb(iso: string | null | undefined, timeZone: string) {
-  if (!iso) return null;
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: safeScheduleTimezone(timeZone), year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(iso));
-  const values: Record<string, string> = {};
-  for (const part of parts) if (part.type !== "literal") values[part.type] = part.value;
-  return values.year && values.month && values.day ? `${values.year}-${values.month}-${values.day}` : null;
-}
-
-function getLocalDatePartsForSchedule(settings?: StoreScheduleSettingsRow | null, date = new Date()) {
-  const timeZone = safeScheduleTimezone(getScheduleTimezone(settings || null));
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const values: Record<string, number> = {};
-  for (const part of parts) {
-    if (part.type !== "literal") values[part.type] = Number(part.value);
-  }
-  return {
-    year: values.year || date.getFullYear(),
-    month: values.month || date.getMonth() + 1,
-    day: values.day || date.getDate(),
-  };
-}
-
-function buildStoreLocalDayRangeIso(settings?: StoreScheduleSettingsRow | null, date = new Date()) {
-  const dateParts = getLocalDatePartsForSchedule(settings || null, date);
-  return {
-    startIso: buildIsoFromDateAndTime(dateParts, "00:00", settings || null),
-    endIso: buildIsoFromDateAndTime(dateParts, "23:59", settings || null),
-    dateKey: `${dateParts.year}-${padTwoDigits(dateParts.month)}-${padTwoDigits(dateParts.day)}`,
-  };
-}
-
 async function createAssistantOperationalTask(args: { supabase: any; organizationId: string; storeId: string; threadId: string | null; taskType: string; status: string; priority?: string; title: string; description?: string | null; appointment?: AppointmentRow | null; targetStartIso?: string | null; targetEndIso?: string | null; timezoneName: string; taskPayload?: Record<string, unknown>; }) {
   const appointment = args.appointment || null;
   const { data, error } = await args.supabase
@@ -4830,15 +4496,6 @@ function buildResponsibleAvailabilityRequestReply(args: { appointment: Appointme
   return `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas não consegui enviar mensagem automática para o cliente porque não encontrei conversa vinculada. A agenda ainda não foi alterada.`;
 }
 
-
-type CustomerRescheduleWorkflowResult =
-  | { type: "not_applicable" }
-  | { type: "needs_target"; reply: string }
-  | { type: "needs_date"; reply: string }
-  | { type: "needs_time"; reply: string }
-  | { type: "missing_conversation"; reply: string }
-  | { type: "send_failed"; reply: string; error?: string }
-  | { type: "message_sent"; reply: string; messageId: string | null; taskId: string | null };
 
 async function resolveCustomerRescheduleWorkflow(args: {
   supabase: any;
