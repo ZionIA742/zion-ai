@@ -185,6 +185,7 @@ export default function AssistantPage() {
   const shouldStickToBottomRef = useRef(true);
   const forceScrollToBottomRef = useRef(false);
   const lastMessageCountRef = useRef(0);
+  const markedNotificationsSeenKeyRef = useRef<string | null>(null);
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const canLoad = useMemo(() => {
@@ -255,10 +256,42 @@ export default function AssistantPage() {
     [canLoad, organizationId, activeStoreId]
   );
 
+  const markNotificationsSeen = useCallback(async () => {
+    if (!canLoad || !organizationId || !activeStoreId) return;
+
+    const seenKey = `${organizationId}:${activeStoreId}`;
+    if (markedNotificationsSeenKeyRef.current === seenKey) return;
+
+    const { error } = await supabase.rpc("assistant_mark_notifications_seen", {
+      p_organization_id: organizationId,
+      p_store_id: activeStoreId,
+    });
+
+    if (error) {
+      console.warn("[AssistantPage] assistant_mark_notifications_seen error:", error);
+      return;
+    }
+
+    markedNotificationsSeenKeyRef.current = seenKey;
+    await loadAssistant({ silent: true });
+  }, [canLoad, organizationId, activeStoreId, loadAssistant]);
+
   useEffect(() => {
     if (!canLoad) return;
     void loadAssistant();
   }, [canLoad, loadAssistant]);
+
+  useEffect(() => {
+    if (!canLoad) return;
+
+    const timeout = window.setTimeout(() => {
+      void markNotificationsSeen();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [canLoad, markNotificationsSeen]);
 
   useEffect(() => {
     if (!canLoad) return;
