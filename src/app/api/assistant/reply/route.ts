@@ -18,6 +18,8 @@ import type {
   StoreScheduleSettingsRow,
 } from "@/lib/server/assistant/types";
 import {
+  addMinutesToIso,
+  buildIsoFromDateAndTime,
   buildStoreLocalDayRangeIso,
   formatDateOnly,
   formatDateOnlyInTimeZone,
@@ -28,10 +30,18 @@ import {
   getDateKeyFromParts,
   getLocalDateKeyFromIso,
   getLocalDatePartsForSchedule,
+  getScheduleParsingNow,
   getScheduleTimezone,
+  hasAmbiguousBareDayDateReference,
   isoDateToLocalDateForDb,
   localScheduleDateTimeToUtcIso,
+  normalizeScheduleTimeText,
   padTwoDigits,
+  parseCompleteScheduleDateFromText,
+  parseDateReferenceFromText,
+  parseDbDateKeyToScheduleParts,
+  parseScheduleDateFromText,
+  parseTimeRangeFromText,
   safeScheduleTimezone,
 } from "@/lib/server/assistant/datetime";
 
@@ -3913,33 +3923,6 @@ function buildUnsafeCustomerContactSuccessClaimFallback(args: {
   return `Encontrei o contexto de ${customerName}${targetLabel}, mas não consegui confirmar um envio real de mensagem para o cliente agora. A agenda não foi alterada.`;
 }
 
-function parseCompleteScheduleDateFromText(text: string, now: Date) {
-  const raw = String(text || "");
-  const numeric = raw.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?\b/);
-  if (numeric) {
-    const day = Number(numeric[1]);
-    const month = Number(numeric[2]);
-    let year = numeric[3] ? Number(numeric[3]) : now.getFullYear();
-    if (year < 100) year += 2000;
-    if (day < 1 || day > 31 || month < 1 || month > 12) return null;
-    return { day, month: month - 1, year };
-  }
-
-  const normalized = normalizeText(raw);
-  if (/\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|marÃ§o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/.test(normalized)) {
-    return parseDateReferenceFromText(raw, now);
-  }
-
-  return null;
-}
-
-function hasAmbiguousBareDayDateReference(text: string) {
-  const normalized = normalizeText(text);
-  const hasCompleteNumericDate = /\b\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/.test(normalized);
-  const hasWrittenMonth = /\b\d{1,2}\s+de\s+(janeiro|fevereiro|marco|marÃ§o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/.test(normalized);
-  return !hasCompleteNumericDate && !hasWrittenMonth && /\b(?:dia|data)\s+\d{1,2}\b/.test(normalized);
-}
-
 function asksAssistantToFindCustomerAvailability(text: string) {
   const t = normalizeText(text);
   return hasAnyTerm(t, [
@@ -4332,93 +4315,6 @@ function extractTitleFromText(text: string, typeCode: string, customerName?: str
   const base = inferAppointmentTypeLabelFromCode(typeCode);
   if (customerName) return `${safeCapitalize(base)} ${customerName}`;
   return safeCapitalize(base);
-}
-
-function parseDateReferenceFromText(text: string, now: Date) {
-  return parseScheduleDateFromText(text, now);
-}
-
-function normalizeScheduleTimeText(hourText: string, minuteText?: string | null) {
-  const hour = Number(hourText);
-  const minute = minuteText ? Number(minuteText) : 0;
-  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return null;
-  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
-  return `${padTwoDigits(hour)}:${padTwoDigits(minute)}`;
-}
-
-function parseTimeRangeFromText(text: string) {
-  const rangeMatch = text.match(/\b(?:das?|de|do)?\s*(\d{1,2})(?::(\d{2}))?\s*h?\s*(?:ate|até|as|às|a|-)\s*(?:as?\s*)?(\d{1,2})(?::(\d{2}))?\s*h?\b/i);
-  if (rangeMatch) {
-    const startTime = normalizeScheduleTimeText(rangeMatch[1], rangeMatch[2]);
-    const endTime = normalizeScheduleTimeText(rangeMatch[3], rangeMatch[4]);
-    if (startTime && endTime) return { startTime, endTime };
-  }
-
-  const singleMatch = text.match(/\b(?:as|às|para|pra)?\s*(\d{1,2})(?::(\d{2}))?\s*h\b/i) ||
-    text.match(/\b(?:as|às|para|pra)\s+(\d{1,2})(?::(\d{2}))?\b/i) ||
-    text.match(/\b(\d{1,2}:\d{2})\b/);
-  if (singleMatch) {
-    if (singleMatch[1]?.includes(":")) {
-      const [hour, minute] = singleMatch[1].split(":");
-      const startTime = normalizeScheduleTimeText(hour, minute);
-      if (startTime) return { startTime, endTime: null as string | null };
-    }
-    const startTime = normalizeScheduleTimeText(singleMatch[1], singleMatch[2]);
-    if (startTime) return { startTime, endTime: null as string | null };
-  }
-
-  return null;
-}
-
-function buildIsoFromDateAndTime(
-  dateParts: { day: number; month: number; year: number },
-  time: string,
-  settings?: StoreScheduleSettingsRow | null
-) {
-  const [hour, minute] = time.split(":").map(Number);
-  return localScheduleDateTimeToUtcIso({
-    dateParts,
-    hour: Number.isFinite(hour) ? hour : 0,
-    minute: Number.isFinite(minute) ? minute : 0,
-    timeZone: getScheduleTimezone(settings || null),
-  });
-}
-
-function addMinutesToIso(iso: string, minutes: number) {
-  const date = new Date(iso);
-  date.setMinutes(date.getMinutes() + minutes);
-  return date.toISOString();
-}
-
-function getScheduleParsingNow(settings?: StoreScheduleSettingsRow | null) {
-  const timeZone = safeScheduleTimezone(getScheduleTimezone(settings || null));
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date());
-
-  const values: Record<string, number> = {};
-  for (const part of parts) {
-    if (part.type !== "literal") {
-      values[part.type] = Number(part.value);
-    }
-  }
-
-  return new Date(
-    values.year || new Date().getFullYear(),
-    (values.month || 1) - 1,
-    values.day || 1,
-    values.hour === 24 ? 0 : values.hour || 0,
-    values.minute || 0,
-    values.second || 0,
-    0
-  );
 }
 
 function isClientFacingRescheduleRequest(text: string) {
@@ -4881,17 +4777,6 @@ function extractReschedulePayload(text: string, now: Date, settings?: StoreSched
   };
 }
 
-
-function parseDbDateKeyToScheduleParts(dateKey: string | null | undefined) {
-  const raw = String(dateKey || "").trim();
-  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  return { year, month: month - 1, day };
-}
 
 function extractContextAwareReschedulePayload(args: {
   text: string;
@@ -8189,87 +8074,6 @@ async function generateAssistantReply(params: {
   }
 }
 
-
-function parseScheduleDateFromText(text: string, now: Date) {
-  const normalized = normalizeText(text);
-
-  const numeric = normalized.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
-  if (numeric) {
-    let year = numeric[3] ? Number(numeric[3]) : now.getFullYear();
-    if (year < 100) year += 2000;
-    return {
-      day: Number(numeric[1]),
-      month: Number(numeric[2]) - 1,
-      year,
-    };
-  }
-
-  const monthMap: Record<string, number> = {
-    janeiro: 0,
-    fevereiro: 1,
-    marco: 2,
-    "março": 2,
-    abril: 3,
-    maio: 4,
-    junho: 5,
-    julho: 6,
-    agosto: 7,
-    setembro: 8,
-    outubro: 9,
-    novembro: 10,
-    dezembro: 11,
-  };
-
-  const written = normalized.match(
-    /\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b/
-  );
-  if (written) {
-    let year = written[3] ? Number(written[3]) : now.getFullYear();
-    const month = monthMap[written[2]];
-    const day = Number(written[1]);
-    let candidate = new Date(year, month, day);
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
-    if (!written[3] && candidate.getTime() < today.getTime()) {
-      year += 1;
-      candidate = new Date(year, month, day);
-    }
-    return { day, month, year };
-  }
-
-  const bareDay = normalized.match(/\bdia\s+(\d{1,2})(?!\d)/);
-  if (bareDay) {
-    const day = Number(bareDay[1]);
-    let month = now.getMonth();
-    let year = now.getFullYear();
-    let candidate = new Date(year, month, day);
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
-    if (candidate.getTime() < today.getTime()) {
-      month += 1;
-      if (month > 11) {
-        month = 0;
-        year += 1;
-      }
-      candidate = new Date(year, month, day);
-    }
-    return { day: candidate.getDate(), month: candidate.getMonth(), year: candidate.getFullYear() };
-  }
-
-  const base = new Date(now);
-  base.setHours(0, 0, 0, 0);
-
-  if (normalized.includes("amanha") || normalized.includes("amanhã")) {
-    base.setDate(base.getDate() + 1);
-    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
-  }
-
-  if (normalized.includes("hoje")) {
-    return { day: base.getDate(), month: base.getMonth(), year: base.getFullYear() };
-  }
-
-  return null;
-}
 
 function hasBlockDateCueFromNormalized(text: string) {
   return (
