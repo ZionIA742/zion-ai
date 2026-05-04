@@ -5352,6 +5352,55 @@ async function resolveAppointmentActionReply(args: {
       return lines.join("\n").trim();
     }
 
+    const clarificationMatches = resolveAppointmentCandidateIndexesFromText({
+      text: args.lastHumanMessage,
+      openAppointments,
+    });
+    const clarificationCandidateIndexes = clarificationMatches.length
+      ? clarificationMatches
+      : openAppointments.map((_, index) => index).slice(0, 6);
+    const candidateOptions = buildAppointmentCandidateOptions({
+      candidateIndexes: clarificationCandidateIndexes,
+      openAppointments,
+    });
+    const requestedDateParts = parseDateReferenceFromText(args.lastHumanMessage, now);
+    const requestedDateKey = getDateKeyFromParts(requestedDateParts);
+    const requestedTimeRange = parseTimeRangeFromText(args.lastHumanMessage);
+    const requestedTimeLabel = requestedTimeRange?.startTime || null;
+
+    if (args.threadId && candidateOptions.length) {
+      await upsertAssistantContextState({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        threadId: args.threadId,
+        currentContextState: args.assistantContextState || null,
+        patch: {
+          active_topic: action === "reschedule" ? "appointment_reschedule" : "appointment_management",
+          active_intent: action,
+          active_status: "waiting_user_choice",
+          active_customer_name: null,
+          active_customer_phone: null,
+          active_lead_id: null,
+          active_conversation_id: null,
+          active_appointment_id: null,
+          target_date: requestedDateKey || null,
+          target_time: requestedTimeLabel || null,
+          target_start_at: null,
+          target_end_at: null,
+          timezone_name: scheduleTimezone,
+          candidate_options: candidateOptions,
+          context_payload: {
+            reason: "appointment_clarification_options",
+            action,
+            requested_date: requestedDateKey,
+            requested_time: requestedTimeLabel,
+          },
+          last_user_message: args.lastHumanMessage,
+        },
+      });
+    }
+
     return buildProfessionalAppointmentClarificationReply({
       action,
       text: args.lastHumanMessage,
