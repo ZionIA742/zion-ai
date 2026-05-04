@@ -2340,7 +2340,7 @@ function buildCancelOrRescheduleDecisionPrompt(args: { appointment: AppointmentR
   const appointment = args.appointment;
   const referenceLabel = buildScheduleAppointmentReferenceLabel(appointment);
   const timeLabel = formatAppointmentStartInTimeZone({ value: appointment.scheduled_start || appointment.scheduled_end || null, scheduleSettings: args.scheduleSettings || null });
-  return `Encontrei este compromisso:\n\n${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)}\nCliente: ${appointment.customer_name || "cliente não identificado"}\nData e horário: ${timeLabel}\n\nAntes de alterar a agenda, me diga como prefere seguir:\n\n1. Cancelar esse compromisso.\n2. Remarcar para outro dia ou horário.\n\nSe a escolha for cancelar, quer que eu explique algum motivo ao cliente ou envio apenas um aviso simples de cancelamento?`;
+  return `Encontrei este compromisso:\n\n${referenceLabel.charAt(0).toUpperCase() + referenceLabel.slice(1)}\nCliente: ${appointment.customer_name || "cliente não identificado"}\nData e horário: ${timeLabel}\n\nAntes de alterar a agenda, me diga como prefere seguir:\n\n1. Cancelar esse compromisso.\n2. Remarcar para outro dia ou horário.\n\nSe for cancelar, quer que eu explique algum motivo ao cliente ou envio apenas um aviso simples de cancelamento?`;
 }
 
 function isWaitingForCustomerCancelDecision(contextState?: StoreAssistantContextStateRow | null) {
