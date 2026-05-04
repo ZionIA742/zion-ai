@@ -2291,10 +2291,10 @@ function buildAppointmentCandidateOptions(args: {
   candidateIndexes: number[];
   openAppointments: AppointmentRow[];
 }) {
-  return args.candidateIndexes.slice(0, 8).map((candidateIndex, visibleIndex) => {
+  return args.candidateIndexes.slice(0, 8).map((candidateIndex) => {
     const appointment = args.openAppointments[candidateIndex];
     return {
-      option_number: visibleIndex + 1,
+      option_number: candidateIndex + 1,
       source_index: candidateIndex,
       appointment_id: appointment?.id || "",
       title: appointment?.title || null,
@@ -2332,7 +2332,11 @@ function resolveAppointmentSelectionFromContextFirst(args: {
     return { type: "not_applicable" as const };
   }
 
-  const selectedOptionIndex = resolveExplicitAppointmentItemIndex(args.text, options.length);
+  const highestOptionNumber = options.reduce((max, option) => {
+    const optionNumber = Number(option.option_number);
+    return Number.isFinite(optionNumber) ? Math.max(max, optionNumber) : max;
+  }, options.length);
+  const selectedOptionIndex = resolveExplicitAppointmentItemIndex(args.text, highestOptionNumber);
   if (selectedOptionIndex !== null) {
     const optionNumber = selectedOptionIndex + 1;
     const matchedOption = options.find((option) => Number(option.option_number) === optionNumber);
@@ -2348,7 +2352,7 @@ function resolveAppointmentSelectionFromContextFirst(args: {
     return { type: "invalid_choice" as const };
   }
 
-  const requestedOptionIndex = resolveExplicitAppointmentItemIndex(args.text, Math.max(options.length, 99));
+  const requestedOptionIndex = resolveExplicitAppointmentItemIndex(args.text, Math.max(highestOptionNumber, 99));
   if (requestedOptionIndex !== null) {
     return { type: "invalid_choice" as const };
   }
