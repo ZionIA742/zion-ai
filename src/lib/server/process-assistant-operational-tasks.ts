@@ -744,6 +744,7 @@ async function processQueueItem(args: {
   const { supabase, queue } = args;
 
   const customerMessage = String(queue.payload?.customer_message || "").trim();
+  const normalizedCustomerReply = normalizeText(customerMessage).replace(/\s+/g, " ").trim();
   let decision = classifyCustomerReply(customerMessage);
 
   const { data: taskRow, error: taskError } = await supabase
@@ -800,6 +801,9 @@ async function processQueueItem(args: {
   }
 
   const timezoneName = task.timezone_name || "America/Sao_Paulo";
+  const taskPayload = task.task_payload || {};
+  const lastConversationId = String(taskPayload.last_processed_conversation_id || "");
+  const currentConversationId = String(task.related_conversation_id || queue.conversation_id || "");
 
   const suggestedDifferentTimeFromTarget = customerSuggestedDifferentTimeFromTarget({
     content: customerMessage,
@@ -815,7 +819,27 @@ async function processQueueItem(args: {
     };
   }
 
+  const lastDecisionType = String(taskPayload.last_customer_reply_decision_type || taskPayload.last_customer_reply_decision?.type || "");
+  const isSameCustomerReply =
+    String(taskPayload.last_customer_reply_normalized || "") === normalizedCustomerReply &&
+    lastDecisionType === decision.type &&
+    (!lastConversationId || lastConversationId === currentConversationId);
+
   if (decision.type === "confirmed") {
+    if (
+      isSameCustomerReply &&
+      (Boolean(taskPayload.appointment_update_succeeded) || Boolean(taskPayload.customer_confirmation_message_sent))
+    ) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: "duplicate_customer_reply_already_processed",
+        action: "duplicate_skipped",
+        taskId: task.id,
+        queueId: queue.id,
+      };
+    }
+
     if (!task.target_start_at || !task.target_end_at) {
       throw new Error("Cliente confirmou, mas a tarefa não tem target_start_at/target_end_at.");
     }
@@ -841,8 +865,12 @@ async function processQueueItem(args: {
     if (updateError) {
       const failedPayload = appendTaskPayload(task.task_payload, {
         last_customer_reply: customerMessage,
+        last_customer_reply_normalized: normalizedCustomerReply,
         last_customer_reply_message_id: queue.message_id,
         last_customer_reply_decision: decision,
+        last_customer_reply_decision_type: decision.type,
+        last_processed_queue_id: queue.id,
+        last_processed_conversation_id: currentConversationId,
         last_execution_error: updateError.message,
         appointment_update_attempted: true,
         appointment_update_succeeded: false,
@@ -891,8 +919,12 @@ async function processQueueItem(args: {
 
     const resolvedPayload = appendTaskPayload(task.task_payload, {
       last_customer_reply: customerMessage,
+      last_customer_reply_normalized: normalizedCustomerReply,
       last_customer_reply_message_id: queue.message_id,
       last_customer_reply_decision: decision,
+      last_customer_reply_decision_type: decision.type,
+      last_processed_queue_id: queue.id,
+      last_processed_conversation_id: currentConversationId,
       appointment_update_attempted: true,
       appointment_update_succeeded: true,
       updated_appointment: updatedAppointment,
@@ -955,6 +987,40 @@ async function processQueueItem(args: {
           })
         : null;
 
+    if (decision.type === "suggested_other_time" && isSameCustomerReply) {
+      const sameSuggestedStart = Boolean(suggestedWindow?.startIso && taskPayload.suggested_start_at === suggestedWindow.startIso);
+      const sameSuggestedLabel = Boolean(suggestedWindow?.suggestedLabel && taskPayload.suggested_label === suggestedWindow.suggestedLabel);
+      const alreadyWaitingApproval = Boolean(taskPayload.needs_responsible_approval) || Boolean(taskPayload.suggested_label);
+
+      if ((sameSuggestedStart || sameSuggestedLabel) && alreadyWaitingApproval) {
+        return {
+          ok: true,
+          skipped: true,
+          reason: "duplicate_customer_reply_already_processed",
+          action: "duplicate_skipped",
+          taskId: task.id,
+          queueId: queue.id,
+        };
+      }
+    }
+
+    if (
+      decision.type === "rejected" &&
+      lastDecisionType === "rejected" &&
+      String(taskPayload.last_customer_reply_normalized || "") === normalizedCustomerReply &&
+      (!lastConversationId || lastConversationId === currentConversationId) &&
+      Boolean(taskPayload.needs_new_time_negotiation)
+    ) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: "duplicate_customer_reply_already_processed",
+        action: "duplicate_skipped",
+        taskId: task.id,
+        queueId: queue.id,
+      };
+    }
+
     const suggestedAvailability = suggestedWindow
       ? await checkSuggestedRescheduleAvailability({
           supabase,
@@ -968,8 +1034,12 @@ async function processQueueItem(args: {
 
     const updatedPayload = appendTaskPayload(task.task_payload, {
       last_customer_reply: customerMessage,
+      last_customer_reply_normalized: normalizedCustomerReply,
       last_customer_reply_message_id: queue.message_id,
       last_customer_reply_decision: decision,
+      last_customer_reply_decision_type: decision.type,
+      last_processed_queue_id: queue.id,
+      last_processed_conversation_id: currentConversationId,
       appointment_update_attempted: false,
       appointment_update_succeeded: false,
       needs_new_time_negotiation: true,
@@ -1082,8 +1152,12 @@ async function processQueueItem(args: {
 
   const ambiguousPayload = appendTaskPayload(task.task_payload, {
     last_customer_reply: customerMessage,
+    last_customer_reply_normalized: normalizedCustomerReply,
     last_customer_reply_message_id: queue.message_id,
     last_customer_reply_decision: decision,
+    last_customer_reply_decision_type: decision.type,
+    last_processed_queue_id: queue.id,
+    last_processed_conversation_id: currentConversationId,
     appointment_update_attempted: false,
     appointment_update_succeeded: false,
   });
