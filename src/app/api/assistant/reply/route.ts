@@ -5385,6 +5385,52 @@ async function resolveAppointmentActionReply(args: {
   }
 
   if (action === "reschedule") {
+    const contextPayload = readAssistantContextPayload(args.assistantContextState || null);
+    const contextRequestedDateKey = String(contextPayload.requested_date || args.assistantContextState?.target_date || "").trim();
+    const contextRequestedDateParts = parseDbDateKeyToScheduleParts(contextRequestedDateKey);
+    const contextRequestedTime = String(contextPayload.requested_time || "").trim();
+    const currentRequestTimeRange = parseTimeRangeFromText(args.lastHumanMessage);
+    const choseItemWithDateButNoTime =
+      isPlainAssistantOptionChoice(args.lastHumanMessage) &&
+      contextRequestedDateParts &&
+      !contextRequestedTime &&
+      !currentRequestTimeRange?.startTime;
+
+    if (choseItemWithDateButNoTime) {
+      if (args.threadId) {
+        await upsertAssistantContextState({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          threadId: args.threadId,
+          currentContextState: args.assistantContextState || null,
+          patch: {
+            active_topic: "appointment_reschedule",
+            active_intent: "reschedule",
+            active_status: "active",
+            active_customer_name: selectedAppointment.customer_name || null,
+            active_customer_phone: selectedAppointment.customer_phone || null,
+            active_lead_id: selectedAppointment.lead_id || null,
+            active_conversation_id: selectedAppointment.conversation_id || null,
+            active_appointment_id: selectedAppointment.id,
+            target_date: contextRequestedDateKey || null,
+            target_time: null,
+            target_start_at: null,
+            target_end_at: null,
+            timezone_name: scheduleTimezone,
+            candidate_options: [],
+            context_payload: { reason: "selected_appointment_waiting_for_reschedule_time", selected_appointment_title: selectedAppointment.title || null, requested_date: contextRequestedDateKey || null },
+            last_user_message: args.lastHumanMessage,
+          },
+        });
+      }
+
+      const targetLabel = selectedAppointment.customer_name
+        ? `a ${formatAppointmentType(selectedAppointment.appointment_type)} de ${selectedAppointment.customer_name}`
+        : buildScheduleAppointmentReferenceLabel(selectedAppointment);
+      return `Certo, é ${targetLabel}. Para qual horário do dia ${formatDatePartsForHuman(contextRequestedDateParts)} você quer tentar remarcar?`;
+    }
+
     const reschedulePayload = extractContextAwareReschedulePayload({
       text: args.lastHumanMessage,
       now,
