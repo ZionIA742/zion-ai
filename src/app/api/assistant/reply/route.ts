@@ -8074,6 +8074,20 @@ function asksToBlockStoreDay(text: string) {
     t.includes("bloqueia a agenda") ||
     t.includes("bloqueie a agenda") ||
     t.includes("bloquear a agenda") ||
+    t.includes("bloqueia minha agenda") ||
+    t.includes("bloqueie minha agenda") ||
+    t.includes("bloquear minha agenda") ||
+    t.includes("bloqueia a minha agenda") ||
+    t.includes("bloqueie a minha agenda") ||
+    t.includes("bloquear a minha agenda") ||
+    t.includes("deixa minha agenda bloqueada") ||
+    t.includes("deixe minha agenda bloqueada") ||
+    t.includes("deixa a minha agenda bloqueada") ||
+    t.includes("deixe a minha agenda bloqueada") ||
+    t.includes("feche minha agenda") ||
+    t.includes("fechar minha agenda") ||
+    t.includes("feche a minha agenda") ||
+    t.includes("fechar a minha agenda") ||
     t.includes("trava a agenda") ||
     t.includes("trave a agenda") ||
     t.includes("travar a agenda") ||
