@@ -4981,7 +4981,7 @@ async function resolveCustomerRescheduleWorkflow(args: {
     type: "message_sent",
     messageId: sendResult.messageId,
     taskId: taskResult.taskId,
-    reply: `Certo. Enviei uma mensagem para ${customerName} propondo remarcar ${appointmentTypeLabel} para ${targetDateLabel} Ã s ${targetTimeLabel}. A agenda ainda nÃ£o foi alterada; assim que ela responder, eu te aviso por aqui.`,
+    reply: `Certo. Enviei uma mensagem para ${customerName} propondo remarcar a ${appointmentTypeLabel} para ${targetDateLabel} Ã s ${targetTimeLabel}. A agenda ainda nÃ£o foi alterada; assim que ela responder, eu te aviso por aqui.`,
   };
 }
 
