@@ -5495,6 +5495,18 @@ async function resolveAppointmentActionReply(args: {
       ];
     } else if (explicitTitleMatches.length > 1) {
       if (args.threadId) {
+        const requestedDateParts = parseCompleteScheduleDateFromText(args.lastHumanMessage, now);
+        const requestedDateKey = getDateKeyFromParts(requestedDateParts);
+        const requestedTimeRange = parseTimeRangeFromText(args.lastHumanMessage);
+        const requestedTimeLabel = requestedTimeRange?.startTime || null;
+        const requestedTargetStartIso = requestedDateParts && requestedTimeLabel
+          ? buildIsoFromDateAndTime(requestedDateParts, requestedTimeLabel, args.scheduleSettings || null)
+          : null;
+        const requestedTargetEndIso = requestedTargetStartIso
+          ? (requestedTimeRange?.endTime
+            ? buildIsoFromDateAndTime(requestedDateParts!, requestedTimeRange.endTime, args.scheduleSettings || null)
+            : addMinutesToIso(requestedTargetStartIso, 60))
+          : null;
         const candidateOptions = explicitTitleMatches.slice(0, 8).map((appointment, index) => ({
           option_number: index + 1,
           source_index: index,
@@ -5517,7 +5529,7 @@ async function resolveAppointmentActionReply(args: {
           threadId: args.threadId,
           currentContextState: args.assistantContextState || null,
           patch: {
-            active_topic: "appointment_management",
+            active_topic: action === "reschedule" ? "appointment_reschedule" : "appointment_management",
             active_intent: action,
             active_status: "waiting_user_choice",
             active_customer_name: null,
@@ -5525,13 +5537,19 @@ async function resolveAppointmentActionReply(args: {
             active_lead_id: null,
             active_conversation_id: null,
             active_appointment_id: null,
-            target_date: null,
-            target_time: null,
-            target_start_at: null,
-            target_end_at: null,
+            target_date: requestedDateKey || null,
+            target_time: requestedTimeLabel || null,
+            target_start_at: requestedTargetStartIso,
+            target_end_at: requestedTargetEndIso,
             timezone_name: scheduleTimezone,
             candidate_options: candidateOptions,
-            context_payload: { reason: "explicit_title_ambiguity", action, explicit_title: explicitAppointmentTitleCandidate },
+            context_payload: {
+              reason: "explicit_title_ambiguity",
+              action,
+              explicit_title: explicitAppointmentTitleCandidate,
+              requested_date: requestedDateKey,
+              requested_time: requestedTimeLabel,
+            },
             last_user_message: args.lastHumanMessage,
           },
         });
