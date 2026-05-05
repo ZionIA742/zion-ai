@@ -3823,6 +3823,75 @@ function hasUnsupportedCustomerContactSuccessClaim(text: string) {
   ]);
 }
 
+function hasUnsupportedOperationalSuccessClaim(text: string) {
+  const t = normalizeText(text);
+
+  if (hasAnyTerm(t, [
+    "nao atualizei",
+    "nao ajustei",
+    "nao cancelei",
+    "nao remarquei",
+    "nao reagendei",
+    "nao confirmei",
+    "nao conclui",
+    "nao bloqueei",
+    "nao consegui atualizar",
+    "nao consegui ajustar",
+    "nao consegui cancelar",
+    "nao consegui remarcar",
+    "nao consegui bloquear",
+  ])) {
+    return false;
+  }
+
+  return hasAnyTerm(t, [
+    "atualizei a agenda",
+    "agenda atualizada",
+    "agenda ja atualizada",
+    "agenda esta atualizada",
+    "ajustei a agenda",
+    "agenda ajustada",
+    "registrei na agenda",
+    "registro na agenda",
+    "cancelei o compromisso",
+    "compromisso cancelado",
+    "ja esta cancelado",
+    "remarquei o compromisso",
+    "compromisso remarcado",
+    "reagendei o compromisso",
+    "compromisso reagendado",
+    "ja esta remarcado",
+    "ja esta atualizado",
+    "confirmei o horario",
+    "horario confirmado",
+    "conclui o compromisso",
+    "compromisso concluido",
+    "marquei como concluido",
+    "bloqueei a agenda",
+    "agenda bloqueada",
+    "criei o bloqueio",
+    "deixei bloqueado",
+    "pronto ajustei",
+    "pronto, ajustei",
+    "pronto cancelei",
+    "pronto, cancelei",
+    "pronto remarquei",
+    "pronto, remarquei",
+    "pronto bloqueei",
+    "pronto, bloqueei",
+    "ja atualizei",
+    "ja cancelei",
+    "ja remarquei",
+    "ja bloqueei",
+    "ja confirmei",
+    "ja conclui",
+  ]);
+}
+
+function buildUnsafeOperationalSuccessClaimFallback() {
+  return "Para evitar confirmar algo que ainda não foi executado com segurança, não vou tratar essa ação como concluída agora. Me diga exatamente o que você quer fazer na agenda, com o nome do cliente/compromisso e a data/horário, que eu sigo pelo fluxo correto.";
+}
+
 function buildUnsafeCustomerContactSuccessClaimFallback(args: {
   contextState?: StoreAssistantContextStateRow | null;
   scheduleSettings?: StoreScheduleSettingsRow | null;
@@ -7668,6 +7737,8 @@ async function generateAssistantReply(params: {
         contextState: assistantContextState,
         scheduleSettings,
       });
+    } else if (aiTextFromModel && hasUnsupportedOperationalSuccessClaim(aiText)) {
+      aiText = buildUnsafeOperationalSuccessClaimFallback();
     }
 
     const isContextMessage =
