@@ -810,7 +810,7 @@ function buildCatalogItemContextLine(match: MatchedCatalogItem): string {
   });
   const stockLabel =
     availability.reason === "in_stock"
-      ? `estoque confirmado: ${item.stock_quantity ?? 0}`
+      ? "disponibilidade: confirmada"
       : availability.reason === "stock_not_tracked"
         ? "estoque não controlado por esta base"
         : availability.reason === "out_of_stock"
@@ -861,7 +861,7 @@ function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
   }
 
   if (availability.reason === "in_stock") {
-    parts.push(`estoque confirmado: ${pool.stock_quantity ?? 0}`);
+    parts.push("disponibilidade: confirmada");
   } else if (availability.reason === "stock_not_tracked") {
     parts.push("estoque não controlado por esta base");
   } else if (availability.reason === "out_of_stock") {
@@ -1422,7 +1422,7 @@ function buildResponsePriorityBlock(args: {
   );
 
   instructions.push(
-    "- Se o catálogo mostrar item ativo com estoque controlado e quantidade > 0, você pode dizer que tem."
+    "- Se o catálogo mostrar item ativo com estoque controlado positivo, você pode dizer que tem, sem revelar a quantidade exata em estoque."
   );
 
   instructions.push(
@@ -1635,7 +1635,7 @@ REGRAS OPERACIONAIS
 REGRAS ESPECÍFICAS DE SINCERIDADE
 - Se o cliente pedir um produto específico e ele não aparecer entre os itens compatíveis, diga que você não conseguiu localizar esse item específico no catálogo atual.
 - Se o cliente pedir uma marca específica e a marca não estiver claramente confirmada nos itens compatíveis, não diga que tem essa marca.
-- Se houver item compatível ativo com estoque controlado e quantidade maior que zero, você pode dizer que há estoque confirmado.
+- Se houver item compatível ativo com estoque controlado positivo, você pode dizer que há disponibilidade confirmada, sem revelar a quantidade exata em estoque.
 - Se houver item compatível ativo com estoque controlado e quantidade zero ou nula, diga que está em falta ou sem estoque confirmado.
 - Se houver item compatível ativo sem controle de estoque, diga que ele aparece ativo no catálogo, mas que o estoque não está confirmado por esta base.
 - Se o cliente pedir foto e não houver foto cadastrada para o item/modelo compatível, diga isso com clareza.
