@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatalogImportPanel";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 
@@ -1288,6 +1289,10 @@ export default function ConfiguracoesPage() {
   const configDraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStoreId) return null;
     return `zion_configuracoes_draft:${organizationId}:${activeStoreId}`;
+  }, [organizationId, activeStoreId]);
+  const intelligentImportStorageKey = useMemo(() => {
+    if (!organizationId || !activeStoreId) return null;
+    return `zion_configuracoes_intelligent_import:${organizationId}:${activeStoreId}`;
   }, [organizationId, activeStoreId]);
   const hasRestoredLocalDraftRef = useRef(false);
   const hasInitializedLocalDraftRef = useRef(false);
@@ -4480,6 +4485,31 @@ export default function ConfiguracoesPage() {
 
       {activeTab === "produtos-acessorios" ? (
         <div className="space-y-4 overflow-x-hidden">
+          <SectionBlock
+            title="Catálogo Inteligente"
+            description="Envie fotos, PDF, Word, Excel ou PowerPoint para o ZION tentar identificar piscinas, produtos, acessórios e outros itens. Você poderá revisar a leitura antes de salvar no catálogo."
+          >
+            <IntelligentCatalogImportPanel
+              organizationId={organizationId}
+              storeId={activeStoreId}
+              storageKey={intelligentImportStorageKey}
+              source="configuracoes_intelligent_import"
+              disabled={!hasValidStoreContext}
+              supabaseClient={supabase}
+              onError={(message) => {
+                setErrorText(message);
+                if (message) setSuccessText(null);
+              }}
+              onSuccess={(message) => {
+                setSuccessText(message);
+                if (message) setErrorText(null);
+              }}
+              onSaved={async () => {
+                await fetchPageData();
+              }}
+            />
+          </SectionBlock>
+
           <SectionBlock
             title="Adicionar item manualmente"
             description="Cadastre produtos químicos, acessórios e outros itens do catálogo por aqui. Você pode subir até 10 fotos por item, com no máximo 50 MB por foto."
