@@ -1015,6 +1015,29 @@ async function processQueueItem(args: {
         },
       });
 
+      await pushAssistantInternalNotification({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        notificationType: "important_alert",
+        title: "Confirmacao ao cliente falhou",
+        body: `A agenda foi atualizada para ${formatLocalDateTime(task.target_start_at, timezoneName)}, mas nao foi possivel enviar a confirmacao automatica ao cliente. Confira a conversa e avise o cliente manualmente.`,
+        priority: "urgent",
+        context: {
+          source: "assistant_operational_task_worker",
+          reason: "confirmed_reschedule_customer_confirmation_failed",
+          classification: "confirmed_partial_failure",
+          task_id: task.id,
+          appointment_id: appointment.id,
+          target_start_at: task.target_start_at,
+          error: message,
+        },
+        relatedLeadId: task.related_lead_id,
+        relatedConversationId: task.related_conversation_id,
+        relatedAppointmentId: task.related_appointment_id,
+        eventKey: `operational_task:${task.id}:confirmed_partial_failure:${appointment.id}:customer_confirmation_failed`,
+      });
+
       throw new Error(message);
     }
 
