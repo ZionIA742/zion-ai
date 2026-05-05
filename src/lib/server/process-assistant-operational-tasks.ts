@@ -906,16 +906,70 @@ async function processQueueItem(args: {
       throw new Error(updateError.message);
     }
 
-    const customerConfirmation = await sendCustomerRescheduleConfirmationMessage({
-      supabase,
-      organizationId: queue.organization_id,
-      storeId: queue.store_id,
-      task,
-      appointment,
-      startIso: task.target_start_at,
-      timezoneName,
-      queueId: queue.id,
-    });
+    let customerConfirmation: { sent: boolean; messageId: string | null };
+    try {
+      customerConfirmation = await sendCustomerRescheduleConfirmationMessage({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        task,
+        appointment,
+        startIso: task.target_start_at,
+        timezoneName,
+        queueId: queue.id,
+      });
+    } catch (error: any) {
+      const message = error?.message || "Agenda atualizada, mas falhou ao avisar o cliente.";
+      const failedAfterUpdatePayload = appendTaskPayload(task.task_payload, {
+        last_customer_reply: customerMessage,
+        last_customer_reply_normalized: normalizedCustomerReply,
+        last_customer_reply_message_id: queue.message_id,
+        last_customer_reply_decision: decision,
+        last_customer_reply_decision_type: decision.type,
+        last_processed_queue_id: queue.id,
+        last_processed_conversation_id: currentConversationId,
+        appointment_update_attempted: true,
+        appointment_update_succeeded: true,
+        updated_appointment: updatedAppointment,
+        customer_confirmation_message_sent: false,
+        customer_confirmation_message_id: null,
+        last_execution_error: message,
+        failed_after_appointment_update_at: new Date().toISOString(),
+      });
+
+      await supabase
+        .from("store_assistant_operational_tasks")
+        .update({
+          status: "failed",
+          error_text: message,
+          task_payload: failedAfterUpdatePayload,
+          last_action_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", task.id)
+        .eq("organization_id", queue.organization_id)
+        .eq("store_id", queue.store_id);
+
+      await pushAssistantSystemMessage({
+        supabase,
+        organizationId: queue.organization_id,
+        storeId: queue.store_id,
+        content: `${task.customer_name || "O cliente"} confirmou a remarcacao e a agenda foi atualizada para ${formatLocalDateTime(task.target_start_at, timezoneName)}, mas eu nao consegui enviar a confirmacao automatica ao cliente: ${message}`,
+        relatedLeadId: task.related_lead_id,
+        relatedConversationId: task.related_conversation_id,
+        relatedAppointmentId: task.related_appointment_id,
+        metadata: {
+          source: "assistant_operational_task_worker",
+          queue_id: queue.id,
+          task_id: task.id,
+          appointment_id: appointment.id,
+          error: message,
+          partial_success: "appointment_updated_customer_confirmation_failed",
+        },
+      });
+
+      throw new Error(message);
+    }
 
     const resolvedPayload = appendTaskPayload(task.task_payload, {
       last_customer_reply: customerMessage,
