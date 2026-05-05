@@ -1635,11 +1635,33 @@ async function resolvePostAppointmentActionReply(args: {
       return `O compromisso foi cancelado, mas eu não consegui encerrar o retorno corretamente: ${updateFollowupError.message}`;
     }
 
-    return buildPostAppointmentActionSuccessReply({
-      action,
-      itemNumber,
-      appointment: selectedAppointment,
-    });
+    const cancelledAppointment = selectedAppointment;
+    if (!cancelledAppointment) {
+      return `O compromisso foi cancelado, mas eu nao achei os dados completos para avisar o cliente automaticamente.`;
+    }
+
+    const referenceLabel = buildScheduleAppointmentReferenceLabel(cancelledAppointment);
+    const customerName = cancelledAppointment.customer_name || "cliente nao identificado";
+
+    if (cancelledAppointment.conversation_id) {
+      const sendResult = await sendAiMessageToCustomerConversation({
+        supabase: args.supabase,
+        conversationId: cancelledAppointment.conversation_id,
+        text: buildCustomerCancellationMessage({
+          appointment: cancelledAppointment,
+          scheduleSettings: args.scheduleSettings || null,
+          reasonText: null,
+        }),
+      });
+
+      if (sendResult.ok) {
+        return `Certo. Marquei como cancelado ${referenceLabel} de ${customerName}, avisei o cliente e tirei esse item da fila de retorno pendente.`;
+      }
+
+      return `Certo. Marquei como cancelado ${referenceLabel} de ${customerName} e tirei esse item da fila de retorno pendente, mas nao consegui avisar o cliente automaticamente.`;
+    }
+
+    return `Certo. Marquei como cancelado ${referenceLabel} de ${customerName} e tirei esse item da fila de retorno pendente, mas nao encontrei conversa vinculada para avisar o cliente automaticamente.`;
   }
 
   return null;
