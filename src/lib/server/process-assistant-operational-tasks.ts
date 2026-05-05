@@ -1211,15 +1211,15 @@ async function processQueueItem(args: {
 
     if (decision.type === "suggested_other_time" && suggestedWindow && suggestedAvailability?.available) {
       const body = suggestedWindow.suggestedLabel
-        ? `O cliente sugeriu ${suggestedWindow.suggestedLabel} para a visita. Esse horÃ¡rio parece estar livre, mas a agenda ainda nÃ£o foi alterada. Entre na Assistente para aprovar ou recusar a remarcaÃ§Ã£o.`
-        : "O cliente sugeriu um novo horÃ¡rio para a visita. Esse horÃ¡rio parece estar livre, mas a agenda ainda nÃ£o foi alterada. Entre na Assistente para aprovar ou recusar a remarcaÃ§Ã£o.";
+        ? `O cliente sugeriu ${suggestedWindow.suggestedLabel} para a visita. Esse horário parece estar livre, mas a agenda ainda não foi alterada. Entre na Assistente para aprovar ou recusar a remarcação.`
+        : "O cliente sugeriu um novo horário para a visita. Esse horário parece estar livre, mas a agenda ainda não foi alterada. Entre na Assistente para aprovar ou recusar a remarcação.";
 
       await pushAssistantInternalNotification({
         supabase,
         organizationId: queue.organization_id,
         storeId: queue.store_id,
         notificationType: "important_alert",
-        title: "AprovaÃ§Ã£o necessÃ¡ria para novo horÃ¡rio",
+        title: "Aprovação necessária para novo horário",
         body,
         priority: "urgent",
         context: {
