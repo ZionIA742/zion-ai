@@ -1236,7 +1236,7 @@ async function processQueueItem(args: {
         relatedLeadId: task.related_lead_id,
         relatedConversationId: task.related_conversation_id,
         relatedAppointmentId: task.related_appointment_id,
-        eventKey: `operational_task:${task.id}:queue:${queue.id}:suggested_other_time:approval_required`,
+        eventKey: `operational_task:${task.id}:suggested_other_time:${suggestedWindow.startIso}:${suggestedWindow.endIso}:approval_required`,
       });
     }
 
