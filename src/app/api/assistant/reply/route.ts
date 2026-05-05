@@ -7500,8 +7500,6 @@ async function generateAssistantReply(params: {
       sendAiMessageToCustomerConversation,
       createAssistantOperationalTask,
       upsertAssistantContextState,
-      readAssistantContextPayload,
-      normalizeText,
       resolveScheduleAction,
       sortOpenScheduleAppointments,
       resolveTargetAppointmentIndex,

@@ -19,6 +19,19 @@ import {
   parseTimeRangeFromText,
 } from "./datetime";
 
+function normalizeWorkflowText(value: string | null | undefined): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function readAssistantContextPayload(contextState?: StoreAssistantContextStateRow | null) {
+  const raw = contextState?.context_payload;
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+}
+
 type TargetAppointmentResolution =
   | { type: "unique"; index: number }
   | { type: "ambiguous"; candidateIndexes: number[] }
@@ -54,8 +67,6 @@ export type CustomerRescheduleWorkflowDeps = {
     currentContextState?: StoreAssistantContextStateRow | null;
     patch: Record<string, unknown>;
   }) => Promise<unknown>;
-  readAssistantContextPayload: (contextState?: StoreAssistantContextStateRow | null) => Record<string, any>;
-  normalizeText: (value: string | null | undefined) => string;
   resolveScheduleAction: (text: string) => string | null;
   sortOpenScheduleAppointments: (items: AppointmentRow[]) => AppointmentRow[];
   resolveTargetAppointmentIndex: (args: {
@@ -95,10 +106,10 @@ export async function resolveCustomerRescheduleWorkflow(args: {
 }): Promise<CustomerRescheduleWorkflowResult> {
   const deps = args.deps;
   const contextState = args.assistantContextState || null;
-  const contextPayload = deps.readAssistantContextPayload(contextState);
-  const contextTopic = deps.normalizeText(contextState?.active_topic || "");
-  const contextIntent = deps.normalizeText(contextState?.active_intent || "");
-  const contextStatus = deps.normalizeText(contextState?.active_status || "");
+  const contextPayload = readAssistantContextPayload(contextState);
+  const contextTopic = normalizeWorkflowText(contextState?.active_topic || "");
+  const contextIntent = normalizeWorkflowText(contextState?.active_intent || "");
+  const contextStatus = normalizeWorkflowText(contextState?.active_status || "");
   const action = deps.resolveScheduleAction(args.lastHumanMessage);
   const currentTimeRange = parseTimeRangeFromText(args.lastHumanMessage);
 
