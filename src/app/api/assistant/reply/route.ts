@@ -8451,7 +8451,9 @@ async function resolveBlockDayReply(args: {
       );
     }
 
-    lines.push("Assim que as respostas chegarem, eu atualizo a agenda e te aviso por aqui.");
+    if (contactedCustomers > 0) {
+      lines.push("Assim que as respostas chegarem, eu atualizo a agenda e te aviso por aqui.");
+    }
     return lines.join("\n").trim();
   }
 
