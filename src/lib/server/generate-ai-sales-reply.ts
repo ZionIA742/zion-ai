@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
+import { isSellableInventoryState } from "../catalog/availability";
 import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
 
 type ConversationRow = {
@@ -802,11 +803,19 @@ function buildCatalogItemContextLine(match: MatchedCatalogItem): string {
   const photoCount = photos.length;
   const photoLabel = photoCount > 0 ? `${photoCount} foto(s) cadastrada(s)` : "sem foto cadastrada";
 
-  let stockLabel = "estoque não controlado por esta base";
-  if (item.track_stock === true) {
-    const qty = item.stock_quantity ?? 0;
-    stockLabel = qty > 0 ? `estoque confirmado: ${qty}` : "sem estoque confirmado";
-  }
+  const availability = isSellableInventoryState({
+    isActive: item.is_active,
+    trackStock: item.track_stock,
+    stockQuantity: item.stock_quantity,
+  });
+  const stockLabel =
+    availability.reason === "in_stock"
+      ? `estoque confirmado: ${item.stock_quantity ?? 0}`
+      : availability.reason === "stock_not_tracked"
+        ? "estoque não controlado por esta base"
+        : availability.reason === "out_of_stock"
+          ? "indisponível para venda: sem estoque"
+          : "indisponível para venda: item inativo";
 
   return [
     `- item: ${item.name || "sem nome"}`,
@@ -825,6 +834,11 @@ function buildCatalogItemContextLine(match: MatchedCatalogItem): string {
 
 function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
   const parts: string[] = [];
+  const availability = isSellableInventoryState({
+    isActive: pool.is_active,
+    trackStock: pool.track_stock,
+    stockQuantity: pool.stock_quantity,
+  });
 
   if (pool.name) parts.push(pool.name);
   if (pool.material) parts.push(`material ${pool.material}`);
@@ -844,6 +858,16 @@ function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
 
   if (pool.description) {
     parts.push(`descrição: ${pool.description}`);
+  }
+
+  if (availability.reason === "in_stock") {
+    parts.push(`estoque confirmado: ${pool.stock_quantity ?? 0}`);
+  } else if (availability.reason === "stock_not_tracked") {
+    parts.push("estoque não controlado por esta base");
+  } else if (availability.reason === "out_of_stock") {
+    parts.push("indisponível para venda: sem estoque");
+  } else {
+    parts.push("indisponível para venda: item inativo");
   }
 
   parts.push(hasPhoto || !!pool.photo_url ? "há foto cadastrada" : "sem foto cadastrada");
@@ -2030,16 +2054,24 @@ export async function generateAiSalesReply(
           hasPhoto: (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url,
           score: scorePool(pool, lastCustomerMessage),
         }))
-        .filter((match) => match.score > 0)
+        .filter((match) => {
+          if (match.score <= 0) return false;
+          return isSellableInventoryState({
+            isActive: match.pool.is_active,
+            trackStock: match.pool.track_stock,
+            stockQuantity: match.pool.stock_quantity,
+          }).isSellable;
+        })
         .sort((a, b) => b.score - a.score)
         .slice(0, 3);
 
-      const usablePools = pools.filter((pool) => {
-        if (pool.track_stock === true) {
-          return (pool.stock_quantity || 0) > 0;
-        }
-        return true;
-      });
+      const usablePools = pools.filter((pool) =>
+        isSellableInventoryState({
+          isActive: pool.is_active,
+          trackStock: pool.track_stock,
+          stockQuantity: pool.stock_quantity,
+        }).isSellable
+      );
 
       poolCountUsed = usablePools.length;
 
@@ -2121,7 +2153,14 @@ export async function generateAiSalesReply(
         photos: photoMap.get(item.id) || [],
         score: scoreCatalogItem(item, catalogIntent),
       }))
-      .filter((match) => match.score > 0)
+      .filter((match) => {
+        if (match.score <= 0) return false;
+        return isSellableInventoryState({
+          isActive: match.item.is_active,
+          trackStock: match.item.track_stock,
+          stockQuantity: match.item.stock_quantity,
+        }).isSellable;
+      })
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
 
