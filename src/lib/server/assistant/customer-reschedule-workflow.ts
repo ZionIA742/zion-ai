@@ -127,7 +127,7 @@ export async function resolveCustomerRescheduleWorkflow(args: {
 
   const openAppointments = deps.sortOpenScheduleAppointments(args.openAppointments || []);
   if (!openAppointments.length) {
-    return { type: "needs_target", reply: "NÃ£o encontrei compromisso em aberto para remarcar agora. Me diga o cliente, o tÃ­tulo ou a data do compromisso." };
+    return { type: "needs_target", reply: "Não encontrei compromisso em aberto para remarcar agora. Me diga o cliente, o título ou a data do compromisso." };
   }
 
   const targetResolution = deps.resolveTargetAppointmentIndex({
@@ -155,22 +155,22 @@ export async function resolveCustomerRescheduleWorkflow(args: {
 
   if (targetResolution.type === "none") {
     if (contextTopic === "appointment_reschedule" || contextIntent === "reschedule") {
-      return { type: "needs_target", reply: "Entendi a remarcaÃ§Ã£o, mas nÃ£o consegui identificar com seguranÃ§a qual compromisso Ã©. Me diga o cliente ou escolha um item da lista." };
+      return { type: "needs_target", reply: "Entendi a remarcação, mas não consegui identificar com segurança qual compromisso é. Me diga o cliente ou escolha um item da lista." };
     }
     return { type: "not_applicable" };
   }
 
   const selectedAppointment = openAppointments[Math.min(Math.max(targetResolution.index, 0), openAppointments.length - 1)];
   if (!selectedAppointment?.id) {
-    return { type: "needs_target", reply: "Entendi a remarcaÃ§Ã£o, mas nÃ£o consegui confirmar o compromisso alvo. Me diga o cliente ou escolha um item da lista." };
+    return { type: "needs_target", reply: "Entendi a remarcação, mas não consegui confirmar o compromisso alvo. Me diga o cliente ou escolha um item da lista." };
   }
 
   if (hasAmbiguousBareDayDateReference(args.lastHumanMessage)) {
     const bareDay = String(args.lastHumanMessage).match(/\b(?:dia|data)\s+(\d{1,2})\b/i)?.[1] || "";
-    const timeLabel = currentTimeRange?.startTime ? " o horÃ¡rio" : "";
+    const timeLabel = currentTimeRange?.startTime ? " o horário" : "";
     return {
       type: "needs_date",
-      reply: `Entendi${timeLabel}, mas preciso confirmar a data antes de falar com ${selectedAppointment.customer_name || "o cliente"}. Quando vocÃª diz dia ${bareDay}, Ã© dia de qual mÃªs?`,
+      reply: `Entendi${timeLabel}, mas preciso confirmar a data antes de falar com ${selectedAppointment.customer_name || "o cliente"}. Quando você diz dia ${bareDay}, é dia de qual mês?`,
     };
   }
 
@@ -186,7 +186,7 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     const targetLabel = selectedAppointment.customer_name
       ? `a ${deps.formatAppointmentType(selectedAppointment.appointment_type)} de ${selectedAppointment.customer_name}`
       : deps.buildScheduleAppointmentReferenceLabel(selectedAppointment);
-    return { type: "needs_date", reply: `Certo, Ã© ${targetLabel}. Para qual data vocÃª quer tentar remarcar?` };
+    return { type: "needs_date", reply: `Certo, é ${targetLabel}. Para qual data você quer tentar remarcar?` };
   }
 
   const contextTime = typeof contextState?.target_time === "string" ? contextState.target_time.slice(0, 5) : null;
@@ -197,7 +197,7 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     const targetLabel = selectedAppointment.customer_name
       ? `a ${deps.formatAppointmentType(selectedAppointment.appointment_type)} de ${selectedAppointment.customer_name}`
       : deps.buildScheduleAppointmentReferenceLabel(selectedAppointment);
-    return { type: "needs_time", reply: `Certo, Ã© ${targetLabel}. Para qual horÃ¡rio do dia ${formatDatePartsForHuman(dateParts)} vocÃª quer tentar remarcar?` };
+    return { type: "needs_time", reply: `Certo, é ${targetLabel}. Para qual horário do dia ${formatDatePartsForHuman(dateParts)} você quer tentar remarcar?` };
   }
 
   const scheduleTimezone = getScheduleTimezone(args.scheduleSettings || null);
@@ -213,7 +213,7 @@ export async function resolveCustomerRescheduleWorkflow(args: {
   if (!selectedAppointment.conversation_id) {
     return {
       type: "missing_conversation",
-      reply: `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas nÃ£o achei uma conversa vinculada para enviar mensagem automaticamente. A agenda nÃ£o foi alterada.`,
+      reply: `Encontrei a ${appointmentTypeLabel} de ${customerName}, mas não achei uma conversa vinculada para enviar mensagem automaticamente. A agenda não foi alterada.`,
     };
   }
 
@@ -232,7 +232,7 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     return {
       type: "send_failed",
       error: sendResult.error,
-      reply: `Encontrei a ${appointmentTypeLabel} de ${customerName} e o horÃ¡rio ${targetDateLabel} Ã s ${targetTimeLabel}, mas nÃ£o consegui enviar a mensagem para ela agora. A agenda nÃ£o foi alterada.`,
+      reply: `Encontrei a ${appointmentTypeLabel} de ${customerName} e o horário ${targetDateLabel} às ${targetTimeLabel}, mas não consegui enviar a mensagem para ela agora. A agenda não foi alterada.`,
     };
   }
 
@@ -244,8 +244,8 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     taskType: "appointment_reschedule_with_customer",
     status: "waiting_customer_response",
     priority: "normal",
-    title: `RemarcaÃ§Ã£o de ${deps.buildScheduleAppointmentReferenceLabel(selectedAppointment)}${selectedAppointment.customer_name ? ` - ${selectedAppointment.customer_name}` : ""}`,
-    description: "A assistente jÃ¡ iniciou contato com o cliente. A agenda ainda nÃ£o foi alterada.",
+    title: `Remarcação de ${deps.buildScheduleAppointmentReferenceLabel(selectedAppointment)}${selectedAppointment.customer_name ? ` - ${selectedAppointment.customer_name}` : ""}`,
+    description: "A assistente já iniciou contato com o cliente. A agenda ainda não foi alterada.",
     appointment: selectedAppointment,
     targetStartIso,
     targetEndIso,
@@ -257,7 +257,7 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     return {
       type: "send_failed",
       error: taskResult.error || undefined,
-      reply: `Enviei a mensagem para ${customerName}, mas nÃ£o consegui registrar a tratativa interna corretamente: ${taskResult.error}. A agenda nÃ£o foi alterada.`,
+      reply: `Enviei a mensagem para ${customerName}, mas não consegui registrar a tratativa interna corretamente: ${taskResult.error}. A agenda não foi alterada.`,
     };
   }
 
@@ -293,6 +293,6 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     type: "message_sent",
     messageId: sendResult.messageId,
     taskId: taskResult.taskId,
-    reply: `Certo. Enviei uma mensagem para ${customerName} propondo remarcar a ${appointmentTypeLabel} para ${targetDateLabel} Ã s ${targetTimeLabel}. A agenda ainda nÃ£o foi alterada; assim que ela responder, eu te aviso por aqui.`,
+    reply: `Certo. Enviei uma mensagem para ${customerName} propondo remarcar a ${appointmentTypeLabel} para ${targetDateLabel} às ${targetTimeLabel}. A agenda ainda não foi alterada; assim que ela responder, eu te aviso por aqui.`,
   };
 }
