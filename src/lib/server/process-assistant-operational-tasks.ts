@@ -745,7 +745,6 @@ async function processQueueItem(args: {
 
   const customerMessage = String(queue.payload?.customer_message || "").trim();
   const normalizedCustomerReply = normalizeText(customerMessage).replace(/\s+/g, " ").trim();
-  let decision = classifyCustomerReply(customerMessage);
 
   const { data: taskRow, error: taskError } = await supabase
     .from("store_assistant_operational_tasks")
@@ -759,6 +758,53 @@ async function processQueueItem(args: {
 
   if (taskError || !task) {
     throw new Error(taskError?.message || "Tarefa operacional não encontrada.");
+  }
+
+  if (task.task_type !== "appointment_reschedule_with_customer") {
+    await supabase
+      .from("store_assistant_operational_task_queue")
+      .update({
+        status: "cancelled",
+        processed_at: new Date().toISOString(),
+        result_payload: {
+          reason: "unsupported_task_type",
+          taskType: task.task_type,
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", queue.id);
+
+    return {
+      ok: true,
+      skipped: true,
+      reason: "unsupported_task_type",
+      taskId: task.id,
+      queueId: queue.id,
+    };
+  }
+
+  if (task.related_conversation_id && queue.conversation_id && task.related_conversation_id !== queue.conversation_id) {
+    await supabase
+      .from("store_assistant_operational_task_queue")
+      .update({
+        status: "cancelled",
+        processed_at: new Date().toISOString(),
+        result_payload: {
+          reason: "task_queue_conversation_mismatch",
+          taskConversationId: task.related_conversation_id,
+          queueConversationId: queue.conversation_id,
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", queue.id);
+
+    return {
+      ok: true,
+      skipped: true,
+      reason: "task_queue_conversation_mismatch",
+      taskId: task.id,
+      queueId: queue.id,
+    };
   }
 
   if (task.status !== "waiting_customer_response") {
@@ -804,6 +850,7 @@ async function processQueueItem(args: {
   const taskPayload = task.task_payload || {};
   const lastConversationId = String(taskPayload.last_processed_conversation_id || "");
   const currentConversationId = String(task.related_conversation_id || queue.conversation_id || "");
+  let decision = classifyCustomerReply(customerMessage);
 
   const suggestedDifferentTimeFromTarget = customerSuggestedDifferentTimeFromTarget({
     content: customerMessage,
