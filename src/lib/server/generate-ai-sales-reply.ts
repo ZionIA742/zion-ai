@@ -1438,6 +1438,10 @@ function buildResponsePriorityBlock(args: {
   );
 
   instructions.push(
+    "- Se houver evidência vendável e evidência indisponível parecida para o mesmo item/modelo, priorize a evidência vendável."
+  );
+
+  instructions.push(
     "- Se o item estiver ativo, mas sem controle de estoque, não diga que tem em estoque; diga que o item aparece ativo no catálogo, mas o estoque não está confirmado por esta base."
   );
 
@@ -2098,6 +2102,13 @@ export async function generateAiSalesReply(
         )
         .slice(0, 3);
 
+      const matchedPoolIds = new Set(matchedPools.map((match) => match.pool.id));
+      const matchedPoolNames = new Set(
+        matchedPools
+          .map((match) => normalizeText(match.pool.name))
+          .filter(Boolean)
+      );
+
       unavailableMatchedPools = scoredPools
         .filter((match) =>
           !isSellableInventoryState({
@@ -2106,6 +2117,11 @@ export async function generateAiSalesReply(
             stockQuantity: match.pool.stock_quantity,
           }).isSellable
         )
+        .filter((match) => {
+          if (matchedPoolIds.has(match.pool.id)) return false;
+          const normalizedName = normalizeText(match.pool.name);
+          return !normalizedName || !matchedPoolNames.has(normalizedName);
+        })
         .slice(0, 3);
 
       const usablePools = pools.filter((pool) =>
@@ -2209,6 +2225,13 @@ export async function generateAiSalesReply(
       )
       .slice(0, 5);
 
+    const matchedCatalogItemIds = new Set(matchedCatalogItems.map((match) => match.item.id));
+    const matchedCatalogItemNames = new Set(
+      matchedCatalogItems
+        .map((match) => normalizeText(match.item.name))
+        .filter(Boolean)
+    );
+
     const unavailableMatchedCatalogItems: MatchedCatalogItem[] = scoredCatalogItems
       .filter((match) =>
         !isSellableInventoryState({
@@ -2217,6 +2240,11 @@ export async function generateAiSalesReply(
           stockQuantity: match.item.stock_quantity,
         }).isSellable
       )
+      .filter((match) => {
+        if (matchedCatalogItemIds.has(match.item.id)) return false;
+        const normalizedName = normalizeText(match.item.name);
+        return !normalizedName || !matchedCatalogItemNames.has(normalizedName);
+      })
       .slice(0, 5);
 
     const commercialObjective = buildCommercialObjective({
