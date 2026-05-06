@@ -205,6 +205,14 @@ function normalizeLoose(value: string | null | undefined) {
     .trim();
 }
 
+function chunkArray<T>(items: T[], chunkSize: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
 function isJunkDescriptionLine(value: string) {
   const normalized = normalizeLoose(value);
   if (!normalized) return true;
@@ -450,6 +458,7 @@ export default function CatalogCategoryPage() {
   const [editForm, setEditForm] = useState<EditCatalogForm | null>(null);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
+  const [deletingAllItems, setDeletingAllItems] = useState(false);
   const [deletingPhotoId, setDeletingPhotoId] = useState<string | null>(null);
   const [selectedCatalogFilesByItemId, setSelectedCatalogFilesByItemId] = useState<Record<string, File[]>>({});
   const [uploadingPhotosItemId, setUploadingPhotosItemId] = useState<string | null>(null);
@@ -799,6 +808,95 @@ async function handleDeleteItem(itemId: string) {
     }
   }
 
+  async function handleDeleteAllItemsInCategory() {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para apagar os itens.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (deletingAllItems) return;
+
+    const confirmed = window.confirm(
+      `VocÃª estÃ¡ prestes a apagar todos os itens de ${pageTitle.toLowerCase()} cadastrados nesta loja. Essa aÃ§Ã£o nÃ£o apaga outras categorias. Itens que serÃ£o apagados: ${items.length}. Deseja continuar?`
+    );
+    if (!confirmed) return;
+
+    setDeletingAllItems(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const { data: catalogRows, error: catalogError } = await supabase
+        .from("store_catalog_items")
+        .select("id, metadata")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (catalogError) throw catalogError;
+
+      const itemIds = ((catalogRows || []) as Array<{ id: string; metadata: CatalogItemMetadata | null }>)
+        .filter((item) => normalizeCategory(item.metadata?.categoria) === category)
+        .map((item) => item.id);
+
+      if (itemIds.length === 0) {
+        setSuccessText(`NÃ£o havia itens de ${pageTitle.toLowerCase()} para apagar nesta loja.`);
+        await fetchData();
+        return;
+      }
+
+      const photoRows: CatalogItemPhotoRow[] = [];
+      for (const ids of chunkArray(itemIds, 200)) {
+        const { data: photoChunk, error: photosError } = await supabase
+          .from("store_catalog_item_photos")
+          .select("*")
+          .in("catalog_item_id", ids);
+
+        if (photosError) throw photosError;
+        photoRows.push(...((photoChunk || []) as CatalogItemPhotoRow[]));
+      }
+
+      const storagePaths = photoRows.map((photo) => photo.storage_path).filter(Boolean);
+      for (const paths of chunkArray(storagePaths, 100)) {
+        const { error: storageError } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .remove(paths);
+
+        if (storageError) throw storageError;
+      }
+
+      for (const ids of chunkArray(itemIds, 200)) {
+        const { error: photoDeleteError } = await supabase
+          .from("store_catalog_item_photos")
+          .delete()
+          .in("catalog_item_id", ids);
+
+        if (photoDeleteError) throw photoDeleteError;
+      }
+
+      for (const ids of chunkArray(itemIds, 200)) {
+        const { error: itemDeleteError } = await supabase
+          .from("store_catalog_items")
+          .delete()
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .in("id", ids);
+
+        if (itemDeleteError) throw itemDeleteError;
+      }
+
+      setSuccessText(`${itemIds.length} item(ns) de ${pageTitle.toLowerCase()} apagado(s) com sucesso.`);
+      setEditingItemId(null);
+      setEditForm(null);
+      setSelectedCatalogFilesByItemId({});
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? `Erro ao apagar os itens de ${pageTitle.toLowerCase()}.`);
+    } finally {
+      setDeletingAllItems(false);
+    }
+  }
+
   const pageTitle = useMemo(() => categoryLabel(category), [category]);
 
   const filteredItems = useMemo(() => {
@@ -834,12 +932,28 @@ async function handleDeleteItem(itemId: string) {
           <p className="mt-1 text-xs text-gray-500">Total de itens: {items.length}</p>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleDeleteAllItemsInCategory()}
+            disabled={!hasValidStoreContext || deletingAllItems || items.length === 0}
+            className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {deletingAllItems
+              ? "Apagando itens..."
+              : category === "quimicos"
+                ? "Apagar todos os produtos quÃ­micos"
+                : category === "acessorios"
+                  ? "Apagar todos os acessÃ³rios"
+                  : "Apagar todos os itens de outros"}
+          </button>
         <Link
           href="/configuracoes"
           className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
         >
           Voltar para configurações
         </Link>
+        </div>
       </div>
       <div className="rounded-xl border border-gray-200 bg-white p-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

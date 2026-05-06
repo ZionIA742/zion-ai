@@ -136,6 +136,14 @@ function normalizeLoose(value: string | null | undefined) {
     .trim();
 }
 
+function chunkArray<T>(items: T[], chunkSize: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
 
 
 function matchesPoolSearch(pool: PoolRow, search: string) {
@@ -315,6 +323,7 @@ export default function PiscinasPage() {
   const [editPoolForm, setEditPoolForm] = useState<EditPoolForm | null>(null);
   const [savingPoolId, setSavingPoolId] = useState<string | null>(null);
   const [deletingPoolId, setDeletingPoolId] = useState<string | null>(null);
+  const [deletingAllPools, setDeletingAllPools] = useState(false);
   const [deletingPoolPhotoId, setDeletingPoolPhotoId] = useState<string | null>(null);
   const [selectedPoolFilesByPoolId, setSelectedPoolFilesByPoolId] = useState<Record<string, File[]>>({});
   const [uploadingPoolPhotosId, setUploadingPoolPhotosId] = useState<string | null>(null);
@@ -628,6 +637,97 @@ export default function PiscinasPage() {
     }
   }
 
+  async function handleDeleteAllPools() {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para apagar as piscinas.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (deletingAllPools) return;
+
+    const confirmed = window.confirm(
+      `VocÃª estÃ¡ prestes a apagar todas as piscinas cadastradas nesta loja. Essa aÃ§Ã£o nÃ£o apaga outras categorias. Itens que serÃ£o apagados: ${totalPools}. Deseja continuar?`
+    );
+    if (!confirmed) return;
+
+    setDeletingAllPools(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const { data: poolRows, error: poolsError } = await supabase
+        .from("pools")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (poolsError) throw poolsError;
+
+      const poolIds = ((poolRows || []) as Array<{ id: string }>).map((pool) => pool.id);
+
+      if (poolIds.length === 0) {
+        setSuccessText("NÃ£o havia piscinas para apagar nesta loja.");
+        await fetchData();
+        return;
+      }
+
+      const photoRows: PoolPhotoRow[] = [];
+      for (const ids of chunkArray(poolIds, 200)) {
+        const { data: photoChunk, error: photosError } = await supabase
+          .from("pool_photos")
+          .select("*")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .in("pool_id", ids);
+
+        if (photosError) throw photosError;
+        photoRows.push(...((photoChunk || []) as PoolPhotoRow[]));
+      }
+
+      const storagePaths = photoRows.map((photo) => photo.storage_path).filter(Boolean);
+      for (const paths of chunkArray(storagePaths, 100)) {
+        const { error: storageError } = await supabase.storage
+          .from(STORAGE_BUCKET)
+          .remove(paths);
+
+        if (storageError) throw storageError;
+      }
+
+      for (const ids of chunkArray(poolIds, 200)) {
+        const { error: photoDeleteError } = await supabase
+          .from("pool_photos")
+          .delete()
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .in("pool_id", ids);
+
+        if (photoDeleteError) throw photoDeleteError;
+      }
+
+      for (const ids of chunkArray(poolIds, 200)) {
+        const { error: poolDeleteError } = await supabase
+          .from("pools")
+          .delete()
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .in("id", ids);
+
+        if (poolDeleteError) throw poolDeleteError;
+      }
+
+      setSuccessText(`${poolIds.length} piscina(s) apagada(s) com sucesso.`);
+      setEditingPoolId(null);
+      setEditPoolForm(null);
+      setSelectedPoolFilesByPoolId({});
+      await fetchData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao apagar todas as piscinas.");
+    } finally {
+      setDeletingAllPools(false);
+    }
+  }
+
   const totalPools = useMemo(() => pools.length, [pools]);
   const filteredPools = useMemo(() => pools.filter((pool) => matchesPoolSearch(pool, searchText)), [pools, searchText]);
 
@@ -644,12 +744,22 @@ export default function PiscinasPage() {
           <p className="mt-1 text-xs text-gray-500">Total de piscinas: {totalPools}</p>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleDeleteAllPools()}
+            disabled={!hasValidStoreContext || deletingAllPools || totalPools === 0}
+            className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {deletingAllPools ? "Apagando piscinas..." : "Apagar todas as piscinas"}
+          </button>
         <Link
           href="/configuracoes"
           className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
         >
           Voltar para configurações
         </Link>
+        </div>
       </div>
 
       {errorText ? (
