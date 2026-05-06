@@ -1451,7 +1451,6 @@ function extractImportedPoolMetrics(
   const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
-  const lowered = source.toLowerCase();
   let width: number | null = null;
   let length: number | null = null;
   let depth: number | null = null;
@@ -1467,9 +1466,12 @@ function extractImportedPoolMetrics(
     width = parseImportedDecimal(diamMatch[1]);
     length = parseImportedDecimal(diamMatch[1]);
   }
+  const explicitDepth = extractMetadataValue(item, ["profundidade", "depth"]);
+  const depthSource = explicitDepth || source;
   const depthMatch =
-    source.match(/profundidade\s*(?:de|do|da)?\s*(\d+[\.,]?\d*)\s*m/i) ||
-    source.match(/prof\.?\s*(\d+[\.,]?\d*)\s*m/i);
+    depthSource.match(/profundidade\s*(?:de|do|da)?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m?/i) ||
+    depthSource.match(/^(\d+(?:[\.,]\d+)?)\s*m?$/i) ||
+    source.match(/prof\.?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m\b/i);
   if (depthMatch) {
     depth = parseImportedDecimal(depthMatch[1]);
   }
@@ -1485,19 +1487,30 @@ function extractImportedPoolMetrics(
   if (priceMatch) {
     price = parseImportedDecimal(priceMatch[1]);
   }
+  const explicitMaterial = normalizeImportedLoose(
+    extractMetadataValue(item, ["tipo", "material", "matéria-prima", "materia_prima"])
+  );
+  const materialSource = explicitMaterial || normalizeImportedLoose(source);
   let material = "fibra";
-  if (lowered.includes("vinil")) material = "vinil";
-  else if (lowered.includes("alvenaria")) material = "alvenaria";
-  else if (lowered.includes("pastilha")) material = "pastilha";
-  else if (lowered.includes("fibra")) material = "fibra";
+  if (materialSource.includes("spa")) material = "spa";
+  else if (materialSource.includes("vinil")) material = "vinil";
+  else if (materialSource.includes("alvenaria")) material = "alvenaria";
+  else if (materialSource.includes("pastilha")) material = "pastilha";
+  else if (materialSource.includes("fibra")) material = "fibra";
+  const explicitShape = normalizeImportedLoose(extractMetadataValue(item, ["formato", "shape"]));
+  const shapeSource = explicitShape || normalizeImportedLoose(source);
   let shape = "retangular";
-  if (lowered.includes("diâm") || lowered.includes("diam") || lowered.includes("redonda")) {
+  if (shapeSource.includes("com prainha") || shapeSource.includes("prainha")) {
+    shape = "com prainha";
+  } else if (shapeSource.includes("organica")) {
+    shape = "organica";
+  } else if (shapeSource.includes("diam") || shapeSource.includes("redonda")) {
     shape = "redonda";
-  } else if (lowered.includes("oval")) {
+  } else if (shapeSource.includes("oval")) {
     shape = "oval";
-  } else if (lowered.includes("raia")) {
+  } else if (shapeSource.includes("raia")) {
     shape = "raia";
-  } else if (lowered.includes("retangular")) {
+  } else if (shapeSource.includes("retangular")) {
     shape = "retangular";
   }
   return {
