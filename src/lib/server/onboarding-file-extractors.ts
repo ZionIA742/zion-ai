@@ -1,6 +1,9 @@
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
+import { createRequire } from "node:module";
+
+const nodeRequire = createRequire(`${process.cwd()}/package.json`);
 
 const DEBUG_INTELLIGENT_IMPORT =
   process.env.NODE_ENV !== "production" ||
@@ -366,10 +369,27 @@ async function extractTextFromPptx(buffer: Buffer) {
 
 async function extractTextFromPdf(buffer: Buffer) {
   try {
-    const pdfParseModule = await import("pdf-parse");
-    const pdfParseFn: any = (pdfParseModule as any).default ?? (pdfParseModule as any);
-    const result = await pdfParseFn(buffer);
-    const text = cleanInlineText(result?.text || "");
+    const pdfParseModule = nodeRequire("pdf-parse");
+    let result: any = null;
+    const PDFParse = (pdfParseModule as any).PDFParse;
+
+    if (typeof PDFParse === "function") {
+      const parser = new PDFParse({ data: buffer });
+      try {
+        result = await parser.getText();
+      } finally {
+        await parser.destroy?.();
+      }
+    } else {
+      const pdfParseFn: any = (pdfParseModule as any).default ?? (pdfParseModule as any);
+      if (typeof pdfParseFn === "function") {
+        result = await pdfParseFn(buffer);
+      }
+    }
+
+    const text = cleanInlineText(
+      typeof result === "string" ? result : result?.text || ""
+    );
     debugIntelligentImport("extractTextFromPdf", {
       textLength: text.length,
       preview: text.slice(0, 300),

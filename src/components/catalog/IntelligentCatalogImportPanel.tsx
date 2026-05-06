@@ -1200,6 +1200,8 @@ function sanitizeImportedDescriptionText(
     const normalized = normalizeImportedLoose(line);
     if (!normalized) return false;
     if (normalized === titleLoose) return false;
+    if (/^\d+\s+of\s+\d+$/.test(normalized)) return false;
+    if (/^(pagina|page|pag)\s+\d+$/.test(normalized)) return false;
 
     const blockedStarts = [
       "categoria ",
