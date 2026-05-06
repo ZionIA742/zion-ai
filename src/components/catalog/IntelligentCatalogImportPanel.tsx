@@ -2248,10 +2248,11 @@ function looksLikeImportedDocumentIntroCatalogItem(args: {
   category: ImportedCatalogCategory;
   metrics: ReturnType<typeof extractImportedPoolMetrics>;
 }) {
-  if (args.category !== "outros") return false;
+  if (!["outros", "acessorios", "quimicos"].includes(args.category)) return false;
   if (canPersistAsPool(args.metrics)) return false;
 
   const rawText = String(args.item.rawText || "");
+  const normalizedName = normalizeImportedLoose(args.itemName);
   const normalizedText = normalizeImportedLoose(
     [
       args.itemName,
@@ -2261,21 +2262,41 @@ function looksLikeImportedDocumentIntroCatalogItem(args: {
     ].join(" ")
   );
 
+  const hasDocumentTitleSignal =
+    normalizedName === "catalogo de acessorios" ||
+    normalizedName === "catalogo de produtos quimicos" ||
+    normalizedName === "catalogo de teste" ||
+    normalizedName === "documento de teste" ||
+    normalizedName.startsWith("catalogo de teste ");
+  const hasRealProductNamePattern = /\b\d{3,4}$/.test(normalizedName) && !hasDocumentTitleSignal;
+  const hasPrice = extractImportedCatalogPriceCents(args.item) != null;
   const hasIntroSignal =
     normalizedText.includes("arquivo ficticio") ||
     normalizedText.includes("catalogo de teste") ||
     normalizedText.includes("documento de teste") ||
+    normalizedText.includes("documento de teste com 100 itens") ||
     normalizedText.includes("objetivo") ||
+    normalizedText.includes("objetivo do arquivo") ||
     normalizedText.includes("validar importacao") ||
     normalizedText.includes("100 piscinas") ||
     normalizedText.includes("total de piscinas") ||
-    normalizedText.includes("fake com foto");
+    normalizedText.includes("fake com foto") ||
+    (hasDocumentTitleSignal && normalizedText.includes("docx"));
 
   if (!hasIntroSignal) return false;
 
+  if (
+    (args.category === "acessorios" || args.category === "quimicos") &&
+    hasDocumentTitleSignal &&
+    !hasPrice &&
+    !hasRealProductNamePattern
+  ) {
+    return true;
+  }
+
   const hasRealProductSignal =
     Boolean(extractImportedCatalogSku(args.item)) ||
-    extractImportedCatalogPriceCents(args.item) != null ||
+    hasPrice ||
     Boolean(extractMetadataValue(args.item, ["embalagem", "package", "packaging", "marca", "brand"])) ||
     Boolean(extractImportedLabeledValue(rawText, ["Embalagem", "Marca", "SKU", "PreÃ§o", "Preco"])) ||
     normalizeImportedLoose(extractImportedSourceCategory(args.item)).includes("quimicos") ||

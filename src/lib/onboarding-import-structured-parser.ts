@@ -280,6 +280,24 @@ function looksLikeStandaloneChemicalHeading(line: string, followingLines: string
   return hasChemicalContext && nearby.includes("sku");
 }
 
+function looksLikeStandaloneCatalogItemHeading(line: string, followingLines: string[]) {
+  const normalizedLine = normalizeLoose(line);
+  if (!normalizedLine || findStandaloneFieldLabel(line)) return false;
+  if (!/\b\d{3,4}$/.test(normalizedLine)) return false;
+  if (normalizedLine.length < 6 || normalizedLine.length > 120) return false;
+
+  const nearby = normalizeLoose(followingLines.slice(0, 14).join(" "));
+  const hasCatalogContext =
+    /\b(acc|out|qmc)\s*\d{3,}\b/.test(nearby) ||
+    nearby.includes("categoria acessorios") ||
+    nearby.includes("categoria outros") ||
+    nearby.includes("categoria quimicos") ||
+    nearby.includes("nome do item") ||
+    nearby.includes("nome do produto");
+
+  return hasCatalogContext && nearby.includes("sku");
+}
+
 function preprocessStructuredText(text: string) {
   return normalizeBlock(
     String(text || "")
@@ -856,15 +874,18 @@ function splitRepeatedFieldBlocks(text: string) {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     const normalizedLine = normalizeLoose(line);
+    const previousLineIsNameLabel = normalizeLoose(lines[index - 1] || "") === "nome do item";
 
     const startsNewBlock =
-      normalizedLine.startsWith("nome do item") ||
+      /^nome do item\s*[:=-]/i.test(line) ||
       normalizedLine.startsWith("nome:") ||
       normalizedLine.startsWith("produto:") ||
       normalizedLine.startsWith("item:") ||
       normalizedLine.startsWith("modelo:") ||
       normalizedLine.startsWith("piscina ") ||
-      looksLikeStandaloneChemicalHeading(line, lines.slice(index + 1, index + 13));
+      looksLikeStandaloneChemicalHeading(line, lines.slice(index + 1, index + 13)) ||
+      (!previousLineIsNameLabel &&
+        looksLikeStandaloneCatalogItemHeading(line, lines.slice(index + 1, index + 15)));
 
     if (startsNewBlock && current.length > 0) {
       pushCurrent();
