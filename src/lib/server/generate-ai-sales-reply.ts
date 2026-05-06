@@ -2047,7 +2047,7 @@ export async function generateAiSalesReply(
         .eq("store_id", resolvedStoreId)
         .eq("is_active", true)
         .order("created_at", { ascending: false })
-        .limit(20);
+        .limit(100);
 
       if (poolsError) {
         return {

@@ -380,6 +380,60 @@ function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategor
 
   return "outros";
 }
+
+function buildIntelligentImportFormatWarnings(params: {
+  extractedPreview: IntelligentImportExtractedPreview[];
+  selectedFiles: IntelligentImportSelectedFilePreview[];
+}) {
+  const extensions = new Set(
+    params.selectedFiles
+      .map((file) => String(file.name || "").split(".").pop()?.toLowerCase() || "")
+      .filter(Boolean)
+  );
+  for (const preview of params.extractedPreview) {
+    const extension = String(preview.extension || "").toLowerCase();
+    if (extension) extensions.add(extension);
+  }
+
+  const extractedByExtension = new Map<string, IntelligentImportExtractedPreview[]>();
+  for (const preview of params.extractedPreview) {
+    const extension = String(preview.extension || "").toLowerCase();
+    if (!extension) continue;
+    const current = extractedByExtension.get(extension) ?? [];
+    current.push(preview);
+    extractedByExtension.set(extension, current);
+  }
+
+  const warnings: string[] = [];
+  const pdfFiles = extractedByExtension.get("pdf") ?? [];
+  const hasPdf = extensions.has("pdf") || pdfFiles.length > 0;
+  if (hasPdf) {
+    const hasPdfWithoutText = pdfFiles.some((file) => !String(file.textPreview || "").trim());
+    warnings.push(
+      hasPdfWithoutText
+        ? "PDF sem texto extraivel pode indicar arquivo escaneado ou imagem. Nesta etapa, PDF ainda nao tem OCR robusto."
+        : "PDF e lido principalmente por texto. Catalogos com colunas, tabelas visuais ou paginas escaneadas ainda podem falhar."
+    );
+  }
+
+  if (extensions.has("ppt") || extensions.has("pptx")) {
+    warnings.push(
+      "PowerPoint pode ter texto extraido dos slides, mas a ligacao entre imagem e item ainda e limitada."
+    );
+  }
+
+  if (extensions.has("png") || extensions.has("jpg") || extensions.has("jpeg") || extensions.has("webp") || extensions.has("gif") || extensions.has("bmp") || extensions.has("heic") || extensions.has("heif")) {
+    warnings.push(
+      "Imagens avulsas sao preservadas para conferencia, mas ainda nao viram item estruturado automaticamente."
+    );
+  }
+
+  if (extensions.has("xls")) {
+    warnings.push("Arquivos .xls antigos podem ser lidos como texto de planilha, mas imagens embutidas nao sao extraidas.");
+  }
+
+  return warnings;
+}
 function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
@@ -2051,6 +2105,62 @@ if (
 
   return false;
 }
+
+const IMPORTED_POOL_ACCESSORY_TERMS = [
+  "capa",
+  "filtro",
+  "bomba",
+  "escada",
+  "refletor",
+  "kit",
+  "cloro",
+  "aspirador",
+  "peneira",
+  "mangueira",
+  "skimmer",
+  "iluminacao",
+  "dispositivo",
+  "retorno",
+  "hidromassagem",
+];
+
+function looksLikeDuplicatedSavedPoolCatalogItem(args: {
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  itemName: string;
+  metrics: ReturnType<typeof extractImportedPoolMetrics>;
+  savedPoolNames: Set<string>;
+}) {
+  if (args.savedPoolNames.size === 0) return false;
+
+  const normalizedItemName = normalizeImportedLoose(args.itemName);
+  const normalizedText = normalizeImportedLoose(
+    [
+      args.itemName,
+      args.item.title,
+      args.item.rawText,
+      ...Object.values(args.item.metadata ?? {}),
+    ].join(" ")
+  );
+
+  if (!normalizedItemName || !normalizedText.includes("piscina")) return false;
+  if (IMPORTED_POOL_ACCESSORY_TERMS.some((term) => normalizedText.includes(term))) return false;
+
+  const hasPoolMetric =
+    (args.metrics.width_m != null && args.metrics.length_m != null) ||
+    /\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m?\b/i.test(String(args.itemName || args.item.rawText || ""));
+
+  if (!hasPoolMetric) return false;
+
+  for (const savedPoolName of args.savedPoolNames) {
+    if (!savedPoolName) continue;
+    if (normalizedItemName.includes(savedPoolName) || savedPoolName.includes(normalizedItemName)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
@@ -2528,6 +2638,66 @@ export default function IntelligentCatalogImportPanel({
     const candidate = intelligentImportResult.extractedImagePreview;
     return Array.isArray(candidate) ? candidate : [];
   }, [intelligentImportResult]);
+  const intelligentImportDiagnostics = useMemo(() => {
+    if (!intelligentImportResult || !intelligentImportResult.ok) {
+      return {
+        previewItems: 0,
+        saveCandidateItems: 0,
+        duplicates: 0,
+        imagesWithOriginClues: 0,
+        destinationCounts: {
+          pools: 0,
+          quimicos: 0,
+          acessorios: 0,
+          outros: 0,
+        },
+        formatWarnings: [] as string[],
+      };
+    }
+
+    const saveCandidates =
+      safeDedupedPreview.length > 0
+        ? safeDedupedPreview.filter((item) => !item.isDuplicate)
+        : safeNormalizedPreview;
+
+    const destinationCounts = {
+      pools: 0,
+      quimicos: 0,
+      acessorios: 0,
+      outros: 0,
+    };
+
+    for (const item of saveCandidates) {
+      const destination = resolveImportedDestination(item);
+      if (destination === "pool") destinationCounts.pools += 1;
+      else if (destination === "quimicos") destinationCounts.quimicos += 1;
+      else if (destination === "acessorios") destinationCounts.acessorios += 1;
+      else destinationCounts.outros += 1;
+    }
+
+    const imagesWithOriginClues = safeExtractedImagePreview.filter((image) =>
+      Boolean(image.sheetScopedKey || image.worksheetRowNumber || image.anchorCell || image.sheetName)
+    ).length;
+
+    return {
+      previewItems: safeDedupedPreview.length || safeNormalizedPreview.length,
+      saveCandidateItems: saveCandidates.length,
+      duplicates: safeDedupedPreview.filter((item) => item.isDuplicate).length,
+      imagesWithOriginClues,
+      destinationCounts,
+      formatWarnings: buildIntelligentImportFormatWarnings({
+        extractedPreview: safeExtractedPreview,
+        selectedFiles: visibleIntelligentImportFiles,
+      }),
+    };
+  }, [
+    intelligentImportResult,
+    safeDedupedPreview,
+    safeExtractedImagePreview,
+    safeExtractedPreview,
+    safeNormalizedPreview,
+    visibleIntelligentImportFiles,
+  ]);
   useEffect(() => {
     return () => {
       for (const preview of selectedImagePreviews) {
@@ -2760,6 +2930,7 @@ async function handleSaveImportedItemsToCatalog() {
 
       const itemErrors: string[] = [];
       const savedRuntimeIdentityKeys = new Set<string>();
+      const savedPoolNames = new Set<string>();
 
       for (const item of sourceItems) {
         try {
@@ -2875,6 +3046,7 @@ async function handleSaveImportedItemsToCatalog() {
 
             if (!firstPoolId) firstPoolId = persistedPoolId;
             savedPools += 1;
+            savedPoolNames.add(normalizeImportedLoose(poolName));
             runtimeIdentityKeys.forEach((key) => savedRuntimeIdentityKeys.add(key));
 
             const sourceFileKey = String(extractImportedOriginalSourceFileName(item) || item.sourceFileName || "")
@@ -2934,6 +3106,18 @@ async function handleSaveImportedItemsToCatalog() {
 
           const itemName = buildImportedCatalogName(item);
           if (!itemName || isGenericImportedTitle(itemName)) {
+            continue;
+          }
+
+          if (
+            category === "outros" &&
+            looksLikeDuplicatedSavedPoolCatalogItem({
+              item,
+              itemName,
+              metrics,
+              savedPoolNames,
+            })
+          ) {
             continue;
           }
 
@@ -3320,8 +3504,85 @@ async function handleSaveImportedItemsToCatalog() {
                           </p>
                         </div>
                       </div>
+                      <div className="rounded-xl border border-sky-200 bg-sky-50 p-3">
+                        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                          <div>
+                            <p className="text-sm font-semibold text-sky-950">
+                              Diagnostico da leitura
+                            </p>
+                            <p className="mt-1 text-sm leading-6 text-sky-900">
+                              A tela mostra uma previa curta para ficar leve. O salvamento usa os itens validos
+                              encontrados na analise, nao apenas os itens visiveis na previa.
+                            </p>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-sm md:min-w-[360px]">
+                            <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                              <p className="text-xs text-sky-700">Itens na previa</p>
+                              <p className="font-semibold text-sky-950">
+                                {intelligentImportDiagnostics.previewItems}
+                              </p>
+                            </div>
+                            <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                              <p className="text-xs text-sky-700">Candidatos para salvar</p>
+                              <p className="font-semibold text-sky-950">
+                                {intelligentImportDiagnostics.saveCandidateItems}
+                              </p>
+                            </div>
+                            <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                              <p className="text-xs text-sky-700">Fotos encontradas</p>
+                              <p className="font-semibold text-sky-950">
+                                {safeExtractedImagePreview.length}
+                              </p>
+                            </div>
+                            <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                              <p className="text-xs text-sky-700">Fotos com pista de item</p>
+                              <p className="font-semibold text-sky-950">
+                                {intelligentImportDiagnostics.imagesWithOriginClues}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+                          <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                            <p className="text-xs text-sky-700">Piscinas</p>
+                            <p className="font-semibold text-sky-950">
+                              {intelligentImportDiagnostics.destinationCounts.pools}
+                            </p>
+                          </div>
+                          <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                            <p className="text-xs text-sky-700">Quimicos</p>
+                            <p className="font-semibold text-sky-950">
+                              {intelligentImportDiagnostics.destinationCounts.quimicos}
+                            </p>
+                          </div>
+                          <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                            <p className="text-xs text-sky-700">Acessorios</p>
+                            <p className="font-semibold text-sky-950">
+                              {intelligentImportDiagnostics.destinationCounts.acessorios}
+                            </p>
+                          </div>
+                          <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                            <p className="text-xs text-sky-700">Outros</p>
+                            <p className="font-semibold text-sky-950">
+                              {intelligentImportDiagnostics.destinationCounts.outros}
+                            </p>
+                          </div>
+                        </div>
+                        {intelligentImportDiagnostics.formatWarnings.length > 0 ? (
+                          <div className="mt-3 space-y-1.5">
+                            {intelligentImportDiagnostics.formatWarnings.map((warning) => (
+                              <p key={warning} className="text-xs leading-5 text-sky-900">
+                                {warning}
+                              </p>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Mostrando ate 10 arquivos na tela.
+                        </p>
                         {safeExtractedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum texto foi extraído nesta tentativa.
@@ -3350,6 +3611,10 @@ async function handleSaveImportedItemsToCatalog() {
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">
                           Fotos encontradas nos arquivos
+                        </p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Mostrando ate 10 fotos. Fotos com pista de item usam aba, linha ou celula quando
+                          o arquivo fornece esses dados.
                         </p>
                         {safeExtractedImagePreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
@@ -3384,6 +3649,9 @@ async function handleSaveImportedItemsToCatalog() {
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Mostrando ate 12 blocos classificados. Arquivos grandes podem ter mais itens do que esta previa.
+                        </p>
                         {safeNormalizedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum bloco foi classificado nesta tentativa.
@@ -3413,6 +3681,9 @@ async function handleSaveImportedItemsToCatalog() {
                       </div>
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Mostrando ate 12 itens. Duplicados detectados nao entram como candidatos principais para salvar.
+                        </p>
                         {safeDedupedPreview.length === 0 ? (
                           <p className="mt-2 text-sm text-gray-500">
                             Nenhum item foi analisado na deduplicação.
