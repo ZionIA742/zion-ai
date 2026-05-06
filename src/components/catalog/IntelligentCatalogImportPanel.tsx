@@ -1003,10 +1003,16 @@ function dedupeImportedItemsForSave(
 function buildImportedCatalogName(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const excelLikeName = extractImportedExcelLikeName(item);
-  if (excelLikeName) return excelLikeName;
+  const pickName = (value: string | null | undefined) => {
+    const cleaned = cleanupImportedDescriptionLine(String(value || ""));
+    return cleaned && !isGenericImportedName(cleaned) ? cleaned.slice(0, 160) : "";
+  };
 
-  const title = String(item.title ?? "").trim();
+  const excelLikeName = extractImportedExcelLikeName(item);
+  const safeExcelLikeName = pickName(excelLikeName);
+  if (safeExcelLikeName) return safeExcelLikeName;
+
+  const title = pickName(item.title);
   if (title && !/\.xlsx?\s*[•·-]\s*item\s*\d+/i.test(title)) {
     return title.slice(0, 160);
   }
@@ -1014,10 +1020,72 @@ function buildImportedCatalogName(
   const raw = String(item.rawText ?? "").trim();
   if (!raw) return "Item importado";
 
+  const fromDescription = extractImportedNameFromNarrative(
+    [
+      extractMetadataValue(item, ["clean_description", "description", "descricao", "descriÃ§Ã£o"]),
+      buildImportedCatalogDescription(item) || "",
+      raw,
+    ]
+      .filter(Boolean)
+      .join("\n")
+  );
+  if (fromDescription) return fromDescription;
+
   const fromRaw = extractImportedLabeledValue(raw, ["Nome do produto", "Produto", "Nome"]);
-  if (fromRaw) return fromRaw.slice(0, 160);
+  const safeFromRaw = pickName(fromRaw);
+  if (safeFromRaw) return safeFromRaw;
 
   return raw.slice(0, 160);
+}
+
+function isGenericImportedName(value: string | null | undefined) {
+  const normalized = normalizeImportedLoose(value);
+  if (!normalized) return true;
+  if (isGenericImportedTitle(String(value || ""))) return true;
+  if (
+    normalized === "produto puro na esponja" ||
+    normalized === "conforme analise" ||
+    normalized.startsWith("dosagem ") ||
+    /\b(?:ml|l|g|kg)\s+por\s+\d/.test(normalized)
+  ) {
+    return true;
+  }
+  return [
+    "nome",
+    "nome do produto",
+    "produto",
+    "titulo",
+    "title",
+    "item",
+  ].includes(normalized);
+}
+
+function extractImportedNameFromNarrative(value: string | null | undefined) {
+  const lines = String(value || "")
+    .split("\n")
+    .map((line) => cleanupImportedDescriptionLine(line))
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const match = line.match(/^(.{3,120}?\b\d{3,4})\s+foi\s+/i);
+    const candidate = cleanupImportedDescriptionLine(match?.[1] || "");
+    if (candidate && !isGenericImportedName(candidate)) {
+      return candidate.slice(0, 160);
+    }
+  }
+
+  return "";
+}
+
+function extractImportedDosageFromText(value: string | null | undefined) {
+  const source = String(value || "");
+  const match =
+    source.match(
+      /\b(?:dosagem|dosage)\s*(?:de)?\s*[:\-]?\s*(\d+[\.,]?\d*\s*(?:ml|l|g|kg)\s+por\s+(?:\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?))/i
+    ) ||
+    source.match(/\b(?:dosagem|dosage)\s*(?:de)?\s*[:\-]?\s*([^.\n,;]+)/i);
+
+  return cleanupImportedDescriptionLine(match?.[1] || "");
 }
 
 function dedupeDescriptionLines(lines: string[]) {
@@ -2174,6 +2242,48 @@ function looksLikeDuplicatedSavedPoolCatalogItem(args: {
   return false;
 }
 
+function looksLikeImportedDocumentIntroCatalogItem(args: {
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  itemName: string;
+  category: ImportedCatalogCategory;
+  metrics: ReturnType<typeof extractImportedPoolMetrics>;
+}) {
+  if (args.category !== "outros") return false;
+  if (canPersistAsPool(args.metrics)) return false;
+
+  const rawText = String(args.item.rawText || "");
+  const normalizedText = normalizeImportedLoose(
+    [
+      args.itemName,
+      args.item.title,
+      rawText,
+      ...Object.values(args.item.metadata ?? {}),
+    ].join(" ")
+  );
+
+  const hasIntroSignal =
+    normalizedText.includes("arquivo ficticio") ||
+    normalizedText.includes("catalogo de teste") ||
+    normalizedText.includes("documento de teste") ||
+    normalizedText.includes("objetivo") ||
+    normalizedText.includes("validar importacao") ||
+    normalizedText.includes("100 piscinas") ||
+    normalizedText.includes("total de piscinas") ||
+    normalizedText.includes("fake com foto");
+
+  if (!hasIntroSignal) return false;
+
+  const hasRealProductSignal =
+    Boolean(extractImportedCatalogSku(args.item)) ||
+    extractImportedCatalogPriceCents(args.item) != null ||
+    Boolean(extractMetadataValue(args.item, ["embalagem", "package", "packaging", "marca", "brand"])) ||
+    Boolean(extractImportedLabeledValue(rawText, ["Embalagem", "Marca", "SKU", "PreÃ§o", "Preco"])) ||
+    normalizeImportedLoose(extractImportedSourceCategory(args.item)).includes("quimicos") ||
+    normalizeImportedLoose(extractImportedSourceCategory(args.item)).includes("acessorios");
+
+  return !hasRealProductSignal;
+}
+
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
@@ -2271,6 +2381,18 @@ function buildImportedCatalogMetadata(
     extractMetadataValue(item, ["codigo_barras", "código de barras", "barcode"]) ||
     extractImportedLabeledValue(source, ["Código de barras", "Codigo de barras", "Barcode"]);
   const stockInitial = extractImportedCatalogStockQuantity(item);
+  const resolvedDosage =
+    dosage ||
+    extractMetadataValue(item, ["dosage"]) ||
+    extractImportedDosageFromText(
+      [
+        extractMetadataValue(item, ["clean_description", "description", "descricao", "descriÃ§Ã£o"]),
+        buildImportedCatalogDescription(item) || "",
+        source,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
 
   return {
     categoria: category,
@@ -2293,14 +2415,15 @@ function buildImportedCatalogMetadata(
     imported_weight_or_volume:
       extractMetadataValue(item, ["peso_volume", "peso", "volume", "conteudo", "conteúdo"]) ||
       extractImportedWeightOrVolume(item),
-    imported_dosage: dosage,
+    imported_dosage: resolvedDosage,
     imported_barcode: barcode,
     clean_description: buildImportedCatalogDescription(item) || "",
     sku,
     line,
     application,
     embalagem: packaging,
-    dosage,
+    dosagem: resolvedDosage,
+    dosage: resolvedDosage,
     barcode,
     stock_initial: stockInitial,
   };
@@ -3119,6 +3242,17 @@ async function handleSaveImportedItemsToCatalog() {
 
           const itemName = buildImportedCatalogName(item);
           if (!itemName || isGenericImportedTitle(itemName)) {
+            continue;
+          }
+
+          if (
+            looksLikeImportedDocumentIntroCatalogItem({
+              item,
+              itemName,
+              category,
+              metrics,
+            })
+          ) {
             continue;
           }
 

@@ -258,6 +258,28 @@ function appendFieldValue(fieldMap: Record<string, string>, rawKey: string, rawV
   fieldMap[key] = `${existing}\n${value}`;
 }
 
+function findStandaloneFieldLabel(line: string) {
+  const normalizedLine = normalizeLoose(line);
+  if (!normalizedLine) return "";
+
+  return INLINE_FIELD_LABELS.find((label) => normalizeLoose(label) === normalizedLine) || "";
+}
+
+function looksLikeStandaloneChemicalHeading(line: string, followingLines: string[]) {
+  const normalizedLine = normalizeLoose(line);
+  if (!normalizedLine || findStandaloneFieldLabel(line)) return false;
+  if (!/\b\d{3,4}$/.test(normalizedLine)) return false;
+  if (normalizedLine.length < 6 || normalizedLine.length > 120) return false;
+
+  const nearby = normalizeLoose(followingLines.slice(0, 12).join(" "));
+  const hasChemicalContext =
+    /\bqmc\s*\d{3,}\b/.test(nearby) ||
+    nearby.includes("categoria quimicos") ||
+    nearby.includes("nome do produto");
+
+  return hasChemicalContext && nearby.includes("sku");
+}
+
 function preprocessStructuredText(text: string) {
   return normalizeBlock(
     String(text || "")
@@ -679,7 +701,12 @@ function extractLooseWeight(text: string) {
 }
 
 function extractLooseDosage(text: string) {
-  const match = text.match(/\bdosagem\s*[:\-]?\s*(.+)/i);
+  const structuredMatch = text.match(
+    /\bdosagem\s*(?:de)?\s*[:\-]?\s*(\d+[\.,]?\d*\s*(?:ml|l|g|kg)\s+por\s+(?:\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?))/i
+  );
+  if (structuredMatch?.[1]) return cleanText(structuredMatch[1]);
+
+  const match = text.match(/\bdosagem\s*(?:de)?\s*[:\-]?\s*(.+)/i);
   return cleanText(match?.[1] || "");
 }
 
@@ -826,7 +853,8 @@ function splitRepeatedFieldBlocks(text: string) {
     current = [];
   }
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const normalizedLine = normalizeLoose(line);
 
     const startsNewBlock =
@@ -835,7 +863,8 @@ function splitRepeatedFieldBlocks(text: string) {
       normalizedLine.startsWith("produto:") ||
       normalizedLine.startsWith("item:") ||
       normalizedLine.startsWith("modelo:") ||
-      normalizedLine.startsWith("piscina ");
+      normalizedLine.startsWith("piscina ") ||
+      looksLikeStandaloneChemicalHeading(line, lines.slice(index + 1, index + 13));
 
     if (startsNewBlock && current.length > 0) {
       pushCurrent();
@@ -887,7 +916,8 @@ function parseFieldLines(block: string) {
   const fieldMap: Record<string, string> = {};
   const plainLines: string[] = [];
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const inlinePairs = extractInlineFieldPairs(line);
     if (inlinePairs.length > 0) {
       for (const [key, value] of inlinePairs) {
@@ -902,10 +932,48 @@ function parseFieldLines(block: string) {
       continue;
     }
 
+    const standaloneLabel = findStandaloneFieldLabel(line);
+    const nextLine = standaloneLabel ? cleanText(lines[index + 1] || "") : "";
+    if (standaloneLabel && nextLine && !findStandaloneFieldLabel(nextLine)) {
+      appendFieldValue(fieldMap, standaloneLabel, nextLine);
+      index += 1;
+      continue;
+    }
+
     plainLines.push(line.replace(/^\d+[\)\.\-]\s+/, "").trim());
   }
 
   return { fieldMap, plainLines };
+}
+
+function pickUsableTitleCandidate(value: string | null | undefined) {
+  const candidates = String(value || "")
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+
+  return (
+    candidates.find((line) => {
+      if (findStandaloneFieldLabel(line)) return false;
+      if (isProbablyGenericTitle(line)) return false;
+      return line.length >= 3 && line.length <= 180;
+    }) || ""
+  );
+}
+
+function extractChemicalTitleFromNarrative(value: string | null | undefined) {
+  const lines = String(value || "")
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const match = line.match(/^(.{3,120}?\b\d{3,4})\s+foi\s+/i);
+    const candidate = pickUsableTitleCandidate(match?.[1] || "");
+    if (candidate) return candidate;
+  }
+
+  return "";
 }
 
 function chooseTitle(
@@ -916,6 +984,7 @@ function chooseTitle(
 ) {
   const candidateKeys = [
     "nome",
+    "nome do produto",
     "nome do item",
     "titulo",
     "título",
@@ -927,10 +996,25 @@ function chooseTitle(
   ];
 
   for (const key of candidateKeys) {
-    if (fieldMap[key]) return fieldMap[key];
+    const candidate = pickUsableTitleCandidate(fieldMap[key]);
+    if (candidate) return candidate;
   }
 
-  const firstLongPlainLine = plainLines.find((line) => line.length >= 3 && line.length <= 180);
+  const titleFromNarrative = extractChemicalTitleFromNarrative(
+    [
+      fieldMap["descriÃ§Ã£o"],
+      fieldMap["descriÃ§Ã£o comercial"],
+      fieldMap["observaÃ§Ãµes"],
+      ...plainLines,
+    ]
+      .filter(Boolean)
+      .join("\n")
+  );
+  if (titleFromNarrative) return titleFromNarrative;
+
+  const firstLongPlainLine = plainLines
+    .map((line) => pickUsableTitleCandidate(line))
+    .find(Boolean);
   if (firstLongPlainLine) return firstLongPlainLine;
 
   return `${fileName} • item ${index + 1}`;
@@ -1046,6 +1130,9 @@ function parseSingleBlock(
   const resolvedSku = sanitizeSku(
     fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || ""
   );
+  const resolvedDosage = findStandaloneFieldLabel(fieldMap["dosagem"] || "")
+    ? extractLooseDosage(normalizedBlock)
+    : fieldMap["dosagem"] || extractLooseDosage(normalizedBlock);
   const sheetName = cleanText(fieldMap["planilha"] || fieldMap["aba"] || fieldMap["sheet"] || "");
   const sourceCategory = cleanText(fieldMap["categoria"] || "");
   const sourceSubcategory = cleanText(fieldMap["subcategoria"] || "");
@@ -1090,8 +1177,8 @@ function parseSingleBlock(
     shape: fieldMap["formato"] || "",
     brand: fieldMap["marca"] || "",
     sku: resolvedSku,
-    weight: fieldMap["peso"] || "",
-    dosage: fieldMap["dosagem"] || "",
+    weight: fieldMap["peso"] || fieldMap["peso/volume"] || fieldMap["volume"] || "",
+    dosage: resolvedDosage,
     color: fieldMap["cor"] || "",
     usage: fieldMap["uso"] || "",
     notes: fieldMap["observações"] || "",
@@ -1118,11 +1205,19 @@ function parseSingleBlock(
 function isProbablyGenericTitle(title: string) {
   const normalized = normalizeLoose(title);
   if (!normalized) return true;
+  if (normalized === "docx" || normalized === "pdf" || normalized === "xlsx" || normalized === "pptx") {
+    return true;
+  }
+  if (/\b(docx|pdf|xlsx|pptx)\s+item\s+\d+$/.test(normalized)) return true;
+  if (/^\d+\s+itens?$/.test(normalized)) return true;
 
   const blocked = [
     "catalogo de teste",
     "catálogo de teste",
+    "catalogo de produtos",
+    "documento de teste",
     "arquivo de teste",
+    "nome do produto",
     "nome do item",
     "descricao detalhada",
     "descrição detalhada",
