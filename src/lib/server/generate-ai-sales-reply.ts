@@ -1426,7 +1426,15 @@ function buildResponsePriorityBlock(args: {
   );
 
   instructions.push(
+    "- Não use a palavra \"unidades\" para falar de estoque/disponibilidade, a menos que exista autorização explícita da loja."
+  );
+
+  instructions.push(
     "- Se o catálogo mostrar item ativo com estoque controlado e quantidade 0 ou nula, diga que está em falta ou sem estoque confirmado."
+  );
+
+  instructions.push(
+    "- Se o item/modelo existir no catálogo, mas aparecer sem disponibilidade vendável, não diga que não encontrou; diga que ele aparece no catálogo, mas não há disponibilidade confirmada para venda no momento."
   );
 
   instructions.push(
@@ -1525,6 +1533,8 @@ function buildCatalogEvidenceBlock(args: {
   analysis: CatalogIntentAnalysis;
   matchedCatalogItems: MatchedCatalogItem[];
   matchedPools: MatchedPool[];
+  unavailableCatalogItems: MatchedCatalogItem[];
+  unavailablePools: MatchedPool[];
 }): string {
   const requestedBrand = args.analysis.requestedBrand || "nenhuma marca claramente identificada";
   const requestedProduct = args.analysis.requestedProductTerm || "nenhum produto claramente identificado";
@@ -1541,6 +1551,18 @@ function buildCatalogEvidenceBlock(args: {
           .join("\n")
       : "- nenhum modelo de piscina compatível localizado";
 
+  const unavailableCatalogLines =
+    args.unavailableCatalogItems.length > 0
+      ? args.unavailableCatalogItems.map(buildCatalogItemContextLine).join("\n")
+      : "- nenhum item de catálogo compatível sem disponibilidade localizado";
+
+  const unavailablePoolLines =
+    args.unavailablePools.length > 0
+      ? args.unavailablePools
+          .map((match) => formatPoolLine(match.pool, match.hasPhoto))
+          .join("\n")
+      : "- nenhum modelo de piscina compatível sem disponibilidade localizado";
+
   return `
 EVIDÊNCIAS DE CATÁLOGO E MÍDIA
 - cliente perguntou por produto de catálogo: ${args.analysis.asksAboutCatalogProduct ? "sim" : "não"}
@@ -1556,6 +1578,12 @@ ${catalogLines}
 
 MODELOS DE PISCINA MAIS COMPATÍVEIS
 ${poolLines}
+
+ITENS ENCONTRADOS NO CATÁLOGO, MAS SEM DISPONIBILIDADE VENDÁVEL
+${unavailableCatalogLines}
+
+MODELOS DE PISCINA ENCONTRADOS, MAS SEM DISPONIBILIDADE VENDÁVEL
+${unavailablePoolLines}
 `.trim();
 }
 
@@ -1637,6 +1665,8 @@ REGRAS ESPECÍFICAS DE SINCERIDADE
 - Se o cliente pedir uma marca específica e a marca não estiver claramente confirmada nos itens compatíveis, não diga que tem essa marca.
 - Se houver item compatível ativo com estoque controlado positivo, você pode dizer que há disponibilidade confirmada, sem revelar a quantidade exata em estoque.
 - Se houver item compatível ativo com estoque controlado e quantidade zero ou nula, diga que está em falta ou sem estoque confirmado.
+- Se o item/modelo aparecer nas seções de encontrados sem disponibilidade vendável, não diga que não localizou no catálogo; diga que ele aparece no catálogo, mas que não há disponibilidade confirmada para venda no momento.
+- Não use a palavra "unidades" ao falar de estoque/disponibilidade, salvo se houver autorização explícita em configuração futura.
 - Se houver item compatível ativo sem controle de estoque, diga que ele aparece ativo no catálogo, mas que o estoque não está confirmado por esta base.
 - Se o cliente pedir foto e não houver foto cadastrada para o item/modelo compatível, diga isso com clareza.
 - Se não houver foto cadastrada, você pode oferecer outras opções que tenham foto, mas somente se essas opções realmente aparecerem nas evidências abaixo.
@@ -2000,6 +2030,7 @@ export async function generateAiSalesReply(
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
     let poolCountUsed = 0;
     let matchedPools: MatchedPool[] = [];
+    let unavailableMatchedPools: MatchedPool[] = [];
 
     let pools: PoolRow[] = [];
     if (shouldLoadPools || catalogIntent.asksForPhoto || catalogIntent.asksAboutPool) {
@@ -2048,21 +2079,33 @@ export async function generateAiSalesReply(
     }
 
     if (pools.length > 0) {
-      matchedPools = pools
+      const scoredPools = pools
         .map((pool) => ({
           pool,
           hasPhoto: (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url,
           score: scorePool(pool, lastCustomerMessage),
         }))
-        .filter((match) => {
-          if (match.score <= 0) return false;
-          return isSellableInventoryState({
+        .filter((match) => match.score > 0)
+        .sort((a, b) => b.score - a.score);
+
+      matchedPools = scoredPools
+        .filter((match) =>
+          isSellableInventoryState({
             isActive: match.pool.is_active,
             trackStock: match.pool.track_stock,
             stockQuantity: match.pool.stock_quantity,
-          }).isSellable;
-        })
-        .sort((a, b) => b.score - a.score)
+          }).isSellable
+        )
+        .slice(0, 3);
+
+      unavailableMatchedPools = scoredPools
+        .filter((match) =>
+          !isSellableInventoryState({
+            isActive: match.pool.is_active,
+            trackStock: match.pool.track_stock,
+            stockQuantity: match.pool.stock_quantity,
+          }).isSellable
+        )
         .slice(0, 3);
 
       const usablePools = pools.filter((pool) =>
@@ -2147,21 +2190,33 @@ export async function generateAiSalesReply(
       photoMap.set(photo.catalog_item_id, existing);
     }
 
-    const matchedCatalogItems: MatchedCatalogItem[] = catalogItems
+    const scoredCatalogItems: MatchedCatalogItem[] = catalogItems
       .map((item) => ({
         item,
         photos: photoMap.get(item.id) || [],
         score: scoreCatalogItem(item, catalogIntent),
       }))
-      .filter((match) => {
-        if (match.score <= 0) return false;
-        return isSellableInventoryState({
+      .filter((match) => match.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    const matchedCatalogItems: MatchedCatalogItem[] = scoredCatalogItems
+      .filter((match) =>
+        isSellableInventoryState({
           isActive: match.item.is_active,
           trackStock: match.item.track_stock,
           stockQuantity: match.item.stock_quantity,
-        }).isSellable;
-      })
-      .sort((a, b) => b.score - a.score)
+        }).isSellable
+      )
+      .slice(0, 5);
+
+    const unavailableMatchedCatalogItems: MatchedCatalogItem[] = scoredCatalogItems
+      .filter((match) =>
+        !isSellableInventoryState({
+          isActive: match.item.is_active,
+          trackStock: match.item.track_stock,
+          stockQuantity: match.item.stock_quantity,
+        }).isSellable
+      )
       .slice(0, 5);
 
     const commercialObjective = buildCommercialObjective({
@@ -2177,6 +2232,8 @@ export async function generateAiSalesReply(
       analysis: catalogIntent,
       matchedCatalogItems,
       matchedPools,
+      unavailableCatalogItems: unavailableMatchedCatalogItems,
+      unavailablePools: unavailableMatchedPools,
     });
 
     const responsePriorityBlock = buildResponsePriorityBlock({
