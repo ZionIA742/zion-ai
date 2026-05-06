@@ -830,7 +830,20 @@ function splitDelimitedBlocks(text: string) {
 
   for (let index = 0; index < markers.length; index += 1) {
     const start = markers[index].index ?? 0;
-    const end = index + 1 < markers.length ? markers[index + 1].index ?? normalized.length : normalized.length;
+    const defaultEnd =
+      index + 1 < markers.length ? markers[index + 1].index ?? normalized.length : normalized.length;
+    const markerLineEnd = normalized.indexOf("\n", start);
+    let searchStart = markerLineEnd >= 0 && markerLineEnd < defaultEnd ? markerLineEnd : start;
+    const ownMarkerContinuation = normalized
+      .slice(searchStart, defaultEnd)
+      .match(/^(?:\n\s*)+(?:PLANILHA|ABA|SHEET)\s*:[^\n]*\nLINHA\s*:[^\n]*===/i);
+    if (ownMarkerContinuation) {
+      searchStart += ownMarkerContinuation[0].length;
+    }
+    const nextSheetMarker = normalized
+      .slice(searchStart, defaultEnd)
+      .search(/\n(?:PLANILHA|ABA|SHEET)\s*:/i);
+    const end = nextSheetMarker >= 0 ? searchStart + nextSheetMarker : defaultEnd;
     const rawBlock = normalized.slice(start, end);
     const cleanedBlock = normalizeBlock(rawBlock.replace(/^===\s*ITEM[^\n]*\n?/i, ""));
 
