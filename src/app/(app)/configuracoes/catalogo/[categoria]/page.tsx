@@ -817,8 +817,14 @@ async function handleDeleteItem(itemId: string) {
 
     if (deletingAllItems) return;
 
+    const sectionName =
+      category === "quimicos"
+        ? "produtos químicos"
+        : category === "acessorios"
+          ? "acessórios"
+          : "itens de outros";
     const confirmed = window.confirm(
-      `VocÃª estÃ¡ prestes a apagar todos os itens de ${pageTitle.toLowerCase()} cadastrados nesta loja. Essa aÃ§Ã£o nÃ£o apaga outras categorias. Itens que serÃ£o apagados: ${items.length}. Deseja continuar?`
+      `Você está prestes a apagar todos os ${sectionName} cadastrados nesta loja. Essa ação não apaga outras categorias.\nItens que serão apagados: ${items.length}. Deseja continuar?`
     );
     if (!confirmed) return;
 
@@ -840,7 +846,7 @@ async function handleDeleteItem(itemId: string) {
         .map((item) => item.id);
 
       if (itemIds.length === 0) {
-        setSuccessText(`NÃ£o havia itens de ${pageTitle.toLowerCase()} para apagar nesta loja.`);
+        setSuccessText(`Não havia itens de ${pageTitle.toLowerCase()} para apagar nesta loja.`);
         await fetchData();
         return;
       }
@@ -942,9 +948,9 @@ async function handleDeleteItem(itemId: string) {
             {deletingAllItems
               ? "Apagando itens..."
               : category === "quimicos"
-                ? "Apagar todos os produtos quÃ­micos"
+                ? "Apagar todos os produtos químicos"
                 : category === "acessorios"
-                  ? "Apagar todos os acessÃ³rios"
+                  ? "Apagar todos os acessórios"
                   : "Apagar todos os itens de outros"}
           </button>
         <Link

@@ -647,7 +647,7 @@ export default function PiscinasPage() {
     if (deletingAllPools) return;
 
     const confirmed = window.confirm(
-      `VocÃª estÃ¡ prestes a apagar todas as piscinas cadastradas nesta loja. Essa aÃ§Ã£o nÃ£o apaga outras categorias. Itens que serÃ£o apagados: ${totalPools}. Deseja continuar?`
+      `Você está prestes a apagar todas as piscinas cadastradas nesta loja. Essa ação não apaga produtos, acessórios ou outros itens.\nItens que serão apagados: ${totalPools}. Deseja continuar?`
     );
     if (!confirmed) return;
 
@@ -667,7 +667,7 @@ export default function PiscinasPage() {
       const poolIds = ((poolRows || []) as Array<{ id: string }>).map((pool) => pool.id);
 
       if (poolIds.length === 0) {
-        setSuccessText("NÃ£o havia piscinas para apagar nesta loja.");
+        setSuccessText("Não havia piscinas para apagar nesta loja.");
         await fetchData();
         return;
       }
