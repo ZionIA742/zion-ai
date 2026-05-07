@@ -2234,12 +2234,75 @@ function isGenericImportedTitle(title: string) {
   }
   return false;
 }
+function buildImportedPdfAccessoryDetectionText(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return normalizeImportedLoose(
+    [
+      extractImportedOriginalSourceFileName(item),
+      item.sourceFileName,
+      extractMetadataValue(item, [
+        "source_file_name",
+        "source_file_name_original",
+        "original_source_file_name",
+      ]),
+      extractImportedSourceCategory(item),
+      extractImportedSourceSubcategory(item),
+      extractImportedSourceSheetName(item),
+      item.type,
+      item.title,
+      ...Object.values(item.metadata ?? {}),
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+}
+
+function isPdfAccessoryImportItem(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const detectionText = buildImportedPdfAccessoryDetectionText(item);
+  return (
+    detectionText.includes("pdf") &&
+    (detectionText.includes("acessorios") || detectionText.includes("acessorio"))
+  );
+}
+
+function hasImportedAccessorySku(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  if (/^ACC[-\s]?\d{1,4}$/i.test(sku)) return true;
+
+  const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
+  return /\bACC[-\s]?\d{1,4}\b/i.test(text);
+}
+
+function shouldForcePdfAccessoryCategory(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return isPdfAccessoryImportItem(item) && hasImportedAccessorySku(item);
+}
+
+function shouldSkipPdfAccessoryNoise(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  if (!isPdfAccessoryImportItem(item)) return false;
+  if (hasImportedAccessorySku(item)) return false;
+  return extractImportedCatalogPriceCents(item) == null;
+}
+
 function shouldSkipImportedItem(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const normalizedTitle = normalizeImportedLoose(item.title);
   const normalizedRaw = normalizeImportedLoose(item.rawText);
   const normalizedType = normalizeImportedLoose(item.type);
+
+  if (shouldSkipPdfAccessoryNoise(item)) {
+    return true;
+  }
+
   if (normalizedType === "commercial rule" || normalizedType === "commercial_rule") {
     return true;
   }
@@ -2397,6 +2460,10 @@ function looksLikeImportedDocumentIntroCatalogItem(args: {
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
+  if (shouldForcePdfAccessoryCategory(item)) {
+    return "acessorios";
+  }
+
   const explicitDestination = resolveImportedExplicitDestination(item);
   if (explicitDestination) return explicitDestination;
 
