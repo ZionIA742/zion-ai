@@ -1088,6 +1088,71 @@ function extractImportedDosageFromText(value: string | null | undefined) {
   return cleanupImportedDescriptionLine(match?.[1] || "");
 }
 
+function cleanImportedDosageValue(value: string | null | undefined) {
+  const source = cleanupImportedDescriptionLine(String(value || ""));
+  if (!source) return "";
+
+  const dosageMatch = source.match(
+    /\b(\d+[\.,]?\d*\s*(?:ml|l|g|kg)\s+por\s+(?:\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?))\b/i
+  );
+
+  if (dosageMatch?.[1]) {
+    return cleanupImportedDescriptionLine(dosageMatch[1]);
+  }
+
+  return cleanupImportedDescriptionLine(
+    source
+      .replace(/^\s*(?:dosagem|dosage)\s*(?:operacional\s+)?(?:de\s+)?[:\-]?\s*/i, "")
+      .split(".")[0] || ""
+  );
+}
+
+function cleanImportedPackagingValue(value: string | null | undefined) {
+  return cleanupImportedDescriptionLine(
+    String(value || "").replace(/^\s*embalagem\s*[:\-]?\s*/i, "")
+  );
+}
+
+function cleanImportedApplicationValue(value: string | null | undefined) {
+  return cleanupImportedDescriptionLine(
+    String(value || "").replace(/^\s*aplica(?:c(?:ao)?|\u00e7\u00e3o)\s*[:\-]?\s*/i, "")
+  );
+}
+
+function cleanImportedTechnicalDescriptionArtifacts(value: string | null | undefined) {
+  let cleaned = String(value || "");
+
+  cleaned = cleaned
+    .replace(/\bCampo\s+Valor\b/giu, " ")
+    .replace(
+      /\bCampos\s+completos\s*,?\s*pre[c\u00e7]o\s*,?\s*estoque\s*,?\s*SKU\s+e\s+foto\s+do\s+item\b/giu,
+      " "
+    )
+    .replace(
+      /\bCompletos\s*,?\s*pre[c\u00e7]o\s*,?\s*estoque\s*,?\s*SKU\s+e\s+foto\s+do\s+item\b/giu,
+      " "
+    )
+    .replace(
+      /\bFoi\s+criado\s+para\s+validar\s+importa\S*o\s+de\s+PDF\s+com\s+campos\b[^.!?]*(?:[.!?]|$)/giu,
+      " "
+    )
+    .replace(
+      /\bDe\s+PDF\s+com\s+campos\s+completos\b[^.!?]*(?:[.!?]|$)/giu,
+      " "
+    )
+    .replace(/(^|[.!?]\s*)De\s+PDF\s*(?:[.!?]+|$)/giu, "$1 ")
+    .replace(/\bN[a\u00e3]o\s+misturar\s+produtos\s+sem\s*\.?/giu, " ")
+    .replace(/\s*,\s*com\s*(?=[.!?]|$|\bObserva|\bOrienta)/giu, "")
+    .replace(/\s+\bcom\s*(?=[.!?]|$|\bObserva|\bOrienta)/giu, " ")
+    .replace(/\s*\.\s*\./g, ".")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/([,.;:])\1+/g, "$1")
+    .replace(/(?:^|\s)\.(?=\s|$)/g, " ")
+    .replace(/\s{2,}/g, " ");
+
+  return cleanupImportedDescriptionLine(cleaned);
+}
+
 function dedupeDescriptionLines(lines: string[]) {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -1118,14 +1183,14 @@ function cleanupImportedDescriptionLine(value: string) {
 }
 
 function normalizeImportedNarrativeLine(value: string) {
-  let cleaned = cleanupImportedDescriptionLine(value);
+  let cleaned = cleanImportedTechnicalDescriptionArtifacts(value);
 
   cleaned = cleaned.replace(
     /^\s*(descri[cç][aã]o curta|descri[cç][aã]o resumida|descri[cç][aã]o|observa[cç][oõ]es|observa[cç][aã]o|obs\.?|notas?|notes?)\s*[:–-]\s*/iu,
     ""
   );
 
-  cleaned = cleanupImportedDescriptionLine(cleaned);
+  cleaned = cleanImportedTechnicalDescriptionArtifacts(cleaned);
 
   if (!cleaned) return "";
 
@@ -1394,7 +1459,7 @@ function finalizeImportedDescriptionParts(parts: string[]) {
   const chosen: string[] = [];
 
   for (const part of parts) {
-    const cleaned = cleanupImportedDescriptionLine(part)
+    const cleaned = cleanImportedTechnicalDescriptionArtifacts(part)
       .replace(/\s*,\s*\./g, ".")
       .replace(/\.\s*,/g, ".")
       .replace(/\s+,/g, ",")
@@ -1437,7 +1502,7 @@ function buildImportedCatalogDescription(
   const applicationValue =
     extractMetadataValue(item, ["application", "aplicacao", "aplicação", "usage", "uso"]) ||
     extractImportedLabeledValue(source, ["Aplicação", "Aplicacao", "Uso"]);
-  const applicationLine = normalizeImportedNarrativeLine(String(applicationValue || ""));
+  const applicationLine = normalizeImportedNarrativeLine(cleanImportedApplicationValue(applicationValue));
 
   const materialLine = normalizeImportedNarrativeLine(buildImportedMaterialSentence(item));
 
@@ -2438,6 +2503,10 @@ function buildImportedCatalogMetadata(
         .filter(Boolean)
         .join("\n")
     );
+  const cleanedApplication = cleanImportedApplicationValue(application);
+  const cleanedPackaging = cleanImportedPackagingValue(packaging);
+  const cleanedDosage = cleanImportedDosageValue(resolvedDosage);
+  const cleanDescription = buildImportedCatalogDescription(item) || "";
 
   return {
     categoria: category,
@@ -2456,19 +2525,19 @@ function buildImportedCatalogMetadata(
     imported_capacity: extractMetadataValue(item, ["capacidade", "capacity"]),
     imported_material: extractMetadataValue(item, ["material"]),
     imported_shape: extractMetadataValue(item, ["formato", "shape"]),
-    imported_package: packaging,
+    imported_package: cleanedPackaging,
     imported_weight_or_volume:
       extractMetadataValue(item, ["peso_volume", "peso", "volume", "conteudo", "conteúdo"]) ||
       extractImportedWeightOrVolume(item),
-    imported_dosage: resolvedDosage,
+    imported_dosage: cleanedDosage,
     imported_barcode: barcode,
-    clean_description: buildImportedCatalogDescription(item) || "",
+    clean_description: cleanDescription,
     sku,
     line,
-    application,
-    embalagem: packaging,
-    dosagem: resolvedDosage,
-    dosage: resolvedDosage,
+    application: cleanedApplication,
+    embalagem: cleanedPackaging,
+    dosagem: cleanedDosage,
+    dosage: cleanedDosage,
     barcode,
     stock_initial: stockInitial,
   };
