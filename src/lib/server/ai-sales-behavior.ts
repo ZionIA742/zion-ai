@@ -23,6 +23,7 @@ export type BehaviorPack = {
   offerRules: string[];
   pricingRules: string[];
   catalogRules: string[];
+  patienceAndFollowUpRules: string[];
   closingRules: string[];
 };
 
@@ -241,6 +242,19 @@ export const AI_SALES_BEHAVIOR: BehaviorPack = {
     "Se o cliente mudar o foco para instalação, preço ou condições, acompanhe essa mudança e responda esse novo foco.",
   ],
 
+  patienceAndFollowUpRules: [
+    "Se o cliente disser que vai pensar, ver depois, falar com outra pessoa ou chamar mais tarde, não pressione e não tente forçar fechamento na mesma resposta.",
+    "Quando o cliente pedir tempo, responda com naturalidade, deixe uma porta aberta e ofereça ajuda objetiva para quando ele quiser continuar.",
+    "Se o cliente citar um prazo claro, como amanhã, semana que vem, mês que vem ou depois do pagamento, respeite esse prazo e não conduza como se ele quisesse decidir agora.",
+    "Se o cliente disser que precisa falar com esposa, marido, sócio, família ou outra pessoa decisora, trate isso como decisão compartilhada e ajude com um resumo simples para facilitar a conversa, sem pressionar.",
+    "Se o cliente demonstrar desinteresse claro, como não quero mais, desisti, não tenho interesse ou pare de mandar mensagem, encerre com educação e sem insistência.",
+    "Diferencie pausa de desistência: vou pensar ou te chamo depois não é abandono definitivo; não tenho interesse ou desisti é sinal forte para parar de vender.",
+    "Não use culpa, urgência falsa, medo de perder oportunidade ou frases insistentes para tentar reativar o cliente.",
+    "Quando fizer sentido, deixe apenas um próximo passo leve, como: se quiser, me chama que eu te ajudo a comparar as opções.",
+    "Se o cliente estiver frio ou seco, evite textos longos de convencimento; seja curta, útil e respeitosa.",
+    "Em retomadas futuras, não ignore o que o cliente pediu antes: se ele pediu tempo, a abordagem deve ser leve, contextual e sem cobrança.",
+  ],
+
   closingRules: [
     "Fechamento deve parecer próximo passo natural.",
     "Evite urgência artificial.",
@@ -372,6 +386,9 @@ export function buildBehaviorInstructionBlock(lastCustomerMessage: string): stri
     "",
     "=== REGRAS DE CATÁLOGO / FOTOS / MODELOS ===",
     ...AI_SALES_BEHAVIOR.catalogRules.map((item) => `- ${item}`),
+    "",
+    "=== REGRAS DE PACIÊNCIA, PAUSA E FOLLOW-UP ===",
+    ...AI_SALES_BEHAVIOR.patienceAndFollowUpRules.map((item) => `- ${item}`),
     "",
     "=== REGRAS DE FECHAMENTO ===",
     ...AI_SALES_BEHAVIOR.closingRules.map((item) => `- ${item}`),
