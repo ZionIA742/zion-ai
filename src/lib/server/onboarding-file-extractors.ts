@@ -4,6 +4,8 @@ import JSZip from "jszip";
 import { createRequire } from "node:module";
 
 const nodeRequire = createRequire(`${process.cwd()}/package.json`);
+const MAX_RENDERED_PDF_IMAGE_PAGES = 150;
+const PDF_RENDER_SCALE = 0.75;
 
 const DEBUG_INTELLIGENT_IMPORT =
   process.env.NODE_ENV !== "production" ||
@@ -788,9 +790,77 @@ async function extractImagesFromPptx(buffer: Buffer) {
   });
 }
 
-async function extractImagesFromPdf(_buffer: Buffer) {
-  debugIntelligentImport("extractImagesFromPdf", { count: 0 });
-  return [] as ExtractedImageAsset[];
+function buildPdfRenderedPageFileName(fileName: string, pageNumber: number) {
+  const baseName = String(fileName || "pdf")
+    .replace(/\.[^.]+$/i, "")
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 120) || "pdf";
+
+  return `${baseName}-page-${String(pageNumber).padStart(3, "0")}.png`;
+}
+
+async function extractImagesFromPdf(buffer: Buffer, fileName: string) {
+  try {
+    const pdfParseModule = nodeRequire("pdf-parse");
+    const PDFParse = (pdfParseModule as any).PDFParse;
+    if (typeof PDFParse !== "function") {
+      return [] as ExtractedImageAsset[];
+    }
+
+    const parser = new PDFParse({ data: buffer });
+    const assets: ExtractedImageAsset[] = [];
+
+    try {
+      const screenshot = await parser.getScreenshot({
+        first: MAX_RENDERED_PDF_IMAGE_PAGES,
+        scale: PDF_RENDER_SCALE,
+        imageDataUrl: true,
+        imageBuffer: true,
+      });
+
+      for (const page of screenshot.pages ?? []) {
+        const pageNumber = Number(page.pageNumber || assets.length + 1);
+        const pageDataUrl =
+          typeof page.dataUrl === "string" && page.dataUrl
+            ? page.dataUrl
+            : page.data
+              ? bufferToDataUrl(Buffer.from(page.data), "image/png")
+              : "";
+
+        if (!pageDataUrl) continue;
+
+        assets.push({
+          fileName: buildPdfRenderedPageFileName(fileName, pageNumber),
+          source: "pdf",
+          mimeType: "image/png",
+          dataUrl: pageDataUrl,
+          sheetName: "PDF",
+          imageOrder: pageNumber - 1,
+          worksheetRowNumber: pageNumber,
+          sheetScopedKey: `pdf::page::${pageNumber}`,
+        });
+      }
+
+      debugIntelligentImport("extractImagesFromPdf", {
+        pages: Number(screenshot.total || 0),
+        renderedPages: assets.length,
+        maxPages: MAX_RENDERED_PDF_IMAGE_PAGES,
+        scale: PDF_RENDER_SCALE,
+        firstImageBytes: assets[0]?.dataUrl?.length ?? 0,
+        lastImageBytes: assets[assets.length - 1]?.dataUrl?.length ?? 0,
+      });
+    } finally {
+      await parser.destroy?.();
+    }
+
+    return assets;
+  } catch (error) {
+    debugIntelligentImport("extractImagesFromPdf:error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [] as ExtractedImageAsset[];
+  }
 }
 
 async function extractTextFromImage(_buffer: Buffer) {
@@ -840,7 +910,7 @@ export async function extractTextFromFile(params: {
 
   if (extension === "pdf") {
     text = await extractTextFromPdf(buffer);
-    extractedImages = await extractImagesFromPdf(buffer);
+    extractedImages = await extractImagesFromPdf(buffer, fileName);
   } else if (extension === "docx") {
     text = await extractTextFromDocx(buffer);
     extractedImages = await extractImagesFromDocx(buffer);
