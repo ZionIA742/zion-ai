@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { isSellableInventoryState } from "../catalog/availability";
 import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
+import { buildSalesMethodologyInstructionBlock } from "./ai-sales-methodology";
 
 type ConversationRow = {
   id: string;
@@ -100,6 +101,21 @@ type DetectedIntent =
 
 type ResponseMode = "objective" | "consultative";
 
+type CustomerPatienceStatus =
+  | "active_interest"
+  | "thinking"
+  | "follow_up_requested"
+  | "not_interested"
+  | "unclear_pause";
+
+type CustomerPatienceSignal = {
+  status: CustomerPatienceStatus;
+  summary: string;
+  followUpTiming: string | null;
+  shouldAvoidNewQuestion: boolean;
+  shouldCloseSoftly: boolean;
+};
+
 type ConversationFactState = {
   budgetKnown: boolean;
   authorityKnown: boolean;
@@ -122,6 +138,7 @@ type CommercialObjective = {
   responseGoal: string;
   forbiddenInThisReply: string[];
   responseMode: ResponseMode;
+  patienceSignal: CustomerPatienceSignal;
 };
 
 type CatalogIntentAnalysis = {
@@ -224,6 +241,67 @@ const ONBOARDING_KEYS = [
   "technical_visit_days_rule",
   "technical_visit_rules",
   "technical_visit_rules_selected",
+
+  // Chaves vivas da tela de Configurações.
+  // A tela de Configurações grava na mesma base do onboarding por RPCs scoped,
+  // então estas chaves representam a configuração oficial atual da loja.
+  "accepted_payment_methods_summary",
+  "after_hours_behavior",
+  "after_hours_summary",
+  "agenda_capacity_rule",
+  "ai_identity_mode",
+  "ai_tone_summary",
+  "channels_system_summary",
+  "commercial_ai_summary",
+  "discount_approver",
+  "discount_approver_name",
+  "discount_cases_other",
+  "discount_cases_selected",
+  "discount_explanation",
+  "discount_percent",
+  "discount_policy_summary",
+  "discount_rules",
+  "discount_special_rules",
+  "final_activation_notes",
+  "human_help_discount_summary",
+  "human_help_general_summary",
+  "human_help_summary",
+  "import_summary",
+  "installation_process_summary",
+  "negotiation_rules_summary",
+  "operational_ai_summary",
+  "payment_alerts",
+  "payment_cases_other",
+  "payment_cases_selected",
+  "payment_methods",
+  "payment_methods_summary",
+  "post_sale_summary",
+  "price_before_summary",
+  "price_must_understand_before_summary",
+  "price_policy_summary",
+  "promise_limits_summary",
+  "sales_flow_notes",
+  "strategy_ai_never_forget",
+  "strategy_ai_presentation",
+  "strategy_ai_priorities",
+  "strategy_ai_store_summary",
+  "strategy_common_customer",
+  "strategy_differentials",
+  "strategy_exception_cases",
+  "strategy_ideal_customer",
+  "strategy_non_worked_brands",
+  "strategy_positioning",
+  "strategy_primary_focus",
+  "strategy_priority_brands",
+  "strategy_promise_limits",
+  "strategy_requires_human",
+  "strategy_requires_visit",
+  "strategy_sell_more",
+  "strategy_service_exclusions",
+  "strategy_ticket_range",
+  "strategy_top_lines",
+  "strategy_top_products",
+  "technical_visit_rules_summary",
 ] as const;
 
 const INTENT_RULES: Array<{
@@ -551,6 +629,144 @@ function looksLikeAuthoritySignal(text: string): boolean {
   );
 }
 
+function detectFollowUpTiming(text: string): string | null {
+  const t = normalizeText(text);
+
+  if (t.includes("amanha") || t.includes("amanhã")) return "amanhã";
+  if (t.includes("semana que vem") || t.includes("proxima semana") || t.includes("próxima semana")) {
+    return "semana que vem";
+  }
+  if (t.includes("mes que vem") || t.includes("mês que vem") || t.includes("proximo mes") || t.includes("próximo mês")) {
+    return "mês que vem";
+  }
+  if (t.includes("mais tarde")) return "mais tarde";
+  if (t.includes("fim de semana") || t.includes("final de semana")) return "fim de semana";
+
+  const daquiMatch = t.match(/daqui\s+(\d{1,2})\s+(dia|dias|semana|semanas|mes|meses|m[eê]s|m[eê]ses)/i);
+  if (daquiMatch?.[0]) return daquiMatch[0];
+
+  return null;
+}
+
+function analyzeCustomerPatienceSignal(text: string): CustomerPatienceSignal {
+  const t = normalizeText(text);
+  const followUpTiming = detectFollowUpTiming(text);
+
+  const notInterestedSignals = [
+    "nao quero",
+    "não quero",
+    "nao tenho interesse",
+    "não tenho interesse",
+    "sem interesse",
+    "desisti",
+    "nao precisa",
+    "não precisa",
+    "pode deixar",
+    "nao vou comprar",
+    "não vou comprar",
+    "pare de mandar",
+    "para de mandar",
+    "me tira",
+    "remove meu contato",
+  ];
+
+  if (notInterestedSignals.some((signal) => t.includes(signal))) {
+    return {
+      status: "not_interested",
+      summary: "cliente demonstrou desinteresse ou pediu para não seguir com a venda",
+      followUpTiming,
+      shouldAvoidNewQuestion: true,
+      shouldCloseSoftly: true,
+    };
+  }
+
+  const followUpSignals = [
+    "te chamo",
+    "eu chamo",
+    "eu retorno",
+    "retorno depois",
+    "falo depois",
+    "me chama",
+    "me mande",
+    "me manda",
+    "volta a falar",
+    "chama depois",
+    "mais tarde",
+    "depois eu vejo",
+    "depois vejo",
+  ];
+
+  if (followUpTiming || followUpSignals.some((signal) => t.includes(signal))) {
+    return {
+      status: "follow_up_requested",
+      summary: "cliente pediu ou indicou uma retomada futura",
+      followUpTiming,
+      shouldAvoidNewQuestion: true,
+      shouldCloseSoftly: false,
+    };
+  }
+
+  const thinkingSignals = [
+    "vou pensar",
+    "preciso pensar",
+    "pensar melhor",
+    "vou analisar",
+    "vou avaliar",
+    "vou ver",
+    "vou dar uma olhada",
+    "vou conversar",
+    "vou falar com",
+    "vou ver com",
+    "ver com minha esposa",
+    "ver com meu marido",
+    "falar com minha esposa",
+    "falar com meu marido",
+    "decidir com calma",
+  ];
+
+  if (thinkingSignals.some((signal) => t.includes(signal))) {
+    return {
+      status: "thinking",
+      summary: "cliente pediu tempo para pensar, avaliar ou falar com outra pessoa",
+      followUpTiming,
+      shouldAvoidNewQuestion: true,
+      shouldCloseSoftly: false,
+    };
+  }
+
+  const unclearPauseSignals = [
+    "agora nao",
+    "agora não",
+    "no momento nao",
+    "no momento não",
+    "mais pra frente",
+    "mais para frente",
+    "so pesquisando",
+    "só pesquisando",
+    "estou pesquisando",
+    "to pesquisando",
+    "tô pesquisando",
+  ];
+
+  if (unclearPauseSignals.some((signal) => t.includes(signal))) {
+    return {
+      status: "unclear_pause",
+      summary: "cliente esfriou a conversa ou indicou pausa sem desistência clara",
+      followUpTiming,
+      shouldAvoidNewQuestion: true,
+      shouldCloseSoftly: false,
+    };
+  }
+
+  return {
+    status: "active_interest",
+    summary: "cliente segue com interesse ativo ou dúvida comercial em aberto",
+    followUpTiming: null,
+    shouldAvoidNewQuestion: false,
+    shouldCloseSoftly: false,
+  };
+}
+
 function looksLikeNeedSignal(text: string): boolean {
   const t = normalizeText(text);
 
@@ -606,6 +822,82 @@ function isExplicitCatalogRequest(text: string): boolean {
     t.includes("catálogo") ||
     t.includes("catalogo")
   );
+}
+
+function isAffirmativeReply(text: string): boolean {
+  const t = normalizeText(text);
+
+  return [
+    "sim",
+    "pode",
+    "pode sim",
+    "quero",
+    "manda",
+    "mande",
+    "me manda",
+    "me mande",
+    "mostra",
+    "me mostra",
+    "quero ver",
+    "isso",
+    "ok",
+    "beleza",
+    "blz",
+  ].some((signal) => t === signal || t.includes(signal));
+}
+
+function detectLastAiOfferedPoolOptions(lastAiMessage: string | null): boolean {
+  if (!lastAiMessage) return false;
+
+  const t = normalizeText(lastAiMessage);
+
+  return (
+    (t.includes("quer que eu") || t.includes("posso te") || t.includes("vou separar")) &&
+    (t.includes("modelo") ||
+      t.includes("modelos") ||
+      t.includes("opcoes") ||
+      t.includes("opções") ||
+      t.includes("piscina") ||
+      t.includes("piscinas"))
+  );
+}
+
+function buildCustomerConversationText(messages: MessageRow[], lastCustomerMessage: string): string {
+  const userTexts = messages
+    .filter(
+      (msg) =>
+        normalizeText(msg.sender) === "user" &&
+        normalizeText(msg.direction) === "incoming" &&
+        String(msg.content || "").trim().length > 0
+    )
+    .map((msg) => String(msg.content || "").trim());
+
+  if (!userTexts.includes(lastCustomerMessage)) {
+    userTexts.push(lastCustomerMessage);
+  }
+
+  return userTexts.slice(-8).join(" | ");
+}
+
+function extractRequestedAreaM2(text: string): number | null {
+  const normalized = normalizeText(text).replace(/,/g, ".");
+  const explicitArea = normalized.match(/(\d{1,3}(?:\.\d{1,2})?)\s*(m2|m²|metros quadrados|metro quadrado)/i);
+
+  if (explicitArea?.[1]) {
+    const parsed = Number(explicitArea[1]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  const dimensions = normalized.match(/(\d{1,2}(?:\.\d{1,2})?)\s*x\s*(\d{1,2}(?:\.\d{1,2})?)/i);
+
+  if (dimensions?.[1] && dimensions?.[2]) {
+    const width = Number(dimensions[1]);
+    const length = Number(dimensions[2]);
+    const area = width * length;
+    return Number.isFinite(area) && area > 0 ? area : null;
+  }
+
+  return null;
 }
 
 function shouldAskTimingNow(args: {
@@ -779,6 +1071,8 @@ function scorePool(pool: PoolRow, text: string): number {
     [pool.name, pool.material, pool.shape, pool.description].filter(Boolean).join(" | ")
   );
   const normalized = normalizeText(text);
+  const requestedAreaM2 = extractRequestedAreaM2(text);
+  const poolAreaM2 = pool.width_m != null && pool.length_m != null ? pool.width_m * pool.length_m : null;
   let score = 0;
 
   for (const token of normalized.split(/\s+/)) {
@@ -792,6 +1086,35 @@ function scorePool(pool: PoolRow, text: string): number {
   if (normalized.includes("alvenaria") && haystack.includes("alvenaria")) score += 4;
   if (normalized.includes("retangular") && haystack.includes("retangular")) score += 3;
   if (normalized.includes("redonda") && haystack.includes("redonda")) score += 3;
+
+  if (normalized.includes("filho") || normalized.includes("filha") || normalized.includes("crianca") || normalized.includes("criança")) {
+    score += 2;
+    if (pool.depth_m != null && pool.depth_m <= 1.4) score += 4;
+    if (haystack.includes("infantil") || haystack.includes("familia") || haystack.includes("família")) score += 3;
+    if (haystack.includes("prainha") || haystack.includes("praia")) score += 2;
+  }
+
+  if (normalized.includes("basica") || normalized.includes("básica") || normalized.includes("basico") || normalized.includes("básico") || normalized.includes("simples")) {
+    score += 2;
+    if (haystack.includes("basica") || haystack.includes("básica") || haystack.includes("simples")) score += 4;
+    if (haystack.includes("fibra")) score += 2;
+  }
+
+  if (normalized.includes("compacta") || normalized.includes("compacto") || normalized.includes("pequena") || normalized.includes("pequeno")) {
+    score += 2;
+    if (haystack.includes("compacta") || haystack.includes("compacto") || haystack.includes("pequena") || haystack.includes("pequeno")) score += 4;
+  }
+
+  if (requestedAreaM2 != null && poolAreaM2 != null) {
+    if (poolAreaM2 <= requestedAreaM2) score += 8;
+    else if (poolAreaM2 <= requestedAreaM2 * 1.2) score += 5;
+    else if (poolAreaM2 <= requestedAreaM2 * 1.5) score += 2;
+    else score -= 4;
+  }
+
+  if (pool.is_active === true) score += 1;
+  if (pool.track_stock === true && (pool.stock_quantity || 0) > 0) score += 1;
+  if (pool.price != null) score += 1;
 
   return score;
 }
@@ -906,6 +1229,42 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
     ["vende químicos", onboardingMap.sells_chemicals],
   ]);
 
+  const liveStoreStrategy = formatSection("CONFIGURAÇÃO VIVA — ESTRATÉGIA COMERCIAL", [
+    ["resumo comercial da loja para IA", onboardingMap.strategy_ai_store_summary],
+    ["apresentação comercial da IA", onboardingMap.strategy_ai_presentation],
+    ["prioridades da IA vendedora", onboardingMap.strategy_ai_priorities],
+    ["o que a IA nunca deve esquecer", onboardingMap.strategy_ai_never_forget],
+    ["posicionamento da loja", onboardingMap.strategy_positioning],
+    ["foco comercial principal", onboardingMap.strategy_primary_focus],
+    ["cliente ideal", onboardingMap.strategy_ideal_customer],
+    ["cliente comum", onboardingMap.strategy_common_customer],
+    ["diferenciais estratégicos", onboardingMap.strategy_differentials],
+    ["o que mais vende", onboardingMap.strategy_sell_more],
+    ["faixa de ticket", onboardingMap.strategy_ticket_range],
+    ["marcas prioritárias", onboardingMap.strategy_priority_brands],
+    ["produtos prioritários", onboardingMap.strategy_top_products],
+    ["linhas prioritárias", onboardingMap.strategy_top_lines],
+    ["limites de promessa", onboardingMap.strategy_promise_limits],
+    ["casos que exigem visita", onboardingMap.strategy_requires_visit],
+    ["casos que exigem humano", onboardingMap.strategy_requires_human],
+    ["casos de exceção", onboardingMap.strategy_exception_cases],
+    ["serviços que a loja não faz", onboardingMap.strategy_service_exclusions],
+    ["marcas que a loja não trabalha", onboardingMap.strategy_non_worked_brands],
+  ]);
+
+  const liveCommercialAi = formatSection("CONFIGURAÇÃO VIVA — COMERCIAL E IA", [
+    ["resumo comercial da IA", onboardingMap.commercial_ai_summary],
+    ["modo de identidade da IA", onboardingMap.ai_identity_mode],
+    ["tom da IA", onboardingMap.ai_tone_summary],
+    ["regras de negociação", onboardingMap.negotiation_rules_summary],
+    ["observações do fluxo comercial", onboardingMap.sales_flow_notes],
+    ["limites de promessa", onboardingMap.promise_limits_summary],
+    ["resumo de atendimento humano", onboardingMap.human_help_general_summary],
+    ["resumo de ajuda humana", onboardingMap.human_help_summary],
+    ["resumo de pós-venda", onboardingMap.post_sale_summary],
+    ["observações finais de ativação", onboardingMap.final_activation_notes],
+  ]);
+
   const serviceRegion = formatSection("REGIÃO E ATENDIMENTO", [
     ["regiões atendidas", onboardingMap.service_regions],
     ["modo principal de região", onboardingMap.service_region_primary_mode],
@@ -915,6 +1274,10 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
       "atendimento fora da região depende de consulta",
       onboardingMap.service_region_outside_consultation,
     ],
+    ["resumo operacional", onboardingMap.operational_ai_summary],
+    ["comportamento fora do horário", onboardingMap.after_hours_behavior],
+    ["resumo fora do horário", onboardingMap.after_hours_summary],
+    ["regra de capacidade da agenda", onboardingMap.agenda_capacity_rule],
   ]);
 
   const installation = formatSection("INSTALAÇÃO", [
@@ -924,6 +1287,7 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
     ["tempo médio de instalação em dias", onboardingMap.average_installation_time_days],
     ["processo de instalação", onboardingMap.installation_process],
     ["etapas do processo de instalação", onboardingMap.installation_process_steps],
+    ["resumo do processo de instalação", onboardingMap.installation_process_summary],
   ]);
 
   const technicalVisit = formatSection("VISITA TÉCNICA", [
@@ -932,19 +1296,39 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
     ["regra dos dias de visita técnica", onboardingMap.technical_visit_days_rule],
     ["regras de visita técnica", onboardingMap.technical_visit_rules],
     ["regras selecionadas de visita técnica", onboardingMap.technical_visit_rules_selected],
+    ["resumo das regras de visita técnica", onboardingMap.technical_visit_rules_summary],
   ]);
 
   const pricingAndPayment = formatSection("PREÇO, PAGAMENTO E DESCONTO", [
     ["ticket médio", onboardingMap.average_ticket],
     ["meios de pagamento aceitos", onboardingMap.accepted_payment_methods],
+    ["resumo dos meios de pagamento aceitos", onboardingMap.accepted_payment_methods_summary],
+    ["meios de pagamento configurados", onboardingMap.payment_methods],
+    ["resumo de pagamento", onboardingMap.payment_methods_summary],
+    ["alertas de pagamento", onboardingMap.payment_alerts],
+    ["casos de pagamento selecionados", onboardingMap.payment_cases_selected],
+    ["outros casos de pagamento", onboardingMap.payment_cases_other],
     ["a IA pode enviar preço direto", onboardingMap.ai_can_send_price_directly],
     ["modo de falar de preço", onboardingMap.price_talk_mode],
     ["regra para preço direto", onboardingMap.price_direct_rule],
     ["condições para passar preço direto", onboardingMap.price_direct_conditions],
     ["o que precisa entender antes de falar preço", onboardingMap.price_must_understand_before],
+    ["resumo do que entender antes de falar preço", onboardingMap.price_must_understand_before_summary],
+    ["política de preço", onboardingMap.price_policy_summary],
+    ["o que entender antes do preço", onboardingMap.price_before_summary],
     ["preço precisa de ajuda humana", onboardingMap.price_needs_human_help],
-    ["pode oferecer desconto", onboardingMap.can_offer_discount],
-    ["desconto máximo", onboardingMap.max_discount_percent],
+    ["pode negociar desconto", onboardingMap.can_offer_discount],
+    ["limite interno máximo de desconto (não revelar automaticamente ao cliente)", onboardingMap.max_discount_percent],
+    ["percentual interno de desconto (não revelar automaticamente ao cliente)", onboardingMap.discount_percent],
+    ["política de desconto", onboardingMap.discount_policy_summary],
+    ["regras de desconto", onboardingMap.discount_rules],
+    ["regras especiais de desconto", onboardingMap.discount_special_rules],
+    ["explicação de desconto", onboardingMap.discount_explanation],
+    ["aprovador de desconto", onboardingMap.discount_approver],
+    ["nome do aprovador de desconto", onboardingMap.discount_approver_name],
+    ["casos de desconto selecionados", onboardingMap.discount_cases_selected],
+    ["outros casos de desconto", onboardingMap.discount_cases_other],
+    ["resumo de ajuda humana em desconto", onboardingMap.human_help_discount_summary],
   ]);
 
   const salesFlow = formatSection("FLUXO COMERCIAL", [
@@ -969,10 +1353,17 @@ function buildOperationalOnboardingBlock(onboardingMap: Record<string, string>):
 
   const limitations = formatSection("LIMITAÇÕES E CUIDADOS", [
     ["limitações importantes", onboardingMap.important_limitations],
+    ["exclusões de serviço", onboardingMap.strategy_service_exclusions],
+    ["marcas não trabalhadas", onboardingMap.strategy_non_worked_brands],
+    ["casos que exigem humano", onboardingMap.strategy_requires_human],
+    ["casos que exigem visita", onboardingMap.strategy_requires_visit],
+    ["casos de exceção", onboardingMap.strategy_exception_cases],
   ]);
 
   return [
     overview,
+    liveStoreStrategy,
+    liveCommercialAi,
     serviceRegion,
     installation,
     technicalVisit,
@@ -1142,8 +1533,13 @@ function inferNextBestQuestion(args: {
   intents: DetectedIntent[];
   lastCustomerMessage: string;
   explicitCatalogRequest: boolean;
+  patienceSignal: CustomerPatienceSignal;
 }): string | null {
-  const { facts, intents, lastCustomerMessage, explicitCatalogRequest } = args;
+  const { facts, intents, lastCustomerMessage, explicitCatalogRequest, patienceSignal } = args;
+
+  if (patienceSignal.shouldAvoidNewQuestion) {
+    return null;
+  }
 
   if (
     (explicitCatalogRequest || intents.includes("comparison") || looksLikePoolChoice(lastCustomerMessage)) &&
@@ -1182,8 +1578,25 @@ function inferResponseGoal(args: {
   nextBestQuestion: string | null;
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
+  patienceSignal: CustomerPatienceSignal;
 }): string {
-  const { intents, facts, nextBestQuestion, responseMode, explicitCatalogRequest } = args;
+  const { intents, facts, nextBestQuestion, responseMode, explicitCatalogRequest, patienceSignal } = args;
+
+  if (patienceSignal.status === "not_interested") {
+    return "respeitar o desinteresse, encerrar com educação e não tentar reabrir a venda nesta resposta";
+  }
+
+  if (patienceSignal.status === "thinking") {
+    return "acolher o tempo do cliente, não pressionar e deixar um próximo passo leve sem nova triagem";
+  }
+
+  if (patienceSignal.status === "follow_up_requested") {
+    return "confirmar que vai respeitar a retomada futura indicada pelo cliente, sem forçar fechamento agora";
+  }
+
+  if (patienceSignal.status === "unclear_pause") {
+    return "baixar a pressão comercial, responder com leveza e manter a porta aberta sem insistir";
+  }
 
   if (responseMode === "objective") {
     return "responder exatamente o que foi perguntado, com clareza, sem excesso de expansão e com no máximo um avanço curto";
@@ -1225,6 +1638,7 @@ function inferForbiddenInThisReply(args: {
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
+  patienceSignal: CustomerPatienceSignal;
 }): string[] {
   const out: string[] = [
     "não ignorar a pergunta principal do cliente",
@@ -1261,6 +1675,17 @@ function inferForbiddenInThisReply(args: {
     out.push("não listar todos os detalhes operacionais quando bastar uma confirmação objetiva");
   }
 
+  if (args.patienceSignal.status !== "active_interest") {
+    out.push("não fazer nova pergunta comercial quando o cliente pediu tempo, indicou pausa ou demonstrou desinteresse");
+    out.push("não insistir, pressionar, criar urgência falsa ou tentar contornar a pausa do cliente");
+    out.push("não listar novos modelos, condições ou benefícios para tentar vencer a pausa nesta resposta");
+  }
+
+  if (args.patienceSignal.status === "not_interested") {
+    out.push("não tentar recuperar a venda nesta resposta; apenas encerrar com educação e deixar a porta aberta");
+    out.push("não escrever quando mudar de ideia; use se mudar de ideia");
+  }
+
   return out;
 }
 
@@ -1275,12 +1700,14 @@ function buildCommercialObjective(args: {
   const responseMode: ResponseMode = isObjectiveQuestionMode(args.lastCustomerMessage)
     ? "objective"
     : "consultative";
+  const patienceSignal = analyzeCustomerPatienceSignal(args.lastCustomerMessage);
 
   const nextBestQuestion = inferNextBestQuestion({
     facts,
     intents,
     lastCustomerMessage: args.lastCustomerMessage,
     explicitCatalogRequest: args.explicitCatalogRequest,
+    patienceSignal,
   });
 
   return {
@@ -1296,6 +1723,7 @@ function buildCommercialObjective(args: {
       nextBestQuestion,
       responseMode,
       explicitCatalogRequest: args.explicitCatalogRequest,
+      patienceSignal,
     }),
     forbiddenInThisReply: inferForbiddenInThisReply({
       intents,
@@ -1303,9 +1731,53 @@ function buildCommercialObjective(args: {
       responseMode,
       explicitCatalogRequest: args.explicitCatalogRequest,
       lastAiListedPools: args.lastAiListedPools,
+      patienceSignal,
     }),
     responseMode,
+    patienceSignal,
   };
+}
+
+
+function formatPatienceToneGuidance(signal: CustomerPatienceSignal): string {
+  if (signal.status === "not_interested") {
+    return [
+      "- tom recomendado: curto, leve e sem tentativa de recuperação",
+      "- frase segura: Tudo bem, sem problema. Se mudar de ideia ou precisar de algo, me avisa.",
+      "- nunca usar: Quando mudar de ideia",
+      "- não adicionar pergunta, catálogo, benefício, urgência ou tentativa de convencer",
+    ].join("\n");
+  }
+
+  if (signal.status === "follow_up_requested") {
+    const timing = signal.followUpTiming ? ` ${signal.followUpTiming}` : "";
+
+    return [
+      "- tom recomendado: bem leve, curto e natural",
+      `- frase segura: Blz, qualquer coisa me avisa${timing ? `. A gente continua${timing}.` : "."}`,
+      "- alternativa segura: Ok, se precisar de algo, me avisa.",
+      "- não fazer nova pergunta comercial nesta resposta",
+    ].join("\n");
+  }
+
+  if (signal.status === "thinking") {
+    return [
+      "- tom recomendado: acolher sem pressionar e sem alongar",
+      "- frase segura: Tranquilo, pode ver com calma. Se precisar de algo, me avisa.",
+      "- se houver decisão compartilhada, não ofereça resumo automaticamente a menos que isso ajude muito; mantenha leve",
+      "- não fazer nova pergunta comercial nesta resposta",
+    ].join("\n");
+  }
+
+  if (signal.status === "unclear_pause") {
+    return [
+      "- tom recomendado: baixar a pressão e manter a porta aberta",
+      "- frase segura: Ok, sem problema. Se precisar de alguma coisa, me avisa.",
+      "- não fazer nova pergunta comercial nesta resposta",
+    ].join("\n");
+  }
+
+  return "- sem orientação especial de pausa nesta resposta";
 }
 
 function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
@@ -1329,6 +1801,12 @@ function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
     ? objective.forbiddenInThisReply.map((item) => `- ${item}`).join("\n")
     : "- sem bloqueios adicionais";
 
+  const patienceTimingText = objective.patienceSignal.followUpTiming
+    ? `- prazo/retomada citado pelo cliente: ${objective.patienceSignal.followUpTiming}`
+    : "- prazo/retomada citado pelo cliente: não identificado";
+
+  const patienceToneGuidance = formatPatienceToneGuidance(objective.patienceSignal);
+
   return `
 DIAGNÓSTICO COMERCIAL
 - intenção principal: ${objective.primaryIntent}
@@ -1345,6 +1823,16 @@ ${knownFactsText}
 
 O QUE AINDA FALTA, SE FIZER SENTIDO
 ${missingFactsText}
+
+SINAL DE PACIÊNCIA, PAUSA OU DESINTERESSE
+- status: ${objective.patienceSignal.status}
+- leitura: ${objective.patienceSignal.summary}
+${patienceTimingText}
+- evitar nova pergunta comercial: ${objective.patienceSignal.shouldAvoidNewQuestion ? "sim" : "não"}
+- encerrar com suavidade: ${objective.patienceSignal.shouldCloseSoftly ? "sim" : "não"}
+
+TOM RECOMENDADO PARA ESTE SINAL
+${patienceToneGuidance}
 
 OBJETIVO DESTA RESPOSTA
 - ${objective.responseGoal}
@@ -1364,6 +1852,7 @@ function buildResponsePriorityBlock(args: {
   lastAiListedPools: boolean;
   hasCatalogEvidence: boolean;
   hasPoolEvidence: boolean;
+  shouldPresentPoolRecommendations: boolean;
 }) {
   const instructions: string[] = [];
 
@@ -1397,9 +1886,13 @@ function buildResponsePriorityBlock(args: {
     );
   }
 
-  if (args.explicitCatalogRequest) {
+  if (args.shouldPresentPoolRecommendations) {
     instructions.push(
-      "- Só liste modelos ou opções concretas quando o cliente pedir isso explicitamente na mensagem atual."
+      "- O cliente já confirmou que quer ver modelos/opções de piscina. Nesta resposta, liste 2 ou 3 modelos concretos do catálogo pelo nome, com um motivo curto para cada um. Não responda apenas que vai separar ou que pode mostrar."
+    );
+  } else if (args.explicitCatalogRequest) {
+    instructions.push(
+      "- Se houver modelos compatíveis no contexto, liste 2 ou 3 opções concretas pelo nome quando o cliente pedir modelos/opções/fotos. Não fique só perguntando se ele quer ver."
     );
   } else {
     instructions.push(
@@ -1601,6 +2094,7 @@ function buildInstructions(args: {
   availablePoolsText: string;
   lastCustomerMessage: string;
   behaviorInstructionBlock: string;
+  salesMethodologyInstructionBlock: string;
   commercialObjectiveBlock: string;
   shouldLoadPools: boolean;
   lastAiMessage: string | null;
@@ -1613,6 +2107,7 @@ function buildInstructions(args: {
   catalogEvidenceBlock: string;
   responsePriorityBlock: string;
   examplesBlock: string;
+  shouldPresentPoolRecommendations: boolean;
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
@@ -1622,6 +2117,7 @@ function buildInstructions(args: {
   return `
 Você é a IA comercial real do projeto ZION atendendo a loja ${storeLabel}.
 Você está falando com ${leadLabel}.
+O nome cadastrado do cliente é ${leadLabel}; se esse nome parecer uma gíria ou apelido, trate como nome próprio quando usar.
 
 MISSÃO
 Responder como uma vendedora humana de WhatsApp: clara, natural, curta, útil e comercial.
@@ -1654,15 +2150,39 @@ ESTILO DE WHATSAPP
 - quando a dúvida for simples, seja simples
 - não transforme confirmação simples em mini-manual
 - não use listas grandes sem necessidade
+- escreva em português correto, com acentos, til, crase, vírgulas e interrogação quando fizer sentido
+- não escreva errado de propósito para parecer humana
+- não use sarcasmo, ironia, deboche, grosseria ou intimidade arriscada
+- não use "tio", "mano", "parça", "amigo" ou apelidos parecidos como gíria, intimidade ou tratamento genérico
+- se o nome cadastrado do cliente for "Tio", isso é nome próprio e pode ser usado com moderação, como qualquer outro nome; não trate como gíria
+- em mensagens curtas e informais de WhatsApp, evite ponto final no fim da última frase; prefira terminar sem ponto, com ? ou ! quando fizer sentido
+- em mensagens longas, sérias, explicações técnicas, contratos, orçamentos ou avisos formais, use pontuação completa normalmente
+- a naturalidade de WhatsApp nunca pode contrariar SPIN, BANT, sinceridade comercial ou regras da loja
 
 REGRAS OPERACIONAIS
-- use o onboarding como fonte principal de verdade
+- use a Configuração viva da loja como fonte principal de verdade; tecnicamente ela pode vir das respostas scoped do onboarding/configurações
 - use as evidências de catálogo, estoque e foto fornecidas abaixo como fonte de verdade para produto e mídia
 - não prometa preço, prazo, instalação, visita, desconto, pagamento ou cobertura regional sem base
+- trate desconto máximo/percentual máximo como limite interno de negociação, não como oferta inicial para o cliente
+- nunca revele automaticamente o percentual máximo de desconto configurado, como "até 18%", "até X%" ou equivalente, a menos que a configuração diga explicitamente para divulgar esse número ao cliente
+- se o cliente perguntar sobre desconto, responda de forma comercial e protegendo margem: diga que a loja consegue avaliar desconto conforme produto, projeto, forma de pagamento ou condição configurada
+- ao falar de desconto, venda valor antes de reduzir preço: destaque orientação, produto, instalação, qualidade, segurança, garantia, atendimento ou outro diferencial configurado antes de negociar abatimento
+- só aproxime ou ofereça percentual específico quando isso estiver claramente autorizado nas regras de desconto, política comercial ou por aprovação humana
 - se faltar base para cravar algo, responda com cautela comercial em vez de inventar certeza
 - se houver regra clara de escalonamento humano, respeite
 - não prometa enviar mídia, PDF, catálogo ou fotos como se a entrega já estivesse acontecendo
 - só cite modelos concretos quando fizer sentido e quando houver pedido explícito atual
+- quando o cliente já aceitou ver modelos ou pediu opções, não peça permissão de novo: use o catálogo e apresente 2 ou 3 recomendações reais com nome e motivo curto
+- se houver contexto suficiente como espaço, uso por crianças, família, básico/premium ou instalação, use esse contexto para justificar a recomendação
+
+REGRAS ESPECÍFICAS DE DESCONTO E NEGOCIAÇÃO
+- Desconto máximo, percentual máximo ou limite interno são informações de bastidor comercial; use para não ultrapassar limite, não para abrir a negociação.
+- Não responda "trabalhamos até X%" só porque existe um limite máximo configurado.
+- Resposta preferida para pergunta genérica sobre desconto: "Conseguimos avaliar desconto dependendo do produto, do projeto e da forma de pagamento." Adapte com a explicação simples que estiver nas configurações.
+- Se houver explicação de desconto nas configurações, use essa explicação em linguagem simples, sem revelar limite máximo se ele não estiver autorizado para divulgação.
+- Se o cliente pressionar por desconto antes de escolher produto/projeto, conduza para entender o caso antes de abrir margem.
+- Se desconto depender de aprovação humana, diga que dá para avaliar e que casos especiais podem precisar de confirmação da loja.
+- A postura comercial é vender bem e proteger margem: não entregue o maior desconto possível logo no começo.
 
 REGRAS ESPECÍFICAS DE SINCERIDADE
 - Se o cliente pedir um produto específico e ele não aparecer entre os itens compatíveis, diga que você não conseguiu localizar esse item específico no catálogo atual.
@@ -1685,16 +2205,19 @@ ${args.commercialObjectiveBlock}
 EVIDÊNCIAS DO CATÁLOGO
 ${args.catalogEvidenceBlock}
 
+METODOLOGIA COMERCIAL OFICIAL DO ZION
+${args.salesMethodologyInstructionBlock}
+
 COMPORTAMENTO OFICIAL DO ZION
 ${args.behaviorInstructionBlock}
 
 EXEMPLOS DE TOM
 ${args.examplesBlock}
 
-BASE OPERACIONAL DA LOJA
+BASE OPERACIONAL E CONFIGURAÇÃO VIVA DA LOJA
 ${operationalBlock}
 
-RESUMO BRUTO DO ONBOARDING
+RESUMO BRUTO DAS RESPOSTAS CONFIGURADAS
 ${rawOnboardingSummary}
 
 ETAPA DO LEAD
@@ -1709,6 +2232,7 @@ ${args.availablePoolsText || "Nenhuma opção de piscina carregada no contexto."
 SINAIS DO CONTEXTO
 - múltiplas intenções na última mensagem: ${args.questionIntentCount >= 2 ? "sim" : "não"}
 - pedido explícito atual de catálogo/fotos/modelos: ${args.explicitCatalogRequest ? "sim" : "não"}
+- deve apresentar recomendações de piscina agora: ${args.shouldPresentPoolRecommendations ? "sim" : "não"}
 - pergunta sobre instalação: ${looksLikeInstallationQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - pergunta sobre visita técnica: ${looksLikeTechnicalVisitQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - pergunta sobre preço: ${looksLikePriceQuestion(args.lastCustomerMessage) ? "sim" : "não"}
@@ -1733,6 +2257,10 @@ SAÍDA OBRIGATÓRIA
 - não use títulos
 - não escreva observações para o sistema
 - em modo objetivo, mantenha a resposta bem compacta
+- use português correto; não remova acentos, til, crase, vírgulas nem interrogação necessária
+- não termine mensagens curtas e informais com ponto final, a menos que o tom precise ser formal ou sério
+- não use "tio" nem apelidos íntimos como gíria, abertura genérica ou tratamento padrão
+- se o nome real do cliente for "Tio", pode usar o nome com naturalidade e moderação, sem forçar em toda resposta
 `.trim();
 }
 
@@ -1792,7 +2320,58 @@ function detectLastAiListedPools(lastAiMessage: string | null): boolean {
   );
 }
 
-function cleanupAiText(text: string, responseMode: ResponseMode): string {
+
+function applyWhatsAppOutputStyle(
+  text: string,
+  responseMode: ResponseMode,
+  leadName?: string | null
+): string {
+  const leadNameIsTio = normalizeText(leadName) === "tio";
+  let withoutRiskyIntimacy = String(text || "")
+    .replace(/^\s*e aí[,!\s]+/i, "")
+    .replace(/^\s*mano[,!\s]+/i, "")
+    .trim();
+
+  // "tio" não deve ser usado como gíria ou intimidade.
+  // Porém, se o nome cadastrado do cliente for Tio, isso é nome próprio e pode permanecer.
+  if (!leadNameIsTio) {
+    withoutRiskyIntimacy = withoutRiskyIntimacy.replace(/^\s*tio[,!\s]+/i, "").trim();
+  }
+
+  const lines = withoutRiskyIntimacy.split("\n");
+
+  const styledLines = lines.map((line) => {
+    const trimmed = line.trimEnd();
+
+    if (!trimmed) return line;
+    if (!trimmed.endsWith(".")) return line;
+    if (/\.\.\.$/.test(trimmed)) return line;
+    if (/\b(?:sr|sra|dr|dra|av|obs)\.$/i.test(trimmed)) return line;
+    if (/https?:\/\//i.test(trimmed)) return line;
+    if (/\b\d+[.]\d+\b/.test(trimmed)) return line;
+
+    const isBulletOrNumbered = /^\s*(?:[-*•]|\d+[.)])\s+/.test(trimmed);
+    const isShortInformalLine = trimmed.length <= 180;
+    const shouldRemoveFinalPeriod = responseMode === "objective" || isShortInformalLine || isBulletOrNumbered;
+
+    if (!shouldRemoveFinalPeriod) return line;
+
+    return trimmed.slice(0, -1);
+  });
+
+  let styled = styledLines.join("\n").trim();
+
+  if (styled.endsWith(".")) {
+    const lastParagraph = styled.split(/\n{2,}/).pop() || styled;
+    if (lastParagraph.length <= 220 && !/\.\.\.$/.test(lastParagraph)) {
+      styled = styled.slice(0, -1).trimEnd();
+    }
+  }
+
+  return styled;
+}
+
+function cleanupAiText(text: string, responseMode: ResponseMode, leadName?: string | null): string {
   let cleaned = String(text || "").trim();
 
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
@@ -1820,7 +2399,7 @@ function cleanupAiText(text: string, responseMode: ResponseMode): string {
     }
   }
 
-  return cleaned.trim();
+  return applyWhatsAppOutputStyle(cleaned.trim(), responseMode, leadName);
 }
 
 function buildModelInput(messages: MessageRow[]) {
@@ -2023,13 +2602,20 @@ export async function generateAiSalesReply(
     const recentHistory = formatRecentHistory(orderedMessages);
     const lastAiMessage = detectLastAiMessage(orderedMessages);
     const lastAiListedPools = detectLastAiListedPools(lastAiMessage);
+    const lastAiOfferedPoolOptions = detectLastAiOfferedPoolOptions(lastAiMessage);
     const explicitCatalogRequest = isExplicitCatalogRequest(lastCustomerMessage);
     const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
+    const customerConversationText = buildCustomerConversationText(orderedMessages, lastCustomerMessage);
+    const shouldPresentPoolRecommendations =
+      (explicitCatalogRequest && catalogIntent.asksAboutPool) ||
+      (lastAiOfferedPoolOptions && isAffirmativeReply(lastCustomerMessage));
 
     const shouldLoadPools =
       explicitCatalogRequest ||
-      (looksLikeComparisonQuestion(lastCustomerMessage) && !lastAiListedPools) ||
-      catalogIntent.asksAboutPool;
+      (looksLikeComparisonQuestion(customerConversationText) && !lastAiListedPools) ||
+      catalogIntent.asksAboutPool ||
+      shouldPresentPoolRecommendations ||
+      (looksLikePoolChoice(customerConversationText) && isAffirmativeReply(lastCustomerMessage));
 
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
     let poolCountUsed = 0;
@@ -2037,7 +2623,7 @@ export async function generateAiSalesReply(
     let unavailableMatchedPools: MatchedPool[] = [];
 
     let pools: PoolRow[] = [];
-    if (shouldLoadPools || catalogIntent.asksForPhoto || catalogIntent.asksAboutPool) {
+    if (shouldLoadPools || catalogIntent.asksForPhoto || catalogIntent.asksAboutPool || shouldPresentPoolRecommendations) {
       const { data: poolsData, error: poolsError } = await supabase
         .from("pools")
         .select(
@@ -2087,9 +2673,9 @@ export async function generateAiSalesReply(
         .map((pool) => ({
           pool,
           hasPhoto: (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url,
-          score: scorePool(pool, lastCustomerMessage),
+          score: scorePool(pool, customerConversationText),
         }))
-        .filter((match) => match.score > 0)
+        .filter((match) => shouldLoadPools || match.score > 0)
         .sort((a, b) => b.score - a.score);
 
       matchedPools = scoredPools
@@ -2271,12 +2857,20 @@ export async function generateAiSalesReply(
       lastAiListedPools,
       hasCatalogEvidence: matchedCatalogItems.length > 0,
       hasPoolEvidence: matchedPools.length > 0,
+      shouldPresentPoolRecommendations,
     });
 
     const examplesBlock = buildExamplesBlock({
       intents: commercialObjective.intents,
       nextBestQuestion: commercialObjective.nextBestQuestion,
       explicitCatalogRequest,
+    });
+
+    const salesMethodologyInstructionBlock = buildSalesMethodologyInstructionBlock({
+      lastCustomerMessage,
+      hasCatalogEvidence: matchedCatalogItems.length > 0,
+      hasPoolEvidence: matchedPools.length > 0,
+      responseMode: commercialObjective.responseMode,
     });
 
     const instructions = buildInstructions({
@@ -2289,6 +2883,7 @@ export async function generateAiSalesReply(
       availablePoolsText,
       lastCustomerMessage,
       behaviorInstructionBlock,
+      salesMethodologyInstructionBlock,
       commercialObjectiveBlock,
       shouldLoadPools,
       lastAiMessage,
@@ -2301,6 +2896,7 @@ export async function generateAiSalesReply(
       catalogEvidenceBlock,
       responsePriorityBlock,
       examplesBlock,
+      shouldPresentPoolRecommendations,
     });
 
     const input = buildModelInput(orderedMessages);
@@ -2314,7 +2910,8 @@ export async function generateAiSalesReply(
 
     const aiText = cleanupAiText(
       String(response.output_text || "").trim(),
-      commercialObjective.responseMode
+      commercialObjective.responseMode,
+      lead.name
     );
 
     if (!aiText) {
