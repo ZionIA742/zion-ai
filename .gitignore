@@ -39,3 +39,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Arquivos locais de teste do Pilar 8
+src/tests/catalog-import-fixtures/

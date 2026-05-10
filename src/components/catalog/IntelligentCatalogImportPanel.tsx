@@ -1602,41 +1602,77 @@ function extractImportedBestMoneyValue(value: string | null | undefined) {
 
   return null;
 }
+
+function normalizeImportedPoolMetricSource(value: string) {
+  return String(value || "")
+    .replace(/[×✕]/g, "x")
+    .replace(/(\d)\s*([,.])\s*(\d)/g, "$1$2$3")
+    .replace(/\s+/g, " ");
+}
+
 function extractImportedPoolMetrics(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
     .map((value) => String(value ?? ""))
     .join(" ");
+  const metricSource = normalizeImportedPoolMetricSource(source);
   let width: number | null = null;
   let length: number | null = null;
   let depth: number | null = null;
   let capacity: number | null = null;
   let price: number | null = null;
-  const rectMatch = source.match(/(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m/i);
+  const rectMatch =
+    metricSource.match(/(?:medidas?|dimens(?:oes|[õo]es)|tamanho)\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m?/i) ||
+    metricSource.match(/(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m\b/i);
   if (rectMatch) {
     width = parseImportedDecimal(rectMatch[1]);
     length = parseImportedDecimal(rectMatch[2]);
+  }
+  if (width == null) {
+    const widthMatch = metricSource.match(/(?:largura|width)\s*(?:de)?\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?/i);
+    if (widthMatch) width = parseImportedDecimal(widthMatch[1]);
+  }
+  if (length == null) {
+    const lengthMatch = metricSource.match(/(?:comprimento|length)\s*(?:de)?\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?/i);
+    if (lengthMatch) length = parseImportedDecimal(lengthMatch[1]);
   }
   const diamMatch = source.match(/(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
   if (diamMatch) {
     width = parseImportedDecimal(diamMatch[1]);
     length = parseImportedDecimal(diamMatch[1]);
   }
+  if (width == null || length == null) {
+    const normalizedDiamMatch = metricSource.match(/(\d+[\.,]?\d*)\s*m\s*diam/i);
+    if (normalizedDiamMatch) {
+      width = parseImportedDecimal(normalizedDiamMatch[1]);
+      length = parseImportedDecimal(normalizedDiamMatch[1]);
+    }
+  }
   const explicitDepth = extractMetadataValue(item, ["profundidade", "depth"]);
-  const depthSource = explicitDepth || source;
+  const depthSource = normalizeImportedPoolMetricSource(explicitDepth || metricSource);
   const depthMatch =
     depthSource.match(/profundidade\s*(?:de|do|da)?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m?/i) ||
     depthSource.match(/^(\d+(?:[\.,]\d+)?)\s*m?$/i) ||
-    source.match(/prof\.?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m\b/i);
+    metricSource.match(/prof\.?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m\b/i);
   if (depthMatch) {
     depth = parseImportedDecimal(depthMatch[1]);
+  }
+  if (depth == null) {
+    const normalizedDepthMatch = metricSource.match(/prof(?:undidade)?\.?\s*(?:de)?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m\b/i);
+    if (normalizedDepthMatch) depth = parseImportedDecimal(normalizedDepthMatch[1]);
   }
   const capacityMatch =
     source.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
     source.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)\b/i);
   if (capacityMatch) {
     capacity = parseImportedDecimal(capacityMatch[1]);
+  }
+  if (capacity == null) {
+    const normalizedCapacityMatch =
+      metricSource.match(/capacidade(?:\s+estimada|\s+maxima|\s+aproximada)?\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
+      metricSource.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)\b/i);
+    if (normalizedCapacityMatch) capacity = parseImportedDecimal(normalizedCapacityMatch[1]);
   }
   const priceMatch =
     source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
@@ -2284,6 +2320,287 @@ function shouldForcePdfAccessoryCategory(
   return isPdfAccessoryImportItem(item) && hasImportedAccessorySku(item);
 }
 
+function isPdfOtherImportItem(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const detectionText = buildImportedPdfAccessoryDetectionText(item);
+  return (
+    detectionText.includes("pdf") &&
+    (detectionText.includes("outros") || detectionText.includes("outro"))
+  );
+}
+
+function hasImportedOtherSku(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  if (/^(OUT|OTR)[-\s]?\d{1,4}$/i.test(sku)) return true;
+
+  const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
+  return /\b(?:OUT|OTR)[-\s]?\d{1,4}\b/i.test(text);
+}
+
+function shouldForcePdfOtherCategory(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return isPdfOtherImportItem(item) && hasImportedOtherSku(item);
+}
+
+function shouldSkipPdfOtherNoise(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  if (!isPdfOtherImportItem(item)) return false;
+  if (hasImportedOtherSku(item)) return false;
+  return extractImportedCatalogPriceCents(item) == null;
+}
+
+function isPowerPointImportItem(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const rawSource = [
+    extractImportedOriginalSourceFileName(item),
+    item.sourceFileName,
+    extractMetadataValue(item, [
+      "source_file_name",
+      "source_file_name_original",
+      "original_source_file_name",
+    ]),
+    ...Object.values(item.metadata ?? {}),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const normalizedSource = normalizeImportedLoose(rawSource);
+  return (
+    /\.(pptx|ppt)\b/i.test(rawSource) ||
+    normalizedSource.includes("pptx") ||
+    normalizedSource.includes("powerpoint") ||
+    normalizedSource.includes("power point")
+  );
+}
+
+function hasImportedPoolSku(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  if (/^PSC[-\s]?\d{1,4}$/i.test(sku)) return true;
+
+  const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
+  return /\bPSC[-\s]?\d{1,4}\b/i.test(text);
+}
+
+function shouldKeepPowerPointPoolDestination(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return isPowerPointImportItem(item) && hasImportedPoolSku(item);
+}
+
+function hasImportedChemicalSku(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  if (/^QMC[-\s]?\d{1,4}$/i.test(sku)) return true;
+
+  const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
+  return /\bQMC[-\s]?\d{1,4}\b/i.test(text);
+}
+
+function shouldUsePowerPointChemicalCatalogRules(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  category: ImportedDestination
+) {
+  return category === "quimicos" && isPowerPointImportItem(item) && hasImportedChemicalSku(item);
+}
+
+function shouldUsePowerPointAccessoryCatalogRules(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  category: ImportedDestination
+) {
+  return category === "acessorios" && isPowerPointImportItem(item) && hasImportedAccessorySku(item);
+}
+
+function hasImportedPowerPointOtherSku(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  if (/^OUT[-\s]?\d{1,4}$/i.test(sku)) return true;
+
+  const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
+  return /\bOUT[-\s]?\d{1,4}\b/i.test(text);
+}
+
+function shouldUsePowerPointOtherCatalogRules(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  category: ImportedDestination
+) {
+  return category === "outros" && isPowerPointImportItem(item) && hasImportedPowerPointOtherSku(item);
+}
+
+function buildPowerPointPoolItemText(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
+    .map((value) => String(value ?? ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function extractPowerPointPoolName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = buildPowerPointPoolItemText(item);
+  const line = source
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((value) => value.trim())
+    .find((value) => /^piscina\s+\S+/i.test(value) && !/\bPSC[-\s]?\d{1,4}\b/i.test(value));
+
+  return line ? line.slice(0, 160) : "";
+}
+
+function extractPowerPointChemicalName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const lines = buildPowerPointPoolItemText(item)
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((value) => cleanupImportedDescriptionLine(value.trim()))
+    .filter(Boolean);
+
+  const line = lines.find((value) => {
+    if (/^QMC[-\s]?\d{1,4}$/i.test(value)) return false;
+    if (/^={2,}\s*ITEM\b/i.test(value) || /^SLIDE\s*:/i.test(value)) return false;
+    if (/^(?:sku|codigo|código|preço|preco|estoque|dosagem|embalagem|categoria)\b/i.test(value)) {
+      return false;
+    }
+
+    return /\blinha\s+[a-z]\s+\d{3,4}\b/i.test(value);
+  });
+
+  return line ? line.slice(0, 160) : "";
+}
+
+function extractPowerPointAccessoryName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const isValidAccessoryName = (value: string) => {
+    if (!value) return false;
+    if (/^ACC[-\s]?\d{1,4}$/i.test(value)) return false;
+    if (/^={2,}\s*ITEM\b/i.test(value) || /^SLIDE\s*:/i.test(value)) return false;
+    if (isGenericImportedTitle(value)) return false;
+    if (
+      /^(?:sku|codigo|código|preço|preco|estoque|dosagem|embalagem|categoria|aplica(?:c(?:ao)?|ção))\b/i.test(value)
+    ) {
+      return false;
+    }
+    if (/\b(?:catalogo de teste|catálogo de teste|slide|pagina|página|arquivo de teste|powerpoint|power point)\b/i.test(value)) {
+      return false;
+    }
+
+    return /[a-zà-ú]/i.test(value);
+  };
+
+  const lines = buildPowerPointPoolItemText(item)
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((value) =>
+      cleanupImportedDescriptionLine(value.trim())
+        .replace(/\bEstoque\b.*$/i, "")
+        .replace(/[.;,\s]+$/g, "")
+        .trim()
+    )
+    .filter(Boolean);
+
+  const numberedLine = lines.find((value) => {
+    return isValidAccessoryName(value) && /\b\d{3,4}\b/.test(value);
+  });
+
+  if (numberedLine) return numberedLine.slice(0, 160);
+
+  const fallbackLine = lines.find((value) => isValidAccessoryName(value) && value.length >= 5);
+
+  return fallbackLine ? fallbackLine.slice(0, 160) : "";
+}
+
+function extractPowerPointOtherName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const isValidOtherName = (value: string) => {
+    if (!value) return false;
+    if (/^OUT[-\s]?\d{1,4}$/i.test(value)) return false;
+    if (/^={2,}\s*ITEM\b/i.test(value) || /^SLIDE\s*:/i.test(value)) return false;
+    if (isGenericImportedTitle(value)) return false;
+    if (
+      /^(?:sku|codigo|código|preço|preco|estoque|dosagem|embalagem|categoria|aplica(?:c(?:ao)?|ção))\b/i.test(value)
+    ) {
+      return false;
+    }
+    if (/\b(?:catalogo de teste|catálogo de teste|slide|pagina|página|arquivo de teste|powerpoint|power point)\b/i.test(value)) {
+      return false;
+    }
+
+    return /[a-zà-ú]/i.test(value);
+  };
+
+  const lines = buildPowerPointPoolItemText(item)
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((value) =>
+      cleanupImportedDescriptionLine(value.trim())
+        .replace(/\bEstoque\b.*$/i, "")
+        .replace(/[.;,\s]+$/g, "")
+        .trim()
+    )
+    .filter(Boolean);
+
+  const lineWithCatalogPattern = lines.find((value) => {
+    return isValidOtherName(value) && /\blinha\s+[a-z]\s+\d{3,4}\b/i.test(value);
+  });
+
+  if (lineWithCatalogPattern) return lineWithCatalogPattern.slice(0, 160);
+
+  const numberedLine = lines.find((value) => {
+    return isValidOtherName(value) && /\b\d{3,4}\b/.test(value);
+  });
+
+  if (numberedLine) return numberedLine.slice(0, 160);
+
+  const fallbackLine = lines.find((value) => isValidOtherName(value) && value.length >= 5);
+
+  return fallbackLine ? fallbackLine.slice(0, 160) : "";
+}
+
+function extractPowerPointItemStockQuantity(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const lines = buildPowerPointPoolItemText(item)
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const inlineMatch = line.match(/^estoque(?:\s+inicial)?\s*[:\-]?\s*(\d+(?:[.,]\d+)?)/i);
+    if (inlineMatch?.[1]) {
+      const parsed = parseImportedDecimal(inlineMatch[1]);
+      if (parsed != null) return Math.max(0, Math.round(parsed));
+    }
+
+    if (/^estoque(?:\s+inicial)?$/i.test(line)) {
+      const parsed = parseImportedDecimal(lines[index + 1] || "");
+      if (parsed != null) return Math.max(0, Math.round(parsed));
+    }
+  }
+
+  return 0;
+}
+
+function extractPowerPointPoolStockQuantity(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return extractPowerPointItemStockQuantity(item);
+}
+
 function shouldSkipPdfAccessoryNoise(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -2298,6 +2615,10 @@ function shouldSkipImportedItem(
   const normalizedTitle = normalizeImportedLoose(item.title);
   const normalizedRaw = normalizeImportedLoose(item.rawText);
   const normalizedType = normalizeImportedLoose(item.type);
+
+  if (shouldSkipPdfOtherNoise(item)) {
+    return true;
+  }
 
   if (shouldSkipPdfAccessoryNoise(item)) {
     return true;
@@ -2460,6 +2781,10 @@ function looksLikeImportedDocumentIntroCatalogItem(args: {
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
+  if (shouldForcePdfOtherCategory(item)) {
+    return "outros";
+  }
+
   if (shouldForcePdfAccessoryCategory(item)) {
     return "acessorios";
   }
@@ -3253,8 +3578,12 @@ async function handleSaveImportedItemsToCatalog() {
         try {
           const initialDestination = resolveImportedDestination(item);
           const metrics = extractImportedPoolMetrics(item);
+          const keepPowerPointPoolDestination =
+            initialDestination === "pool" && shouldKeepPowerPointPoolDestination(item);
           const destination =
-            initialDestination === "pool" && !canPersistAsPool(metrics)
+            initialDestination === "pool" &&
+            !canPersistAsPool(metrics) &&
+            !keepPowerPointPoolDestination
               ? normalizeImportedCatalogCategory(
                   [
                     extractImportedSourceCategory(item),
@@ -3283,14 +3612,28 @@ async function handleSaveImportedItemsToCatalog() {
           }
 
           if (destination === "pool") {
-            const poolName = buildImportedPoolName(item);
+            const poolName =
+              (keepPowerPointPoolDestination ? extractPowerPointPoolName(item) : "") ||
+              buildImportedPoolName(item);
 
             if (!poolName || isGenericImportedTitle(poolName)) {
               continue;
             }
 
+            if (
+              keepPowerPointPoolDestination &&
+              (metrics.width_m == null || metrics.length_m == null || metrics.depth_m == null)
+            ) {
+              throw new Error(
+                `Piscina PowerPoint ${extractImportedCatalogSku(item) || poolName} sem medidas obrigatorias para salvar.`
+              );
+            }
+
             let poolDescription = buildImportedPoolDescription(item);
             let safeDepth = metrics.depth_m;
+            const poolStockQuantity = keepPowerPointPoolDestination
+              ? extractPowerPointPoolStockQuantity(item)
+              : extractImportedCatalogStockQuantity(item);
 
             if (safeDepth == null) {
               safeDepth = 1.4;
@@ -3326,6 +3669,7 @@ async function handleSaveImportedItemsToCatalog() {
                   description: poolDescription,
                   is_active: true,
                   track_stock: true,
+                  stock_quantity: poolStockQuantity,
                 })
                 .eq("id", existingPool.id);
 
@@ -3348,7 +3692,7 @@ async function handleSaveImportedItemsToCatalog() {
                   description: poolDescription,
                   is_active: true,
                   track_stock: true,
-                  stock_quantity: 0,
+                  stock_quantity: poolStockQuantity,
                 })
                 .select("id")
                 .single();
@@ -3421,7 +3765,37 @@ async function handleSaveImportedItemsToCatalog() {
                   [item.type, item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ")
                 );
 
-          const itemName = buildImportedCatalogName(item);
+          const usePowerPointChemicalCatalogRules = shouldUsePowerPointChemicalCatalogRules(
+            item,
+            category
+          );
+          const usePowerPointAccessoryCatalogRules = shouldUsePowerPointAccessoryCatalogRules(
+            item,
+            category
+          );
+          const usePowerPointOtherCatalogRules = shouldUsePowerPointOtherCatalogRules(
+            item,
+            category
+          );
+          const powerPointAccessoryName = usePowerPointAccessoryCatalogRules
+            ? extractPowerPointAccessoryName(item)
+            : "";
+          const safePowerPointAccessoryName =
+            powerPointAccessoryName && !isGenericImportedTitle(powerPointAccessoryName)
+              ? powerPointAccessoryName
+              : "";
+          const powerPointOtherName = usePowerPointOtherCatalogRules
+            ? extractPowerPointOtherName(item)
+            : "";
+          const safePowerPointOtherName =
+            powerPointOtherName && !isGenericImportedTitle(powerPointOtherName)
+              ? powerPointOtherName
+              : "";
+          const itemName =
+            (usePowerPointChemicalCatalogRules ? extractPowerPointChemicalName(item) : "") ||
+            safePowerPointAccessoryName ||
+            safePowerPointOtherName ||
+            buildImportedCatalogName(item);
           if (!itemName || isGenericImportedTitle(itemName)) {
             continue;
           }
@@ -3451,7 +3825,12 @@ async function handleSaveImportedItemsToCatalog() {
 
           const sku = extractImportedCatalogSku(item) || null;
           const priceCents = extractImportedCatalogPriceCents(item);
-          const stockQuantity = extractImportedCatalogStockQuantity(item);
+          const stockQuantity =
+            usePowerPointChemicalCatalogRules ||
+            usePowerPointAccessoryCatalogRules ||
+            usePowerPointOtherCatalogRules
+            ? extractPowerPointItemStockQuantity(item)
+            : extractImportedCatalogStockQuantity(item);
           const metadata = buildImportedCatalogMetadata(item, category, source);
           const description = buildImportedCatalogDescription(item);
 

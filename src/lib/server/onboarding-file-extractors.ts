@@ -333,6 +333,7 @@ async function extractTextFromPptx(buffer: Buffer) {
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
   const parts: string[] = [];
+  let itemIndex = 0;
 
   for (const slidePath of slides) {
     const file = zip.files[slidePath];
@@ -350,10 +351,19 @@ async function extractTextFromPptx(buffer: Buffer) {
     const slideNumberMatch = slidePath.match(/slide(\d+)\.xml/i);
     const slideNumber = slideNumberMatch ? slideNumberMatch[1] : "?";
 
-    parts.push(`SLIDE: ${slideNumber}`);
-
     const slideText = texts.filter(Boolean).join("\n").trim();
     if (slideText) {
+      const looksLikeItemSlide =
+        /\b(?:PSC|QMC|ACC|OUT|OTR)[-\s]?\d{3,4}\b/i.test(slideText) ||
+        /^\s*(?:piscina|qu[ií]mico|acess[oó]rio)\b[\s\S]*\b\d{3,4}\b/im.test(slideText);
+
+      if (looksLikeItemSlide) {
+        itemIndex += 1;
+        parts.push(`=== ITEM ${itemIndex} | SLIDE: ${slideNumber} ===`);
+      } else {
+        parts.push(`SLIDE: ${slideNumber}`);
+      }
+
       parts.push(slideText);
     }
 
