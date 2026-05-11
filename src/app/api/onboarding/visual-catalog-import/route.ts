@@ -32,6 +32,7 @@ type VisualCatalogDraft = {
     depth_m: number | null;
     capacity_l: number | null;
   } | null;
+  visualDimensionsText: string | null;
   material: string | null;
   description: string | null;
   pageNumber: number;
@@ -83,11 +84,82 @@ function coerceNullableNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseVisualDecimal(value: string | null | undefined) {
+  const normalized = String(value || "").replace(",", ".").replace(/[^\d.]/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractDimensionsFromVisualName(name: string | null) {
+  if (!name) return null;
+
+  const match = name.match(
+    /(.+?)\s+(\d+(?:[,.]\d+)?)\s*m?\s*x\s*(\d+(?:[,.]\d+)?)\s*m?(?:\s*x\s*(\d+(?:[,.]\d+)?)\s*m?)?/i
+  );
+  if (!match) return null;
+
+  const cleanName = match[1].trim().replace(/[.;,\s]+$/g, "");
+  return {
+    cleanName: cleanName || name,
+    visualDimensionsText: match[0].slice(match[1].length).trim(),
+    width_m: parseVisualDecimal(match[2]),
+    length_m: parseVisualDecimal(match[3]),
+    depth_m: parseVisualDecimal(match[4]),
+  };
+}
+
+function buildVisualDimensionsTextFromDraft(value: any) {
+  const dimensionsFromName = extractDimensionsFromVisualName(coerceNullableString(value?.name));
+  if (dimensionsFromName?.visualDimensionsText) return dimensionsFromName.visualDimensionsText;
+
+  return coerceNullableString(value?.visualDimensionsText || value?.visual_dimensions_text);
+}
+
+function cleanupVisualMissingFields(params: {
+  missingFields: string[];
+  name: string | null;
+  sku: string | null;
+  price_cents: number | null;
+  stock_quantity: number | null;
+  dimensions: VisualCatalogDraft["dimensions"];
+  visualDimensionsText: string | null;
+  material: string | null;
+  description: string | null;
+}) {
+  const filled = new Set<string>();
+  if (params.name) filled.add("name");
+  if (params.sku) filled.add("sku");
+  if (params.price_cents != null) filled.add("price_cents");
+  if (params.stock_quantity != null) filled.add("stock_quantity");
+  if (params.material) filled.add("material");
+  if (params.description) filled.add("description");
+  if (params.visualDimensionsText) {
+    filled.add("dimensions");
+    filled.add("width_m");
+    filled.add("length_m");
+    filled.add("depth_m");
+  } else if (
+    params.dimensions &&
+    (params.dimensions.width_m != null ||
+      params.dimensions.length_m != null ||
+      params.dimensions.depth_m != null ||
+      params.dimensions.capacity_l != null)
+  ) {
+    filled.add("dimensions");
+  }
+  if (params.dimensions?.capacity_l != null) filled.add("capacity_l");
+
+  return params.missingFields.filter((field) => !filled.has(field));
+}
+
 function normalizeVisualDraft(value: any, pageNumber: number, imageRef: string): VisualCatalogDraft | null {
   const category = ["pool", "chemical", "accessory", "other"].includes(String(value?.category || ""))
     ? value.category
     : null;
-  const name = coerceNullableString(value?.name);
+  const rawName = coerceNullableString(value?.name);
+  const dimensionsFromName = extractDimensionsFromVisualName(rawName);
+  const name = dimensionsFromName ? dimensionsFromName.cleanName : rawName;
+  const visualDimensionsText = buildVisualDimensionsTextFromDraft(value);
   const confidence = Math.max(0, Math.min(1, Number(value?.confidence || 0)));
 
   if (!name || confidence <= 0) return null;
@@ -100,23 +172,48 @@ function normalizeVisualDraft(value: any, pageNumber: number, imageRef: string):
         capacity_l: coerceNullableNumber(value.dimensions.capacity_l),
       }
     : null;
+  const normalizedDimensions = dimensionsFromName
+    ? {
+        width_m: dimensions?.width_m ?? dimensionsFromName.width_m,
+        length_m: dimensions?.length_m ?? dimensionsFromName.length_m,
+        depth_m: dimensions?.depth_m ?? dimensionsFromName.depth_m,
+        capacity_l: dimensions?.capacity_l ?? null,
+      }
+    : dimensions;
   const missingFields = Array.isArray(value?.missingFields)
     ? value.missingFields.map((field: unknown) => String(field || "").trim()).filter(Boolean).slice(0, 12)
     : [];
+  const sku = coerceNullableString(value?.sku);
+  const priceCents = coerceNullableNumber(value?.price_cents);
+  const stockQuantity = coerceNullableNumber(value?.stock_quantity);
+  const material = coerceNullableString(value?.material);
+  const description = coerceNullableString(value?.description);
+  const cleanMissingFields = cleanupVisualMissingFields({
+    missingFields,
+    name,
+    sku,
+    price_cents: priceCents,
+    stock_quantity: stockQuantity,
+    dimensions: normalizedDimensions,
+    visualDimensionsText,
+    material,
+    description,
+  });
 
   return {
     category,
     name,
-    sku: coerceNullableString(value?.sku),
-    price_cents: coerceNullableNumber(value?.price_cents),
-    stock_quantity: coerceNullableNumber(value?.stock_quantity),
-    dimensions,
-    material: coerceNullableString(value?.material),
-    description: coerceNullableString(value?.description),
+    sku,
+    price_cents: priceCents,
+    stock_quantity: stockQuantity,
+    dimensions: normalizedDimensions,
+    visualDimensionsText,
+    material,
+    description,
     pageNumber,
     imageRef,
     confidence,
-    missingFields,
+    missingFields: cleanMissingFields,
   };
 }
 
@@ -172,6 +269,7 @@ async function analyzeVisualCatalogPage(params: {
                   sku: { type: ["string", "null"] },
                   price_cents: { type: ["number", "null"] },
                   stock_quantity: { type: ["number", "null"] },
+                  visualDimensionsText: { type: ["string", "null"] },
                   dimensions: {
                     type: ["object", "null"],
                     additionalProperties: false,
@@ -198,6 +296,7 @@ async function analyzeVisualCatalogPage(params: {
                   "sku",
                   "price_cents",
                   "stock_quantity",
+                  "visualDimensionsText",
                   "dimensions",
                   "material",
                   "description",
@@ -215,7 +314,7 @@ async function analyzeVisualCatalogPage(params: {
       {
         role: "system",
         content:
-          "Voce extrai rascunhos de catalogos visuais de lojas de piscina. Uma pagina pode conter 0, 1 ou varios produtos. Retorne um draft separado para cada item visivel, ate 12 itens. Nao resuma varios modelos em um so. Nao escolha apenas o item principal se houver outros modelos. Use apenas nomes, codigos e medidas literalmente visiveis na imagem. Nunca invente nomes genericos como Pool Model 1, Modelo 1, Piscina 1 ou Item 1. Se so houver codigo legivel como E01/E02/E03, use esse codigo como nome provisorio e sku. Se o nome nao estiver legivel, use name null e inclua name em missingFields. Responda somente JSON valido, sem markdown, comentarios ou texto fora do JSON. Nao use fracao solta como 1/2; escreva como string no nome/descricao ou use null em campos numericos. Nao use virgula decimal em numeros JSON. Se a pagina estiver muito densa, retorne menos itens corretos em vez de muitos itens inventados. Se nao houver item claro, retorne drafts vazio.",
+          "Voce extrai rascunhos de catalogos visuais de lojas de piscina. Uma pagina pode conter 0, 1 ou varios produtos. Retorne um draft separado para cada item visivel, ate 12 itens. Nao resuma varios modelos em um so. Nao escolha apenas o item principal se houver outros modelos. Use apenas nomes, codigos e medidas literalmente visiveis na imagem. Separe nome/modelo das medidas: se aparecer ITAPEMA 9,10m x 3,60m x 1,40m, use name ITAPEMA, visualDimensionsText exatamente 9,10m x 3,60m x 1,40m e dimensions com numeros JSON usando ponto decimal. Nao reordene as medidas em visualDimensionsText. Nao misture medidas no name quando conseguir separar. Nunca invente nomes genericos como Pool Model 1, Modelo 1, Piscina 1 ou Item 1. Se so houver codigo legivel como E01/E02/E03, use esse codigo como nome provisorio e sku. Se o nome nao estiver legivel, use name null e inclua name em missingFields. Responda somente JSON valido, sem markdown, comentarios ou texto fora do JSON. Nao use fracao solta como 1/2; escreva como string no nome/descricao ou use null em campos numericos. Nao use virgula decimal em numeros JSON. Se a pagina estiver muito densa, retorne menos itens corretos em vez de muitos itens inventados. Se nao houver item claro, retorne drafts vazio.",
       },
       {
         role: "user",
@@ -223,7 +322,7 @@ async function analyzeVisualCatalogPage(params: {
           {
             type: "input_text",
             text:
-              "Analise esta pagina de catalogo. Extraia todos os modelos/produtos visiveis com leitura segura, ate 12 drafts. Cada piscina/produto/codigo deve virar um draft separado. Preserve codigos como E01, E02, E03 no sku quando forem codigos claros; se forem parte do nome, inclua no name. Nunca crie nomes aproximados ou traduzidos. Nao use Pool Model, Modelo, Piscina ou Item com numero se isso nao estiver escrito na imagem. Se houver apenas codigo visivel, use o codigo como name provisorio. Para piscinas use category pool e tente capturar width_m, length_m, depth_m e capacity_l apenas se estiverem legiveis ao lado do item. Use null quando nao tiver certeza. Campos ausentes devem ser null e listados em missingFields. Use confidence menor quando a leitura estiver incerta. Categorias validas: pool, chemical, accessory, other. Devolva apenas JSON valido.",
+              "Analise esta pagina de catalogo. Extraia todos os modelos/produtos visiveis com leitura segura, ate 12 drafts. Cada piscina/produto/codigo deve virar um draft separado. Preserve codigos como E01, E02, E03 no sku quando forem codigos claros; se forem parte do nome, inclua no name. Nunca crie nomes aproximados ou traduzidos. Nao use Pool Model, Modelo, Piscina ou Item com numero se isso nao estiver escrito na imagem. Se houver apenas codigo visivel, use o codigo como name provisorio. Para piscinas use category pool e tente capturar width_m, length_m, depth_m e capacity_l apenas se estiverem legiveis ao lado do item. Se aparecer modelo junto de medidas, coloque apenas o modelo em name, coloque a medida textual exatamente como aparece em visualDimensionsText, sem reordenar e mantendo virgula decimal, e coloque numeros JSON em dimensions com ponto decimal. Use null quando nao tiver certeza. Campos ausentes devem ser null e listados em missingFields. Use confidence menor quando a leitura estiver incerta. Categorias validas: pool, chemical, accessory, other. Devolva apenas JSON valido.",
           },
           {
             type: "input_image",

@@ -83,6 +83,7 @@ type VisualCatalogImportResponse =
           depth_m: number | null;
           capacity_l: number | null;
         } | null;
+        visualDimensionsText?: string | null;
         material?: string | null;
         description?: string | null;
         pageNumber: number;
@@ -522,6 +523,62 @@ function buildIntelligentImportFormatWarnings(params: {
 }
 function buildVisualCatalogSessionCacheKey(file: File, page: number) {
   return `${file.name}::${file.size}::${page}`;
+}
+function translateVisualMissingField(field: string) {
+  const normalized = String(field || "").trim();
+  const labels: Record<string, string> = {
+    sku: "Codigo/SKU",
+    price_cents: "Preco",
+    stock_quantity: "Estoque",
+    capacity_l: "Capacidade em litros",
+    material: "Material",
+    description: "Descricao",
+    dimensions: "Medidas",
+    width_m: "Largura",
+    length_m: "Comprimento",
+    depth_m: "Profundidade",
+    name: "Nome",
+  };
+  return labels[normalized] || normalized;
+}
+function formatVisualMeter(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${value.toFixed(2).replace(".", ",")}m`
+    : "";
+}
+function formatVisualDraftDimensions(
+  dimensions:
+    | {
+        width_m: number | null;
+        length_m: number | null;
+        depth_m: number | null;
+        capacity_l: number | null;
+      }
+    | null
+    | undefined
+) {
+  if (!dimensions || typeof dimensions !== "object") return "";
+  const values = [
+    formatVisualMeter((dimensions as any).width_m),
+    formatVisualMeter((dimensions as any).length_m),
+    formatVisualMeter((dimensions as any).depth_m),
+  ].filter(Boolean);
+  return values.length > 0 ? values.join(" x ") : "";
+}
+function getVisualDraftDimensionsLabel(draft: {
+  visualDimensionsText?: string | null;
+  dimensions?: {
+    width_m: number | null;
+    length_m: number | null;
+    depth_m: number | null;
+    capacity_l: number | null;
+  } | null;
+}) {
+  const visualText = String(draft.visualDimensionsText || "").trim();
+  if (visualText) return { label: "Medidas lidas", value: visualText };
+
+  const fallback = formatVisualDraftDimensions(draft.dimensions);
+  return fallback ? { label: "Medidas estimadas", value: fallback } : null;
 }
 function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -4552,9 +4609,18 @@ async function handleSaveImportedItemsToCatalog() {
                                       {Math.round((draft.confidence || 0) * 100)}% confianca
                                     </span>
                                   </div>
+                                  <p className="mt-2 text-xs font-medium text-violet-900">
+                                    Rascunho gerado por analise visual. Revise antes de salvar.
+                                  </p>
+                                  {getVisualDraftDimensionsLabel(draft) ? (
+                                    <p className="mt-2 text-xs leading-5 text-gray-700">
+                                      {getVisualDraftDimensionsLabel(draft)?.label}:{" "}
+                                      {getVisualDraftDimensionsLabel(draft)?.value}
+                                    </p>
+                                  ) : null}
                                   {draft.missingFields.length > 0 ? (
                                     <p className="mt-2 text-xs leading-5 text-gray-600">
-                                      Campos faltando: {draft.missingFields.join(", ")}
+                                      Campos faltando: {draft.missingFields.map(translateVisualMissingField).join(", ")}
                                     </p>
                                   ) : null}
                                 </div>
