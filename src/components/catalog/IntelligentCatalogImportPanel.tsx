@@ -78,6 +78,9 @@ type ExistingCatalogItemRow = {
   description: string | null;
   metadata: Record<string, unknown> | null;
 };
+
+const VISUAL_PDF_IMPORT_MESSAGE =
+  "PDF visual detectado. O arquivo tem paginas renderizadas, mas nao possui texto extraivel suficiente para gerar itens automaticamente nesta etapa. Para importar esse catalogo, sera necessario OCR/vision por pagina.";
 type IntelligentCatalogImportPanelProps = {
   organizationId: string | null | undefined;
   storeId: string | null | undefined;
@@ -261,10 +264,54 @@ function buildFrontendDedupedPreviewFromItems(
   });
 }
 
+function isVisualOnlyPdfText(value: string | null | undefined) {
+  const text = String(value || "").trim();
+  if (!text) return true;
+
+  const withoutPagination = text
+    .replace(/[-–—]{1,3}\s*\d{1,4}\s+of\s+\d{1,4}\s*[-–—]{1,3}/gi, " ")
+    .replace(/[-–—]{1,3}\s*p[aá]gina\s*\d{1,4}\s*(?:de|\/)\s*\d{1,4}\s*[-–—]{0,3}/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return text.length <= 500 && withoutPagination.length <= 20;
+}
+
+function isVisualPdfImportResult(result: IntelligentImportResponse) {
+  if (!result.ok) return false;
+
+  const pdfPreviews = result.extractedPreview.filter(
+    (preview) => String(preview.extension || "").toLowerCase() === "pdf"
+  );
+  if (pdfPreviews.length === 0) return false;
+
+  const renderedPdfImages = (result.extractedImagePreview ?? []).filter(
+    (image) => String(image.source || "").toLowerCase() === "pdf"
+  );
+  if (renderedPdfImages.length === 0) return false;
+
+  return pdfPreviews.some((preview) => isVisualOnlyPdfText(preview.textPreview));
+}
+
 function normalizeIntelligentImportResultForFrontend(
   result: IntelligentImportResponse
 ): IntelligentImportResponse {
   if (!result.ok) return result;
+
+  if (isVisualPdfImportResult(result)) {
+    return {
+      ...result,
+      message: VISUAL_PDF_IMPORT_MESSAGE,
+      summary: {
+        ...result.summary,
+        normalizedItems: 0,
+        dedupedItems: 0,
+        duplicateItems: 0,
+      },
+      normalizedPreview: [],
+      dedupedPreview: [],
+    };
+  }
 
   const rawSourceItems =
     result.dedupedPreview.length > 0
@@ -3478,7 +3525,9 @@ async function handleSaveImportedItemsToCatalog() {
 
     if (sourceItems.length === 0) {
       setParentError(
-        "A análise não encontrou itens prontos para salvar. Tente um arquivo mais direto ou revise a importação."
+        isVisualPdfImportResult(intelligentImportResult)
+          ? VISUAL_PDF_IMPORT_MESSAGE
+          : "A análise não encontrou itens prontos para salvar. Tente um arquivo mais direto ou revise a importação."
       );
       return;
     }
