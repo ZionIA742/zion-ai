@@ -58,6 +58,34 @@ type IntelligentImportResponse =
       error: string;
       message: string;
     };
+type VisualCatalogImportResponse =
+  | {
+      ok: true;
+      pageStart: number;
+      pageLimit: number;
+      pages: Array<{
+        pageNumber: number;
+        width: number | null;
+        height: number | null;
+        imageRef: string;
+        hasRenderedImage: boolean;
+      }>;
+      drafts: Array<{
+        category: string | null;
+        name: string | null;
+        sku: string | null;
+        pageNumber: number;
+        imageRef: string;
+        confidence: number;
+        missingFields: string[];
+      }>;
+      warnings: string[];
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    };
 type IntelligentImportSelectedFilePreview = {
   name: string;
   type: string;
@@ -3284,6 +3312,10 @@ export default function IntelligentCatalogImportPanel({
   const [intelligentImportResult, setIntelligentImportResult] =
     useState<IntelligentImportResponse | null>(null);
   const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
+  const [visualCatalogLoading, setVisualCatalogLoading] = useState(false);
+  const [visualCatalogResult, setVisualCatalogResult] =
+    useState<VisualCatalogImportResponse | null>(null);
+  const [visualCatalogError, setVisualCatalogError] = useState<string | null>(null);
 
   const visibleIntelligentImportFiles = useMemo(() => {
     if (intelligentImportFiles.length > 0) {
@@ -3327,6 +3359,10 @@ export default function IntelligentCatalogImportPanel({
     const candidate = intelligentImportResult.extractedImagePreview;
     return Array.isArray(candidate) ? candidate : [];
   }, [intelligentImportResult]);
+  const hasVisualPdfImportResult = useMemo(
+    () => Boolean(intelligentImportResult && isVisualPdfImportResult(intelligentImportResult)),
+    [intelligentImportResult]
+  );
   const intelligentImportDiagnostics = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       return {
@@ -3401,6 +3437,8 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportError(null);
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
+    setVisualCatalogResult(null);
+    setVisualCatalogError(null);
     setIntelligentImportRecovered(false);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -3421,6 +3459,8 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportError(null);
     setIntelligentImportSuccess(null);
     setIntelligentImportResult(null);
+    setVisualCatalogResult(null);
+    setVisualCatalogError(null);
     setIntelligentImportRecovered(false);
     try {
       const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
@@ -3445,6 +3485,9 @@ export default function IntelligentCatalogImportPanel({
       const decoratedResult = decorateIntelligentImportResultWithImageFallback(result, selectedFilesPreview);
       const frontendReadyResult = normalizeIntelligentImportResultForFrontend(decoratedResult);
       setIntelligentImportResult(frontendReadyResult);
+      if (isVisualPdfImportResult(frontendReadyResult)) {
+        void handleRunVisualCatalogBase({ resetResult: false });
+      }
       setIntelligentImportSuccess(
         frontendReadyResult.message || "Importação inteligente processada com sucesso."
       );
@@ -3453,6 +3496,52 @@ export default function IntelligentCatalogImportPanel({
       setIntelligentImportError("Erro inesperado ao testar a importação inteligente.");
     } finally {
       setIntelligentImportLoading(false);
+    }
+  }
+
+  async function handleRunVisualCatalogBase(options?: { resetResult?: boolean }) {
+    const resetResult = options?.resetResult ?? true;
+    const pdfFile = intelligentImportFiles.find((file) =>
+      String(file.name || "").toLowerCase().endsWith(".pdf")
+    );
+
+    if (!pdfFile) {
+      setVisualCatalogError("Selecione um PDF visual para analisar as primeiras paginas.");
+      return;
+    }
+
+    setVisualCatalogLoading(true);
+    setVisualCatalogError(null);
+    if (resetResult) {
+      setVisualCatalogResult(null);
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append("file", pdfFile);
+      formData.append("pageStart", "1");
+      formData.append("pageLimit", "3");
+
+      const response = await fetch("/api/onboarding/visual-catalog-import", {
+        method: "POST",
+        body: formData,
+      });
+      const result = (await response.json()) as VisualCatalogImportResponse;
+
+      if (!response.ok || !result.ok) {
+        setVisualCatalogError(
+          !result.ok ? result.message : "Falha ao criar base visual do catalogo."
+        );
+        setVisualCatalogResult(result);
+        return;
+      }
+
+      setVisualCatalogResult(result);
+    } catch (error) {
+      console.error("[OnboardingPage] handleRunVisualCatalogBase error:", error);
+      setVisualCatalogError("Erro inesperado ao criar base visual do catalogo.");
+    } finally {
+      setVisualCatalogLoading(false);
     }
   }
   
@@ -4334,6 +4423,35 @@ async function handleSaveImportedItemsToCatalog() {
                           </div>
                         ) : null}
                       </div>
+                      {hasVisualPdfImportResult ? (
+                        <div className="rounded-xl border border-violet-200 bg-violet-50 p-3">
+                          <div className="grid gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-violet-950">
+                                Base visual do catalogo
+                              </p>
+                              <p className="mt-1 text-sm leading-6 text-violet-900">
+                                Este PDF foi lido como imagem. O sistema prepara automaticamente as paginas 1 a 3
+                                para a proxima etapa visual; o salvamento so sera liberado quando a vision gerar
+                                itens reais para revisao.
+                              </p>
+                            </div>
+                          </div>
+                          {visualCatalogLoading ? (
+                            <p className="mt-3 text-sm text-violet-900">
+                              Preparando paginas renderizadas para analise visual...
+                            </p>
+                          ) : null}
+                          {visualCatalogError ? (
+                            <p className="mt-3 text-sm text-red-700">{visualCatalogError}</p>
+                          ) : null}
+                          {visualCatalogResult ? (
+                            <pre className="mt-3 max-h-80 overflow-auto rounded-lg bg-white p-3 text-xs leading-5 text-gray-800 ring-1 ring-violet-100">
+                              {JSON.stringify(visualCatalogResult, null, 2)}
+                            </pre>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
                         <p className="mt-1 text-xs text-gray-500">
@@ -4487,7 +4605,7 @@ async function handleSaveImportedItemsToCatalog() {
                   ) : null}
                 </div>
               </div>
-              {intelligentImportResult?.ok ? (
+              {intelligentImportResult?.ok && !hasVisualPdfImportResult ? (
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
