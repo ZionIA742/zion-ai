@@ -63,6 +63,7 @@ type VisualCatalogImportResponse =
       ok: true;
       pageStart: number;
       pageLimit: number;
+      model?: string;
       pages: Array<{
         pageNumber: number;
         width: number | null;
@@ -74,6 +75,16 @@ type VisualCatalogImportResponse =
         category: string | null;
         name: string | null;
         sku: string | null;
+        price_cents?: number | null;
+        stock_quantity?: number | null;
+        dimensions?: {
+          width_m: number | null;
+          length_m: number | null;
+          depth_m: number | null;
+          capacity_l: number | null;
+        } | null;
+        material?: string | null;
+        description?: string | null;
         pageNumber: number;
         imageRef: string;
         confidence: number;
@@ -3316,6 +3327,7 @@ export default function IntelligentCatalogImportPanel({
   const [visualCatalogResult, setVisualCatalogResult] =
     useState<VisualCatalogImportResponse | null>(null);
   const [visualCatalogError, setVisualCatalogError] = useState<string | null>(null);
+  const [visualCatalogPage, setVisualCatalogPage] = useState(1);
 
   const visibleIntelligentImportFiles = useMemo(() => {
     if (intelligentImportFiles.length > 0) {
@@ -3363,6 +3375,19 @@ export default function IntelligentCatalogImportPanel({
     () => Boolean(intelligentImportResult && isVisualPdfImportResult(intelligentImportResult)),
     [intelligentImportResult]
   );
+  const visualPdfTotalPages = useMemo(() => {
+    const pageNumbers = safeExtractedImagePreview
+      .filter((image) => String(image.source || "").toLowerCase() === "pdf")
+      .map((image) =>
+        typeof image.worksheetRowNumber === "number"
+          ? image.worksheetRowNumber
+          : typeof image.imageOrder === "number"
+            ? image.imageOrder + 1
+            : 0
+      )
+      .filter((value) => Number.isFinite(value) && value > 0);
+    return pageNumbers.length > 0 ? Math.max(...pageNumbers) : null;
+  }, [safeExtractedImagePreview]);
   const intelligentImportDiagnostics = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       return {
@@ -3439,6 +3464,7 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportResult(null);
     setVisualCatalogResult(null);
     setVisualCatalogError(null);
+    setVisualCatalogPage(1);
     setIntelligentImportRecovered(false);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -3461,6 +3487,7 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportResult(null);
     setVisualCatalogResult(null);
     setVisualCatalogError(null);
+    setVisualCatalogPage(1);
     setIntelligentImportRecovered(false);
     try {
       const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
@@ -3486,7 +3513,8 @@ export default function IntelligentCatalogImportPanel({
       const frontendReadyResult = normalizeIntelligentImportResultForFrontend(decoratedResult);
       setIntelligentImportResult(frontendReadyResult);
       if (isVisualPdfImportResult(frontendReadyResult)) {
-        void handleRunVisualCatalogBase({ resetResult: false });
+        setVisualCatalogPage(1);
+        void handleRunVisualCatalogBase({ resetResult: false, page: 1 });
       }
       setIntelligentImportSuccess(
         frontendReadyResult.message || "Importação inteligente processada com sucesso."
@@ -3499,8 +3527,12 @@ export default function IntelligentCatalogImportPanel({
     }
   }
 
-  async function handleRunVisualCatalogBase(options?: { resetResult?: boolean }) {
+  async function handleRunVisualCatalogBase(options?: { resetResult?: boolean; page?: number }) {
     const resetResult = options?.resetResult ?? true;
+    const requestedPage = Math.max(1, Math.floor(options?.page ?? visualCatalogPage));
+    const pageToAnalyze = visualPdfTotalPages
+      ? Math.min(requestedPage, visualPdfTotalPages)
+      : requestedPage;
     const pdfFile = intelligentImportFiles.find((file) =>
       String(file.name || "").toLowerCase().endsWith(".pdf")
     );
@@ -3519,8 +3551,8 @@ export default function IntelligentCatalogImportPanel({
     try {
       const formData = new FormData();
       formData.append("file", pdfFile);
-      formData.append("pageStart", "1");
-      formData.append("pageLimit", "3");
+      formData.append("pageStart", String(pageToAnalyze));
+      formData.append("pageLimit", "1");
 
       const response = await fetch("/api/onboarding/visual-catalog-import", {
         method: "POST",
@@ -4427,28 +4459,84 @@ async function handleSaveImportedItemsToCatalog() {
                         <div className="rounded-xl border border-violet-200 bg-violet-50 p-3">
                           <div className="grid gap-3">
                             <div>
-                              <p className="text-sm font-semibold text-violet-950">
-                                Base visual do catalogo
-                              </p>
                               <p className="mt-1 text-sm leading-6 text-violet-900">
-                                Este PDF foi lido como imagem. O sistema prepara automaticamente as paginas 1 a 3
-                                para a proxima etapa visual; o salvamento so sera liberado quando a vision gerar
-                                itens reais para revisao.
+                                Este PDF e visual. O sistema vai analisar a imagem das paginas para tentar encontrar
+                                itens. Nada sera salvo sem revisao.
                               </p>
                             </div>
                           </div>
+                          <div className="mt-3 grid gap-2 md:grid-cols-[160px_auto] md:items-end">
+                            <label className="block">
+                              <span className="text-xs font-medium text-violet-900">
+                                Pagina para analisar
+                              </span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={visualPdfTotalPages ?? undefined}
+                                value={visualCatalogPage}
+                                onChange={(event) => {
+                                  const parsed = Number(event.target.value);
+                                  const positivePage = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+                                  setVisualCatalogPage(
+                                    visualPdfTotalPages
+                                      ? Math.min(positivePage, visualPdfTotalPages)
+                                      : positivePage
+                                  );
+                                }}
+                                className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => void handleRunVisualCatalogBase({ page: visualCatalogPage })}
+                              disabled={disabled || visualCatalogLoading || intelligentImportLoading}
+                              className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                            >
+                              {visualCatalogLoading ? "Analisando..." : "Analisar esta pagina"}
+                            </button>
+                          </div>
                           {visualCatalogLoading ? (
                             <p className="mt-3 text-sm text-violet-900">
-                              Preparando paginas renderizadas para analise visual...
+                              Analisando a pagina {visualCatalogPage}...
                             </p>
                           ) : null}
                           {visualCatalogError ? (
                             <p className="mt-3 text-sm text-red-700">{visualCatalogError}</p>
                           ) : null}
-                          {visualCatalogResult ? (
-                            <pre className="mt-3 max-h-80 overflow-auto rounded-lg bg-white p-3 text-xs leading-5 text-gray-800 ring-1 ring-violet-100">
-                              {JSON.stringify(visualCatalogResult, null, 2)}
-                            </pre>
+                          {visualCatalogResult?.ok && visualCatalogResult.drafts.length > 0 ? (
+                            <div className="mt-3 space-y-2">
+                              {visualCatalogResult.drafts.map((draft, index) => (
+                                <div
+                                  key={`${draft.pageNumber}-${draft.name || "rascunho"}-${index}`}
+                                  className="rounded-lg bg-white p-3 ring-1 ring-violet-100"
+                                >
+                                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                                    <div>
+                                      <p className="text-sm font-semibold text-gray-900">
+                                        {draft.name || "Item visual sem nome"}
+                                      </p>
+                                      <p className="mt-1 text-xs text-gray-600">
+                                        Categoria: {draft.category || "a revisar"} • Pagina {draft.pageNumber}
+                                      </p>
+                                    </div>
+                                    <span className="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-800 ring-1 ring-violet-100">
+                                      {Math.round((draft.confidence || 0) * 100)}% confianca
+                                    </span>
+                                  </div>
+                                  {draft.missingFields.length > 0 ? (
+                                    <p className="mt-2 text-xs leading-5 text-gray-600">
+                                      Campos faltando: {draft.missingFields.join(", ")}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {visualCatalogResult?.ok && visualCatalogResult.drafts.length === 0 && !visualCatalogLoading ? (
+                            <p className="mt-3 text-sm leading-6 text-violet-900">
+                              Ainda nao encontramos itens prontos nesta pagina. Tente outra pagina.
+                            </p>
                           ) : null}
                         </div>
                       ) : null}
