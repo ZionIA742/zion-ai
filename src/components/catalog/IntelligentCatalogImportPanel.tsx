@@ -150,6 +150,37 @@ type VisualCatalogDocumentScanResponse =
       error: string;
       message: string;
     };
+type VisualProductCandidateFieldSource = {
+  pageNumber: number;
+  evidenceId: string;
+  confidence: number;
+};
+type VisualProductCandidate = {
+  candidateId: string;
+  modelKey: string;
+  category: "pool" | "chemical" | "accessory" | "other" | null;
+  name: string | null;
+  sku: string | null;
+  dimensions: {
+    visualText: string | null;
+    width_m: number | null;
+    length_m: number | null;
+    depth_m: number | null;
+    capacity_l: number | null;
+  } | null;
+  material: string | null;
+  description: string | null;
+  primaryImageRef: string | null;
+  sourcePages: number[];
+  fieldSources: Record<string, VisualProductCandidateFieldSource[]>;
+  confidence: number;
+  conflicts: Array<{
+    field: string;
+    values: string[];
+    sourcePages: number[];
+  }>;
+  missingFields: string[];
+};
 type IntelligentImportSelectedFilePreview = {
   name: string;
   type: string;
@@ -610,6 +641,10 @@ function selectAutomaticVisualEvidencePages(totalPages: number | null) {
 function translateVisualMissingField(field: string) {
   const normalized = String(field || "").trim();
   const labels: Record<string, string> = {
+    visibleName: "Nome",
+    visible_name: "Nome",
+    visibleCode: "Codigo",
+    visible_code: "Codigo",
     sku: "Codigo/SKU",
     price_cents: "Preco",
     stock_quantity: "Estoque",
@@ -621,8 +656,37 @@ function translateVisualMissingField(field: string) {
     length_m: "Comprimento",
     depth_m: "Profundidade",
     name: "Nome",
+    category: "Categoria",
   };
   return labels[normalized] || normalized;
+}
+function getVisualDisplayMissingFields(
+  fields: string[],
+  filled: {
+    name?: string | null;
+    sku?: string | null;
+    dimensions?: unknown;
+    material?: string | null;
+    description?: string | null;
+    category?: string | null;
+  }
+) {
+  const blocked = new Set<string>();
+  if (filled.name) {
+    blocked.add("name");
+    blocked.add("visibleName");
+    blocked.add("visible_name");
+  }
+  if (filled.sku) {
+    blocked.add("sku");
+    blocked.add("visibleCode");
+    blocked.add("visible_code");
+  }
+  if (filled.dimensions) blocked.add("dimensions");
+  if (filled.material) blocked.add("material");
+  if (filled.description) blocked.add("description");
+  if (filled.category) blocked.add("category");
+  return Array.from(new Set(fields.filter((field) => !blocked.has(field))));
 }
 function formatVisualMeter(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value)
@@ -727,13 +791,50 @@ function buildEditableVisualCatalogDrafts(
 function getVisualEvidencePageTypeLabel(pageType: string) {
   const labels: Record<string, string> = {
     cover: "Capa",
-    model_photos: "Fotos/modelos",
+    model_photos: "Modelos/fotos",
     measurement_table: "Tabela de medidas",
     description: "Descricao",
-    mixed: "Mista",
-    unknown: "A revisar",
+    mixed: "Misto",
+    unknown: "Desconhecido",
   };
-  return labels[pageType] || "A revisar";
+  return labels[pageType] || "Desconhecido";
+}
+function getVisualEvidenceDisplayPageType(page: {
+  pageType: string;
+  items: Array<{
+    visibleName: string | null;
+    visibleCode: string | null;
+    dimensions?: {
+      visualText?: string | null;
+      width_m?: number | null;
+      length_m?: number | null;
+      depth_m?: number | null;
+      capacity_l?: number | null;
+    };
+  }>;
+}) {
+  const hasItems = page.items.length > 0;
+  const hasNamedModels = page.items.some((item) => Boolean(item.visibleName || item.visibleCode));
+  const hasDimensions = page.items.some((item) => Boolean(formatVisualEvidenceDimensions(item.dimensions)));
+
+  if (hasNamedModels && hasDimensions) return "Misto";
+  if (hasDimensions) return "Tabela de medidas";
+  if (hasNamedModels) return "Modelos/fotos";
+  if (page.pageType === "cover" && hasItems) return "Misto";
+  return getVisualEvidencePageTypeLabel(page.pageType);
+}
+function formatLooseVisualMeasureText(value: string) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/\s+x\s+/i.test(text)) return text;
+
+  const parts = text.match(/\d+(?:[,.]\d+)?\s*(?:cm|m|mm)\b/gi);
+  if (!parts || parts.length < 2) return text;
+
+  const withoutParts = parts.reduce((current, part) => current.replace(part, ""), text).trim();
+  if (withoutParts && /[A-Za-zÀ-ÿ]/.test(withoutParts.replace(/[xX\s,.;:-]/g, ""))) return text;
+
+  return parts.map((part) => part.replace(/\s+/g, "")).join(" x ");
 }
 function formatVisualEvidenceDimensions(dimensions: {
   visualText?: string | null;
@@ -744,13 +845,303 @@ function formatVisualEvidenceDimensions(dimensions: {
 } | null | undefined) {
   if (!dimensions) return "";
   const visualText = String(dimensions.visualText || "").trim();
-  if (visualText) return visualText;
+  if (visualText) return formatLooseVisualMeasureText(visualText);
   const values = [
     formatVisualMeter(dimensions.width_m),
     formatVisualMeter(dimensions.length_m),
     formatVisualMeter(dimensions.depth_m),
   ].filter(Boolean);
   return values.length > 0 ? values.join(" x ") : "";
+}
+function normalizeVisualProductKey(value: string | null | undefined) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\b\d+(?:[,.]\d+)?\s*m?\s*x\s*\d+(?:[,.]\d+)?\s*m?(?:\s*x\s*\d+(?:[,.]\d+)?\s*m?)?\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+function normalizeVisualConflictValue(value: string | number | null | undefined) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+function getVisualCandidateDimensionsKey(dimensions: VisualProductCandidate["dimensions"]) {
+  if (!dimensions) return "";
+  return [
+    normalizeVisualConflictValue(dimensions.visualText),
+    dimensions.width_m ?? "",
+    dimensions.length_m ?? "",
+    dimensions.depth_m ?? "",
+    dimensions.capacity_l ?? "",
+  ].join("|");
+}
+function getVisualEvidenceDimensionsGroupKey(dimensions: {
+  visualText?: string | null;
+  width_m?: number | null;
+  length_m?: number | null;
+  depth_m?: number | null;
+  capacity_l?: number | null;
+} | null | undefined) {
+  const displayText = formatVisualEvidenceDimensions(dimensions);
+  if (displayText) return normalizeVisualConflictValue(displayText);
+  if (!dimensions) return "";
+  return [
+    dimensions.width_m ?? "",
+    dimensions.length_m ?? "",
+    dimensions.depth_m ?? "",
+    dimensions.capacity_l ?? "",
+  ]
+    .join("|")
+    .replace(/\|+$/g, "");
+}
+function isStrongVisualCode(value: string | null | undefined) {
+  return /^[A-Z]{1,5}[-\s]?\d{1,4}$/i.test(String(value || "").trim());
+}
+function buildVisualProductCandidateId(modelKey: string) {
+  return `visual-candidate-${modelKey.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+}
+function addVisualCandidateFieldSource(
+  candidate: VisualProductCandidate,
+  field: string,
+  source: VisualProductCandidateFieldSource
+) {
+  candidate.fieldSources[field] = [...(candidate.fieldSources[field] ?? []), source];
+}
+function addVisualCandidateConflict(
+  candidate: VisualProductCandidate,
+  field: string,
+  values: Array<string | null | undefined>,
+  sourcePages: number[]
+) {
+  const normalizedValues = Array.from(
+    new Set(values.map((value) => String(value || "").trim()).filter(Boolean))
+  );
+  if (normalizedValues.length < 2) return;
+  const existing = candidate.conflicts.find((conflict) => conflict.field === field);
+  if (existing) {
+    existing.values = Array.from(new Set([...existing.values, ...normalizedValues]));
+    existing.sourcePages = Array.from(new Set([...existing.sourcePages, ...sourcePages])).sort((a, b) => a - b);
+    return;
+  }
+  candidate.conflicts.push({
+    field,
+    values: normalizedValues,
+    sourcePages: Array.from(new Set(sourcePages)).sort((a, b) => a - b),
+  });
+}
+function buildVisualProductMissingFields(candidate: VisualProductCandidate) {
+  const missing = new Set<string>();
+  if (!candidate.name) missing.add("name");
+  if (!candidate.sku) missing.add("sku");
+  if (!candidate.category) missing.add("category");
+  if (!candidate.dimensions) missing.add("dimensions");
+  if (!candidate.material) missing.add("material");
+  if (!candidate.description) missing.add("description");
+  if (candidate.name) {
+    missing.delete("visibleName");
+    missing.delete("visible_name");
+    missing.delete("name");
+  }
+  if (candidate.sku) {
+    missing.delete("visibleCode");
+    missing.delete("visible_code");
+    missing.delete("sku");
+  }
+  return Array.from(missing);
+}
+function consolidateVisualProductCandidates(
+  result: VisualCatalogDocumentScanResponse | null
+): VisualProductCandidate[] {
+  if (!result?.ok) return [];
+
+  const candidates = new Map<
+    string,
+    VisualProductCandidate & {
+      __fieldConfidence?: Record<string, number>;
+      __dimensionKey?: string;
+      __confidenceValues?: number[];
+    }
+  >();
+
+  for (const page of result.pageEvidence) {
+    for (const item of page.items) {
+      const baseModelKey =
+        normalizeVisualProductKey(item.visibleCode) ||
+        normalizeVisualProductKey(item.modelKey) ||
+        normalizeVisualProductKey(item.visibleName);
+      const dimensionsGroupKey = getVisualEvidenceDimensionsGroupKey(item.dimensions);
+      const shouldSplitPoolByDimensions =
+        item.category === "pool" &&
+        dimensionsGroupKey &&
+        !isStrongVisualCode(item.visibleCode);
+      const modelKey = shouldSplitPoolByDimensions
+        ? `${baseModelKey}::${dimensionsGroupKey}`
+        : baseModelKey;
+      const confidence = Math.max(0, Math.min(1, Number(item.confidence || 0)));
+      if (!modelKey || confidence < 0.15) continue;
+
+      const source = {
+        pageNumber: page.pageNumber,
+        evidenceId: item.evidenceId,
+        confidence,
+      };
+      const existing = candidates.get(modelKey);
+      const candidate =
+        existing ??
+        ({
+          candidateId: buildVisualProductCandidateId(modelKey),
+          modelKey,
+          category: null,
+          name: null,
+          sku: null,
+          dimensions: null,
+          material: null,
+          description: null,
+          primaryImageRef: null,
+          sourcePages: [],
+          fieldSources: {},
+          confidence: 0,
+          conflicts: [],
+          missingFields: [],
+          __fieldConfidence: {},
+          __dimensionKey: "",
+          __confidenceValues: [],
+        } satisfies VisualProductCandidate & {
+          __fieldConfidence: Record<string, number>;
+          __dimensionKey: string;
+          __confidenceValues: number[];
+        });
+
+      candidate.sourcePages = Array.from(new Set([...candidate.sourcePages, page.pageNumber])).sort((a, b) => a - b);
+      candidate.__confidenceValues?.push(confidence);
+
+      const incomingName = item.visibleName || item.visibleCode || null;
+      if (incomingName) {
+        const currentConfidence = candidate.__fieldConfidence?.name ?? -1;
+        if (candidate.name && normalizeVisualConflictValue(candidate.name) !== normalizeVisualConflictValue(incomingName)) {
+          addVisualCandidateConflict(candidate, "name", [candidate.name, incomingName], candidate.sourcePages);
+        }
+        if (!candidate.name || confidence > currentConfidence) {
+          candidate.name = incomingName;
+          candidate.__fieldConfidence!.name = confidence;
+        }
+        addVisualCandidateFieldSource(candidate, "name", source);
+      }
+
+      if (item.visibleCode) {
+        const currentConfidence = candidate.__fieldConfidence?.sku ?? -1;
+        if (candidate.sku && normalizeVisualConflictValue(candidate.sku) !== normalizeVisualConflictValue(item.visibleCode)) {
+          addVisualCandidateConflict(candidate, "sku", [candidate.sku, item.visibleCode], candidate.sourcePages);
+        }
+        if (!candidate.sku || confidence > currentConfidence) {
+          candidate.sku = item.visibleCode;
+          candidate.__fieldConfidence!.sku = confidence;
+        }
+        addVisualCandidateFieldSource(candidate, "sku", source);
+      }
+
+      if (item.category) {
+        const currentConfidence = candidate.__fieldConfidence?.category ?? -1;
+        if (candidate.category && candidate.category !== item.category) {
+          addVisualCandidateConflict(candidate, "category", [candidate.category, item.category], candidate.sourcePages);
+        }
+        if (!candidate.category || confidence > currentConfidence) {
+          candidate.category = item.category;
+          candidate.__fieldConfidence!.category = confidence;
+        }
+        addVisualCandidateFieldSource(candidate, "category", source);
+      }
+
+      const dimensionText = formatVisualEvidenceDimensions(item.dimensions);
+      const incomingDimensions = item.dimensions && dimensionText
+        ? {
+            visualText: item.dimensions.visualText || dimensionText || null,
+            width_m: item.dimensions.width_m ?? null,
+            length_m: item.dimensions.length_m ?? null,
+            depth_m: item.dimensions.depth_m ?? null,
+            capacity_l: item.dimensions.capacity_l ?? null,
+          }
+        : null;
+      if (incomingDimensions) {
+        const incomingKey = getVisualCandidateDimensionsKey(incomingDimensions);
+        const currentConfidence = candidate.__fieldConfidence?.dimensions ?? -1;
+        if (candidate.dimensions && candidate.__dimensionKey && candidate.__dimensionKey !== incomingKey) {
+          addVisualCandidateConflict(
+            candidate,
+            "dimensions",
+            [formatVisualEvidenceDimensions(candidate.dimensions), formatVisualEvidenceDimensions(incomingDimensions)],
+            candidate.sourcePages
+          );
+        }
+        if (!candidate.dimensions || confidence > currentConfidence) {
+          candidate.dimensions = incomingDimensions;
+          candidate.__dimensionKey = incomingKey;
+          candidate.__fieldConfidence!.dimensions = confidence;
+        }
+        addVisualCandidateFieldSource(candidate, "dimensions", source);
+      }
+
+      if (item.material) {
+        const currentConfidence = candidate.__fieldConfidence?.material ?? -1;
+        if (candidate.material && normalizeVisualConflictValue(candidate.material) !== normalizeVisualConflictValue(item.material)) {
+          addVisualCandidateConflict(candidate, "material", [candidate.material, item.material], candidate.sourcePages);
+        }
+        if (!candidate.material || confidence > currentConfidence) {
+          candidate.material = item.material;
+          candidate.__fieldConfidence!.material = confidence;
+        }
+        addVisualCandidateFieldSource(candidate, "material", source);
+      }
+
+      if (item.description) {
+        const currentConfidence = candidate.__fieldConfidence?.description ?? -1;
+        if (candidate.description && normalizeVisualConflictValue(candidate.description) !== normalizeVisualConflictValue(item.description)) {
+          addVisualCandidateConflict(candidate, "description", [candidate.description, item.description], candidate.sourcePages);
+        }
+        if (!candidate.description || confidence > currentConfidence) {
+          candidate.description = item.description;
+          candidate.__fieldConfidence!.description = confidence;
+        }
+        addVisualCandidateFieldSource(candidate, "description", source);
+      }
+
+      candidates.set(modelKey, candidate);
+    }
+  }
+
+  return Array.from(candidates.values())
+    .map((candidate) => {
+      const confidenceValues = candidate.__confidenceValues ?? [];
+      const averageConfidence =
+        confidenceValues.length > 0
+          ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length
+          : 0;
+      const cleanCandidate: VisualProductCandidate = {
+        candidateId: candidate.candidateId,
+        modelKey: candidate.modelKey,
+        category: candidate.category,
+        name: candidate.name,
+        sku: candidate.sku,
+        dimensions: candidate.dimensions,
+        material: candidate.material,
+        description: candidate.description,
+        primaryImageRef: candidate.primaryImageRef,
+        sourcePages: candidate.sourcePages,
+        fieldSources: candidate.fieldSources,
+        confidence: Math.max(0, Math.min(1, averageConfidence)),
+        conflicts: candidate.conflicts,
+        missingFields: [],
+      };
+      cleanCandidate.missingFields = buildVisualProductMissingFields(cleanCandidate);
+      return cleanCandidate;
+    })
+    .filter((candidate) => Boolean(candidate.modelKey && (candidate.name || candidate.sku)))
+    .sort((a, b) => a.sourcePages[0] - b.sourcePages[0] || a.modelKey.localeCompare(b.modelKey));
 }
 function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -3636,6 +4027,10 @@ export default function IntelligentCatalogImportPanel({
       .filter((value) => Number.isFinite(value) && value > 0);
     return pageNumbers.length > 0 ? Math.max(...pageNumbers) : null;
   }, [safeExtractedImagePreview]);
+  const visualProductCandidates = useMemo(
+    () => consolidateVisualProductCandidates(visualEvidenceResult),
+    [visualEvidenceResult]
+  );
   const intelligentImportDiagnostics = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       return {
@@ -5079,6 +5474,72 @@ async function handleSaveImportedItemsToCatalog() {
                                     O ZION encontrou evidencias visuais no catalogo. A proxima etapa sera juntar essas informacoes em itens para revisao.
                                   </p>
                                 ) : null}
+                                {visualProductCandidates.length > 0 ? (
+                                  <div className="rounded-lg border border-violet-200 bg-violet-50/70 p-3">
+                                    <p className="text-sm font-semibold text-violet-950">
+                                      Itens sugeridos para revisao
+                                    </p>
+                                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                      {visualProductCandidates.map((candidate) => {
+                                        const dimensionsText = formatVisualEvidenceDimensions(candidate.dimensions);
+                                        return (
+                                          <div
+                                            key={candidate.candidateId}
+                                            className="rounded-lg bg-white p-3 ring-1 ring-violet-100"
+                                          >
+                                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                                              <div>
+                                                <p className="text-sm font-semibold text-gray-900">
+                                                  {candidate.name || candidate.sku || "Item sugerido"}
+                                                </p>
+                                                <p className="mt-1 text-xs text-gray-600">
+                                                  Categoria: {getVisualCategoryLabel(candidate.category)}
+                                                  {candidate.sku ? ` | Codigo: ${candidate.sku}` : ""}
+                                                </p>
+                                              </div>
+                                              <span className="text-xs font-medium text-violet-800">
+                                                {Math.round((candidate.confidence || 0) * 100)}% confianca
+                                              </span>
+                                            </div>
+                                            {dimensionsText ? (
+                                              <p className="mt-2 text-xs leading-5 text-gray-700">
+                                                Medidas: {dimensionsText}
+                                              </p>
+                                            ) : null}
+                                            {candidate.material ? (
+                                              <p className="mt-1 text-xs leading-5 text-gray-700">
+                                                Material: {candidate.material}
+                                              </p>
+                                            ) : null}
+                                            {candidate.description ? (
+                                              <p className="mt-1 text-xs leading-5 text-gray-700">
+                                                Descricao: {candidate.description}
+                                              </p>
+                                            ) : null}
+                                            <p className="mt-2 text-xs leading-5 text-gray-600">
+                                              Paginas usadas: {candidate.sourcePages.join(", ")}
+                                            </p>
+                                            {candidate.missingFields.length > 0 ? (
+                                              <p className="mt-1 text-xs leading-5 text-gray-600">
+                                                Campos faltando: {candidate.missingFields.map(translateVisualMissingField).join(", ")}
+                                              </p>
+                                            ) : null}
+                                            {candidate.conflicts.length > 0 ? (
+                                              <div className="mt-2 rounded-lg bg-amber-50 p-2 text-xs leading-5 text-amber-800 ring-1 ring-amber-100">
+                                                <p className="font-medium">Conflitos para revisar:</p>
+                                                {candidate.conflicts.map((conflict) => (
+                                                  <p key={`${candidate.candidateId}-${conflict.field}`}>
+                                                    {translateVisualMissingField(conflict.field)}: {conflict.values.join(" / ")}
+                                                  </p>
+                                                ))}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ) : null}
                                 {visualEvidenceResult.warnings.length > 0 ? (
                                   <p className="text-xs leading-5 text-violet-900">
                                     Avisos: {visualEvidenceResult.warnings.join(" ")}
@@ -5099,7 +5560,7 @@ async function handleSaveImportedItemsToCatalog() {
                                         Pagina {page.pageNumber}
                                       </p>
                                       <p className="text-xs text-gray-600">
-                                        Tipo: {getVisualEvidencePageTypeLabel(page.pageType)}
+                                        Tipo: {getVisualEvidenceDisplayPageType(page)}
                                       </p>
                                     </div>
                                     {page.warnings.length > 0 ? (
@@ -5115,6 +5576,14 @@ async function handleSaveImportedItemsToCatalog() {
                                       <div className="mt-2 space-y-2">
                                         {page.items.map((item) => {
                                           const dimensionsText = formatVisualEvidenceDimensions(item.dimensions);
+                                          const visibleMissingFields = getVisualDisplayMissingFields(item.missingFields, {
+                                            name: item.visibleName,
+                                            sku: item.visibleCode,
+                                            dimensions: dimensionsText,
+                                            material: item.material,
+                                            description: item.description,
+                                            category: item.category,
+                                          });
                                           return (
                                             <div
                                               key={item.evidenceId}
@@ -5149,9 +5618,9 @@ async function handleSaveImportedItemsToCatalog() {
                                                   Descricao: {item.description}
                                                 </p>
                                               ) : null}
-                                              {item.missingFields.length > 0 ? (
+                                              {visibleMissingFields.length > 0 ? (
                                                 <p className="mt-1 text-xs leading-5 text-gray-600">
-                                                  Campos faltando: {item.missingFields.map(translateVisualMissingField).join(", ")}
+                                                  Campos faltando: {visibleMissingFields.map(translateVisualMissingField).join(", ")}
                                                 </p>
                                               ) : null}
                                             </div>
