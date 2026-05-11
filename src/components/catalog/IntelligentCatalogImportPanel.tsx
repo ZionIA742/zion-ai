@@ -98,6 +98,58 @@ type VisualCatalogImportResponse =
       error: string;
       message: string;
     };
+type EditableVisualCatalogDraft = {
+  id: string;
+  name: string;
+  category: "" | "pool" | "chemical" | "accessory" | "other";
+  visualDimensionsText: string;
+  material: string;
+  description: string;
+  price: string;
+  stock: string;
+  pageNumber: number;
+  confidence: number;
+  missingFields: string[];
+};
+type VisualCatalogDocumentScanResponse =
+  | {
+      ok: true;
+      fileKey: string;
+      requestedPages: number[];
+      pageLimit: number;
+      model?: string;
+      pageEvidence: Array<{
+        fileKey: string;
+        pageNumber: number;
+        pageType: "cover" | "model_photos" | "measurement_table" | "description" | "mixed" | "unknown";
+        items: Array<{
+          evidenceId: string;
+          modelKey: string | null;
+          visibleName: string | null;
+          visibleCode: string | null;
+          category: "pool" | "chemical" | "accessory" | "other" | null;
+          dimensions?: {
+            visualText?: string | null;
+            width_m?: number | null;
+            length_m?: number | null;
+            depth_m?: number | null;
+            capacity_l?: number | null;
+          };
+          material?: string | null;
+          description?: string | null;
+          confidence: number;
+          missingFields: string[];
+          rawSnippet?: string | null;
+        }>;
+        warnings: string[];
+      }>;
+      warnings: string[];
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    };
 type IntelligentImportSelectedFilePreview = {
   name: string;
   type: string;
@@ -579,6 +631,95 @@ function getVisualDraftDimensionsLabel(draft: {
 
   const fallback = formatVisualDraftDimensions(draft.dimensions);
   return fallback ? { label: "Medidas estimadas", value: fallback } : null;
+}
+function getVisualCategoryLabel(category: string | null | undefined) {
+  const labels: Record<string, string> = {
+    pool: "Piscina",
+    chemical: "Produto quimico",
+    accessory: "Acessorio",
+    other: "Outro",
+  };
+  return labels[String(category || "")] || "A revisar";
+}
+function cleanupEditableVisualMissingFields(draft: EditableVisualCatalogDraft) {
+  const filled = new Set<string>();
+  if (draft.name.trim()) filled.add("name");
+  if (draft.visualDimensionsText.trim()) {
+    filled.add("dimensions");
+    filled.add("width_m");
+    filled.add("length_m");
+    filled.add("depth_m");
+  }
+  if (draft.material.trim()) filled.add("material");
+  if (draft.description.trim()) filled.add("description");
+  if (draft.price.trim()) filled.add("price_cents");
+  if (draft.stock.trim()) filled.add("stock_quantity");
+  return {
+    ...draft,
+    missingFields: draft.missingFields.filter((field) => !filled.has(field)),
+  };
+}
+function buildEditableVisualCatalogDrafts(
+  result: VisualCatalogImportResponse | null
+): EditableVisualCatalogDraft[] {
+  if (!result?.ok) return [];
+  return result.drafts.map((draft, index) => {
+    const dimensionsLabel = getVisualDraftDimensionsLabel(draft);
+    const editableDraft: EditableVisualCatalogDraft = {
+      id: `${draft.pageNumber}-${draft.imageRef}-${index}`,
+      name: draft.name || "",
+      category:
+        draft.category === "pool" ||
+        draft.category === "chemical" ||
+        draft.category === "accessory" ||
+        draft.category === "other"
+          ? draft.category
+          : "",
+      visualDimensionsText: dimensionsLabel?.value || "",
+      material: draft.material || "",
+      description: draft.description || "",
+      price:
+        typeof draft.price_cents === "number" && Number.isFinite(draft.price_cents)
+          ? (draft.price_cents / 100).toFixed(2).replace(".", ",")
+          : "",
+      stock:
+        typeof draft.stock_quantity === "number" && Number.isFinite(draft.stock_quantity)
+          ? String(draft.stock_quantity)
+          : "",
+      pageNumber: draft.pageNumber,
+      confidence: draft.confidence || 0,
+      missingFields: Array.isArray(draft.missingFields) ? draft.missingFields : [],
+    };
+    return cleanupEditableVisualMissingFields(editableDraft);
+  });
+}
+function getVisualEvidencePageTypeLabel(pageType: string) {
+  const labels: Record<string, string> = {
+    cover: "Capa",
+    model_photos: "Fotos/modelos",
+    measurement_table: "Tabela de medidas",
+    description: "Descricao",
+    mixed: "Mista",
+    unknown: "A revisar",
+  };
+  return labels[pageType] || "A revisar";
+}
+function formatVisualEvidenceDimensions(dimensions: {
+  visualText?: string | null;
+  width_m?: number | null;
+  length_m?: number | null;
+  depth_m?: number | null;
+  capacity_l?: number | null;
+} | null | undefined) {
+  if (!dimensions) return "";
+  const visualText = String(dimensions.visualText || "").trim();
+  if (visualText) return visualText;
+  const values = [
+    formatVisualMeter(dimensions.width_m),
+    formatVisualMeter(dimensions.length_m),
+    formatVisualMeter(dimensions.depth_m),
+  ].filter(Boolean);
+  return values.length > 0 ? values.join(" x ") : "";
 }
 function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
@@ -3392,6 +3533,14 @@ export default function IntelligentCatalogImportPanel({
     Record<string, VisualCatalogImportResponse>
   >({});
   const [visualCatalogNotice, setVisualCatalogNotice] = useState<string | null>(null);
+  const [editableVisualCatalogDrafts, setEditableVisualCatalogDrafts] = useState<
+    EditableVisualCatalogDraft[]
+  >([]);
+  const [visualEvidencePagesInput, setVisualEvidencePagesInput] = useState("3,4,5,12");
+  const [visualEvidenceLoading, setVisualEvidenceLoading] = useState(false);
+  const [visualEvidenceError, setVisualEvidenceError] = useState<string | null>(null);
+  const [visualEvidenceResult, setVisualEvidenceResult] =
+    useState<VisualCatalogDocumentScanResponse | null>(null);
 
   const visibleIntelligentImportFiles = useMemo(() => {
     if (intelligentImportFiles.length > 0) {
@@ -3531,6 +3680,9 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogPage(1);
     setVisualCatalogSessionCache({});
     setVisualCatalogNotice(null);
+    setEditableVisualCatalogDrafts([]);
+    setVisualEvidenceError(null);
+    setVisualEvidenceResult(null);
     setIntelligentImportRecovered(false);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -3556,6 +3708,9 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogPage(1);
     setVisualCatalogSessionCache({});
     setVisualCatalogNotice(null);
+    setEditableVisualCatalogDrafts([]);
+    setVisualEvidenceError(null);
+    setVisualEvidenceResult(null);
     setIntelligentImportRecovered(false);
     try {
       const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
@@ -3614,6 +3769,7 @@ export default function IntelligentCatalogImportPanel({
     const cachedResult = visualCatalogSessionCache[cacheKey];
     if (cachedResult) {
       setVisualCatalogResult(cachedResult);
+      setEditableVisualCatalogDrafts(buildEditableVisualCatalogDrafts(cachedResult));
       setVisualCatalogError(null);
       setVisualCatalogNotice("Resultado reaproveitado desta sessao.");
       return;
@@ -3624,6 +3780,7 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogNotice(null);
     if (resetResult) {
       setVisualCatalogResult(null);
+      setEditableVisualCatalogDrafts([]);
     }
 
     try {
@@ -3643,10 +3800,12 @@ export default function IntelligentCatalogImportPanel({
           !result.ok ? result.message : "Falha ao criar base visual do catalogo."
         );
         setVisualCatalogResult(result);
+        setEditableVisualCatalogDrafts([]);
         return;
       }
 
       setVisualCatalogResult(result);
+      setEditableVisualCatalogDrafts(buildEditableVisualCatalogDrafts(result));
       setVisualCatalogSessionCache((current) => ({
         ...current,
         [cacheKey]: result,
@@ -3654,8 +3813,77 @@ export default function IntelligentCatalogImportPanel({
     } catch (error) {
       console.error("[OnboardingPage] handleRunVisualCatalogBase error:", error);
       setVisualCatalogError("Erro inesperado ao criar base visual do catalogo.");
+      setEditableVisualCatalogDrafts([]);
     } finally {
       setVisualCatalogLoading(false);
+    }
+  }
+
+  function updateEditableVisualCatalogDraft(
+    draftId: string,
+    patch: Partial<EditableVisualCatalogDraft>
+  ) {
+    setEditableVisualCatalogDrafts((current) =>
+      current.map((draft) =>
+        draft.id === draftId
+          ? cleanupEditableVisualMissingFields({ ...draft, ...patch })
+          : draft
+      )
+    );
+  }
+
+  async function handleRunVisualEvidenceScan() {
+    const pdfFile = intelligentImportFiles.find((file) =>
+      String(file.name || "").toLowerCase().endsWith(".pdf")
+    );
+    const requestedPages = Array.from(
+      new Set(
+        visualEvidencePagesInput
+          .split(/[,\s;]+/g)
+          .map((value) => Number(value.replace(/[^\d]/g, "")))
+          .filter((value) => Number.isFinite(value) && value > 0)
+          .map((value) => Math.floor(value))
+      )
+    ).slice(0, 5);
+
+    if (!pdfFile) {
+      setVisualEvidenceError("Selecione um PDF visual para gerar evidencias.");
+      return;
+    }
+    if (requestedPages.length === 0) {
+      setVisualEvidenceError("Informe pelo menos uma pagina, por exemplo 3,4,5,12.");
+      return;
+    }
+
+    setVisualEvidenceLoading(true);
+    setVisualEvidenceError(null);
+    setVisualEvidenceResult(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", pdfFile);
+      formData.append("pages", requestedPages.join(","));
+
+      const response = await fetch("/api/onboarding/visual-catalog-document-scan", {
+        method: "POST",
+        body: formData,
+      });
+      const result = (await response.json()) as VisualCatalogDocumentScanResponse;
+
+      if (!response.ok || !result.ok) {
+        setVisualEvidenceError(
+          !result.ok ? result.message : "Falha ao gerar evidencias visuais."
+        );
+        setVisualEvidenceResult(result);
+        return;
+      }
+
+      setVisualEvidenceResult(result);
+    } catch (error) {
+      console.error("[OnboardingPage] handleRunVisualEvidenceScan error:", error);
+      setVisualEvidenceError("Erro inesperado ao gerar evidencias visuais.");
+    } finally {
+      setVisualEvidenceLoading(false);
     }
   }
   
@@ -4589,11 +4817,14 @@ async function handleSaveImportedItemsToCatalog() {
                           {visualCatalogNotice ? (
                             <p className="mt-3 text-sm text-violet-900">{visualCatalogNotice}</p>
                           ) : null}
-                          {visualCatalogResult?.ok && visualCatalogResult.drafts.length > 0 ? (
-                            <div className="mt-3 space-y-2">
-                              {visualCatalogResult.drafts.map((draft, index) => (
+                          {visualCatalogResult?.ok && editableVisualCatalogDrafts.length > 0 ? (
+                            <div className="mt-3 space-y-3">
+                              <p className="text-sm font-medium text-violet-950">
+                                Rascunhos gerados por imagem. Revise e ajuste os dados antes de uma etapa futura de salvamento.
+                              </p>
+                              {editableVisualCatalogDrafts.map((draft) => (
                                 <div
-                                  key={`${draft.pageNumber}-${draft.name || "rascunho"}-${index}`}
+                                  key={draft.id}
                                   className="rounded-lg bg-white p-3 ring-1 ring-violet-100"
                                 >
                                   <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
@@ -4609,15 +4840,96 @@ async function handleSaveImportedItemsToCatalog() {
                                       {Math.round((draft.confidence || 0) * 100)}% confianca
                                     </span>
                                   </div>
-                                  <p className="mt-2 text-xs font-medium text-violet-900">
-                                    Rascunho gerado por analise visual. Revise antes de salvar.
-                                  </p>
-                                  {getVisualDraftDimensionsLabel(draft) ? (
-                                    <p className="mt-2 text-xs leading-5 text-gray-700">
-                                      {getVisualDraftDimensionsLabel(draft)?.label}:{" "}
-                                      {getVisualDraftDimensionsLabel(draft)?.value}
-                                    </p>
-                                  ) : null}
+                                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Nome</span>
+                                      <input
+                                        type="text"
+                                        value={draft.name}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, { name: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Categoria</span>
+                                      <select
+                                        value={draft.category}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, {
+                                            category: event.target.value as EditableVisualCatalogDraft["category"],
+                                          })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                      >
+                                        <option value="">A revisar</option>
+                                        <option value="pool">Piscina</option>
+                                        <option value="chemical">Produto quimico</option>
+                                        <option value="accessory">Acessorio</option>
+                                        <option value="other">Outro</option>
+                                      </select>
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Medidas lidas</span>
+                                      <input
+                                        type="text"
+                                        value={draft.visualDimensionsText}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, {
+                                            visualDimensionsText: event.target.value,
+                                          })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Material</span>
+                                      <input
+                                        type="text"
+                                        value={draft.material}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, { material: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Preco</span>
+                                      <input
+                                        type="text"
+                                        value={draft.price}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, { price: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Estoque</span>
+                                      <input
+                                        type="text"
+                                        value={draft.stock}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, { stock: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block md:col-span-2">
+                                      <span className="text-xs font-medium text-gray-700">Descricao</span>
+                                      <textarea
+                                        value={draft.description}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, {
+                                            description: event.target.value,
+                                          })
+                                        }
+                                        rows={2}
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                  </div>
                                   {draft.missingFields.length > 0 ? (
                                     <p className="mt-2 text-xs leading-5 text-gray-600">
                                       Campos faltando: {draft.missingFields.map(translateVisualMissingField).join(", ")}
@@ -4632,6 +4944,122 @@ async function handleSaveImportedItemsToCatalog() {
                               Ainda nao encontramos itens prontos nesta pagina. Tente outra pagina.
                             </p>
                           ) : null}
+                          <div className="mt-4 rounded-lg bg-white p-3 ring-1 ring-violet-100">
+                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                              <label className="block">
+                                <span className="text-xs font-medium text-violet-900">
+                                  Evidencias visuais por paginas
+                                </span>
+                                <input
+                                  type="text"
+                                  value={visualEvidencePagesInput}
+                                  onChange={(event) => setVisualEvidencePagesInput(event.target.value)}
+                                  placeholder="3,4,5,12"
+                                  className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => void handleRunVisualEvidenceScan()}
+                                disabled={disabled || visualEvidenceLoading || intelligentImportLoading}
+                                className="rounded-lg border border-violet-200 bg-white px-4 py-2 text-sm font-medium text-violet-950 disabled:opacity-60"
+                              >
+                                {visualEvidenceLoading ? "Lendo evidencias..." : "Gerar evidencias"}
+                              </button>
+                            </div>
+                            <p className="mt-2 text-xs leading-5 text-violet-900">
+                              Use poucas paginas por vez. Esta leitura cria evidencias para futura consolidacao por modelo e nao salva nada.
+                            </p>
+                            {visualEvidenceError ? (
+                              <p className="mt-2 text-sm text-red-700">{visualEvidenceError}</p>
+                            ) : null}
+                            {visualEvidenceResult?.ok ? (
+                              <div className="mt-3 space-y-3">
+                                {visualEvidenceResult.warnings.length > 0 ? (
+                                  <p className="text-xs leading-5 text-violet-900">
+                                    Avisos: {visualEvidenceResult.warnings.join(" ")}
+                                  </p>
+                                ) : null}
+                                {visualEvidenceResult.pageEvidence.length === 0 ? (
+                                  <p className="text-sm text-gray-600">
+                                    Nenhuma evidencia visual foi encontrada nestas paginas.
+                                  </p>
+                                ) : null}
+                                {visualEvidenceResult.pageEvidence.map((page) => (
+                                  <div
+                                    key={`visual-evidence-${page.pageNumber}`}
+                                    className="rounded-lg border border-gray-200 bg-gray-50 p-3"
+                                  >
+                                    <div className="grid gap-1 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                      <p className="text-sm font-semibold text-gray-900">
+                                        Pagina {page.pageNumber}
+                                      </p>
+                                      <p className="text-xs text-gray-600">
+                                        Tipo: {getVisualEvidencePageTypeLabel(page.pageType)}
+                                      </p>
+                                    </div>
+                                    {page.warnings.length > 0 ? (
+                                      <p className="mt-2 text-xs leading-5 text-amber-700">
+                                        Avisos: {page.warnings.join(" ")}
+                                      </p>
+                                    ) : null}
+                                    {page.items.length === 0 ? (
+                                      <p className="mt-2 text-sm text-gray-600">
+                                        Nenhum nome, codigo ou medida segura nesta pagina.
+                                      </p>
+                                    ) : (
+                                      <div className="mt-2 space-y-2">
+                                        {page.items.map((item) => {
+                                          const dimensionsText = formatVisualEvidenceDimensions(item.dimensions);
+                                          return (
+                                            <div
+                                              key={item.evidenceId}
+                                              className="rounded-lg bg-white p-2 ring-1 ring-gray-200"
+                                            >
+                                              <div className="grid gap-1 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                                                <div>
+                                                  <p className="text-sm font-medium text-gray-900">
+                                                    {item.visibleName || item.visibleCode || "Evidencia sem nome"}
+                                                  </p>
+                                                  <p className="mt-0.5 text-xs text-gray-600">
+                                                    {item.visibleCode ? `Codigo: ${item.visibleCode}` : "Codigo nao visivel"}{" "}
+                                                    | Categoria: {getVisualCategoryLabel(item.category)}
+                                                  </p>
+                                                </div>
+                                                <span className="text-xs font-medium text-violet-800">
+                                                  {Math.round((item.confidence || 0) * 100)}% confianca
+                                                </span>
+                                              </div>
+                                              {dimensionsText ? (
+                                                <p className="mt-1 text-xs leading-5 text-gray-700">
+                                                  Medidas: {dimensionsText}
+                                                </p>
+                                              ) : null}
+                                              {item.material ? (
+                                                <p className="mt-1 text-xs leading-5 text-gray-700">
+                                                  Material: {item.material}
+                                                </p>
+                                              ) : null}
+                                              {item.description ? (
+                                                <p className="mt-1 text-xs leading-5 text-gray-700">
+                                                  Descricao: {item.description}
+                                                </p>
+                                              ) : null}
+                                              {item.missingFields.length > 0 ? (
+                                                <p className="mt-1 text-xs leading-5 text-gray-600">
+                                                  Campos faltando: {item.missingFields.map(translateVisualMissingField).join(", ")}
+                                                </p>
+                                              ) : null}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
                       ) : null}
                       <div className="rounded-xl border border-gray-200 bg-white p-3">
