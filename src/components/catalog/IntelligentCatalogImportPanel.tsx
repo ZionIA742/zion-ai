@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase as defaultSupabase } from "@/lib/supabaseBrowser";
+import { buildVisualDocumentAnalysis } from "@/lib/visual-catalog-document-analysis";
 
 type IntelligentImportSummary = {
   totalFiles: number;
@@ -143,6 +144,43 @@ type VisualCatalogDocumentScanResponse =
         }>;
         warnings: string[];
       }>;
+      warnings: string[];
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    };
+type VisualCatalogDocumentMapResponse =
+  | {
+      ok: true;
+      fileKey: string;
+      totalPages: number | null;
+      pageLimit: number;
+      model?: string;
+      pages: Array<{
+        pageNumber: number;
+        pageType:
+          | "cover"
+          | "index"
+          | "model_photos"
+          | "measurement_table"
+          | "spa"
+          | "accessories"
+          | "institutional"
+          | "back_cover"
+          | "mixed"
+          | "unknown";
+        relevanceScore: number;
+        detectedLabels: string[];
+        possibleModels: string[];
+        hasMeasurements: boolean;
+        hasManySmallItems: boolean;
+        confidence: number;
+        recommendedForDetailedScan: boolean;
+        reason: string;
+      }>;
+      recommendedPages: number[];
       warnings: string[];
     }
   | {
@@ -610,6 +648,9 @@ function buildVisualCatalogSessionCacheKey(file: File, page: number) {
 function buildVisualEvidenceSessionCacheKey(file: File, pages: number[]) {
   return `${file.name}::${file.size}::${pages.join(",")}`;
 }
+function buildVisualDocumentMapSessionCacheKey(file: File) {
+  return `${file.name}::${file.size}::document-map`;
+}
 function getVisualPdfTotalPagesFromResult(result: IntelligentImportResponse | null) {
   if (!result?.ok) return null;
   const pageNumbers = (result.extractedImagePreview ?? [])
@@ -637,6 +678,64 @@ function selectAutomaticVisualEvidencePages(totalPages: number | null) {
   return Array.from(
     new Set(candidates.map((page) => Math.max(1, Math.min(totalPages, page))))
   ).slice(0, 5);
+}
+function addVisualScanPage(target: number[], page: number | null | undefined, totalPages: number | null) {
+  if (!page || !Number.isFinite(page) || page <= 0) return;
+  const normalized = Math.floor(totalPages ? Math.min(page, totalPages) : page);
+  if (!target.includes(normalized) && target.length < 5) {
+    target.push(normalized);
+  }
+}
+function selectBalancedVisualEvidencePages(
+  mapResult: VisualCatalogDocumentMapResponse | null,
+  fallbackPages: number[]
+) {
+  if (!mapResult?.ok) return fallbackPages.slice(0, 5);
+
+  const totalPages =
+    mapResult.totalPages ||
+    Math.max(0, ...mapResult.pages.map((page) => page.pageNumber), ...fallbackPages);
+  const selected: number[] = [];
+  const validFallbackPages = fallbackPages.filter((page) => !totalPages || page <= totalPages);
+  const pageByNumber = new Map(mapResult.pages.map((page) => [page.pageNumber, page]));
+  const usefulTypes = new Set(["model_photos", "measurement_table", "spa", "accessories", "mixed"]);
+  const ignoredTypes = new Set(["cover", "index", "institutional", "back_cover"]);
+  const relevantPages = mapResult.pages
+    .filter((page) => usefulTypes.has(page.pageType) || page.recommendedForDetailedScan)
+    .filter((page) => !ignoredTypes.has(page.pageType) || page.relevanceScore >= 0.75);
+  const measurementPages = relevantPages
+    .filter((page) => page.pageType === "measurement_table" || (page.pageType === "mixed" && page.hasMeasurements))
+    .sort((a, b) => b.relevanceScore - a.relevanceScore || a.pageNumber - b.pageNumber);
+  const photoPages = relevantPages
+    .filter((page) => ["model_photos", "spa", "accessories"].includes(page.pageType) || (page.pageType === "mixed" && !page.hasMeasurements))
+    .sort((a, b) => a.pageNumber - b.pageNumber);
+  const recommendedPages = mapResult.recommendedPages
+    .map((pageNumber) => pageByNumber.get(pageNumber))
+    .filter((page): page is NonNullable<typeof page> => Boolean(page))
+    .filter((page) => !ignoredTypes.has(page.pageType) || page.relevanceScore >= 0.75)
+    .sort((a, b) => b.relevanceScore - a.relevanceScore || a.pageNumber - b.pageNumber);
+  const safeAnchorPages =
+    totalPages >= 12
+      ? [3, 4, 5, Math.round(totalPages * 0.7)]
+      : validFallbackPages.slice(0, 3);
+
+  for (const page of safeAnchorPages) {
+    addVisualScanPage(selected, page, totalPages);
+  }
+  for (const page of measurementPages.slice(0, 2)) {
+    addVisualScanPage(selected, page.pageNumber, totalPages);
+  }
+  for (const page of photoPages) {
+    addVisualScanPage(selected, page.pageNumber, totalPages);
+  }
+  for (const page of recommendedPages) {
+    addVisualScanPage(selected, page.pageNumber, totalPages);
+  }
+  for (const page of validFallbackPages) {
+    addVisualScanPage(selected, page, totalPages);
+  }
+
+  return selected.slice(0, 5);
 }
 function translateVisualMissingField(field: string) {
   const normalized = String(field || "").trim();
@@ -3967,6 +4066,13 @@ export default function IntelligentCatalogImportPanel({
   const [visualEvidenceSessionCache, setVisualEvidenceSessionCache] = useState<
     Record<string, VisualCatalogDocumentScanResponse>
   >({});
+  const [visualDocumentMapLoading, setVisualDocumentMapLoading] = useState(false);
+  const [visualDocumentMapError, setVisualDocumentMapError] = useState<string | null>(null);
+  const [visualDocumentMapResult, setVisualDocumentMapResult] =
+    useState<VisualCatalogDocumentMapResponse | null>(null);
+  const [visualDocumentMapSessionCache, setVisualDocumentMapSessionCache] = useState<
+    Record<string, VisualCatalogDocumentMapResponse>
+  >({});
 
   const visibleIntelligentImportFiles = useMemo(() => {
     if (intelligentImportFiles.length > 0) {
@@ -4031,6 +4137,28 @@ export default function IntelligentCatalogImportPanel({
     () => consolidateVisualProductCandidates(visualEvidenceResult),
     [visualEvidenceResult]
   );
+  const visualDocumentAnalysis = useMemo(() => {
+    const selectedPages = visualEvidencePagesInput
+      .split(/[,\s;]+/g)
+      .map((value) => Number(String(value).replace(/[^\d]/g, "")))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .map((value) => Math.floor(value));
+
+    return buildVisualDocumentAnalysis({
+      documentMap: visualDocumentMapResult,
+      pageEvidence: visualEvidenceResult,
+      productCandidates: visualProductCandidates,
+      totalPages: visualPdfTotalPages,
+      selectedPages,
+      detailedScanPages: visualEvidenceResult?.ok ? visualEvidenceResult.requestedPages : [],
+    });
+  }, [
+    visualDocumentMapResult,
+    visualEvidenceResult,
+    visualProductCandidates,
+    visualPdfTotalPages,
+    visualEvidencePagesInput,
+  ]);
   const intelligentImportDiagnostics = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       return {
@@ -4115,6 +4243,9 @@ export default function IntelligentCatalogImportPanel({
     setVisualEvidenceNotice(null);
     setVisualEvidenceResult(null);
     setVisualEvidenceSessionCache({});
+    setVisualDocumentMapError(null);
+    setVisualDocumentMapResult(null);
+    setVisualDocumentMapSessionCache({});
     setIntelligentImportRecovered(false);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -4145,6 +4276,9 @@ export default function IntelligentCatalogImportPanel({
     setVisualEvidenceNotice(null);
     setVisualEvidenceResult(null);
     setVisualEvidenceSessionCache({});
+    setVisualDocumentMapError(null);
+    setVisualDocumentMapResult(null);
+    setVisualDocumentMapSessionCache({});
     setIntelligentImportRecovered(false);
     try {
       const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
@@ -4176,11 +4310,7 @@ export default function IntelligentCatalogImportPanel({
         setVisualCatalogPage(1);
         setVisualEvidencePagesInput(automaticEvidencePages.join(","));
         void handleRunVisualCatalogBase({ resetResult: false, page: 1 });
-        void handleRunVisualEvidenceScan({
-          pages: automaticEvidencePages,
-          resetResult: false,
-          source: "auto",
-        });
+        void handleRunVisualDocumentMapAndEvidenceScan(automaticEvidencePages);
       }
       setIntelligentImportSuccess(
         frontendReadyResult.message || "Importação inteligente processada com sucesso."
@@ -4273,6 +4403,89 @@ export default function IntelligentCatalogImportPanel({
           : draft
       )
     );
+  }
+
+  async function handleRunVisualDocumentMapAndEvidenceScan(fallbackPages: number[]) {
+    const pdfFile = intelligentImportFiles.find((file) =>
+      String(file.name || "").toLowerCase().endsWith(".pdf")
+    );
+    if (!pdfFile) {
+      await handleRunVisualEvidenceScan({
+        pages: fallbackPages,
+        resetResult: false,
+        source: "auto",
+      });
+      return;
+    }
+
+    const cacheKey = buildVisualDocumentMapSessionCacheKey(pdfFile);
+    const cachedMap = visualDocumentMapSessionCache[cacheKey];
+    if (cachedMap?.ok) {
+      const mappedPages = selectBalancedVisualEvidencePages(cachedMap, fallbackPages);
+      const pagesToScan = mappedPages.length > 0 ? mappedPages : fallbackPages;
+      setVisualDocumentMapResult(cachedMap);
+      setVisualDocumentMapError(null);
+      setVisualEvidencePagesInput(pagesToScan.join(","));
+      await handleRunVisualEvidenceScan({
+        pages: pagesToScan,
+        resetResult: false,
+        source: "auto",
+      });
+      return;
+    }
+
+    setVisualDocumentMapLoading(true);
+    setVisualDocumentMapError(null);
+    setVisualDocumentMapResult(null);
+    setVisualEvidenceNotice("Mapeando paginas do catalogo...");
+
+    try {
+      const formData = new FormData();
+      formData.append("file", pdfFile);
+      formData.append("allPages", "true");
+
+      const response = await fetch("/api/onboarding/visual-catalog-document-map", {
+        method: "POST",
+        body: formData,
+      });
+      const result = (await response.json()) as VisualCatalogDocumentMapResponse;
+
+      if (!response.ok || !result.ok) {
+        setVisualDocumentMapError(
+          !result.ok ? result.message : "Falha ao mapear paginas do catalogo."
+        );
+        await handleRunVisualEvidenceScan({
+          pages: fallbackPages,
+          resetResult: false,
+          source: "auto",
+        });
+        return;
+      }
+
+      const mappedPages = selectBalancedVisualEvidencePages(result, fallbackPages);
+      const pagesToScan = mappedPages.length > 0 ? mappedPages : fallbackPages;
+      setVisualDocumentMapResult(result);
+      setVisualDocumentMapSessionCache((current) => ({
+        ...current,
+        [cacheKey]: result,
+      }));
+      setVisualEvidencePagesInput(pagesToScan.join(","));
+      await handleRunVisualEvidenceScan({
+        pages: pagesToScan,
+        resetResult: false,
+        source: "auto",
+      });
+    } catch (error) {
+      console.error("[OnboardingPage] handleRunVisualDocumentMapAndEvidenceScan error:", error);
+      setVisualDocumentMapError("Nao foi possivel mapear o documento visual. Usando amostra inicial.");
+      await handleRunVisualEvidenceScan({
+        pages: fallbackPages,
+        resetResult: false,
+        source: "auto",
+      });
+    } finally {
+      setVisualDocumentMapLoading(false);
+    }
   }
 
   async function handleRunVisualEvidenceScan(options?: {
@@ -5450,6 +5663,23 @@ async function handleSaveImportedItemsToCatalog() {
                             <p className="mt-2 text-xs leading-5 text-violet-900">
                               Use no maximo 5 paginas. Esta opcao existe para desenvolvimento e validacao.
                             </p>
+                            <div className="mt-3 rounded-lg bg-white/80 p-2 text-xs leading-5 text-violet-900 ring-1 ring-violet-100">
+                              <p className="font-medium">Cobertura interna do documento</p>
+                              <p>{visualDocumentAnalysis.coverage.coverageSummary}</p>
+                              {visualDocumentAnalysis.coverage.recommendedPages.length > 0 ? (
+                                <p>
+                                  Paginas recomendadas pelo mapa:{" "}
+                                  {visualDocumentAnalysis.coverage.recommendedPages.join(", ")}
+                                </p>
+                              ) : null}
+                              {visualDocumentAnalysis.coverage.pendingPages.length > 0 ? (
+                                <p>
+                                  Paginas ainda sem scan detalhado:{" "}
+                                  {visualDocumentAnalysis.coverage.pendingPages.slice(0, 12).join(", ")}
+                                  {visualDocumentAnalysis.coverage.pendingPages.length > 12 ? "..." : ""}
+                                </p>
+                              ) : null}
+                            </div>
                           </div>
                           </details>
                           <div className="mt-4 rounded-lg bg-white p-3 ring-1 ring-violet-100">
@@ -5460,6 +5690,25 @@ async function handleSaveImportedItemsToCatalog() {
                               <p className="mt-2 text-sm text-violet-900">
                                 Lendo evidencias visuais...
                               </p>
+                            ) : null}
+                            {visualDocumentMapLoading ? (
+                              <p className="mt-2 text-sm text-violet-900">
+                                Mapeando paginas do catalogo...
+                              </p>
+                            ) : null}
+                            {visualDocumentMapResult?.ok && visualDocumentMapResult.recommendedPages.length > 0 ? (
+                              <p className="mt-2 text-sm leading-6 text-violet-900">
+                                Paginas usadas no scan detalhado:{" "}
+                                {visualEvidencePagesInput}
+                              </p>
+                            ) : null}
+                            {visualDocumentMapResult?.ok && visualDocumentMapResult.recommendedPages.length > 0 ? (
+                              <p className="mt-1 text-xs leading-5 text-violet-800">
+                                Mapa visual como apoio: recomendou {visualDocumentMapResult.recommendedPages.slice(0, 8).join(", ")}.
+                              </p>
+                            ) : null}
+                            {visualDocumentMapError ? (
+                              <p className="mt-2 text-sm text-amber-700">{visualDocumentMapError}</p>
                             ) : null}
                             {visualEvidenceNotice ? (
                               <p className="mt-2 text-sm text-violet-900">{visualEvidenceNotice}</p>
