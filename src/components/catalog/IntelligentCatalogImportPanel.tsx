@@ -576,6 +576,37 @@ function buildIntelligentImportFormatWarnings(params: {
 function buildVisualCatalogSessionCacheKey(file: File, page: number) {
   return `${file.name}::${file.size}::${page}`;
 }
+function buildVisualEvidenceSessionCacheKey(file: File, pages: number[]) {
+  return `${file.name}::${file.size}::${pages.join(",")}`;
+}
+function getVisualPdfTotalPagesFromResult(result: IntelligentImportResponse | null) {
+  if (!result?.ok) return null;
+  const pageNumbers = (result.extractedImagePreview ?? [])
+    .filter((image) => String(image.source || "").toLowerCase() === "pdf")
+    .map((image) =>
+      typeof image.worksheetRowNumber === "number"
+        ? image.worksheetRowNumber
+        : typeof image.imageOrder === "number"
+          ? image.imageOrder + 1
+          : 0
+    )
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return pageNumbers.length > 0 ? Math.max(...pageNumbers) : null;
+}
+function selectAutomaticVisualEvidencePages(totalPages: number | null) {
+  if (!totalPages || totalPages <= 0) return [1, 2, 3, 4, 5];
+  if (totalPages <= 5) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const candidates =
+    totalPages >= 12
+      ? [3, 4, 5, Math.round(totalPages * 0.7), Math.max(2, totalPages - 1)]
+      : [2, 3, Math.ceil(totalPages / 2), Math.max(2, totalPages - 1), totalPages];
+  return Array.from(
+    new Set(candidates.map((page) => Math.max(1, Math.min(totalPages, page))))
+  ).slice(0, 5);
+}
 function translateVisualMissingField(field: string) {
   const normalized = String(field || "").trim();
   const labels: Record<string, string> = {
@@ -3539,8 +3570,12 @@ export default function IntelligentCatalogImportPanel({
   const [visualEvidencePagesInput, setVisualEvidencePagesInput] = useState("3,4,5,12");
   const [visualEvidenceLoading, setVisualEvidenceLoading] = useState(false);
   const [visualEvidenceError, setVisualEvidenceError] = useState<string | null>(null);
+  const [visualEvidenceNotice, setVisualEvidenceNotice] = useState<string | null>(null);
   const [visualEvidenceResult, setVisualEvidenceResult] =
     useState<VisualCatalogDocumentScanResponse | null>(null);
+  const [visualEvidenceSessionCache, setVisualEvidenceSessionCache] = useState<
+    Record<string, VisualCatalogDocumentScanResponse>
+  >({});
 
   const visibleIntelligentImportFiles = useMemo(() => {
     if (intelligentImportFiles.length > 0) {
@@ -3682,7 +3717,9 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogNotice(null);
     setEditableVisualCatalogDrafts([]);
     setVisualEvidenceError(null);
+    setVisualEvidenceNotice(null);
     setVisualEvidenceResult(null);
+    setVisualEvidenceSessionCache({});
     setIntelligentImportRecovered(false);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -3710,7 +3747,9 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogNotice(null);
     setEditableVisualCatalogDrafts([]);
     setVisualEvidenceError(null);
+    setVisualEvidenceNotice(null);
     setVisualEvidenceResult(null);
+    setVisualEvidenceSessionCache({});
     setIntelligentImportRecovered(false);
     try {
       const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
@@ -3736,8 +3775,17 @@ export default function IntelligentCatalogImportPanel({
       const frontendReadyResult = normalizeIntelligentImportResultForFrontend(decoratedResult);
       setIntelligentImportResult(frontendReadyResult);
       if (isVisualPdfImportResult(frontendReadyResult)) {
+        const automaticEvidencePages = selectAutomaticVisualEvidencePages(
+          getVisualPdfTotalPagesFromResult(frontendReadyResult)
+        );
         setVisualCatalogPage(1);
+        setVisualEvidencePagesInput(automaticEvidencePages.join(","));
         void handleRunVisualCatalogBase({ resetResult: false, page: 1 });
+        void handleRunVisualEvidenceScan({
+          pages: automaticEvidencePages,
+          resetResult: false,
+          source: "auto",
+        });
       }
       setIntelligentImportSuccess(
         frontendReadyResult.message || "Importação inteligente processada com sucesso."
@@ -3832,15 +3880,20 @@ export default function IntelligentCatalogImportPanel({
     );
   }
 
-  async function handleRunVisualEvidenceScan() {
+  async function handleRunVisualEvidenceScan(options?: {
+    pages?: number[];
+    resetResult?: boolean;
+    source?: "auto" | "manual";
+  }) {
     const pdfFile = intelligentImportFiles.find((file) =>
       String(file.name || "").toLowerCase().endsWith(".pdf")
     );
+    const resetResult = options?.resetResult ?? true;
+    const source = options?.source ?? "manual";
     const requestedPages = Array.from(
       new Set(
-        visualEvidencePagesInput
-          .split(/[,\s;]+/g)
-          .map((value) => Number(value.replace(/[^\d]/g, "")))
+        (options?.pages ?? visualEvidencePagesInput.split(/[,\s;]+/g))
+          .map((value) => Number(String(value).replace(/[^\d]/g, "")))
           .filter((value) => Number.isFinite(value) && value > 0)
           .map((value) => Math.floor(value))
       )
@@ -3855,9 +3908,25 @@ export default function IntelligentCatalogImportPanel({
       return;
     }
 
+    const cacheKey = buildVisualEvidenceSessionCacheKey(pdfFile, requestedPages);
+    const cachedResult = visualEvidenceSessionCache[cacheKey];
+    if (cachedResult) {
+      setVisualEvidenceResult(cachedResult);
+      setVisualEvidenceError(null);
+      setVisualEvidenceNotice("Resultado visual reaproveitado desta sessao.");
+      return;
+    }
+
     setVisualEvidenceLoading(true);
     setVisualEvidenceError(null);
-    setVisualEvidenceResult(null);
+    setVisualEvidenceNotice(
+      source === "auto"
+        ? "O ZION esta analisando paginas importantes para montar evidencias do catalogo."
+        : null
+    );
+    if (resetResult) {
+      setVisualEvidenceResult(null);
+    }
 
     try {
       const formData = new FormData();
@@ -3874,14 +3943,25 @@ export default function IntelligentCatalogImportPanel({
         setVisualEvidenceError(
           !result.ok ? result.message : "Falha ao gerar evidencias visuais."
         );
+        setVisualEvidenceNotice(null);
         setVisualEvidenceResult(result);
         return;
       }
 
       setVisualEvidenceResult(result);
+      setVisualEvidenceSessionCache((current) => ({
+        ...current,
+        [cacheKey]: result,
+      }));
+      setVisualEvidenceNotice(
+        source === "auto"
+          ? `Analise visual automatica concluida nas paginas ${requestedPages.join(", ")}.`
+          : "Evidencias visuais geradas para as paginas escolhidas."
+      );
     } catch (error) {
       console.error("[OnboardingPage] handleRunVisualEvidenceScan error:", error);
       setVisualEvidenceError("Erro inesperado ao gerar evidencias visuais.");
+      setVisualEvidenceNotice(null);
     } finally {
       setVisualEvidenceLoading(false);
     }
@@ -4775,6 +4855,10 @@ async function handleSaveImportedItemsToCatalog() {
                               </p>
                             </div>
                           </div>
+                          <details className="mt-3 rounded-lg border border-violet-100 bg-white/70 p-3">
+                            <summary className="cursor-pointer text-xs font-medium text-violet-900">
+                              Ferramentas de diagnostico
+                            </summary>
                           <div className="mt-3 grid gap-2 md:grid-cols-[160px_auto] md:items-end">
                             <label className="block">
                               <span className="text-xs font-medium text-violet-900">
@@ -4944,11 +5028,12 @@ async function handleSaveImportedItemsToCatalog() {
                               Ainda nao encontramos itens prontos nesta pagina. Tente outra pagina.
                             </p>
                           ) : null}
-                          <div className="mt-4 rounded-lg bg-white p-3 ring-1 ring-violet-100">
-                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                          <div className="mt-4 rounded-lg border border-violet-100 bg-violet-50/50 p-3">
+                            <p className="text-xs font-medium text-violet-900">Teste manual de evidencias</p>
+                            <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                               <label className="block">
                                 <span className="text-xs font-medium text-violet-900">
-                                  Evidencias visuais por paginas
+                                  Paginas para testar
                                 </span>
                                 <input
                                   type="text"
@@ -4964,17 +5049,36 @@ async function handleSaveImportedItemsToCatalog() {
                                 disabled={disabled || visualEvidenceLoading || intelligentImportLoading}
                                 className="rounded-lg border border-violet-200 bg-white px-4 py-2 text-sm font-medium text-violet-950 disabled:opacity-60"
                               >
-                                {visualEvidenceLoading ? "Lendo evidencias..." : "Gerar evidencias"}
+                                {visualEvidenceLoading ? "Lendo..." : "Testar paginas"}
                               </button>
                             </div>
                             <p className="mt-2 text-xs leading-5 text-violet-900">
-                              Use poucas paginas por vez. Esta leitura cria evidencias para futura consolidacao por modelo e nao salva nada.
+                              Use no maximo 5 paginas. Esta opcao existe para desenvolvimento e validacao.
                             </p>
+                          </div>
+                          </details>
+                          <div className="mt-4 rounded-lg bg-white p-3 ring-1 ring-violet-100">
+                            <p className="mt-2 text-xs leading-5 text-violet-900">
+                              Este PDF e visual. O ZION analisa automaticamente paginas importantes para montar evidencias do catalogo. Nada sera salvo sem sua revisao.
+                            </p>
+                            {visualEvidenceLoading ? (
+                              <p className="mt-2 text-sm text-violet-900">
+                                Lendo evidencias visuais...
+                              </p>
+                            ) : null}
+                            {visualEvidenceNotice ? (
+                              <p className="mt-2 text-sm text-violet-900">{visualEvidenceNotice}</p>
+                            ) : null}
                             {visualEvidenceError ? (
                               <p className="mt-2 text-sm text-red-700">{visualEvidenceError}</p>
                             ) : null}
                             {visualEvidenceResult?.ok ? (
                               <div className="mt-3 space-y-3">
+                                {visualEvidenceResult.pageEvidence.length > 0 ? (
+                                  <p className="text-sm leading-6 text-violet-950">
+                                    O ZION encontrou evidencias visuais no catalogo. A proxima etapa sera juntar essas informacoes em itens para revisao.
+                                  </p>
+                                ) : null}
                                 {visualEvidenceResult.warnings.length > 0 ? (
                                   <p className="text-xs leading-5 text-violet-900">
                                     Avisos: {visualEvidenceResult.warnings.join(" ")}
