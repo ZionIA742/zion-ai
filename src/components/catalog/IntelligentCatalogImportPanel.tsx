@@ -5666,6 +5666,12 @@ async function handleSaveImportedItemsToCatalog() {
                             <div className="mt-3 rounded-lg bg-white/80 p-2 text-xs leading-5 text-violet-900 ring-1 ring-violet-100">
                               <p className="font-medium">Cobertura interna do documento</p>
                               <p>{visualDocumentAnalysis.coverage.coverageSummary}</p>
+                              <p>Entidades detectadas: {visualDocumentAnalysis.entities.length}</p>
+                              {visualDocumentAnalysis.mapOnlyHints.length > 0 ? (
+                                <p>
+                                  Sugestoes do mapa ainda sem scan detalhado: {visualDocumentAnalysis.mapOnlyHints.length}
+                                </p>
+                              ) : null}
                               {visualDocumentAnalysis.coverage.recommendedPages.length > 0 ? (
                                 <p>
                                   Paginas recomendadas pelo mapa:{" "}
@@ -5677,6 +5683,28 @@ async function handleSaveImportedItemsToCatalog() {
                                   Paginas ainda sem scan detalhado:{" "}
                                   {visualDocumentAnalysis.coverage.pendingPages.slice(0, 12).join(", ")}
                                   {visualDocumentAnalysis.coverage.pendingPages.length > 12 ? "..." : ""}
+                                </p>
+                              ) : null}
+                              {visualDocumentAnalysis.entities.length > 0 ? (
+                                <p>
+                                  Amostra:{" "}
+                                  {visualDocumentAnalysis.entities
+                                    .slice(0, 6)
+                                    .map((entity) =>
+                                      `${entity.sku || entity.name || entity.modelKey} (${entity.sourcePages.join(", ")})`
+                                    )
+                                    .join(" | ")}
+                                </p>
+                              ) : null}
+                              {visualDocumentAnalysis.mapOnlyHints.length > 0 ? (
+                                <p>
+                                  Mapa:{" "}
+                                  {visualDocumentAnalysis.mapOnlyHints
+                                    .slice(0, 6)
+                                    .map((entity) =>
+                                      `${entity.sku || entity.name || entity.modelKey} (${entity.sourcePages.join(", ")})`
+                                    )
+                                    .join(" | ")}
                                 </p>
                               ) : null}
                             </div>

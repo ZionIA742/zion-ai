@@ -24,6 +24,7 @@ export type VisualDocumentEntity = {
   category: string | null;
   sourcePages: number[];
   confidence: number;
+  sourceType?: "confirmed" | "map_hint";
 };
 
 export type VisualFieldEvidence = {
@@ -64,6 +65,7 @@ export type VisualDocumentAnalysis = {
   coverage: VisualDocumentCoverage;
   parts: VisualDocumentPart[];
   entities: VisualDocumentEntity[];
+  mapOnlyHints: VisualDocumentEntity[];
   fieldEvidence: VisualFieldEvidence[];
   reviewCandidates: VisualReviewCandidate[];
 };
@@ -77,6 +79,7 @@ type VisualDocumentMapInput = {
     relevanceScore?: number;
     confidence?: number;
     recommendedForDetailedScan?: boolean;
+    possibleModels?: string[];
   }>;
   recommendedPages?: number[];
 } | null;
@@ -123,6 +126,27 @@ export type BuildVisualDocumentAnalysisInput = {
   detailedScanPages?: number[];
 };
 
+type DiscoverVisualDocumentEntitiesInput = {
+  documentMap?: VisualDocumentMapInput;
+  pageEvidence?: VisualPageEvidenceInput;
+  productCandidates?: VisualProductCandidateInput[];
+};
+
+type VisualEntitySourceKind = "document_map" | "page_evidence" | "product_candidate";
+
+type VisualEntityAggregate = VisualDocumentEntity & {
+  __confidenceValues: number[];
+  __sourceKinds: Set<VisualEntitySourceKind>;
+  __pageTypes: Set<string>;
+  __hasMeasurements: boolean;
+  __hasTechnicalDetails: boolean;
+  __documentMapOnly: boolean;
+  __mentions: number;
+  __scoreReasons: string[];
+  __score: number;
+  __accepted: boolean;
+};
+
 function normalizePageNumbers(values: Array<number | null | undefined>) {
   return Array.from(
     new Set(
@@ -144,6 +168,471 @@ function buildCoverageSummary(params: {
   const total = params.totalPages;
   const pageText = total ? `${analyzed}/${total} paginas` : `${analyzed} paginas`;
   return `${pageText} analisadas, ${params.evidenceCount} evidencias, ${params.candidateCount} candidatos.`;
+}
+
+function normalizeLoose(value: string | null | undefined) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanupEntityLabel(value: string | null | undefined) {
+  return String(value || "")
+    .replace(/\s*::\s*.+$/g, "")
+    .replace(
+      /\b\d+[\.,]?\d*\s*m?(?:\s*x\s*\d+[\.,]?\d*\s*m?){1,3}(?:\s*x\s*\d+[\.,]?\d*\s*cm)?\b/gi,
+      " "
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeEntityNameKey(value: string | null | undefined) {
+  return normalizeLoose(cleanupEntityLabel(value));
+}
+
+function normalizeEntityCodeKey(value: string | null | undefined) {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) return "";
+  return raw.replace(/[^A-Z0-9\-_/]/g, "");
+}
+
+function pickEntityKey(params: {
+  sku?: string | null;
+  visibleCode?: string | null;
+  modelKey?: string | null;
+  name?: string | null;
+}) {
+  const strongCode = normalizeEntityCodeKey(params.sku || params.visibleCode);
+  if (strongCode) return `code::${strongCode}`;
+
+  const normalizedName =
+    normalizeEntityNameKey(params.name) || normalizeEntityNameKey(params.modelKey);
+  if (normalizedName) return `name::${normalizedName}`;
+  return "";
+}
+
+function preferLongerText(current: string | null, incoming: string | null) {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  return incoming.length > current.length ? incoming : current;
+}
+
+function isStrongSkuOrCode(value: string | null | undefined) {
+  const code = normalizeEntityCodeKey(value);
+  if (!code) return false;
+  return (
+    /^[A-Z]{2,5}-\d{2,5}$/.test(code) ||
+    /^[A-Z]\d{2,4}$/.test(code) ||
+    /^[A-Z]{2,4}\d{2,4}$/.test(code)
+  );
+}
+
+function isLikelyGenericVisualPhrase(value: string | null | undefined) {
+  const normalized = normalizeEntityNameKey(value);
+  if (!normalized) return true;
+
+  const blockedExact = new Set([
+    "piscina",
+    "produto",
+    "acessorio",
+    "catalogo",
+    "imagem",
+    "foto",
+    "tabela",
+    "medidas",
+    "capa",
+    "indice",
+    "logo",
+    "modelo de piscina",
+    "piscina generica",
+  ]);
+  if (blockedExact.has(normalized)) return true;
+
+  if (
+    /\b(imagem|foto|catalogo|capa|indice|ambiente|logo|banner|institucional|tabela|medidas)\b/.test(
+      normalized
+    )
+  ) {
+    return true;
+  }
+
+  return normalized.split(" ").length >= 5 && !isStrongSkuOrCode(value);
+}
+
+function isLikelyInstitutionalEntity(value: string | null | undefined) {
+  const normalized = normalizeEntityNameKey(value);
+  if (!normalized) return false;
+
+  if (
+    /\b(aguazul|marca|fabricante|empresa|institucional|contracapa|banner|logo)\b/.test(normalized)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isLikelySceneOrHumanDescription(value: string | null | undefined) {
+  const normalized = normalizeEntityNameKey(value);
+  if (!normalized) return false;
+
+  return /\b(pessoa|bebe|bebê|crianca|criança|rosto|oculos|óculos|chapeu|chapéu|modelo humano|paisagem|cenario|cenario floral)\b/.test(
+    normalized
+  );
+}
+
+function isShortSpecificModelName(value: string | null | undefined) {
+  const cleaned = cleanupEntityLabel(value);
+  const normalized = normalizeEntityNameKey(cleaned);
+  if (!normalized || normalized.length < 2) return false;
+  if (isLikelyGenericVisualPhrase(normalized) || isLikelyInstitutionalEntity(normalized)) return false;
+
+  const words = normalized.split(" ").filter(Boolean);
+  if (words.length === 1) {
+    return /^[a-z]{3,20}$/.test(words[0]) || isStrongSkuOrCode(cleaned);
+  }
+  if (words.length === 2) {
+    return words[1] === "spa" || isStrongSkuOrCode(cleaned);
+  }
+  return false;
+}
+
+function scoreVisualEntityCandidate(entity: VisualEntityAggregate) {
+  let score = 0;
+  const reasons: string[] = [];
+  const displayName = entity.name || entity.sku || entity.modelKey;
+  const normalizedPageTypes = Array.from(entity.__pageTypes);
+  const sourceKindCount = entity.__sourceKinds.size;
+  const pageCount = entity.sourcePages.length;
+  const hasStrongCode = isStrongSkuOrCode(entity.sku || entity.modelKey);
+  const usefulPageType = normalizedPageTypes.some((pageType) =>
+    ["model_photos", "measurement_table", "mixed", "spa", "accessories"].includes(pageType)
+  );
+  const hostilePageType = normalizedPageTypes.some((pageType) =>
+    ["cover", "index", "institutional", "back_cover"].includes(pageType)
+  );
+
+  if (hasStrongCode) {
+    score += 5;
+    reasons.push("codigo_forte");
+  }
+  if (normalizedPageTypes.includes("measurement_table")) {
+    score += 4;
+    reasons.push("tabela_medidas");
+  }
+  if (entity.__hasMeasurements) {
+    score += 4;
+    reasons.push("medidas");
+  }
+  if (entity.__sourceKinds.has("product_candidate")) {
+    score += 4;
+    reasons.push("product_candidate");
+  }
+  if (entity.__sourceKinds.has("page_evidence")) {
+    score += 3;
+    reasons.push("page_evidence");
+  }
+  if (pageCount >= 2) {
+    score += 3;
+    reasons.push("multiplas_paginas");
+  }
+  if (usefulPageType) {
+    score += 3;
+    reasons.push("pagina_util");
+  }
+  if (isShortSpecificModelName(displayName)) {
+    score += 2;
+    reasons.push("nome_especifico");
+  }
+  if (entity.category) {
+    score += 2;
+    reasons.push("categoria");
+  }
+  if (entity.__hasTechnicalDetails) {
+    score += 2;
+    reasons.push("detalhe_tecnico");
+  }
+
+  if (hostilePageType) {
+    score -= 6;
+    reasons.push("pagina_hostil");
+  }
+  if (isLikelySceneOrHumanDescription(displayName)) {
+    score -= 5;
+    reasons.push("cena_ou_pessoa");
+  }
+  if (isLikelyGenericVisualPhrase(displayName)) {
+    score -= 5;
+    reasons.push("frase_generica");
+  }
+  if (entity.__documentMapOnly) {
+    score -= 4;
+    reasons.push("apenas_document_map");
+  }
+  if (isLikelyInstitutionalEntity(displayName)) {
+    score -= 4;
+    reasons.push("institucional_ou_marca");
+  }
+  if ((displayName || "").trim().split(/\s+/).length >= 5 && !hasStrongCode) {
+    score -= 3;
+    reasons.push("frase_longa");
+  }
+  if (
+    /\b(imagem|foto|catalogo|capa|indice|ambiente|logo|banner|institucional)\b/.test(
+      normalizeEntityNameKey(displayName)
+    )
+  ) {
+    score -= 3;
+    reasons.push("termos_ruido");
+  }
+  if (
+    /\b(pessoa|bebe|crianca|rosto|oculos|chapeu|paisagem|cenario)\b/.test(
+      normalizeEntityNameKey(displayName)
+    )
+  ) {
+    score -= 4;
+    reasons.push("humano_ambiente");
+  }
+
+  if (sourceKindCount >= 2 && entity.__sourceKinds.has("page_evidence") && entity.__sourceKinds.has("product_candidate")) {
+    score += 3;
+    reasons.push("duas_fontes_confiaveis");
+  }
+
+  return { score, reasons };
+}
+
+function shouldAcceptVisualEntity(entity: VisualEntityAggregate) {
+  const displayName = entity.name || entity.sku || entity.modelKey;
+  const normalizedPageTypes = Array.from(entity.__pageTypes);
+  const { score } = scoreVisualEntityCandidate(entity);
+  const hasStrongCode = isStrongSkuOrCode(entity.sku || entity.modelKey);
+  const hasStrongNameAndMeasures = isShortSpecificModelName(displayName) && entity.__hasMeasurements;
+  const hasTrustedSources =
+    entity.__sourceKinds.has("page_evidence") && entity.__sourceKinds.has("product_candidate");
+  const hasTwoUsefulContexts =
+    entity.sourcePages.length >= 2 &&
+    normalizedPageTypes.some((pageType) => ["model_photos", "spa"].includes(pageType)) &&
+    normalizedPageTypes.some((pageType) => ["measurement_table", "mixed"].includes(pageType));
+
+  const hardReject =
+    (entity.__documentMapOnly &&
+      (normalizedPageTypes.length === 0 ||
+        normalizedPageTypes.every((pageType) =>
+          ["cover", "index", "institutional", "back_cover", "unknown"].includes(pageType)
+        ))) ||
+    isLikelySceneOrHumanDescription(displayName) ||
+    isLikelyGenericVisualPhrase(displayName) ||
+    isLikelyInstitutionalEntity(displayName);
+
+  if (hardReject && !hasStrongCode && !hasStrongNameAndMeasures && !hasTrustedSources) {
+    return false;
+  }
+
+  return score >= 4 || hasStrongCode || hasStrongNameAndMeasures || hasTrustedSources || hasTwoUsefulContexts;
+}
+
+export function discoverVisualDocumentEntities(
+  input: DiscoverVisualDocumentEntitiesInput
+): { confirmedEntities: VisualDocumentEntity[]; mapOnlyHints: VisualDocumentEntity[] } {
+  const entities = new Map<string, VisualEntityAggregate>();
+  const pageTypeByNumber = new Map<number, string>();
+
+  if (input.documentMap?.ok) {
+    for (const page of input.documentMap.pages ?? []) {
+      const pageNumber = Number(page.pageNumber || 0);
+      if (!pageNumber) continue;
+      pageTypeByNumber.set(pageNumber, String(page.pageType || "unknown"));
+    }
+  }
+  if (input.pageEvidence?.ok) {
+    for (const page of input.pageEvidence.pageEvidence ?? []) {
+      const pageNumber = Number(page.pageNumber || 0);
+      if (!pageNumber || pageTypeByNumber.has(pageNumber)) continue;
+      pageTypeByNumber.set(pageNumber, "unknown");
+    }
+  }
+
+  const upsertEntity = (params: {
+    key: string;
+    name?: string | null;
+    sku?: string | null;
+    category?: string | null;
+    sourcePages?: Array<number | null | undefined>;
+    confidence?: number | null;
+    sourceKind: VisualEntitySourceKind;
+    pageType?: string | null;
+    hasMeasurements?: boolean;
+    hasTechnicalDetails?: boolean;
+  }) => {
+    if (!params.key) return;
+    const confidence = Math.max(0, Math.min(1, Number(params.confidence || 0)));
+    const existing = entities.get(params.key);
+    const sourcePages = normalizePageNumbers(params.sourcePages ?? []);
+    const next =
+      existing ??
+      ({
+        entityId: params.key,
+        modelKey: params.key.replace(/^(code|name)::/i, ""),
+        name: null,
+        sku: null,
+        category: null,
+        sourcePages: [],
+        confidence: 0,
+        __confidenceValues: [],
+        __sourceKinds: new Set<VisualEntitySourceKind>(),
+        __pageTypes: new Set<string>(),
+        __hasMeasurements: false,
+        __hasTechnicalDetails: false,
+        __documentMapOnly: true,
+        __mentions: 0,
+        __scoreReasons: [],
+        __score: 0,
+        __accepted: false,
+      } satisfies VisualEntityAggregate);
+
+    next.name = preferLongerText(next.name, cleanupEntityLabel(params.name || null) || null);
+    next.sku = normalizeEntityCodeKey(params.sku) || next.sku;
+    next.category = next.category || params.category || null;
+    next.sourcePages = normalizePageNumbers([...next.sourcePages, ...sourcePages]);
+    next.__confidenceValues.push(confidence);
+    next.__sourceKinds.add(params.sourceKind);
+    if (params.pageType) next.__pageTypes.add(params.pageType);
+    next.__hasMeasurements = next.__hasMeasurements || Boolean(params.hasMeasurements);
+    next.__hasTechnicalDetails = next.__hasTechnicalDetails || Boolean(params.hasTechnicalDetails);
+    next.__documentMapOnly =
+      next.__documentMapOnly && params.sourceKind === "document_map";
+    next.__mentions += 1;
+    entities.set(params.key, next);
+  };
+
+  if (input.documentMap?.ok) {
+    for (const page of input.documentMap.pages ?? []) {
+      const pageNumber = Number(page.pageNumber || 0);
+      for (const possibleModel of page.possibleModels ?? []) {
+        const cleanName = cleanupEntityLabel(possibleModel);
+        const key = pickEntityKey({ name: cleanName, modelKey: cleanName });
+        upsertEntity({
+          key,
+          name: cleanName,
+          category: null,
+          sourcePages: [pageNumber],
+          confidence: typeof page.confidence === "number" ? page.confidence * 0.7 : 0.35,
+          sourceKind: "document_map",
+          pageType: pageTypeByNumber.get(pageNumber) || String(page.pageType || "unknown"),
+        });
+      }
+    }
+  }
+
+  if (input.pageEvidence?.ok) {
+    for (const page of input.pageEvidence.pageEvidence ?? []) {
+      const pageNumber = Number(page.pageNumber || 0);
+      for (const item of page.items ?? []) {
+        const preferredName = item.visibleName || item.visibleCode || item.modelKey || null;
+        const key = pickEntityKey({
+          sku: item.visibleCode,
+          visibleCode: item.visibleCode,
+          modelKey: item.modelKey,
+          name: preferredName,
+        });
+        upsertEntity({
+          key,
+          name: preferredName,
+          sku: item.visibleCode ?? null,
+          category: item.category ?? null,
+          sourcePages: [pageNumber],
+          confidence: item.confidence ?? 0.5,
+          sourceKind: "page_evidence",
+          pageType: pageTypeByNumber.get(pageNumber) || "unknown",
+          hasMeasurements: Boolean(item.dimensions?.visualText),
+          hasTechnicalDetails: Boolean(item.material || item.description || item.dimensions?.visualText),
+        });
+      }
+    }
+  }
+
+  for (const candidate of input.productCandidates ?? []) {
+    const preferredName = candidate.name || candidate.sku || candidate.modelKey || null;
+    const key = pickEntityKey({
+      sku: candidate.sku,
+      visibleCode: candidate.sku,
+      modelKey: candidate.modelKey,
+      name: preferredName,
+    });
+    upsertEntity({
+      key,
+      name: preferredName,
+      sku: candidate.sku ?? null,
+      category: candidate.category ?? null,
+      sourcePages: candidate.sourcePages ?? [],
+      confidence: candidate.confidence ?? 0.6,
+      sourceKind: "product_candidate",
+      pageType: null,
+      hasMeasurements: false,
+      hasTechnicalDetails: false,
+    });
+  }
+
+  const normalizedEntities = Array.from(entities.values())
+    .map((entity) => {
+      const scoreResult = scoreVisualEntityCandidate(entity);
+      entity.__scoreReasons = scoreResult.reasons;
+      entity.__score = scoreResult.score;
+      entity.__accepted = shouldAcceptVisualEntity(entity);
+      return {
+        entityId: entity.entityId,
+        modelKey: entity.modelKey,
+        name: entity.name,
+        sku: entity.sku,
+        category: entity.category,
+        sourcePages: entity.sourcePages,
+        confidence:
+          entity.__confidenceValues.length > 0
+            ? entity.__confidenceValues.reduce((sum, value) => sum + value, 0) /
+              entity.__confidenceValues.length
+            : 0,
+        sourceType: entity.__documentMapOnly
+          ? ("map_hint" as const)
+          : ("confirmed" as const),
+        __score: entity.__score,
+        __accepted: entity.__accepted,
+        __documentMapOnly: entity.__documentMapOnly,
+        __sourceKinds: entity.__sourceKinds,
+      };
+    })
+    .filter((entity) => Boolean(entity.modelKey || entity.name || entity.sku))
+    .sort((a, b) => {
+      const pageA = a.sourcePages[0] ?? Number.MAX_SAFE_INTEGER;
+      const pageB = b.sourcePages[0] ?? Number.MAX_SAFE_INTEGER;
+      return pageA - pageB || a.modelKey.localeCompare(b.modelKey);
+    });
+
+  const confirmedEntities = normalizedEntities
+    .filter((entity) => entity.__accepted && entity.sourceType === "confirmed")
+    .map(({ __score: _score, __accepted: _accepted, __documentMapOnly: _documentMapOnly, __sourceKinds: _sourceKinds, ...entity }) => entity);
+
+  const mapOnlyHints = normalizedEntities
+    .filter((entity) => entity.sourceType === "map_hint")
+    .filter((entity) => !isLikelySceneOrHumanDescription(entity.name || entity.modelKey))
+    .filter((entity) => !isLikelyGenericVisualPhrase(entity.name || entity.modelKey))
+    .filter((entity) => !isLikelyInstitutionalEntity(entity.name || entity.modelKey))
+    .filter((entity) =>
+      entity.__score >= -2 ||
+      isShortSpecificModelName(entity.name || entity.modelKey) ||
+      isStrongSkuOrCode(entity.sku || entity.modelKey)
+    )
+    .map(({ __score: _score, __accepted: _accepted, __documentMapOnly: _documentMapOnly, __sourceKinds: _sourceKinds, ...entity }) => entity);
+
+  return {
+    confirmedEntities,
+    mapOnlyHints,
+  };
 }
 
 export function buildVisualDocumentAnalysis(
@@ -251,15 +740,11 @@ export function buildVisualDocumentAnalysis(
       conflictsCount: Array.isArray(candidate.conflicts) ? candidate.conflicts.length : 0,
     }));
 
-  const entities = reviewCandidates.map((candidate) => ({
-    entityId: candidate.candidateId,
-    modelKey: candidate.modelKey,
-    name: candidate.name,
-    sku: candidate.sku,
-    category: candidate.category,
-    sourcePages: candidate.sourcePages,
-    confidence: candidate.confidence,
-  }));
+  const discoveredEntities = discoverVisualDocumentEntities({
+    documentMap: input.documentMap,
+    pageEvidence: input.pageEvidence,
+    productCandidates: candidates,
+  });
 
   const evidenceCount = fieldEvidence.length;
   const candidateCount = reviewCandidates.length;
@@ -284,7 +769,8 @@ export function buildVisualDocumentAnalysis(
     parts: Array.from(partsById.values()).sort(
       (a, b) => Number(a.pageNumber || 0) - Number(b.pageNumber || 0)
     ),
-    entities,
+    entities: discoveredEntities.confirmedEntities,
+    mapOnlyHints: discoveredEntities.mapOnlyHints,
     fieldEvidence,
     reviewCandidates,
   };
