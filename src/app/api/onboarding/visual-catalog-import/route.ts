@@ -215,7 +215,7 @@ async function analyzeVisualCatalogPage(params: {
       {
         role: "system",
         content:
-          "Voce extrai rascunhos de catalogos visuais de lojas de piscina. Uma pagina pode conter 0, 1 ou varios produtos. Retorne um draft separado para cada item visivel, ate 12 itens. Nao resuma varios modelos em um so. Nao escolha apenas o item principal se houver outros modelos. Use apenas informacoes visiveis. Nao invente. Responda somente JSON valido, sem markdown, comentarios ou texto fora do JSON. Nao use fracao solta como 1/2; escreva como string no nome/descricao ou use null em campos numericos. Nao use virgula decimal em numeros JSON. Se a pagina estiver muito densa, retorne menos itens com mais seguranca em vez de quebrar o JSON. Se nao houver item claro, retorne drafts vazio.",
+          "Voce extrai rascunhos de catalogos visuais de lojas de piscina. Uma pagina pode conter 0, 1 ou varios produtos. Retorne um draft separado para cada item visivel, ate 12 itens. Nao resuma varios modelos em um so. Nao escolha apenas o item principal se houver outros modelos. Use apenas nomes, codigos e medidas literalmente visiveis na imagem. Nunca invente nomes genericos como Pool Model 1, Modelo 1, Piscina 1 ou Item 1. Se so houver codigo legivel como E01/E02/E03, use esse codigo como nome provisorio e sku. Se o nome nao estiver legivel, use name null e inclua name em missingFields. Responda somente JSON valido, sem markdown, comentarios ou texto fora do JSON. Nao use fracao solta como 1/2; escreva como string no nome/descricao ou use null em campos numericos. Nao use virgula decimal em numeros JSON. Se a pagina estiver muito densa, retorne menos itens corretos em vez de muitos itens inventados. Se nao houver item claro, retorne drafts vazio.",
       },
       {
         role: "user",
@@ -223,7 +223,7 @@ async function analyzeVisualCatalogPage(params: {
           {
             type: "input_text",
             text:
-              "Analise esta pagina de catalogo. Extraia todos os modelos/produtos visiveis com leitura segura, ate 12 drafts. Cada piscina/produto/codigo deve virar um draft separado. Preserve codigos como E01, E02, E03 no sku quando forem codigos claros; se forem parte do nome, inclua no name. Para piscinas use category pool e tente capturar width_m, length_m, depth_m e capacity_l apenas se estiverem legiveis. Use null quando nao tiver certeza. Campos ausentes devem ser null e listados em missingFields. Use confidence menor quando a leitura estiver incerta. Categorias validas: pool, chemical, accessory, other. Devolva apenas JSON valido.",
+              "Analise esta pagina de catalogo. Extraia todos os modelos/produtos visiveis com leitura segura, ate 12 drafts. Cada piscina/produto/codigo deve virar um draft separado. Preserve codigos como E01, E02, E03 no sku quando forem codigos claros; se forem parte do nome, inclua no name. Nunca crie nomes aproximados ou traduzidos. Nao use Pool Model, Modelo, Piscina ou Item com numero se isso nao estiver escrito na imagem. Se houver apenas codigo visivel, use o codigo como name provisorio. Para piscinas use category pool e tente capturar width_m, length_m, depth_m e capacity_l apenas se estiverem legiveis ao lado do item. Use null quando nao tiver certeza. Campos ausentes devem ser null e listados em missingFields. Use confidence menor quando a leitura estiver incerta. Categorias validas: pool, chemical, accessory, other. Devolva apenas JSON valido.",
           },
           {
             type: "input_image",

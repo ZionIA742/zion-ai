@@ -520,6 +520,9 @@ function buildIntelligentImportFormatWarnings(params: {
 
   return warnings;
 }
+function buildVisualCatalogSessionCacheKey(file: File, page: number) {
+  return `${file.name}::${file.size}::${page}`;
+}
 function inferImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
@@ -3328,6 +3331,10 @@ export default function IntelligentCatalogImportPanel({
     useState<VisualCatalogImportResponse | null>(null);
   const [visualCatalogError, setVisualCatalogError] = useState<string | null>(null);
   const [visualCatalogPage, setVisualCatalogPage] = useState(1);
+  const [visualCatalogSessionCache, setVisualCatalogSessionCache] = useState<
+    Record<string, VisualCatalogImportResponse>
+  >({});
+  const [visualCatalogNotice, setVisualCatalogNotice] = useState<string | null>(null);
 
   const visibleIntelligentImportFiles = useMemo(() => {
     if (intelligentImportFiles.length > 0) {
@@ -3465,6 +3472,8 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogResult(null);
     setVisualCatalogError(null);
     setVisualCatalogPage(1);
+    setVisualCatalogSessionCache({});
+    setVisualCatalogNotice(null);
     setIntelligentImportRecovered(false);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -3488,6 +3497,8 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogResult(null);
     setVisualCatalogError(null);
     setVisualCatalogPage(1);
+    setVisualCatalogSessionCache({});
+    setVisualCatalogNotice(null);
     setIntelligentImportRecovered(false);
     try {
       const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
@@ -3542,8 +3553,18 @@ export default function IntelligentCatalogImportPanel({
       return;
     }
 
+    const cacheKey = buildVisualCatalogSessionCacheKey(pdfFile, pageToAnalyze);
+    const cachedResult = visualCatalogSessionCache[cacheKey];
+    if (cachedResult) {
+      setVisualCatalogResult(cachedResult);
+      setVisualCatalogError(null);
+      setVisualCatalogNotice("Resultado reaproveitado desta sessao.");
+      return;
+    }
+
     setVisualCatalogLoading(true);
     setVisualCatalogError(null);
+    setVisualCatalogNotice(null);
     if (resetResult) {
       setVisualCatalogResult(null);
     }
@@ -3569,6 +3590,10 @@ export default function IntelligentCatalogImportPanel({
       }
 
       setVisualCatalogResult(result);
+      setVisualCatalogSessionCache((current) => ({
+        ...current,
+        [cacheKey]: result,
+      }));
     } catch (error) {
       console.error("[OnboardingPage] handleRunVisualCatalogBase error:", error);
       setVisualCatalogError("Erro inesperado ao criar base visual do catalogo.");
@@ -4503,6 +4528,9 @@ async function handleSaveImportedItemsToCatalog() {
                           ) : null}
                           {visualCatalogError ? (
                             <p className="mt-3 text-sm text-red-700">{visualCatalogError}</p>
+                          ) : null}
+                          {visualCatalogNotice ? (
+                            <p className="mt-3 text-sm text-violet-900">{visualCatalogNotice}</p>
                           ) : null}
                           {visualCatalogResult?.ok && visualCatalogResult.drafts.length > 0 ? (
                             <div className="mt-3 space-y-2">
