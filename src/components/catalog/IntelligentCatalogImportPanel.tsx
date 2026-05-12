@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase as defaultSupabase } from "@/lib/supabaseBrowser";
-import { buildVisualDocumentAnalysis } from "@/lib/visual-catalog-document-analysis";
+import {
+  buildVisualDocumentAnalysis,
+  type VisualDocumentAnalysis,
+} from "@/lib/visual-catalog-document-analysis";
 
 type IntelligentImportSummary = {
   totalFiles: number;
@@ -219,6 +222,99 @@ type VisualProductCandidate = {
   }>;
   missingFields: string[];
 };
+
+const VISUAL_LINKED_EVIDENCE_FIELD_PRIORITY = [
+  "sku",
+  "code",
+  "name",
+  "dimensions",
+  "price",
+  "category",
+  "material",
+  "description",
+];
+
+function normalizeVisualLinkedEvidenceField(field: string) {
+  const cleanField = String(field || "").trim().toLowerCase();
+  if (cleanField === "sku") return "code";
+  return cleanField;
+}
+
+function getVisualLinkedEvidenceFieldPriority(field: string) {
+  const canonicalField = field === "code" ? "sku" : field;
+  const index = VISUAL_LINKED_EVIDENCE_FIELD_PRIORITY.indexOf(canonicalField);
+  return index >= 0 ? index : VISUAL_LINKED_EVIDENCE_FIELD_PRIORITY.length;
+}
+
+function buildVisualLinkedEvidenceSummary(analysis: VisualDocumentAnalysis) {
+  const entitiesById = new Map(analysis.entities.map((entity, index) => [entity.entityId, { entity, index }]));
+  const groupedEvidence = new Map<
+    string,
+    {
+      label: string;
+      order: number;
+      fields: Map<string, { field: string; pageNumber: number; priority: number }>;
+    }
+  >();
+
+  for (const evidence of analysis.fieldEvidence) {
+    const pageNumber = Number(evidence.pageNumber || 0);
+    if (!pageNumber) continue;
+
+    const field = normalizeVisualLinkedEvidenceField(evidence.field);
+    if (!field) continue;
+
+    const entityMatch = entitiesById.get(evidence.entityId);
+    const label =
+      entityMatch?.entity.sku ||
+      entityMatch?.entity.name ||
+      entityMatch?.entity.modelKey ||
+      evidence.modelKey ||
+      evidence.entityId;
+    const entityKey = evidence.entityId || label;
+    const currentGroup =
+      groupedEvidence.get(entityKey) ??
+      {
+        label,
+        order: entityMatch?.index ?? analysis.entities.length + groupedEvidence.size,
+        fields: new Map<string, { field: string; pageNumber: number; priority: number }>(),
+      };
+
+    const dedupeKey = `${field}::${pageNumber}`;
+    if (!currentGroup.fields.has(dedupeKey)) {
+      currentGroup.fields.set(dedupeKey, {
+        field,
+        pageNumber,
+        priority: getVisualLinkedEvidenceFieldPriority(field),
+      });
+    }
+
+    groupedEvidence.set(entityKey, currentGroup);
+  }
+
+  return Array.from(groupedEvidence.values())
+    .sort((a, b) => {
+      const orderDelta = a.order - b.order;
+      if (orderDelta !== 0) return orderDelta;
+      return a.label.localeCompare(b.label);
+    })
+    .slice(0, 8)
+    .map((group) => {
+      const fieldSummary = Array.from(group.fields.values())
+        .sort((a, b) => {
+          const priorityDelta = a.priority - b.priority;
+          if (priorityDelta !== 0) return priorityDelta;
+          const pageDelta = a.pageNumber - b.pageNumber;
+          if (pageDelta !== 0) return pageDelta;
+          return a.field.localeCompare(b.field);
+        })
+        .slice(0, 6)
+        .map((item) => `${item.field} p${item.pageNumber}`)
+        .join(", ");
+
+      return `${group.label}: ${fieldSummary}`;
+    });
+}
 type IntelligentImportSelectedFilePreview = {
   name: string;
   type: string;
@@ -4159,6 +4255,10 @@ export default function IntelligentCatalogImportPanel({
     visualPdfTotalPages,
     visualEvidencePagesInput,
   ]);
+  const visualLinkedEvidenceSummary = useMemo(
+    () => buildVisualLinkedEvidenceSummary(visualDocumentAnalysis),
+    [visualDocumentAnalysis]
+  );
   const intelligentImportDiagnostics = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       return {
@@ -5667,6 +5767,7 @@ async function handleSaveImportedItemsToCatalog() {
                               <p className="font-medium">Cobertura interna do documento</p>
                               <p>{visualDocumentAnalysis.coverage.coverageSummary}</p>
                               <p>Entidades detectadas: {visualDocumentAnalysis.entities.length}</p>
+                              <p>Evidencias ligadas: {visualDocumentAnalysis.fieldEvidence.length}</p>
                               {visualDocumentAnalysis.mapOnlyHints.length > 0 ? (
                                 <p>
                                   Sugestoes do mapa ainda sem scan detalhado: {visualDocumentAnalysis.mapOnlyHints.length}
@@ -5705,6 +5806,11 @@ async function handleSaveImportedItemsToCatalog() {
                                       `${entity.sku || entity.name || entity.modelKey} (${entity.sourcePages.join(", ")})`
                                     )
                                     .join(" | ")}
+                                </p>
+                              ) : null}
+                              {visualLinkedEvidenceSummary.length > 0 ? (
+                                <p>
+                                  Evidencias por entidade: {visualLinkedEvidenceSummary.join(" | ")}
                                 </p>
                               ) : null}
                             </div>

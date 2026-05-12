@@ -29,12 +29,15 @@ export type VisualDocumentEntity = {
 
 export type VisualFieldEvidence = {
   evidenceId: string;
+  entityId: string;
   partId: string;
   pageNumber: number;
   modelKey: string | null;
   field: string;
   value: string;
   confidence: number;
+  extractionMethod: "page_evidence" | "product_candidate";
+  rawSnippet?: string | null;
 };
 
 export type VisualReviewCandidate = {
@@ -101,6 +104,7 @@ type VisualPageEvidenceInput = {
       };
       material?: string | null;
       description?: string | null;
+      rawSnippet?: string | null;
     }>;
   }>;
 } | null;
@@ -113,6 +117,15 @@ type VisualProductCandidateInput = {
   category?: string | null;
   sourcePages?: number[];
   confidence?: number;
+  dimensions?: {
+    visualText?: string | null;
+    width_m?: number | null;
+    length_m?: number | null;
+    depth_m?: number | null;
+    capacity_l?: number | null;
+  } | null;
+  material?: string | null;
+  description?: string | null;
   missingFields?: string[];
   conflicts?: unknown[];
 };
@@ -128,6 +141,12 @@ export type BuildVisualDocumentAnalysisInput = {
 
 type DiscoverVisualDocumentEntitiesInput = {
   documentMap?: VisualDocumentMapInput;
+  pageEvidence?: VisualPageEvidenceInput;
+  productCandidates?: VisualProductCandidateInput[];
+};
+
+type LinkVisualEvidenceToEntitiesInput = {
+  entities: VisualDocumentEntity[];
   pageEvidence?: VisualPageEvidenceInput;
   productCandidates?: VisualProductCandidateInput[];
 };
@@ -220,6 +239,15 @@ function preferLongerText(current: string | null, incoming: string | null) {
   if (!incoming) return current;
   if (!current) return incoming;
   return incoming.length > current.length ? incoming : current;
+}
+
+function formatCandidateDimensions(value: VisualProductCandidateInput["dimensions"]) {
+  if (!value) return "";
+  if (value.visualText) return String(value.visualText).trim();
+  const parts = [value.width_m, value.length_m, value.depth_m]
+    .filter((item) => typeof item === "number" && Number.isFinite(item))
+    .map((item) => String(item).replace(".", ",") + "m");
+  return parts.join(" x ");
 }
 
 function isStrongSkuOrCode(value: string | null | undefined) {
@@ -635,6 +663,159 @@ export function discoverVisualDocumentEntities(
   };
 }
 
+function findLinkedEntity(
+  entities: VisualDocumentEntity[],
+  params: {
+    sku?: string | null;
+    visibleCode?: string | null;
+    modelKey?: string | null;
+    name?: string | null;
+  }
+) {
+  const codeKey = normalizeEntityCodeKey(params.sku || params.visibleCode);
+  if (codeKey) {
+    const byCode = entities.find((entity) => normalizeEntityCodeKey(entity.sku || entity.modelKey) === codeKey);
+    if (byCode) return byCode;
+  }
+
+  const candidateNames = [
+    params.name,
+    params.modelKey,
+    params.visibleCode,
+  ]
+    .map((value) => normalizeEntityNameKey(value))
+    .filter(Boolean);
+
+  for (const candidateName of candidateNames) {
+    const byName = entities.find(
+      (entity) =>
+        normalizeEntityNameKey(entity.name) === candidateName ||
+        normalizeEntityNameKey(entity.modelKey) === candidateName
+    );
+    if (byName) return byName;
+  }
+
+  return null;
+}
+
+export function linkVisualEvidenceToEntities(
+  input: LinkVisualEvidenceToEntitiesInput
+): VisualFieldEvidence[] {
+  const linkedEvidence: VisualFieldEvidence[] = [];
+  const confirmedEntities = input.entities.filter((entity) => entity.sourceType !== "map_hint");
+
+  if (input.pageEvidence?.ok) {
+    for (const page of input.pageEvidence.pageEvidence ?? []) {
+      const pageNumber = Number(page.pageNumber || 0);
+      if (!pageNumber) continue;
+
+      for (const item of page.items ?? []) {
+        const linkedEntity = findLinkedEntity(confirmedEntities, {
+          sku: item.visibleCode,
+          visibleCode: item.visibleCode,
+          modelKey: item.modelKey,
+          name: item.visibleName,
+        });
+        if (!linkedEntity) continue;
+
+        const evidenceId = item.evidenceId || `page-${pageNumber}-evidence-${linkedEvidence.length + 1}`;
+        const base = {
+          evidenceId,
+          entityId: linkedEntity.entityId,
+          partId: `pdf::page::${pageNumber}`,
+          pageNumber,
+          modelKey: item.modelKey ?? item.visibleCode ?? item.visibleName ?? null,
+          confidence: Math.max(0, Math.min(1, Number(item.confidence || 0))),
+          extractionMethod: "page_evidence" as const,
+          rawSnippet: item.rawSnippet ?? item.description ?? item.visibleName ?? item.visibleCode ?? null,
+        };
+
+        const fields: Array<[string, string | null | undefined]> = [
+          ["name", item.visibleName],
+          ["sku", item.visibleCode],
+          ["category", item.category],
+          ["dimensions", item.dimensions?.visualText],
+          ["material", item.material],
+          ["description", item.description],
+        ];
+
+        for (const [field, value] of fields) {
+          const cleanValue = String(value || "").trim();
+          if (!cleanValue) continue;
+          linkedEvidence.push({
+            ...base,
+            field,
+            value: cleanValue,
+          });
+        }
+      }
+    }
+  }
+
+  for (const candidate of input.productCandidates ?? []) {
+    const linkedEntity = findLinkedEntity(confirmedEntities, {
+      sku: candidate.sku,
+      visibleCode: candidate.sku,
+      modelKey: candidate.modelKey,
+      name: candidate.name,
+    });
+    if (!linkedEntity) continue;
+
+    const pageNumbers = normalizePageNumbers(candidate.sourcePages ?? []);
+    const pageNumber = pageNumbers[0] ?? 0;
+    const partId = pageNumber > 0 ? `pdf::page::${pageNumber}` : `candidate::${candidate.candidateId || linkedEntity.entityId}`;
+    const evidenceIdBase = candidate.candidateId || linkedEntity.entityId;
+    const fields: Array<[string, string | null | undefined]> = [
+      ["name", candidate.name],
+      ["sku", candidate.sku],
+      ["category", candidate.category],
+      ["dimensions", formatCandidateDimensions(candidate.dimensions)],
+      ["material", candidate.material],
+      ["description", candidate.description],
+    ];
+
+    for (const [field, value] of fields) {
+      const cleanValue = String(value || "").trim();
+      if (!cleanValue) continue;
+      linkedEvidence.push({
+        evidenceId: `${evidenceIdBase}::${field}`,
+        entityId: linkedEntity.entityId,
+        partId,
+        pageNumber,
+        modelKey: candidate.modelKey ?? candidate.sku ?? candidate.name ?? null,
+        field,
+        value: cleanValue,
+        confidence: Math.max(0, Math.min(1, Number(candidate.confidence || 0))),
+        extractionMethod: "product_candidate",
+        rawSnippet: candidate.description ?? candidate.name ?? candidate.sku ?? null,
+      });
+    }
+  }
+
+  const deduped = new Map<string, VisualFieldEvidence>();
+  for (const evidence of linkedEvidence) {
+    const dedupeKey = [
+      evidence.entityId,
+      evidence.field,
+      evidence.value,
+      evidence.pageNumber,
+      evidence.extractionMethod,
+    ].join("::");
+    const existing = deduped.get(dedupeKey);
+    if (!existing || evidence.confidence > existing.confidence) {
+      deduped.set(dedupeKey, evidence);
+    }
+  }
+
+  return Array.from(deduped.values()).sort((a, b) => {
+    const pageDelta = a.pageNumber - b.pageNumber;
+    if (pageDelta !== 0) return pageDelta;
+    const entityDelta = a.entityId.localeCompare(b.entityId);
+    if (entityDelta !== 0) return entityDelta;
+    return a.field.localeCompare(b.field);
+  });
+}
+
 export function buildVisualDocumentAnalysis(
   input: BuildVisualDocumentAnalysisInput
 ): VisualDocumentAnalysis {
@@ -695,37 +876,6 @@ export function buildVisualDocumentAnalysis(
     }
   }
 
-  const fieldEvidence: VisualFieldEvidence[] = [];
-  for (const page of evidencePages) {
-    const pageNumber = Number(page.pageNumber || 0);
-    if (!pageNumber) continue;
-    for (const item of page.items ?? []) {
-      const evidenceId = item.evidenceId || `page-${pageNumber}-evidence-${fieldEvidence.length + 1}`;
-      const confidence = Math.max(0, Math.min(1, Number(item.confidence || 0)));
-      const values: Array<[string, string | null | undefined]> = [
-        ["name", item.visibleName],
-        ["sku", item.visibleCode],
-        ["category", item.category],
-        ["dimensions", item.dimensions?.visualText],
-        ["material", item.material],
-        ["description", item.description],
-      ];
-      for (const [field, value] of values) {
-        const cleanValue = String(value || "").trim();
-        if (!cleanValue) continue;
-        fieldEvidence.push({
-          evidenceId,
-          partId: `pdf::page::${pageNumber}`,
-          pageNumber,
-          modelKey: item.modelKey ?? item.visibleCode ?? item.visibleName ?? null,
-          field,
-          value: cleanValue,
-          confidence,
-        });
-      }
-    }
-  }
-
   const reviewCandidates = candidates
     .filter((candidate) => candidate.modelKey || candidate.name || candidate.sku)
     .map((candidate, index) => ({
@@ -742,6 +892,11 @@ export function buildVisualDocumentAnalysis(
 
   const discoveredEntities = discoverVisualDocumentEntities({
     documentMap: input.documentMap,
+    pageEvidence: input.pageEvidence,
+    productCandidates: candidates,
+  });
+  const fieldEvidence = linkVisualEvidenceToEntities({
+    entities: discoveredEntities.confirmedEntities,
     pageEvidence: input.pageEvidence,
     productCandidates: candidates,
   });
