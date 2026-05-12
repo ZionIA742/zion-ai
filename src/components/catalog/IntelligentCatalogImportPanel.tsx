@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase as defaultSupabase } from "@/lib/supabaseBrowser";
 import {
   buildVisualDocumentAnalysis,
@@ -1002,6 +1002,29 @@ function removeVisualAnalysisCache(params: {
     storage.removeItem(buildVisualAnalysisCacheKey(params));
   } catch (error) {
     console.error("[OnboardingPage] visual analysis cache removeItem error:", error);
+  }
+}
+function removeVisualAnalysisCacheForFile(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+}) {
+  const storage = getVisualAnalysisStorage();
+  if (!storage) return;
+  const prefix = buildVisualAnalysisCachePrefix(params);
+  try {
+    const keysToRemove: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(prefix)) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      storage.removeItem(key);
+    }
+  } catch (error) {
+    console.error("[OnboardingPage] visual analysis cache remove file error:", error);
   }
 }
 function buildRestoredVisualPdfImportResult(params: {
@@ -4496,6 +4519,7 @@ export default function IntelligentCatalogImportPanel({
     onSuccess?.(message);
   }
 
+  const lastVisualPdfFileRef = useRef<File | null>(null);
   const [intelligentImportFiles, setIntelligentImportFiles] = useState<File[]>([]);
   const [intelligentImportSelectedFilesPreview, setIntelligentImportSelectedFilesPreview] = useState<
     IntelligentImportSelectedFilePreview[]
@@ -4520,6 +4544,7 @@ export default function IntelligentCatalogImportPanel({
     EditableVisualCatalogDraft[]
   >([]);
   const [visualEvidencePagesInput, setVisualEvidencePagesInput] = useState("3,4,5,12");
+  const visualEvidencePagesManuallyEditedRef = useRef(false);
   const [visualEvidenceLoading, setVisualEvidenceLoading] = useState(false);
   const [visualEvidenceError, setVisualEvidenceError] = useState<string | null>(null);
   const [visualEvidenceNotice, setVisualEvidenceNotice] = useState<string | null>(null);
@@ -4643,6 +4668,14 @@ export default function IntelligentCatalogImportPanel({
     () => getAnalyzedVisualEvidencePages(visualEvidenceResult),
     [visualEvidenceResult]
   );
+  const visualDetailedScanPages = useMemo(() => {
+    if (!visualEvidenceResult?.ok) return [];
+    return normalizeVisualAnalysisPageList(
+      visualEvidenceResult.requestedPages.length > 0
+        ? visualEvidenceResult.requestedPages
+        : visualEvidenceResult.pageEvidence.map((page) => page.pageNumber)
+    );
+  }, [visualEvidenceResult]);
   const nextVisualRecommendedPagesBatch = useMemo(
     () => getNextVisualRecommendedPagesBatch(visualDocumentMapResult, visualEvidenceResult),
     [visualDocumentMapResult, visualEvidenceResult]
@@ -4718,7 +4751,7 @@ export default function IntelligentCatalogImportPanel({
   function restoreVisualAnalysisCache(cache: PersistedVisualAnalysisCache) {
     const pages = normalizeVisualAnalysisPageList(cache.pages);
     const pagesInput = cache.visualEvidencePagesInput || pages.join(",");
-    setVisualEvidencePagesInput(pagesInput);
+    setVisualEvidencePagesInputFromSystem(pagesInput, { force: true });
     setVisualDocumentMapResult(cache.visualDocumentMapResult);
     setVisualDocumentMapError(null);
     setVisualEvidenceResult(cache.visualEvidenceResult);
@@ -4793,20 +4826,22 @@ export default function IntelligentCatalogImportPanel({
     );
   }
 
+  function setVisualEvidencePagesInputFromSystem(value: string, options?: { force?: boolean }) {
+    if (options?.force || !visualEvidencePagesManuallyEditedRef.current) {
+      setVisualEvidencePagesInput(value);
+    }
+  }
+
   function handleRedoVisualAnalysis() {
-    const pages = normalizeVisualAnalysisPages(
-      visualEvidencePagesInput
-        .split(/[,\s;]+/g)
-        .map((value) => Number(String(value).replace(/[^\d]/g, "")))
-    );
-    if (visualPdfFileMeta && pages.length > 0) {
-      removeVisualAnalysisCache({
+    if (visualPdfFileMeta) {
+      removeVisualAnalysisCacheForFile({
         organizationId,
         storeId,
         file: visualPdfFileMeta,
-        pages,
       });
     }
+    visualEvidencePagesManuallyEditedRef.current = true;
+    setVisualEvidencePagesInput("3,4,5,12,10");
     setVisualEvidenceResult(null);
     setVisualEvidenceSessionCache({});
     setVisualDocumentMapResult(null);
@@ -4848,6 +4883,8 @@ export default function IntelligentCatalogImportPanel({
         pages,
       });
     }
+    lastVisualPdfFileRef.current = null;
+    visualEvidencePagesManuallyEditedRef.current = false;
     setIntelligentImportFiles([]);
     setIntelligentImportSelectedFilesPreview([]);
     setIntelligentImportError(null);
@@ -4928,7 +4965,7 @@ export default function IntelligentCatalogImportPanel({
           getVisualPdfTotalPagesFromResult(frontendReadyResult)
         );
         setVisualCatalogPage(1);
-        setVisualEvidencePagesInput(automaticEvidencePages.join(","));
+        setVisualEvidencePagesInputFromSystem(automaticEvidencePages.join(","));
         void handleRunVisualCatalogBase({ resetResult: false, page: 1 });
         void handleRunVisualDocumentMapAndEvidenceScan(automaticEvidencePages);
       }
@@ -5055,7 +5092,7 @@ export default function IntelligentCatalogImportPanel({
       const pagesToScan = mappedPages.length > 0 ? mappedPages : fallbackPages;
       setVisualDocumentMapResult(cachedMap);
       setVisualDocumentMapError(null);
-      setVisualEvidencePagesInput(pagesToScan.join(","));
+      setVisualEvidencePagesInputFromSystem(pagesToScan.join(","));
       persistCurrentVisualAnalysisCache({
         pages: pagesToScan,
         visualEvidencePagesInput: pagesToScan.join(","),
@@ -5106,7 +5143,7 @@ export default function IntelligentCatalogImportPanel({
         ...current,
         [cacheKey]: result,
       }));
-      setVisualEvidencePagesInput(pagesToScan.join(","));
+      setVisualEvidencePagesInputFromSystem(pagesToScan.join(","));
       persistCurrentVisualAnalysisCache({
         pages: pagesToScan,
         visualEvidencePagesInput: pagesToScan.join(","),
@@ -5244,9 +5281,17 @@ export default function IntelligentCatalogImportPanel({
   }
 
   async function handleRunNextVisualRecommendedPages() {
-    const pdfFile = intelligentImportFiles.find((file) =>
+    const currentPdfFile = intelligentImportFiles.find((file) =>
       String(file.name || "").toLowerCase().endsWith(".pdf")
     );
+    const lastVisualPdfFile = lastVisualPdfFileRef.current;
+    const canUseLastVisualPdfFile =
+      Boolean(lastVisualPdfFile) &&
+      (!visualPdfFileMeta ||
+        (lastVisualPdfFile?.name === visualPdfFileMeta.name &&
+          lastVisualPdfFile.size === visualPdfFileMeta.size &&
+          lastVisualPdfFile.lastModified === visualPdfFileMeta.lastModified));
+    const pdfFile = currentPdfFile ?? (canUseLastVisualPdfFile ? lastVisualPdfFile : null);
     const requestedPages = nextVisualRecommendedPagesBatch;
 
     if (requestedPages.length === 0) {
@@ -5272,7 +5317,7 @@ export default function IntelligentCatalogImportPanel({
     if (cachedResult?.ok) {
       const mergedResult = mergeVisualEvidenceResults(visualEvidenceResult, cachedResult);
       setVisualEvidenceResult(mergedResult);
-      setVisualEvidencePagesInput(mergedResult.requestedPages.join(","));
+      setVisualEvidencePagesInputFromSystem(mergedResult.requestedPages.join(","));
       setVisualEvidenceError(null);
       setVisualEvidenceNotice("Paginas sugeridas reaproveitadas do cache. Nenhuma nova chamada de API foi feita.");
       setVisualEvidenceSessionCache((current) => ({
@@ -5314,7 +5359,7 @@ export default function IntelligentCatalogImportPanel({
 
       const mergedResult = mergeVisualEvidenceResults(visualEvidenceResult, result);
       setVisualEvidenceResult(mergedResult);
-      setVisualEvidencePagesInput(mergedResult.requestedPages.join(","));
+      setVisualEvidencePagesInputFromSystem(mergedResult.requestedPages.join(","));
       setVisualEvidenceSessionCache((current) => ({
         ...current,
         [cacheKey]: result,
@@ -6005,18 +6050,22 @@ async function handleSaveImportedItemsToCatalog() {
                     onChange={async (e) => {
                       const input = e.currentTarget;
                       const selectedFiles = Array.from(input.files ?? []) as File[];
+                      const selectedVisualPdfFile = selectedFiles.find((file) =>
+                        String(file.name || "").toLowerCase().endsWith(".pdf")
+                      );
                       const keepsCurrentVisualAnalysis =
                         Boolean(visualEvidenceResult?.ok || visualDocumentMapResult?.ok) &&
                         Boolean(
                           visualPdfFileMeta &&
-                            selectedFiles.some(
-                              (file) =>
-                                String(file.name || "").toLowerCase().endsWith(".pdf") &&
-                                file.name === visualPdfFileMeta.name &&
-                                file.size === visualPdfFileMeta.size &&
-                                file.lastModified === visualPdfFileMeta.lastModified
-                            )
-                        );
+                            selectedVisualPdfFile &&
+                            selectedVisualPdfFile.name === visualPdfFileMeta.name &&
+                            selectedVisualPdfFile.size === visualPdfFileMeta.size &&
+                            selectedVisualPdfFile.lastModified === visualPdfFileMeta.lastModified
+                      );
+                      lastVisualPdfFileRef.current = selectedVisualPdfFile ?? null;
+                      if (!keepsCurrentVisualAnalysis) {
+                        visualEvidencePagesManuallyEditedRef.current = false;
+                      }
                       setIntelligentImportFiles(selectedFiles);
                       setIntelligentImportSelectedFilesPreview(
                         await buildSelectedFilePreviews(selectedFiles)
@@ -6423,7 +6472,10 @@ async function handleSaveImportedItemsToCatalog() {
                                 <input
                                   type="text"
                                   value={visualEvidencePagesInput}
-                                  onChange={(event) => setVisualEvidencePagesInput(event.target.value)}
+                                  onChange={(event) => {
+                                    visualEvidencePagesManuallyEditedRef.current = true;
+                                    setVisualEvidencePagesInput(event.target.value);
+                                  }}
                                   placeholder="3,4,5,12"
                                   className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
                                 />
@@ -6537,8 +6589,10 @@ async function handleSaveImportedItemsToCatalog() {
                             ) : null}
                             {visualDocumentMapResult?.ok && visualDocumentMapResult.recommendedPages.length > 0 ? (
                               <p className="mt-2 text-sm leading-6 text-violet-900">
-                                Paginas usadas no scan detalhado:{" "}
-                                {visualEvidencePagesInput}
+                                Paginas analisadas no scan detalhado:{" "}
+                                {visualDetailedScanPages.length > 0
+                                  ? visualDetailedScanPages.join(", ")
+                                  : visualEvidencePagesInput}
                               </p>
                             ) : null}
                             {visualDocumentMapResult?.ok && visualDocumentMapResult.recommendedPages.length > 0 ? (
