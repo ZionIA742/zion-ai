@@ -52,6 +52,41 @@ export type VisualReviewCandidate = {
   conflictsCount: number;
 };
 
+export type VisualConsolidatedReviewFieldSource = {
+  evidenceId: string;
+  pageNumber: number;
+  confidence: number;
+  extractionMethod: VisualFieldEvidence["extractionMethod"];
+};
+
+export type VisualConsolidatedReviewConflict = {
+  field: string;
+  values: string[];
+  sourcePages: number[];
+};
+
+export type VisualConsolidatedReviewCandidate = {
+  candidateId: string;
+  entityId: string;
+  modelKey: string;
+  name: string | null;
+  sku: string | null;
+  code: string | null;
+  category: string | null;
+  dimensions: string | null;
+  dimensionsList: string[];
+  material: string | null;
+  description: string | null;
+  sourcePages: number[];
+  fieldSources: Record<string, VisualConsolidatedReviewFieldSource[]>;
+  missingFields: string[];
+  confidence: number;
+  conflicts: VisualConsolidatedReviewConflict[];
+  conflictsCount: number;
+  reviewState: "needs_review";
+  status: "needs_review";
+};
+
 export type VisualDocumentCoverage = {
   totalPages: number | null;
   mappedPages: number[];
@@ -71,6 +106,7 @@ export type VisualDocumentAnalysis = {
   mapOnlyHints: VisualDocumentEntity[];
   fieldEvidence: VisualFieldEvidence[];
   reviewCandidates: VisualReviewCandidate[];
+  consolidatedReviewCandidates: VisualConsolidatedReviewCandidate[];
 };
 
 type VisualDocumentMapInput = {
@@ -149,6 +185,11 @@ type LinkVisualEvidenceToEntitiesInput = {
   entities: VisualDocumentEntity[];
   pageEvidence?: VisualPageEvidenceInput;
   productCandidates?: VisualProductCandidateInput[];
+};
+
+type BuildVisualReviewCandidatesFromEvidenceInput = {
+  entities: VisualDocumentEntity[];
+  fieldEvidence: VisualFieldEvidence[];
 };
 
 type VisualEntitySourceKind = "document_map" | "page_evidence" | "product_candidate";
@@ -816,6 +857,183 @@ export function linkVisualEvidenceToEntities(
   });
 }
 
+function normalizeVisualEvidenceFieldName(field: string | null | undefined) {
+  const cleanField = String(field || "").trim().toLowerCase();
+  if (cleanField === "code") return "sku";
+  return cleanField;
+}
+
+function normalizeVisualEvidenceValue(value: string | null | undefined) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function makeVisualEvidenceValueKey(value: string | null | undefined) {
+  return normalizeLoose(normalizeVisualEvidenceValue(value));
+}
+
+function compareVisualFieldEvidenceQuality(a: VisualFieldEvidence, b: VisualFieldEvidence) {
+  const confidenceDelta = b.confidence - a.confidence;
+  if (confidenceDelta !== 0) return confidenceDelta;
+  const lengthDelta = normalizeVisualEvidenceValue(b.value).length - normalizeVisualEvidenceValue(a.value).length;
+  if (lengthDelta !== 0) return lengthDelta;
+  return a.pageNumber - b.pageNumber;
+}
+
+function collectVisualFieldSources(items: VisualFieldEvidence[]) {
+  const sourcesByKey = new Map<string, VisualConsolidatedReviewFieldSource>();
+  for (const item of items) {
+    const pageNumber = Number(item.pageNumber || 0);
+    if (!pageNumber) continue;
+    const key = `${item.evidenceId}::${pageNumber}::${item.extractionMethod}`;
+    const current = sourcesByKey.get(key);
+    if (!current || item.confidence > current.confidence) {
+      sourcesByKey.set(key, {
+        evidenceId: item.evidenceId,
+        pageNumber,
+        confidence: Math.max(0, Math.min(1, Number(item.confidence || 0))),
+        extractionMethod: item.extractionMethod,
+      });
+    }
+  }
+
+  return Array.from(sourcesByKey.values()).sort((a, b) => {
+    const pageDelta = a.pageNumber - b.pageNumber;
+    if (pageDelta !== 0) return pageDelta;
+    return b.confidence - a.confidence;
+  });
+}
+
+function pickBestVisualEvidenceValue(items: VisualFieldEvidence[]) {
+  const bestEvidence = [...items].sort(compareVisualFieldEvidenceQuality)[0];
+  return bestEvidence ? normalizeVisualEvidenceValue(bestEvidence.value) || null : null;
+}
+
+function listDistinctVisualEvidenceValues(items: VisualFieldEvidence[]) {
+  const valuesByKey = new Map<string, { value: string; evidence: VisualFieldEvidence }>();
+  for (const item of items) {
+    const cleanValue = normalizeVisualEvidenceValue(item.value);
+    if (!cleanValue) continue;
+    const key = makeVisualEvidenceValueKey(cleanValue);
+    const current = valuesByKey.get(key);
+    if (!current || compareVisualFieldEvidenceQuality(item, current.evidence) < 0) {
+      valuesByKey.set(key, { value: cleanValue, evidence: item });
+    }
+  }
+
+  return Array.from(valuesByKey.values())
+    .sort((a, b) => compareVisualFieldEvidenceQuality(a.evidence, b.evidence))
+    .map((item) => item.value);
+}
+
+function buildVisualFieldConflict(field: string, items: VisualFieldEvidence[]) {
+  const values = listDistinctVisualEvidenceValues(items);
+  if (values.length <= 1) return null;
+
+  return {
+    field,
+    values,
+    sourcePages: normalizePageNumbers(items.map((item) => item.pageNumber)),
+  } satisfies VisualConsolidatedReviewConflict;
+}
+
+export function buildVisualReviewCandidatesFromEvidence(
+  input: BuildVisualReviewCandidatesFromEvidenceInput
+): VisualConsolidatedReviewCandidate[] {
+  const confirmedEntities = input.entities.filter((entity) => entity.sourceType !== "map_hint");
+  const evidenceByEntityId = new Map<string, VisualFieldEvidence[]>();
+
+  for (const evidence of input.fieldEvidence) {
+    if (!evidence.entityId) continue;
+    const current = evidenceByEntityId.get(evidence.entityId) ?? [];
+    current.push({
+      ...evidence,
+      field: normalizeVisualEvidenceFieldName(evidence.field),
+      value: normalizeVisualEvidenceValue(evidence.value),
+    });
+    evidenceByEntityId.set(evidence.entityId, current);
+  }
+
+  return confirmedEntities
+    .map((entity, index) => {
+      const entityEvidence = evidenceByEntityId.get(entity.entityId) ?? [];
+      const byField = new Map<string, VisualFieldEvidence[]>();
+      for (const evidence of entityEvidence) {
+        if (!evidence.field || !evidence.value) continue;
+        const current = byField.get(evidence.field) ?? [];
+        current.push(evidence);
+        byField.set(evidence.field, current);
+      }
+
+      const name = pickBestVisualEvidenceValue(byField.get("name") ?? []) ?? entity.name ?? null;
+      const sku = pickBestVisualEvidenceValue(byField.get("sku") ?? []) ?? entity.sku ?? null;
+      const category = pickBestVisualEvidenceValue(byField.get("category") ?? []) ?? entity.category ?? null;
+      const dimensionsList = listDistinctVisualEvidenceValues(byField.get("dimensions") ?? []);
+      const material = pickBestVisualEvidenceValue(byField.get("material") ?? []);
+      const description = pickBestVisualEvidenceValue(byField.get("description") ?? []);
+      const fieldSources: Record<string, VisualConsolidatedReviewFieldSource[]> = {};
+
+      for (const [field, items] of byField.entries()) {
+        fieldSources[field] = collectVisualFieldSources(items);
+      }
+
+      const conflicts = ["name", "sku", "category", "material", "description"]
+        .map((field) => buildVisualFieldConflict(field, byField.get(field) ?? []))
+        .filter((conflict): conflict is VisualConsolidatedReviewConflict => Boolean(conflict));
+      const sourcePages = normalizePageNumbers([
+        ...entity.sourcePages,
+        ...entityEvidence.map((evidence) => evidence.pageNumber),
+      ]);
+      const confidenceValues = [
+        entity.confidence,
+        ...entityEvidence.map((evidence) => evidence.confidence),
+      ].filter((value) => Number.isFinite(value));
+      const confidence =
+        confidenceValues.length > 0
+          ? Math.max(0, Math.min(1, confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length))
+          : 0;
+      const missingFields = [
+        !name ? "name" : null,
+        !sku ? "code" : null,
+        !category ? "category" : null,
+        dimensionsList.length === 0 ? "dimensions" : null,
+        !material ? "material" : null,
+        "price",
+      ].filter((field): field is string => Boolean(field));
+
+      return {
+        candidateId: `visual-consolidated-${entity.entityId || index + 1}`,
+        entityId: entity.entityId,
+        modelKey: entity.modelKey,
+        name,
+        sku,
+        code: sku,
+        category,
+        dimensions: dimensionsList[0] ?? null,
+        dimensionsList,
+        material,
+        description,
+        sourcePages,
+        fieldSources,
+        missingFields,
+        confidence,
+        conflicts,
+        conflictsCount: conflicts.length,
+        reviewState: "needs_review" as const,
+        status: "needs_review" as const,
+      };
+    })
+    .filter(
+      (candidate) =>
+        candidate.sourcePages.length > 0 ||
+        Boolean(candidate.name || candidate.sku || candidate.category || candidate.dimensions)
+    )
+    .sort((a, b) => {
+      const firstPageDelta = (a.sourcePages[0] ?? Number.MAX_SAFE_INTEGER) - (b.sourcePages[0] ?? Number.MAX_SAFE_INTEGER);
+      if (firstPageDelta !== 0) return firstPageDelta;
+      return a.candidateId.localeCompare(b.candidateId);
+    });
+}
+
 export function buildVisualDocumentAnalysis(
   input: BuildVisualDocumentAnalysisInput
 ): VisualDocumentAnalysis {
@@ -900,6 +1118,10 @@ export function buildVisualDocumentAnalysis(
     pageEvidence: input.pageEvidence,
     productCandidates: candidates,
   });
+  const consolidatedReviewCandidates = buildVisualReviewCandidatesFromEvidence({
+    entities: discoveredEntities.confirmedEntities,
+    fieldEvidence,
+  });
 
   const evidenceCount = fieldEvidence.length;
   const candidateCount = reviewCandidates.length;
@@ -928,5 +1150,6 @@ export function buildVisualDocumentAnalysis(
     mapOnlyHints: discoveredEntities.mapOnlyHints,
     fieldEvidence,
     reviewCandidates,
+    consolidatedReviewCandidates,
   };
 }

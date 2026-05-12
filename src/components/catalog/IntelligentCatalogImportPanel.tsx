@@ -315,6 +315,32 @@ function buildVisualLinkedEvidenceSummary(analysis: VisualDocumentAnalysis) {
       return `${group.label}: ${fieldSummary}`;
     });
 }
+
+function formatVisualConsolidatedCandidateSummary(analysis: VisualDocumentAnalysis) {
+  return analysis.consolidatedReviewCandidates.slice(0, 8).map((candidate) => {
+    const label = candidate.sku || candidate.name || candidate.modelKey || candidate.entityId;
+    const fields = [
+      candidate.name ? "nome" : null,
+      candidate.sku ? "codigo" : null,
+      candidate.category ? "categoria" : null,
+      candidate.dimensionsList.length > 0 ? "medidas" : null,
+      candidate.material ? "material" : null,
+      candidate.description ? "descricao" : null,
+    ].filter(Boolean);
+    const missingFields = candidate.missingFields
+      .map((field) => (field === "code" || field === "sku" ? "codigo" : field))
+      .slice(0, 4);
+    const details = [
+      `paginas ${candidate.sourcePages.join(",") || "-"}`,
+      fields.length > 0 ? `campos ${fields.join(", ")}` : "campos -",
+      candidate.dimensionsList.length > 1 ? `${candidate.dimensionsList.length} medidas encontradas` : null,
+      missingFields.length > 0 ? `faltando ${missingFields.join("/")}` : null,
+      candidate.conflictsCount > 0 ? `${candidate.conflictsCount} conflito(s)` : null,
+    ].filter(Boolean);
+
+    return `${label}: ${details.join("; ")}`;
+  });
+}
 type IntelligentImportSelectedFilePreview = {
   name: string;
   type: string;
@@ -4259,6 +4285,10 @@ export default function IntelligentCatalogImportPanel({
     () => buildVisualLinkedEvidenceSummary(visualDocumentAnalysis),
     [visualDocumentAnalysis]
   );
+  const visualConsolidatedCandidateSummary = useMemo(
+    () => formatVisualConsolidatedCandidateSummary(visualDocumentAnalysis),
+    [visualDocumentAnalysis]
+  );
   const intelligentImportDiagnostics = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       return {
@@ -5768,6 +5798,10 @@ async function handleSaveImportedItemsToCatalog() {
                               <p>{visualDocumentAnalysis.coverage.coverageSummary}</p>
                               <p>Entidades detectadas: {visualDocumentAnalysis.entities.length}</p>
                               <p>Evidencias ligadas: {visualDocumentAnalysis.fieldEvidence.length}</p>
+                              <p>
+                                Candidatos consolidados:{" "}
+                                {visualDocumentAnalysis.consolidatedReviewCandidates.length}
+                              </p>
                               {visualDocumentAnalysis.mapOnlyHints.length > 0 ? (
                                 <p>
                                   Sugestoes do mapa ainda sem scan detalhado: {visualDocumentAnalysis.mapOnlyHints.length}
@@ -5811,6 +5845,11 @@ async function handleSaveImportedItemsToCatalog() {
                               {visualLinkedEvidenceSummary.length > 0 ? (
                                 <p>
                                   Evidencias por entidade: {visualLinkedEvidenceSummary.join(" | ")}
+                                </p>
+                              ) : null}
+                              {visualConsolidatedCandidateSummary.length > 0 ? (
+                                <p>
+                                  Revisao visual consolidada: {visualConsolidatedCandidateSummary.join(" | ")}
                                 </p>
                               ) : null}
                             </div>
