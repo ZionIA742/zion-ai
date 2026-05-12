@@ -341,6 +341,25 @@ function formatVisualConsolidatedCandidateSummary(analysis: VisualDocumentAnalys
     return `${label}: ${details.join("; ")}`;
   });
 }
+
+function getVisualConsolidatedFoundFields(candidate: VisualDocumentAnalysis["consolidatedReviewCandidates"][number]) {
+  return [
+    candidate.name ? "Nome" : null,
+    candidate.sku ? "Codigo/SKU" : null,
+    candidate.category ? "Categoria" : null,
+    candidate.dimensionsList.length > 0 ? "Medidas" : null,
+    candidate.material ? "Material" : null,
+    candidate.description ? "Descricao" : null,
+  ].filter((field): field is string => Boolean(field));
+}
+
+function getVisualConsolidatedMissingFields(candidate: VisualDocumentAnalysis["consolidatedReviewCandidates"][number]) {
+  return candidate.missingFields.map((field) => {
+    if (field === "code") return "Codigo/SKU";
+    if (field === "price") return "Preco";
+    return translateVisualMissingField(field);
+  });
+}
 type IntelligentImportSelectedFilePreview = {
   name: string;
   type: string;
@@ -353,6 +372,24 @@ type PersistedIntelligentImportState = {
   successMessage: string | null;
   errorMessage: string | null;
 };
+type VisualAnalysisCacheFileMeta = {
+  name: string;
+  size: number;
+  lastModified: number;
+};
+type PersistedVisualAnalysisCache = {
+  cacheVersion: number;
+  createdAt: number;
+  expiresAt: number;
+  organizationId: string | null;
+  storeId: string | null;
+  file: VisualAnalysisCacheFileMeta;
+  pages: number[];
+  visualEvidencePagesInput: string;
+  visualPdfTotalPages: number | null;
+  visualDocumentMapResult: VisualCatalogDocumentMapResponse | null;
+  visualEvidenceResult: VisualCatalogDocumentScanResponse | null;
+};
 type ExistingCatalogItemRow = {
   id: string;
   sku: string | null;
@@ -364,6 +401,9 @@ type ExistingCatalogItemRow = {
 
 const VISUAL_PDF_IMPORT_MESSAGE =
   "PDF visual detectado. O arquivo tem paginas renderizadas, mas nao possui texto extraivel suficiente para gerar itens automaticamente nesta etapa. Para importar esse catalogo, sera necessario OCR/vision por pagina.";
+const VISUAL_ANALYSIS_CACHE_VERSION = 1;
+const VISUAL_ANALYSIS_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
+const VISUAL_ANALYSIS_CACHE_MAX_CHARS = 450_000;
 type IntelligentCatalogImportPanelProps = {
   organizationId: string | null | undefined;
   storeId: string | null | undefined;
@@ -767,11 +807,236 @@ function buildIntelligentImportFormatWarnings(params: {
 function buildVisualCatalogSessionCacheKey(file: File, page: number) {
   return `${file.name}::${file.size}::${page}`;
 }
+function normalizeVisualAnalysisPages(values: Array<number | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => Number(value || 0))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .map((value) => Math.floor(value))
+    )
+  )
+    .slice(0, 5)
+    .sort((a, b) => a - b);
+}
+function getVisualAnalysisFileMeta(file: File | IntelligentImportSelectedFilePreview): VisualAnalysisCacheFileMeta {
+  return {
+    name: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+  };
+}
 function buildVisualEvidenceSessionCacheKey(file: File, pages: number[]) {
   return `${file.name}::${file.size}::${pages.join(",")}`;
 }
 function buildVisualDocumentMapSessionCacheKey(file: File) {
   return `${file.name}::${file.size}::document-map`;
+}
+function buildVisualAnalysisCacheKey(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+  pages: number[];
+}) {
+  const scope = [params.organizationId || "org", params.storeId || "store"]
+    .map((value) => encodeURIComponent(String(value)))
+    .join(":");
+  const pagesKey = normalizeVisualAnalysisPages(params.pages).join(",");
+  const fileKey = [params.file.name, params.file.size, params.file.lastModified]
+    .map((value) => encodeURIComponent(String(value)))
+    .join(":");
+  return `zion:visual-catalog-analysis:v${VISUAL_ANALYSIS_CACHE_VERSION}:${scope}:${fileKey}:${pagesKey}`;
+}
+function buildVisualAnalysisCachePrefix(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+}) {
+  const scope = [params.organizationId || "org", params.storeId || "store"]
+    .map((value) => encodeURIComponent(String(value)))
+    .join(":");
+  const fileKey = [params.file.name, params.file.size, params.file.lastModified]
+    .map((value) => encodeURIComponent(String(value)))
+    .join(":");
+  return `zion:visual-catalog-analysis:v${VISUAL_ANALYSIS_CACHE_VERSION}:${scope}:${fileKey}:`;
+}
+function getVisualAnalysisStorage() {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage;
+  } catch (error) {
+    console.error("[OnboardingPage] sessionStorage access error:", error);
+    return null;
+  }
+}
+function isVisualAnalysisCacheValid(
+  value: PersistedVisualAnalysisCache,
+  params: {
+    organizationId: string | null | undefined;
+    storeId: string | null | undefined;
+    file: VisualAnalysisCacheFileMeta;
+    pages: number[];
+  }
+) {
+  if (!value || value.cacheVersion !== VISUAL_ANALYSIS_CACHE_VERSION) return false;
+  if (!value.expiresAt || value.expiresAt <= Date.now()) return false;
+  if ((value.organizationId || null) !== (params.organizationId || null)) return false;
+  if ((value.storeId || null) !== (params.storeId || null)) return false;
+  if (value.file?.name !== params.file.name) return false;
+  if (value.file?.size !== params.file.size) return false;
+  if (value.file?.lastModified !== params.file.lastModified) return false;
+  const expectedPages = normalizeVisualAnalysisPages(params.pages).join(",");
+  const cachedPages = normalizeVisualAnalysisPages(value.pages ?? []).join(",");
+  if (!expectedPages || cachedPages !== expectedPages) return false;
+  return Boolean(value.visualDocumentMapResult?.ok || value.visualEvidenceResult?.ok);
+}
+function readVisualAnalysisCache(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+  pages: number[];
+}) {
+  const storage = getVisualAnalysisStorage();
+  if (!storage) return null;
+  const key = buildVisualAnalysisCacheKey(params);
+  const raw = storage.getItem(key);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as PersistedVisualAnalysisCache;
+    if (!isVisualAnalysisCacheValid(parsed, params)) {
+      storage.removeItem(key);
+      return null;
+    }
+    return parsed;
+  } catch (error) {
+    console.error("[OnboardingPage] visual analysis cache parse error:", error);
+    storage.removeItem(key);
+    return null;
+  }
+}
+function readLatestVisualAnalysisCacheForFile(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+}) {
+  const storage = getVisualAnalysisStorage();
+  if (!storage) return null;
+  const prefix = buildVisualAnalysisCachePrefix(params);
+  let best: PersistedVisualAnalysisCache | null = null;
+
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (!key || !key.startsWith(prefix)) continue;
+    const raw = storage.getItem(key);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as PersistedVisualAnalysisCache;
+      if (!isVisualAnalysisCacheValid(parsed, { ...params, pages: parsed.pages ?? [] })) {
+        storage.removeItem(key);
+        continue;
+      }
+      if (!best || parsed.createdAt > best.createdAt) {
+        best = parsed;
+      }
+    } catch (error) {
+      console.error("[OnboardingPage] visual analysis cache scan error:", error);
+      storage.removeItem(key);
+    }
+  }
+
+  return best;
+}
+function writeVisualAnalysisCache(
+  params: {
+    organizationId: string | null | undefined;
+    storeId: string | null | undefined;
+    file: VisualAnalysisCacheFileMeta;
+    pages: number[];
+  },
+  payload: {
+    visualEvidencePagesInput: string;
+    visualPdfTotalPages: number | null;
+    visualDocumentMapResult: VisualCatalogDocumentMapResponse | null;
+    visualEvidenceResult: VisualCatalogDocumentScanResponse | null;
+  }
+) {
+  const storage = getVisualAnalysisStorage();
+  if (!storage) return;
+  const pages = normalizeVisualAnalysisPages(params.pages);
+  if (pages.length === 0) return;
+
+  const value: PersistedVisualAnalysisCache = {
+    cacheVersion: VISUAL_ANALYSIS_CACHE_VERSION,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + VISUAL_ANALYSIS_CACHE_TTL_MS,
+    organizationId: params.organizationId || null,
+    storeId: params.storeId || null,
+    file: params.file,
+    pages,
+    visualEvidencePagesInput: payload.visualEvidencePagesInput,
+    visualPdfTotalPages: payload.visualPdfTotalPages,
+    visualDocumentMapResult: payload.visualDocumentMapResult,
+    visualEvidenceResult: payload.visualEvidenceResult,
+  };
+  const serialized = JSON.stringify(value);
+  if (serialized.length > VISUAL_ANALYSIS_CACHE_MAX_CHARS) return;
+
+  try {
+    storage.setItem(buildVisualAnalysisCacheKey({ ...params, pages }), serialized);
+  } catch (error) {
+    console.error("[OnboardingPage] visual analysis cache setItem error:", error);
+  }
+}
+function removeVisualAnalysisCache(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+  pages: number[];
+}) {
+  const storage = getVisualAnalysisStorage();
+  if (!storage) return;
+  try {
+    storage.removeItem(buildVisualAnalysisCacheKey(params));
+  } catch (error) {
+    console.error("[OnboardingPage] visual analysis cache removeItem error:", error);
+  }
+}
+function buildRestoredVisualPdfImportResult(params: {
+  file: VisualAnalysisCacheFileMeta;
+  totalPages: number | null;
+}): IntelligentImportResponse {
+  const totalPages = params.totalPages && params.totalPages > 0 ? Math.floor(params.totalPages) : 1;
+  return {
+    ok: true,
+    message: VISUAL_PDF_IMPORT_MESSAGE,
+    summary: {
+      totalFiles: 1,
+      extractedFiles: 1,
+      normalizedItems: 0,
+      dedupedItems: 0,
+      duplicateItems: 0,
+    },
+    extractedPreview: [
+      {
+        fileName: params.file.name,
+        mimeType: "application/pdf",
+        extension: "pdf",
+        textPreview: "",
+      },
+    ],
+    extractedImagePreview: Array.from({ length: totalPages }, (_, index) => ({
+      sourceFileName: params.file.name,
+      fileName: `${params.file.name}#page-${index + 1}`,
+      source: "pdf",
+      mimeType: "image/png",
+      dataUrl: "",
+      imageOrder: index,
+      worksheetRowNumber: index + 1,
+    })),
+    normalizedPreview: [],
+    dedupedPreview: [],
+  };
 }
 function getVisualPdfTotalPagesFromResult(result: IntelligentImportResponse | null) {
   if (!result?.ok) return null;
@@ -4195,6 +4460,12 @@ export default function IntelligentCatalogImportPanel({
   const [visualDocumentMapSessionCache, setVisualDocumentMapSessionCache] = useState<
     Record<string, VisualCatalogDocumentMapResponse>
   >({});
+  const visualPdfFileMeta = useMemo(() => {
+    const file =
+      intelligentImportFiles.find((item) => String(item.name || "").toLowerCase().endsWith(".pdf")) ??
+      intelligentImportSelectedFilesPreview.find((item) => String(item.name || "").toLowerCase().endsWith(".pdf"));
+    return file ? getVisualAnalysisFileMeta(file) : null;
+  }, [intelligentImportFiles, intelligentImportSelectedFilesPreview]);
 
   const visibleIntelligentImportFiles = useMemo(() => {
     if (intelligentImportFiles.length > 0) {
@@ -4357,7 +4628,139 @@ export default function IntelligentCatalogImportPanel({
     };
   }, [selectedImagePreviews]);
 
+  function restoreVisualAnalysisCache(cache: PersistedVisualAnalysisCache) {
+    const pages = normalizeVisualAnalysisPages(cache.pages);
+    const pagesInput = cache.visualEvidencePagesInput || pages.join(",");
+    setVisualEvidencePagesInput(pagesInput);
+    setVisualDocumentMapResult(cache.visualDocumentMapResult);
+    setVisualDocumentMapError(null);
+    setVisualEvidenceResult(cache.visualEvidenceResult);
+    setVisualEvidenceError(null);
+    setVisualEvidenceNotice("Analise visual restaurada. Nenhuma nova chamada de API foi feita.");
+    if (!intelligentImportResult?.ok) {
+      setIntelligentImportResult(
+        buildRestoredVisualPdfImportResult({
+          file: cache.file,
+          totalPages: cache.visualPdfTotalPages,
+        })
+      );
+    }
+    setIntelligentImportSelectedFilesPreview((current) =>
+      current.length > 0
+        ? current
+        : [
+            {
+              name: cache.file.name,
+              type: "application/pdf",
+              size: cache.file.size,
+              lastModified: cache.file.lastModified,
+            },
+          ]
+    );
+    if (cache.visualEvidenceResult?.ok && pages.length > 0) {
+      const evidenceCacheKey = `${cache.file.name}::${cache.file.size}::${pages.join(",")}`;
+      setVisualEvidenceSessionCache((current) => ({
+        ...current,
+        [evidenceCacheKey]: cache.visualEvidenceResult as VisualCatalogDocumentScanResponse,
+      }));
+    }
+    if (cache.visualDocumentMapResult?.ok) {
+      const mapCacheKey = `${cache.file.name}::${cache.file.size}::document-map`;
+      setVisualDocumentMapSessionCache((current) => ({
+        ...current,
+        [mapCacheKey]: cache.visualDocumentMapResult as VisualCatalogDocumentMapResponse,
+      }));
+    }
+  }
+
+  function readCurrentVisualAnalysisCache(pages: number[]) {
+    if (!visualPdfFileMeta) return null;
+    return readVisualAnalysisCache({
+      organizationId,
+      storeId,
+      file: visualPdfFileMeta,
+      pages,
+    });
+  }
+
+  function persistCurrentVisualAnalysisCache(params: {
+    pages: number[];
+    visualDocumentMapResult: VisualCatalogDocumentMapResponse | null;
+    visualEvidenceResult: VisualCatalogDocumentScanResponse | null;
+    visualEvidencePagesInput?: string;
+  }) {
+    if (!visualPdfFileMeta) return;
+    writeVisualAnalysisCache(
+      {
+        organizationId,
+        storeId,
+        file: visualPdfFileMeta,
+        pages: params.pages,
+      },
+      {
+        visualEvidencePagesInput: params.visualEvidencePagesInput || params.pages.join(","),
+        visualPdfTotalPages,
+        visualDocumentMapResult: params.visualDocumentMapResult,
+        visualEvidenceResult: params.visualEvidenceResult,
+      }
+    );
+  }
+
+  function handleRedoVisualAnalysis() {
+    const pages = normalizeVisualAnalysisPages(
+      visualEvidencePagesInput
+        .split(/[,\s;]+/g)
+        .map((value) => Number(String(value).replace(/[^\d]/g, "")))
+    );
+    if (visualPdfFileMeta && pages.length > 0) {
+      removeVisualAnalysisCache({
+        organizationId,
+        storeId,
+        file: visualPdfFileMeta,
+        pages,
+      });
+    }
+    setVisualEvidenceResult(null);
+    setVisualEvidenceSessionCache({});
+    setVisualDocumentMapResult(null);
+    setVisualDocumentMapSessionCache({});
+    setVisualDocumentMapError(null);
+    setVisualEvidenceError(null);
+    setVisualEvidenceNotice("Analise salva removida. Para gerar uma nova analise, clique em Testar paginas.");
+  }
+
+  useEffect(() => {
+    if (!visualPdfFileMeta || visualEvidenceResult || visualEvidenceLoading || visualDocumentMapLoading) return;
+    const cached = readLatestVisualAnalysisCacheForFile({
+      organizationId,
+      storeId,
+      file: visualPdfFileMeta,
+    });
+    if (!cached) return;
+    restoreVisualAnalysisCache(cached);
+  }, [
+    organizationId,
+    storeId,
+    visualPdfFileMeta,
+    visualEvidenceResult,
+    visualEvidenceLoading,
+    visualDocumentMapLoading,
+  ]);
+
   function clearIntelligentImportState() {
+    const pages = normalizeVisualAnalysisPages(
+      visualEvidencePagesInput
+        .split(/[,\s;]+/g)
+        .map((value) => Number(String(value).replace(/[^\d]/g, "")))
+    );
+    if (visualPdfFileMeta && pages.length > 0) {
+      removeVisualAnalysisCache({
+        organizationId,
+        storeId,
+        file: visualPdfFileMeta,
+        pages,
+      });
+    }
     setIntelligentImportFiles([]);
     setIntelligentImportSelectedFilesPreview([]);
     setIntelligentImportError(null);
@@ -4548,6 +4951,16 @@ export default function IntelligentCatalogImportPanel({
       return;
     }
 
+    const persistedCache = readLatestVisualAnalysisCacheForFile({
+      organizationId,
+      storeId,
+      file: getVisualAnalysisFileMeta(pdfFile),
+    });
+    if (persistedCache) {
+      restoreVisualAnalysisCache(persistedCache);
+      return;
+    }
+
     const cacheKey = buildVisualDocumentMapSessionCacheKey(pdfFile);
     const cachedMap = visualDocumentMapSessionCache[cacheKey];
     if (cachedMap?.ok) {
@@ -4556,10 +4969,17 @@ export default function IntelligentCatalogImportPanel({
       setVisualDocumentMapResult(cachedMap);
       setVisualDocumentMapError(null);
       setVisualEvidencePagesInput(pagesToScan.join(","));
+      persistCurrentVisualAnalysisCache({
+        pages: pagesToScan,
+        visualEvidencePagesInput: pagesToScan.join(","),
+        visualDocumentMapResult: cachedMap,
+        visualEvidenceResult,
+      });
       await handleRunVisualEvidenceScan({
         pages: pagesToScan,
         resetResult: false,
         source: "auto",
+        mapResultForCache: cachedMap,
       });
       return;
     }
@@ -4600,10 +5020,17 @@ export default function IntelligentCatalogImportPanel({
         [cacheKey]: result,
       }));
       setVisualEvidencePagesInput(pagesToScan.join(","));
+      persistCurrentVisualAnalysisCache({
+        pages: pagesToScan,
+        visualEvidencePagesInput: pagesToScan.join(","),
+        visualDocumentMapResult: result,
+        visualEvidenceResult,
+      });
       await handleRunVisualEvidenceScan({
         pages: pagesToScan,
         resetResult: false,
         source: "auto",
+        mapResultForCache: result,
       });
     } catch (error) {
       console.error("[OnboardingPage] handleRunVisualDocumentMapAndEvidenceScan error:", error);
@@ -4622,6 +5049,7 @@ export default function IntelligentCatalogImportPanel({
     pages?: number[];
     resetResult?: boolean;
     source?: "auto" | "manual";
+    mapResultForCache?: VisualCatalogDocumentMapResponse | null;
   }) {
     const pdfFile = intelligentImportFiles.find((file) =>
       String(file.name || "").toLowerCase().endsWith(".pdf")
@@ -4646,12 +5074,29 @@ export default function IntelligentCatalogImportPanel({
       return;
     }
 
+    const persistedCache = readVisualAnalysisCache({
+      organizationId,
+      storeId,
+      file: getVisualAnalysisFileMeta(pdfFile),
+      pages: requestedPages,
+    });
+    if (persistedCache?.visualEvidenceResult?.ok) {
+      restoreVisualAnalysisCache(persistedCache);
+      return;
+    }
+
     const cacheKey = buildVisualEvidenceSessionCacheKey(pdfFile, requestedPages);
     const cachedResult = visualEvidenceSessionCache[cacheKey];
     if (cachedResult) {
       setVisualEvidenceResult(cachedResult);
       setVisualEvidenceError(null);
       setVisualEvidenceNotice("Resultado visual reaproveitado desta sessao.");
+      persistCurrentVisualAnalysisCache({
+        pages: requestedPages,
+        visualEvidencePagesInput: requestedPages.join(","),
+        visualDocumentMapResult: options?.mapResultForCache ?? visualDocumentMapResult,
+        visualEvidenceResult: cachedResult,
+      });
       return;
     }
 
@@ -4691,6 +5136,12 @@ export default function IntelligentCatalogImportPanel({
         ...current,
         [cacheKey]: result,
       }));
+      persistCurrentVisualAnalysisCache({
+        pages: requestedPages,
+        visualEvidencePagesInput: requestedPages.join(","),
+        visualDocumentMapResult: options?.mapResultForCache ?? visualDocumentMapResult,
+        visualEvidenceResult: result,
+      });
       setVisualEvidenceNotice(
         source === "auto"
           ? `Analise visual automatica concluida nas paginas ${requestedPages.join(", ")}.`
@@ -5886,6 +6337,21 @@ async function handleSaveImportedItemsToCatalog() {
                             {visualEvidenceNotice ? (
                               <p className="mt-2 text-sm text-violet-900">{visualEvidenceNotice}</p>
                             ) : null}
+                            {visualEvidenceResult?.ok || visualDocumentMapResult?.ok ? (
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={handleRedoVisualAnalysis}
+                                  disabled={disabled || visualEvidenceLoading || visualDocumentMapLoading || intelligentImportLoading}
+                                  className="rounded-lg border border-violet-200 bg-white px-3 py-1.5 text-xs font-medium text-violet-950 disabled:opacity-60"
+                                >
+                                  Limpar analise salva
+                                </button>
+                                <p className="text-xs leading-5 text-violet-800">
+                                  Remove a analise salva deste arquivo. Para analisar de novo, clique em Testar paginas.
+                                </p>
+                              </div>
+                            ) : null}
                             {visualEvidenceError ? (
                               <p className="mt-2 text-sm text-red-700">{visualEvidenceError}</p>
                             ) : null}
@@ -5895,6 +6361,79 @@ async function handleSaveImportedItemsToCatalog() {
                                   <p className="text-sm leading-6 text-violet-950">
                                     O ZION encontrou evidencias visuais no catalogo. A proxima etapa sera juntar essas informacoes em itens para revisao.
                                   </p>
+                                ) : null}
+                                {visualDocumentAnalysis.consolidatedReviewCandidates.length > 0 ? (
+                                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3">
+                                    <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                                      <div>
+                                        <p className="text-sm font-semibold text-emerald-950">
+                                          Itens consolidados para revisao
+                                        </p>
+                                        <p className="mt-1 text-xs leading-5 text-emerald-900">
+                                          O ZION juntou informacoes encontradas em paginas diferentes. Revise antes de salvar. Nada sera salvo ainda.
+                                        </p>
+                                      </div>
+                                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-emerald-900 ring-1 ring-emerald-200">
+                                        Precisa revisao
+                                      </span>
+                                    </div>
+                                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                      {visualDocumentAnalysis.consolidatedReviewCandidates.slice(0, 10).map((candidate) => {
+                                        const foundFields = getVisualConsolidatedFoundFields(candidate);
+                                        const missingFields = getVisualConsolidatedMissingFields(candidate);
+                                        const displayName = candidate.name || candidate.sku || "Item para revisar";
+                                        const visibleDimensions = candidate.dimensionsList.slice(0, 3);
+                                        return (
+                                          <div
+                                            key={candidate.candidateId}
+                                            className="rounded-lg bg-white p-3 ring-1 ring-emerald-100"
+                                          >
+                                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                                              <div>
+                                                <p className="text-sm font-semibold text-gray-950">
+                                                  {displayName}
+                                                </p>
+                                                <p className="mt-1 text-xs leading-5 text-gray-600">
+                                                  Categoria: {getVisualCategoryLabel(candidate.category)}
+                                                  {candidate.sku ? ` | Codigo: ${candidate.sku}` : ""}
+                                                </p>
+                                              </div>
+                                              <span className="text-xs font-medium text-emerald-800">
+                                                {Math.round((candidate.confidence || 0) * 100)}% confianca
+                                              </span>
+                                            </div>
+                                            <p className="mt-2 text-xs leading-5 text-gray-700">
+                                              Paginas usadas: {candidate.sourcePages.join(", ") || "A revisar"}
+                                            </p>
+                                            {candidate.dimensionsList.length === 1 ? (
+                                              <p className="mt-1 text-xs leading-5 text-gray-700">
+                                                Medidas encontradas: {candidate.dimensionsList[0]}
+                                              </p>
+                                            ) : null}
+                                            {candidate.dimensionsList.length > 1 ? (
+                                              <div className="mt-1 text-xs leading-5 text-gray-700">
+                                                <p>{candidate.dimensionsList.length} medidas encontradas:</p>
+                                                <p>{visibleDimensions.join(" | ")}</p>
+                                              </div>
+                                            ) : null}
+                                            {foundFields.length > 0 ? (
+                                              <p className="mt-2 text-xs leading-5 text-gray-700">
+                                                Campos encontrados: {foundFields.join(", ")}
+                                              </p>
+                                            ) : null}
+                                            {missingFields.length > 0 ? (
+                                              <p className="mt-1 text-xs leading-5 text-gray-600">
+                                                Campos faltando: {missingFields.join(", ")}
+                                              </p>
+                                            ) : null}
+                                            <p className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
+                                              Precisa revisao
+                                            </p>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
                                 ) : null}
                                 {visualProductCandidates.length > 0 ? (
                                   <div className="rounded-lg border border-violet-200 bg-violet-50/70 p-3">
