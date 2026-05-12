@@ -154,6 +154,7 @@ type VisualCatalogDocumentScanResponse =
       error: string;
       message: string;
     };
+type VisualCatalogDocumentScanSuccess = Extract<VisualCatalogDocumentScanResponse, { ok: true }>;
 type VisualCatalogDocumentMapResponse =
   | {
       ok: true;
@@ -191,6 +192,7 @@ type VisualCatalogDocumentMapResponse =
       error: string;
       message: string;
     };
+type VisualCatalogDocumentMapSuccess = Extract<VisualCatalogDocumentMapResponse, { ok: true }>;
 type VisualProductCandidateFieldSource = {
   pageNumber: number;
   evidenceId: string;
@@ -404,6 +406,7 @@ const VISUAL_PDF_IMPORT_MESSAGE =
 const VISUAL_ANALYSIS_CACHE_VERSION = 1;
 const VISUAL_ANALYSIS_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const VISUAL_ANALYSIS_CACHE_MAX_CHARS = 450_000;
+const VISUAL_ANALYSIS_MAIN_FLOW_MAX_ADDITIONAL_BATCHES = 3;
 type IntelligentCatalogImportPanelProps = {
   organizationId: string | null | undefined;
   storeId: string | null | undefined;
@@ -890,7 +893,7 @@ function isVisualAnalysisCacheValid(
   const expectedPages = normalizeVisualAnalysisPageList(params.pages).join(",");
   const cachedPages = normalizeVisualAnalysisPageList(value.pages ?? []).join(",");
   if (!expectedPages || cachedPages !== expectedPages) return false;
-  return Boolean(value.visualDocumentMapResult?.ok || value.visualEvidenceResult?.ok);
+  return Boolean(value.visualEvidenceResult?.ok);
 }
 function readVisualAnalysisCache(params: {
   organizationId: string | null | undefined;
@@ -4749,6 +4752,13 @@ export default function IntelligentCatalogImportPanel({
   }, [selectedImagePreviews]);
 
   function restoreVisualAnalysisCache(cache: PersistedVisualAnalysisCache) {
+    if (!cache.visualEvidenceResult?.ok) {
+      setVisualDocumentMapResult(cache.visualDocumentMapResult);
+      setVisualDocumentMapError(null);
+      setVisualEvidenceResult(null);
+      setVisualEvidenceNotice(null);
+      return;
+    }
     const pages = normalizeVisualAnalysisPageList(cache.pages);
     const pagesInput = cache.visualEvidencePagesInput || pages.join(",");
     setVisualEvidencePagesInputFromSystem(pagesInput, { force: true });
@@ -4819,7 +4829,7 @@ export default function IntelligentCatalogImportPanel({
       },
       {
         visualEvidencePagesInput: params.visualEvidencePagesInput || params.pages.join(","),
-        visualPdfTotalPages,
+        visualPdfTotalPages: visualPdfTotalPages ?? (params.visualDocumentMapResult?.ok ? params.visualDocumentMapResult.totalPages : null),
         visualDocumentMapResult: params.visualDocumentMapResult,
         visualEvidenceResult: params.visualEvidenceResult,
       }
@@ -4967,7 +4977,7 @@ export default function IntelligentCatalogImportPanel({
         setVisualCatalogPage(1);
         setVisualEvidencePagesInputFromSystem(automaticEvidencePages.join(","));
         void handleRunVisualCatalogBase({ resetResult: false, page: 1 });
-        void handleRunVisualDocumentMapAndEvidenceScan(automaticEvidencePages);
+        await handleRunVisualDocumentMapAndEvidenceScan(automaticEvidencePages);
       }
       setIntelligentImportSuccess(
         frontendReadyResult.message || "Importação inteligente processada com sucesso."
@@ -5062,6 +5072,150 @@ export default function IntelligentCatalogImportPanel({
     );
   }
 
+  async function runVisualEvidenceScanBatch(params: {
+    pdfFile: File;
+    pages: number[];
+    mapResult: VisualCatalogDocumentMapResponse | null;
+    currentResult: VisualCatalogDocumentScanResponse | null;
+    notice?: string | null;
+    resetResult?: boolean;
+  }) {
+    const requestedPages = normalizeVisualAnalysisPages(params.pages);
+    if (requestedPages.length === 0) return params.currentResult?.ok ? params.currentResult : null;
+
+    const cacheKey = buildVisualEvidenceSessionCacheKey(params.pdfFile, requestedPages);
+    const cachedResult =
+      visualEvidenceSessionCache[cacheKey] ??
+      readVisualAnalysisCache({
+        organizationId,
+        storeId,
+        file: getVisualAnalysisFileMeta(params.pdfFile),
+        pages: requestedPages,
+      })?.visualEvidenceResult;
+
+    if (cachedResult?.ok) {
+      const mergedResult = params.currentResult?.ok
+        ? mergeVisualEvidenceResults(params.currentResult, cachedResult)
+        : cachedResult;
+      setVisualEvidenceResult(mergedResult);
+      setVisualEvidencePagesInputFromSystem(mergedResult.requestedPages.join(","));
+      setVisualEvidenceError(null);
+      if (params.notice !== null) {
+        setVisualEvidenceNotice(params.notice || "Resultado visual reaproveitado desta sessao.");
+      }
+      setVisualEvidenceSessionCache((current) => ({
+        ...current,
+        [cacheKey]: cachedResult,
+        [buildVisualEvidenceSessionCacheKey(params.pdfFile, mergedResult.requestedPages)]: mergedResult,
+      }));
+      persistCurrentVisualAnalysisCache({
+        pages: mergedResult.requestedPages,
+        visualEvidencePagesInput: mergedResult.requestedPages.join(","),
+        visualDocumentMapResult: params.mapResult,
+        visualEvidenceResult: mergedResult,
+      });
+      return mergedResult;
+    }
+
+    setVisualEvidenceLoading(true);
+    setVisualEvidenceError(null);
+    if (params.notice !== null) {
+      setVisualEvidenceNotice(params.notice || "Analisando paginas do PDF...");
+    }
+    if (params.resetResult) {
+      setVisualEvidenceResult(null);
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append("file", params.pdfFile);
+      formData.append("pages", requestedPages.join(","));
+
+      const response = await fetch("/api/onboarding/visual-catalog-document-scan", {
+        method: "POST",
+        body: formData,
+      });
+      const result = (await response.json()) as VisualCatalogDocumentScanResponse;
+
+      if (!response.ok || !result.ok) {
+        setVisualEvidenceError(
+          !result.ok ? result.message : "Falha ao analisar paginas do PDF."
+        );
+        setVisualEvidenceNotice("A analise visual parou neste ponto. O resultado ja encontrado foi preservado.");
+        return params.currentResult?.ok ? params.currentResult : null;
+      }
+
+      const mergedResult = params.currentResult?.ok
+        ? mergeVisualEvidenceResults(params.currentResult, result)
+        : result;
+      setVisualEvidenceResult(mergedResult);
+      setVisualEvidencePagesInputFromSystem(mergedResult.requestedPages.join(","));
+      setVisualEvidenceSessionCache((current) => ({
+        ...current,
+        [cacheKey]: result,
+        [buildVisualEvidenceSessionCacheKey(params.pdfFile, mergedResult.requestedPages)]: mergedResult,
+      }));
+      persistCurrentVisualAnalysisCache({
+        pages: mergedResult.requestedPages,
+        visualEvidencePagesInput: mergedResult.requestedPages.join(","),
+        visualDocumentMapResult: params.mapResult,
+        visualEvidenceResult: mergedResult,
+      });
+      return mergedResult;
+    } catch (error) {
+      console.error("[OnboardingPage] runVisualEvidenceScanBatch error:", error);
+      setVisualEvidenceError("Erro inesperado ao analisar paginas do PDF.");
+      setVisualEvidenceNotice("A analise visual parou neste ponto. O resultado ja encontrado foi preservado.");
+      return params.currentResult?.ok ? params.currentResult : null;
+    } finally {
+      setVisualEvidenceLoading(false);
+    }
+  }
+
+  async function runRemainingVisualRecommendedBatches(params: {
+    pdfFile: File;
+    mapResult: VisualCatalogDocumentMapSuccess;
+    currentResult: VisualCatalogDocumentScanResponse | null;
+    maxAdditionalBatches?: number;
+  }) {
+    let mergedResult = params.currentResult;
+    const maxAdditionalBatches =
+      params.maxAdditionalBatches ?? VISUAL_ANALYSIS_MAIN_FLOW_MAX_ADDITIONAL_BATCHES;
+
+    for (let batchIndex = 0; batchIndex < maxAdditionalBatches; batchIndex += 1) {
+      const analyzedPages = new Set(
+        normalizeVisualAnalysisPageList([
+          ...(mergedResult?.ok ? mergedResult.requestedPages : []),
+          ...getAnalyzedVisualEvidencePages(mergedResult),
+        ])
+      );
+      const nextPages = normalizeVisualAnalysisPages(
+        params.mapResult.recommendedPages.filter((pageNumber) => !analyzedPages.has(pageNumber))
+      );
+      if (nextPages.length === 0) break;
+
+      setVisualEvidenceNotice(`Analisando lote ${batchIndex + 2} de ate ${maxAdditionalBatches + 1}...`);
+      const nextResult = await runVisualEvidenceScanBatch({
+        pdfFile: params.pdfFile,
+        pages: nextPages,
+        mapResult: params.mapResult,
+        currentResult: mergedResult,
+        notice: `Analisando lote ${batchIndex + 2} de ate ${maxAdditionalBatches + 1}...`,
+        resetResult: false,
+      });
+
+      if (!nextResult?.ok || nextResult === mergedResult) {
+        break;
+      }
+      mergedResult = nextResult;
+    }
+
+    if (mergedResult?.ok) {
+      setVisualEvidenceNotice("Analise visual concluida. Revise os itens encontrados antes de salvar.");
+    }
+    return mergedResult;
+  }
+
   async function handleRunVisualDocumentMapAndEvidenceScan(fallbackPages: number[]) {
     const pdfFile = intelligentImportFiles.find((file) =>
       String(file.name || "").toLowerCase().endsWith(".pdf")
@@ -5072,7 +5226,7 @@ export default function IntelligentCatalogImportPanel({
         resetResult: false,
         source: "auto",
       });
-      return;
+      return null;
     }
 
     const persistedCache = readLatestVisualAnalysisCacheForFile({
@@ -5082,7 +5236,14 @@ export default function IntelligentCatalogImportPanel({
     });
     if (persistedCache) {
       restoreVisualAnalysisCache(persistedCache);
-      return;
+      if (persistedCache.visualDocumentMapResult?.ok && persistedCache.visualEvidenceResult?.ok) {
+        return runRemainingVisualRecommendedBatches({
+          pdfFile,
+          mapResult: persistedCache.visualDocumentMapResult,
+          currentResult: persistedCache.visualEvidenceResult,
+        });
+      }
+      return persistedCache.visualEvidenceResult?.ok ? persistedCache.visualEvidenceResult : null;
     }
 
     const cacheKey = buildVisualDocumentMapSessionCacheKey(pdfFile);
@@ -5093,19 +5254,19 @@ export default function IntelligentCatalogImportPanel({
       setVisualDocumentMapResult(cachedMap);
       setVisualDocumentMapError(null);
       setVisualEvidencePagesInputFromSystem(pagesToScan.join(","));
-      persistCurrentVisualAnalysisCache({
+      const initialResult = await runVisualEvidenceScanBatch({
+        pdfFile,
         pages: pagesToScan,
-        visualEvidencePagesInput: pagesToScan.join(","),
-        visualDocumentMapResult: cachedMap,
-        visualEvidenceResult,
-      });
-      await handleRunVisualEvidenceScan({
-        pages: pagesToScan,
+        mapResult: cachedMap,
+        currentResult: null,
+        notice: "Analisando paginas do PDF...",
         resetResult: false,
-        source: "auto",
-        mapResultForCache: cachedMap,
       });
-      return;
+      return runRemainingVisualRecommendedBatches({
+        pdfFile,
+        mapResult: cachedMap,
+        currentResult: initialResult,
+      });
     }
 
     setVisualDocumentMapLoading(true);
@@ -5133,7 +5294,7 @@ export default function IntelligentCatalogImportPanel({
           resetResult: false,
           source: "auto",
         });
-        return;
+        return null;
       }
 
       const mappedPages = selectBalancedVisualEvidencePages(result, fallbackPages);
@@ -5144,17 +5305,18 @@ export default function IntelligentCatalogImportPanel({
         [cacheKey]: result,
       }));
       setVisualEvidencePagesInputFromSystem(pagesToScan.join(","));
-      persistCurrentVisualAnalysisCache({
+      const initialResult = await runVisualEvidenceScanBatch({
+        pdfFile,
         pages: pagesToScan,
-        visualEvidencePagesInput: pagesToScan.join(","),
-        visualDocumentMapResult: result,
-        visualEvidenceResult,
-      });
-      await handleRunVisualEvidenceScan({
-        pages: pagesToScan,
+        mapResult: result,
+        currentResult: null,
+        notice: "Analisando paginas do PDF...",
         resetResult: false,
-        source: "auto",
-        mapResultForCache: result,
+      });
+      return runRemainingVisualRecommendedBatches({
+        pdfFile,
+        mapResult: result,
+        currentResult: initialResult,
       });
     } catch (error) {
       console.error("[OnboardingPage] handleRunVisualDocumentMapAndEvidenceScan error:", error);
@@ -5164,6 +5326,7 @@ export default function IntelligentCatalogImportPanel({
         resetResult: false,
         source: "auto",
       });
+      return null;
     } finally {
       setVisualDocumentMapLoading(false);
     }
