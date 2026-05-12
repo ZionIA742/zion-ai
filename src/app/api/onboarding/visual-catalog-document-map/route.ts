@@ -97,29 +97,29 @@ function normalizePageMap(value: any, pageNumber: number): VisualDocumentPageMap
     pageNumber,
     pageType,
     relevanceScore,
-    detectedLabels: coerceStringArray(value?.detectedLabels || value?.detected_labels, 8),
-    possibleModels: coerceStringArray(value?.possibleModels || value?.possible_models, 10),
+    detectedLabels: coerceStringArray(value?.detectedLabels || value?.detected_labels, 5),
+    possibleModels: coerceStringArray(value?.possibleModels || value?.possible_models, 5),
     hasMeasurements,
     hasManySmallItems,
     confidence,
     recommendedForDetailedScan: recommended,
-    reason: String(value?.reason || "").trim().slice(0, 220),
+    reason: String(value?.reason || "").trim().slice(0, 80),
   };
 }
 
 function parseMapJson(text: string | null | undefined) {
   const rawText = String(text || "").trim();
-  if (!rawText) return null;
+  if (!rawText) return { value: null, invalidJson: false };
 
   try {
-    return JSON.parse(rawText);
+    return { value: JSON.parse(rawText), invalidJson: false };
   } catch (error) {
     console.error("[ZION][visual-catalog-document-map] invalid vision JSON", {
       message: error instanceof Error ? error.message : String(error),
       preview: rawText.slice(0, 500),
       length: rawText.length,
     });
-    return null;
+    return { value: null, invalidJson: true };
   }
 }
 
@@ -135,7 +135,7 @@ async function classifyDocumentPage(params: {
   const openai = new OpenAI({ apiKey });
   const response = await openai.responses.create({
     model: VISUAL_CATALOG_MODEL,
-    max_output_tokens: 650,
+    max_output_tokens: 950,
     temperature: 0,
     text: {
       format: {
@@ -164,19 +164,19 @@ async function classifyDocumentPage(params: {
             relevanceScore: { type: "number", minimum: 0, maximum: 1 },
             detectedLabels: {
               type: "array",
-              items: { type: "string" },
-              maxItems: 8,
+              items: { type: "string", maxLength: 50 },
+              maxItems: 5,
             },
             possibleModels: {
               type: "array",
-              items: { type: "string" },
-              maxItems: 10,
+              items: { type: "string", maxLength: 50 },
+              maxItems: 5,
             },
             hasMeasurements: { type: "boolean" },
             hasManySmallItems: { type: "boolean" },
             confidence: { type: "number", minimum: 0, maximum: 1 },
             recommendedForDetailedScan: { type: "boolean" },
-            reason: { type: "string" },
+            reason: { type: "string", maxLength: 80 },
           },
           required: [
             "pageType",
@@ -196,7 +196,7 @@ async function classifyDocumentPage(params: {
       {
         role: "system",
         content:
-          "Voce faz um mapa barato de paginas de catalogo visual. Nao extraia itens detalhados. Classifique a pagina e diga se vale analise detalhada. Use apenas o que estiver visivel. Responda somente JSON valido.",
+          "Voce faz um mapa barato de paginas de catalogo visual. Nao extraia itens detalhados, medidas completas, tabelas ou listas longas. Classifique a pagina e diga se vale analise detalhada. Use poucos rotulos visiveis e reason com uma frase curta. Responda somente JSON valido.",
       },
       {
         role: "user",
@@ -204,7 +204,7 @@ async function classifyDocumentPage(params: {
           {
             type: "input_text",
             text:
-              "Classifique esta pagina de catalogo. Tipos validos: cover, index, model_photos, measurement_table, spa, accessories, institutional, back_cover, mixed, unknown. Marque relevanceScore alto para paginas com fotos/modelos, tabelas de medidas, spas, acessorios ou varias linhas de produto. Marque baixo para capa, institucional ou contracapa. Liste rotulos/modelos visiveis em detectedLabels/possibleModels sem inventar. recommendedForDetailedScan deve ser true se a pagina pode ajudar a montar itens do catalogo.",
+              "Classifique esta pagina de catalogo. Tipos validos: cover, index, model_photos, measurement_table, spa, accessories, institutional, back_cover, mixed, unknown. Marque relevanceScore alto para paginas com fotos/modelos, tabelas de medidas, spas, acessorios ou varias linhas de produto. Marque baixo para capa, institucional ou contracapa. Nao transcreva tabelas, nao liste medidas completas e nao liste muitos itens. Em paginas densas, resuma. Liste no maximo 5 rotulos/modelos curtos e visiveis em detectedLabels/possibleModels sem inventar. reason deve ter ate 80 caracteres. recommendedForDetailedScan deve ser true se a pagina pode ajudar a montar itens do catalogo.",
           },
           {
             type: "input_image",
@@ -217,7 +217,11 @@ async function classifyDocumentPage(params: {
   } as any);
 
   const parsed = parseMapJson(response.output_text);
-  return normalizePageMap(parsed || {}, params.pageNumber);
+  const pageMap = normalizePageMap(parsed.value || {}, params.pageNumber);
+  if (parsed.invalidJson) {
+    pageMap.reason = "Resposta visual parcial no mapa.";
+  }
+  return pageMap;
 }
 
 function selectRecommendedPages(pages: VisualDocumentPageMap[]) {
@@ -303,7 +307,11 @@ export async function POST(request: Request) {
         }
 
         try {
-          pages.push(await classifyDocumentPage({ dataUrl, pageNumber }));
+          const pageMap = await classifyDocumentPage({ dataUrl, pageNumber });
+          if (pageMap.reason === "Resposta visual parcial no mapa.") {
+            warnings.push(`Pagina ${pageNumber} teve resposta visual parcial no mapa e foi marcada como unknown.`);
+          }
+          pages.push(pageMap);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Falha ao classificar uma pagina.";
           pages.push({
