@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 const nodeRequire = createRequire(`${process.cwd()}/package.json`);
 const MAX_DOCUMENT_SCAN_PAGES = 5;
-const PDF_RENDER_SCALE = 0.75;
+const PDF_RENDER_SCALE = 1;
 const VISUAL_CATALOG_MODEL = process.env.ZION_VISUAL_CATALOG_MODEL || "gpt-4.1-mini";
 const INVALID_JSON_MESSAGE =
   "A analise visual de uma pagina nao retornou evidencias estruturadas validas.";
@@ -196,7 +196,7 @@ async function analyzeEvidencePage(params: {
   const openai = new OpenAI({ apiKey });
   const response = await openai.responses.create({
     model: VISUAL_CATALOG_MODEL,
-    max_output_tokens: 1400,
+    max_output_tokens: 2200,
     temperature: 0,
     text: {
       format: {
@@ -213,7 +213,7 @@ async function analyzeEvidencePage(params: {
             },
             items: {
               type: "array",
-              maxItems: 12,
+              maxItems: 20,
               items: {
                 type: "object",
                 additionalProperties: false,
@@ -270,7 +270,7 @@ async function analyzeEvidencePage(params: {
       {
         role: "system",
         content:
-          "Voce gera evidencias visuais de paginas de catalogo. Nao crie produto final e nao consolide modelos. Classifique a pagina e liste apenas evidencias visiveis: nomes, codigos, medidas, materiais e descricoes curtas. Use null quando algo nao estiver legivel. Nunca invente nomes, medidas, precos ou estoque. Se a pagina for densa, retorne menos evidencias corretas em vez de muitas duvidosas. Responda somente JSON valido.",
+          "Voce gera evidencias visuais de paginas de catalogo. Nao crie produto final e nao consolide modelos. Classifique a pagina e liste apenas evidencias visiveis: nomes, codigos, medidas, materiais e descricoes curtas. Em paginas de tabela ou medidas, priorize linhas com codigo, nome/modelo e medidas. Cada linha clara deve virar uma evidencia separada, ate o limite permitido. Preserve codigos curtos exatamente como aparecem, por exemplo E01, E02, E03. Nunca invente nomes, medidas, precos ou estoque. Se uma linha estiver ilegivel, ignore. Nao transcreva textos institucionais, capa, slogan ou marca como produto. Responda somente JSON valido.",
       },
       {
         role: "user",
@@ -278,7 +278,7 @@ async function analyzeEvidencePage(params: {
           {
             type: "input_text",
             text:
-              "Analise esta pagina como evidencia para uma futura consolidacao de catalogo. Classifique pageType como cover, model_photos, measurement_table, description, mixed ou unknown. Se houver fotos/modelos, capture nomes e codigos visiveis. Se houver tabela de medidas, capture cada modelo/codigo e suas medidas legiveis. Nao gere item final. Nao junte modelos. Para cada evidencia, use visibleName, visibleCode, category, dimensions.visualText exatamente como aparece, numeros JSON com ponto decimal, material, description curta, confidence e missingFields. Se so houver codigo como E01, use visibleCode E01 e visibleName null ou E01 se parecer titulo do item. Use rawSnippet com trecho curto visivel quando ajudar a revisar. Retorne no maximo 12 evidencias seguras.",
+              "Analise esta pagina como evidencia para uma futura consolidacao de catalogo. Classifique pageType como cover, model_photos, measurement_table, description, mixed ou unknown. Se houver fotos/modelos, capture nomes e codigos visiveis. Se houver tabela de medidas, capture cada linha clara com modelo/codigo e medidas legiveis como uma evidencia separada, ate o limite permitido. Nao gere item final. Nao junte modelos. Para cada evidencia, use visibleName, visibleCode, category, dimensions.visualText exatamente como aparece, numeros JSON com ponto decimal, material, description curta, confidence e missingFields. Preserve codigos curtos exatamente como aparecem, por exemplo E01, E02, E03. Se so houver codigo como E01, use visibleCode E01 e visibleName null ou E01 se parecer titulo do item. Nao invente valores. Se uma linha estiver ilegivel, ignore. Nao transcreva textos institucionais, capa, slogan ou marca como produto. Use rawSnippet com trecho curto visivel quando ajudar a revisar. Retorne no maximo 20 evidencias seguras.",
           },
           {
             type: "input_image",
