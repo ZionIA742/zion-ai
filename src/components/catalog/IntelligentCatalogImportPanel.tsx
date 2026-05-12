@@ -115,6 +115,31 @@ type EditableVisualCatalogDraft = {
   confidence: number;
   missingFields: string[];
 };
+type VisualReviewItemState = "pending" | "approved" | "ignored";
+type EditableVisualReviewItem = {
+  id: string;
+  candidateId: string;
+  entityId: string;
+  name: string;
+  category: "" | "pool" | "chemical" | "accessory" | "other";
+  sku: string;
+  code: string;
+  price: string;
+  dimensionsText: string;
+  dimensionsList: string[];
+  material: string;
+  description: string;
+  stock: string;
+  isActive: boolean;
+  reviewState: VisualReviewItemState;
+  sourcePages: number[];
+  confidence: number;
+  missingFields: string[];
+  conflicts: VisualDocumentAnalysis["consolidatedReviewCandidates"][number]["conflicts"];
+  fieldSources: VisualDocumentAnalysis["consolidatedReviewCandidates"][number]["fieldSources"];
+  dirty: boolean;
+  originalCandidate: VisualDocumentAnalysis["consolidatedReviewCandidates"][number];
+};
 type VisualCatalogDocumentScanResponse =
   | {
       ok: true;
@@ -360,6 +385,70 @@ function getVisualConsolidatedMissingFields(candidate: VisualDocumentAnalysis["c
     if (field === "code") return "Codigo/SKU";
     if (field === "price") return "Preco";
     return translateVisualMissingField(field);
+  });
+}
+function normalizeEditableVisualReviewCategory(category: string | null | undefined): EditableVisualReviewItem["category"] {
+  return category === "pool" ||
+    category === "chemical" ||
+    category === "accessory" ||
+    category === "other"
+    ? category
+    : "";
+}
+function buildVisualReviewCandidatesSignature(
+  candidates: VisualDocumentAnalysis["consolidatedReviewCandidates"]
+) {
+  return candidates.map((candidate) => candidate.candidateId).join("|");
+}
+function cleanupEditableVisualReviewMissingFields(item: EditableVisualReviewItem) {
+  const filled = new Set<string>();
+  if (item.name.trim()) filled.add("name");
+  if (item.sku.trim() || item.code.trim()) {
+    filled.add("sku");
+    filled.add("code");
+  }
+  if (item.category) filled.add("category");
+  if (item.dimensionsText.trim()) filled.add("dimensions");
+  if (item.material.trim()) filled.add("material");
+  if (item.description.trim()) filled.add("description");
+  if (item.price.trim()) filled.add("price");
+  if (item.stock.trim()) filled.add("stock");
+
+  return {
+    ...item,
+    missingFields: item.originalCandidate.missingFields.filter((field) => !filled.has(field)),
+  };
+}
+function buildEditableVisualReviewItemsFromCandidates(
+  candidates: VisualDocumentAnalysis["consolidatedReviewCandidates"]
+): EditableVisualReviewItem[] {
+  return candidates.map((candidate) => {
+    const sku = candidate.sku || candidate.code || "";
+    const item: EditableVisualReviewItem = {
+      id: candidate.candidateId,
+      candidateId: candidate.candidateId,
+      entityId: candidate.entityId,
+      name: candidate.name || "",
+      category: normalizeEditableVisualReviewCategory(candidate.category),
+      sku,
+      code: candidate.code || sku,
+      price: "",
+      dimensionsText: candidate.dimensionsList.join(" | ") || candidate.dimensions || "",
+      dimensionsList: candidate.dimensionsList,
+      material: candidate.material || "",
+      description: candidate.description || "",
+      stock: "",
+      isActive: true,
+      reviewState: "pending",
+      sourcePages: candidate.sourcePages,
+      confidence: candidate.confidence || 0,
+      missingFields: candidate.missingFields,
+      conflicts: candidate.conflicts,
+      fieldSources: candidate.fieldSources,
+      dirty: false,
+      originalCandidate: candidate,
+    };
+    return cleanupEditableVisualReviewMissingFields(item);
   });
 }
 type IntelligentImportSelectedFilePreview = {
@@ -4546,6 +4635,8 @@ export default function IntelligentCatalogImportPanel({
   const [editableVisualCatalogDrafts, setEditableVisualCatalogDrafts] = useState<
     EditableVisualCatalogDraft[]
   >([]);
+  const visualReviewSourceSignatureRef = useRef<string | null>(null);
+  const [visualReviewItems, setVisualReviewItems] = useState<EditableVisualReviewItem[]>([]);
   const [visualEvidencePagesInput, setVisualEvidencePagesInput] = useState("3,4,5,12");
   const visualEvidencePagesManuallyEditedRef = useRef(false);
   const [visualEvidenceLoading, setVisualEvidenceLoading] = useState(false);
@@ -4663,6 +4754,18 @@ export default function IntelligentCatalogImportPanel({
     () => formatVisualConsolidatedCandidateSummary(visualDocumentAnalysis),
     [visualDocumentAnalysis]
   );
+  const visualReviewCandidatesSignature = useMemo(
+    () => buildVisualReviewCandidatesSignature(visualDocumentAnalysis.consolidatedReviewCandidates),
+    [visualDocumentAnalysis.consolidatedReviewCandidates]
+  );
+  const visualReviewCounts = useMemo(
+    () => ({
+      approved: visualReviewItems.filter((item) => item.reviewState === "approved").length,
+      pending: visualReviewItems.filter((item) => item.reviewState === "pending").length,
+      ignored: visualReviewItems.filter((item) => item.reviewState === "ignored").length,
+    }),
+    [visualReviewItems]
+  );
   const visualEvidencePageSummary = useMemo(
     () => summarizeVisualEvidencePages(visualEvidenceResult),
     [visualEvidenceResult]
@@ -4743,6 +4846,30 @@ export default function IntelligentCatalogImportPanel({
     safeNormalizedPreview,
     visibleIntelligentImportFiles,
   ]);
+  useEffect(() => {
+    setVisualReviewItems((current) => {
+      if (!visualReviewCandidatesSignature) {
+        if (current.some((item) => item.dirty)) return current;
+        visualReviewSourceSignatureRef.current = null;
+        return [];
+      }
+
+      const hasDirtyItems = current.some((item) => item.dirty);
+      const sourceChanged = visualReviewSourceSignatureRef.current !== visualReviewCandidatesSignature;
+      if (hasDirtyItems && current.length > 0 && sourceChanged) {
+        return current;
+      }
+
+      visualReviewSourceSignatureRef.current = visualReviewCandidatesSignature;
+      if (!sourceChanged && current.length > 0) {
+        return current;
+      }
+
+      return buildEditableVisualReviewItemsFromCandidates(
+        visualDocumentAnalysis.consolidatedReviewCandidates
+      );
+    });
+  }, [visualDocumentAnalysis.consolidatedReviewCandidates, visualReviewCandidatesSignature]);
   useEffect(() => {
     return () => {
       for (const preview of selectedImagePreviews) {
@@ -4858,6 +4985,8 @@ export default function IntelligentCatalogImportPanel({
     setVisualDocumentMapSessionCache({});
     setVisualDocumentMapError(null);
     setVisualEvidenceError(null);
+    visualReviewSourceSignatureRef.current = null;
+    setVisualReviewItems([]);
     setVisualEvidenceNotice("Analise salva removida. Para gerar uma nova analise, clique em Testar paginas.");
   }
 
@@ -4906,6 +5035,8 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogSessionCache({});
     setVisualCatalogNotice(null);
     setEditableVisualCatalogDrafts([]);
+    visualReviewSourceSignatureRef.current = null;
+    setVisualReviewItems([]);
     setVisualEvidenceError(null);
     setVisualEvidenceNotice(null);
     setVisualEvidenceResult(null);
@@ -4939,6 +5070,8 @@ export default function IntelligentCatalogImportPanel({
     setVisualCatalogSessionCache({});
     setVisualCatalogNotice(null);
     setEditableVisualCatalogDrafts([]);
+    visualReviewSourceSignatureRef.current = null;
+    setVisualReviewItems([]);
     setVisualEvidenceError(null);
     setVisualEvidenceNotice(null);
     setVisualEvidenceResult(null);
@@ -5068,6 +5201,19 @@ export default function IntelligentCatalogImportPanel({
         draft.id === draftId
           ? cleanupEditableVisualMissingFields({ ...draft, ...patch })
           : draft
+      )
+    );
+  }
+
+  function updateEditableVisualReviewItem(
+    itemId: string,
+    patch: Partial<EditableVisualReviewItem>
+  ) {
+    setVisualReviewItems((current) =>
+      current.map((item) =>
+        item.id === itemId
+          ? cleanupEditableVisualReviewMissingFields({ ...item, ...patch, dirty: true })
+          : item
       )
     );
   }
@@ -6847,7 +6993,7 @@ async function handleSaveImportedItemsToCatalog() {
                                     O ZION encontrou evidencias visuais no catalogo. A proxima etapa sera juntar essas informacoes em itens para revisao.
                                   </p>
                                 ) : null}
-                                {visualDocumentAnalysis.consolidatedReviewCandidates.length > 0 ? (
+                                {visualReviewItems.length > 0 ? (
                                   <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3">
                                     <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
                                       <div>
@@ -6855,22 +7001,49 @@ async function handleSaveImportedItemsToCatalog() {
                                           Itens consolidados para revisao
                                         </p>
                                         <p className="mt-1 text-xs leading-5 text-emerald-900">
-                                          O ZION juntou informacoes encontradas em paginas diferentes. Revise antes de salvar. Nada sera salvo ainda.
+                                          O ZION juntou informacoes encontradas em paginas diferentes. Edite e aprove os itens que deseja salvar depois. Nada foi salvo ainda.
                                         </p>
                                       </div>
-                                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-emerald-900 ring-1 ring-emerald-200">
-                                        Precisa revisao
-                                      </span>
+                                      <div className="flex flex-wrap gap-2 text-xs">
+                                        <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-200">
+                                          {visualReviewCounts.approved} aprovados
+                                        </span>
+                                        <span className="rounded-full bg-white px-3 py-1 font-medium text-amber-800 ring-1 ring-amber-200">
+                                          {visualReviewCounts.pending} pendentes
+                                        </span>
+                                        <span className="rounded-full bg-white px-3 py-1 font-medium text-gray-700 ring-1 ring-gray-200">
+                                          {visualReviewCounts.ignored} ignorados
+                                        </span>
+                                      </div>
                                     </div>
                                     <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                      {visualDocumentAnalysis.consolidatedReviewCandidates.slice(0, 10).map((candidate) => {
-                                        const foundFields = getVisualConsolidatedFoundFields(candidate);
-                                        const missingFields = getVisualConsolidatedMissingFields(candidate);
-                                        const displayName = candidate.name || candidate.sku || "Item para revisar";
-                                        const visibleDimensions = candidate.dimensionsList.slice(0, 3);
+                                      {visualReviewItems.map((item) => {
+                                        const foundFields = [
+                                          item.name.trim() ? "Nome" : null,
+                                          item.sku.trim() || item.code.trim() ? "Codigo/SKU" : null,
+                                          item.category ? "Categoria" : null,
+                                          item.dimensionsText.trim() ? "Medidas" : null,
+                                          item.material.trim() ? "Material" : null,
+                                          item.description.trim() ? "Descricao" : null,
+                                          item.price.trim() ? "Preco" : null,
+                                          item.stock.trim() ? "Estoque" : null,
+                                        ].filter((field): field is string => Boolean(field));
+                                        const missingFields = item.missingFields.map((field) => {
+                                          if (field === "code" || field === "sku") return "Codigo/SKU";
+                                          if (field === "price") return "Preco";
+                                          return translateVisualMissingField(field);
+                                        });
+                                        const displayName = item.name || item.sku || item.code || "Item para revisar";
+                                        const visibleDimensions = item.dimensionsList.slice(0, 3);
+                                        const statusLabel =
+                                          item.reviewState === "approved"
+                                            ? "Aprovado"
+                                            : item.reviewState === "ignored"
+                                              ? "Ignorado"
+                                              : "Pendente";
                                         return (
                                           <div
-                                            key={candidate.candidateId}
+                                            key={item.id}
                                             className="rounded-lg bg-white p-3 ring-1 ring-emerald-100"
                                           >
                                             <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
@@ -6879,25 +7052,137 @@ async function handleSaveImportedItemsToCatalog() {
                                                   {displayName}
                                                 </p>
                                                 <p className="mt-1 text-xs leading-5 text-gray-600">
-                                                  Categoria: {getVisualCategoryLabel(candidate.category)}
-                                                  {candidate.sku ? ` | Codigo: ${candidate.sku}` : ""}
+                                                  Categoria: {getVisualCategoryLabel(item.category)}
+                                                  {item.sku || item.code ? ` | Codigo: ${item.sku || item.code}` : ""}
                                                 </p>
                                               </div>
                                               <span className="text-xs font-medium text-emerald-800">
-                                                {Math.round((candidate.confidence || 0) * 100)}% confianca
+                                                {Math.round((item.confidence || 0) * 100)}% confianca
                                               </span>
                                             </div>
+                                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                              <label className="block">
+                                                <span className="text-xs font-medium text-gray-700">Nome</span>
+                                                <input
+                                                  type="text"
+                                                  value={item.name}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, { name: event.target.value })
+                                                  }
+                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                                />
+                                              </label>
+                                              <label className="block">
+                                                <span className="text-xs font-medium text-gray-700">Categoria</span>
+                                                <select
+                                                  value={item.category}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, {
+                                                      category: event.target.value as EditableVisualReviewItem["category"],
+                                                    })
+                                                  }
+                                                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                                >
+                                                  <option value="">A revisar</option>
+                                                  <option value="pool">Piscina</option>
+                                                  <option value="chemical">Quimico</option>
+                                                  <option value="accessory">Acessorio</option>
+                                                  <option value="other">Outro</option>
+                                                </select>
+                                              </label>
+                                              <label className="block">
+                                                <span className="text-xs font-medium text-gray-700">Codigo/SKU</span>
+                                                <input
+                                                  type="text"
+                                                  value={item.sku}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, {
+                                                      sku: event.target.value,
+                                                      code: event.target.value,
+                                                    })
+                                                  }
+                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                                />
+                                              </label>
+                                              <label className="block">
+                                                <span className="text-xs font-medium text-gray-700">Preco</span>
+                                                <input
+                                                  type="text"
+                                                  value={item.price}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, { price: event.target.value })
+                                                  }
+                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                                />
+                                              </label>
+                                              <label className="block md:col-span-2">
+                                                <span className="text-xs font-medium text-gray-700">Medidas</span>
+                                                <input
+                                                  type="text"
+                                                  value={item.dimensionsText}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, {
+                                                      dimensionsText: event.target.value,
+                                                    })
+                                                  }
+                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                                />
+                                              </label>
+                                              <label className="block">
+                                                <span className="text-xs font-medium text-gray-700">Material</span>
+                                                <input
+                                                  type="text"
+                                                  value={item.material}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, { material: event.target.value })
+                                                  }
+                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                                />
+                                              </label>
+                                              <label className="block">
+                                                <span className="text-xs font-medium text-gray-700">Estoque</span>
+                                                <input
+                                                  type="text"
+                                                  value={item.stock}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, { stock: event.target.value })
+                                                  }
+                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                                />
+                                              </label>
+                                              <label className="block md:col-span-2">
+                                                <span className="text-xs font-medium text-gray-700">Descricao</span>
+                                                <textarea
+                                                  value={item.description}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, {
+                                                      description: event.target.value,
+                                                    })
+                                                  }
+                                                  rows={2}
+                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                                />
+                                              </label>
+                                              <label className="flex items-center gap-2 text-xs font-medium text-gray-700">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={item.isActive}
+                                                  onChange={(event) =>
+                                                    updateEditableVisualReviewItem(item.id, {
+                                                      isActive: event.target.checked,
+                                                    })
+                                                  }
+                                                  className="h-4 w-4 rounded border-gray-300"
+                                                />
+                                                Ativo
+                                              </label>
+                                            </div>
                                             <p className="mt-2 text-xs leading-5 text-gray-700">
-                                              Paginas usadas: {candidate.sourcePages.join(", ") || "A revisar"}
+                                              Paginas usadas: {item.sourcePages.join(", ") || "A revisar"}
                                             </p>
-                                            {candidate.dimensionsList.length === 1 ? (
-                                              <p className="mt-1 text-xs leading-5 text-gray-700">
-                                                Medidas encontradas: {candidate.dimensionsList[0]}
-                                              </p>
-                                            ) : null}
-                                            {candidate.dimensionsList.length > 1 ? (
+                                            {item.dimensionsList.length > 1 ? (
                                               <div className="mt-1 text-xs leading-5 text-gray-700">
-                                                <p>{candidate.dimensionsList.length} medidas encontradas:</p>
+                                                <p>{item.dimensionsList.length} medidas encontradas:</p>
                                                 <p>{visibleDimensions.join(" | ")}</p>
                                               </div>
                                             ) : null}
@@ -6911,13 +7196,55 @@ async function handleSaveImportedItemsToCatalog() {
                                                 Campos faltando: {missingFields.join(", ")}
                                               </p>
                                             ) : null}
-                                            <p className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
-                                              Precisa revisao
-                                            </p>
+                                            {item.conflicts.length > 0 ? (
+                                              <div className="mt-2 rounded-lg bg-amber-50 p-2 text-xs leading-5 text-amber-800 ring-1 ring-amber-100">
+                                                <p className="font-medium">Conflitos para revisar:</p>
+                                                {item.conflicts.map((conflict) => (
+                                                  <p key={`${item.id}-${conflict.field}`}>
+                                                    {translateVisualMissingField(conflict.field)}: {conflict.values.join(" / ")}
+                                                  </p>
+                                                ))}
+                                              </div>
+                                            ) : null}
+                                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                                              <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
+                                                {statusLabel}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  updateEditableVisualReviewItem(item.id, { reviewState: "approved" })
+                                                }
+                                                className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900"
+                                              >
+                                                Aprovar
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  updateEditableVisualReviewItem(item.id, { reviewState: "pending" })
+                                                }
+                                                className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900"
+                                              >
+                                                Deixar pendente
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  updateEditableVisualReviewItem(item.id, { reviewState: "ignored" })
+                                                }
+                                                className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-700"
+                                              >
+                                                Ignorar
+                                              </button>
+                                            </div>
                                           </div>
                                         );
                                       })}
                                     </div>
+                                    <p className="mt-3 text-xs leading-5 text-emerald-900">
+                                      Salvar no catalogo sera habilitado depois da revisao.
+                                    </p>
                                   </div>
                                 ) : null}
                                 {visualProductCandidates.length > 0 ? (
