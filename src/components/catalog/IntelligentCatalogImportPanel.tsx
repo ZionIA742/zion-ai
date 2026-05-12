@@ -406,7 +406,7 @@ const VISUAL_PDF_IMPORT_MESSAGE =
 const VISUAL_ANALYSIS_CACHE_VERSION = 1;
 const VISUAL_ANALYSIS_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const VISUAL_ANALYSIS_CACHE_MAX_CHARS = 450_000;
-const VISUAL_ANALYSIS_MAIN_FLOW_MAX_ADDITIONAL_BATCHES = 3;
+const VISUAL_ANALYSIS_MAIN_FLOW_MAX_RECOMMENDED_PAGES = 20;
 type IntelligentCatalogImportPanelProps = {
   organizationId: string | null | undefined;
   storeId: string | null | undefined;
@@ -5176,13 +5176,19 @@ export default function IntelligentCatalogImportPanel({
     pdfFile: File;
     mapResult: VisualCatalogDocumentMapSuccess;
     currentResult: VisualCatalogDocumentScanResponse | null;
-    maxAdditionalBatches?: number;
+    maxRecommendedPages?: number;
   }) {
     let mergedResult = params.currentResult;
-    const maxAdditionalBatches =
-      params.maxAdditionalBatches ?? VISUAL_ANALYSIS_MAIN_FLOW_MAX_ADDITIONAL_BATCHES;
+    const maxRecommendedPages =
+      params.maxRecommendedPages ?? VISUAL_ANALYSIS_MAIN_FLOW_MAX_RECOMMENDED_PAGES;
+    const recommendedPages = normalizeVisualAnalysisPageList(params.mapResult.recommendedPages).slice(
+      0,
+      maxRecommendedPages
+    );
+    const totalRemainingBatches = Math.ceil(recommendedPages.length / 5);
+    let batchIndex = 0;
 
-    for (let batchIndex = 0; batchIndex < maxAdditionalBatches; batchIndex += 1) {
+    while (batchIndex < totalRemainingBatches) {
       const analyzedPages = new Set(
         normalizeVisualAnalysisPageList([
           ...(mergedResult?.ok ? mergedResult.requestedPages : []),
@@ -5190,17 +5196,19 @@ export default function IntelligentCatalogImportPanel({
         ])
       );
       const nextPages = normalizeVisualAnalysisPages(
-        params.mapResult.recommendedPages.filter((pageNumber) => !analyzedPages.has(pageNumber))
+        recommendedPages.filter((pageNumber) => !analyzedPages.has(pageNumber))
       );
       if (nextPages.length === 0) break;
 
-      setVisualEvidenceNotice(`Analisando lote ${batchIndex + 2} de ate ${maxAdditionalBatches + 1}...`);
+      const displayBatch = batchIndex + 2;
+      const displayTotal = Math.max(displayBatch, totalRemainingBatches + 1);
+      setVisualEvidenceNotice(`Analisando lote ${displayBatch} de ${displayTotal}...`);
       const nextResult = await runVisualEvidenceScanBatch({
         pdfFile: params.pdfFile,
         pages: nextPages,
         mapResult: params.mapResult,
         currentResult: mergedResult,
-        notice: `Analisando lote ${batchIndex + 2} de ate ${maxAdditionalBatches + 1}...`,
+        notice: `Analisando lote ${displayBatch} de ${displayTotal}...`,
         resetResult: false,
       });
 
@@ -5208,10 +5216,24 @@ export default function IntelligentCatalogImportPanel({
         break;
       }
       mergedResult = nextResult;
+      batchIndex += 1;
     }
 
     if (mergedResult?.ok) {
-      setVisualEvidenceNotice("Analise visual concluida. Revise os itens encontrados antes de salvar.");
+      const analyzedRecommendedPages = new Set(
+        normalizeVisualAnalysisPageList([
+          ...mergedResult.requestedPages,
+          ...getAnalyzedVisualEvidencePages(mergedResult),
+        ])
+      );
+      const pendingRecommendedPages = recommendedPages.filter((pageNumber) => !analyzedRecommendedPages.has(pageNumber));
+      const hasMoreRecommendedPages =
+        params.mapResult.recommendedPages.length > recommendedPages.length || pendingRecommendedPages.length > 0;
+      setVisualEvidenceNotice(
+        hasMoreRecommendedPages
+          ? "Analise visual concluida ate o limite seguro. Algumas paginas ficaram para uma analise complementar."
+          : "Analise visual concluida. Revise os itens encontrados antes de salvar."
+      );
     }
     return mergedResult;
   }
