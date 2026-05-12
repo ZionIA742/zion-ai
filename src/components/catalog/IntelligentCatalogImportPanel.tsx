@@ -1388,6 +1388,36 @@ function getVisualEvidenceDimensionsGroupKey(dimensions: {
 function isStrongVisualCode(value: string | null | undefined) {
   return /^[A-Z]{1,5}[-\s]?\d{1,4}$/i.test(String(value || "").trim());
 }
+function summarizeVisualEvidencePages(result: VisualCatalogDocumentScanResponse | null) {
+  if (!result?.ok) return [];
+
+  return result.pageEvidence.map((page) => {
+    const labels = Array.from(
+      new Set(
+        page.items
+          .map((item) => String(item.visibleName || item.visibleCode || "").trim())
+          .filter(Boolean)
+      )
+    );
+    const codes = Array.from(
+      new Set(
+        page.items
+          .map((item) => String(item.visibleCode || "").trim())
+          .filter((value) => isStrongVisualCode(value))
+      )
+    );
+
+    return {
+      pageNumber: page.pageNumber,
+      pageType: getVisualEvidenceDisplayPageType(page),
+      itemCount: page.items.length,
+      labels: labels.slice(0, 8),
+      hasMoreLabels: labels.length > 8,
+      codes: codes.slice(0, 8),
+      hasMoreCodes: codes.length > 8,
+    };
+  });
+}
 function buildVisualProductCandidateId(modelKey: string) {
   return `visual-candidate-${modelKey.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
 }
@@ -4560,6 +4590,10 @@ export default function IntelligentCatalogImportPanel({
     () => formatVisualConsolidatedCandidateSummary(visualDocumentAnalysis),
     [visualDocumentAnalysis]
   );
+  const visualEvidencePageSummary = useMemo(
+    () => summarizeVisualEvidencePages(visualEvidenceResult),
+    [visualEvidenceResult]
+  );
   const intelligentImportDiagnostics = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       return {
@@ -6292,6 +6326,25 @@ async function handleSaveImportedItemsToCatalog() {
                                     )
                                     .join(" | ")}
                                 </p>
+                              ) : null}
+                              {visualEvidencePageSummary.length > 0 ? (
+                                <div className="mt-2">
+                                  <p className="font-medium">Resumo por pagina analisada:</p>
+                                  <div className="mt-1 space-y-1">
+                                    {visualEvidencePageSummary.map((page) => (
+                                      <p key={`visual-page-summary-${page.pageNumber}`}>
+                                        Pagina {page.pageNumber} - {page.pageType} - {page.itemCount}{" "}
+                                        {page.itemCount === 1 ? "item" : "itens"}
+                                        {page.labels.length > 0
+                                          ? ` - ${page.labels.join(", ")}${page.hasMoreLabels ? "..." : ""}`
+                                          : ""}
+                                        {page.codes.length > 0
+                                          ? ` | Codigos: ${page.codes.join(", ")}${page.hasMoreCodes ? "..." : ""}`
+                                          : ""}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
                               ) : null}
                               {visualLinkedEvidenceSummary.length > 0 ? (
                                 <p>
