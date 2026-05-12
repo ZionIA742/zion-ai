@@ -808,6 +808,9 @@ function buildVisualCatalogSessionCacheKey(file: File, page: number) {
   return `${file.name}::${file.size}::${page}`;
 }
 function normalizeVisualAnalysisPages(values: Array<number | null | undefined>) {
+  return normalizeVisualAnalysisPageList(values).slice(0, 5);
+}
+function normalizeVisualAnalysisPageList(values: Array<number | null | undefined>) {
   return Array.from(
     new Set(
       values
@@ -816,7 +819,6 @@ function normalizeVisualAnalysisPages(values: Array<number | null | undefined>) 
         .map((value) => Math.floor(value))
     )
   )
-    .slice(0, 5)
     .sort((a, b) => a - b);
 }
 function getVisualAnalysisFileMeta(file: File | IntelligentImportSelectedFilePreview): VisualAnalysisCacheFileMeta {
@@ -841,7 +843,7 @@ function buildVisualAnalysisCacheKey(params: {
   const scope = [params.organizationId || "org", params.storeId || "store"]
     .map((value) => encodeURIComponent(String(value)))
     .join(":");
-  const pagesKey = normalizeVisualAnalysisPages(params.pages).join(",");
+  const pagesKey = normalizeVisualAnalysisPageList(params.pages).join(",");
   const fileKey = [params.file.name, params.file.size, params.file.lastModified]
     .map((value) => encodeURIComponent(String(value)))
     .join(":");
@@ -885,8 +887,8 @@ function isVisualAnalysisCacheValid(
   if (value.file?.name !== params.file.name) return false;
   if (value.file?.size !== params.file.size) return false;
   if (value.file?.lastModified !== params.file.lastModified) return false;
-  const expectedPages = normalizeVisualAnalysisPages(params.pages).join(",");
-  const cachedPages = normalizeVisualAnalysisPages(value.pages ?? []).join(",");
+  const expectedPages = normalizeVisualAnalysisPageList(params.pages).join(",");
+  const cachedPages = normalizeVisualAnalysisPageList(value.pages ?? []).join(",");
   if (!expectedPages || cachedPages !== expectedPages) return false;
   return Boolean(value.visualDocumentMapResult?.ok || value.visualEvidenceResult?.ok);
 }
@@ -963,7 +965,7 @@ function writeVisualAnalysisCache(
 ) {
   const storage = getVisualAnalysisStorage();
   if (!storage) return;
-  const pages = normalizeVisualAnalysisPages(params.pages);
+  const pages = normalizeVisualAnalysisPageList(params.pages);
   if (pages.length === 0) return;
 
   const value: PersistedVisualAnalysisCache = {
@@ -1417,6 +1419,49 @@ function summarizeVisualEvidencePages(result: VisualCatalogDocumentScanResponse 
       hasMoreCodes: codes.length > 8,
     };
   });
+}
+function getAnalyzedVisualEvidencePages(result: VisualCatalogDocumentScanResponse | null) {
+  if (!result?.ok) return [];
+  return normalizeVisualAnalysisPageList(result.pageEvidence.map((page) => page.pageNumber));
+}
+function getNextVisualRecommendedPagesBatch(
+  mapResult: VisualCatalogDocumentMapResponse | null,
+  evidenceResult: VisualCatalogDocumentScanResponse | null
+) {
+  if (!mapResult?.ok) return [];
+  const analyzedPages = new Set(getAnalyzedVisualEvidencePages(evidenceResult));
+  return normalizeVisualAnalysisPages(
+    mapResult.recommendedPages.filter((pageNumber) => !analyzedPages.has(pageNumber))
+  ).slice(0, 5);
+}
+function mergeVisualEvidenceResults(
+  current: VisualCatalogDocumentScanResponse | null,
+  incoming: Extract<VisualCatalogDocumentScanResponse, { ok: true }>
+): Extract<VisualCatalogDocumentScanResponse, { ok: true }> {
+  if (!current?.ok) return incoming;
+
+  type VisualCatalogDocumentScanSuccess = Extract<VisualCatalogDocumentScanResponse, { ok: true }>;
+  const pageEvidenceByNumber = new Map<number, VisualCatalogDocumentScanSuccess["pageEvidence"][number]>();
+  for (const page of current.pageEvidence) {
+    pageEvidenceByNumber.set(page.pageNumber, page);
+  }
+  for (const page of incoming.pageEvidence) {
+    pageEvidenceByNumber.set(page.pageNumber, page);
+  }
+
+  return {
+    ok: true,
+    fileKey: incoming.fileKey || current.fileKey,
+    requestedPages: normalizeVisualAnalysisPageList([
+      ...current.requestedPages,
+      ...incoming.requestedPages,
+      ...Array.from(pageEvidenceByNumber.keys()),
+    ]),
+    pageLimit: incoming.pageLimit || current.pageLimit,
+    model: incoming.model || current.model,
+    pageEvidence: Array.from(pageEvidenceByNumber.values()).sort((a, b) => a.pageNumber - b.pageNumber),
+    warnings: Array.from(new Set([...(current.warnings ?? []), ...(incoming.warnings ?? [])])),
+  };
 }
 function buildVisualProductCandidateId(modelKey: string) {
   return `visual-candidate-${modelKey.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
@@ -4594,6 +4639,14 @@ export default function IntelligentCatalogImportPanel({
     () => summarizeVisualEvidencePages(visualEvidenceResult),
     [visualEvidenceResult]
   );
+  const analyzedVisualEvidencePages = useMemo(
+    () => getAnalyzedVisualEvidencePages(visualEvidenceResult),
+    [visualEvidenceResult]
+  );
+  const nextVisualRecommendedPagesBatch = useMemo(
+    () => getNextVisualRecommendedPagesBatch(visualDocumentMapResult, visualEvidenceResult),
+    [visualDocumentMapResult, visualEvidenceResult]
+  );
   const intelligentImportDiagnostics = useMemo(() => {
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       return {
@@ -4663,7 +4716,7 @@ export default function IntelligentCatalogImportPanel({
   }, [selectedImagePreviews]);
 
   function restoreVisualAnalysisCache(cache: PersistedVisualAnalysisCache) {
-    const pages = normalizeVisualAnalysisPages(cache.pages);
+    const pages = normalizeVisualAnalysisPageList(cache.pages);
     const pagesInput = cache.visualEvidencePagesInput || pages.join(",");
     setVisualEvidencePagesInput(pagesInput);
     setVisualDocumentMapResult(cache.visualDocumentMapResult);
@@ -5184,6 +5237,101 @@ export default function IntelligentCatalogImportPanel({
     } catch (error) {
       console.error("[OnboardingPage] handleRunVisualEvidenceScan error:", error);
       setVisualEvidenceError("Erro inesperado ao gerar evidencias visuais.");
+      setVisualEvidenceNotice(null);
+    } finally {
+      setVisualEvidenceLoading(false);
+    }
+  }
+
+  async function handleRunNextVisualRecommendedPages() {
+    const pdfFile = intelligentImportFiles.find((file) =>
+      String(file.name || "").toLowerCase().endsWith(".pdf")
+    );
+    const requestedPages = nextVisualRecommendedPagesBatch;
+
+    if (requestedPages.length === 0) {
+      setVisualEvidenceNotice("Nao ha novas paginas sugeridas pelo mapa para analisar agora.");
+      setVisualEvidenceError(null);
+      return;
+    }
+    if (!pdfFile) {
+      setVisualEvidenceError("Selecione novamente o PDF para analisar novas paginas sugeridas.");
+      return;
+    }
+
+    const cacheKey = buildVisualEvidenceSessionCacheKey(pdfFile, requestedPages);
+    const cachedResult =
+      visualEvidenceSessionCache[cacheKey] ??
+      readVisualAnalysisCache({
+        organizationId,
+        storeId,
+        file: getVisualAnalysisFileMeta(pdfFile),
+        pages: requestedPages,
+      })?.visualEvidenceResult;
+
+    if (cachedResult?.ok) {
+      const mergedResult = mergeVisualEvidenceResults(visualEvidenceResult, cachedResult);
+      setVisualEvidenceResult(mergedResult);
+      setVisualEvidencePagesInput(mergedResult.requestedPages.join(","));
+      setVisualEvidenceError(null);
+      setVisualEvidenceNotice("Paginas sugeridas reaproveitadas do cache. Nenhuma nova chamada de API foi feita.");
+      setVisualEvidenceSessionCache((current) => ({
+        ...current,
+        [cacheKey]: cachedResult,
+        [buildVisualEvidenceSessionCacheKey(pdfFile, mergedResult.requestedPages)]: mergedResult,
+      }));
+      persistCurrentVisualAnalysisCache({
+        pages: mergedResult.requestedPages,
+        visualEvidencePagesInput: mergedResult.requestedPages.join(","),
+        visualDocumentMapResult,
+        visualEvidenceResult: mergedResult,
+      });
+      return;
+    }
+
+    setVisualEvidenceLoading(true);
+    setVisualEvidenceError(null);
+    setVisualEvidenceNotice(`Analisando paginas sugeridas pelo mapa: ${requestedPages.join(", ")}.`);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", pdfFile);
+      formData.append("pages", requestedPages.join(","));
+
+      const response = await fetch("/api/onboarding/visual-catalog-document-scan", {
+        method: "POST",
+        body: formData,
+      });
+      const result = (await response.json()) as VisualCatalogDocumentScanResponse;
+
+      if (!response.ok || !result.ok) {
+        setVisualEvidenceError(
+          !result.ok ? result.message : "Falha ao analisar as proximas paginas sugeridas."
+        );
+        setVisualEvidenceNotice(null);
+        return;
+      }
+
+      const mergedResult = mergeVisualEvidenceResults(visualEvidenceResult, result);
+      setVisualEvidenceResult(mergedResult);
+      setVisualEvidencePagesInput(mergedResult.requestedPages.join(","));
+      setVisualEvidenceSessionCache((current) => ({
+        ...current,
+        [cacheKey]: result,
+        [buildVisualEvidenceSessionCacheKey(pdfFile, mergedResult.requestedPages)]: mergedResult,
+      }));
+      persistCurrentVisualAnalysisCache({
+        pages: mergedResult.requestedPages,
+        visualEvidencePagesInput: mergedResult.requestedPages.join(","),
+        visualDocumentMapResult,
+        visualEvidenceResult: mergedResult,
+      });
+      setVisualEvidenceNotice(
+        `Paginas sugeridas analisadas: ${requestedPages.join(", ")}. Resultado anterior preservado.`
+      );
+    } catch (error) {
+      console.error("[OnboardingPage] handleRunNextVisualRecommendedPages error:", error);
+      setVisualEvidenceError("Erro inesperado ao analisar as proximas paginas sugeridas.");
       setVisualEvidenceNotice(null);
     } finally {
       setVisualEvidenceLoading(false);
@@ -5857,14 +6005,28 @@ async function handleSaveImportedItemsToCatalog() {
                     onChange={async (e) => {
                       const input = e.currentTarget;
                       const selectedFiles = Array.from(input.files ?? []) as File[];
+                      const keepsCurrentVisualAnalysis =
+                        Boolean(visualEvidenceResult?.ok || visualDocumentMapResult?.ok) &&
+                        Boolean(
+                          visualPdfFileMeta &&
+                            selectedFiles.some(
+                              (file) =>
+                                String(file.name || "").toLowerCase().endsWith(".pdf") &&
+                                file.name === visualPdfFileMeta.name &&
+                                file.size === visualPdfFileMeta.size &&
+                                file.lastModified === visualPdfFileMeta.lastModified
+                            )
+                        );
                       setIntelligentImportFiles(selectedFiles);
                       setIntelligentImportSelectedFilesPreview(
                         await buildSelectedFilePreviews(selectedFiles)
                       );
                       setIntelligentImportRecovered(false);
                       setIntelligentImportError(null);
-                      setIntelligentImportSuccess(null);
-                      setIntelligentImportResult(null);
+                      if (!keepsCurrentVisualAnalysis) {
+                        setIntelligentImportSuccess(null);
+                        setIntelligentImportResult(null);
+                      }
                       if (input) {
                         input.value = "";
                       }
@@ -6383,6 +6545,37 @@ async function handleSaveImportedItemsToCatalog() {
                               <p className="mt-1 text-xs leading-5 text-violet-800">
                                 Mapa visual como apoio: recomendou {visualDocumentMapResult.recommendedPages.slice(0, 8).join(", ")}.
                               </p>
+                            ) : null}
+                            {visualDocumentMapResult?.ok ? (
+                              <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50/60 p-3">
+                                <p className="text-xs leading-5 text-violet-900">
+                                  Paginas ja analisadas:{" "}
+                                  {analyzedVisualEvidencePages.length > 0 ? analyzedVisualEvidencePages.join(", ") : "nenhuma"}
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-violet-900">
+                                  Total de paginas analisadas: {analyzedVisualEvidencePages.length}
+                                  {visualPdfTotalPages ? `/${visualPdfTotalPages}` : ""}
+                                </p>
+                                {nextVisualRecommendedPagesBatch.length > 0 ? (
+                                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleRunNextVisualRecommendedPages()}
+                                      disabled={disabled || visualEvidenceLoading || visualDocumentMapLoading || intelligentImportLoading}
+                                      className="rounded-lg border border-violet-200 bg-white px-3 py-1.5 text-xs font-medium text-violet-950 disabled:opacity-60"
+                                    >
+                                      Analisar proximas paginas sugeridas
+                                    </button>
+                                    <p className="text-xs leading-5 text-violet-800">
+                                      Proximas paginas: {nextVisualRecommendedPagesBatch.join(", ")}. Analisa ate mais 5 paginas recomendadas pelo mapa. Pode consumir API.
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <p className="mt-2 text-xs leading-5 text-violet-800">
+                                    Nao ha novas paginas sugeridas pelo mapa para analisar agora.
+                                  </p>
+                                )}
+                              </div>
                             ) : null}
                             {visualDocumentMapError ? (
                               <p className="mt-2 text-sm text-amber-700">{visualDocumentMapError}</p>
