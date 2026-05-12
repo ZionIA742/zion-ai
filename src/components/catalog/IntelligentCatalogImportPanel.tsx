@@ -138,6 +138,7 @@ type EditableVisualReviewItem = {
   conflicts: VisualDocumentAnalysis["consolidatedReviewCandidates"][number]["conflicts"];
   fieldSources: VisualDocumentAnalysis["consolidatedReviewCandidates"][number]["fieldSources"];
   dirty: boolean;
+  saved: boolean;
   originalCandidate: VisualDocumentAnalysis["consolidatedReviewCandidates"][number];
 };
 type VisualReviewSavePreviewItem = {
@@ -451,6 +452,7 @@ function buildEditableVisualReviewItemsFromCandidates(
       conflicts: candidate.conflicts,
       fieldSources: candidate.fieldSources,
       dirty: false,
+      saved: false,
       originalCandidate: candidate,
     };
     return cleanupEditableVisualReviewMissingFields(item);
@@ -474,6 +476,87 @@ function buildVisualReviewSavePreviewItem(item: EditableVisualReviewItem): Visua
   }
 
   return { item, blockers, warnings };
+}
+function mapVisualReviewCategoryToCatalogCategory(
+  category: EditableVisualReviewItem["category"]
+): ImportedCatalogCategory | null {
+  if (category === "chemical") return "quimicos";
+  if (category === "accessory") return "acessorios";
+  if (category === "other") return "outros";
+  return null;
+}
+function parseVisualReviewPriceCents(value: string) {
+  const parsed = parseImportedDecimal(value);
+  return parsed == null ? null : Math.max(0, Math.round(parsed * 100));
+}
+function parseVisualReviewStockQuantity(value: string) {
+  const parsed = parseImportedDecimal(value);
+  return parsed == null ? 0 : Math.max(0, Math.round(parsed));
+}
+function parseVisualReviewPoolMetrics(item: EditableVisualReviewItem) {
+  const source = normalizeImportedPoolMetricSource(
+    [item.dimensionsText, item.material, item.description].filter(Boolean).join(" ")
+  );
+  const numbers = (source.match(/\d+(?:[\.,]\d+)?/g) ?? [])
+    .map((value) => parseImportedDecimal(value))
+    .filter((value): value is number => value != null && value > 0);
+  const width = numbers[0] ?? null;
+  const length = numbers[1] ?? null;
+  const depth = numbers[2] ?? null;
+  const capacityMatch = source.match(/(\d{3,}(?:[\.,]\d+)?)\s*(?:l|litros?)\b/i);
+  const capacity = capacityMatch ? parseImportedDecimal(capacityMatch[1]) : null;
+  const materialSource = normalizeImportedLoose([item.material, item.description].join(" "));
+  const shapeSource = normalizeImportedLoose([item.name, item.dimensionsText, item.description].join(" "));
+  let material = item.material.trim() || "fibra";
+  if (!item.material.trim()) {
+    if (materialSource.includes("spa")) material = "spa";
+    else if (materialSource.includes("vinil")) material = "vinil";
+    else if (materialSource.includes("alvenaria")) material = "alvenaria";
+    else if (materialSource.includes("pastilha")) material = "pastilha";
+  }
+  let shape = "retangular";
+  if (shapeSource.includes("prainha")) shape = "com prainha";
+  else if (shapeSource.includes("organica")) shape = "organica";
+  else if (shapeSource.includes("diam") || shapeSource.includes("redonda")) shape = "redonda";
+  else if (shapeSource.includes("oval")) shape = "oval";
+  else if (shapeSource.includes("raia")) shape = "raia";
+
+  return {
+    width_m: width,
+    length_m: length,
+    depth_m: depth,
+    max_capacity_l: capacity ? Math.round(capacity) : null,
+    material,
+    shape,
+  };
+}
+function buildVisualReviewItemMetadata(
+  item: EditableVisualReviewItem,
+  category: ImportedCatalogCategory
+) {
+  return {
+    source: "visual_catalog_review",
+    categoria: category,
+    visual_candidate_id: item.candidateId,
+    visual_entity_id: item.entityId,
+    source_pages: item.sourcePages,
+    confidence: item.confidence,
+    dimensions_text: item.dimensionsText,
+    dimensions_list: item.dimensionsList,
+    material: item.material || null,
+    field_sources: item.fieldSources,
+    conflicts: item.conflicts,
+    original_missing_fields: item.originalCandidate.missingFields,
+    review_state: item.reviewState,
+  };
+}
+function buildVisualReviewIdentityKey(item: EditableVisualReviewItem) {
+  const normalizedName = normalizeImportedLoose(item.name);
+  const normalizedSku = normalizeImportedLoose(item.sku || item.code);
+  if (item.category === "pool") return `pool::${normalizedName}`;
+  const category = mapVisualReviewCategoryToCatalogCategory(item.category) ?? "outros";
+  if (normalizedSku) return `catalog::${category}::sku::${normalizedSku}`;
+  return `catalog::${category}::name::${normalizedName}`;
 }
 type IntelligentImportSelectedFilePreview = {
   name: string;
@@ -5797,6 +5880,234 @@ export default function IntelligentCatalogImportPanel({
     if (metadataError) throw metadataError;
   }
   
+  async function handleSaveApprovedVisualReviewItemsToCatalog() {
+    if (!organizationId || !storeId) {
+      setParentError("Nao foi possivel identificar a organizacao e a loja ativa.");
+      return;
+    }
+
+    const approvedReadyItems = visualReviewSavePreview.readyItems
+      .map((entry) => entry.item)
+      .filter((item) => item.reviewState === "approved" && item.name.trim() && item.category);
+
+    if (approvedReadyItems.length === 0) {
+      setParentError("Aprove ao menos um item completo antes de salvar no catalogo.");
+      return;
+    }
+
+    setSavingImportedCatalog(true);
+    setParentError(null);
+    setParentSuccess(null);
+
+    let savedPools = 0;
+    let savedAcessorios = 0;
+    let savedQuimicos = 0;
+    let savedOutros = 0;
+    const savedItemIds = new Set<string>();
+    const savedIdentityKeys = new Set<string>();
+    const itemErrors: string[] = [];
+
+    try {
+      for (const item of approvedReadyItems) {
+        try {
+          const identityKey = buildVisualReviewIdentityKey(item);
+          if (savedIdentityKeys.has(identityKey)) continue;
+
+          const itemName = item.name.trim();
+          if (!itemName) throw new Error("Item aprovado sem nome.");
+
+          if (item.category === "pool") {
+            const metrics = parseVisualReviewPoolMetrics(item);
+            if (!metrics.width_m || !metrics.length_m || !metrics.depth_m) {
+              throw new Error("Piscina aprovada sem medidas suficientes.");
+            }
+
+            const price = parseImportedDecimal(item.price);
+            const stockQuantity = parseVisualReviewStockQuantity(item.stock);
+            const description = [
+              item.description.trim(),
+              item.dimensionsText.trim() ? `Medidas revisadas: ${item.dimensionsText.trim()}` : "",
+              item.sourcePages.length > 0 ? `Paginas de origem: ${item.sourcePages.join(", ")}` : "",
+              "Origem: revisao visual do catalogo.",
+            ].filter(Boolean).join("\n");
+            const maxCapacity =
+              metrics.max_capacity_l ?? Math.round(metrics.width_m * metrics.length_m * metrics.depth_m * 1000);
+            const poolPayload = {
+              width_m: metrics.width_m,
+              length_m: metrics.length_m,
+              depth_m: metrics.depth_m,
+              shape: metrics.shape,
+              material: metrics.material,
+              max_capacity_l: maxCapacity,
+              weight_kg: null,
+              price: price ?? null,
+              description: description || null,
+              is_active: item.isActive,
+              track_stock: true,
+              stock_quantity: stockQuantity,
+            };
+
+            const { data: existingPool } = await supabase
+              .from("pools")
+              .select("id")
+              .eq("organization_id", organizationId)
+              .eq("store_id", storeId)
+              .eq("name", itemName)
+              .maybeSingle();
+
+            let persistedPoolId: string | null = existingPool?.id ?? null;
+            if (existingPool?.id) {
+              const { error } = await supabase
+                .from("pools")
+                .update(poolPayload)
+                .eq("id", existingPool.id)
+                .eq("organization_id", organizationId)
+                .eq("store_id", storeId);
+              if (error) throw error;
+            } else {
+              const { data: createdPool, error } = await supabase
+                .from("pools")
+                .insert({
+                  organization_id: organizationId,
+                  store_id: storeId,
+                  name: itemName,
+                  ...poolPayload,
+                })
+                .select("id")
+                .single();
+              if (error) throw error;
+              persistedPoolId = createdPool.id;
+            }
+
+            if (!persistedPoolId) throw new Error("Falha ao persistir a piscina revisada.");
+            savedPools += 1;
+            savedIdentityKeys.add(identityKey);
+            savedItemIds.add(item.id);
+            continue;
+          }
+
+          const category = mapVisualReviewCategoryToCatalogCategory(item.category);
+          if (!category) throw new Error("Categoria nao escolhida.");
+
+          const cleanSku = String(item.sku || item.code || "").trim();
+          const sku = cleanSku || null;
+          const metadata = buildVisualReviewItemMetadata(item, category);
+          const priceCents = parseVisualReviewPriceCents(item.price);
+          const stockQuantity = parseVisualReviewStockQuantity(item.stock);
+          const description = item.description.trim() || null;
+
+          let existingCatalogItem: ExistingCatalogItemRow | null = null;
+          if (sku) {
+            const { data } = await supabase
+              .from("store_catalog_items")
+              .select("id, sku, price_cents, stock_quantity, description, metadata")
+              .eq("organization_id", organizationId)
+              .eq("store_id", storeId)
+              .eq("sku", sku)
+              .maybeSingle();
+            existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
+          }
+
+          if (!existingCatalogItem) {
+            const { data } = await supabase
+              .from("store_catalog_items")
+              .select("id, sku, price_cents, stock_quantity, description, metadata")
+              .eq("organization_id", organizationId)
+              .eq("store_id", storeId)
+              .eq("name", itemName)
+              .contains("metadata", { categoria: category })
+              .maybeSingle();
+            existingCatalogItem = (data as ExistingCatalogItemRow | null) ?? null;
+          }
+
+          let persistedCatalogItemId: string | null = existingCatalogItem?.id ?? null;
+          if (existingCatalogItem?.id) {
+            const mergedMetadata = {
+              ...(existingCatalogItem.metadata ?? {}),
+              ...metadata,
+            } as Record<string, unknown>;
+            const { error } = await supabase
+              .from("store_catalog_items")
+              .update({
+                sku,
+                name: itemName,
+                description: description ?? existingCatalogItem.description ?? null,
+                price_cents: priceCents ?? existingCatalogItem.price_cents ?? null,
+                currency: "BRL",
+                is_active: item.isActive,
+                track_stock: true,
+                stock_quantity: item.stock.trim() ? stockQuantity : existingCatalogItem.stock_quantity ?? 0,
+                metadata: mergedMetadata,
+              })
+              .eq("id", existingCatalogItem.id)
+              .eq("organization_id", organizationId)
+              .eq("store_id", storeId);
+            if (error) throw error;
+          } else {
+            const { data: createdItem, error } = await supabase
+              .from("store_catalog_items")
+              .insert({
+                organization_id: organizationId,
+                store_id: storeId,
+                sku,
+                name: itemName,
+                description,
+                price_cents: priceCents,
+                currency: "BRL",
+                is_active: item.isActive,
+                track_stock: true,
+                stock_quantity: stockQuantity,
+                metadata,
+              })
+              .select("id")
+              .single();
+            if (error) throw error;
+            persistedCatalogItemId = createdItem.id;
+          }
+
+          if (!persistedCatalogItemId) throw new Error("Falha ao persistir o item revisado.");
+          if (category === "quimicos") savedQuimicos += 1;
+          else if (category === "acessorios") savedAcessorios += 1;
+          else savedOutros += 1;
+          savedIdentityKeys.add(identityKey);
+          savedItemIds.add(item.id);
+        } catch (itemError) {
+          console.error("[OnboardingPage] handleSaveApprovedVisualReviewItemsToCatalog item error:", itemError);
+          const label = item.name || item.sku || item.code || "Item sem nome";
+          const reason = itemError instanceof Error ? itemError.message : "Erro inesperado.";
+          itemErrors.push(`${label}: ${reason}`);
+        }
+      }
+
+      const totalSaved = savedPools + savedAcessorios + savedQuimicos + savedOutros;
+      if (totalSaved === 0) {
+        setParentError(
+          itemErrors.length > 0
+            ? `Nenhum item foi salvo. Primeiras falhas: ${itemErrors.slice(0, 5).join(" | ")}`
+            : "Nenhum item aprovado ficou pronto para salvar."
+        );
+        return;
+      }
+
+      setVisualReviewItems((current) =>
+        current.map((item) =>
+          savedItemIds.has(item.id) ? { ...item, saved: true, dirty: false } : item
+        )
+      );
+      setParentSuccess(
+        `${totalSaved} item(ns) salvos. Piscinas: ${savedPools}. Quimicos: ${savedQuimicos}. Acessorios: ${savedAcessorios}. Outros: ${savedOutros}.` +
+          (itemErrors.length > 0 ? ` ${itemErrors.length} falharam: ${itemErrors.slice(0, 5).join(" | ")}` : "")
+      );
+      await onSaved?.();
+      void afterSaveBehavior?.();
+    } catch (error) {
+      console.error("[OnboardingPage] handleSaveApprovedVisualReviewItemsToCatalog error:", error);
+      setParentError(error instanceof Error ? error.message : "Erro ao salvar itens aprovados.");
+    } finally {
+      setSavingImportedCatalog(false);
+    }
+  }
+
 async function handleSaveImportedItemsToCatalog() {
     if (!organizationId || !storeId) {
       setParentError("Não foi possível identificar a organização e a loja ativa.");
@@ -7242,7 +7553,7 @@ async function handleSaveImportedItemsToCatalog() {
                                             ) : null}
                                             <div className="mt-3 flex flex-wrap items-center gap-2">
                                               <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
-                                                {statusLabel}
+                                                {item.saved ? "Salvo" : statusLabel}
                                               </span>
                                               <button
                                                 type="button"
@@ -7297,8 +7608,20 @@ async function handleSaveImportedItemsToCatalog() {
                                       </p>
                                       {visualReviewSavePreview.readyItems.length > 0 ? (
                                         <p className="mt-1 text-emerald-900">
-                                          Na proxima etapa, estes itens poderao ser salvos no catalogo.
+                                          Estes itens aprovados ja podem ser salvos no catalogo.
                                         </p>
+                                      ) : null}
+                                      {visualReviewSavePreview.readyItems.length > 0 ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleSaveApprovedVisualReviewItemsToCatalog()}
+                                          disabled={disabled || savingImportedCatalog || intelligentImportLoading}
+                                          className="mt-3 rounded-lg bg-black px-4 py-2 text-xs font-medium text-white disabled:opacity-60"
+                                        >
+                                          {savingImportedCatalog
+                                            ? "Salvando itens aprovados..."
+                                            : "Salvar itens aprovados no catalogo"}
+                                        </button>
                                       ) : null}
                                       {visualReviewSavePreview.blockedItems.length > 0 ? (
                                         <div className="mt-2 rounded-lg bg-amber-50 p-2 text-amber-900 ring-1 ring-amber-100">
