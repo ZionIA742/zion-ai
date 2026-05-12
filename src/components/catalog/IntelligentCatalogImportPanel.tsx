@@ -140,6 +140,11 @@ type EditableVisualReviewItem = {
   dirty: boolean;
   originalCandidate: VisualDocumentAnalysis["consolidatedReviewCandidates"][number];
 };
+type VisualReviewSavePreviewItem = {
+  item: EditableVisualReviewItem;
+  blockers: string[];
+  warnings: string[];
+};
 type VisualCatalogDocumentScanResponse =
   | {
       ok: true;
@@ -450,6 +455,25 @@ function buildEditableVisualReviewItemsFromCandidates(
     };
     return cleanupEditableVisualReviewMissingFields(item);
   });
+}
+function buildVisualReviewSavePreviewItem(item: EditableVisualReviewItem): VisualReviewSavePreviewItem {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+
+  if (item.reviewState !== "approved") {
+    blockers.push("Item nao aprovado");
+  }
+  if (!item.name.trim()) {
+    blockers.push("Nome vazio");
+  }
+  if (!item.category) {
+    blockers.push("Categoria nao escolhida");
+  }
+  if (!item.dimensionsText.trim()) {
+    warnings.push(item.category === "pool" ? "Piscina sem medidas revisadas" : "Medidas vazias");
+  }
+
+  return { item, blockers, warnings };
 }
 type IntelligentImportSelectedFilePreview = {
   name: string;
@@ -4766,6 +4790,16 @@ export default function IntelligentCatalogImportPanel({
     }),
     [visualReviewItems]
   );
+  const visualReviewSavePreview = useMemo(() => {
+    const approvedItems = visualReviewItems.filter((item) => item.reviewState === "approved");
+    const reviewedItems = approvedItems.map(buildVisualReviewSavePreviewItem);
+    return {
+      approvedItems,
+      readyItems: reviewedItems.filter((entry) => entry.blockers.length === 0),
+      blockedItems: reviewedItems.filter((entry) => entry.blockers.length > 0),
+      reviewedItems,
+    };
+  }, [visualReviewItems]);
   const visualEvidencePageSummary = useMemo(
     () => summarizeVisualEvidencePages(visualEvidenceResult),
     [visualEvidenceResult]
@@ -7245,6 +7279,45 @@ async function handleSaveImportedItemsToCatalog() {
                                     <p className="mt-3 text-xs leading-5 text-emerald-900">
                                       Salvar no catalogo sera habilitado depois da revisao.
                                     </p>
+                                    <div className="mt-3 rounded-lg bg-white p-3 text-xs leading-5 text-emerald-950 ring-1 ring-emerald-100">
+                                      <p className="text-sm font-semibold">Resumo para salvar depois</p>
+                                      <div className="mt-2 flex flex-wrap gap-2">
+                                        <span className="rounded-full bg-emerald-50 px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-100">
+                                          {visualReviewSavePreview.approvedItems.length} itens aprovados
+                                        </span>
+                                        <span className="rounded-full bg-emerald-50 px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-100">
+                                          {visualReviewSavePreview.readyItems.length} prontos para salvar
+                                        </span>
+                                        <span className="rounded-full bg-amber-50 px-3 py-1 font-medium text-amber-800 ring-1 ring-amber-100">
+                                          {visualReviewSavePreview.blockedItems.length} precisam de ajuste
+                                        </span>
+                                      </div>
+                                      <p className="mt-2 text-emerald-900">
+                                        Nada foi salvo ainda.
+                                      </p>
+                                      {visualReviewSavePreview.readyItems.length > 0 ? (
+                                        <p className="mt-1 text-emerald-900">
+                                          Na proxima etapa, estes itens poderao ser salvos no catalogo.
+                                        </p>
+                                      ) : null}
+                                      {visualReviewSavePreview.blockedItems.length > 0 ? (
+                                        <div className="mt-2 rounded-lg bg-amber-50 p-2 text-amber-900 ring-1 ring-amber-100">
+                                          <p className="font-medium">Itens aprovados que precisam de ajuste:</p>
+                                          {visualReviewSavePreview.blockedItems.slice(0, 5).map((entry) => (
+                                            <p key={`visual-review-blocked-${entry.item.id}`}>
+                                              {entry.item.name || entry.item.sku || entry.item.code || "Item sem nome"}:{" "}
+                                              {entry.blockers.join(", ")}
+                                              {entry.warnings.length > 0 ? ` (${entry.warnings.join(", ")})` : ""}
+                                            </p>
+                                          ))}
+                                          {visualReviewSavePreview.blockedItems.length > 5 ? (
+                                            <p>
+                                              Mais {visualReviewSavePreview.blockedItems.length - 5} item(ns) precisam de ajuste.
+                                            </p>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                    </div>
                                   </div>
                                 ) : null}
                                 {visualProductCandidates.length > 0 ? (
