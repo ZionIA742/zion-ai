@@ -4666,7 +4666,7 @@ function SectionTitle({
   hint?: string;
 }) {
   return (
-    <div className="mb-3">
+    <div className="mb-2">
       <h2 className="text-sm font-medium text-gray-900">{title}</h2>
       {hint ? <p className="mt-1 text-sm text-gray-500">{hint}</p> : null}
     </div>
@@ -5010,7 +5010,7 @@ export default function IntelligentCatalogImportPanel({
     setVisualDocumentMapError(null);
     setVisualEvidenceResult(cache.visualEvidenceResult);
     setVisualEvidenceError(null);
-    setVisualEvidenceNotice("Analise visual restaurada. Nenhuma nova chamada de API foi feita.");
+    setVisualEvidenceNotice(null);
     if (!intelligentImportResult?.ok) {
       setIntelligentImportResult(
         buildRestoredVisualPdfImportResult({
@@ -6713,12 +6713,37 @@ async function handleSaveImportedItemsToCatalog() {
   ]);
   return (
     <>
-              <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4">
+              <style>{`
+                section:has([data-zion-intelligent-import-panel]) > div:first-child p {
+                  display: none;
+                }
+              `}</style>
+              <div data-zion-intelligent-import-panel className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-2.5">
                 <SectionTitle
                   title="Importar catálogo, piscinas e materiais da loja"
-                  hint="Envie fotos, Excel básico, Word básico ou PDF básico para a IA começar a entender os produtos, piscinas, acessórios e materiais mais comuns da loja. Nesta fase ela ainda mostra uma prévia da leitura antes da parte de salvamento real."
+                  hint=""
                 />
-                <div className="space-y-3">
+                <div className="space-y-2">
+                  {intelligentImportResult?.ok ? (
+                    <div className="flex flex-col gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 md:flex-row md:items-center md:justify-between">
+                      <p className="min-w-0 truncate">
+                        <span className="font-medium text-gray-900">Arquivo analisado:</span>{" "}
+                        {visibleIntelligentImportFiles[0]?.name || "catalogo importado"}
+                        {visibleIntelligentImportFiles.length > 1
+                          ? ` +${visibleIntelligentImportFiles.length - 1}`
+                          : ""}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={clearIntelligentImportState}
+                        disabled={disabled || intelligentImportLoading}
+                        className="shrink-0 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-100 disabled:opacity-60"
+                      >
+                        Trocar arquivo / limpar análise
+                      </button>
+                    </div>
+                  ) : (
+                    <>
                   <input
                     type="file"
                     multiple
@@ -6756,44 +6781,35 @@ async function handleSaveImportedItemsToCatalog() {
                         input.value = "";
                       }
                     }}
-                    className="block w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-700 outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
+                    className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none file:mr-3 file:rounded-md file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />
-                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700">
+                  <div className="hidden">
                     Você pode enviar fotos do catálogo, imagens de produtos, tabelas simples em foto, PDF, Word, Excel e PowerPoint. As imagens selecionadas aparecem em pré-visualização logo abaixo para facilitar a conferência antes do teste.
                   </div>
                   {visibleIntelligentImportFiles.length > 0 ? (
-                    <div className="rounded-xl border border-gray-200 bg-white p-3">
-                      <p className="text-sm font-semibold text-gray-900">
-                        Arquivos selecionados ou restaurados (mostrando até 10 de {visibleIntelligentImportFiles.length})
-                      </p>
-                      <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
-                        {visibleIntelligentImportFiles.slice(0, 10).map((file, index) => (
-                          <div
-                            key={`${file.name}-${file.size}-${file.lastModified}`}
-                            className={cx(
-                              "grid gap-1 px-3 py-2 text-sm text-gray-700 md:grid-cols-[minmax(0,1fr)_auto] md:items-center md:gap-3",
-                              index > 0 ? "border-t border-gray-200" : ""
-                            )}
-                          >
-                            <span className="truncate font-medium text-gray-900">{file.name}</span>
-                            <span className="text-xs text-gray-500 md:text-right">
-                              {file.type || "tipo não informado"} • {formatFileSize(file.size)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                    <div className="flex min-w-0 flex-col gap-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 md:flex-row md:items-center md:justify-between">
+                      <span className="truncate font-medium text-gray-900">
+                        {visibleIntelligentImportFiles[0]?.name}
+                        {visibleIntelligentImportFiles.length > 1
+                          ? ` +${visibleIntelligentImportFiles.length - 1}`
+                          : ""}
+                      </span>
+                      <span className="text-xs text-gray-500 md:text-right">
+                        {visibleIntelligentImportFiles[0]?.type || "tipo não informado"} •{" "}
+                        {formatFileSize(visibleIntelligentImportFiles[0]?.size ?? 0)}
+                      </span>
                     </div>
                   ) : null}
                   {selectedImagePreviews.length > 0 ? (
-                    <div className="rounded-xl border border-gray-200 bg-white p-3">
-                      <p className="text-sm font-semibold text-gray-900">
-                        Pré-visualização das fotos selecionadas (mostrando até 10 de {selectedImagePreviews.length})
-                      </p>
-                      <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                    <details className="rounded-lg border border-gray-200 bg-white p-2">
+                      <summary className="cursor-pointer text-sm font-semibold text-gray-900">
+                        Pré-visualização das fotos ({selectedImagePreviews.length})
+                      </summary>
+                      <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4">
                         {selectedImagePreviews.slice(0, 10).map((preview) => (
                           <div
                             key={preview.name}
-                            className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
+                            className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
                           >
                             <div className="aspect-square w-full bg-white">
                               <img
@@ -6810,30 +6826,32 @@ async function handleSaveImportedItemsToCatalog() {
                           </div>
                         ))}
                       </div>
-                    </div>
+                    </details>
                   ) : null}
                   <div className="flex flex-col gap-3 md:flex-row md:items-center">
                     <button
                       type="button"
                       onClick={() => void handleRunIntelligentImport()}
                       disabled={disabled || intelligentImportLoading}
-                      className="rounded-xl bg-black px-5 py-2.5 text-sm font-medium text-white disabled:opacity-60"
+                      className="rounded-lg bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
                     >
                       {intelligentImportLoading
-                        ? "Processando importação..."
-                        : "Testar importação inteligente"}
+                        ? "Analisando catálogo..."
+                        : "Analisar catálogo"}
                     </button>
                     {visibleIntelligentImportFiles.length > 0 ? (
                       <button
                         type="button"
                         onClick={clearIntelligentImportState}
                         disabled={disabled || intelligentImportLoading}
-                        className="rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:opacity-60"
+                        className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:opacity-60"
                       >
                         Limpar arquivos e análise
                       </button>
                     ) : null}
                   </div>
+                    </>
+                  )}
                   {intelligentImportError ? (
                     <InfoBlock
                       title="Falha na importação inteligente"
@@ -6848,8 +6866,8 @@ async function handleSaveImportedItemsToCatalog() {
                     />
                   ) : null}
                   {intelligentImportResult?.ok ? (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+                    <div className="space-y-3">
+                      <div className="hidden">
                         <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
                           <p className="text-xs text-gray-500">Arquivos enviados</p>
                           <p className="mt-1 text-lg font-semibold text-gray-900">
@@ -6881,6 +6899,11 @@ async function handleSaveImportedItemsToCatalog() {
                           </p>
                         </div>
                       </div>
+                      <details className="rounded-xl border border-sky-200 bg-sky-50 p-3">
+                        <summary className="cursor-pointer text-sm font-semibold text-sky-950">
+                          Ferramentas avancadas e diagnostico
+                        </summary>
+                        <div className="mt-3">
                       <div className="rounded-xl border border-sky-200 bg-sky-50 p-3">
                         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
                           <div>
@@ -6956,16 +6979,301 @@ async function handleSaveImportedItemsToCatalog() {
                         ) : null}
                       </div>
                       {hasVisualPdfImportResult ? (
+                        <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3">
+                          <div className="grid gap-2 md:grid-cols-[160px_auto] md:items-end">
+                            <label className="block">
+                              <span className="text-xs font-medium text-violet-900">
+                                Pagina para analisar
+                              </span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={visualPdfTotalPages ?? undefined}
+                                value={visualCatalogPage}
+                                onChange={(event) => {
+                                  const parsed = Number(event.target.value);
+                                  const positivePage = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+                                  setVisualCatalogPage(
+                                    visualPdfTotalPages
+                                      ? Math.min(positivePage, visualPdfTotalPages)
+                                      : positivePage
+                                  );
+                                }}
+                                className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => void handleRunVisualCatalogBase({ page: visualCatalogPage })}
+                              disabled={disabled || visualCatalogLoading || intelligentImportLoading}
+                              className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                            >
+                              {visualCatalogLoading ? "Analisando..." : "Analisar esta pagina"}
+                            </button>
+                          </div>
+                          {visualCatalogLoading ? (
+                            <p className="mt-3 text-sm text-violet-900">
+                              Analisando a pagina {visualCatalogPage}...
+                            </p>
+                          ) : null}
+                          {visualCatalogError ? (
+                            <p className="mt-3 text-sm text-red-700">{visualCatalogError}</p>
+                          ) : null}
+                          {visualCatalogNotice ? (
+                            <p className="mt-3 text-sm text-violet-900">{visualCatalogNotice}</p>
+                          ) : null}
+                          {visualCatalogResult?.ok && editableVisualCatalogDrafts.length > 0 ? (
+                            <div className="mt-3 space-y-3">
+                              <p className="text-sm font-medium text-violet-950">
+                                Rascunhos gerados por imagem. Revise e ajuste os dados antes de uma etapa futura de salvamento.
+                              </p>
+                              {editableVisualCatalogDrafts.map((draft) => (
+                                <div
+                                  key={draft.id}
+                                  className="rounded-lg bg-white p-3 ring-1 ring-violet-100"
+                                >
+                                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                                    <div className="min-w-0">
+                                      <p className="break-words text-sm font-semibold text-gray-900">
+                                        {draft.name || "Item visual sem nome"}
+                                      </p>
+                                      <p className="mt-1 text-xs text-gray-600">
+                                        Categoria: {draft.category || "a revisar"} - Pagina {draft.pageNumber}
+                                      </p>
+                                    </div>
+                                    <span className="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-800 ring-1 ring-violet-100">
+                                      {Math.round((draft.confidence || 0) * 100)}% confianca
+                                    </span>
+                                  </div>
+                                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Nome</span>
+                                      <input
+                                        type="text"
+                                        value={draft.name}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, { name: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Categoria</span>
+                                      <select
+                                        value={draft.category}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, {
+                                            category: event.target.value as EditableVisualCatalogDraft["category"],
+                                          })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                      >
+                                        <option value="">A revisar</option>
+                                        <option value="pool">Piscina</option>
+                                        <option value="chemical">Produto quimico</option>
+                                        <option value="accessory">Acessorio</option>
+                                        <option value="other">Outro</option>
+                                      </select>
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Medidas lidas</span>
+                                      <input
+                                        type="text"
+                                        value={draft.visualDimensionsText}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, {
+                                            visualDimensionsText: event.target.value,
+                                          })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Material</span>
+                                      <input
+                                        type="text"
+                                        value={draft.material}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, { material: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Preco</span>
+                                      <input
+                                        type="text"
+                                        value={draft.price}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, { price: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block">
+                                      <span className="text-xs font-medium text-gray-700">Estoque</span>
+                                      <input
+                                        type="text"
+                                        value={draft.stock}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, { stock: event.target.value })
+                                        }
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                    <label className="block md:col-span-2">
+                                      <span className="text-xs font-medium text-gray-700">Descricao</span>
+                                      <textarea
+                                        value={draft.description}
+                                        onChange={(event) =>
+                                          updateEditableVisualCatalogDraft(draft.id, {
+                                            description: event.target.value,
+                                          })
+                                        }
+                                        rows={2}
+                                        className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                                      />
+                                    </label>
+                                  </div>
+                                  {draft.missingFields.length > 0 ? (
+                                    <p className="mt-2 break-words text-xs leading-5 text-gray-600">
+                                      Campos faltando: {draft.missingFields.map(translateVisualMissingField).join(", ")}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {visualCatalogResult?.ok && visualCatalogResult.drafts.length === 0 && !visualCatalogLoading ? (
+                            <p className="mt-3 text-sm leading-6 text-violet-900">
+                              Ainda nao encontramos itens prontos nesta pagina. Tente outra pagina.
+                            </p>
+                          ) : null}
+                          <div className="mt-4 rounded-lg border border-violet-100 bg-violet-50/50 p-3">
+                            <p className="text-xs font-medium text-violet-900">Teste manual de evidencias</p>
+                            <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                              <label className="block min-w-0">
+                                <span className="text-xs font-medium text-violet-900">
+                                  Paginas para testar
+                                </span>
+                                <input
+                                  type="text"
+                                  value={visualEvidencePagesInput}
+                                  onChange={(event) => {
+                                    visualEvidencePagesManuallyEditedRef.current = true;
+                                    setVisualEvidencePagesInput(event.target.value);
+                                  }}
+                                  placeholder="3,4,5,12"
+                                  className="mt-1 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => void handleRunVisualEvidenceScan()}
+                                disabled={disabled || visualEvidenceLoading || intelligentImportLoading}
+                                className="rounded-lg border border-violet-200 bg-white px-4 py-2 text-sm font-medium text-violet-950 disabled:opacity-60"
+                              >
+                                {visualEvidenceLoading ? "Lendo..." : "Testar paginas"}
+                              </button>
+                            </div>
+                            <p className="mt-2 text-xs leading-5 text-violet-900">
+                              Use no maximo 5 paginas. Esta opcao existe para desenvolvimento e validacao.
+                            </p>
+                            <div className="mt-3 rounded-lg bg-white/80 p-2 text-xs leading-5 text-violet-900 ring-1 ring-violet-100">
+                              <p className="font-medium">Cobertura interna do documento</p>
+                              <p>{visualDocumentAnalysis.coverage.coverageSummary}</p>
+                              <p>Entidades detectadas: {visualDocumentAnalysis.entities.length}</p>
+                              <p>Evidencias ligadas: {visualDocumentAnalysis.fieldEvidence.length}</p>
+                              <p>
+                                Candidatos consolidados:{" "}
+                                {visualDocumentAnalysis.consolidatedReviewCandidates.length}
+                              </p>
+                              {visualDocumentAnalysis.mapOnlyHints.length > 0 ? (
+                                <p>
+                                  Sugestoes do mapa ainda sem scan detalhado: {visualDocumentAnalysis.mapOnlyHints.length}
+                                </p>
+                              ) : null}
+                              {visualDocumentAnalysis.coverage.recommendedPages.length > 0 ? (
+                                <p className="break-words">
+                                  Paginas recomendadas pelo mapa:{" "}
+                                  {visualDocumentAnalysis.coverage.recommendedPages.join(", ")}
+                                </p>
+                              ) : null}
+                              {visualDocumentAnalysis.coverage.pendingPages.length > 0 ? (
+                                <p className="break-words">
+                                  Paginas ainda sem scan detalhado:{" "}
+                                  {visualDocumentAnalysis.coverage.pendingPages.slice(0, 12).join(", ")}
+                                  {visualDocumentAnalysis.coverage.pendingPages.length > 12 ? "..." : ""}
+                                </p>
+                              ) : null}
+                              {visualDocumentAnalysis.entities.length > 0 ? (
+                                <p className="break-words">
+                                  Amostra:{" "}
+                                  {visualDocumentAnalysis.entities
+                                    .slice(0, 6)
+                                    .map((entity) =>
+                                      `${entity.sku || entity.name || entity.modelKey} (${entity.sourcePages.join(", ")})`
+                                    )
+                                    .join(" | ")}
+                                </p>
+                              ) : null}
+                              {visualDocumentAnalysis.mapOnlyHints.length > 0 ? (
+                                <p className="break-words">
+                                  Mapa:{" "}
+                                  {visualDocumentAnalysis.mapOnlyHints
+                                    .slice(0, 6)
+                                    .map((entity) =>
+                                      `${entity.sku || entity.name || entity.modelKey} (${entity.sourcePages.join(", ")})`
+                                    )
+                                    .join(" | ")}
+                                </p>
+                              ) : null}
+                              {visualEvidencePageSummary.length > 0 ? (
+                                <div className="mt-2">
+                                  <p className="font-medium">Resumo por pagina analisada:</p>
+                                  <div className="mt-1 space-y-1">
+                                    {visualEvidencePageSummary.map((page) => (
+                                      <p key={`visual-page-summary-${page.pageNumber}`} className="break-words">
+                                        Pagina {page.pageNumber} - {page.pageType} - {page.itemCount}{" "}
+                                        {page.itemCount === 1 ? "item" : "itens"}
+                                        {page.labels.length > 0
+                                          ? ` - ${page.labels.join(", ")}${page.hasMoreLabels ? "..." : ""}`
+                                          : ""}
+                                        {page.codes.length > 0
+                                          ? ` | Codigos: ${page.codes.join(", ")}${page.hasMoreCodes ? "..." : ""}`
+                                          : ""}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                              {visualLinkedEvidenceSummary.length > 0 ? (
+                                <p className="break-words">
+                                  Evidencias por entidade: {visualLinkedEvidenceSummary.join(" | ")}
+                                </p>
+                              ) : null}
+                              {visualConsolidatedCandidateSummary.length > 0 ? (
+                                <p className="break-words">
+                                  Revisao visual consolidada: {visualConsolidatedCandidateSummary.join(" | ")}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                      </div>
+                      </details>
+                      {hasVisualPdfImportResult ? (
                         <div className="rounded-xl border border-violet-200 bg-violet-50 p-3">
                           <div className="grid gap-3">
                             <div>
-                              <p className="mt-1 text-sm leading-6 text-violet-900">
+                              <p className="hidden">
                                 Este PDF e visual. O sistema vai analisar a imagem das paginas para tentar encontrar
                                 itens. Nada sera salvo sem revisao.
                               </p>
                             </div>
                           </div>
-                          <details className="mt-3 rounded-lg border border-violet-100 bg-white/70 p-3">
+                          <details className="hidden">
                             <summary className="cursor-pointer text-xs font-medium text-violet-900">
                               Ferramentas de diagnostico
                             </summary>
@@ -7250,7 +7558,7 @@ async function handleSaveImportedItemsToCatalog() {
                           </div>
                           </details>
                           <div className="mt-4 rounded-lg bg-white p-3 ring-1 ring-violet-100">
-                            <p className="mt-2 text-xs leading-5 text-violet-900">
+                            <p className="hidden">
                               Este PDF e visual. O ZION analisa automaticamente paginas importantes para montar evidencias do catalogo. Nada sera salvo sem sua revisao.
                             </p>
                             {visualEvidenceLoading ? (
@@ -7264,7 +7572,7 @@ async function handleSaveImportedItemsToCatalog() {
                               </p>
                             ) : null}
                             {visualDocumentMapResult?.ok && visualDocumentMapResult.recommendedPages.length > 0 ? (
-                              <p className="mt-2 text-sm leading-6 text-violet-900">
+                              <p className="hidden">
                                 Paginas analisadas no scan detalhado:{" "}
                                 {visualDetailedScanPages.length > 0
                                   ? visualDetailedScanPages.join(", ")
@@ -7272,12 +7580,12 @@ async function handleSaveImportedItemsToCatalog() {
                               </p>
                             ) : null}
                             {visualDocumentMapResult?.ok && visualDocumentMapResult.recommendedPages.length > 0 ? (
-                              <p className="mt-1 text-xs leading-5 text-violet-800">
+                              <p className="hidden">
                                 Mapa visual como apoio: recomendou {visualDocumentMapResult.recommendedPages.slice(0, 8).join(", ")}.
                               </p>
                             ) : null}
                             {visualDocumentMapResult?.ok ? (
-                              <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50/60 p-3">
+                              <div className="hidden">
                                 <p className="text-xs leading-5 text-violet-900">
                                   Paginas ja analisadas:{" "}
                                   {analyzedVisualEvidencePages.length > 0 ? analyzedVisualEvidencePages.join(", ") : "nenhuma"}
@@ -7311,10 +7619,10 @@ async function handleSaveImportedItemsToCatalog() {
                               <p className="mt-2 text-sm text-amber-700">{visualDocumentMapError}</p>
                             ) : null}
                             {visualEvidenceNotice ? (
-                              <p className="mt-2 text-sm text-violet-900">{visualEvidenceNotice}</p>
+                              <p className="hidden">{visualEvidenceNotice}</p>
                             ) : null}
                             {visualEvidenceResult?.ok || visualDocumentMapResult?.ok ? (
-                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <div className="hidden">
                                 <button
                                   type="button"
                                   onClick={handleRedoVisualAnalysis}
@@ -7334,18 +7642,18 @@ async function handleSaveImportedItemsToCatalog() {
                             {visualEvidenceResult?.ok ? (
                               <div className="mt-3 space-y-3">
                                 {visualEvidenceResult.pageEvidence.length > 0 ? (
-                                  <p className="text-sm leading-6 text-violet-950">
+                                  <p className="hidden">
                                     O ZION encontrou evidencias visuais no catalogo. A proxima etapa sera juntar essas informacoes em itens para revisao.
                                   </p>
                                 ) : null}
                                 {visualReviewItems.length > 0 ? (
-                                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3">
+                                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2.5">
                                     <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
                                       <div>
                                         <p className="text-sm font-semibold text-emerald-950">
                                           Itens consolidados para revisao
                                         </p>
-                                        <p className="mt-1 text-xs leading-5 text-emerald-900">
+                                        <p className="hidden">
                                           O ZION juntou informacoes encontradas em paginas diferentes. Edite e aprove os itens que deseja salvar depois. Nada foi salvo ainda.
                                         </p>
                                       </div>
@@ -7361,7 +7669,7 @@ async function handleSaveImportedItemsToCatalog() {
                                         </span>
                                       </div>
                                     </div>
-                                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                    <div className="mt-2 space-y-2">
                                       {visualReviewItems.map((item) => {
                                         const foundFields = [
                                           item.name.trim() ? "Nome" : null,
@@ -7389,200 +7697,213 @@ async function handleSaveImportedItemsToCatalog() {
                                         return (
                                           <div
                                             key={item.id}
-                                            className="rounded-lg bg-white p-3 ring-1 ring-emerald-100"
+                                            className="min-w-0 rounded-lg bg-white px-2.5 py-2 ring-1 ring-emerald-100"
                                           >
-                                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
-                                              <div>
-                                                <p className="text-sm font-semibold text-gray-950">
+                                            <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(180px,0.8fr)_auto] md:items-center">
+                                              <div className="min-w-0">
+                                                <p className="truncate text-sm font-semibold text-gray-950">
                                                   {displayName}
                                                 </p>
-                                                <p className="mt-1 text-xs leading-5 text-gray-600">
-                                                  Categoria: {getVisualCategoryLabel(item.category)}
-                                                  {item.sku || item.code ? ` | Codigo: ${item.sku || item.code}` : ""}
+                                                <p className="mt-0.5 truncate text-xs text-gray-600">
+                                                  {getVisualCategoryLabel(item.category)}{" "}
+                                                  {item.sku || item.code ? `| ${item.sku || item.code}` : "| Sem codigo"}
                                                 </p>
                                               </div>
-                                              <span className="text-xs font-medium text-emerald-800">
-                                                {Math.round((item.confidence || 0) * 100)}% confianca
-                                              </span>
-                                            </div>
-                                            <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                              <label className="block">
-                                                <span className="text-xs font-medium text-gray-700">Nome</span>
-                                                <input
-                                                  type="text"
-                                                  value={item.name}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, { name: event.target.value })
+                                              <div className="grid min-w-0 grid-cols-3 gap-1.5 text-xs text-gray-600">
+                                                <span className="truncate rounded-md bg-gray-50 px-2 py-1 ring-1 ring-gray-100">
+                                                  {item.price.trim() ? item.price : "Sem preço"}
+                                                </span>
+                                                <span className="truncate rounded-md bg-gray-50 px-2 py-1 ring-1 ring-gray-100">
+                                                  {item.stock.trim() ? `Estoque ${item.stock}` : "Sem estoque"}
+                                                </span>
+                                                <span className="truncate rounded-md bg-emerald-50 px-2 py-1 font-medium text-emerald-800 ring-1 ring-emerald-100">
+                                                  {Math.round((item.confidence || 0) * 100)}%
+                                                </span>
+                                              </div>
+                                              <div className="flex flex-wrap items-center gap-1.5 md:justify-end">
+                                                <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
+                                                  {item.saved ? "Salvo" : statusLabel}
+                                                </span>
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    updateEditableVisualReviewItem(item.id, { reviewState: "approved" })
                                                   }
-                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
-                                                />
-                                              </label>
-                                              <label className="block">
-                                                <span className="text-xs font-medium text-gray-700">Categoria</span>
-                                                <select
-                                                  value={item.category}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, {
-                                                      category: event.target.value as EditableVisualReviewItem["category"],
-                                                    })
-                                                  }
-                                                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900"
+                                                  className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-900"
                                                 >
-                                                  <option value="">A revisar</option>
-                                                  <option value="pool">Piscina</option>
-                                                  <option value="chemical">Quimico</option>
-                                                  <option value="accessory">Acessorio</option>
-                                                  <option value="other">Outro</option>
-                                                </select>
-                                              </label>
-                                              <label className="block">
-                                                <span className="text-xs font-medium text-gray-700">Codigo/SKU</span>
-                                                <input
-                                                  type="text"
-                                                  value={item.sku}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, {
-                                                      sku: event.target.value,
-                                                      code: event.target.value,
-                                                    })
+                                                  Aprovar
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    updateEditableVisualReviewItem(item.id, { reviewState: "pending" })
                                                   }
-                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
-                                                />
-                                              </label>
-                                              <label className="block">
-                                                <span className="text-xs font-medium text-gray-700">Preco</span>
-                                                <input
-                                                  type="text"
-                                                  value={item.price}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, { price: event.target.value })
+                                                  className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-900"
+                                                >
+                                                  Deixar pendente
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    updateEditableVisualReviewItem(item.id, { reviewState: "ignored" })
                                                   }
-                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
-                                                />
-                                              </label>
-                                              <label className="block md:col-span-2">
-                                                <span className="text-xs font-medium text-gray-700">Medidas</span>
-                                                <input
-                                                  type="text"
-                                                  value={item.dimensionsText}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, {
-                                                      dimensionsText: event.target.value,
-                                                    })
-                                                  }
-                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
-                                                />
-                                              </label>
-                                              <label className="block">
-                                                <span className="text-xs font-medium text-gray-700">Material</span>
-                                                <input
-                                                  type="text"
-                                                  value={item.material}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, { material: event.target.value })
-                                                  }
-                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
-                                                />
-                                              </label>
-                                              <label className="block">
-                                                <span className="text-xs font-medium text-gray-700">Estoque</span>
-                                                <input
-                                                  type="text"
-                                                  value={item.stock}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, { stock: event.target.value })
-                                                  }
-                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
-                                                />
-                                              </label>
-                                              <label className="block md:col-span-2">
-                                                <span className="text-xs font-medium text-gray-700">Descricao</span>
-                                                <textarea
-                                                  value={item.description}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, {
-                                                      description: event.target.value,
-                                                    })
-                                                  }
-                                                  rows={2}
-                                                  className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
-                                                />
-                                              </label>
-                                              <label className="flex items-center gap-2 text-xs font-medium text-gray-700">
-                                                <input
-                                                  type="checkbox"
-                                                  checked={item.isActive}
-                                                  onChange={(event) =>
-                                                    updateEditableVisualReviewItem(item.id, {
-                                                      isActive: event.target.checked,
-                                                    })
-                                                  }
-                                                  className="h-4 w-4 rounded border-gray-300"
-                                                />
-                                                Ativo
-                                              </label>
-                                            </div>
-                                            <p className="mt-2 text-xs leading-5 text-gray-700">
-                                              Paginas usadas: {item.sourcePages.join(", ") || "A revisar"}
-                                            </p>
-                                            {item.dimensionsList.length > 1 ? (
-                                              <div className="mt-1 text-xs leading-5 text-gray-700">
-                                                <p>{item.dimensionsList.length} medidas encontradas:</p>
-                                                <p>{visibleDimensions.join(" | ")}</p>
+                                                  className="rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-medium text-gray-700"
+                                                >
+                                                  Ignorar
+                                                </button>
                                               </div>
-                                            ) : null}
-                                            {foundFields.length > 0 ? (
-                                              <p className="mt-2 text-xs leading-5 text-gray-700">
-                                                Campos encontrados: {foundFields.join(", ")}
-                                              </p>
-                                            ) : null}
-                                            {missingFields.length > 0 ? (
-                                              <p className="mt-1 text-xs leading-5 text-gray-600">
-                                                Campos faltando: {missingFields.join(", ")}
-                                              </p>
-                                            ) : null}
-                                            {item.conflicts.length > 0 ? (
-                                              <div className="mt-2 rounded-lg bg-amber-50 p-2 text-xs leading-5 text-amber-800 ring-1 ring-amber-100">
-                                                <p className="font-medium">Conflitos para revisar:</p>
-                                                {item.conflicts.map((conflict) => (
-                                                  <p key={`${item.id}-${conflict.field}`}>
-                                                    {translateVisualMissingField(conflict.field)}: {conflict.values.join(" / ")}
-                                                  </p>
-                                                ))}
-                                              </div>
-                                            ) : null}
-                                            <div className="mt-3 flex flex-wrap items-center gap-2">
-                                              <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
-                                                {item.saved ? "Salvo" : statusLabel}
-                                              </span>
-                                              <button
-                                                type="button"
-                                                onClick={() =>
-                                                  updateEditableVisualReviewItem(item.id, { reviewState: "approved" })
-                                                }
-                                                className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900"
-                                              >
-                                                Aprovar
-                                              </button>
-                                              <button
-                                                type="button"
-                                                onClick={() =>
-                                                  updateEditableVisualReviewItem(item.id, { reviewState: "pending" })
-                                                }
-                                                className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900"
-                                              >
-                                                Deixar pendente
-                                              </button>
-                                              <button
-                                                type="button"
-                                                onClick={() =>
-                                                  updateEditableVisualReviewItem(item.id, { reviewState: "ignored" })
-                                                }
-                                                className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-700"
-                                              >
-                                                Ignorar
-                                              </button>
                                             </div>
+                                            <details className="mt-1.5 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5">
+                                              <summary className="cursor-pointer text-xs font-medium text-gray-700">
+                                                Editar detalhes
+                                              </summary>
+                                              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                                <label className="block">
+                                                  <span className="text-xs font-medium text-gray-700">Nome</span>
+                                                  <input
+                                                    type="text"
+                                                    value={item.name}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, { name: event.target.value })
+                                                    }
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                  />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="text-xs font-medium text-gray-700">Categoria</span>
+                                                  <select
+                                                    value={item.category}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, {
+                                                        category: event.target.value as EditableVisualReviewItem["category"],
+                                                      })
+                                                    }
+                                                    className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-sm text-gray-900"
+                                                  >
+                                                    <option value="">A revisar</option>
+                                                    <option value="pool">Piscina</option>
+                                                    <option value="chemical">Quimico</option>
+                                                    <option value="accessory">Acessorio</option>
+                                                    <option value="other">Outro</option>
+                                                  </select>
+                                                </label>
+                                                <label className="block">
+                                                  <span className="text-xs font-medium text-gray-700">Codigo/SKU</span>
+                                                  <input
+                                                    type="text"
+                                                    value={item.sku}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, {
+                                                        sku: event.target.value,
+                                                        code: event.target.value,
+                                                      })
+                                                    }
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                  />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="text-xs font-medium text-gray-700">Preco</span>
+                                                  <input
+                                                    type="text"
+                                                    value={item.price}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, { price: event.target.value })
+                                                    }
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                  />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="text-xs font-medium text-gray-700">Estoque</span>
+                                                  <input
+                                                    type="text"
+                                                    value={item.stock}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, { stock: event.target.value })
+                                                    }
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                  />
+                                                </label>
+                                                <label className="flex items-center gap-2 self-end text-xs font-medium text-gray-700">
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={item.isActive}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, {
+                                                        isActive: event.target.checked,
+                                                      })
+                                                    }
+                                                    className="h-4 w-4 rounded border-gray-300"
+                                                  />
+                                                  Ativo
+                                                </label>
+                                                <label className="block md:col-span-2">
+                                                  <span className="text-xs font-medium text-gray-700">Medidas</span>
+                                                  <input
+                                                    type="text"
+                                                    value={item.dimensionsText}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, {
+                                                        dimensionsText: event.target.value,
+                                                      })
+                                                    }
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                  />
+                                                </label>
+                                                <label className="block">
+                                                  <span className="text-xs font-medium text-gray-700">Material</span>
+                                                  <input
+                                                    type="text"
+                                                    value={item.material}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, { material: event.target.value })
+                                                    }
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                  />
+                                                </label>
+                                                <label className="block md:col-span-2">
+                                                  <span className="text-xs font-medium text-gray-700">Descricao</span>
+                                                  <textarea
+                                                    value={item.description}
+                                                    onChange={(event) =>
+                                                      updateEditableVisualReviewItem(item.id, {
+                                                        description: event.target.value,
+                                                      })
+                                                    }
+                                                    rows={2}
+                                                    className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                                                  />
+                                                </label>
+                                              </div>
+                                              <p className="mt-2 break-words text-xs leading-5 text-gray-700">
+                                                Paginas usadas: {item.sourcePages.join(", ") || "A revisar"}
+                                              </p>
+                                              {item.dimensionsList.length > 1 ? (
+                                                <div className="mt-1 text-xs leading-5 text-gray-700">
+                                                  <p>{item.dimensionsList.length} medidas encontradas:</p>
+                                                  <p className="break-words">{visibleDimensions.join(" | ")}</p>
+                                                </div>
+                                              ) : null}
+                                              {foundFields.length > 0 ? (
+                                                <p className="mt-2 break-words text-xs leading-5 text-gray-700">
+                                                  Campos encontrados: {foundFields.join(", ")}
+                                                </p>
+                                              ) : null}
+                                              {missingFields.length > 0 ? (
+                                                <p className="mt-1 break-words text-xs leading-5 text-gray-600">
+                                                  Campos faltando: {missingFields.join(", ")}
+                                                </p>
+                                              ) : null}
+                                              {item.conflicts.length > 0 ? (
+                                                <div className="mt-2 rounded-md bg-amber-50 p-2 text-xs leading-5 text-amber-800 ring-1 ring-amber-100">
+                                                  <p className="font-medium">Conflitos para revisar:</p>
+                                                  {item.conflicts.map((conflict) => (
+                                                    <p key={`${item.id}-${conflict.field}`} className="break-words">
+                                                      {translateVisualMissingField(conflict.field)}: {conflict.values.join(" / ")}
+                                                    </p>
+                                                  ))}
+                                                </div>
+                                              ) : null}
+                                            </details>
                                           </div>
                                         );
                                       })}
@@ -7644,7 +7965,7 @@ async function handleSaveImportedItemsToCatalog() {
                                   </div>
                                 ) : null}
                                 {visualProductCandidates.length > 0 ? (
-                                  <div className="rounded-lg border border-violet-200 bg-violet-50/70 p-3">
+                                  <div className="hidden">
                                     <p className="text-sm font-semibold text-violet-950">
                                       Itens sugeridos para revisao
                                     </p>
@@ -7710,19 +8031,19 @@ async function handleSaveImportedItemsToCatalog() {
                                   </div>
                                 ) : null}
                                 {visualEvidenceResult.warnings.length > 0 ? (
-                                  <p className="text-xs leading-5 text-violet-900">
+                                  <p className="hidden">
                                     Avisos: {visualEvidenceResult.warnings.join(" ")}
                                   </p>
                                 ) : null}
                                 {visualEvidenceResult.pageEvidence.length === 0 ? (
-                                  <p className="text-sm text-gray-600">
+                                  <p className="hidden">
                                     Nenhuma evidencia visual foi encontrada nestas paginas.
                                   </p>
                                 ) : null}
                                 {visualEvidenceResult.pageEvidence.map((page) => (
                                   <div
                                     key={`visual-evidence-${page.pageNumber}`}
-                                    className="rounded-lg border border-gray-200 bg-gray-50 p-3"
+                                    className="hidden"
                                   >
                                     <div className="grid gap-1 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                                       <p className="text-sm font-semibold text-gray-900">
@@ -7804,7 +8125,7 @@ async function handleSaveImportedItemsToCatalog() {
                           </div>
                         </div>
                       ) : null}
-                      <div className="rounded-xl border border-gray-200 bg-white p-3">
+                      <div className="hidden">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos arquivos extraídos</p>
                         <p className="mt-1 text-xs text-gray-500">
                           Mostrando ate 10 arquivos na tela.
@@ -7834,7 +8155,7 @@ async function handleSaveImportedItemsToCatalog() {
                           </div>
                         )}
                       </div>
-                      <div className="rounded-xl border border-gray-200 bg-white p-3">
+                      <div className="hidden">
                         <p className="text-sm font-semibold text-gray-900">
                           Fotos encontradas nos arquivos
                         </p>
@@ -7873,7 +8194,7 @@ async function handleSaveImportedItemsToCatalog() {
                           </div>
                         )}
                       </div>
-                      <div className="rounded-xl border border-gray-200 bg-white p-3">
+                      <div className="hidden">
                         <p className="text-sm font-semibold text-gray-900">Prévia dos blocos classificados</p>
                         <p className="mt-1 text-xs text-gray-500">
                           Mostrando ate 12 blocos classificados. Arquivos grandes podem ter mais itens do que esta previa.
@@ -7905,7 +8226,7 @@ async function handleSaveImportedItemsToCatalog() {
                           </div>
                         )}
                       </div>
-                      <div className="rounded-xl border border-gray-200 bg-white p-3">
+                      <div className="hidden">
                         <p className="text-sm font-semibold text-gray-900">Prévia da deduplicação</p>
                         <p className="mt-1 text-xs text-gray-500">
                           Mostrando ate 12 itens. Duplicados detectados nao entram como candidatos principais para salvar.
