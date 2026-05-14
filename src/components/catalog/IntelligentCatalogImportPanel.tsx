@@ -116,6 +116,7 @@ type EditableVisualCatalogDraft = {
   missingFields: string[];
 };
 type VisualReviewItemState = "pending" | "approved" | "ignored";
+const VISUAL_REVIEW_NO_IMAGE_KEY = "__no_visual_review_image__";
 type EditableVisualReviewItem = {
   id: string;
   candidateId: string;
@@ -125,6 +126,7 @@ type EditableVisualReviewItem = {
   sku: string;
   code: string;
   price: string;
+  selectedImageKey: string;
   dimensionsText: string;
   dimensionsList: string[];
   material: string;
@@ -458,6 +460,7 @@ function buildEditableVisualReviewItemsFromCandidates(
       sku,
       code: candidate.code || sku,
       price: "",
+      selectedImageKey: "",
       dimensionsText: candidate.dimensionsList.join(" | ") || candidate.dimensions || "",
       dimensionsList: candidate.dimensionsList,
       material: candidate.material || "",
@@ -621,6 +624,123 @@ function buildVisualReviewIdentityKey(item: EditableVisualReviewItem) {
   const category = mapVisualReviewCategoryToCatalogCategory(item.category) ?? "outros";
   if (normalizedSku) return `catalog::${category}::sku::${normalizedSku}`;
   return `catalog::${category}::name::${normalizedName}`;
+}
+type VisualReviewExtractedImagePreview = NonNullable<
+  Extract<IntelligentImportResponse, { ok: true }>["extractedImagePreview"]
+>[number];
+type VisualReviewSuggestedImage = {
+  key: string;
+  fileName: string;
+  sourceFileName: string;
+  dataUrl: string;
+  pageNumber: number;
+  preferredSourceMatch: boolean;
+};
+type VisualReviewImageSuggestions = {
+  candidatesWithPreview: VisualReviewSuggestedImage[];
+  candidatesWithoutPreview: Array<{
+    key: string;
+    fileName: string;
+    sourceFileName: string;
+    pageNumber: number;
+    preferredSourceMatch: boolean;
+  }>;
+  hasPageMatchWithoutPreview: boolean;
+  matchedPages: number[];
+};
+function getVisualReviewImagePageNumber(image: VisualReviewExtractedImagePreview) {
+  if (typeof image.worksheetRowNumber === "number" && image.worksheetRowNumber > 0) {
+    return Math.floor(image.worksheetRowNumber);
+  }
+
+  const scopedPageMatch = String(image.sheetScopedKey || "").match(/pdf::page::(\d+)/i);
+  if (scopedPageMatch?.[1]) {
+    const parsed = Number(scopedPageMatch[1]);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+
+  if (typeof image.imageOrder === "number" && image.imageOrder >= 0) {
+    return Math.floor(image.imageOrder + 1);
+  }
+
+  return null;
+}
+function buildVisualReviewSuggestedImageKey(
+  image: VisualReviewExtractedImagePreview,
+  pageNumber: number,
+  index: number
+) {
+  return [
+    "visual-review-image",
+    String(image.originalSourceFileName || image.sourceFileName || "").trim().toLowerCase(),
+    pageNumber,
+    String(image.fileName || "imagem-extraida").trim().toLowerCase(),
+    index,
+  ].join("::");
+}
+function getVisualReviewSuggestedImages(
+  item: EditableVisualReviewItem,
+  images: VisualReviewExtractedImagePreview[],
+  preferredSourceFileName?: string | null
+): VisualReviewImageSuggestions {
+  const sourcePages = new Set(
+    item.sourcePages
+      .map((page) => Number(page || 0))
+      .filter((page) => Number.isFinite(page) && page > 0)
+      .map((page) => Math.floor(page))
+  );
+  if (sourcePages.size === 0) {
+    return {
+      candidatesWithPreview: [],
+      candidatesWithoutPreview: [],
+      hasPageMatchWithoutPreview: false,
+      matchedPages: [],
+    };
+  }
+
+  const normalizedPreferredSource = normalizeImportedLoose(preferredSourceFileName);
+  const candidates = images
+    .map((image, index) => {
+      const pageNumber = getVisualReviewImagePageNumber(image);
+      if (!pageNumber || !sourcePages.has(pageNumber)) return null;
+      if (String(image.source || "").toLowerCase() !== "pdf") return null;
+
+      const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim();
+      const preferredSourceMatch =
+        Boolean(normalizedPreferredSource) &&
+        normalizeImportedLoose(sourceFileName) === normalizedPreferredSource;
+
+      return {
+        key: buildVisualReviewSuggestedImageKey(image, pageNumber, index),
+        fileName: image.fileName || `Pagina ${pageNumber}`,
+        sourceFileName,
+        dataUrl: image.dataUrl,
+        pageNumber,
+        preferredSourceMatch,
+      };
+    })
+    .filter((image): image is VisualReviewSuggestedImage => Boolean(image))
+    .sort((left, right) => {
+      if (left.preferredSourceMatch !== right.preferredSourceMatch) {
+        return left.preferredSourceMatch ? -1 : 1;
+      }
+      const sourcePageOrder =
+        item.sourcePages.indexOf(left.pageNumber) - item.sourcePages.indexOf(right.pageNumber);
+      if (sourcePageOrder !== 0) return sourcePageOrder;
+      if (left.pageNumber !== right.pageNumber) return left.pageNumber - right.pageNumber;
+      return left.fileName.localeCompare(right.fileName);
+    });
+  const candidatesWithPreview = candidates
+    .filter((image) => String(image.dataUrl || "").trim())
+    .slice(0, 3);
+  const candidatesWithoutPreview = candidates.filter((image) => !String(image.dataUrl || "").trim());
+
+  return {
+    candidatesWithPreview,
+    candidatesWithoutPreview,
+    hasPageMatchWithoutPreview: candidatesWithPreview.length === 0 && candidatesWithoutPreview.length > 0,
+    matchedPages: Array.from(new Set(candidates.map((image) => image.pageNumber))).sort((a, b) => a - b),
+  };
 }
 type IntelligentImportSelectedFilePreview = {
   name: string;
@@ -7801,6 +7921,11 @@ async function handleSaveImportedItemsToCatalog() {
                                               ? "Ignorado"
                                               : "Pendente";
                                         const priceInput = parseVisualReviewPriceInput(item.price);
+                                        const imageSuggestions = getVisualReviewSuggestedImages(
+                                          item,
+                                          safeExtractedImagePreview,
+                                          visualPdfFileMeta?.name
+                                        );
                                         return (
                                           <div
                                             key={item.id}
@@ -7994,6 +8119,97 @@ async function handleSaveImportedItemsToCatalog() {
                                                     className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
                                                   />
                                                 </label>
+                                              </div>
+                                              <div className="mt-2 rounded-md bg-white p-2 text-xs leading-5 text-gray-700 ring-1 ring-gray-200">
+                                                <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                                                  <p className="font-medium text-gray-900">Imagem sugerida</p>
+                                                  <label className="inline-flex items-center gap-1.5 text-gray-600">
+                                                    <input
+                                                      type="radio"
+                                                      name={`visual-review-image-${item.id}`}
+                                                      checked={item.selectedImageKey === VISUAL_REVIEW_NO_IMAGE_KEY}
+                                                      onChange={() =>
+                                                        updateEditableVisualReviewItem(item.id, {
+                                                          selectedImageKey: VISUAL_REVIEW_NO_IMAGE_KEY,
+                                                        })
+                                                      }
+                                                      className="h-3.5 w-3.5"
+                                                    />
+                                                    Sem foto
+                                                  </label>
+                                                </div>
+                                                <p className="mt-1 break-words text-[11px] leading-4 text-gray-500">
+                                                  A imagem sera salva em uma etapa posterior. Revise antes de usar.
+                                                </p>
+                                                {imageSuggestions.candidatesWithPreview.length === 0 &&
+                                                imageSuggestions.hasPageMatchWithoutPreview ? (
+                                                  <div className="mt-2 space-y-2">
+                                                    <div className="flex min-w-0 flex-wrap gap-1.5">
+                                                      {imageSuggestions.matchedPages.slice(0, 4).map((pageNumber) => (
+                                                        <span
+                                                          key={`${item.id}-visual-page-match-${pageNumber}`}
+                                                          className="rounded-full bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-700 ring-1 ring-gray-200"
+                                                        >
+                                                          Pagina {pageNumber}
+                                                        </span>
+                                                      ))}
+                                                    </div>
+                                                    <p className="break-words text-[11px] leading-4 text-gray-600">
+                                                      Encontramos paginas relacionadas a este item, mas a miniatura nao esta disponivel nesta sessao.
+                                                    </p>
+                                                    <p className="break-words text-[11px] leading-4 text-gray-500">
+                                                      Para ver previas, limpe a analise e rode o upload novamente.
+                                                    </p>
+                                                  </div>
+                                                ) : null}
+                                                {imageSuggestions.candidatesWithPreview.length === 0 &&
+                                                !imageSuggestions.hasPageMatchWithoutPreview ? (
+                                                  <p className="mt-2 text-[11px] leading-4 text-gray-500">
+                                                    Nenhuma imagem sugerida para este item.
+                                                  </p>
+                                                ) : null}
+                                                {imageSuggestions.candidatesWithPreview.length > 0 ? (
+                                                  <div className="mt-2 flex min-w-0 flex-wrap gap-2">
+                                                    {imageSuggestions.candidatesWithPreview.map((image) => (
+                                                      <label
+                                                        key={image.key}
+                                                        className={cx(
+                                                          "min-w-0 overflow-hidden rounded-md border bg-gray-50 p-1.5",
+                                                          item.selectedImageKey === image.key
+                                                            ? "border-emerald-300 ring-1 ring-emerald-200"
+                                                            : "border-gray-200"
+                                                        )}
+                                                      >
+                                                        <div className="flex min-w-0 items-start gap-2">
+                                                          <input
+                                                            type="radio"
+                                                            name={`visual-review-image-${item.id}`}
+                                                            checked={item.selectedImageKey === image.key}
+                                                            onChange={() =>
+                                                              updateEditableVisualReviewItem(item.id, {
+                                                                selectedImageKey: image.key,
+                                                              })
+                                                            }
+                                                            className="mt-1 h-3.5 w-3.5 shrink-0"
+                                                          />
+                                                          <div className="min-w-0">
+                                                            <img
+                                                              src={image.dataUrl}
+                                                              alt={image.fileName}
+                                                              className="h-14 w-20 rounded object-cover ring-1 ring-gray-200"
+                                                            />
+                                                            <p className="mt-1 truncate text-[11px] font-medium text-gray-800">
+                                                              Usar esta imagem
+                                                            </p>
+                                                            <p className="break-words text-[11px] text-gray-500">
+                                                              Pagina {image.pageNumber}
+                                                            </p>
+                                                          </div>
+                                                        </div>
+                                                      </label>
+                                                    ))}
+                                                  </div>
+                                                ) : null}
                                               </div>
                                               <p className="mt-2 break-words text-xs leading-5 text-gray-700">
                                                 Paginas usadas: {item.sourcePages.join(", ") || "A revisar"}
