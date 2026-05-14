@@ -956,6 +956,45 @@ function getVisualReviewCandidateCodeAlias(candidate: VisualConsolidatedReviewCa
     : "";
 }
 
+function normalizeVisualReviewCandidateNameAlias(value: string | null | undefined) {
+  const words = normalizeEntityNameKey(value).split(" ").filter(Boolean);
+  return words.filter((word, index) => index === 0 || word !== words[index - 1]).join(" ");
+}
+
+function normalizeVisualReviewCandidateCategoryAlias(value: string | null | undefined) {
+  const normalized = normalizeLoose(value);
+  if (!normalized) return "";
+  if (["pool", "piscina", "piscinas"].includes(normalized)) return "pool";
+  if (["chemical", "chemicals", "quimico", "quimicos", "produto quimico", "produtos quimicos"].includes(normalized)) {
+    return "chemical";
+  }
+  if (["accessory", "accessories", "acessorio", "acessorios"].includes(normalized)) return "accessory";
+  if (["other", "others", "outro", "outros"].includes(normalized)) return "other";
+  return normalized;
+}
+
+function getVisualReviewCandidateNameCategoryAlias(candidate: VisualConsolidatedReviewCandidate) {
+  const nameAlias = normalizeVisualReviewCandidateNameAlias(candidate.name);
+  const categoryAlias = normalizeVisualReviewCandidateCategoryAlias(candidate.category);
+  if (!nameAlias || !categoryAlias) return "";
+  if (categoryAlias === "pool") return "";
+  return `${categoryAlias}::${nameAlias}`;
+}
+
+function canMergeVisualReviewCandidatesByNameCategory(
+  base: VisualConsolidatedReviewCandidate,
+  incoming: VisualConsolidatedReviewCandidate
+) {
+  const baseCodeAlias = getVisualReviewCandidateCodeAlias(base);
+  const incomingCodeAlias = getVisualReviewCandidateCodeAlias(incoming);
+  if (baseCodeAlias && incomingCodeAlias && baseCodeAlias !== incomingCodeAlias) {
+    return false;
+  }
+
+  const baseNameCategoryAlias = getVisualReviewCandidateNameCategoryAlias(base);
+  return Boolean(baseNameCategoryAlias && baseNameCategoryAlias === getVisualReviewCandidateNameCategoryAlias(incoming));
+}
+
 function mergeVisualReviewFieldSources(
   current: Record<string, VisualConsolidatedReviewFieldSource[]>,
   incoming: Record<string, VisualConsolidatedReviewFieldSource[]>
@@ -1106,22 +1145,43 @@ function mergeVisualReviewCandidateByCodeAlias(
 function consolidateVisualReviewCandidateAliases(
   candidates: VisualConsolidatedReviewCandidate[]
 ): VisualConsolidatedReviewCandidate[] {
-  const mergedCandidates: VisualConsolidatedReviewCandidate[] = [];
+  const codeMergedCandidates: VisualConsolidatedReviewCandidate[] = [];
   const indexByCodeAlias = new Map<string, number>();
 
   for (const candidate of candidates) {
     const codeAlias = getVisualReviewCandidateCodeAlias(candidate);
     const existingIndex = codeAlias ? indexByCodeAlias.get(codeAlias) : undefined;
     if (existingIndex === undefined) {
-      if (codeAlias) indexByCodeAlias.set(codeAlias, mergedCandidates.length);
+      if (codeAlias) indexByCodeAlias.set(codeAlias, codeMergedCandidates.length);
+      codeMergedCandidates.push(candidate);
+      continue;
+    }
+
+    codeMergedCandidates[existingIndex] = mergeVisualReviewCandidateByCodeAlias(
+      codeMergedCandidates[existingIndex],
+      candidate
+    );
+  }
+
+  const mergedCandidates: VisualConsolidatedReviewCandidate[] = [];
+  const indexByNameCategoryAlias = new Map<string, number>();
+
+  for (const candidate of codeMergedCandidates) {
+    const nameCategoryAlias = getVisualReviewCandidateNameCategoryAlias(candidate);
+    const existingIndex = nameCategoryAlias ? indexByNameCategoryAlias.get(nameCategoryAlias) : undefined;
+    const existingCandidate = existingIndex === undefined ? null : mergedCandidates[existingIndex];
+
+    if (
+      existingIndex === undefined ||
+      !existingCandidate ||
+      !canMergeVisualReviewCandidatesByNameCategory(existingCandidate, candidate)
+    ) {
+      if (nameCategoryAlias) indexByNameCategoryAlias.set(nameCategoryAlias, mergedCandidates.length);
       mergedCandidates.push(candidate);
       continue;
     }
 
-    mergedCandidates[existingIndex] = mergeVisualReviewCandidateByCodeAlias(
-      mergedCandidates[existingIndex],
-      candidate
-    );
+    mergedCandidates[existingIndex] = mergeVisualReviewCandidateByCodeAlias(existingCandidate, candidate);
   }
 
   return mergedCandidates;

@@ -148,6 +148,16 @@ type VisualReviewSavePreviewItem = {
   blockers: string[];
   warnings: string[];
 };
+type VisualReviewDuplicateDiagnosticGroup = {
+  id: string;
+  type: "SKU parecido" | "Nome igual" | "Nome parecido";
+  items: EditableVisualReviewItem[];
+};
+type VisualReviewDuplicateDiagnostics = {
+  totalItems: number;
+  suspiciousGroups: VisualReviewDuplicateDiagnosticGroup[];
+  suspiciousItemCount: number;
+};
 type VisualReviewSaveResult = {
   savedCount: number;
   failedCount: number;
@@ -502,6 +512,137 @@ function buildVisualReviewSavePreviewItem(item: EditableVisualReviewItem): Visua
   }
 
   return { item, blockers, warnings };
+}
+function normalizeVisualReviewDiagnosticCode(value: string | null | undefined) {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s\-_/\.]+/g, "")
+    .replace(/[^A-Z0-9]/g, "");
+  return normalized.length >= 3 && /[A-Z]/.test(normalized) && /\d/.test(normalized)
+    ? normalized
+    : "";
+}
+function normalizeVisualReviewDiagnosticName(value: string | null | undefined) {
+  const words = normalizeImportedLoose(value).split(" ").filter(Boolean);
+  return words.filter((word, index) => index === 0 || word !== words[index - 1]).join(" ");
+}
+function normalizeVisualReviewDiagnosticCategory(value: string | null | undefined) {
+  const normalized = normalizeImportedLoose(value);
+  if (!normalized) return "";
+  if (["pool", "piscina", "piscinas"].includes(normalized)) return "pool";
+  if (["chemical", "chemicals", "quimico", "quimicos", "produto quimico", "produtos quimicos"].includes(normalized)) {
+    return "chemical";
+  }
+  if (["accessory", "accessories", "acessorio", "acessorios"].includes(normalized)) return "accessory";
+  if (["other", "others", "outro", "outros"].includes(normalized)) return "other";
+  return normalized;
+}
+function getVisualReviewDiagnosticStatus(item: EditableVisualReviewItem) {
+  if (item.saved) return "salvo";
+  if (item.reviewState === "approved") return "aprovado";
+  if (item.reviewState === "ignored") return "ignorado";
+  return "pendente";
+}
+function getVisualReviewDiagnosticSignature(items: EditableVisualReviewItem[]) {
+  return items.map((item) => item.id).sort().join("|");
+}
+function getVisualReviewNameTokens(item: EditableVisualReviewItem) {
+  return Array.from(
+    new Set(
+      normalizeVisualReviewDiagnosticName(item.name)
+        .split(" ")
+        .filter((token) => token.length >= 3)
+    )
+  );
+}
+function areVisualReviewNamesWeaklySimilar(left: EditableVisualReviewItem, right: EditableVisualReviewItem) {
+  const leftCategory = normalizeVisualReviewDiagnosticCategory(left.category);
+  const rightCategory = normalizeVisualReviewDiagnosticCategory(right.category);
+  if (!leftCategory || leftCategory !== rightCategory) return false;
+
+  const leftName = normalizeVisualReviewDiagnosticName(left.name);
+  const rightName = normalizeVisualReviewDiagnosticName(right.name);
+  if (!leftName || !rightName || leftName === rightName) return false;
+
+  const leftTokens = getVisualReviewNameTokens(left);
+  const rightTokens = getVisualReviewNameTokens(right);
+  if (leftTokens.length < 2 || rightTokens.length < 2) return false;
+
+  const rightTokenSet = new Set(rightTokens);
+  const sharedCount = leftTokens.filter((token) => rightTokenSet.has(token)).length;
+  const overlap = sharedCount / Math.min(leftTokens.length, rightTokens.length);
+  return sharedCount >= 2 && overlap >= 0.75;
+}
+function buildVisualReviewDuplicateDiagnostics(
+  items: EditableVisualReviewItem[]
+): VisualReviewDuplicateDiagnostics {
+  const suspiciousGroups: VisualReviewDuplicateDiagnosticGroup[] = [];
+  const signatures = new Set<string>();
+  const pushGroup = (
+    type: VisualReviewDuplicateDiagnosticGroup["type"],
+    key: string,
+    groupItems: EditableVisualReviewItem[]
+  ) => {
+    const uniqueItems = Array.from(new Map(groupItems.map((item) => [item.id, item])).values());
+    if (uniqueItems.length < 2) return;
+    const signature = `${type}::${getVisualReviewDiagnosticSignature(uniqueItems)}`;
+    if (signatures.has(signature)) return;
+    signatures.add(signature);
+    suspiciousGroups.push({
+      id: `${type}-${key}-${suspiciousGroups.length}`,
+      type,
+      items: uniqueItems,
+    });
+  };
+
+  const byCode = new Map<string, EditableVisualReviewItem[]>();
+  const byNameCategory = new Map<string, EditableVisualReviewItem[]>();
+
+  for (const item of items) {
+    const code = normalizeVisualReviewDiagnosticCode(item.sku || item.code);
+    if (code) byCode.set(code, [...(byCode.get(code) ?? []), item]);
+
+    const name = normalizeVisualReviewDiagnosticName(item.name);
+    const category = normalizeVisualReviewDiagnosticCategory(item.category);
+    if (name && category) {
+      const key = `${category}::${name}`;
+      byNameCategory.set(key, [...(byNameCategory.get(key) ?? []), item]);
+    }
+  }
+
+  for (const [key, groupItems] of byCode.entries()) {
+    pushGroup("SKU parecido", key, groupItems);
+  }
+  for (const [key, groupItems] of byNameCategory.entries()) {
+    pushGroup("Nome igual", key, groupItems);
+  }
+
+  const weakSimilarGroups: EditableVisualReviewItem[][] = [];
+  for (const item of items) {
+    let group = weakSimilarGroups.find((currentGroup) =>
+      currentGroup.some((candidate) => areVisualReviewNamesWeaklySimilar(candidate, item))
+    );
+    if (!group) {
+      group = [];
+      weakSimilarGroups.push(group);
+    }
+    group.push(item);
+  }
+  for (const groupItems of weakSimilarGroups) {
+    if (groupItems.length < 2) continue;
+    const categories = new Set(groupItems.map((item) => normalizeVisualReviewDiagnosticCategory(item.category)));
+    if (categories.size !== 1) continue;
+    pushGroup("Nome parecido", getVisualReviewDiagnosticSignature(groupItems), groupItems);
+  }
+
+  return {
+    totalItems: items.length,
+    suspiciousGroups,
+    suspiciousItemCount: new Set(
+      suspiciousGroups.flatMap((group) => group.items.map((item) => item.id))
+    ).size,
+  };
 }
 function mapVisualReviewCategoryToCatalogCategory(
   category: EditableVisualReviewItem["category"]
@@ -5058,6 +5199,10 @@ export default function IntelligentCatalogImportPanel({
     }),
     [visualReviewItems]
   );
+  const visualReviewDuplicateDiagnostics = useMemo(
+    () => buildVisualReviewDuplicateDiagnostics(visualReviewItems),
+    [visualReviewItems]
+  );
   const visualReviewSavePreview = useMemo(() => {
     const approvedItems = visualReviewItems.filter((item) => item.reviewState === "approved");
     const reviewedItems = approvedItems.map(buildVisualReviewSavePreviewItem);
@@ -7483,6 +7628,65 @@ async function handleSaveImportedItemsToCatalog() {
                                   Revisao visual consolidada: {visualConsolidatedCandidateSummary.join(" | ")}
                                 </p>
                               ) : null}
+                            </div>
+                            <div className="mt-3 rounded-lg bg-white/80 p-2 text-xs leading-5 text-violet-900 ring-1 ring-violet-100">
+                              <p className="font-medium">Diagnostico de possiveis duplicados</p>
+                              <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                                <div className="rounded-md bg-violet-50 px-2 py-1 ring-1 ring-violet-100">
+                                  <p className="text-violet-700">Itens analisados</p>
+                                  <p className="font-semibold text-violet-950">
+                                    {visualReviewDuplicateDiagnostics.totalItems}
+                                  </p>
+                                </div>
+                                <div className="rounded-md bg-violet-50 px-2 py-1 ring-1 ring-violet-100">
+                                  <p className="text-violet-700">Grupos suspeitos</p>
+                                  <p className="font-semibold text-violet-950">
+                                    {visualReviewDuplicateDiagnostics.suspiciousGroups.length}
+                                  </p>
+                                </div>
+                                <div className="rounded-md bg-violet-50 px-2 py-1 ring-1 ring-violet-100">
+                                  <p className="text-violet-700">Itens em grupos</p>
+                                  <p className="font-semibold text-violet-950">
+                                    {visualReviewDuplicateDiagnostics.suspiciousItemCount}
+                                  </p>
+                                </div>
+                              </div>
+                              {visualReviewDuplicateDiagnostics.suspiciousGroups.length === 0 ? (
+                                <p className="mt-2">
+                                  Nenhum possivel duplicado encontrado pelos criterios atuais.
+                                </p>
+                              ) : (
+                                <div className="mt-2 space-y-2">
+                                  {visualReviewDuplicateDiagnostics.suspiciousGroups.map((group) => (
+                                    <div
+                                      key={group.id}
+                                      className="rounded-md border border-violet-100 bg-white p-2"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="rounded-full bg-violet-50 px-2 py-0.5 font-medium text-violet-800 ring-1 ring-violet-100">
+                                          {group.type}
+                                        </span>
+                                        <span className="text-violet-800">
+                                          {group.items.length} itens no grupo
+                                        </span>
+                                      </div>
+                                      <div className="mt-1 space-y-1">
+                                        {group.items.map((item) => (
+                                          <p key={`${group.id}-${item.id}`} className="break-words">
+                                            {item.name || "Sem nome"} | Categoria: {item.category || "a revisar"} |
+                                            {" "}SKU/codigo: {item.sku || item.code || "-"} | Paginas:{" "}
+                                            {item.sourcePages.join(", ") || "-"} | Status:{" "}
+                                            {getVisualReviewDiagnosticStatus(item)}
+                                          </p>
+                                        ))}
+                                      </div>
+                                      <p className="mt-1 text-violet-700">
+                                        O sistema nao juntou automaticamente; este grupo foi apenas sinalizado para revisao.
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
