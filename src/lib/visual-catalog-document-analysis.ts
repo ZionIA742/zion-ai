@@ -936,6 +936,197 @@ function buildVisualFieldConflict(field: string, items: VisualFieldEvidence[]) {
   } satisfies VisualConsolidatedReviewConflict;
 }
 
+function normalizeVisualReviewCandidateCodeAlias(value: string | null | undefined) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s\-_/\.]+/g, "")
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function isStrongVisualReviewCandidateCodeAlias(value: string | null | undefined) {
+  const normalized = normalizeVisualReviewCandidateCodeAlias(value);
+  return normalized.length >= 3 && /[A-Z]/.test(normalized) && /\d/.test(normalized);
+}
+
+function getVisualReviewCandidateCodeAlias(candidate: VisualConsolidatedReviewCandidate) {
+  const code = candidate.sku || candidate.code;
+  return isStrongVisualReviewCandidateCodeAlias(code)
+    ? normalizeVisualReviewCandidateCodeAlias(code)
+    : "";
+}
+
+function mergeVisualReviewFieldSources(
+  current: Record<string, VisualConsolidatedReviewFieldSource[]>,
+  incoming: Record<string, VisualConsolidatedReviewFieldSource[]>
+) {
+  const merged: Record<string, VisualConsolidatedReviewFieldSource[]> = { ...current };
+  for (const [field, sources] of Object.entries(incoming)) {
+    const sourcesByKey = new Map<string, VisualConsolidatedReviewFieldSource>();
+    for (const source of [...(merged[field] ?? []), ...sources]) {
+      const key = `${source.evidenceId}::${source.pageNumber}::${source.extractionMethod}`;
+      const existing = sourcesByKey.get(key);
+      if (!existing || source.confidence > existing.confidence) {
+        sourcesByKey.set(key, source);
+      }
+    }
+    merged[field] = Array.from(sourcesByKey.values()).sort((a, b) => {
+      const pageDelta = a.pageNumber - b.pageNumber;
+      if (pageDelta !== 0) return pageDelta;
+      return b.confidence - a.confidence;
+    });
+  }
+  return merged;
+}
+
+function addVisualReviewCandidateConflict(
+  conflicts: VisualConsolidatedReviewConflict[],
+  field: string,
+  values: Array<string | null | undefined>,
+  sourcePages: number[]
+) {
+  const distinctValues = Array.from(
+    new Map(
+      values
+        .map((value) => normalizeVisualEvidenceValue(value))
+        .filter(Boolean)
+        .map((value) => [
+          field === "sku" || field === "code"
+            ? normalizeVisualReviewCandidateCodeAlias(value)
+            : makeVisualEvidenceValueKey(value),
+          value,
+        ])
+    ).values()
+  );
+  if (distinctValues.length <= 1) return conflicts;
+
+  const conflictField = field === "code" ? "sku" : field;
+  const existing = conflicts.find((conflict) => conflict.field === conflictField);
+  if (!existing) {
+    return [
+      ...conflicts,
+      {
+        field: conflictField,
+        values: distinctValues,
+        sourcePages: normalizePageNumbers(sourcePages),
+      },
+    ];
+  }
+
+  existing.values = Array.from(new Set([...existing.values, ...distinctValues]));
+  existing.sourcePages = normalizePageNumbers([...existing.sourcePages, ...sourcePages]);
+  return conflicts;
+}
+
+function mergeVisualReviewCandidateValue(
+  base: VisualConsolidatedReviewCandidate,
+  incoming: VisualConsolidatedReviewCandidate,
+  field: "name" | "sku" | "code" | "category" | "dimensions" | "material" | "description"
+) {
+  const baseValue = base[field];
+  const incomingValue = incoming[field];
+  if (!baseValue && incomingValue) {
+    base[field] = incomingValue;
+    return;
+  }
+  if (!baseValue || !incomingValue) return;
+
+  const baseKey =
+    field === "sku" || field === "code"
+      ? normalizeVisualReviewCandidateCodeAlias(baseValue)
+      : makeVisualEvidenceValueKey(baseValue);
+  const incomingKey =
+    field === "sku" || field === "code"
+      ? normalizeVisualReviewCandidateCodeAlias(incomingValue)
+      : makeVisualEvidenceValueKey(incomingValue);
+  if (baseKey && incomingKey && baseKey !== incomingKey) {
+    base.conflicts = addVisualReviewCandidateConflict(
+      base.conflicts,
+      field,
+      [baseValue, incomingValue],
+      [...base.sourcePages, ...incoming.sourcePages]
+    );
+  }
+}
+
+function mergeVisualReviewMissingFields(candidate: VisualConsolidatedReviewCandidate) {
+  const foundFields = new Set<string>();
+  if (candidate.name) foundFields.add("name");
+  if (candidate.sku || candidate.code) {
+    foundFields.add("sku");
+    foundFields.add("code");
+  }
+  if (candidate.category) foundFields.add("category");
+  if (candidate.dimensions || candidate.dimensionsList.length > 0) foundFields.add("dimensions");
+  if (candidate.material) foundFields.add("material");
+  if (candidate.description) foundFields.add("description");
+
+  return Array.from(new Set(candidate.missingFields)).filter((field) => !foundFields.has(field));
+}
+
+function mergeVisualReviewCandidateByCodeAlias(
+  base: VisualConsolidatedReviewCandidate,
+  incoming: VisualConsolidatedReviewCandidate
+) {
+  const merged: VisualConsolidatedReviewCandidate = {
+    ...base,
+    sourcePages: normalizePageNumbers([...base.sourcePages, ...incoming.sourcePages]),
+    fieldSources: mergeVisualReviewFieldSources(base.fieldSources, incoming.fieldSources),
+    dimensionsList: Array.from(new Set([...base.dimensionsList, ...incoming.dimensionsList].filter(Boolean))),
+    missingFields: Array.from(new Set([...base.missingFields, ...incoming.missingFields])),
+    conflicts: base.conflicts.map((conflict) => ({
+      ...conflict,
+      values: [...conflict.values],
+      sourcePages: [...conflict.sourcePages],
+    })),
+    confidence: Math.max(base.confidence || 0, incoming.confidence || 0),
+  };
+
+  for (const conflict of incoming.conflicts) {
+    merged.conflicts = addVisualReviewCandidateConflict(
+      merged.conflicts,
+      conflict.field,
+      conflict.values,
+      conflict.sourcePages
+    );
+  }
+
+  for (const field of ["name", "sku", "code", "category", "dimensions", "material", "description"] as const) {
+    mergeVisualReviewCandidateValue(merged, incoming, field);
+  }
+
+  if (!merged.sku && merged.code) merged.sku = merged.code;
+  if (!merged.code && merged.sku) merged.code = merged.sku;
+  merged.dimensions = merged.dimensions || merged.dimensionsList[0] || null;
+  merged.missingFields = mergeVisualReviewMissingFields(merged);
+  merged.conflictsCount = merged.conflicts.length;
+  return merged;
+}
+
+function consolidateVisualReviewCandidateAliases(
+  candidates: VisualConsolidatedReviewCandidate[]
+): VisualConsolidatedReviewCandidate[] {
+  const mergedCandidates: VisualConsolidatedReviewCandidate[] = [];
+  const indexByCodeAlias = new Map<string, number>();
+
+  for (const candidate of candidates) {
+    const codeAlias = getVisualReviewCandidateCodeAlias(candidate);
+    const existingIndex = codeAlias ? indexByCodeAlias.get(codeAlias) : undefined;
+    if (existingIndex === undefined) {
+      if (codeAlias) indexByCodeAlias.set(codeAlias, mergedCandidates.length);
+      mergedCandidates.push(candidate);
+      continue;
+    }
+
+    mergedCandidates[existingIndex] = mergeVisualReviewCandidateByCodeAlias(
+      mergedCandidates[existingIndex],
+      candidate
+    );
+  }
+
+  return mergedCandidates;
+}
+
 export function buildVisualReviewCandidatesFromEvidence(
   input: BuildVisualReviewCandidatesFromEvidenceInput
 ): VisualConsolidatedReviewCandidate[] {
@@ -1118,10 +1309,12 @@ export function buildVisualDocumentAnalysis(
     pageEvidence: input.pageEvidence,
     productCandidates: candidates,
   });
-  const consolidatedReviewCandidates = buildVisualReviewCandidatesFromEvidence({
-    entities: discoveredEntities.confirmedEntities,
-    fieldEvidence,
-  });
+  const consolidatedReviewCandidates = consolidateVisualReviewCandidateAliases(
+    buildVisualReviewCandidatesFromEvidence({
+      entities: discoveredEntities.confirmedEntities,
+      fieldEvidence,
+    })
+  );
 
   const evidenceCount = fieldEvidence.length;
   const candidateCount = reviewCandidates.length;
