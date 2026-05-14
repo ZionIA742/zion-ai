@@ -169,12 +169,20 @@ type VisualReviewDuplicateDiagnostics = {
 type VisualReviewSaveResult = {
   savedCount: number;
   failedCount: number;
+  savedPhotoCount: number;
+  failedPhotoCount: number;
   savedItems: Array<{
     name: string;
     category: string;
     destination: string;
+    photoSavedCount?: number;
+    photoFailedCount?: number;
   }>;
   failedItems: Array<{
+    name: string;
+    reason: string;
+  }>;
+  photoFailures: Array<{
     name: string;
     reason: string;
   }>;
@@ -782,6 +790,7 @@ type VisualReviewSuggestedImage = {
   key: string;
   fileName: string;
   sourceFileName: string;
+  mimeType: string;
   dataUrl: string;
   pageNumber: number;
   preferredSourceMatch: boolean;
@@ -864,6 +873,7 @@ function getVisualReviewSuggestedImages(
         key: buildVisualReviewSuggestedImageKey(image, pageNumber, index),
         fileName: image.fileName || `Pagina ${pageNumber}`,
         sourceFileName,
+        mimeType: image.mimeType || "image/png",
         dataUrl: image.dataUrl,
         pageNumber,
         preferredSourceMatch,
@@ -986,9 +996,9 @@ const VISUAL_ANALYSIS_CACHE_VERSION = 1;
 const VISUAL_ANALYSIS_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const VISUAL_ANALYSIS_CACHE_MAX_CHARS = 450_000;
 const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEWS = 40;
-const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS = 700_000;
-const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_TOTAL_CHARS = 1_800_000;
-const VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS = 2_000_000;
+const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS = 1_200_000;
+const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_TOTAL_CHARS = 3_500_000;
+const VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS = 4_000_000;
 const VISUAL_ANALYSIS_MAIN_FLOW_MAX_RECOMMENDED_PAGES = 20;
 type IntelligentCatalogImportPanelProps = {
   organizationId: string | null | undefined;
@@ -1553,33 +1563,66 @@ function buildVisualAnalysisCacheImagePreviews(params: {
   pages: number[];
   fileName?: string | null;
 }) {
-  const pages = new Set(normalizeVisualAnalysisPageList(params.pages));
+  const orderedPages = normalizeVisualAnalysisPageList(params.pages);
+  const pages = new Set(orderedPages);
   if (pages.size === 0) return [];
 
   const normalizedFileName = normalizeImportedLoose(params.fileName);
   const seen = new Set<string>();
   const previews: VisualReviewExtractedImagePreview[] = [];
   let previewChars = 0;
+  const candidates = params.images
+    .map((image, index) => {
+      if (String(image.source || "").toLowerCase() !== "pdf") return null;
+      const dataUrl = String(image.dataUrl || "").trim();
+      if (!dataUrl) return null;
+      const pageNumber = getVisualReviewImagePageNumber(image);
+      if (!pageNumber || !pages.has(pageNumber)) return null;
 
-  for (const image of params.images) {
-    if (previews.length >= VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEWS) break;
-    if (String(image.source || "").toLowerCase() !== "pdf") continue;
-    const dataUrl = String(image.dataUrl || "").trim();
-    if (!dataUrl) continue;
-    if (dataUrl.length > VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS) continue;
-    if (previewChars + dataUrl.length > VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_TOTAL_CHARS) break;
+      const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim();
+      if (
+        normalizedFileName &&
+        sourceFileName &&
+        normalizeImportedLoose(sourceFileName) !== normalizedFileName
+      ) {
+        return null;
+      }
 
-    const pageNumber = getVisualReviewImagePageNumber(image);
-    if (!pageNumber || !pages.has(pageNumber)) continue;
+      return {
+        image,
+        index,
+        dataUrl,
+        pageNumber,
+        sourceFileName,
+        pagePriority: orderedPages.indexOf(pageNumber),
+      };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
+    .sort((left, right) => {
+      const leftPriority = left.pagePriority >= 0 ? left.pagePriority : Number.MAX_SAFE_INTEGER;
+      const rightPriority = right.pagePriority >= 0 ? right.pagePriority : Number.MAX_SAFE_INTEGER;
+      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+      const leftSize = left.dataUrl.length;
+      const rightSize = right.dataUrl.length;
+      if (leftSize !== rightSize) return leftSize - rightSize;
+      return left.index - right.index;
+    });
 
-    const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim();
-    if (
-      normalizedFileName &&
-      sourceFileName &&
-      normalizeImportedLoose(sourceFileName) !== normalizedFileName
-    ) {
-      continue;
+  const firstCandidateByPage = new Map<number, (typeof candidates)[number]>();
+  const extraCandidates: typeof candidates = [];
+  for (const candidate of candidates) {
+    if (!firstCandidateByPage.has(candidate.pageNumber)) {
+      firstCandidateByPage.set(candidate.pageNumber, candidate);
+    } else {
+      extraCandidates.push(candidate);
     }
+  }
+
+  function pushPreview(candidate: (typeof candidates)[number]) {
+    if (previews.length >= VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEWS) return;
+    const { image, dataUrl, pageNumber, sourceFileName } = candidate;
+    if (dataUrl.length > VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS) return;
+    if (previewChars + dataUrl.length > VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_TOTAL_CHARS) return;
 
     const key = [
       pageNumber,
@@ -1588,7 +1631,7 @@ function buildVisualAnalysisCacheImagePreviews(params: {
       image.sheetScopedKey ?? "",
       image.fileName ?? "",
     ].join("::");
-    if (seen.has(key)) continue;
+    if (seen.has(key)) return;
     seen.add(key);
     previewChars += dataUrl.length;
 
@@ -1608,6 +1651,14 @@ function buildVisualAnalysisCacheImagePreviews(params: {
         typeof image.worksheetRowNumber === "number" ? image.worksheetRowNumber : pageNumber,
       sheetScopedKey: image.sheetScopedKey,
     });
+  }
+
+  for (const pageNumber of orderedPages) {
+    const candidate = firstCandidateByPage.get(pageNumber);
+    if (candidate) pushPreview(candidate);
+  }
+  for (const candidate of extraCandidates) {
+    pushPreview(candidate);
   }
 
   return previews;
@@ -1664,16 +1715,29 @@ function writeVisualAnalysisPreviewCache(
   const storage = getVisualAnalysisStorage();
   if (!storage || extractedImagePreview.length === 0) return;
 
-  const value: PersistedVisualAnalysisPreviewCache = {
+  const baseValue = {
     cacheVersion: VISUAL_ANALYSIS_CACHE_VERSION,
     createdAt: Date.now(),
     expiresAt: Date.now() + VISUAL_ANALYSIS_CACHE_TTL_MS,
     organizationId: params.organizationId || null,
     storeId: params.storeId || null,
     file: params.file,
-    extractedImagePreview,
   };
-  const serialized = JSON.stringify(value);
+  let previewsToPersist = extractedImagePreview;
+  let serialized = JSON.stringify({
+    ...baseValue,
+    extractedImagePreview: previewsToPersist,
+  } satisfies PersistedVisualAnalysisPreviewCache);
+  while (
+    serialized.length > VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS &&
+    previewsToPersist.length > 1
+  ) {
+    previewsToPersist = previewsToPersist.slice(0, -1);
+    serialized = JSON.stringify({
+      ...baseValue,
+      extractedImagePreview: previewsToPersist,
+    } satisfies PersistedVisualAnalysisPreviewCache);
+  }
   if (serialized.length > VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS) return;
 
   try {
@@ -5208,7 +5272,7 @@ async function replaceCatalogItemPhotos(
   catalogItemId: string,
   images: Array<{ fileName: string; mimeType: string; dataUrl: string }>
 ) {
-  const normalizedImages = images.filter((image) => Boolean(image?.dataUrl)).slice(0, 1);
+  const normalizedImages = images.filter((image) => Boolean(String(image?.dataUrl || "").trim()));
   if (normalizedImages.length === 0) return;
 
   await clearCatalogItemPhotos(catalogItemId);
@@ -6614,6 +6678,9 @@ export default function IntelligentCatalogImportPanel({
     const itemErrors: string[] = [];
     const savedItems: VisualReviewSaveResult["savedItems"] = [];
     const failedItems: VisualReviewSaveResult["failedItems"] = [];
+    const photoFailures: VisualReviewSaveResult["photoFailures"] = [];
+    let savedPhotoCount = 0;
+    let failedPhotoCount = 0;
 
     try {
       for (const item of approvedReadyItems) {
@@ -6623,6 +6690,11 @@ export default function IntelligentCatalogImportPanel({
 
           const itemName = item.name.trim();
           if (!itemName) throw new Error("Item aprovado sem nome.");
+          const selectedImagesForUpload = getSelectedVisualReviewImagesForUpload(
+            item,
+            safeExtractedImagePreview,
+            visualPdfFileMeta?.name
+          );
 
           if (item.category === "pool") {
             const metrics = parseVisualReviewPoolMetrics(item);
@@ -6689,6 +6761,31 @@ export default function IntelligentCatalogImportPanel({
             }
 
             if (!persistedPoolId) throw new Error("Falha ao persistir a piscina revisada.");
+            let itemPhotoSavedCount = 0;
+            let itemPhotoFailedCount = 0;
+            for (const [imageIndex, image] of selectedImagesForUpload.entries()) {
+              try {
+                await uploadExtractedImageToPool(
+                  organizationId,
+                  storeId,
+                  persistedPoolId,
+                  {
+                    fileName: image.fileName,
+                    mimeType: image.mimeType,
+                    dataUrl: image.dataUrl,
+                  },
+                  imageIndex
+                );
+                itemPhotoSavedCount += 1;
+                savedPhotoCount += 1;
+              } catch (photoError) {
+                console.error("[OnboardingPage] visual review pool photo upload error:", photoError);
+                const reason = photoError instanceof Error ? photoError.message : "Erro ao salvar foto.";
+                itemPhotoFailedCount += 1;
+                failedPhotoCount += 1;
+                photoFailures.push({ name: itemName, reason });
+              }
+            }
             savedPools += 1;
             savedIdentityKeys.add(identityKey);
             savedItemIds.add(item.id);
@@ -6696,6 +6793,8 @@ export default function IntelligentCatalogImportPanel({
               name: itemName,
               category: "Piscina",
               destination: "Piscinas",
+              photoSavedCount: itemPhotoSavedCount,
+              photoFailedCount: itemPhotoFailedCount,
             });
             continue;
           }
@@ -6782,6 +6881,30 @@ export default function IntelligentCatalogImportPanel({
           }
 
           if (!persistedCatalogItemId) throw new Error("Falha ao persistir o item revisado.");
+          let itemPhotoSavedCount = 0;
+          let itemPhotoFailedCount = 0;
+          if (selectedImagesForUpload.length > 0) {
+            try {
+              await replaceCatalogItemPhotos(
+                organizationId,
+                storeId,
+                persistedCatalogItemId,
+                selectedImagesForUpload.map((image) => ({
+                  fileName: image.fileName,
+                  mimeType: image.mimeType,
+                  dataUrl: image.dataUrl,
+                }))
+              );
+              itemPhotoSavedCount = selectedImagesForUpload.length;
+              savedPhotoCount += selectedImagesForUpload.length;
+            } catch (photoError) {
+              console.error("[OnboardingPage] visual review catalog photo upload error:", photoError);
+              const reason = photoError instanceof Error ? photoError.message : "Erro ao salvar fotos.";
+              itemPhotoFailedCount = selectedImagesForUpload.length;
+              failedPhotoCount += selectedImagesForUpload.length;
+              photoFailures.push({ name: itemName, reason });
+            }
+          }
           if (category === "quimicos") savedQuimicos += 1;
           else if (category === "acessorios") savedAcessorios += 1;
           else savedOutros += 1;
@@ -6801,6 +6924,8 @@ export default function IntelligentCatalogImportPanel({
                 : category === "acessorios"
                   ? "Catalogo > Acessorios"
                   : "Catalogo > Outros",
+            photoSavedCount: itemPhotoSavedCount,
+            photoFailedCount: itemPhotoFailedCount,
           });
         } catch (itemError) {
           console.error("[OnboardingPage] handleSaveApprovedVisualReviewItemsToCatalog item error:", itemError);
@@ -6815,8 +6940,11 @@ export default function IntelligentCatalogImportPanel({
       const saveResult: VisualReviewSaveResult = {
         savedCount: totalSaved,
         failedCount: failedItems.length,
+        savedPhotoCount,
+        failedPhotoCount,
         savedItems,
         failedItems,
+        photoFailures,
         savedByCategory: {
           piscinas: savedPools,
           quimicos: savedQuimicos,
@@ -6842,6 +6970,8 @@ export default function IntelligentCatalogImportPanel({
       );
       setParentSuccess(
         `${totalSaved} item(ns) salvos. Piscinas: ${savedPools}. Quimicos: ${savedQuimicos}. Acessorios: ${savedAcessorios}. Outros: ${savedOutros}.` +
+          (savedPhotoCount > 0 ? ` Fotos salvas: ${savedPhotoCount}.` : "") +
+          (failedPhotoCount > 0 ? ` ${failedPhotoCount} foto(s) falharam.` : "") +
           (itemErrors.length > 0 ? ` ${itemErrors.length} falharam: ${itemErrors.slice(0, 5).join(" | ")}` : "")
       );
       await onSaved?.();
@@ -8931,7 +9061,7 @@ async function handleSaveImportedItemsToCatalog() {
                                           </p>
                                         ) : null}
                                         <p className="mt-1 text-emerald-800">
-                                          Fotos ainda nao serao salvas nesta etapa.
+                                          Fotos selecionadas serao salvas junto com os itens aprovados.
                                         </p>
                                       </div>
                                       {visualReviewSavePreview.readyItems.length > 0 ? (
@@ -8976,6 +9106,13 @@ async function handleSaveImportedItemsToCatalog() {
                                               {visualReviewSaveResult.savedCount} item(ns) foram salvos no catalogo.
                                             </p>
                                           ) : null}
+                                          {visualReviewSaveResult.savedPhotoCount > 0 ||
+                                          visualReviewSaveResult.failedPhotoCount > 0 ? (
+                                            <p className="mt-1 text-emerald-900">
+                                              Fotos: {visualReviewSaveResult.savedPhotoCount} salva(s),{" "}
+                                              {visualReviewSaveResult.failedPhotoCount} falharam.
+                                            </p>
+                                          ) : null}
                                           {visualReviewSaveResult.savedCount > 0 &&
                                           visualReviewSaveResult.failedCount === 0 &&
                                           visualReviewSavePreview.blockedItems.length === 0 ? (
@@ -9016,6 +9153,12 @@ async function handleSaveImportedItemsToCatalog() {
                                                     className="break-words"
                                                   >
                                                     {savedItem.name} - {savedItem.destination}
+                                                    {savedItem.photoSavedCount ? ` com ${savedItem.photoSavedCount} foto(s)` : ""}
+                                                    {savedItem.photoFailedCount
+                                                      ? savedItem.photoSavedCount
+                                                        ? `; ${savedItem.photoFailedCount} foto(s) falharam`
+                                                        : "; item salvo, mas foto(s) nao foram salvas"
+                                                      : ""}
                                                   </p>
                                                 ))}
                                                 {visualReviewSaveResult.savedItems.length > 8 ? (
@@ -9043,6 +9186,28 @@ async function handleSaveImportedItemsToCatalog() {
                                                 {visualReviewSaveResult.failedItems.length > 5 ? (
                                                   <p>
                                                     Mais {visualReviewSaveResult.failedItems.length - 5} falha(s).
+                                                  </p>
+                                                ) : null}
+                                              </div>
+                                            </div>
+                                          ) : null}
+                                          {visualReviewSaveResult.photoFailures.length > 0 ? (
+                                            <div className="mt-2 rounded-lg bg-amber-50 p-2 text-amber-900 ring-1 ring-amber-100">
+                                              <p className="font-medium">
+                                                {visualReviewSaveResult.failedPhotoCount} foto(s) nao foram salvas.
+                                              </p>
+                                              <div className="mt-1 space-y-1">
+                                                {visualReviewSaveResult.photoFailures.slice(0, 5).map((failedPhoto, index) => (
+                                                  <p
+                                                    key={`visual-review-photo-failed-result-${failedPhoto.name}-${index}`}
+                                                    className="break-words"
+                                                  >
+                                                    {failedPhoto.name}: {failedPhoto.reason}
+                                                  </p>
+                                                ))}
+                                                {visualReviewSaveResult.photoFailures.length > 5 ? (
+                                                  <p>
+                                                    Mais {visualReviewSaveResult.photoFailures.length - 5} falha(s) de foto.
                                                   </p>
                                                 ) : null}
                                               </div>
