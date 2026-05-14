@@ -480,6 +480,7 @@ function buildEditableVisualReviewItemsFromCandidates(
 function buildVisualReviewSavePreviewItem(item: EditableVisualReviewItem): VisualReviewSavePreviewItem {
   const blockers: string[] = [];
   const warnings: string[] = [];
+  const priceInput = parseVisualReviewPriceInput(item.price);
 
   if (item.reviewState !== "approved") {
     blockers.push("Item nao aprovado");
@@ -489,6 +490,9 @@ function buildVisualReviewSavePreviewItem(item: EditableVisualReviewItem): Visua
   }
   if (!item.category) {
     blockers.push("Categoria nao escolhida");
+  }
+  if (priceInput.error) {
+    blockers.push("Preco invalido ou ambiguo");
   }
   if (!item.dimensionsText.trim()) {
     warnings.push(item.category === "pool" ? "Piscina sem medidas revisadas" : "Medidas vazias");
@@ -505,8 +509,49 @@ function mapVisualReviewCategoryToCatalogCategory(
   return null;
 }
 function parseVisualReviewPriceCents(value: string) {
-  const parsed = parseImportedDecimal(value);
-  return parsed == null ? null : Math.max(0, Math.round(parsed * 100));
+  return parseVisualReviewPriceInput(value).cents;
+}
+function parseVisualReviewPriceInput(value: string): {
+  amount: number | null;
+  cents: number | null;
+  error: string | null;
+  isAmbiguous: boolean;
+} {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return { amount: null, cents: null, error: null, isAmbiguous: false };
+  }
+
+  const numericSource = raw.replace(/[^\d,.]/g, "");
+  const digitsOnly = numericSource.replace(/\D/g, "");
+  const hasSeparator = /[,.]/.test(numericSource);
+
+  if (!hasSeparator && digitsOnly.length >= 7) {
+    return {
+      amount: null,
+      cents: null,
+      error: "Preco muito alto sem separador. Use formato como 150.000,00.",
+      isAmbiguous: true,
+    };
+  }
+
+  const parsed = parseImportedDecimal(raw);
+  if (parsed == null) {
+    return {
+      amount: null,
+      cents: null,
+      error: "Preco invalido ou ambiguo.",
+      isAmbiguous: false,
+    };
+  }
+
+  const amount = Math.max(0, parsed);
+  return {
+    amount,
+    cents: Math.max(0, Math.round(amount * 100)),
+    error: null,
+    isAmbiguous: false,
+  };
 }
 function parseVisualReviewStockQuantity(value: string) {
   const parsed = parseImportedDecimal(value);
@@ -5945,7 +5990,8 @@ export default function IntelligentCatalogImportPanel({
               throw new Error("Piscina aprovada sem medidas suficientes.");
             }
 
-            const price = parseImportedDecimal(item.price);
+            const priceInput = parseVisualReviewPriceInput(item.price);
+            if (priceInput.error) throw new Error("Preco invalido ou ambiguo.");
             const stockQuantity = parseVisualReviewStockQuantity(item.stock);
             const description = [
               item.description.trim(),
@@ -5963,7 +6009,7 @@ export default function IntelligentCatalogImportPanel({
               material: metrics.material,
               max_capacity_l: maxCapacity,
               weight_kg: null,
-              price: price ?? null,
+              price: priceInput.amount,
               description: description || null,
               is_active: item.isActive,
               track_stock: true,
@@ -6020,7 +6066,9 @@ export default function IntelligentCatalogImportPanel({
           const cleanSku = String(item.sku || item.code || "").trim();
           const sku = cleanSku || null;
           const metadata = buildVisualReviewItemMetadata(item, category);
-          const priceCents = parseVisualReviewPriceCents(item.price);
+          const priceInput = parseVisualReviewPriceInput(item.price);
+          if (priceInput.error) throw new Error("Preco invalido ou ambiguo.");
+          const priceCents = priceInput.cents;
           const stockQuantity = parseVisualReviewStockQuantity(item.stock);
           const description = item.description.trim() || null;
 
@@ -7752,6 +7800,7 @@ async function handleSaveImportedItemsToCatalog() {
                                             : item.reviewState === "ignored"
                                               ? "Ignorado"
                                               : "Pendente";
+                                        const priceInput = parseVisualReviewPriceInput(item.price);
                                         return (
                                           <div
                                             key={item.id}
@@ -7782,6 +7831,11 @@ async function handleSaveImportedItemsToCatalog() {
                                                 <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
                                                   {item.saved ? "Salvo" : statusLabel}
                                                 </span>
+                                                {priceInput.error ? (
+                                                  <span className="rounded-full bg-red-50 px-2 py-1 text-xs font-medium text-red-700 ring-1 ring-red-100">
+                                                    Preco invalido
+                                                  </span>
+                                                ) : null}
                                                 <button
                                                   type="button"
                                                   onClick={() =>
@@ -7867,8 +7921,17 @@ async function handleSaveImportedItemsToCatalog() {
                                                     onChange={(event) =>
                                                       updateEditableVisualReviewItem(item.id, { price: event.target.value })
                                                     }
+                                                    placeholder="Ex.: 150.000,00"
                                                     className="mt-1 w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
                                                   />
+                                                  <p className="mt-1 text-[11px] leading-4 text-gray-500">
+                                                    Use virgula para centavos. Ex.: 129,90 ou 1.200,00
+                                                  </p>
+                                                  {priceInput.error ? (
+                                                    <p className="mt-1 text-[11px] leading-4 text-red-700">
+                                                      {priceInput.error}
+                                                    </p>
+                                                  ) : null}
                                                 </label>
                                                 <label className="block">
                                                   <span className="text-xs font-medium text-gray-700">Estoque</span>
@@ -8028,9 +8091,17 @@ async function handleSaveImportedItemsToCatalog() {
                                             </p>
                                           ) : null}
                                           {visualReviewSaveResult.savedCount > 0 &&
-                                          visualReviewSaveResult.failedCount === 0 ? (
+                                          visualReviewSaveResult.failedCount === 0 &&
+                                          visualReviewSavePreview.blockedItems.length === 0 ? (
                                             <p className="mt-1 text-emerald-900">
                                               Tudo certo. Os itens aprovados ja estao no catalogo.
+                                            </p>
+                                          ) : null}
+                                          {visualReviewSaveResult.savedCount > 0 &&
+                                          visualReviewSaveResult.failedCount === 0 &&
+                                          visualReviewSavePreview.blockedItems.length > 0 ? (
+                                            <p className="mt-1 text-emerald-900">
+                                              Os itens prontos foram salvos. Revise os itens que ainda precisam de ajuste.
                                             </p>
                                           ) : null}
                                           {visualReviewSaveResult.savedCount > 0 ? (
