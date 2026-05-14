@@ -146,6 +146,25 @@ type VisualReviewSavePreviewItem = {
   blockers: string[];
   warnings: string[];
 };
+type VisualReviewSaveResult = {
+  savedCount: number;
+  failedCount: number;
+  savedItems: Array<{
+    name: string;
+    category: string;
+    destination: string;
+  }>;
+  failedItems: Array<{
+    name: string;
+    reason: string;
+  }>;
+  savedByCategory: {
+    piscinas: number;
+    quimicos: number;
+    acessorios: number;
+    outros: number;
+  };
+};
 type VisualCatalogDocumentScanResponse =
   | {
       ok: true;
@@ -4744,6 +4763,7 @@ export default function IntelligentCatalogImportPanel({
   >([]);
   const visualReviewSourceSignatureRef = useRef<string | null>(null);
   const [visualReviewItems, setVisualReviewItems] = useState<EditableVisualReviewItem[]>([]);
+  const [visualReviewSaveResult, setVisualReviewSaveResult] = useState<VisualReviewSaveResult | null>(null);
   const [visualEvidencePagesInput, setVisualEvidencePagesInput] = useState("3,4,5,12");
   const visualEvidencePagesManuallyEditedRef = useRef(false);
   const [visualEvidenceLoading, setVisualEvidenceLoading] = useState(false);
@@ -5898,6 +5918,7 @@ export default function IntelligentCatalogImportPanel({
     setSavingImportedCatalog(true);
     setParentError(null);
     setParentSuccess(null);
+    setVisualReviewSaveResult(null);
 
     let savedPools = 0;
     let savedAcessorios = 0;
@@ -5906,6 +5927,8 @@ export default function IntelligentCatalogImportPanel({
     const savedItemIds = new Set<string>();
     const savedIdentityKeys = new Set<string>();
     const itemErrors: string[] = [];
+    const savedItems: VisualReviewSaveResult["savedItems"] = [];
+    const failedItems: VisualReviewSaveResult["failedItems"] = [];
 
     try {
       for (const item of approvedReadyItems) {
@@ -5983,6 +6006,11 @@ export default function IntelligentCatalogImportPanel({
             savedPools += 1;
             savedIdentityKeys.add(identityKey);
             savedItemIds.add(item.id);
+            savedItems.push({
+              name: itemName,
+              category: "Piscina",
+              destination: "Piscinas",
+            });
             continue;
           }
 
@@ -6071,15 +6099,45 @@ export default function IntelligentCatalogImportPanel({
           else savedOutros += 1;
           savedIdentityKeys.add(identityKey);
           savedItemIds.add(item.id);
+          savedItems.push({
+            name: itemName,
+            category:
+              category === "quimicos"
+                ? "Quimico"
+                : category === "acessorios"
+                  ? "Acessorio"
+                  : "Outro",
+            destination:
+              category === "quimicos"
+                ? "Catalogo > Quimicos"
+                : category === "acessorios"
+                  ? "Catalogo > Acessorios"
+                  : "Catalogo > Outros",
+          });
         } catch (itemError) {
           console.error("[OnboardingPage] handleSaveApprovedVisualReviewItemsToCatalog item error:", itemError);
           const label = item.name || item.sku || item.code || "Item sem nome";
           const reason = itemError instanceof Error ? itemError.message : "Erro inesperado.";
           itemErrors.push(`${label}: ${reason}`);
+          failedItems.push({ name: label, reason });
         }
       }
 
       const totalSaved = savedPools + savedAcessorios + savedQuimicos + savedOutros;
+      const saveResult: VisualReviewSaveResult = {
+        savedCount: totalSaved,
+        failedCount: failedItems.length,
+        savedItems,
+        failedItems,
+        savedByCategory: {
+          piscinas: savedPools,
+          quimicos: savedQuimicos,
+          acessorios: savedAcessorios,
+          outros: savedOutros,
+        },
+      };
+      setVisualReviewSaveResult(saveResult);
+
       if (totalSaved === 0) {
         setParentError(
           itemErrors.length > 0
@@ -7958,6 +8016,80 @@ async function handleSaveImportedItemsToCatalog() {
                                             <p>
                                               Mais {visualReviewSavePreview.blockedItems.length - 5} item(ns) precisam de ajuste.
                                             </p>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                      {visualReviewSaveResult ? (
+                                        <div className="mt-3 rounded-lg bg-emerald-50 p-3 text-emerald-950 ring-1 ring-emerald-100">
+                                          <p className="text-sm font-semibold">Resultado do salvamento</p>
+                                          {visualReviewSaveResult.savedCount > 0 ? (
+                                            <p className="mt-2">
+                                              {visualReviewSaveResult.savedCount} item(ns) foram salvos no catalogo.
+                                            </p>
+                                          ) : null}
+                                          {visualReviewSaveResult.savedCount > 0 &&
+                                          visualReviewSaveResult.failedCount === 0 ? (
+                                            <p className="mt-1 text-emerald-900">
+                                              Tudo certo. Os itens aprovados ja estao no catalogo.
+                                            </p>
+                                          ) : null}
+                                          {visualReviewSaveResult.savedCount > 0 ? (
+                                            <div className="mt-2 flex flex-wrap gap-2">
+                                              <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-100">
+                                                Piscinas: {visualReviewSaveResult.savedByCategory.piscinas}
+                                              </span>
+                                              <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-100">
+                                                Quimicos: {visualReviewSaveResult.savedByCategory.quimicos}
+                                              </span>
+                                              <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-100">
+                                                Acessorios: {visualReviewSaveResult.savedByCategory.acessorios}
+                                              </span>
+                                              <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-100">
+                                                Outros: {visualReviewSaveResult.savedByCategory.outros}
+                                              </span>
+                                            </div>
+                                          ) : null}
+                                          {visualReviewSaveResult.savedItems.length > 0 ? (
+                                            <div className="mt-2">
+                                              <p className="font-medium">Itens salvos:</p>
+                                              <div className="mt-1 space-y-1">
+                                                {visualReviewSaveResult.savedItems.slice(0, 8).map((savedItem, index) => (
+                                                  <p
+                                                    key={`visual-review-saved-result-${savedItem.name}-${index}`}
+                                                    className="break-words"
+                                                  >
+                                                    {savedItem.name} - {savedItem.destination}
+                                                  </p>
+                                                ))}
+                                                {visualReviewSaveResult.savedItems.length > 8 ? (
+                                                  <p>
+                                                    Mais {visualReviewSaveResult.savedItems.length - 8} item(ns) salvos.
+                                                  </p>
+                                                ) : null}
+                                              </div>
+                                            </div>
+                                          ) : null}
+                                          {visualReviewSaveResult.failedCount > 0 ? (
+                                            <div className="mt-2 rounded-lg bg-amber-50 p-2 text-amber-900 ring-1 ring-amber-100">
+                                              <p className="font-medium">
+                                                {visualReviewSaveResult.failedCount} item(ns) nao foram salvos.
+                                              </p>
+                                              <div className="mt-1 space-y-1">
+                                                {visualReviewSaveResult.failedItems.slice(0, 5).map((failedItem, index) => (
+                                                  <p
+                                                    key={`visual-review-failed-result-${failedItem.name}-${index}`}
+                                                    className="break-words"
+                                                  >
+                                                    {failedItem.name}: {failedItem.reason}
+                                                  </p>
+                                                ))}
+                                                {visualReviewSaveResult.failedItems.length > 5 ? (
+                                                  <p>
+                                                    Mais {visualReviewSaveResult.failedItems.length - 5} falha(s).
+                                                  </p>
+                                                ) : null}
+                                              </div>
+                                            </div>
                                           ) : null}
                                         </div>
                                       ) : null}
