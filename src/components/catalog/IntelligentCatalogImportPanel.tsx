@@ -126,7 +126,8 @@ type EditableVisualReviewItem = {
   sku: string;
   code: string;
   price: string;
-  selectedImageKey: string;
+  selectedImageKey?: string;
+  selectedImageKeys: string[];
   dimensionsText: string;
   dimensionsList: string[];
   material: string;
@@ -149,7 +150,8 @@ type VisualReviewSavePreviewItem = {
   warnings: string[];
 };
 type VisualReviewSelectedImageSummary = {
-  readyToUploadCount: number;
+  readyToUploadItemCount: number;
+  selectedImageCount: number;
   withoutPhotoCount: number;
   noSelectionCount: number;
   relatedWithoutPreviewCount: number;
@@ -477,6 +479,7 @@ function buildEditableVisualReviewItemsFromCandidates(
       code: candidate.code || sku,
       price: "",
       selectedImageKey: "",
+      selectedImageKeys: [],
       dimensionsText: candidate.dimensionsList.join(" | ") || candidate.dimensions || "",
       dimensionsList: candidate.dimensionsList,
       material: candidate.material || "",
@@ -877,9 +880,7 @@ function getVisualReviewSuggestedImages(
       if (left.pageNumber !== right.pageNumber) return left.pageNumber - right.pageNumber;
       return left.fileName.localeCompare(right.fileName);
     });
-  const candidatesWithPreview = candidates
-    .filter((image) => String(image.dataUrl || "").trim())
-    .slice(0, 3);
+  const candidatesWithPreview = candidates.filter((image) => String(image.dataUrl || "").trim());
   const candidatesWithoutPreview = candidates.filter((image) => !String(image.dataUrl || "").trim());
 
   return {
@@ -889,20 +890,47 @@ function getVisualReviewSuggestedImages(
     matchedPages: Array.from(new Set(candidates.map((image) => image.pageNumber))).sort((a, b) => a - b),
   };
 }
+function getVisualReviewSelectedImageKeys(item: EditableVisualReviewItem): string[] {
+  const selectedImageKeys = Array.isArray(item.selectedImageKeys) ? item.selectedImageKeys : [];
+  const legacySelectedImageKey = String(item.selectedImageKey || "").trim();
+  const keys = selectedImageKeys
+    .map((key) => String(key || "").trim())
+    .filter((key) => key && key !== VISUAL_REVIEW_NO_IMAGE_KEY);
+
+  if (
+    keys.length === 0 &&
+    legacySelectedImageKey &&
+    legacySelectedImageKey !== VISUAL_REVIEW_NO_IMAGE_KEY
+  ) {
+    keys.push(legacySelectedImageKey);
+  }
+
+  return Array.from(new Set(keys));
+}
+function isVisualReviewMarkedWithoutPhoto(item: EditableVisualReviewItem): boolean {
+  return String(item.selectedImageKey || "").trim() === VISUAL_REVIEW_NO_IMAGE_KEY;
+}
+function getSelectedVisualReviewImagesForUpload(
+  item: EditableVisualReviewItem,
+  images: VisualReviewExtractedImagePreview[],
+  preferredSourceFileName?: string | null
+): VisualReviewSuggestedImage[] {
+  if (isVisualReviewMarkedWithoutPhoto(item)) return [];
+
+  const selectedImageKeys = new Set(getVisualReviewSelectedImageKeys(item));
+  if (selectedImageKeys.size === 0) return [];
+
+  const suggestions = getVisualReviewSuggestedImages(item, images, preferredSourceFileName);
+  return suggestions.candidatesWithPreview.filter(
+    (image) => selectedImageKeys.has(image.key) && Boolean(String(image.dataUrl || "").trim())
+  );
+}
 function getSelectedVisualReviewImageForUpload(
   item: EditableVisualReviewItem,
   images: VisualReviewExtractedImagePreview[],
   preferredSourceFileName?: string | null
 ): VisualReviewSuggestedImage | null {
-  const selectedImageKey = String(item.selectedImageKey || "").trim();
-  if (!selectedImageKey || selectedImageKey === VISUAL_REVIEW_NO_IMAGE_KEY) return null;
-
-  const suggestions = getVisualReviewSuggestedImages(item, images, preferredSourceFileName);
-  return (
-    suggestions.candidatesWithPreview.find(
-      (image) => image.key === selectedImageKey && Boolean(String(image.dataUrl || "").trim())
-    ) ?? null
-  );
+  return getSelectedVisualReviewImagesForUpload(item, images, preferredSourceFileName)[0] ?? null;
 }
 type IntelligentImportSelectedFilePreview = {
   name: string;
@@ -934,6 +962,15 @@ type PersistedVisualAnalysisCache = {
   visualDocumentMapResult: VisualCatalogDocumentMapResponse | null;
   visualEvidenceResult: VisualCatalogDocumentScanResponse | null;
 };
+type PersistedVisualAnalysisPreviewCache = {
+  cacheVersion: number;
+  createdAt: number;
+  expiresAt: number;
+  organizationId: string | null;
+  storeId: string | null;
+  file: VisualAnalysisCacheFileMeta;
+  extractedImagePreview: VisualReviewExtractedImagePreview[];
+};
 type ExistingCatalogItemRow = {
   id: string;
   sku: string | null;
@@ -948,6 +985,10 @@ const VISUAL_PDF_IMPORT_MESSAGE =
 const VISUAL_ANALYSIS_CACHE_VERSION = 1;
 const VISUAL_ANALYSIS_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const VISUAL_ANALYSIS_CACHE_MAX_CHARS = 450_000;
+const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEWS = 40;
+const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS = 700_000;
+const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_TOTAL_CHARS = 1_800_000;
+const VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS = 2_000_000;
 const VISUAL_ANALYSIS_MAIN_FLOW_MAX_RECOMMENDED_PAGES = 20;
 type IntelligentCatalogImportPanelProps = {
   organizationId: string | null | undefined;
@@ -1407,6 +1448,19 @@ function buildVisualAnalysisCachePrefix(params: {
     .join(":");
   return `zion:visual-catalog-analysis:v${VISUAL_ANALYSIS_CACHE_VERSION}:${scope}:${fileKey}:`;
 }
+function buildVisualAnalysisPreviewCacheKey(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+}) {
+  const scope = [params.organizationId || "org", params.storeId || "store"]
+    .map((value) => encodeURIComponent(String(value)))
+    .join(":");
+  const fileKey = [params.file.name, params.file.size, params.file.lastModified]
+    .map((value) => encodeURIComponent(String(value)))
+    .join(":");
+  return `zion:visual-catalog-preview-cache:v${VISUAL_ANALYSIS_CACHE_VERSION}:${scope}:${fileKey}`;
+}
 function getVisualAnalysisStorage() {
   if (typeof window === "undefined") return null;
   try {
@@ -1494,6 +1548,153 @@ function readLatestVisualAnalysisCacheForFile(params: {
 
   return best;
 }
+function buildVisualAnalysisCacheImagePreviews(params: {
+  images: VisualReviewExtractedImagePreview[];
+  pages: number[];
+  fileName?: string | null;
+}) {
+  const pages = new Set(normalizeVisualAnalysisPageList(params.pages));
+  if (pages.size === 0) return [];
+
+  const normalizedFileName = normalizeImportedLoose(params.fileName);
+  const seen = new Set<string>();
+  const previews: VisualReviewExtractedImagePreview[] = [];
+  let previewChars = 0;
+
+  for (const image of params.images) {
+    if (previews.length >= VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEWS) break;
+    if (String(image.source || "").toLowerCase() !== "pdf") continue;
+    const dataUrl = String(image.dataUrl || "").trim();
+    if (!dataUrl) continue;
+    if (dataUrl.length > VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS) continue;
+    if (previewChars + dataUrl.length > VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_TOTAL_CHARS) break;
+
+    const pageNumber = getVisualReviewImagePageNumber(image);
+    if (!pageNumber || !pages.has(pageNumber)) continue;
+
+    const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim();
+    if (
+      normalizedFileName &&
+      sourceFileName &&
+      normalizeImportedLoose(sourceFileName) !== normalizedFileName
+    ) {
+      continue;
+    }
+
+    const key = [
+      pageNumber,
+      image.imageOrder ?? "",
+      image.worksheetRowNumber ?? "",
+      image.sheetScopedKey ?? "",
+      image.fileName ?? "",
+    ].join("::");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    previewChars += dataUrl.length;
+
+    previews.push({
+      sourceFileName: image.sourceFileName,
+      originalSourceFileName: image.originalSourceFileName,
+      fileName: image.fileName || `${sourceFileName || params.fileName || "catalogo"}#page-${pageNumber}`,
+      source: image.source,
+      mimeType: image.mimeType || "image/png",
+      dataUrl,
+      sheetName: image.sheetName,
+      rowIndex: image.rowIndex,
+      columnIndex: image.columnIndex,
+      anchorCell: image.anchorCell,
+      imageOrder: typeof image.imageOrder === "number" ? image.imageOrder : pageNumber - 1,
+      worksheetRowNumber:
+        typeof image.worksheetRowNumber === "number" ? image.worksheetRowNumber : pageNumber,
+      sheetScopedKey: image.sheetScopedKey,
+    });
+  }
+
+  return previews;
+}
+function isVisualAnalysisPreviewCacheValid(
+  value: PersistedVisualAnalysisPreviewCache,
+  params: {
+    organizationId: string | null | undefined;
+    storeId: string | null | undefined;
+    file: VisualAnalysisCacheFileMeta;
+  }
+) {
+  if (!value || value.cacheVersion !== VISUAL_ANALYSIS_CACHE_VERSION) return false;
+  if (!value.expiresAt || value.expiresAt <= Date.now()) return false;
+  if ((value.organizationId || null) !== (params.organizationId || null)) return false;
+  if ((value.storeId || null) !== (params.storeId || null)) return false;
+  if (value.file?.name !== params.file.name) return false;
+  if (value.file?.size !== params.file.size) return false;
+  if (value.file?.lastModified !== params.file.lastModified) return false;
+  return Array.isArray(value.extractedImagePreview);
+}
+function readVisualAnalysisPreviewCache(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+}) {
+  const storage = getVisualAnalysisStorage();
+  if (!storage) return [];
+  const key = buildVisualAnalysisPreviewCacheKey(params);
+  const raw = storage.getItem(key);
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw) as PersistedVisualAnalysisPreviewCache;
+    if (!isVisualAnalysisPreviewCacheValid(parsed, params)) {
+      storage.removeItem(key);
+      return [];
+    }
+    return parsed.extractedImagePreview.filter((image) => String(image.dataUrl || "").trim());
+  } catch (error) {
+    console.error("[OnboardingPage] visual analysis preview cache parse error:", error);
+    storage.removeItem(key);
+    return [];
+  }
+}
+function writeVisualAnalysisPreviewCache(
+  params: {
+    organizationId: string | null | undefined;
+    storeId: string | null | undefined;
+    file: VisualAnalysisCacheFileMeta;
+  },
+  extractedImagePreview: VisualReviewExtractedImagePreview[]
+) {
+  const storage = getVisualAnalysisStorage();
+  if (!storage || extractedImagePreview.length === 0) return;
+
+  const value: PersistedVisualAnalysisPreviewCache = {
+    cacheVersion: VISUAL_ANALYSIS_CACHE_VERSION,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + VISUAL_ANALYSIS_CACHE_TTL_MS,
+    organizationId: params.organizationId || null,
+    storeId: params.storeId || null,
+    file: params.file,
+    extractedImagePreview,
+  };
+  const serialized = JSON.stringify(value);
+  if (serialized.length > VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS) return;
+
+  try {
+    storage.setItem(buildVisualAnalysisPreviewCacheKey(params), serialized);
+  } catch (error) {
+    console.error("[OnboardingPage] visual analysis preview cache setItem error:", error);
+  }
+}
+function removeVisualAnalysisPreviewCacheForFile(params: {
+  organizationId: string | null | undefined;
+  storeId: string | null | undefined;
+  file: VisualAnalysisCacheFileMeta;
+}) {
+  const storage = getVisualAnalysisStorage();
+  if (!storage) return;
+  try {
+    storage.removeItem(buildVisualAnalysisPreviewCacheKey(params));
+  } catch (error) {
+    console.error("[OnboardingPage] visual analysis preview cache remove error:", error);
+  }
+}
 function writeVisualAnalysisCache(
   params: {
     organizationId: string | null | undefined;
@@ -1568,6 +1769,7 @@ function removeVisualAnalysisCacheForFile(params: {
     for (const key of keysToRemove) {
       storage.removeItem(key);
     }
+    removeVisualAnalysisPreviewCacheForFile(params);
   } catch (error) {
     console.error("[OnboardingPage] visual analysis cache remove file error:", error);
   }
@@ -1575,8 +1777,30 @@ function removeVisualAnalysisCacheForFile(params: {
 function buildRestoredVisualPdfImportResult(params: {
   file: VisualAnalysisCacheFileMeta;
   totalPages: number | null;
+  extractedImagePreview?: VisualReviewExtractedImagePreview[];
 }): IntelligentImportResponse {
   const totalPages = params.totalPages && params.totalPages > 0 ? Math.floor(params.totalPages) : 1;
+  const restoredImagePreviews = Array.isArray(params.extractedImagePreview)
+    ? params.extractedImagePreview.filter(
+        (image) =>
+          String(image.source || "").toLowerCase() === "pdf" &&
+          Boolean(String(image.dataUrl || "").trim())
+      )
+    : [];
+  const restoredPreviewPages = new Set(
+    restoredImagePreviews
+      .map((image) => getVisualReviewImagePageNumber(image))
+      .filter((pageNumber): pageNumber is number => Boolean(pageNumber))
+  );
+  const placeholderImagePreviews = Array.from({ length: totalPages }, (_, index) => ({
+    sourceFileName: params.file.name,
+    fileName: `${params.file.name}#page-${index + 1}`,
+    source: "pdf",
+    mimeType: "image/png",
+    dataUrl: "",
+    imageOrder: index,
+    worksheetRowNumber: index + 1,
+  })).filter((image) => !restoredPreviewPages.has(image.worksheetRowNumber));
   return {
     ok: true,
     message: VISUAL_PDF_IMPORT_MESSAGE,
@@ -1595,15 +1819,10 @@ function buildRestoredVisualPdfImportResult(params: {
         textPreview: "",
       },
     ],
-    extractedImagePreview: Array.from({ length: totalPages }, (_, index) => ({
-      sourceFileName: params.file.name,
-      fileName: `${params.file.name}#page-${index + 1}`,
-      source: "pdf",
-      mimeType: "image/png",
-      dataUrl: "",
-      imageOrder: index,
-      worksheetRowNumber: index + 1,
-    })),
+    extractedImagePreview:
+      restoredImagePreviews.length > 0
+        ? [...restoredImagePreviews, ...placeholderImagePreviews]
+        : placeholderImagePreviews,
     normalizedPreview: [],
     dedupedPreview: [],
   };
@@ -5089,8 +5308,16 @@ export default function IntelligentCatalogImportPanel({
     EditableVisualCatalogDraft[]
   >([]);
   const visualReviewSourceSignatureRef = useRef<string | null>(null);
+  const latestExtractedImagePreviewRef = useRef<VisualReviewExtractedImagePreview[]>([]);
   const [visualReviewItems, setVisualReviewItems] = useState<EditableVisualReviewItem[]>([]);
   const [visualReviewSaveResult, setVisualReviewSaveResult] = useState<VisualReviewSaveResult | null>(null);
+  const [expandedVisualReviewImage, setExpandedVisualReviewImage] = useState<{
+    itemId: string;
+    key: string;
+    dataUrl: string;
+    fileName: string;
+    pageNumber: number;
+  } | null>(null);
   const [visualEvidencePagesInput, setVisualEvidencePagesInput] = useState("3,4,5,12");
   const visualEvidencePagesManuallyEditedRef = useRef(false);
   const [visualEvidenceLoading, setVisualEvidenceLoading] = useState(false);
@@ -5157,6 +5384,9 @@ export default function IntelligentCatalogImportPanel({
     const candidate = intelligentImportResult.extractedImagePreview;
     return Array.isArray(candidate) ? candidate : [];
   }, [intelligentImportResult]);
+  useEffect(() => {
+    latestExtractedImagePreviewRef.current = safeExtractedImagePreview;
+  }, [safeExtractedImagePreview]);
   const hasVisualPdfImportResult = useMemo(
     () => Boolean(intelligentImportResult && isVisualPdfImportResult(intelligentImportResult)),
     [intelligentImportResult]
@@ -5235,14 +5465,15 @@ export default function IntelligentCatalogImportPanel({
     };
   }, [visualReviewItems]);
   const visualReviewSelectedImageSummary = useMemo<VisualReviewSelectedImageSummary>(() => {
-    let readyToUploadCount = 0;
+    let readyToUploadItemCount = 0;
+    let selectedImageCount = 0;
     let withoutPhotoCount = 0;
     let noSelectionCount = 0;
     let relatedWithoutPreviewCount = 0;
 
     for (const item of visualReviewSavePreview.approvedItems) {
-      const selectedImageKey = String(item.selectedImageKey || "").trim();
-      const selectedImage = getSelectedVisualReviewImageForUpload(
+      const selectedImageKeys = getVisualReviewSelectedImageKeys(item);
+      const selectedImages = getSelectedVisualReviewImagesForUpload(
         item,
         safeExtractedImagePreview,
         visualPdfFileMeta?.name
@@ -5253,21 +5484,23 @@ export default function IntelligentCatalogImportPanel({
         visualPdfFileMeta?.name
       );
 
-      if (selectedImage) {
-        readyToUploadCount += 1;
-      } else if (selectedImageKey === VISUAL_REVIEW_NO_IMAGE_KEY) {
+      if (selectedImages.length > 0) {
+        readyToUploadItemCount += 1;
+        selectedImageCount += selectedImages.length;
+      } else if (isVisualReviewMarkedWithoutPhoto(item)) {
         withoutPhotoCount += 1;
-      } else if (!selectedImageKey) {
+      } else if (selectedImageKeys.length === 0) {
         noSelectionCount += 1;
       }
 
-      if (!selectedImage && suggestions.hasPageMatchWithoutPreview) {
+      if (selectedImages.length === 0 && suggestions.hasPageMatchWithoutPreview) {
         relatedWithoutPreviewCount += 1;
       }
     }
 
     return {
-      readyToUploadCount,
+      readyToUploadItemCount,
+      selectedImageCount,
       withoutPhotoCount,
       noSelectionCount,
       relatedWithoutPreviewCount,
@@ -5402,12 +5635,20 @@ export default function IntelligentCatalogImportPanel({
     setVisualEvidenceError(null);
     setVisualEvidenceNotice(null);
     if (!intelligentImportResult?.ok) {
-      setIntelligentImportResult(
-        buildRestoredVisualPdfImportResult({
-          file: cache.file,
-          totalPages: cache.visualPdfTotalPages,
-        })
-      );
+      const previewCacheImages = readVisualAnalysisPreviewCache({
+        organizationId,
+        storeId,
+        file: cache.file,
+      });
+      const restoredImportResult = buildRestoredVisualPdfImportResult({
+        file: cache.file,
+        totalPages: cache.visualPdfTotalPages,
+        extractedImagePreview: previewCacheImages,
+      });
+      latestExtractedImagePreviewRef.current = restoredImportResult.ok
+        ? restoredImportResult.extractedImagePreview ?? []
+        : [];
+      setIntelligentImportResult(restoredImportResult);
     }
     setIntelligentImportSelectedFilesPreview((current) =>
       current.length > 0
@@ -5454,6 +5695,42 @@ export default function IntelligentCatalogImportPanel({
     visualEvidencePagesInput?: string;
   }) {
     if (!visualPdfFileMeta) return;
+    const previewPages = new Set(normalizeVisualAnalysisPageList(params.pages));
+    if (params.visualEvidenceResult?.ok) {
+      for (const evidence of params.visualEvidenceResult.pageEvidence) {
+        const pageNumber = Math.floor(Number(evidence.pageNumber || 0));
+        if (Number.isFinite(pageNumber) && pageNumber > 0) previewPages.add(pageNumber);
+      }
+    }
+    for (const candidate of visualDocumentAnalysis.consolidatedReviewCandidates) {
+      for (const pageNumber of candidate.sourcePages) {
+        const normalizedPage = Math.floor(Number(pageNumber || 0));
+        if (Number.isFinite(normalizedPage) && normalizedPage > 0) previewPages.add(normalizedPage);
+      }
+    }
+    for (const item of visualReviewItems) {
+      for (const pageNumber of item.sourcePages) {
+        const normalizedPage = Math.floor(Number(pageNumber || 0));
+        if (Number.isFinite(normalizedPage) && normalizedPage > 0) previewPages.add(normalizedPage);
+      }
+    }
+    const currentExtractedImagePreview =
+      safeExtractedImagePreview.length > 0
+        ? safeExtractedImagePreview
+        : latestExtractedImagePreviewRef.current;
+    const extractedImagePreview = buildVisualAnalysisCacheImagePreviews({
+      images: currentExtractedImagePreview,
+      pages: Array.from(previewPages),
+      fileName: visualPdfFileMeta.name,
+    });
+    writeVisualAnalysisPreviewCache(
+      {
+        organizationId,
+        storeId,
+        file: visualPdfFileMeta,
+      },
+      extractedImagePreview
+    );
     writeVisualAnalysisCache(
       {
         organizationId,
@@ -5528,6 +5805,11 @@ export default function IntelligentCatalogImportPanel({
         file: visualPdfFileMeta,
         pages,
       });
+      removeVisualAnalysisPreviewCacheForFile({
+        organizationId,
+        storeId,
+        file: visualPdfFileMeta,
+      });
     }
     lastVisualPdfFileRef.current = null;
     visualEvidencePagesManuallyEditedRef.current = false;
@@ -5535,6 +5817,7 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportSelectedFilesPreview([]);
     setIntelligentImportError(null);
     setIntelligentImportSuccess(null);
+    latestExtractedImagePreviewRef.current = [];
     setIntelligentImportResult(null);
     setVisualCatalogResult(null);
     setVisualCatalogError(null);
@@ -5570,6 +5853,7 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportLoading(true);
     setIntelligentImportError(null);
     setIntelligentImportSuccess(null);
+    latestExtractedImagePreviewRef.current = [];
     setIntelligentImportResult(null);
     setVisualCatalogResult(null);
     setVisualCatalogError(null);
@@ -5609,6 +5893,9 @@ export default function IntelligentCatalogImportPanel({
       }
       const decoratedResult = decorateIntelligentImportResultWithImageFallback(result, selectedFilesPreview);
       const frontendReadyResult = normalizeIntelligentImportResultForFrontend(decoratedResult);
+      latestExtractedImagePreviewRef.current = frontendReadyResult.ok
+        ? frontendReadyResult.extractedImagePreview ?? []
+        : [];
       setIntelligentImportResult(frontendReadyResult);
       if (isVisualPdfImportResult(frontendReadyResult)) {
         const automaticEvidencePages = selectAutomaticVisualEvidencePages(
@@ -5838,20 +6125,27 @@ export default function IntelligentCatalogImportPanel({
       0,
       maxRecommendedPages
     );
-    const totalRemainingBatches = Math.ceil(recommendedPages.length / 5);
+    const totalRemainingBatches = Math.max(1, Math.ceil(recommendedPages.length / 5));
     let batchIndex = 0;
+    let lastAnalyzedSignature = "";
 
-    while (batchIndex < totalRemainingBatches) {
+    while (batchIndex < totalRemainingBatches + 1) {
       const analyzedPages = new Set(
         normalizeVisualAnalysisPageList([
           ...(mergedResult?.ok ? mergedResult.requestedPages : []),
           ...getAnalyzedVisualEvidencePages(mergedResult),
         ])
       );
+      const analyzedSignature = Array.from(analyzedPages).sort((a, b) => a - b).join(",");
+      if (analyzedSignature && analyzedSignature === lastAnalyzedSignature) break;
+      lastAnalyzedSignature = analyzedSignature;
+
       const nextPages = normalizeVisualAnalysisPages(
         recommendedPages.filter((pageNumber) => !analyzedPages.has(pageNumber))
       );
-      if (nextPages.length === 0) break;
+      if (nextPages.length === 0) {
+        break;
+      }
 
       const displayBatch = batchIndex + 2;
       const displayTotal = Math.max(displayBatch, totalRemainingBatches + 1);
@@ -5868,6 +6162,15 @@ export default function IntelligentCatalogImportPanel({
       if (!nextResult?.ok || nextResult === mergedResult) {
         break;
       }
+
+      const nextAnalyzedPages = normalizeVisualAnalysisPageList([
+        ...nextResult.requestedPages,
+        ...getAnalyzedVisualEvidencePages(nextResult),
+      ]);
+      if (nextAnalyzedPages.join(",") === analyzedSignature) {
+        break;
+      }
+
       mergedResult = nextResult;
       batchIndex += 1;
     }
@@ -5904,6 +6207,7 @@ export default function IntelligentCatalogImportPanel({
       return null;
     }
 
+    let cachedEvidenceResultForContinuation: VisualCatalogDocumentScanResponse | null = null;
     const persistedCache = readLatestVisualAnalysisCacheForFile({
       organizationId,
       storeId,
@@ -5912,13 +6216,16 @@ export default function IntelligentCatalogImportPanel({
     if (persistedCache) {
       restoreVisualAnalysisCache(persistedCache);
       if (persistedCache.visualDocumentMapResult?.ok && persistedCache.visualEvidenceResult?.ok) {
-        return runRemainingVisualRecommendedBatches({
+        const completedResult = await runRemainingVisualRecommendedBatches({
           pdfFile,
           mapResult: persistedCache.visualDocumentMapResult,
           currentResult: persistedCache.visualEvidenceResult,
         });
+        return completedResult;
       }
-      return persistedCache.visualEvidenceResult?.ok ? persistedCache.visualEvidenceResult : null;
+      cachedEvidenceResultForContinuation = persistedCache.visualEvidenceResult?.ok
+        ? persistedCache.visualEvidenceResult
+        : null;
     }
 
     const cacheKey = buildVisualDocumentMapSessionCacheKey(pdfFile);
@@ -5929,19 +6236,23 @@ export default function IntelligentCatalogImportPanel({
       setVisualDocumentMapResult(cachedMap);
       setVisualDocumentMapError(null);
       setVisualEvidencePagesInputFromSystem(pagesToScan.join(","));
-      const initialResult = await runVisualEvidenceScanBatch({
-        pdfFile,
-        pages: pagesToScan,
-        mapResult: cachedMap,
-        currentResult: null,
-        notice: "Analisando paginas do PDF...",
-        resetResult: false,
-      });
-      return runRemainingVisualRecommendedBatches({
+      const initialResult =
+        cachedEvidenceResultForContinuation?.ok
+          ? cachedEvidenceResultForContinuation
+          : await runVisualEvidenceScanBatch({
+              pdfFile,
+              pages: pagesToScan,
+              mapResult: cachedMap,
+              currentResult: null,
+              notice: "Analisando paginas do PDF...",
+              resetResult: false,
+            });
+      const completedResult = await runRemainingVisualRecommendedBatches({
         pdfFile,
         mapResult: cachedMap,
         currentResult: initialResult,
       });
+      return completedResult;
     }
 
     setVisualDocumentMapLoading(true);
@@ -5980,19 +6291,23 @@ export default function IntelligentCatalogImportPanel({
         [cacheKey]: result,
       }));
       setVisualEvidencePagesInputFromSystem(pagesToScan.join(","));
-      const initialResult = await runVisualEvidenceScanBatch({
-        pdfFile,
-        pages: pagesToScan,
-        mapResult: result,
-        currentResult: null,
-        notice: "Analisando paginas do PDF...",
-        resetResult: false,
-      });
-      return runRemainingVisualRecommendedBatches({
+      const initialResult =
+        cachedEvidenceResultForContinuation?.ok
+          ? cachedEvidenceResultForContinuation
+          : await runVisualEvidenceScanBatch({
+              pdfFile,
+              pages: pagesToScan,
+              mapResult: result,
+              currentResult: null,
+              notice: "Analisando paginas do PDF...",
+              resetResult: false,
+            });
+      const completedResult = await runRemainingVisualRecommendedBatches({
         pdfFile,
         mapResult: result,
         currentResult: initialResult,
       });
+      return completedResult;
     } catch (error) {
       console.error("[OnboardingPage] handleRunVisualDocumentMapAndEvidenceScan error:", error);
       setVisualDocumentMapError("Nao foi possivel mapear o documento visual. Usando amostra inicial.");
@@ -7110,6 +7425,7 @@ async function handleSaveImportedItemsToCatalog() {
       setIntelligentImportSelectedFilesPreview(
         Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : []
       );
+      latestExtractedImagePreviewRef.current = [];
       setIntelligentImportResult(null);
       setIntelligentImportSuccess(parsed.successMessage ?? null);
       setIntelligentImportError(parsed.errorMessage ?? null);
@@ -7206,6 +7522,7 @@ async function handleSaveImportedItemsToCatalog() {
                       setIntelligentImportError(null);
                       if (!keepsCurrentVisualAnalysis) {
                         setIntelligentImportSuccess(null);
+                        latestExtractedImagePreviewRef.current = [];
                         setIntelligentImportResult(null);
                       }
                       if (input) {
@@ -8190,6 +8507,9 @@ async function handleSaveImportedItemsToCatalog() {
                                           safeExtractedImagePreview,
                                           visualPdfFileMeta?.name
                                         );
+                                        const selectedImageKeys = getVisualReviewSelectedImageKeys(item);
+                                        const selectedImageKeySet = new Set(selectedImageKeys);
+                                        const markedWithoutPhoto = isVisualReviewMarkedWithoutPhoto(item);
                                         return (
                                           <div
                                             key={item.id}
@@ -8389,12 +8709,14 @@ async function handleSaveImportedItemsToCatalog() {
                                                   <p className="font-medium text-gray-900">Imagem sugerida</p>
                                                   <label className="inline-flex items-center gap-1.5 text-gray-600">
                                                     <input
-                                                      type="radio"
-                                                      name={`visual-review-image-${item.id}`}
-                                                      checked={item.selectedImageKey === VISUAL_REVIEW_NO_IMAGE_KEY}
-                                                      onChange={() =>
+                                                      type="checkbox"
+                                                      checked={markedWithoutPhoto}
+                                                      onChange={(event) =>
                                                         updateEditableVisualReviewItem(item.id, {
-                                                          selectedImageKey: VISUAL_REVIEW_NO_IMAGE_KEY,
+                                                          selectedImageKey: event.target.checked
+                                                            ? VISUAL_REVIEW_NO_IMAGE_KEY
+                                                            : "",
+                                                          selectedImageKeys: [],
                                                         })
                                                       }
                                                       className="h-3.5 w-3.5"
@@ -8434,44 +8756,105 @@ async function handleSaveImportedItemsToCatalog() {
                                                 ) : null}
                                                 {imageSuggestions.candidatesWithPreview.length > 0 ? (
                                                   <div className="mt-2 flex min-w-0 flex-wrap gap-2">
-                                                    {imageSuggestions.candidatesWithPreview.map((image) => (
-                                                      <label
-                                                        key={image.key}
-                                                        className={cx(
-                                                          "min-w-0 overflow-hidden rounded-md border bg-gray-50 p-1.5",
-                                                          item.selectedImageKey === image.key
-                                                            ? "border-emerald-300 ring-1 ring-emerald-200"
-                                                            : "border-gray-200"
-                                                        )}
-                                                      >
-                                                        <div className="flex min-w-0 items-start gap-2">
-                                                          <input
-                                                            type="radio"
-                                                            name={`visual-review-image-${item.id}`}
-                                                            checked={item.selectedImageKey === image.key}
-                                                            onChange={() =>
-                                                              updateEditableVisualReviewItem(item.id, {
-                                                                selectedImageKey: image.key,
-                                                              })
-                                                            }
-                                                            className="mt-1 h-3.5 w-3.5 shrink-0"
-                                                          />
-                                                          <div className="min-w-0">
-                                                            <img
-                                                              src={image.dataUrl}
-                                                              alt={image.fileName}
-                                                              className="h-14 w-20 rounded object-cover ring-1 ring-gray-200"
+                                                    {imageSuggestions.candidatesWithPreview.map((image) => {
+                                                      const inputId = `visual-review-image-${item.id}-${image.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+                                                      const imageSelected = selectedImageKeySet.has(image.key);
+                                                      return (
+                                                        <div
+                                                          key={image.key}
+                                                          className={cx(
+                                                            "min-w-0 overflow-hidden rounded-md border bg-gray-50 p-1.5",
+                                                            imageSelected
+                                                              ? "border-emerald-300 ring-1 ring-emerald-200"
+                                                              : "border-gray-200"
+                                                          )}
+                                                        >
+                                                          <div className="flex min-w-0 items-start gap-2">
+                                                            <input
+                                                              id={inputId}
+                                                              type="checkbox"
+                                                              checked={imageSelected}
+                                                              onChange={(event) => {
+                                                                const nextSelectedImageKeys = event.target.checked
+                                                                  ? Array.from(new Set([...selectedImageKeys, image.key]))
+                                                                  : selectedImageKeys.filter((key) => key !== image.key);
+                                                                updateEditableVisualReviewItem(item.id, {
+                                                                  selectedImageKey: "",
+                                                                  selectedImageKeys: nextSelectedImageKeys,
+                                                                });
+                                                              }}
+                                                              className="mt-1 h-3.5 w-3.5 shrink-0"
                                                             />
-                                                            <p className="mt-1 truncate text-[11px] font-medium text-gray-800">
-                                                              Usar esta imagem
-                                                            </p>
-                                                            <p className="break-words text-[11px] text-gray-500">
-                                                              Pagina {image.pageNumber}
-                                                            </p>
+                                                            <div className="min-w-0">
+                                                              <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                  setExpandedVisualReviewImage({
+                                                                    itemId: item.id,
+                                                                    key: image.key,
+                                                                    dataUrl: image.dataUrl,
+                                                                    fileName: image.fileName,
+                                                                    pageNumber: image.pageNumber,
+                                                                  })
+                                                                }
+                                                                className="block rounded text-left focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                                                              >
+                                                                <img
+                                                                  src={image.dataUrl}
+                                                                  alt={image.fileName}
+                                                                  className="h-14 w-20 rounded object-cover ring-1 ring-gray-200"
+                                                                />
+                                                              </button>
+                                                              <label
+                                                                htmlFor={inputId}
+                                                                className="mt-1 block cursor-pointer truncate text-[11px] font-medium text-gray-800"
+                                                              >
+                                                                Selecionar imagem
+                                                              </label>
+                                                              <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                  setExpandedVisualReviewImage({
+                                                                    itemId: item.id,
+                                                                    key: image.key,
+                                                                    dataUrl: image.dataUrl,
+                                                                    fileName: image.fileName,
+                                                                    pageNumber: image.pageNumber,
+                                                                  })
+                                                                }
+                                                                className="mt-0.5 block text-[11px] font-medium text-emerald-700 hover:text-emerald-900"
+                                                              >
+                                                                Visualizar imagem
+                                                              </button>
+                                                              <p className="break-words text-[11px] text-gray-500">
+                                                                Pagina {image.pageNumber}
+                                                              </p>
+                                                            </div>
                                                           </div>
                                                         </div>
-                                                      </label>
-                                                    ))}
+                                                      );
+                                                    })}
+                                                  </div>
+                                                ) : null}
+                                                {expandedVisualReviewImage?.itemId === item.id ? (
+                                                  <div className="mt-2 min-w-0 rounded-md bg-gray-50 p-2 ring-1 ring-gray-200">
+                                                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                                                      <p className="break-words text-[11px] font-medium text-gray-800">
+                                                        Visualizar imagem - Pagina {expandedVisualReviewImage.pageNumber}
+                                                      </p>
+                                                      <button
+                                                        type="button"
+                                                        onClick={() => setExpandedVisualReviewImage(null)}
+                                                        className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] font-medium text-gray-700"
+                                                      >
+                                                        Fechar visualizacao
+                                                      </button>
+                                                    </div>
+                                                    <img
+                                                      src={expandedVisualReviewImage.dataUrl}
+                                                      alt={expandedVisualReviewImage.fileName}
+                                                      className="mt-2 max-h-[70vh] w-full max-w-full rounded object-contain ring-1 ring-gray-200"
+                                                    />
                                                   </div>
                                                 ) : null}
                                               </div>
@@ -8531,7 +8914,10 @@ async function handleSaveImportedItemsToCatalog() {
                                       <div className="mt-2 rounded-lg bg-emerald-50 p-2 text-emerald-950 ring-1 ring-emerald-100">
                                         <p className="font-medium">Fotos selecionadas para salvar depois</p>
                                         <p className="mt-1">
-                                          {visualReviewSelectedImageSummary.readyToUploadCount} item(ns) aprovado(s) tem imagem pronta para salvar.
+                                          {visualReviewSelectedImageSummary.readyToUploadItemCount} item(ns) aprovado(s) tem foto(s) pronta(s) para salvar.
+                                        </p>
+                                        <p>
+                                          {visualReviewSelectedImageSummary.selectedImageCount} foto(s) selecionada(s) no total.
                                         </p>
                                         <p>
                                           {visualReviewSelectedImageSummary.withoutPhotoCount} item(ns) aprovado(s) estao marcados sem foto.
