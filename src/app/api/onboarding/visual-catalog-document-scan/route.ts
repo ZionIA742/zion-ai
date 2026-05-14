@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 const nodeRequire = createRequire(`${process.cwd()}/package.json`);
 const MAX_DOCUMENT_SCAN_PAGES = 5;
 const PDF_RENDER_SCALE = 1;
+const MAX_PAGE_PREVIEW_DATA_URL_CHARS = 2_500_000;
 const VISUAL_CATALOG_MODEL = process.env.ZION_VISUAL_CATALOG_MODEL || "gpt-4.1-mini";
 const INVALID_JSON_MESSAGE =
   "A analise visual de uma pagina nao retornou evidencias estruturadas validas.";
@@ -40,6 +41,13 @@ type PageEvidence = {
   pageType: PageEvidenceType;
   items: PageEvidenceItem[];
   warnings: string[];
+};
+type PagePreview = {
+  pageNumber: number;
+  dataUrl: string;
+  mimeType: string;
+  fileName: string;
+  sourceFileName: string;
 };
 
 class VisualEvidenceInvalidJsonError extends Error {
@@ -78,6 +86,31 @@ function readPngDimensionsFromDataUrl(dataUrl: string) {
   return {
     width: buffer.readUInt32BE(16),
     height: buffer.readUInt32BE(20),
+  };
+}
+
+function buildPagePreviewFileName(fileName: string, pageNumber: number) {
+  const baseName = String(fileName || "catalogo")
+    .replace(/\.[^.]+$/i, "")
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 120) || "catalogo";
+  return `${baseName}-page-${String(pageNumber).padStart(3, "0")}.png`;
+}
+
+function buildPagePreview(params: {
+  sourceFileName: string;
+  pageNumber: number;
+  dataUrl: string;
+}): PagePreview | null {
+  const dataUrl = String(params.dataUrl || "").trim();
+  if (!dataUrl || dataUrl.length > MAX_PAGE_PREVIEW_DATA_URL_CHARS) return null;
+  return {
+    pageNumber: params.pageNumber,
+    dataUrl,
+    mimeType: "image/png",
+    fileName: buildPagePreviewFileName(params.sourceFileName, params.pageNumber),
+    sourceFileName: params.sourceFileName,
   };
 }
 
@@ -386,6 +419,7 @@ export async function POST(request: Request) {
       });
       const renderedPages = screenshot.pages ?? [];
       const pageEvidence: PageEvidence[] = [];
+      const pagePreviews: PagePreview[] = [];
       const warnings: string[] = [];
 
       for (const page of renderedPages) {
@@ -394,6 +428,14 @@ export async function POST(request: Request) {
         if (!pageNumber || !dataUrl) {
           warnings.push("Uma pagina solicitada nao foi renderizada.");
           continue;
+        }
+        const pagePreview = buildPagePreview({
+          sourceFileName: uploadedEntry.name,
+          pageNumber,
+          dataUrl,
+        });
+        if (pagePreview) {
+          pagePreviews.push(pagePreview);
         }
 
         try {
@@ -435,6 +477,7 @@ export async function POST(request: Request) {
         pageLimit: MAX_DOCUMENT_SCAN_PAGES,
         model: VISUAL_CATALOG_MODEL,
         pageEvidence,
+        pagePreviews,
         warnings,
       });
     } finally {

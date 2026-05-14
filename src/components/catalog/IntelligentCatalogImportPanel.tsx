@@ -225,6 +225,13 @@ type VisualCatalogDocumentScanResponse =
         }>;
         warnings: string[];
       }>;
+      pagePreviews?: Array<{
+        pageNumber: number;
+        dataUrl: string;
+        mimeType: string;
+        fileName: string;
+        sourceFileName: string;
+      }>;
       warnings: string[];
     }
   | {
@@ -996,9 +1003,10 @@ const VISUAL_ANALYSIS_CACHE_VERSION = 1;
 const VISUAL_ANALYSIS_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const VISUAL_ANALYSIS_CACHE_MAX_CHARS = 450_000;
 const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEWS = 40;
-const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS = 1_200_000;
-const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_TOTAL_CHARS = 3_500_000;
+const VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS = 5_000_000;
 const VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS = 4_000_000;
+const VISUAL_ANALYSIS_PREVIEW_CACHE_THUMBNAIL_WIDTH = 560;
+const VISUAL_ANALYSIS_PREVIEW_CACHE_THUMBNAIL_QUALITY = 0.72;
 const VISUAL_ANALYSIS_MAIN_FLOW_MAX_RECOMMENDED_PAGES = 20;
 type IntelligentCatalogImportPanelProps = {
   organizationId: string | null | undefined;
@@ -1570,7 +1578,6 @@ function buildVisualAnalysisCacheImagePreviews(params: {
   const normalizedFileName = normalizeImportedLoose(params.fileName);
   const seen = new Set<string>();
   const previews: VisualReviewExtractedImagePreview[] = [];
-  let previewChars = 0;
   const candidates = params.images
     .map((image, index) => {
       if (String(image.source || "").toLowerCase() !== "pdf") return null;
@@ -1622,7 +1629,6 @@ function buildVisualAnalysisCacheImagePreviews(params: {
     if (previews.length >= VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEWS) return;
     const { image, dataUrl, pageNumber, sourceFileName } = candidate;
     if (dataUrl.length > VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_CHARS) return;
-    if (previewChars + dataUrl.length > VISUAL_ANALYSIS_CACHE_MAX_IMAGE_PREVIEW_TOTAL_CHARS) return;
 
     const key = [
       pageNumber,
@@ -1633,7 +1639,6 @@ function buildVisualAnalysisCacheImagePreviews(params: {
     ].join("::");
     if (seen.has(key)) return;
     seen.add(key);
-    previewChars += dataUrl.length;
 
     previews.push({
       sourceFileName: image.sourceFileName,
@@ -1662,6 +1667,64 @@ function buildVisualAnalysisCacheImagePreviews(params: {
   }
 
   return previews;
+}
+function loadVisualAnalysisPreviewImage(dataUrl: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Falha ao carregar miniatura."));
+    image.src = dataUrl;
+  });
+}
+function replaceVisualPreviewFileExtension(fileName: string, extension: string) {
+  const safeExtension = extension.replace(/^\./, "");
+  const baseName = String(fileName || "preview").replace(/\.[^.]+$/i, "");
+  return `${baseName}.${safeExtension}`;
+}
+async function compactVisualAnalysisPreviewImage(
+  image: VisualReviewExtractedImagePreview
+): Promise<VisualReviewExtractedImagePreview> {
+  const dataUrl = String(image.dataUrl || "").trim();
+  if (!dataUrl || typeof document === "undefined") return image;
+  if (dataUrl.length <= 180_000) return { ...image, dataUrl };
+
+  try {
+    const loadedImage = await loadVisualAnalysisPreviewImage(dataUrl);
+    const sourceWidth = loadedImage.naturalWidth || loadedImage.width;
+    const sourceHeight = loadedImage.naturalHeight || loadedImage.height;
+    if (!sourceWidth || !sourceHeight) return { ...image, dataUrl };
+
+    const scale = Math.min(1, VISUAL_ANALYSIS_PREVIEW_CACHE_THUMBNAIL_WIDTH / sourceWidth);
+    const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+    const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return { ...image, dataUrl };
+    context.drawImage(loadedImage, 0, 0, targetWidth, targetHeight);
+    const compactDataUrl = canvas.toDataURL(
+      "image/jpeg",
+      VISUAL_ANALYSIS_PREVIEW_CACHE_THUMBNAIL_QUALITY
+    );
+    if (!compactDataUrl || compactDataUrl.length >= dataUrl.length) return { ...image, dataUrl };
+
+    return {
+      ...image,
+      fileName: replaceVisualPreviewFileExtension(image.fileName, "jpg"),
+      mimeType: "image/jpeg",
+      dataUrl: compactDataUrl,
+    };
+  } catch {
+    return { ...image, dataUrl };
+  }
+}
+async function compactVisualAnalysisPreviewImages(images: VisualReviewExtractedImagePreview[]) {
+  const compactedImages: VisualReviewExtractedImagePreview[] = [];
+  for (const image of images) {
+    compactedImages.push(await compactVisualAnalysisPreviewImage(image));
+  }
+  return compactedImages;
 }
 function isVisualAnalysisPreviewCacheValid(
   value: PersistedVisualAnalysisPreviewCache,
@@ -1715,36 +1778,47 @@ function writeVisualAnalysisPreviewCache(
   const storage = getVisualAnalysisStorage();
   if (!storage || extractedImagePreview.length === 0) return;
 
-  const baseValue = {
-    cacheVersion: VISUAL_ANALYSIS_CACHE_VERSION,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + VISUAL_ANALYSIS_CACHE_TTL_MS,
-    organizationId: params.organizationId || null,
-    storeId: params.storeId || null,
-    file: params.file,
-  };
-  let previewsToPersist = extractedImagePreview;
-  let serialized = JSON.stringify({
-    ...baseValue,
-    extractedImagePreview: previewsToPersist,
-  } satisfies PersistedVisualAnalysisPreviewCache);
-  while (
-    serialized.length > VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS &&
-    previewsToPersist.length > 1
-  ) {
-    previewsToPersist = previewsToPersist.slice(0, -1);
-    serialized = JSON.stringify({
+  const createdAt = Date.now();
+  void compactVisualAnalysisPreviewImages(extractedImagePreview).then((compactedImagePreview) => {
+    const latestStorage = getVisualAnalysisStorage();
+    if (!latestStorage || compactedImagePreview.length === 0) return;
+    const cacheKey = buildVisualAnalysisPreviewCacheKey(params);
+    const baseValue = {
+      cacheVersion: VISUAL_ANALYSIS_CACHE_VERSION,
+      createdAt,
+      expiresAt: createdAt + VISUAL_ANALYSIS_CACHE_TTL_MS,
+      organizationId: params.organizationId || null,
+      storeId: params.storeId || null,
+      file: params.file,
+    };
+    let previewsToPersist = compactedImagePreview;
+    let serialized = JSON.stringify({
       ...baseValue,
       extractedImagePreview: previewsToPersist,
     } satisfies PersistedVisualAnalysisPreviewCache);
-  }
-  if (serialized.length > VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS) return;
+    while (
+      serialized.length > VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS &&
+      previewsToPersist.length > 1
+    ) {
+      previewsToPersist = previewsToPersist.slice(0, -1);
+      serialized = JSON.stringify({
+        ...baseValue,
+        extractedImagePreview: previewsToPersist,
+      } satisfies PersistedVisualAnalysisPreviewCache);
+    }
+    if (serialized.length > VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS) return;
 
-  try {
-    storage.setItem(buildVisualAnalysisPreviewCacheKey(params), serialized);
-  } catch (error) {
-    console.error("[OnboardingPage] visual analysis preview cache setItem error:", error);
-  }
+    try {
+      const existingRaw = latestStorage.getItem(cacheKey);
+      if (existingRaw) {
+        const existing = JSON.parse(existingRaw) as Partial<PersistedVisualAnalysisPreviewCache>;
+        if (Number(existing.createdAt || 0) > createdAt) return;
+      }
+      latestStorage.setItem(cacheKey, serialized);
+    } catch (error) {
+      console.error("[OnboardingPage] visual analysis preview cache setItem error:", error);
+    }
+  });
 }
 function removeVisualAnalysisPreviewCacheForFile(params: {
   organizationId: string | null | undefined;
@@ -1789,7 +1863,7 @@ function writeVisualAnalysisCache(
     visualEvidencePagesInput: payload.visualEvidencePagesInput,
     visualPdfTotalPages: payload.visualPdfTotalPages,
     visualDocumentMapResult: payload.visualDocumentMapResult,
-    visualEvidenceResult: payload.visualEvidenceResult,
+    visualEvidenceResult: stripVisualDocumentScanPreviews(payload.visualEvidenceResult),
   };
   const serialized = JSON.stringify(value);
   if (serialized.length > VISUAL_ANALYSIS_CACHE_MAX_CHARS) return;
@@ -1904,6 +1978,56 @@ function getVisualPdfTotalPagesFromResult(result: IntelligentImportResponse | nu
     )
     .filter((value) => Number.isFinite(value) && value > 0);
   return pageNumbers.length > 0 ? Math.max(...pageNumbers) : null;
+}
+function buildVisualReviewImagePreviewsFromScanResult(
+  result: VisualCatalogDocumentScanResponse | null,
+  fallbackSourceFileName?: string | null
+): VisualReviewExtractedImagePreview[] {
+  if (!result?.ok || !Array.isArray(result.pagePreviews)) return [];
+  const images: VisualReviewExtractedImagePreview[] = [];
+  for (const preview of result.pagePreviews) {
+    const pageNumber = Math.floor(Number(preview.pageNumber || 0));
+    const dataUrl = String(preview.dataUrl || "").trim();
+    if (!pageNumber || !dataUrl) continue;
+    const sourceFileName = String(preview.sourceFileName || fallbackSourceFileName || result.fileKey || "").trim();
+    images.push({
+      sourceFileName,
+      originalSourceFileName: sourceFileName,
+      fileName: preview.fileName || `${sourceFileName || "catalogo"}#page-${pageNumber}`,
+      source: "pdf",
+      mimeType: preview.mimeType || "image/png",
+      dataUrl,
+      sheetName: "PDF",
+      imageOrder: pageNumber - 1,
+      worksheetRowNumber: pageNumber,
+      sheetScopedKey: `pdf::page::${pageNumber}`,
+    });
+  }
+  return images;
+}
+function mergeVisualReviewImagePreviews(
+  primaryImages: VisualReviewExtractedImagePreview[],
+  secondaryImages: VisualReviewExtractedImagePreview[]
+) {
+  const merged = new Map<string, VisualReviewExtractedImagePreview>();
+  for (const image of [...primaryImages, ...secondaryImages]) {
+    const pageNumber = getVisualReviewImagePageNumber(image) ?? 0;
+    const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim().toLowerCase();
+    const fileName = String(image.fileName || "").trim().toLowerCase();
+    const key = [String(image.source || "").toLowerCase(), sourceFileName, pageNumber, fileName].join("::");
+    const existing = merged.get(key);
+    if (!existing || (!String(existing.dataUrl || "").trim() && String(image.dataUrl || "").trim())) {
+      merged.set(key, image);
+    }
+  }
+  return Array.from(merged.values());
+}
+function stripVisualDocumentScanPreviews(
+  result: VisualCatalogDocumentScanResponse | null
+): VisualCatalogDocumentScanResponse | null {
+  if (!result?.ok || !Array.isArray(result.pagePreviews) || result.pagePreviews.length === 0) return result;
+  const { pagePreviews: _pagePreviews, ...rest } = result;
+  return rest;
 }
 function selectAutomaticVisualEvidencePages(totalPages: number | null) {
   if (!totalPages || totalPages <= 0) return [1, 2, 3, 4, 5];
@@ -2311,6 +2435,16 @@ function mergeVisualEvidenceResults(
     pageLimit: incoming.pageLimit || current.pageLimit,
     model: incoming.model || current.model,
     pageEvidence: Array.from(pageEvidenceByNumber.values()).sort((a, b) => a.pageNumber - b.pageNumber),
+    pagePreviews: mergeVisualReviewImagePreviews(
+      buildVisualReviewImagePreviewsFromScanResult(current),
+      buildVisualReviewImagePreviewsFromScanResult(incoming)
+    ).map((image) => ({
+      pageNumber: getVisualReviewImagePageNumber(image) ?? 0,
+      dataUrl: image.dataUrl,
+      mimeType: image.mimeType,
+      fileName: image.fileName,
+      sourceFileName: image.sourceFileName,
+    })).filter((preview) => preview.pageNumber > 0),
     warnings: Array.from(new Set([...(current.warnings ?? []), ...(incoming.warnings ?? [])])),
   };
 }
@@ -5451,6 +5585,14 @@ export default function IntelligentCatalogImportPanel({
   useEffect(() => {
     latestExtractedImagePreviewRef.current = safeExtractedImagePreview;
   }, [safeExtractedImagePreview]);
+  const visualEvidencePageImagePreview = useMemo(
+    () => buildVisualReviewImagePreviewsFromScanResult(visualEvidenceResult, visualPdfFileMeta?.name),
+    [visualEvidenceResult, visualPdfFileMeta?.name]
+  );
+  const visualReviewImagePreview = useMemo(
+    () => mergeVisualReviewImagePreviews(safeExtractedImagePreview, visualEvidencePageImagePreview),
+    [safeExtractedImagePreview, visualEvidencePageImagePreview]
+  );
   const hasVisualPdfImportResult = useMemo(
     () => Boolean(intelligentImportResult && isVisualPdfImportResult(intelligentImportResult)),
     [intelligentImportResult]
@@ -5539,12 +5681,12 @@ export default function IntelligentCatalogImportPanel({
       const selectedImageKeys = getVisualReviewSelectedImageKeys(item);
       const selectedImages = getSelectedVisualReviewImagesForUpload(
         item,
-        safeExtractedImagePreview,
+        visualReviewImagePreview,
         visualPdfFileMeta?.name
       );
       const suggestions = getVisualReviewSuggestedImages(
         item,
-        safeExtractedImagePreview,
+        visualReviewImagePreview,
         visualPdfFileMeta?.name
       );
 
@@ -5569,7 +5711,7 @@ export default function IntelligentCatalogImportPanel({
       noSelectionCount,
       relatedWithoutPreviewCount,
     };
-  }, [safeExtractedImagePreview, visualPdfFileMeta?.name, visualReviewSavePreview.approvedItems]);
+  }, [visualReviewImagePreview, visualPdfFileMeta?.name, visualReviewSavePreview.approvedItems]);
   const visualEvidencePageSummary = useMemo(
     () => summarizeVisualEvidencePages(visualEvidenceResult),
     [visualEvidenceResult]
@@ -5779,8 +5921,8 @@ export default function IntelligentCatalogImportPanel({
       }
     }
     const currentExtractedImagePreview =
-      safeExtractedImagePreview.length > 0
-        ? safeExtractedImagePreview
+      visualReviewImagePreview.length > 0
+        ? visualReviewImagePreview
         : latestExtractedImagePreviewRef.current;
     const extractedImagePreview = buildVisualAnalysisCacheImagePreviews({
       images: currentExtractedImagePreview,
@@ -6692,7 +6834,7 @@ export default function IntelligentCatalogImportPanel({
           if (!itemName) throw new Error("Item aprovado sem nome.");
           const selectedImagesForUpload = getSelectedVisualReviewImagesForUpload(
             item,
-            safeExtractedImagePreview,
+            visualReviewImagePreview,
             visualPdfFileMeta?.name
           );
 
@@ -8634,7 +8776,7 @@ async function handleSaveImportedItemsToCatalog() {
                                         const priceInput = parseVisualReviewPriceInput(item.price);
                                         const imageSuggestions = getVisualReviewSuggestedImages(
                                           item,
-                                          safeExtractedImagePreview,
+                                          visualReviewImagePreview,
                                           visualPdfFileMeta?.name
                                         );
                                         const selectedImageKeys = getVisualReviewSelectedImageKeys(item);
