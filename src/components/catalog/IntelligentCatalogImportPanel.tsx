@@ -148,6 +148,12 @@ type VisualReviewSavePreviewItem = {
   blockers: string[];
   warnings: string[];
 };
+type VisualReviewSelectedImageSummary = {
+  readyToUploadCount: number;
+  withoutPhotoCount: number;
+  noSelectionCount: number;
+  relatedWithoutPreviewCount: number;
+};
 type VisualReviewDuplicateDiagnosticGroup = {
   id: string;
   type: "SKU parecido" | "Nome igual" | "Nome parecido";
@@ -882,6 +888,21 @@ function getVisualReviewSuggestedImages(
     hasPageMatchWithoutPreview: candidatesWithPreview.length === 0 && candidatesWithoutPreview.length > 0,
     matchedPages: Array.from(new Set(candidates.map((image) => image.pageNumber))).sort((a, b) => a - b),
   };
+}
+function getSelectedVisualReviewImageForUpload(
+  item: EditableVisualReviewItem,
+  images: VisualReviewExtractedImagePreview[],
+  preferredSourceFileName?: string | null
+): VisualReviewSuggestedImage | null {
+  const selectedImageKey = String(item.selectedImageKey || "").trim();
+  if (!selectedImageKey || selectedImageKey === VISUAL_REVIEW_NO_IMAGE_KEY) return null;
+
+  const suggestions = getVisualReviewSuggestedImages(item, images, preferredSourceFileName);
+  return (
+    suggestions.candidatesWithPreview.find(
+      (image) => image.key === selectedImageKey && Boolean(String(image.dataUrl || "").trim())
+    ) ?? null
+  );
 }
 type IntelligentImportSelectedFilePreview = {
   name: string;
@@ -5213,6 +5234,45 @@ export default function IntelligentCatalogImportPanel({
       reviewedItems,
     };
   }, [visualReviewItems]);
+  const visualReviewSelectedImageSummary = useMemo<VisualReviewSelectedImageSummary>(() => {
+    let readyToUploadCount = 0;
+    let withoutPhotoCount = 0;
+    let noSelectionCount = 0;
+    let relatedWithoutPreviewCount = 0;
+
+    for (const item of visualReviewSavePreview.approvedItems) {
+      const selectedImageKey = String(item.selectedImageKey || "").trim();
+      const selectedImage = getSelectedVisualReviewImageForUpload(
+        item,
+        safeExtractedImagePreview,
+        visualPdfFileMeta?.name
+      );
+      const suggestions = getVisualReviewSuggestedImages(
+        item,
+        safeExtractedImagePreview,
+        visualPdfFileMeta?.name
+      );
+
+      if (selectedImage) {
+        readyToUploadCount += 1;
+      } else if (selectedImageKey === VISUAL_REVIEW_NO_IMAGE_KEY) {
+        withoutPhotoCount += 1;
+      } else if (!selectedImageKey) {
+        noSelectionCount += 1;
+      }
+
+      if (!selectedImage && suggestions.hasPageMatchWithoutPreview) {
+        relatedWithoutPreviewCount += 1;
+      }
+    }
+
+    return {
+      readyToUploadCount,
+      withoutPhotoCount,
+      noSelectionCount,
+      relatedWithoutPreviewCount,
+    };
+  }, [safeExtractedImagePreview, visualPdfFileMeta?.name, visualReviewSavePreview.approvedItems]);
   const visualEvidencePageSummary = useMemo(
     () => summarizeVisualEvidencePages(visualEvidenceResult),
     [visualEvidenceResult]
@@ -8468,6 +8528,26 @@ async function handleSaveImportedItemsToCatalog() {
                                       <p className="mt-2 text-emerald-900">
                                         Nada foi salvo ainda.
                                       </p>
+                                      <div className="mt-2 rounded-lg bg-emerald-50 p-2 text-emerald-950 ring-1 ring-emerald-100">
+                                        <p className="font-medium">Fotos selecionadas para salvar depois</p>
+                                        <p className="mt-1">
+                                          {visualReviewSelectedImageSummary.readyToUploadCount} item(ns) aprovado(s) tem imagem pronta para salvar.
+                                        </p>
+                                        <p>
+                                          {visualReviewSelectedImageSummary.withoutPhotoCount} item(ns) aprovado(s) estao marcados sem foto.
+                                        </p>
+                                        <p>
+                                          {visualReviewSelectedImageSummary.noSelectionCount} item(ns) aprovado(s) ainda nao tem foto escolhida.
+                                        </p>
+                                        {visualReviewSelectedImageSummary.relatedWithoutPreviewCount > 0 ? (
+                                          <p>
+                                            {visualReviewSelectedImageSummary.relatedWithoutPreviewCount} item(ns) aprovado(s) tem pagina relacionada, mas sem preview real nesta sessao.
+                                          </p>
+                                        ) : null}
+                                        <p className="mt-1 text-emerald-800">
+                                          Fotos ainda nao serao salvas nesta etapa.
+                                        </p>
+                                      </div>
                                       {visualReviewSavePreview.readyItems.length > 0 ? (
                                         <p className="mt-1 text-emerald-900">
                                           Estes itens aprovados ja podem ser salvos no catalogo.

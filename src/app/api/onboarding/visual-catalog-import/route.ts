@@ -79,6 +79,44 @@ function coerceNullableString(value: unknown) {
   return text ? text.slice(0, 240) : null;
 }
 
+function polishPortugueseCatalogDescription(value: string | null | undefined) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+
+  const replacements: Array<[RegExp, string]> = [
+    [/\bagua\b/g, "água"],
+    [/\bAgua\b/g, "Água"],
+    [/\baplicacao\b/g, "aplicação"],
+    [/\bAplicacao\b/g, "Aplicação"],
+    [/\bsuspensao\b/g, "suspensão"],
+    [/\bSuspensao\b/g, "Suspensão"],
+    [/\bparticulas\b/g, "partículas"],
+    [/\bParticulas\b/g, "Partículas"],
+    [/\birritacao\b/g, "irritação"],
+    [/\bIrritacao\b/g, "Irritação"],
+    [/\bincrustacoes\b/g, "incrustações"],
+    [/\bIncrustacoes\b/g, "Incrustações"],
+    [/\bprotecao\b/g, "proteção"],
+    [/\bProtecao\b/g, "Proteção"],
+    [/\bmanutencao\b/g, "manutenção"],
+    [/\bManutencao\b/g, "Manutenção"],
+    [/\bcirculacao\b/g, "circulação"],
+    [/\bCirculacao\b/g, "Circulação"],
+    [/\bquimico\b/g, "químico"],
+    [/\bQuimico\b/g, "Químico"],
+    [/\bquimica\b/g, "química"],
+    [/\bQuimica\b/g, "Química"],
+    [/\bacao\b/g, "ação"],
+    [/\bAcao\b/g, "Ação"],
+    [/\bcorrecao\b/g, "correção"],
+    [/\bCorrecao\b/g, "Correção"],
+    [/\beliminacao\b/g, "eliminação"],
+    [/\bEliminacao\b/g, "Eliminação"],
+  ];
+
+  return replacements.reduce((current, [pattern, replacement]) => current.replace(pattern, replacement), text);
+}
+
 function coerceNullableNumber(value: unknown) {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -187,7 +225,7 @@ function normalizeVisualDraft(value: any, pageNumber: number, imageRef: string):
   const priceCents = coerceNullableNumber(value?.price_cents);
   const stockQuantity = coerceNullableNumber(value?.stock_quantity);
   const material = coerceNullableString(value?.material);
-  const description = coerceNullableString(value?.description);
+  const description = polishPortugueseCatalogDescription(coerceNullableString(value?.description));
   const cleanMissingFields = cleanupVisualMissingFields({
     missingFields,
     name,
@@ -314,7 +352,7 @@ async function analyzeVisualCatalogPage(params: {
       {
         role: "system",
         content:
-          "Voce extrai rascunhos de catalogos visuais de lojas de piscina. Uma pagina pode conter 0, 1 ou varios produtos. Retorne um draft separado para cada item visivel, ate 12 itens. Nao resuma varios modelos em um so. Nao escolha apenas o item principal se houver outros modelos. Use apenas nomes, codigos e medidas literalmente visiveis na imagem. Separe nome/modelo das medidas: se aparecer ITAPEMA 9,10m x 3,60m x 1,40m, use name ITAPEMA, visualDimensionsText exatamente 9,10m x 3,60m x 1,40m e dimensions com numeros JSON usando ponto decimal. Nao reordene as medidas em visualDimensionsText. Nao misture medidas no name quando conseguir separar. Nunca invente nomes genericos como Pool Model 1, Modelo 1, Piscina 1 ou Item 1. Se so houver codigo legivel como E01/E02/E03, use esse codigo como nome provisorio e sku. Se o nome nao estiver legivel, use name null e inclua name em missingFields. Responda somente JSON valido, sem markdown, comentarios ou texto fora do JSON. Nao use fracao solta como 1/2; escreva como string no nome/descricao ou use null em campos numericos. Nao use virgula decimal em numeros JSON. Se a pagina estiver muito densa, retorne menos itens corretos em vez de muitos itens inventados. Se nao houver item claro, retorne drafts vazio.",
+          "Você extrai rascunhos de catálogos visuais de lojas de piscina. Responda em português brasileiro natural, com acentos, cedilha e pontuação correta quando escrever nomes descritivos e descrições, por exemplo: água, aplicação, suspensão, manutenção, proteção, circulação e partículas. Preserve exatamente SKUs, códigos, siglas, medidas, marcas e nomes comerciais como aparecem no documento; não invente acentos em códigos, SKUs, marcas ou textos técnicos. Se o texto visível estiver sem acento por ser marca, SKU, rótulo técnico ou texto de embalagem, preserve como está. As descrições devem ficar naturais para catálogo de loja brasileira. Uma página pode conter 0, 1 ou vários produtos. Retorne um draft separado para cada item visível, até 12 itens. Não resuma vários modelos em um só. Não escolha apenas o item principal se houver outros modelos. Use apenas nomes, códigos e medidas literalmente visíveis na imagem. Separe nome/modelo das medidas: se aparecer ITAPEMA 9,10m x 3,60m x 1,40m, use name ITAPEMA, visualDimensionsText exatamente 9,10m x 3,60m x 1,40m e dimensions com números JSON usando ponto decimal. Não reordene as medidas em visualDimensionsText. Não misture medidas no name quando conseguir separar. Nunca invente nomes genéricos como Pool Model 1, Modelo 1, Piscina 1 ou Item 1. Se só houver código legível como E01/E02/E03, use esse código como nome provisório e sku. Se o nome não estiver legível, use name null e inclua name em missingFields. Responda somente JSON válido, sem markdown, comentários ou texto fora do JSON. Não use fração solta como 1/2; escreva como string no nome/descrição ou use null em campos numéricos. Não use vírgula decimal em números JSON. Se a página estiver muito densa, retorne menos itens corretos em vez de muitos itens inventados. Se não houver item claro, retorne drafts vazio.",
       },
       {
         role: "user",
@@ -322,7 +360,7 @@ async function analyzeVisualCatalogPage(params: {
           {
             type: "input_text",
             text:
-              "Analise esta pagina de catalogo. Extraia todos os modelos/produtos visiveis com leitura segura, ate 12 drafts. Cada piscina/produto/codigo deve virar um draft separado. Preserve codigos como E01, E02, E03 no sku quando forem codigos claros; se forem parte do nome, inclua no name. Nunca crie nomes aproximados ou traduzidos. Nao use Pool Model, Modelo, Piscina ou Item com numero se isso nao estiver escrito na imagem. Se houver apenas codigo visivel, use o codigo como name provisorio. Para piscinas use category pool e tente capturar width_m, length_m, depth_m e capacity_l apenas se estiverem legiveis ao lado do item. Se aparecer modelo junto de medidas, coloque apenas o modelo em name, coloque a medida textual exatamente como aparece em visualDimensionsText, sem reordenar e mantendo virgula decimal, e coloque numeros JSON em dimensions com ponto decimal. Use null quando nao tiver certeza. Campos ausentes devem ser null e listados em missingFields. Use confidence menor quando a leitura estiver incerta. Categorias validas: pool, chemical, accessory, other. Devolva apenas JSON valido.",
+              "Analise esta página de catálogo. Extraia todos os modelos/produtos visíveis com leitura segura, até 12 drafts. Cada piscina/produto/código deve virar um draft separado. Preserve códigos como E01, E02, E03 no sku quando forem códigos claros; se forem parte do nome, inclua no name. Nunca crie nomes aproximados ou traduzidos. Não use Pool Model, Modelo, Piscina ou Item com número se isso não estiver escrito na imagem. Se houver apenas código visível, use o código como name provisório. Para piscinas use category pool e tente capturar width_m, length_m, depth_m e capacity_l apenas se estiverem legíveis ao lado do item. Se aparecer modelo junto de medidas, coloque apenas o modelo em name, coloque a medida textual exatamente como aparece em visualDimensionsText, sem reordenar e mantendo vírgula decimal, e coloque números JSON em dimensions com ponto decimal. Quando preencher description, escreva em português brasileiro natural com acentos, cedilha e pontuação correta, sem alterar SKUs, códigos, marcas, medidas ou textos técnicos. Use null quando não tiver certeza. Campos ausentes devem ser null e listados em missingFields. Use confidence menor quando a leitura estiver incerta. Categorias válidas: pool, chemical, accessory, other. Devolva apenas JSON válido.",
           },
           {
             type: "input_image",

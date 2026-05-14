@@ -86,6 +86,44 @@ function coerceNullableString(value: unknown, maxLength = 240) {
   return text ? text.slice(0, maxLength) : null;
 }
 
+function polishPortugueseCatalogDescription(value: string | null | undefined) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+
+  const replacements: Array<[RegExp, string]> = [
+    [/\bagua\b/g, "água"],
+    [/\bAgua\b/g, "Água"],
+    [/\baplicacao\b/g, "aplicação"],
+    [/\bAplicacao\b/g, "Aplicação"],
+    [/\bsuspensao\b/g, "suspensão"],
+    [/\bSuspensao\b/g, "Suspensão"],
+    [/\bparticulas\b/g, "partículas"],
+    [/\bParticulas\b/g, "Partículas"],
+    [/\birritacao\b/g, "irritação"],
+    [/\bIrritacao\b/g, "Irritação"],
+    [/\bincrustacoes\b/g, "incrustações"],
+    [/\bIncrustacoes\b/g, "Incrustações"],
+    [/\bprotecao\b/g, "proteção"],
+    [/\bProtecao\b/g, "Proteção"],
+    [/\bmanutencao\b/g, "manutenção"],
+    [/\bManutencao\b/g, "Manutenção"],
+    [/\bcirculacao\b/g, "circulação"],
+    [/\bCirculacao\b/g, "Circulação"],
+    [/\bquimico\b/g, "químico"],
+    [/\bQuimico\b/g, "Químico"],
+    [/\bquimica\b/g, "química"],
+    [/\bQuimica\b/g, "Química"],
+    [/\bacao\b/g, "ação"],
+    [/\bAcao\b/g, "Ação"],
+    [/\bcorrecao\b/g, "correção"],
+    [/\bCorrecao\b/g, "Correção"],
+    [/\beliminacao\b/g, "eliminação"],
+    [/\bEliminacao\b/g, "Eliminação"],
+  ];
+
+  return replacements.reduce((current, [pattern, replacement]) => current.replace(pattern, replacement), text);
+}
+
 function coerceNullableNumber(value: unknown) {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -152,7 +190,7 @@ function normalizeEvidenceItem(value: any, pageNumber: number, index: number): P
     category,
     dimensions,
     material: coerceNullableString(value?.material),
-    description: coerceNullableString(value?.description, 360),
+    description: polishPortugueseCatalogDescription(coerceNullableString(value?.description, 360)),
     confidence,
     missingFields,
     rawSnippet: coerceNullableString(value?.rawSnippet || value?.raw_snippet, 360),
@@ -270,7 +308,7 @@ async function analyzeEvidencePage(params: {
       {
         role: "system",
         content:
-          "Voce gera evidencias visuais de paginas de catalogo. Nao crie produto final e nao consolide modelos. Classifique a pagina e liste apenas evidencias visiveis: nomes, codigos, medidas, materiais e descricoes curtas. Em paginas de tabela ou medidas, priorize linhas com codigo, nome/modelo e medidas. Cada linha clara deve virar uma evidencia separada, ate o limite permitido. Preserve codigos curtos exatamente como aparecem, por exemplo E01, E02, E03. Nunca invente nomes, medidas, precos ou estoque. Se uma linha estiver ilegivel, ignore. Nao transcreva textos institucionais, capa, slogan ou marca como produto. Responda somente JSON valido.",
+          "Você gera evidências visuais de páginas de catálogo. Responda em português brasileiro natural, com acentos, cedilha e pontuação correta quando escrever nomes descritivos e descrições, por exemplo: água, aplicação, suspensão, manutenção, proteção, circulação e partículas. Preserve exatamente SKUs, códigos, siglas, medidas, marcas e nomes comerciais como aparecem no documento; não invente acentos em códigos, SKUs, marcas ou textos técnicos. Se o texto visível estiver sem acento por ser marca, SKU, rótulo técnico ou texto de embalagem, preserve como está. Não crie produto final e não consolide modelos. Classifique a página e liste apenas evidências visíveis: nomes, códigos, medidas, materiais e descrições curtas naturais para catálogo de loja brasileira. Em páginas de tabela ou medidas, priorize linhas com código, nome/modelo e medidas. Cada linha clara deve virar uma evidência separada, até o limite permitido. Preserve códigos curtos exatamente como aparecem, por exemplo E01, E02, E03. Nunca invente nomes, medidas, preços ou estoque. Se uma linha estiver ilegível, ignore. Não transcreva textos institucionais, capa, slogan ou marca como produto. Responda somente JSON válido.",
       },
       {
         role: "user",
@@ -278,7 +316,7 @@ async function analyzeEvidencePage(params: {
           {
             type: "input_text",
             text:
-              "Analise esta pagina como evidencia para uma futura consolidacao de catalogo. Classifique pageType como cover, model_photos, measurement_table, description, mixed ou unknown. Se houver fotos/modelos, capture nomes e codigos visiveis. Se houver tabela de medidas, capture cada linha clara com modelo/codigo e medidas legiveis como uma evidencia separada, ate o limite permitido. Nao gere item final. Nao junte modelos. Para cada evidencia, use visibleName, visibleCode, category, dimensions.visualText exatamente como aparece, numeros JSON com ponto decimal, material, description curta, confidence e missingFields. Preserve codigos curtos exatamente como aparecem, por exemplo E01, E02, E03. Se so houver codigo como E01, use visibleCode E01 e visibleName null ou E01 se parecer titulo do item. Nao invente valores. Se uma linha estiver ilegivel, ignore. Nao transcreva textos institucionais, capa, slogan ou marca como produto. Use rawSnippet com trecho curto visivel quando ajudar a revisar. Retorne no maximo 20 evidencias seguras.",
+              "Analise esta página como evidência para uma futura consolidação de catálogo. Classifique pageType como cover, model_photos, measurement_table, description, mixed ou unknown. Se houver fotos/modelos, capture nomes e códigos visíveis. Se houver tabela de medidas, capture cada linha clara com modelo/código e medidas legíveis como uma evidência separada, até o limite permitido. Não gere item final. Não junte modelos. Para cada evidência, use visibleName, visibleCode, category, dimensions.visualText exatamente como aparece, números JSON com ponto decimal, material, description curta em português brasileiro com acentos quando for texto descritivo, confidence e missingFields. Preserve códigos curtos exatamente como aparecem, por exemplo E01, E02, E03. Se só houver código como E01, use visibleCode E01 e visibleName null ou E01 se parecer título do item. Não invente valores. Se uma linha estiver ilegível, ignore. Não transcreva textos institucionais, capa, slogan ou marca como produto. Use rawSnippet com trecho curto visível quando ajudar a revisar. Retorne no máximo 20 evidências seguras.",
           },
           {
             type: "input_image",
