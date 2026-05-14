@@ -182,6 +182,8 @@ function normalizeEvidenceItem(value: any, pageNumber: number, index: number): P
   const missingFields = Array.isArray(value?.missingFields)
     ? value.missingFields.map((field: unknown) => String(field || "").trim()).filter(Boolean).slice(0, 12)
     : [];
+  const rawDescription = coerceNullableString(value?.description, 360);
+  const polishedDescription = polishPortugueseCatalogDescription(rawDescription);
   const evidence = {
     evidenceId: `page-${pageNumber}-evidence-${index + 1}`,
     modelKey: buildModelKey({ visibleName, visibleCode }),
@@ -190,7 +192,7 @@ function normalizeEvidenceItem(value: any, pageNumber: number, index: number): P
     category,
     dimensions,
     material: coerceNullableString(value?.material),
-    description: polishPortugueseCatalogDescription(coerceNullableString(value?.description, 360)),
+    description: polishedDescription,
     confidence,
     missingFields,
     rawSnippet: coerceNullableString(value?.rawSnippet || value?.raw_snippet, 360),

@@ -225,7 +225,8 @@ function normalizeVisualDraft(value: any, pageNumber: number, imageRef: string):
   const priceCents = coerceNullableNumber(value?.price_cents);
   const stockQuantity = coerceNullableNumber(value?.stock_quantity);
   const material = coerceNullableString(value?.material);
-  const description = polishPortugueseCatalogDescription(coerceNullableString(value?.description));
+  const rawDescription = coerceNullableString(value?.description);
+  const description = polishPortugueseCatalogDescription(rawDescription);
   const cleanMissingFields = cleanupVisualMissingFields({
     missingFields,
     name,
@@ -447,7 +448,7 @@ export async function POST(request: Request) {
       const firstRenderedPage = (screenshot.pages ?? [])[0];
       const firstPage = pages[0];
       let hadInvalidVisionJson = false;
-      const drafts =
+      const drafts: VisualCatalogDraft[] =
         firstRenderedPage?.dataUrl && firstPage
           ? await analyzeVisualCatalogPage({
               dataUrl: String(firstRenderedPage.dataUrl),
