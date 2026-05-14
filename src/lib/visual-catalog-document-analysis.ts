@@ -306,6 +306,13 @@ function isLikelyGenericVisualPhrase(value: string | null | undefined) {
   if (!normalized) return true;
 
   const blockedExact = new Set([
+    "indice",
+    "sumario",
+    "capa",
+    "apresentacao",
+    "institucional",
+    "pagina de catalogo",
+    "lista de linhas",
     "piscina",
     "produto",
     "acessorio",
@@ -331,6 +338,27 @@ function isLikelyGenericVisualPhrase(value: string | null | undefined) {
   }
 
   return normalized.split(" ").length >= 5 && !isStrongSkuOrCode(value);
+}
+
+function isHardRejectedVisualReviewLabel(value: string | null | undefined) {
+  const normalized = normalizeEntityNameKey(value);
+  if (!normalized) return false;
+
+  const blockedExact = new Set([
+    "indice",
+    "sumario",
+    "capa",
+    "apresentacao",
+    "institucional",
+    "catalogo",
+    "pagina de catalogo",
+    "lista de linhas",
+  ]);
+  if (blockedExact.has(normalized)) return true;
+
+  return /\b(indice|sumario|apresentacao|institucional|pagina de catalogo|lista de linhas|paginas correspondentes|nomes de linhas)\b/.test(
+    normalized
+  );
 }
 
 function isLikelyInstitutionalEntity(value: string | null | undefined) {
@@ -493,11 +521,16 @@ function shouldAcceptVisualEntity(entity: VisualEntityAggregate) {
     (entity.__documentMapOnly &&
       (normalizedPageTypes.length === 0 ||
         normalizedPageTypes.every((pageType) =>
-          ["cover", "index", "institutional", "back_cover", "unknown"].includes(pageType)
+      ["cover", "index", "institutional", "back_cover", "unknown"].includes(pageType)
         ))) ||
+    isHardRejectedVisualReviewLabel(displayName) ||
     isLikelySceneOrHumanDescription(displayName) ||
     isLikelyGenericVisualPhrase(displayName) ||
     isLikelyInstitutionalEntity(displayName);
+
+  if (isHardRejectedVisualReviewLabel(displayName) && !hasStrongCode) {
+    return false;
+  }
 
   if (hardReject && !hasStrongCode && !hasStrongNameAndMeasures && !hasTrustedSources) {
     return false;
@@ -1272,6 +1305,11 @@ export function buildVisualReviewCandidatesFromEvidence(
         reviewState: "needs_review" as const,
         status: "needs_review" as const,
       };
+    })
+    .filter((candidate) => {
+      const displayName = candidate.name || candidate.sku || candidate.code || candidate.modelKey;
+      if (!isHardRejectedVisualReviewLabel(displayName)) return true;
+      return isStrongSkuOrCode(candidate.sku || candidate.code);
     })
     .filter(
       (candidate) =>

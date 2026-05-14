@@ -847,7 +847,8 @@ function buildVisualReviewSuggestedImageKey(
 function getVisualReviewSuggestedImages(
   item: EditableVisualReviewItem,
   images: VisualReviewExtractedImagePreview[],
-  preferredSourceFileName?: string | null
+  preferredSourceFileName?: string | null,
+  blockedPages?: Set<number>
 ): VisualReviewImageSuggestions {
   const sourcePages = new Set(
     item.sourcePages
@@ -869,6 +870,7 @@ function getVisualReviewSuggestedImages(
     .map((image, index) => {
       const pageNumber = getVisualReviewImagePageNumber(image);
       if (!pageNumber || !sourcePages.has(pageNumber)) return null;
+      if (blockedPages?.has(pageNumber)) return null;
       if (String(image.source || "").toLowerCase() !== "pdf") return null;
 
       const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim();
@@ -930,14 +932,15 @@ function isVisualReviewMarkedWithoutPhoto(item: EditableVisualReviewItem): boole
 function getSelectedVisualReviewImagesForUpload(
   item: EditableVisualReviewItem,
   images: VisualReviewExtractedImagePreview[],
-  preferredSourceFileName?: string | null
+  preferredSourceFileName?: string | null,
+  blockedPages?: Set<number>
 ): VisualReviewSuggestedImage[] {
   if (isVisualReviewMarkedWithoutPhoto(item)) return [];
 
   const selectedImageKeys = new Set(getVisualReviewSelectedImageKeys(item));
   if (selectedImageKeys.size === 0) return [];
 
-  const suggestions = getVisualReviewSuggestedImages(item, images, preferredSourceFileName);
+  const suggestions = getVisualReviewSuggestedImages(item, images, preferredSourceFileName, blockedPages);
   return suggestions.candidatesWithPreview.filter(
     (image) => selectedImageKeys.has(image.key) && Boolean(String(image.dataUrl || "").trim())
   );
@@ -945,9 +948,10 @@ function getSelectedVisualReviewImagesForUpload(
 function getSelectedVisualReviewImageForUpload(
   item: EditableVisualReviewItem,
   images: VisualReviewExtractedImagePreview[],
-  preferredSourceFileName?: string | null
+  preferredSourceFileName?: string | null,
+  blockedPages?: Set<number>
 ): VisualReviewSuggestedImage | null {
-  return getSelectedVisualReviewImagesForUpload(item, images, preferredSourceFileName)[0] ?? null;
+  return getSelectedVisualReviewImagesForUpload(item, images, preferredSourceFileName, blockedPages)[0] ?? null;
 }
 type IntelligentImportSelectedFilePreview = {
   name: string;
@@ -2028,6 +2032,61 @@ function stripVisualDocumentScanPreviews(
   if (!result?.ok || !Array.isArray(result.pagePreviews) || result.pagePreviews.length === 0) return result;
   const { pagePreviews: _pagePreviews, ...rest } = result;
   return rest;
+}
+function hasInstitutionalVisualPageText(value: string | null | undefined) {
+  const normalized = normalizeImportedLoose(value);
+  if (!normalized) return false;
+  return /\b(indice|sumario|institucional|contracapa|apresentacao|40 anos|bebe|crianca|oculos|chapeu)\b/.test(
+    normalized
+  );
+}
+function buildBlockedVisualReviewImagePages(params: {
+  documentMap: VisualCatalogDocumentMapResponse | null;
+  evidence: VisualCatalogDocumentScanResponse | null;
+}) {
+  const blockedPages = new Set<number>();
+  const blockedPageTypes = new Set(["cover", "index", "institutional", "back_cover"]);
+
+  if (params.documentMap?.ok) {
+    for (const page of params.documentMap.pages) {
+      if (blockedPageTypes.has(page.pageType)) {
+        blockedPages.add(page.pageNumber);
+        continue;
+      }
+      const pageText = [
+        page.reason,
+        ...page.detectedLabels,
+        ...page.possibleModels,
+      ].join(" ");
+      if (hasInstitutionalVisualPageText(pageText)) {
+        blockedPages.add(page.pageNumber);
+      }
+    }
+  }
+
+  if (params.evidence?.ok) {
+    for (const page of params.evidence.pageEvidence) {
+      if (blockedPageTypes.has(page.pageType)) {
+        blockedPages.add(page.pageNumber);
+        continue;
+      }
+      const pageText = page.items
+        .map((item) =>
+          [
+            item.visibleName,
+            item.visibleCode,
+            item.description,
+            item.rawSnippet,
+          ].filter(Boolean).join(" ")
+        )
+        .join(" ");
+      if (hasInstitutionalVisualPageText(pageText)) {
+        blockedPages.add(page.pageNumber);
+      }
+    }
+  }
+
+  return blockedPages;
 }
 function selectAutomaticVisualEvidencePages(totalPages: number | null) {
   if (!totalPages || totalPages <= 0) return [1, 2, 3, 4, 5];
@@ -5593,6 +5652,14 @@ export default function IntelligentCatalogImportPanel({
     () => mergeVisualReviewImagePreviews(safeExtractedImagePreview, visualEvidencePageImagePreview),
     [safeExtractedImagePreview, visualEvidencePageImagePreview]
   );
+  const blockedVisualReviewImagePages = useMemo(
+    () =>
+      buildBlockedVisualReviewImagePages({
+        documentMap: visualDocumentMapResult,
+        evidence: visualEvidenceResult,
+      }),
+    [visualDocumentMapResult, visualEvidenceResult]
+  );
   const hasVisualPdfImportResult = useMemo(
     () => Boolean(intelligentImportResult && isVisualPdfImportResult(intelligentImportResult)),
     [intelligentImportResult]
@@ -5682,12 +5749,14 @@ export default function IntelligentCatalogImportPanel({
       const selectedImages = getSelectedVisualReviewImagesForUpload(
         item,
         visualReviewImagePreview,
-        visualPdfFileMeta?.name
+        visualPdfFileMeta?.name,
+        blockedVisualReviewImagePages
       );
       const suggestions = getVisualReviewSuggestedImages(
         item,
         visualReviewImagePreview,
-        visualPdfFileMeta?.name
+        visualPdfFileMeta?.name,
+        blockedVisualReviewImagePages
       );
 
       if (selectedImages.length > 0) {
@@ -5711,7 +5780,7 @@ export default function IntelligentCatalogImportPanel({
       noSelectionCount,
       relatedWithoutPreviewCount,
     };
-  }, [visualReviewImagePreview, visualPdfFileMeta?.name, visualReviewSavePreview.approvedItems]);
+  }, [blockedVisualReviewImagePages, visualReviewImagePreview, visualPdfFileMeta?.name, visualReviewSavePreview.approvedItems]);
   const visualEvidencePageSummary = useMemo(
     () => summarizeVisualEvidencePages(visualEvidenceResult),
     [visualEvidenceResult]

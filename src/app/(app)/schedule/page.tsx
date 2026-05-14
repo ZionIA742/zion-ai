@@ -550,23 +550,23 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
   const selectedDateLabel = dateValue ? formatDateOnlyPtBr(dateValue) : "Selecionar dia";
 
   return (
-    <div className="space-y-2">
-      <label className="block text-sm font-semibold text-gray-700">{label}</label>
+    <div className="space-y-1">
+      <label className="block text-xs font-semibold text-gray-700">{label}</label>
 
-      <div className="grid gap-3 sm:grid-cols-[1.3fr_0.7fr]">
+      <div className="grid gap-2 sm:grid-cols-[1.3fr_0.7fr]">
         <div ref={containerRef} className="relative">
           <button
             type="button"
             onClick={() => setCalendarOpen((prev) => !prev)}
-            className="flex w-full items-center justify-between rounded-xl border border-black/10 bg-white px-3 py-2 text-left text-sm text-gray-900 outline-none transition hover:bg-gray-50 focus:border-black"
+            className="flex w-full items-center justify-between rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-left text-xs text-gray-900 outline-none transition hover:bg-gray-50 focus:border-black"
           >
             <span className={dateValue ? "text-gray-900" : "text-gray-400"}>{selectedDateLabel}</span>
             <span className="text-xs font-semibold text-gray-500">Calendário</span>
           </button>
 
           {calendarOpen ? (
-            <div className="absolute left-0 top-[calc(100%+8px)] z-20 w-full min-w-[280px] rounded-2xl border border-black/10 bg-white p-3 shadow-xl">
-              <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="absolute left-0 top-[calc(100%+6px)] z-20 w-full min-w-[260px] rounded-xl border border-black/10 bg-white p-2.5 shadow-xl">
+              <div className="mb-2 flex items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={() =>
@@ -574,7 +574,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                       (prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1)
                     )
                   }
-                  className="rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-200"
+                  className="rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-200"
                 >
                   Mês anterior
                 </button>
@@ -590,17 +590,17 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                       (prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1)
                     )
                   }
-                  className="rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-200"
+                  className="rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-200"
                 >
                   Próximo mês
                 </button>
               </div>
 
-              <div className="mb-2 grid grid-cols-7 gap-1">
+              <div className="mb-1 grid grid-cols-7 gap-1">
                 {WEEKDAY_LABELS.map((weekday) => (
                   <div
                     key={`${label}-${weekday}`}
-                    className="rounded-md bg-gray-50 px-1 py-1 text-center text-[10px] font-semibold uppercase tracking-wide text-gray-500"
+                    className="rounded-md bg-gray-50 px-1 py-0.5 text-center text-[9px] font-semibold uppercase tracking-wide text-gray-500"
                   >
                     {weekday}
                   </div>
@@ -623,7 +623,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
                         setCalendarOpen(false);
                       }}
                       className={[
-                        "h-9 rounded-lg text-center text-xs font-semibold transition",
+                        "h-7 rounded-lg text-center text-[11px] font-semibold transition",
                         sameMonth ? "text-gray-900" : "text-gray-300",
                         isSelected
                           ? "bg-black text-white"
@@ -645,7 +645,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
           <select
             value={timeValue}
             onChange={(event) => onTimeChange(event.target.value)}
-            className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-black"
+            className="w-full rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-xs text-gray-900 outline-none focus:border-black"
           >
             {TIME_OPTIONS.map((option) => (
               <option key={`${label}-${option}`} value={option}>
@@ -1867,13 +1867,13 @@ export default function SchedulePage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-[1440px] px-4 py-4 lg:px-5 lg:py-5">
-        <div className="mb-4 flex items-start justify-between gap-3">
+    <div className="h-[calc(100vh-151px)] overflow-hidden bg-gray-100 text-sm">
+      <div className="mx-auto h-full max-w-[1320px] overflow-hidden px-3 py-1.5 lg:px-4 lg:py-1.5">
+        <div className="mb-1.5 flex items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Agenda</h1>
+            <h1 className="text-lg font-bold text-gray-900">Agenda</h1>
 
-            <div className="mt-1 text-xs text-gray-500">
+            <div className="mt-0.5 text-[11px] text-gray-500">
               {storeLoading
                 ? "Carregando contexto da loja..."
                 : storeError
@@ -1884,11 +1884,11 @@ export default function SchedulePage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               onClick={openCreateAppointmentPanel}
               disabled={storeLoading || !organizationId || !activeStoreId}
-              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Novo compromisso
             </button>
@@ -1896,7 +1896,7 @@ export default function SchedulePage() {
             <button
               onClick={openCreateBlockPanel}
               disabled={storeLoading || !organizationId || !activeStoreId}
-              className="rounded-xl bg-black px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg bg-black px-2.5 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Novo bloqueio
             </button>
@@ -1910,29 +1910,10 @@ export default function SchedulePage() {
             <button
               onClick={() => void loadSchedule()}
               disabled={loading || storeLoading || !organizationId || !activeStoreId}
-              className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Recarregar
             </button>
-          </div>
-        </div>
-
-        <div className="mb-4 grid gap-3 md:grid-cols-3">
-          <div className="rounded-2xl bg-white px-4 py-3 shadow-sm ring-1 ring-black/5">
-            <div className="text-xs text-gray-500">Total de itens</div>
-            <div className="mt-1 text-2xl font-bold text-gray-900">{counts.total}</div>
-          </div>
-
-          <div className="rounded-2xl bg-white px-4 py-3 shadow-sm ring-1 ring-black/5">
-            <div className="text-xs text-gray-500">Compromissos</div>
-            <div className="mt-1 text-2xl font-bold text-gray-900">
-              {counts.appointments}
-            </div>
-          </div>
-
-          <div className="rounded-2xl bg-white px-4 py-3 shadow-sm ring-1 ring-black/5">
-            <div className="text-xs text-gray-500">Bloqueios</div>
-            <div className="mt-1 text-2xl font-bold text-gray-900">{counts.blocks}</div>
           </div>
         </div>
 
@@ -1942,54 +1923,54 @@ export default function SchedulePage() {
           </div>
         ) : null}
 
-        <div className="grid gap-4 xl:grid-cols-[1.72fr_0.78fr]">
-          <div className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-            <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="grid min-h-0 items-start gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_288px]">
+          <div className="min-h-0 rounded-2xl bg-white p-2 shadow-sm ring-1 ring-black/5">
+            <div className="mb-1.5 flex flex-col gap-1.5 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <h2 className="text-lg font-bold capitalize text-gray-900">
+                <h2 className="text-[15px] font-bold capitalize text-gray-900">
                   {formatMonthYear(viewMonth)}
                 </h2>
-                <p className="mt-1 text-xs text-gray-500">
+                <p className="mt-0.5 text-[9px] text-gray-500">
                   A agenda segue a capacidade definida pela loja.
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={goToPreviousMonth}
-                  className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Mês anterior
                 </button>
 
                 <button
                   onClick={goToCurrentMonth}
-                  className="rounded-xl bg-black px-3 py-2 text-xs font-semibold text-white hover:opacity-90"
+                  className="rounded-lg bg-black px-2.5 py-1.5 text-[11px] font-semibold text-white hover:opacity-90"
                 >
                   Hoje
                 </button>
 
                 <button
                   onClick={goToNextMonth}
-                  className="rounded-xl bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Próximo mês
                 </button>
               </div>
             </div>
 
-            <div className="mb-2 grid grid-cols-7 gap-1.5">
+            <div className="mb-1 grid grid-cols-7 gap-1">
               {WEEKDAY_LABELS.map((label) => (
                 <div
                   key={label}
-                  className="rounded-lg bg-gray-50 px-2 py-1.5 text-center text-[11px] font-semibold uppercase tracking-wide text-gray-500"
+                  className="rounded-md bg-gray-50 px-1 py-0.5 text-center text-[9px] font-semibold uppercase tracking-wide text-gray-500"
                 >
                   {label}
                 </div>
               ))}
             </div>
 
-            <div className="grid grid-cols-7 gap-1.5">
+            <div className="grid grid-cols-7 gap-1">
               {calendarDays.map((date) => {
                 const dayKey = toDateKey(date);
                 const dayItems = itemsByDate[dayKey] || [];
@@ -2003,17 +1984,17 @@ export default function SchedulePage() {
                     type="button"
                     onClick={() => setSelectedDateKey(dayKey)}
                     className={[
-                      "min-h-[108px] rounded-xl border p-2 text-left transition",
+                      "min-h-[64px] rounded-lg border p-1 text-left transition",
                       isSelected
                         ? "border-black bg-black/[0.03] ring-2 ring-black/10"
                         : "border-black/10 bg-white hover:bg-gray-50",
                       !isCurrentMonth ? "opacity-45" : "",
                     ].join(" ")}
                   >
-                    <div className="mb-2 flex items-center justify-between">
+                    <div className="mb-0.5 flex items-center justify-between">
                       <span
                         className={[
-                          "inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold",
+                          "inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold",
                           isToday
                             ? "bg-black text-white"
                             : "bg-transparent text-gray-900",
@@ -2022,44 +2003,33 @@ export default function SchedulePage() {
                         {formatDayNumber(date)}
                       </span>
 
-                      <span className="text-[10px] text-gray-400">
+                      <span className="text-[8px] text-gray-400">
                         {dayItems.length > 0 ? `${dayItems.length} item(ns)` : ""}
                       </span>
                     </div>
 
-                    <div className="space-y-1.5">
-                      {dayItems.slice(0, 3).map((item) => (
+                    <div className="space-y-0.5">
+                      {dayItems.slice(0, 1).map((item) => (
                         <div
                           key={`${dayKey}-${item.itemId}`}
                           onClick={(event) => {
                             event.stopPropagation();
                             openItemDetails(item);
                           }}
-                          className={`cursor-pointer rounded-lg px-2 py-1.5 text-[11px] font-semibold ring-1 ${getItemChipClass(
+                          className={`cursor-pointer rounded-none border-l-2 border-current px-1 py-0 text-[8.5px] font-semibold leading-tight ring-0 ${getItemChipClass(
                             item
                           )}`}
                         >
                           <div className="truncate">
-                            {item.itemKind === "block" ? "Bloqueio" : "Compromisso"}
-                          </div>
-                          {item.itemKind === "appointment" && getHighlightedStatusLabel(item.status) ? (
-                            <div
-                              className={`mt-0.5 truncate text-[10px] font-bold uppercase tracking-wide ${getHighlightedStatusTextClass(
-                                item.status
-                              )}`}
-                            >
-                              {getHighlightedStatusLabel(item.status)}
-                            </div>
-                          ) : null}
-                          <div className="mt-0.5 truncate text-[10px] font-medium">
-                            {item.title || "-"}
+                            <span>{item.itemKind === "block" ? "Bloqueio" : "Compromisso"}</span>
+                            <span className="font-medium"> · {item.title || "-"}</span>
                           </div>
                         </div>
                       ))}
 
-                      {dayItems.length > 3 ? (
-                        <div className="text-[11px] font-semibold text-gray-500">
-                          +{dayItems.length - 3} item(ns)
+                      {dayItems.length > 1 ? (
+                        <div className="text-[8.5px] font-semibold text-gray-500">
+                          +{dayItems.length - 1} item(ns)
                         </div>
                       ) : null}
                     </div>
@@ -2069,14 +2039,14 @@ export default function SchedulePage() {
             </div>
           </div>
 
-          <div className="space-y-4">
-            <div className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+          <div className="space-y-2">
+            <div className="rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setRightPanelTab("day")}
                   className={[
-                    "rounded-xl px-3 py-2 text-xs font-semibold transition",
+                    "rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition",
                     rightPanelTab === "day"
                       ? "bg-black text-white"
                       : "bg-gray-100 text-gray-700 hover:bg-gray-200",
@@ -2088,7 +2058,7 @@ export default function SchedulePage() {
                   type="button"
                   onClick={() => setRightPanelTab("help")}
                   className={[
-                    "rounded-xl px-3 py-2 text-xs font-semibold transition",
+                    "rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition",
                     rightPanelTab === "help"
                       ? "bg-black text-white"
                       : "bg-gray-100 text-gray-700 hover:bg-gray-200",
@@ -2100,17 +2070,17 @@ export default function SchedulePage() {
 
               {rightPanelTab === "day" ? (
                 <>
-                  <p className="mt-3 text-xs capitalize text-gray-500">
+                  <p className="mt-2 text-[11px] capitalize text-gray-500">
                     {selectedDateLabel}
                   </p>
 
-                  <div className="mt-3 space-y-2.5">
+                  <div className="mt-2 space-y-2">
                     {loading || storeLoading ? (
-                      <div className="rounded-2xl bg-gray-50 p-3 text-sm text-gray-500">
+                      <div className="rounded-xl bg-gray-50 p-2.5 text-xs text-gray-500">
                         Carregando itens do dia...
                       </div>
                     ) : selectedDateItems.length === 0 ? (
-                      <div className="rounded-2xl bg-gray-50 p-3 text-sm text-gray-500">
+                      <div className="rounded-xl bg-gray-50 p-2.5 text-xs text-gray-500">
                         Nenhum item nesse dia.
                       </div>
                     ) : (
@@ -2119,14 +2089,14 @@ export default function SchedulePage() {
                           key={item.itemId}
                           type="button"
                           onClick={() => openItemDetails(item)}
-                          className="w-full rounded-2xl border border-black/10 bg-white p-3 text-left transition hover:bg-gray-50"
+                          className="w-full rounded-xl border border-black/10 bg-white p-2.5 text-left transition hover:bg-gray-50"
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <div className="text-sm font-bold text-gray-900">
+                              <div className="text-xs font-bold text-gray-900">
                                 {item.title}
                               </div>
-                              <div className="mt-1 text-[11px] text-gray-500">
+                              <div className="mt-0.5 text-[10px] text-gray-500">
                                 {formatItemKind(item.itemKind)} • {" "}
                                 {formatItemType(item.itemType)}
                               </div>
@@ -2150,12 +2120,12 @@ export default function SchedulePage() {
                             </span>
                           </div>
 
-                          <div className="mt-2 text-xs text-gray-600">
+                          <div className="mt-1.5 text-[11px] text-gray-600">
                             {formatDateTime(item.startAt)} até {formatDateTime(item.endAt)}
                           </div>
 
                           {item.customerName ? (
-                            <div className="mt-1 text-[11px] text-gray-500">
+                            <div className="mt-0.5 text-[10px] text-gray-500">
                               Cliente: {item.customerName}
                             </div>
                           ) : null}
@@ -2165,41 +2135,36 @@ export default function SchedulePage() {
                   </div>
                 </>
               ) : (
-                <div className="mt-3 space-y-2">
-                  <div className="rounded-2xl bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+                <div className="mt-2 space-y-1.5">
+                  <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
                     A agenda segue a capacidade definida na aba Operação.
                   </div>
-                  <div className="rounded-2xl bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+                  <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
                     Vários compromissos no mesmo dia são permitidos. No mesmo horário, vale a capacidade configurada pela loja.
                   </div>
-                  <div className="rounded-2xl bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+                  <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
                     Bloqueios impedem novos agendamentos e não podem ser criados por cima de compromisso ativo.
                   </div>
-                  <div className="rounded-2xl bg-gray-50 p-3 text-xs leading-5 text-gray-700">
+                  <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
                     Para mudar a regra da agenda, vá em Configurações → Operação.
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-              <h2 className="text-base font-bold text-gray-900">Resumo do mês</h2>
-
-              <div className="mt-3 space-y-2 text-sm">
-                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2.5">
-                  <span className="text-xs text-gray-600">Total</span>
+            <div className="rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
+              <div className="text-[11px] font-semibold text-gray-500">Resumo</div>
+              <div className="mt-2 divide-y divide-black/5">
+                <div className="flex items-center justify-between py-1.5">
+                  <span className="text-[10px] text-gray-500">Total de itens</span>
                   <span className="text-sm font-bold text-gray-900">{counts.total}</span>
                 </div>
-
-                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2.5">
-                  <span className="text-xs text-gray-600">Compromissos</span>
-                  <span className="text-sm font-bold text-gray-900">
-                    {counts.appointments}
-                  </span>
+                <div className="flex items-center justify-between py-1.5">
+                  <span className="text-[10px] text-gray-500">Compromissos</span>
+                  <span className="text-sm font-bold text-gray-900">{counts.appointments}</span>
                 </div>
-
-                <div className="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2.5">
-                  <span className="text-xs text-gray-600">Bloqueios</span>
+                <div className="flex items-center justify-between py-1.5">
+                  <span className="text-[10px] text-gray-500">Bloqueios</span>
                   <span className="text-sm font-bold text-gray-900">{counts.blocks}</span>
                 </div>
               </div>
@@ -2213,15 +2178,15 @@ export default function SchedulePage() {
             onClick={closeItemDetails}
           >
             <div
-              className="flex h-full w-full max-w-2xl flex-col bg-white shadow-2xl"
+              className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
+              <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
                 <div>
-                  <div className="text-sm font-semibold text-gray-500">
+                  <div className="text-xs font-semibold text-gray-500">
                     {formatItemKind(selectedItem.itemKind)}
                   </div>
-                  <h3 className="mt-1 text-2xl font-bold text-gray-900">
+                  <h3 className="mt-0.5 text-xl font-bold text-gray-900">
                     {selectedItem.title}
                   </h3>
                 </div>
@@ -2229,52 +2194,52 @@ export default function SchedulePage() {
                 <button
                   type="button"
                   onClick={closeItemDetails}
-                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Fechar
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="flex-1 overflow-y-auto px-5 py-4">
                 {saveErrorText ? (
                   <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
                     {saveErrorText}
                   </div>
                 ) : null}
 
-                <div className="mb-5 flex flex-wrap items-center gap-2">
+                <div className="mb-4 flex flex-wrap items-center gap-1.5">
                   <span
-                    className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${getStatusBadgeClass(
+                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ${getStatusBadgeClass(
                       selectedItem.status
                     )}`}
                   >
                     {formatStatus(selectedItem.status)}
                   </span>
 
-                  <span className="rounded-full bg-gray-50 px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-gray-200">
+                  <span className="rounded-full bg-gray-50 px-2.5 py-0.5 text-[11px] font-semibold text-gray-700 ring-1 ring-gray-200">
                     {formatItemType(selectedItem.itemType)}
                   </span>
                 </div>
 
                 {selectedItem.itemKind === "appointment" &&
                 selectedItem.status === "rescheduled" ? (
-                  <div className="mb-5 rounded-2xl bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 ring-1 ring-amber-200">
+                  <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2.5 text-xs font-semibold text-amber-800 ring-1 ring-amber-200">
                     Este compromisso foi remarcado. Confira abaixo o horário atualizado.
                   </div>
                 ) : null}
 
                 {selectedItem.itemKind === "appointment" &&
                 selectedItem.status === "completed" ? (
-                  <div className="mb-5 rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 ring-1 ring-emerald-200">
+                  <div className="mb-4 rounded-xl bg-emerald-50 px-3 py-2.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
                     Este compromisso foi concluído.
                   </div>
                 ) : null}
 
                 {selectedItem.itemKind === "appointment" && !editMode ? (
-                  <div className="mb-5 flex flex-wrap gap-3">
+                  <div className="mb-4 flex flex-wrap gap-2">
                     <button
                       onClick={startEditingSelectedItem}
-                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+                      className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
                     >
                       Editar
                     </button>
@@ -2282,7 +2247,7 @@ export default function SchedulePage() {
                     <button
                       onClick={() => void cancelAppointment()}
                       disabled={savingEdit || selectedItem.status === "cancelled"}
-                      className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Cancelar compromisso
                     </button>
@@ -2290,10 +2255,10 @@ export default function SchedulePage() {
                 ) : null}
 
                 {selectedItem.itemKind === "block" && !editMode ? (
-                  <div className="mb-5 flex flex-wrap gap-3">
+                  <div className="mb-4 flex flex-wrap gap-2">
                     <button
                       onClick={startEditingSelectedItem}
-                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+                      className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
                     >
                       Editar bloqueio
                     </button>
@@ -2301,7 +2266,7 @@ export default function SchedulePage() {
                     <button
                       onClick={() => void deleteBlock()}
                       disabled={savingEdit}
-                      className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Excluir bloqueio
                     </button>
@@ -2309,10 +2274,10 @@ export default function SchedulePage() {
                 ) : null}
 
                 {selectedItem.itemKind === "appointment" && editMode && editForm ? (
-                  <div className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-3">
+                    <div className="grid gap-3 md:grid-cols-2">
                       <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        <label className="mb-1 block text-xs font-semibold text-gray-700">
                           Título
                         </label>
                         <input
@@ -2322,12 +2287,12 @@ export default function SchedulePage() {
                               prev ? { ...prev, title: e.target.value } : prev
                             )
                           }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                         />
                       </div>
 
                       <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        <label className="mb-1 block text-xs font-semibold text-gray-700">
                           Tipo
                         </label>
                         <select
@@ -2339,7 +2304,7 @@ export default function SchedulePage() {
                                 : prev
                             )
                           }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                         >
                           <option value="technical_visit">Visita técnica</option>
                           <option value="installation">Instalação</option>
@@ -2352,7 +2317,7 @@ export default function SchedulePage() {
                       </div>
 
                       <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        <label className="mb-1 block text-xs font-semibold text-gray-700">
                           Status
                         </label>
                         <select
@@ -2362,7 +2327,7 @@ export default function SchedulePage() {
                               prev ? { ...prev, status: e.target.value } : prev
                             )
                           }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                         >
                           <option value="scheduled">Agendado</option>
                           <option value="rescheduled">Remarcado</option>
@@ -2372,7 +2337,7 @@ export default function SchedulePage() {
                       </div>
 
                       <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        <label className="mb-1 block text-xs font-semibold text-gray-700">
                           Cliente
                         </label>
                         <input
@@ -2384,7 +2349,7 @@ export default function SchedulePage() {
                                 : prev
                             )
                           }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                         />
                       </div>
 
@@ -2453,7 +2418,7 @@ export default function SchedulePage() {
                       />
 
                       <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        <label className="mb-1 block text-xs font-semibold text-gray-700">
                           Telefone
                         </label>
                         <input
@@ -2470,12 +2435,12 @@ export default function SchedulePage() {
                           }
                           placeholder="(11) 99999-9999"
                           inputMode="numeric"
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                         />
                       </div>
 
                       <div>
-                        <label className="mb-1 block text-sm font-semibold text-gray-700">
+                        <label className="mb-1 block text-xs font-semibold text-gray-700">
                           Endereço
                         </label>
                         <input
@@ -2487,13 +2452,13 @@ export default function SchedulePage() {
                                 : prev
                             )
                           }
-                          className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                          className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                         />
                       </div>
                     </div>
 
                     <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
                         Observações
                       </label>
                       <textarea
@@ -2504,15 +2469,15 @@ export default function SchedulePage() {
                           )
                         }
                         rows={5}
-                        className="w-full rounded-2xl border border-black/10 px-3 py-3 text-sm outline-none focus:border-black"
+                        className="w-full rounded-xl border border-black/10 px-2.5 py-2 text-xs outline-none focus:border-black"
                       />
                     </div>
 
-                    <div className="flex flex-wrap gap-3 pt-2">
+                    <div className="flex flex-wrap gap-2 pt-1">
                       <button
                         onClick={() => void saveAppointmentEdit()}
                         disabled={savingEdit}
-                        className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {savingEdit ? "Salvando..." : "Salvar alterações"}
                       </button>
@@ -2520,7 +2485,7 @@ export default function SchedulePage() {
                       <button
                         onClick={cancelEditingSelectedItem}
                         disabled={savingEdit}
-                        className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Cancelar edição
                       </button>
@@ -2529,7 +2494,7 @@ export default function SchedulePage() {
                     {completionDecisionOpen &&
                     selectedItem.itemKind === "appointment" &&
                     editForm.status === "completed" ? (
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
                         <div className="text-sm font-semibold text-amber-900">
                           Esse atendimento terminou por completo?
                         </div>
@@ -2537,12 +2502,12 @@ export default function SchedulePage() {
                           Se já terminou tudo, o sistema encerra também o retorno ligado a esse atendimento. Se ainda falta falar com o cliente ou acompanhar algo, o retorno continua em aberto.
                         </p>
 
-                        <div className="mt-4 flex flex-wrap gap-3">
+                        <div className="mt-3 flex flex-wrap gap-2">
                           <button
                             type="button"
                             onClick={() => void saveAppointmentEdit("fully_completed")}
                             disabled={savingEdit}
-                            className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Sim, terminou tudo
                           </button>
@@ -2551,7 +2516,7 @@ export default function SchedulePage() {
                             type="button"
                             onClick={() => void saveAppointmentEdit("needs_followup")}
                             disabled={savingEdit}
-                            className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Não, ainda falta retorno
                           </button>
@@ -2560,7 +2525,7 @@ export default function SchedulePage() {
                             type="button"
                             onClick={() => setCompletionDecisionOpen(false)}
                             disabled={savingEdit}
-                            className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Voltar
                           </button>
@@ -2571,9 +2536,9 @@ export default function SchedulePage() {
                 ) : null}
 
                 {selectedItem.itemKind === "block" && editMode && blockEditForm ? (
-                  <div className="space-y-4">
+                  <div className="space-y-3">
                     <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
                         Título
                       </label>
                       <input
@@ -2583,12 +2548,12 @@ export default function SchedulePage() {
                             prev ? { ...prev, title: e.target.value } : prev
                           )
                         }
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                       />
                     </div>
 
                     <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
                         Tipo do bloqueio
                       </label>
                       <select
@@ -2598,7 +2563,7 @@ export default function SchedulePage() {
                             prev ? { ...prev, blockType: e.target.value } : prev
                           )
                         }
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                       >
                         <option value="manual_block">Bloqueio manual</option>
                         <option value="personal_unavailable">Indisponível</option>
@@ -2608,7 +2573,7 @@ export default function SchedulePage() {
                       </select>
                     </div>
 
-                    <div className="grid gap-4 md:grid-cols-2">
+                    <div className="grid gap-3 md:grid-cols-2">
                       <DateTimePickerField
                         label="Início"
                         dateValue={extractDatePart(blockEditForm.startAt)}
@@ -2675,7 +2640,7 @@ export default function SchedulePage() {
                     </div>
 
                     <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
                         Observações
                       </label>
                       <textarea
@@ -2686,15 +2651,15 @@ export default function SchedulePage() {
                           )
                         }
                         rows={5}
-                        className="w-full rounded-2xl border border-black/10 px-3 py-3 text-sm outline-none focus:border-black"
+                        className="w-full rounded-xl border border-black/10 px-2.5 py-2 text-xs outline-none focus:border-black"
                       />
                     </div>
 
-                    <div className="flex flex-wrap gap-3 pt-2">
+                    <div className="flex flex-wrap gap-2 pt-1">
                       <button
                         onClick={() => void saveBlockEdit()}
                         disabled={savingEdit}
-                        className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {savingEdit ? "Salvando..." : "Salvar bloqueio"}
                       </button>
@@ -2702,7 +2667,7 @@ export default function SchedulePage() {
                       <button
                         onClick={cancelEditingSelectedItem}
                         disabled={savingEdit}
-                        className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Cancelar edição
                       </button>
@@ -2711,68 +2676,68 @@ export default function SchedulePage() {
                 ) : null}
 
                 {!editMode ? (
-                  <div className="space-y-4">
-                    <div className="rounded-2xl bg-gray-50 p-4">
+                  <div className="space-y-3">
+                    <div className="rounded-xl bg-gray-50 p-3">
                       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Início
                       </div>
-                      <div className="mt-1 text-sm font-medium text-gray-900">
+                      <div className="mt-0.5 text-xs font-medium text-gray-900">
                         {formatDateTime(selectedItem.startAt)}
                       </div>
                     </div>
 
-                    <div className="rounded-2xl bg-gray-50 p-4">
+                    <div className="rounded-xl bg-gray-50 p-3">
                       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Fim
                       </div>
-                      <div className="mt-1 text-sm font-medium text-gray-900">
+                      <div className="mt-0.5 text-xs font-medium text-gray-900">
                         {formatDateTime(selectedItem.endAt)}
                       </div>
                     </div>
 
-                    <div className="rounded-2xl bg-gray-50 p-4">
+                    <div className="rounded-xl bg-gray-50 p-3">
                       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Cliente
                       </div>
-                      <div className="mt-1 text-sm font-medium text-gray-900">
+                      <div className="mt-0.5 text-xs font-medium text-gray-900">
                         {selectedItem.customerName || "-"}
                       </div>
-                      <div className="mt-1 text-xs text-gray-500">
+                      <div className="mt-0.5 text-[11px] text-gray-500">
                         {formatPhone(selectedItem.customerPhone)}
                       </div>
                     </div>
 
                     {selectedItem.itemKind === "appointment" ? (
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="rounded-2xl bg-gray-50 p-4">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-xl bg-gray-50 p-3">
                           <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                             Lead vinculado
                           </div>
-                          <div className="mt-1 text-sm font-medium text-gray-900">
+                          <div className="mt-0.5 text-xs font-medium text-gray-900">
                             {selectedItemLeadOption?.leadName || selectedItem.customerName || (selectedItem.leadId ? "Lead vinculado" : "-")}
                           </div>
                           <div className="mt-1 break-all text-xs text-gray-500">
                             {selectedItem.leadId || "Sem lead vinculado"}
                           </div>
                           {selectedItemLeadOption?.leadState ? (
-                            <div className="mt-1 text-xs text-gray-500">
+                            <div className="mt-0.5 text-[11px] text-gray-500">
                               Etapa atual: {selectedItemLeadOption.leadState}
                             </div>
                           ) : null}
                         </div>
 
-                        <div className="rounded-2xl bg-gray-50 p-4">
+                        <div className="rounded-xl bg-gray-50 p-3">
                           <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                             Conversa vinculada
                           </div>
-                          <div className="mt-1 text-sm font-medium text-gray-900">
+                          <div className="mt-0.5 text-xs font-medium text-gray-900">
                             {selectedItem.conversationId ? "Conversa conectada" : "Sem conversa vinculada"}
                           </div>
                           <div className="mt-1 break-all text-xs text-gray-500">
                             {selectedItem.conversationId || "-"}
                           </div>
                           {selectedItem.conversationId && selectedItemLeadOption?.conversationId === selectedItem.conversationId ? (
-                            <div className="mt-1 text-xs text-gray-500">
+                            <div className="mt-0.5 text-[11px] text-gray-500">
                               Status: {selectedItemLeadOption.conversationStatus || "-"}
                               {selectedItemLeadOption.isHumanActive ? " • Humano ativo" : " • IA ativa"}
                             </div>
@@ -2781,29 +2746,29 @@ export default function SchedulePage() {
                       </div>
                     ) : null}
 
-                    <div className="rounded-2xl bg-gray-50 p-4">
+                    <div className="rounded-xl bg-gray-50 p-3">
                       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Endereço
                       </div>
-                      <div className="mt-1 whitespace-pre-wrap text-sm font-medium text-gray-900">
+                      <div className="mt-0.5 whitespace-pre-wrap text-xs font-medium text-gray-900">
                         {selectedItem.addressText || "-"}
                       </div>
                     </div>
 
-                    <div className="rounded-2xl bg-gray-50 p-4">
+                    <div className="rounded-xl bg-gray-50 p-3">
                       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Observações
                       </div>
-                      <div className="mt-1 whitespace-pre-wrap text-sm font-medium text-gray-900">
+                      <div className="mt-0.5 whitespace-pre-wrap text-xs font-medium text-gray-900">
                         {selectedItem.notes || "-"}
                       </div>
                     </div>
 
-                    <div className="rounded-2xl bg-gray-50 p-4">
+                    <div className="rounded-xl bg-gray-50 p-3">
                       <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                         Origem
                       </div>
-                      <div className="mt-1 text-sm font-medium text-gray-900">
+                      <div className="mt-0.5 text-xs font-medium text-gray-900">
                         {selectedItem.source || "-"}
                       </div>
                     </div>
@@ -2820,15 +2785,15 @@ export default function SchedulePage() {
             onClick={closeCreateBlockPanel}
           >
             <div
-              className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+              className="flex h-full w-full max-w-lg flex-col bg-white shadow-2xl"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
+              <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
                 <div>
-                  <div className="text-sm font-semibold text-gray-500">
+                  <div className="text-xs font-semibold text-gray-500">
                     Novo bloqueio
                   </div>
-                  <h3 className="mt-1 text-2xl font-bold text-gray-900">
+                  <h3 className="mt-0.5 text-xl font-bold text-gray-900">
                     Criar bloqueio manual
                   </h3>
                 </div>
@@ -2836,22 +2801,22 @@ export default function SchedulePage() {
                 <button
                   type="button"
                   onClick={closeCreateBlockPanel}
-                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Fechar
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="flex-1 overflow-y-auto px-5 py-4">
                 {blockErrorText ? (
                   <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
                     {blockErrorText}
                   </div>
                 ) : null}
 
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <div>
-                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
                       Título
                     </label>
                     <input
@@ -2863,12 +2828,12 @@ export default function SchedulePage() {
                         }))
                       }
                       placeholder="Ex.: Consulta médica, viagem, equipe ocupada..."
-                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                     />
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
                       Tipo do bloqueio
                     </label>
                     <select
@@ -2879,7 +2844,7 @@ export default function SchedulePage() {
                           blockType: e.target.value,
                         }))
                       }
-                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                     >
                       <option value="manual_block">Bloqueio manual</option>
                       <option value="personal_unavailable">Indisponível</option>
@@ -2889,7 +2854,7 @@ export default function SchedulePage() {
                     </select>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-3 md:grid-cols-2">
                     <DateTimePickerField
                       label="Início"
                       dateValue={extractDatePart(blockForm.startAt)}
@@ -2940,7 +2905,7 @@ export default function SchedulePage() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
                       Observações
                     </label>
                     <textarea
@@ -2952,15 +2917,15 @@ export default function SchedulePage() {
                         }))
                       }
                       rows={5}
-                      className="w-full rounded-2xl border border-black/10 px-3 py-3 text-sm outline-none focus:border-black"
+                      className="w-full rounded-xl border border-black/10 px-2.5 py-2 text-xs outline-none focus:border-black"
                     />
                   </div>
 
-                  <div className="flex flex-wrap gap-3 pt-2">
+                  <div className="flex flex-wrap gap-2 pt-1">
                     <button
                       onClick={() => void saveNewBlock()}
                       disabled={savingBlock}
-                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {savingBlock ? "Salvando..." : "Salvar bloqueio"}
                     </button>
@@ -2968,7 +2933,7 @@ export default function SchedulePage() {
                     <button
                       onClick={closeCreateBlockPanel}
                       disabled={savingBlock}
-                      className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Cancelar
                     </button>
@@ -2985,15 +2950,15 @@ export default function SchedulePage() {
             onClick={closeCreateAppointmentPanel}
           >
             <div
-              className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+              className="flex h-full w-full max-w-lg flex-col bg-white shadow-2xl"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="flex items-start justify-between border-b border-black/10 px-6 py-5">
+              <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
                 <div>
-                  <div className="text-sm font-semibold text-gray-500">
+                  <div className="text-xs font-semibold text-gray-500">
                     Novo compromisso
                   </div>
-                  <h3 className="mt-1 text-2xl font-bold text-gray-900">
+                  <h3 className="mt-0.5 text-xl font-bold text-gray-900">
                     Criar compromisso manual
                   </h3>
                 </div>
@@ -3001,22 +2966,22 @@ export default function SchedulePage() {
                 <button
                   type="button"
                   onClick={closeCreateAppointmentPanel}
-                  className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Fechar
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="flex-1 overflow-y-auto px-5 py-4">
                 {appointmentCreateErrorText ? (
                   <div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-200">
                     {appointmentCreateErrorText}
                   </div>
                 ) : null}
 
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <div>
-                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
                       Título
                     </label>
                     <input
@@ -3028,13 +2993,13 @@ export default function SchedulePage() {
                         }))
                       }
                       placeholder="Ex.: Visita técnica na casa do cliente"
-                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                     />
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-3 md:grid-cols-2">
                     <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
                         Tipo
                       </label>
                       <select
@@ -3045,7 +3010,7 @@ export default function SchedulePage() {
                             appointmentType: e.target.value,
                           }))
                         }
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                       >
                         <option value="technical_visit">Visita técnica</option>
                         <option value="installation">Instalação</option>
@@ -3058,7 +3023,7 @@ export default function SchedulePage() {
                     </div>
 
                     <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
                         Status inicial
                       </label>
                       <select
@@ -3069,7 +3034,7 @@ export default function SchedulePage() {
                             status: e.target.value,
                           }))
                         }
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                       >
                         <option value="scheduled">Agendado</option>
                         <option value="rescheduled">Remarcado</option>
@@ -3079,7 +3044,7 @@ export default function SchedulePage() {
                     </div>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-3 md:grid-cols-2">
                     <DateTimePickerField
                       label="Início"
                       dateValue={extractDatePart(appointmentCreateForm.scheduledStart)}
@@ -3129,15 +3094,15 @@ export default function SchedulePage() {
                     />
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-3 md:grid-cols-2">
                     <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
                         Lead vinculado
                       </label>
                       <select
                         value={appointmentCreateForm.leadId}
                         onChange={(e) => handleAppointmentLeadChange(e.target.value)}
-                        className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                       >
                         <option value="">Sem vínculo manual</option>
                         {leadOptions.map((lead) => (
@@ -3146,7 +3111,7 @@ export default function SchedulePage() {
                           </option>
                         ))}
                       </select>
-                      <div className="mt-1 text-xs text-gray-500">
+                      <div className="mt-0.5 text-[11px] text-gray-500">
                         {loadingLeadOptions
                           ? "Carregando leads da loja..."
                           : createLeadConversationState.status === "loading"
@@ -3158,16 +3123,16 @@ export default function SchedulePage() {
                     </div>
 
                     <div>
-                      <label className="mb-1 block text-sm font-semibold text-gray-700">
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
                         Conversa vinculada
                       </label>
                       <input
                         value={effectiveCreateConversationId}
                         readOnly
                         placeholder="Será preenchida automaticamente pelo lead"
-                        className="w-full rounded-xl border border-black/10 bg-gray-50 px-3 py-2 text-sm text-gray-600 outline-none"
+                        className="w-full rounded-lg border border-black/10 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600 outline-none"
                       />
-                      <div className="mt-1 text-xs text-gray-500">
+                      <div className="mt-0.5 text-[11px] text-gray-500">
                         {createLeadConversationState.status === "loading"
                           ? "Buscando a conversa mais recente desse lead..."
                           : createLeadConversationState.status === "resolved"
@@ -3182,7 +3147,7 @@ export default function SchedulePage() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
                       Cliente
                     </label>
                     <input
@@ -3194,12 +3159,12 @@ export default function SchedulePage() {
                         }))
                       }
                       placeholder="Nome do cliente"
-                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                     />
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
                       Telefone
                     </label>
                     <input
@@ -3212,12 +3177,12 @@ export default function SchedulePage() {
                       }
                       placeholder="(11) 99999-9999"
                       inputMode="numeric"
-                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                     />
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
                       Endereço
                     </label>
                     <input
@@ -3229,12 +3194,12 @@ export default function SchedulePage() {
                         }))
                       }
                       placeholder="Endereço do atendimento"
-                      className="w-full rounded-xl border border-black/10 px-3 py-2 text-sm outline-none focus:border-black"
+                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black"
                     />
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
                       Observações
                     </label>
                     <textarea
@@ -3246,15 +3211,15 @@ export default function SchedulePage() {
                         }))
                       }
                       rows={5}
-                      className="w-full rounded-2xl border border-black/10 px-3 py-3 text-sm outline-none focus:border-black"
+                      className="w-full rounded-xl border border-black/10 px-2.5 py-2 text-xs outline-none focus:border-black"
                     />
                   </div>
 
-                  <div className="flex flex-wrap gap-3 pt-2">
+                  <div className="flex flex-wrap gap-2 pt-1">
                     <button
                       onClick={() => void saveNewAppointment()}
                       disabled={savingAppointmentCreate}
-                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-black px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {savingAppointmentCreate ? "Salvando..." : "Salvar compromisso"}
                     </button>
@@ -3262,7 +3227,7 @@ export default function SchedulePage() {
                     <button
                       onClick={closeCreateAppointmentPanel}
                       disabled={savingAppointmentCreate}
-                      className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Cancelar
                     </button>
