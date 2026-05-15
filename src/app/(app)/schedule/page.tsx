@@ -1868,8 +1868,8 @@ export default function SchedulePage() {
 
   return (
     <div className="h-[calc(100vh-151px)] overflow-hidden bg-gray-100 text-sm">
-      <div className="mx-auto h-full max-w-[1320px] overflow-hidden px-3 py-1.5 lg:px-4 lg:py-1.5">
-        <div className="mb-1.5 flex items-start justify-between gap-3">
+      <div className="mx-auto flex h-full min-h-0 max-w-[1320px] flex-col overflow-hidden px-3 py-1.5 lg:px-4 lg:py-1.5">
+        <div className="mb-1.5 flex shrink-0 items-start justify-between gap-3">
           <div>
             <h1 className="text-lg font-bold text-gray-900">Agenda</h1>
 
@@ -1923,16 +1923,13 @@ export default function SchedulePage() {
           </div>
         ) : null}
 
-        <div className="grid min-h-0 items-start gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_288px]">
-          <div className="min-h-0 rounded-2xl bg-white p-2 shadow-sm ring-1 ring-black/5">
-            <div className="mb-1.5 flex flex-col gap-1.5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="grid min-h-0 flex-1 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_288px]">
+          <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl bg-white p-2 shadow-sm ring-1 ring-black/5">
+            <div className="mb-1.5 flex shrink-0 flex-col gap-1.5 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h2 className="text-[15px] font-bold capitalize text-gray-900">
                   {formatMonthYear(viewMonth)}
                 </h2>
-                <p className="mt-0.5 text-[9px] text-gray-500">
-                  A agenda segue a capacidade definida pela loja.
-                </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-1.5">
@@ -1959,7 +1956,7 @@ export default function SchedulePage() {
               </div>
             </div>
 
-            <div className="mb-1 grid grid-cols-7 gap-1">
+            <div className="mb-1 grid shrink-0 grid-cols-7 gap-1">
               {WEEKDAY_LABELS.map((label) => (
                 <div
                   key={label}
@@ -1970,7 +1967,7 @@ export default function SchedulePage() {
               ))}
             </div>
 
-            <div className="grid grid-cols-7 gap-1">
+            <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 gap-1 overflow-hidden">
               {calendarDays.map((date) => {
                 const dayKey = toDateKey(date);
                 const dayItems = itemsByDate[dayKey] || [];
@@ -1984,7 +1981,7 @@ export default function SchedulePage() {
                     type="button"
                     onClick={() => setSelectedDateKey(dayKey)}
                     className={[
-                      "min-h-[64px] rounded-lg border p-1 text-left transition",
+                      "h-full min-h-0 overflow-hidden rounded-lg border p-1 text-left transition",
                       isSelected
                         ? "border-black bg-black/[0.03] ring-2 ring-black/10"
                         : "border-black/10 bg-white hover:bg-gray-50",
@@ -2039,9 +2036,9 @@ export default function SchedulePage() {
             </div>
           </div>
 
-          <div className="space-y-2">
-            <div className="rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
-              <div className="flex items-center gap-2">
+          <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
+              <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setRightPanelTab("day")}
@@ -2069,12 +2066,12 @@ export default function SchedulePage() {
               </div>
 
               {rightPanelTab === "day" ? (
-                <>
-                  <p className="mt-2 text-[11px] capitalize text-gray-500">
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <p className="mt-2 shrink-0 text-[11px] capitalize text-gray-500">
                     {selectedDateLabel}
                   </p>
 
-                  <div className="mt-2 space-y-2">
+                  <div className="mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                     {loading || storeLoading ? (
                       <div className="rounded-xl bg-gray-50 p-2.5 text-xs text-gray-500">
                         Carregando itens do dia...
@@ -2133,12 +2130,9 @@ export default function SchedulePage() {
                       ))
                     )}
                   </div>
-                </>
+                </div>
               ) : (
                 <div className="mt-2 space-y-1.5">
-                  <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
-                    A agenda segue a capacidade definida na aba Operação.
-                  </div>
                   <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
                     Vários compromissos no mesmo dia são permitidos. No mesmo horário, vale a capacidade configurada pela loja.
                   </div>
@@ -2152,7 +2146,7 @@ export default function SchedulePage() {
               )}
             </div>
 
-            <div className="rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
+            <div className="shrink-0 rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
               <div className="text-[11px] font-semibold text-gray-500">Resumo</div>
               <div className="mt-2 divide-y divide-black/5">
                 <div className="flex items-center justify-between py-1.5">

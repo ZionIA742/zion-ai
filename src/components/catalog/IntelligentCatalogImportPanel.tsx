@@ -6904,7 +6904,8 @@ export default function IntelligentCatalogImportPanel({
           const selectedImagesForUpload = getSelectedVisualReviewImagesForUpload(
             item,
             visualReviewImagePreview,
-            visualPdfFileMeta?.name
+            visualPdfFileMeta?.name,
+            blockedVisualReviewImagePages
           );
 
           if (item.category === "pool") {
@@ -8846,7 +8847,8 @@ async function handleSaveImportedItemsToCatalog() {
                                         const imageSuggestions = getVisualReviewSuggestedImages(
                                           item,
                                           visualReviewImagePreview,
-                                          visualPdfFileMeta?.name
+                                          visualPdfFileMeta?.name,
+                                          blockedVisualReviewImagePages
                                         );
                                         const selectedImageKeys = getVisualReviewSelectedImageKeys(item);
                                         const selectedImageKeySet = new Set(selectedImageKeys);
