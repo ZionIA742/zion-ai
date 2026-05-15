@@ -1787,15 +1787,38 @@ function writeVisualAnalysisPreviewCache(
     const latestStorage = getVisualAnalysisStorage();
     if (!latestStorage || compactedImagePreview.length === 0) return;
     const cacheKey = buildVisualAnalysisPreviewCacheKey(params);
+    let existingImagePreview: VisualReviewExtractedImagePreview[] = [];
+    let cacheCreatedAt = createdAt;
+    try {
+      const existingRaw = latestStorage.getItem(cacheKey);
+      if (existingRaw) {
+        const existing = JSON.parse(existingRaw) as PersistedVisualAnalysisPreviewCache;
+        if (isVisualAnalysisPreviewCacheValid(existing, params)) {
+          existingImagePreview = existing.extractedImagePreview.filter((image) =>
+            Boolean(String(image.dataUrl || "").trim())
+          );
+          cacheCreatedAt = Math.max(createdAt, Number(existing.createdAt || 0));
+        } else {
+          latestStorage.removeItem(cacheKey);
+        }
+      }
+    } catch (error) {
+      console.error("[OnboardingPage] visual analysis preview cache merge error:", error);
+    }
+    const mergedImagePreview = mergeVisualReviewImagePreviews(
+      existingImagePreview,
+      compactedImagePreview.filter((image) => Boolean(String(image.dataUrl || "").trim()))
+    );
+    if (mergedImagePreview.length === 0) return;
     const baseValue = {
       cacheVersion: VISUAL_ANALYSIS_CACHE_VERSION,
-      createdAt,
-      expiresAt: createdAt + VISUAL_ANALYSIS_CACHE_TTL_MS,
+      createdAt: cacheCreatedAt,
+      expiresAt: cacheCreatedAt + VISUAL_ANALYSIS_CACHE_TTL_MS,
       organizationId: params.organizationId || null,
       storeId: params.storeId || null,
       file: params.file,
     };
-    let previewsToPersist = compactedImagePreview;
+    let previewsToPersist = mergedImagePreview;
     let serialized = JSON.stringify({
       ...baseValue,
       extractedImagePreview: previewsToPersist,
@@ -1813,11 +1836,6 @@ function writeVisualAnalysisPreviewCache(
     if (serialized.length > VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS) return;
 
     try {
-      const existingRaw = latestStorage.getItem(cacheKey);
-      if (existingRaw) {
-        const existing = JSON.parse(existingRaw) as Partial<PersistedVisualAnalysisPreviewCache>;
-        if (Number(existing.createdAt || 0) > createdAt) return;
-      }
       latestStorage.setItem(cacheKey, serialized);
     } catch (error) {
       console.error("[OnboardingPage] visual analysis preview cache setItem error:", error);
@@ -2040,12 +2058,24 @@ function hasInstitutionalVisualPageText(value: string | null | undefined) {
     normalized
   );
 }
+function hasUsefulVisualImagePageEvidence(
+  page: Extract<VisualCatalogDocumentScanResponse, { ok: true }>["pageEvidence"][number]
+) {
+  return page.items.some((item) => {
+    const label = normalizeImportedLoose([item.visibleName, item.visibleCode].filter(Boolean).join(" "));
+    const hasCategory = Boolean(item.category);
+    const hasCode = Boolean(String(item.visibleCode || "").trim());
+    const hasDimensions = Boolean(formatVisualEvidenceDimensions(item.dimensions));
+    return Boolean((label || hasCategory || hasCode || hasDimensions) && !hasInstitutionalVisualPageText(label));
+  });
+}
 function buildBlockedVisualReviewImagePages(params: {
   documentMap: VisualCatalogDocumentMapResponse | null;
   evidence: VisualCatalogDocumentScanResponse | null;
 }) {
   const blockedPages = new Set<number>();
   const blockedPageTypes = new Set(["cover", "index", "institutional", "back_cover"]);
+  const usefulPageTypes = new Set(["model_photos", "measurement_table", "mixed", "spa", "accessories"]);
 
   if (params.documentMap?.ok) {
     for (const page of params.documentMap.pages) {
@@ -2053,6 +2083,7 @@ function buildBlockedVisualReviewImagePages(params: {
         blockedPages.add(page.pageNumber);
         continue;
       }
+      if (usefulPageTypes.has(page.pageType)) continue;
       const pageText = [
         page.reason,
         ...page.detectedLabels,
@@ -2070,6 +2101,7 @@ function buildBlockedVisualReviewImagePages(params: {
         blockedPages.add(page.pageNumber);
         continue;
       }
+      if (usefulPageTypes.has(page.pageType) || hasUsefulVisualImagePageEvidence(page)) continue;
       const pageText = page.items
         .map((item) =>
           [
@@ -5903,18 +5935,48 @@ export default function IntelligentCatalogImportPanel({
     }
     const pages = normalizeVisualAnalysisPageList(cache.pages);
     const pagesInput = cache.visualEvidencePagesInput || pages.join(",");
+    const previewCacheImages = readVisualAnalysisPreviewCache({
+      organizationId,
+      storeId,
+      file: cache.file,
+    });
+    const restoredPagePreviews = previewCacheImages
+      .map((image) => {
+        const pageNumber = getVisualReviewImagePageNumber(image) ?? 0;
+        const dataUrl = String(image.dataUrl || "").trim();
+        if (
+          String(image.source || "").toLowerCase() !== "pdf" ||
+          !pageNumber ||
+          !dataUrl
+        ) {
+          return null;
+        }
+        const sourceFileName = String(
+          image.originalSourceFileName || image.sourceFileName || cache.file.name
+        ).trim();
+        return {
+          pageNumber,
+          dataUrl,
+          mimeType: image.mimeType || "image/png",
+          fileName: image.fileName || `${sourceFileName || cache.file.name}#page-${pageNumber}`,
+          sourceFileName,
+        };
+      })
+      .filter((preview): preview is NonNullable<typeof preview> => Boolean(preview));
+    const restoredVisualEvidenceResult =
+      restoredPagePreviews.length > 0
+        ? {
+            ...cache.visualEvidenceResult,
+            pagePreviews: restoredPagePreviews,
+          }
+        : cache.visualEvidenceResult;
     setVisualEvidencePagesInputFromSystem(pagesInput, { force: true });
     setVisualDocumentMapResult(cache.visualDocumentMapResult);
     setVisualDocumentMapError(null);
-    setVisualEvidenceResult(cache.visualEvidenceResult);
+    setVisualEvidenceResult(restoredVisualEvidenceResult);
     setVisualEvidenceError(null);
     setVisualEvidenceNotice(null);
     if (!intelligentImportResult?.ok) {
-      const previewCacheImages = readVisualAnalysisPreviewCache({
-        organizationId,
-        storeId,
-        file: cache.file,
-      });
       const restoredImportResult = buildRestoredVisualPdfImportResult({
         file: cache.file,
         totalPages: cache.visualPdfTotalPages,
@@ -5941,7 +6003,7 @@ export default function IntelligentCatalogImportPanel({
       const evidenceCacheKey = `${cache.file.name}::${cache.file.size}::${pages.join(",")}`;
       setVisualEvidenceSessionCache((current) => ({
         ...current,
-        [evidenceCacheKey]: cache.visualEvidenceResult as VisualCatalogDocumentScanResponse,
+        [evidenceCacheKey]: restoredVisualEvidenceResult as VisualCatalogDocumentScanResponse,
       }));
     }
     if (cache.visualDocumentMapResult?.ok) {
@@ -5989,10 +6051,14 @@ export default function IntelligentCatalogImportPanel({
         if (Number.isFinite(normalizedPage) && normalizedPage > 0) previewPages.add(normalizedPage);
       }
     }
-    const currentExtractedImagePreview =
-      visualReviewImagePreview.length > 0
-        ? visualReviewImagePreview
-        : latestExtractedImagePreviewRef.current;
+    const freshEvidenceImagePreview = buildVisualReviewImagePreviewsFromScanResult(
+      params.visualEvidenceResult,
+      visualPdfFileMeta.name
+    );
+    const currentExtractedImagePreview = mergeVisualReviewImagePreviews(
+      mergeVisualReviewImagePreviews(visualReviewImagePreview, latestExtractedImagePreviewRef.current),
+      freshEvidenceImagePreview
+    );
     const extractedImagePreview = buildVisualAnalysisCacheImagePreviews({
       images: currentExtractedImagePreview,
       pages: Array.from(previewPages),
@@ -9142,11 +9208,17 @@ async function handleSaveImportedItemsToCatalog() {
                                                                 }
                                                                 className="block rounded text-left focus:outline-none focus:ring-2 focus:ring-emerald-300"
                                                               >
-                                                                <img
-                                                                  src={image.dataUrl}
-                                                                  alt={image.fileName}
-                                                                  className="h-14 w-20 rounded object-cover ring-1 ring-gray-200"
-                                                                />
+                                                                {String(image.dataUrl || "").trim() ? (
+                                                                  <img
+                                                                    src={image.dataUrl}
+                                                                    alt={image.fileName}
+                                                                    className="h-14 w-20 rounded object-cover ring-1 ring-gray-200"
+                                                                  />
+                                                                ) : (
+                                                                  <span className="flex h-14 w-20 items-center justify-center rounded bg-white px-1 text-center text-[10px] text-gray-500 ring-1 ring-gray-200">
+                                                                    Sem miniatura
+                                                                  </span>
+                                                                )}
                                                               </button>
                                                               <label
                                                                 htmlFor={inputId}
@@ -9193,11 +9265,17 @@ async function handleSaveImportedItemsToCatalog() {
                                                         Fechar visualizacao
                                                       </button>
                                                     </div>
-                                                    <img
-                                                      src={expandedVisualReviewImage.dataUrl}
-                                                      alt={expandedVisualReviewImage.fileName}
-                                                      className="mt-2 max-h-[70vh] w-full max-w-full rounded object-contain ring-1 ring-gray-200"
-                                                    />
+                                                    {String(expandedVisualReviewImage.dataUrl || "").trim() ? (
+                                                      <img
+                                                        src={expandedVisualReviewImage.dataUrl}
+                                                        alt={expandedVisualReviewImage.fileName}
+                                                        className="mt-2 max-h-[70vh] w-full max-w-full rounded object-contain ring-1 ring-gray-200"
+                                                      />
+                                                    ) : (
+                                                      <div className="mt-2 flex min-h-32 w-full items-center justify-center rounded bg-white px-3 text-center text-xs text-gray-500 ring-1 ring-gray-200">
+                                                        Sem miniatura disponivel.
+                                                      </div>
+                                                    )}
                                                   </div>
                                                 ) : null}
                                               </div>
@@ -9642,11 +9720,17 @@ async function handleSaveImportedItemsToCatalog() {
                                 className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
                               >
                                 <div className="aspect-square w-full bg-white">
-                                  <img
-                                    src={image.dataUrl}
-                                    alt={image.fileName}
-                                    className="h-full w-full object-cover"
-                                  />
+                                  {String(image.dataUrl || "").trim() ? (
+                                    <img
+                                      src={image.dataUrl}
+                                      alt={image.fileName}
+                                      className="h-full w-full object-cover"
+                                    />
+                                  ) : (
+                                    <div className="flex h-full w-full items-center justify-center px-2 text-center text-[10px] text-gray-500">
+                                      Sem miniatura
+                                    </div>
+                                  )}
                                 </div>
                                 <div className="border-t border-gray-200 px-3 py-2">
                                   <p className="truncate text-xs font-semibold text-gray-800">
