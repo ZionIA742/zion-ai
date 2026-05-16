@@ -1191,7 +1191,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadDashboardMetrics();
-  }, []);
+  }, [activeTab]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1200,7 +1200,35 @@ export default function DashboardPage() {
   }, [activeTab]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const previousBodyOverflowY = document.body.style.overflowY;
+    const previousHtmlOverflowY = document.documentElement.style.overflowY;
+
+    if (activeTab === "agenda") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+      document.body.style.overflowY = "hidden";
+      document.documentElement.style.overflowY = "hidden";
+    } else {
+      document.body.style.overflowY = previousBodyOverflowY;
+      document.documentElement.style.overflowY = previousHtmlOverflowY;
+    }
+
+    return () => {
+      document.body.style.overflowY = previousBodyOverflowY;
+      document.documentElement.style.overflowY = previousHtmlOverflowY;
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || isLoading) return;
+
+    if (activeTab === "agenda") {
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: 0, behavior: "auto" });
+      });
+      return;
+    }
 
     const savedScrollY = Number(
       window.localStorage.getItem(DASHBOARD_SCROLL_STORAGE_KEY) || "0"
@@ -1211,7 +1239,7 @@ export default function DashboardPage() {
         window.scrollTo({ top: savedScrollY, behavior: "auto" });
       });
     }
-  }, [isLoading]);
+  }, [activeTab, isLoading]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1219,6 +1247,11 @@ export default function DashboardPage() {
     let animationFrameId = 0;
 
     const saveScrollPosition = () => {
+      if (activeTab === "agenda") {
+        window.localStorage.setItem(DASHBOARD_SCROLL_STORAGE_KEY, "0");
+        return;
+      }
+
       window.localStorage.setItem(
         DASHBOARD_SCROLL_STORAGE_KEY,
         String(window.scrollY || 0)
@@ -1607,7 +1640,11 @@ export default function DashboardPage() {
   ];
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-zinc-50 text-zinc-950">
+    <main
+      className={`overflow-x-hidden bg-zinc-50 text-zinc-950 ${
+        activeTab === "agenda" ? "h-auto min-h-0" : "min-h-screen"
+      }`}
+    >
       <div className="border-b border-zinc-200 bg-white">
         <div className="px-4 py-4 md:px-6">
           <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -1618,11 +1655,7 @@ export default function DashboardPage() {
               <h1 className="mt-1 break-words text-2xl font-semibold tracking-tight">
                 {dashboardTitle}
               </h1>
-              {activeTab !== "geral" ? (
-                <p className="mt-1 break-words text-sm leading-relaxed text-zinc-500">
-                  Atualizado em {formatDateTime(metrics.generatedAt)}.
-                </p>
-              ) : null}
+
             </div>
 
             <button
@@ -1658,7 +1691,11 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="min-w-0 space-y-5 p-4 md:p-6">
+      <div
+        className={`min-w-0 ${
+          activeTab === "agenda" ? "space-y-3 p-4 pb-0 md:p-6 md:pb-0" : "space-y-5 p-4 md:p-6"
+        }`}
+      >
         {activeTab === "geral" ? (
           <div className="space-y-4">
             <div className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.35fr]">
@@ -1852,20 +1889,20 @@ export default function DashboardPage() {
 
         {activeTab === "agenda" ? (
           <>
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div className="grid min-w-0 gap-3 md:grid-cols-4">
                 <button
                   type="button"
                   onClick={() => setIsTodayAppointmentsDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
                 >
-                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                  <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Compromisso do dia
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
                     {formatNumber(summary.appointments.today)}
                   </p>
-                  <p className="mt-1 break-words text-[11px] leading-relaxed text-zinc-500">
+                  <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
                     Clique para ver todos
                   </p>
                 </button>
@@ -1873,15 +1910,15 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setIsUrgentStatesDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
                 >
-                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                  <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Estados urgentes
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
                     {formatNumber(urgentAgendaItems.length)}
                   </p>
-                  <p className="mt-1 break-words text-[11px] leading-relaxed text-zinc-500">
+                  <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
                     Clique para ver detalhes
                   </p>
                 </button>
@@ -1889,15 +1926,15 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setIsPendingFollowupsDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
                 >
-                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                  <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Follow-ups pendentes
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
                     {formatNumber(summary.followups.pending)}
                   </p>
-                  <p className="mt-1 break-words text-[11px] leading-relaxed text-zinc-500">
+                  <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
                     Clique para ver lista
                   </p>
                 </button>
@@ -1905,36 +1942,38 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setIsMonthFollowupsDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
                 >
-                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                  <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Follow-ups no mês
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
                     {formatNumber(summary.followups.total)}
                   </p>
-                  <p className="mt-1 break-words text-[11px] leading-relaxed text-zinc-500">
+                  <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
                     Clique para ver lista
                   </p>
                 </button>
               </div>
 
-              <div className="grid min-w-0 gap-4 xl:grid-cols-[0.85fr_1.35fr]">
-                <div className="grid min-w-0 gap-4">
+              <div className="grid min-w-0 gap-3 xl:grid-cols-[0.85fr_1.35fr]">
+                <div className="grid min-w-0 gap-3">
                   <DashboardPanel>
                     <PanelTitle
                       title="Processos"
                       helper="Todos os processos da agenda e quantos existem em cada um."
                     />
-                    <HorizontalBars items={summary.appointments.byType} />
+                    <div className="max-h-[185px] overflow-y-auto pr-1">
+                      <HorizontalBars items={summary.appointments.byType} />
+                    </div>
                   </DashboardPanel>
                 </div>
 
-                <div className="grid min-w-0 gap-4 content-start">
+                <div className="grid min-w-0 gap-3 content-start">
                   <DashboardPanel>
                     <PanelTitle title="Próximos compromissos" />
                     {lists.nextAppointments.length ? (
-                      <div className="max-h-[158px] overflow-y-auto pr-1">
+                      <div className="max-h-[185px] overflow-y-auto pr-1">
                         <div className="space-y-2">
                           {lists.nextAppointments.map((appointment) => (
                             <div
