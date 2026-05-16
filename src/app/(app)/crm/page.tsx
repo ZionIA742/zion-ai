@@ -95,6 +95,8 @@ export default function CrmPage() {
   const [cards, setCards] = useState<UiCardRow[]>([]);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
 
   const columns = useMemo(() => {
     return (COLUNAS as any[]).map((c) => {
@@ -132,6 +134,27 @@ export default function CrmPage() {
 
     return map;
   }, [cards, columns]);
+
+  const selectedColumn = useMemo(() => {
+    if (!selectedColumnId) return null;
+    return columns.find((col) => String(col.id) === selectedColumnId) || null;
+  }, [columns, selectedColumnId]);
+
+  const selectedColumnCards = useMemo(() => {
+    if (!selectedColumnId) return [];
+    return cardsByColumn.get(selectedColumnId) || [];
+  }, [cardsByColumn, selectedColumnId]);
+
+  const searchResults = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) return [];
+
+    return cards.filter((card) => {
+      const name = String(card.name || "").toLowerCase();
+      const phone = String(card.phone || "").toLowerCase();
+      return name.includes(query) || phone.includes(query);
+    });
+  }, [cards, searchText]);
 
   async function fetchPageData() {
     if (!organizationId) {
@@ -230,208 +253,322 @@ export default function CrmPage() {
     return String(card.phone || "").trim();
   }
 
-  return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="border-b border-black/5 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
-          <div>
-            <div className="text-xl font-semibold tracking-tight">CRM</div>
-            <div className="text-sm text-gray-600">
-              Agora o CRM usa o status oficial da conversa como referência principal.
+  function getColumnForCard(card: UiCardRow) {
+    return columns.find((col) => String(col.id) === String(card.state)) || null;
+  }
+
+  function renderLeadCard(card: UiCardRow, options?: { compact?: boolean; showStage?: boolean }) {
+    const compact = options?.compact === true;
+    const showStage = options?.showStage === true;
+    const current = String(card.state || "novo_lead");
+    const currentIndex = columns.findIndex((c) => String(c.id) === current);
+    const cidx = currentIndex >= 0 ? currentIndex : 0;
+    const previousColumnId = cidx > 0 ? String(columns[cidx - 1].id) : null;
+    const nextColumnId = cidx < columns.length - 1 ? String(columns[cidx + 1].id) : null;
+    const canGoBack = canMoveTo(current, previousColumnId);
+    const canGoNext = canMoveTo(current, nextColumnId);
+    const cardColumn = getColumnForCard(card);
+    const ui = cardColumn?.ui || nivelToUI("ok");
+
+    return (
+      <div
+        key={card.leadId}
+        className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-black/5"
+      >
+        <div className={cx("h-1 w-full", ui.bar)} />
+
+        <div className={compact ? "p-3" : "p-4"}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-gray-900">
+                {leadTitle(card)}
+              </div>
+
+              {leadPhone(card) ? (
+                <div className="mt-0.5 truncate text-xs text-gray-600">
+                  {leadPhone(card)}
+                </div>
+              ) : (
+                <div className="mt-0.5 text-xs text-gray-400">Sem telefone</div>
+              )}
+            </div>
+
+            <span className="shrink-0 rounded-full bg-gray-50 px-2 py-1 text-[10px] font-semibold text-gray-700 ring-1 ring-black/10">
+              {new Date(card.createdAt || Date.now()).toLocaleDateString("pt-BR")}
+            </span>
+          </div>
+
+          {showStage && cardColumn ? (
+            <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-full bg-gray-50 px-2 py-1 text-[10px] font-semibold text-gray-600 ring-1 ring-black/10">
+              <span className={cx("h-1.5 w-1.5 rounded-full", cardColumn.ui.dot)} />
+              <span className="truncate">{cardColumn.title}</span>
+            </div>
+          ) : null}
+
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-gray-500">
+            <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-black/10">
+              conversa: {card.conversationId ? "sim" : "não"}
+            </span>
+            <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-black/10">
+              modo: {card.isHumanActive ? "humano" : "IA"}
+            </span>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <Link
+              href={`/crm/lead/${card.leadId}`}
+              className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+            >
+              Abrir conversa
+            </Link>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                disabled={!canGoBack || movingId === card.leadId}
+                onClick={() =>
+                  previousColumnId &&
+                  canGoBack &&
+                  updateConversationState(card, previousColumnId)
+                }
+                className={cx(
+                  "rounded-lg px-3 py-2 text-xs font-semibold shadow-sm ring-1 ring-black/10",
+                  !canGoBack || movingId === card.leadId
+                    ? "cursor-not-allowed bg-white/60 text-gray-400"
+                    : "bg-white text-gray-800 hover:bg-gray-50"
+                )}
+              >
+                ← Voltar
+              </button>
+
+              <button
+                disabled={!canGoNext || movingId === card.leadId}
+                onClick={() =>
+                  nextColumnId &&
+                  canGoNext &&
+                  updateConversationState(card, nextColumnId)
+                }
+                className={cx(
+                  "rounded-lg px-3 py-2 text-xs font-semibold shadow-sm ring-1 ring-black/10",
+                  !canGoNext || movingId === card.leadId
+                    ? "cursor-not-allowed bg-white/60 text-gray-400"
+                    : "bg-black text-white hover:opacity-90"
+                )}
+              >
+                Avançar →
+              </button>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <Link
-              href="/inbox"
-              className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90"
-            >
-              Ir para Inbox
-            </Link>
-
-            <button
-              onClick={() => void fetchPageData()}
-              className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
-            >
-              Recarregar
-            </button>
-          </div>
+          {movingId === card.leadId ? (
+            <div className="mt-2 text-xs text-gray-500">Atualizando...</div>
+          ) : null}
         </div>
       </div>
+    );
+  }
 
-      <div className="mx-auto max-w-6xl px-6 py-6">
-        {errorMsg ? (
-          <div className="mb-5 rounded-2xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
-            <div className="font-semibold">Erro</div>
-            <div className="mt-1 break-words">{errorMsg}</div>
+  return (
+    <div className="h-[calc(100vh-151px)] overflow-hidden bg-gray-100">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        <div className="shrink-0 border-b border-black/5 bg-white">
+          <div className="mx-auto flex max-w-[1320px] items-center justify-between gap-3 px-4 py-3">
+            <div className="text-xl font-semibold tracking-tight">CRM</div>
+
+            <div className="flex shrink-0 items-center gap-2">
+              <Link
+                href="/inbox"
+                className="rounded-lg bg-black px-3 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90"
+              >
+                Ir para Inbox
+              </Link>
+
+              <button
+                onClick={() => void fetchPageData()}
+                className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+              >
+                Recarregar
+              </button>
+            </div>
           </div>
-        ) : null}
+        </div>
 
-        {loading ? (
-          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-            Carregando leads...
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {columns.map((col, idx) => {
-              const items = cardsByColumn.get(col.id) || [];
-              const ui = col.ui || nivelToUI(col.nivel);
+        <div className="mx-auto flex min-h-0 w-full max-w-[1320px] flex-1 flex-col overflow-hidden px-4 py-2">
+          {errorMsg ? (
+            <div className="mb-3 shrink-0 rounded-xl bg-red-50 p-3 text-xs text-red-800 ring-1 ring-red-600/20">
+              <div className="font-semibold">Erro</div>
+              <div className="mt-1 break-words">{errorMsg}</div>
+            </div>
+          ) : null}
 
-              return (
-                <section
-                  key={col.id}
-                  className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5"
+          <div className="mb-2 shrink-0 rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
+            <label className="text-xs font-semibold text-gray-700" htmlFor="crm-search">
+              Buscar pessoa
+            </label>
+            <div className="mt-1.5 flex items-center gap-2 rounded-xl bg-gray-50 px-3 py-1.5 ring-1 ring-black/5">
+              <span className="text-sm text-gray-400">⌕</span>
+              <input
+                id="crm-search"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder="Procure por nome ou telefone"
+                className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+              />
+              {searchText.trim() ? (
+                <button
+                  type="button"
+                  onClick={() => setSearchText("")}
+                  className="rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-gray-600 ring-1 ring-black/10 hover:bg-gray-50"
                 >
-                  <div className="flex items-center justify-between gap-3 border-b border-black/5 px-6 py-4">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className={cx("h-2.5 w-2.5 rounded-full", ui.dot)} />
-                        <h2 className="truncate text-base font-semibold text-gray-900">
-                          {col.title}
-                        </h2>
-                        <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                          {items.length}
-                        </span>
-                      </div>
-                      <div className="mt-1 text-sm text-gray-600">
-                        Leads neste estado oficial da conversa
+                  Limpar
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="rounded-2xl bg-white p-5 text-sm shadow-sm ring-1 ring-black/5">
+              Carregando leads...
+            </div>
+          ) : searchText.trim() ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+              <div className="flex shrink-0 items-center justify-between border-b border-black/5 px-4 py-2">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Resultados da busca</div>
+                  <div className="mt-0.5 text-xs text-gray-500">
+                    {searchResults.length} resultado(s) encontrado(s)
+                  </div>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                {searchResults.length === 0 ? (
+                  <div className="rounded-xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                    Nenhum lead encontrado com essa busca.
+                  </div>
+                ) : (
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {searchResults.map((card) => renderLeadCard(card, { compact: true, showStage: true }))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
+              <div className="flex h-full min-h-0 flex-col overflow-hidden">
+                <div className="shrink-0 border-b border-black/5 px-4 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-gray-900">Processos do CRM</div>
+                      <div className="mt-0.5 text-xs text-gray-500">
+                        Clique em uma linha para ver os leads daquela etapa.
                       </div>
                     </div>
 
+                    <div className="text-xs font-semibold text-gray-500">
+                      {cards.length} lead(s)
+                    </div>
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-hidden p-2">
+                  <div className="grid min-h-0 gap-1">
+                    {columns.map((col) => {
+                      const items = cardsByColumn.get(col.id) || [];
+                      const ui = col.ui || nivelToUI(col.nivel);
+
+                      return (
+                        <button
+                          key={col.id}
+                          type="button"
+                          onClick={() => setSelectedColumnId(col.id)}
+                          className="group flex h-5 min-h-0 items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-0 text-left ring-1 ring-black/5 transition hover:bg-white hover:shadow-sm"
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className={cx("h-2.5 w-2.5 shrink-0 rounded-full", ui.dot)} />
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-semibold text-gray-900">
+                                {col.title}
+                              </div>
+
+                            </div>
+                          </div>
+
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                              {items.length}
+                            </span>
+                            <span
+                              className={cx(
+                                "rounded-full px-2.5 py-0.5 text-[10px] font-semibold",
+                                ui.chip
+                              )}
+                            >
+                              {ui.label}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {selectedColumn ? (
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-black/30"
+          onClick={() => setSelectedColumnId(null)}
+        >
+          <div
+            className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="shrink-0 border-b border-black/10 px-5 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
                     <span
-                      className={cx(
-                        "shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold",
-                        ui.chip
-                      )}
-                    >
-                      {ui.label}
+                      className={cx("h-2.5 w-2.5 shrink-0 rounded-full", selectedColumn.ui.dot)}
+                    />
+                    <h2 className="truncate text-lg font-bold text-gray-900">
+                      {selectedColumn.title}
+                    </h2>
+                    <span className="rounded-full bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                      {selectedColumnCards.length}
                     </span>
                   </div>
-
-                  <div className="p-6">
-                    {items.length === 0 ? (
-                      <div className="rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
-                        Sem leads aqui ainda.
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        {items.map((card) => {
-                          const current = String(card.state || "novo_lead");
-                          const currentIndex = columns.findIndex(
-                            (c) => String(c.id) === current
-                          );
-                          const cidx = currentIndex >= 0 ? currentIndex : idx;
-
-                          const previousColumnId =
-                            cidx > 0 ? String(columns[cidx - 1].id) : null;
-                          const nextColumnId =
-                            cidx < columns.length - 1 ? String(columns[cidx + 1].id) : null;
-
-                          const canGoBack = canMoveTo(current, previousColumnId);
-                          const canGoNext = canMoveTo(current, nextColumnId);
-
-                          return (
-                            <div
-                              key={card.leadId}
-                              className="overflow-hidden rounded-2xl bg-gray-50 ring-1 ring-black/5"
-                            >
-                              <div className={cx("h-2 w-full", ui.bar)} />
-
-                              <div className="p-5">
-                                <div className="flex items-start justify-between gap-4">
-                                  <div className="min-w-0">
-                                    <div className="truncate text-base font-semibold text-gray-900">
-                                      {leadTitle(card)}
-                                    </div>
-
-                                    {leadPhone(card) ? (
-                                      <div className="mt-1 text-sm text-gray-600">
-                                        {leadPhone(card)}
-                                      </div>
-                                    ) : (
-                                      <div className="mt-1 text-sm text-gray-400">
-                                        Sem telefone
-                                      </div>
-                                    )}
-
-                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                                      <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-black/10">
-                                        conversa: {card.conversationId ? "sim" : "não"}
-                                      </span>
-                                      <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-black/10">
-                                        modo: {card.isHumanActive ? "humano" : "IA"}
-                                      </span>
-                                    </div>
-                                  </div>
-
-                                  <span className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                                    {new Date(
-                                      card.createdAt || Date.now()
-                                    ).toLocaleDateString("pt-BR")}
-                                  </span>
-                                </div>
-
-                                <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-                                  <Link
-                                    href={`/crm/lead/${card.leadId}`}
-                                    className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
-                                  >
-                                    Abrir conversa
-                                  </Link>
-
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <button
-                                      disabled={!canGoBack || movingId === card.leadId}
-                                      onClick={() =>
-                                        previousColumnId &&
-                                        canGoBack &&
-                                        updateConversationState(card, previousColumnId)
-                                      }
-                                      className={cx(
-                                        "rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm ring-1 ring-black/10",
-                                        !canGoBack || movingId === card.leadId
-                                          ? "cursor-not-allowed bg-white/60 text-gray-400"
-                                          : "bg-white text-gray-800 hover:bg-gray-50"
-                                      )}
-                                    >
-                                      ← Voltar
-                                    </button>
-
-                                    <button
-                                      disabled={!canGoNext || movingId === card.leadId}
-                                      onClick={() =>
-                                        nextColumnId &&
-                                        canGoNext &&
-                                        updateConversationState(card, nextColumnId)
-                                      }
-                                      className={cx(
-                                        "rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm ring-1 ring-black/10",
-                                        !canGoNext || movingId === card.leadId
-                                          ? "cursor-not-allowed bg-white/60 text-gray-400"
-                                          : "bg-black text-white hover:opacity-90"
-                                      )}
-                                    >
-                                      Avançar →
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {movingId === card.leadId ? (
-                                  <div className="mt-3 text-sm text-gray-500">Atualizando...</div>
-                                ) : null}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                  <div className="mt-1 text-xs text-gray-500">
+                    Leads desta etapa do CRM
                   </div>
-                </section>
-              );
-            })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedColumnId(null)}
+                  className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto bg-gray-100 p-4">
+              {selectedColumnCards.length === 0 ? (
+                <div className="rounded-2xl bg-white p-4 text-sm text-gray-600 shadow-sm ring-1 ring-black/5">
+                  Sem leads aqui ainda.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {selectedColumnCards.map((card) => renderLeadCard(card))}
+                </div>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }
