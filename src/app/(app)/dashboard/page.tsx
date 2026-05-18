@@ -67,6 +67,7 @@ type DashboardMetrics = {
       zeroStockItems: number;
       lowStockItems: number;
       estimatedInventoryValueCents: number;
+      inventoryValueByCategoryCents?: Record<string, number>;
     };
     sales: {
       available: boolean;
@@ -139,23 +140,53 @@ type DashboardMetrics = {
       scheduledEnd: string;
       lastPromptedAt: string | null;
     }>;
-    lowStockItems: Array<{
+    allCatalogItems?: Array<{
       id: string;
       sku: string | null;
       name: string;
+      category?: string;
+      categoryLabel?: string;
       priceCents: number | null;
       currency: string;
       stockQuantity: number | null;
       isActive: boolean;
+      trackStock?: boolean;
+    }>;
+    inStockItems?: Array<{
+      id: string;
+      sku: string | null;
+      name: string;
+      category?: string;
+      categoryLabel?: string;
+      priceCents: number | null;
+      currency: string;
+      stockQuantity: number | null;
+      isActive: boolean;
+      trackStock?: boolean;
+    }>;
+    lowStockItems: Array<{
+      id: string;
+      sku: string | null;
+      name: string;
+      category?: string;
+      categoryLabel?: string;
+      priceCents: number | null;
+      currency: string;
+      stockQuantity: number | null;
+      isActive: boolean;
+      trackStock?: boolean;
     }>;
     zeroStockItems: Array<{
       id: string;
       sku: string | null;
       name: string;
+      category?: string;
+      categoryLabel?: string;
       priceCents: number | null;
       currency: string;
       stockQuantity: number | null;
       isActive: boolean;
+      trackStock?: boolean;
     }>;
     operationalAlerts: Array<{
       type: string;
@@ -468,6 +499,75 @@ function InfoList({
           {item.right ? (
             <div className="min-w-0 md:text-right">{item.right}</div>
           ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+function CatalogItemsList({
+  items,
+  emptyText,
+}: {
+  items: Array<{
+    id: string;
+    sku: string | null;
+    name: string;
+    categoryLabel?: string;
+    priceCents: number | null;
+    stockQuantity: number | null;
+    isActive: boolean;
+    trackStock?: boolean;
+  }>;
+  emptyText: string;
+}) {
+  if (!items.length) {
+    return <EmptyState text={emptyText} />;
+  }
+
+  return (
+    <div className="space-y-3">
+      {items.map((item) => (
+        <div
+          key={item.id}
+          className="rounded-2xl border border-zinc-200 bg-white p-4"
+        >
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h4 className="break-words text-base font-semibold text-zinc-950">
+                {item.name}
+              </h4>
+              <p className="mt-1 break-words text-sm text-zinc-600">
+                SKU: {item.sku || "Sem SKU"}
+              </p>
+            </div>
+
+            <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
+              {item.isActive ? "Ativo" : "Inativo"}
+            </span>
+          </div>
+
+          <div className="mt-3 grid gap-2 text-sm text-zinc-600 sm:grid-cols-2">
+            <div>
+              <span className="font-medium text-zinc-950">Categoria: </span>
+              {item.categoryLabel || "Sem categoria"}
+            </div>
+            <div>
+              <span className="font-medium text-zinc-950">Estoque: </span>
+              {item.trackStock === false ? "Sem controle" : formatNumber(item.stockQuantity || 0)}
+            </div>
+            <div>
+              <span className="font-medium text-zinc-950">Valor unitário: </span>
+              {formatCurrencyFromCents(item.priceCents)}
+            </div>
+            <div>
+              <span className="font-medium text-zinc-950">Valor em estoque: </span>
+              {item.trackStock === false
+                ? "Sem controle"
+                : formatCurrencyFromCents((item.priceCents || 0) * (item.stockQuantity || 0))}
+            </div>
+          </div>
         </div>
       ))}
     </div>
@@ -1155,6 +1255,17 @@ export default function DashboardPage() {
   const [isUrgentStatesDrawerOpen, setIsUrgentStatesDrawerOpen] = useState(false);
   const [isPendingFollowupsDrawerOpen, setIsPendingFollowupsDrawerOpen] = useState(false);
   const [isMonthFollowupsDrawerOpen, setIsMonthFollowupsDrawerOpen] = useState(false);
+  const [isCatalogStockDrawerOpen, setIsCatalogStockDrawerOpen] = useState(false);
+  const [isTrackedStockDrawerOpen, setIsTrackedStockDrawerOpen] = useState(false);
+  const [isLowStockDrawerOpen, setIsLowStockDrawerOpen] = useState(false);
+  const [isZeroStockDrawerOpen, setIsZeroStockDrawerOpen] = useState(false);
+  const [isInventoryValueDrawerOpen, setIsInventoryValueDrawerOpen] = useState(false);
+  const [isFastMovingItemsDrawerOpen, setIsFastMovingItemsDrawerOpen] = useState(false);
+  const [isHistoricalMonthDrawerOpen, setIsHistoricalMonthDrawerOpen] = useState(false);
+  const [selectedHistoricalMonth, setSelectedHistoricalMonth] = useState("Mês anterior");
+  const [historicalDetailDrawer, setHistoricalDetailDrawer] = useState<
+    null | "messages" | "leads" | "conversations" | "appointments" | "currentMonth"
+  >(null);
   const [selectedGeneralItemId, setSelectedGeneralItemId] = useState('revenue_month');
   const [selectedPendingIssueId, setSelectedPendingIssueId] = useState('sales_source');
 
@@ -1205,7 +1316,7 @@ export default function DashboardPage() {
     const previousBodyOverflowY = document.body.style.overflowY;
     const previousHtmlOverflowY = document.documentElement.style.overflowY;
 
-    if (activeTab === "agenda") {
+    if (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
       window.scrollTo({ top: 0, behavior: "auto" });
       document.body.style.overflowY = "hidden";
       document.documentElement.style.overflowY = "hidden";
@@ -1223,7 +1334,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (typeof window === "undefined" || isLoading) return;
 
-    if (activeTab === "agenda") {
+    if (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
       window.requestAnimationFrame(() => {
         window.scrollTo({ top: 0, behavior: "auto" });
       });
@@ -1247,7 +1358,7 @@ export default function DashboardPage() {
     let animationFrameId = 0;
 
     const saveScrollPosition = () => {
-      if (activeTab === "agenda") {
+      if (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
         window.localStorage.setItem(DASHBOARD_SCROLL_STORAGE_KEY, "0");
         return;
       }
@@ -1639,10 +1750,54 @@ export default function DashboardPage() {
     })),
   ];
 
+  const allCatalogItems = lists.allCatalogItems || [];
+  const inStockItems = lists.inStockItems || [];
+  const inventoryValueByCategoryCents = summary.catalog.inventoryValueByCategoryCents || {
+    pools: 0,
+    chemicals: 0,
+    accessories: 0,
+    others: 0,
+  };
+  const inventoryValueCategories = [
+    { key: "pools", label: "Piscinas" },
+    { key: "chemicals", label: "Químicos" },
+    { key: "accessories", label: "Acessórios" },
+    { key: "others", label: "Outros" },
+  ];
+
+  const historicalMonthItems = ["Mês anterior", "Há 2 meses", "Há 3 meses"];
+
+  function openHistoricalMonth(monthLabel: string) {
+    setSelectedHistoricalMonth(monthLabel);
+    setIsHistoricalMonthDrawerOpen(true);
+  }
+
+  const historicalDetailTitle =
+    historicalDetailDrawer === "messages"
+      ? "Mensagens do mês"
+      : historicalDetailDrawer === "leads"
+        ? "Leads no mês"
+        : historicalDetailDrawer === "conversations"
+          ? "Conversas ativas"
+          : historicalDetailDrawer === "appointments"
+            ? "Compromissos futuros"
+            : "Resumo do mês atual";
+
+  const historicalDetailDescription =
+    historicalDetailDrawer === "messages"
+      ? "Resumo das mensagens registradas no mês atual."
+      : historicalDetailDrawer === "leads"
+        ? "Leads registrados no período e informações disponíveis."
+        : historicalDetailDrawer === "conversations"
+          ? "Conversas abertas e últimos sinais de atendimento."
+          : historicalDetailDrawer === "appointments"
+            ? "Pessoas, horários e dados dos próximos compromissos."
+            : "Explicação dos indicadores comerciais do mês em andamento.";
+
   return (
     <main
       className={`overflow-x-hidden bg-zinc-50 text-zinc-950 ${
-        activeTab === "agenda" ? "h-auto min-h-0" : "min-h-screen"
+        (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") ? "h-auto min-h-0" : "min-h-screen"
       }`}
     >
       <div className="border-b border-zinc-200 bg-white">
@@ -1693,7 +1848,7 @@ export default function DashboardPage() {
 
       <div
         className={`min-w-0 ${
-          activeTab === "agenda" ? "space-y-3 p-4 pb-0 md:p-6 md:pb-0" : "space-y-5 p-4 md:p-6"
+          (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") ? "space-y-3 p-4 pb-0 md:p-6 md:pb-0" : "space-y-5 p-4 md:p-6"
         }`}
       >
         {activeTab === "geral" ? (
@@ -2130,176 +2285,576 @@ export default function DashboardPage() {
 
         {activeTab === "estoque" ? (
           <>
-            <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-5">
-              <MetricCard
-                label="Itens no catálogo"
-                value={formatNumber(summary.catalog.totalItems)}
-                helper={`${formatNumber(summary.catalog.activeItems)} ativos`}
-              />
-              <MetricCard
-                label="Com estoque"
-                value={formatNumber(summary.catalog.stockTrackedItems)}
-                helper="Itens com controle ativo"
-              />
-              <MetricCard
-                label="Estoque baixo"
-                value={formatNumber(summary.catalog.lowStockItems)}
-                helper="Quantidade entre 1 e 3"
-              />
-              <MetricCard
-                label="Estoque zerado"
-                value={formatNumber(summary.catalog.zeroStockItems)}
-                helper="Precisa de atenção"
-              />
-              <MetricCard
-                label="Valor estimado"
-                value={formatCurrencyFromCents(
-                  summary.catalog.estimatedInventoryValueCents
-                )}
-                helper="Preço x quantidade"
-              />
+            <div className="space-y-4">
+              <div className="grid min-w-0 gap-3 md:grid-cols-5">
+                <button
+                  type="button"
+                  onClick={() => setIsCatalogStockDrawerOpen(true)}
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                >
+                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                    Itens no catálogo
+                  </p>
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                    {formatNumber(summary.catalog.totalItems)}
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsTrackedStockDrawerOpen(true)}
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                >
+                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                    Com estoque
+                  </p>
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                    {formatNumber(summary.catalog.stockTrackedItems)}
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsLowStockDrawerOpen(true)}
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                >
+                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                    Estoque baixo
+                  </p>
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                    {formatNumber(summary.catalog.lowStockItems)}
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsZeroStockDrawerOpen(true)}
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                >
+                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                    Estoque zerado
+                  </p>
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                    {formatNumber(summary.catalog.zeroStockItems)}
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsInventoryValueDrawerOpen(true)}
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                >
+                  <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                    Valor em estoque
+                  </p>
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                    {formatCurrencyFromCents(summary.catalog.estimatedInventoryValueCents)}
+                  </p>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsFastMovingItemsDrawerOpen(true)}
+                className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+              >
+                <PanelTitle
+                  title="Itens que mais saem"
+                  helper="Este bloco ficará pronto quando existir uma origem confiável de vendas, pedidos ou movimentação de estoque."
+                />
+                <EmptyState text={salesPlaceholder} />
+              </button>
             </div>
 
-            <div className="grid min-w-0 gap-5 xl:grid-cols-2">
-              <SectionCard title="Itens com estoque baixo">
-                <InfoList
-                  emptyText="Nenhum item com estoque baixo encontrado."
-                  items={lists.lowStockItems.map((item) => ({
-                    id: item.id,
-                    title: item.name,
-                    subtitle: item.sku ? `SKU: ${item.sku}` : "Sem SKU",
-                    meta: (
-                      <>
-                        <span>Qtd: {formatNumber(item.stockQuantity || 0)}</span>
-                        <span>{formatCurrencyFromCents(item.priceCents)}</span>
-                      </>
-                    ),
-                  }))}
-                />
-              </SectionCard>
-
-              <SectionCard title="Itens sem estoque">
-                <InfoList
-                  emptyText="Nenhum item zerado encontrado."
-                  items={lists.zeroStockItems.map((item) => ({
-                    id: item.id,
-                    title: item.name,
-                    subtitle: item.sku ? `SKU: ${item.sku}` : "Sem SKU",
-                    meta: (
-                      <>
-                        <span>Qtd: {formatNumber(item.stockQuantity || 0)}</span>
-                        <span>{formatCurrencyFromCents(item.priceCents)}</span>
-                      </>
-                    ),
-                  }))}
-                />
-              </SectionCard>
-            </div>
-
-            <SectionCard
-              title="Produtos que mais saem"
-              description="Este bloco precisa de uma base real de vendas, pedidos ou movimentação de estoque."
+            <DashboardDetailDrawer
+              title="Itens no catálogo"
+              description="Resumo geral dos itens cadastrados no catálogo da loja."
+              isOpen={isCatalogStockDrawerOpen}
+              onClose={() => setIsCatalogStockDrawerOpen(false)}
             >
-              <EmptyState text={salesPlaceholder} />
-            </SectionCard>
+              <div className="space-y-4">
+                <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                  <ExecutiveNumberCard
+                    title="Total cadastrado"
+                    value={formatNumber(summary.catalog.totalItems)}
+                  />
+                  <ExecutiveNumberCard
+                    title="Ativos"
+                    value={formatNumber(summary.catalog.activeItems)}
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
+                    Lista do catálogo
+                  </p>
+                  <div className="mt-3">
+                    <CatalogItemsList
+                      items={allCatalogItems}
+                      emptyText="A rota ainda não enviou a lista completa do catálogo."
+                    />
+                  </div>
+                </div>
+              </div>
+            </DashboardDetailDrawer>
+
+            <DashboardDetailDrawer
+              title="Itens com estoque"
+              description="Itens cadastrados com controle de estoque ativo."
+              isOpen={isTrackedStockDrawerOpen}
+              onClose={() => setIsTrackedStockDrawerOpen(false)}
+            >
+              <div className="space-y-4">
+                <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                  <ExecutiveNumberCard
+                    title="Com estoque"
+                    value={formatNumber(inStockItems.length)}
+                  />
+                  <ExecutiveNumberCard
+                    title="Estoque baixo"
+                    value={formatNumber(summary.catalog.lowStockItems)}
+                  />
+                  <ExecutiveNumberCard
+                    title="Estoque zerado"
+                    value={formatNumber(summary.catalog.zeroStockItems)}
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
+                    Lista dos itens com estoque
+                  </p>
+                  <div className="mt-3">
+                    <CatalogItemsList
+                      items={inStockItems}
+                      emptyText="Nenhum item com estoque positivo encontrado."
+                    />
+                  </div>
+                </div>
+              </div>
+            </DashboardDetailDrawer>
+
+            <DashboardDetailDrawer
+              title="Itens com estoque baixo"
+              description="Produtos que ainda existem, mas precisam de reposição."
+              isOpen={isLowStockDrawerOpen}
+              onClose={() => setIsLowStockDrawerOpen(false)}
+            >
+              {lists.lowStockItems.length ? (
+                <div className="space-y-3">
+                  {lists.lowStockItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-zinc-200 bg-white p-4"
+                    >
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h4 className="break-words text-base font-semibold text-zinc-950">
+                            {item.name}
+                          </h4>
+                          <p className="mt-1 break-words text-sm text-zinc-600">
+                            SKU: {item.sku || "Sem SKU"}
+                          </p>
+                        </div>
+
+                        <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
+                          Qtd: {formatNumber(item.stockQuantity || 0)}
+                        </span>
+                      </div>
+
+                      <p className="mt-3 text-sm text-zinc-500">
+                        Valor unitário: {formatCurrencyFromCents(item.priceCents)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState text="Nenhum item com estoque baixo encontrado." />
+              )}
+            </DashboardDetailDrawer>
+
+            <DashboardDetailDrawer
+              title="Itens sem estoque"
+              description="Itens zerados que precisam de atenção."
+              isOpen={isZeroStockDrawerOpen}
+              onClose={() => setIsZeroStockDrawerOpen(false)}
+            >
+              {lists.zeroStockItems.length ? (
+                <div className="space-y-3">
+                  {lists.zeroStockItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-zinc-200 bg-white p-4"
+                    >
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h4 className="break-words text-base font-semibold text-zinc-950">
+                            {item.name}
+                          </h4>
+                          <p className="mt-1 break-words text-sm text-zinc-600">
+                            SKU: {item.sku || "Sem SKU"}
+                          </p>
+                        </div>
+
+                        <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
+                          Qtd: {formatNumber(item.stockQuantity || 0)}
+                        </span>
+                      </div>
+
+                      <p className="mt-3 text-sm text-zinc-500">
+                        Valor unitário: {formatCurrencyFromCents(item.priceCents)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState text="Nenhum item zerado encontrado." />
+              )}
+            </DashboardDetailDrawer>
+
+            <DashboardDetailDrawer
+              title="Valor em estoque"
+              description="Valor estimado dos itens cadastrados com base em preço e quantidade."
+              isOpen={isInventoryValueDrawerOpen}
+              onClose={() => setIsInventoryValueDrawerOpen(false)}
+            >
+              <div className="space-y-4">
+                <ExecutiveNumberCard
+                  title="Total em estoque"
+                  value={formatCurrencyFromCents(summary.catalog.estimatedInventoryValueCents)}
+                />
+
+                <div className="space-y-2">
+                  {inventoryValueCategories.map((category) => (
+                    <div
+                      key={category.key}
+                      className="grid min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto]"
+                    >
+                      <span className="min-w-0 break-words font-medium text-zinc-950">
+                        {category.label}
+                      </span>
+                      <span className="shrink-0 text-zinc-700">
+                        {formatCurrencyFromCents(inventoryValueByCategoryCents[category.key] || 0)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
+                    Observação
+                  </p>
+                  <p className="mt-3 text-sm leading-relaxed text-zinc-700">
+                    A separação por categoria depende da categoria salva no catálogo. Itens sem categoria reconhecida entram em Outros.
+                  </p>
+                </div>
+              </div>
+            </DashboardDetailDrawer>
+
+            <DashboardDetailDrawer
+              title="Itens que mais saem"
+              description="Ranking de produtos com maior saída quando existir base real de vendas ou movimentação."
+              isOpen={isFastMovingItemsDrawerOpen}
+              onClose={() => setIsFastMovingItemsDrawerOpen(false)}
+            >
+              <div className="space-y-4">
+                <EmptyState text={salesPlaceholder} />
+
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
+                    Como esse bloco deve funcionar
+                  </p>
+                  <p className="mt-3 text-sm leading-relaxed text-zinc-700">
+                    Quando existir histórico real de vendas, pedidos ou movimentação de estoque, esta tela deve mostrar quais piscinas, químicos, acessórios e outros itens saem mais.
+                  </p>
+                </div>
+              </div>
+            </DashboardDetailDrawer>
           </>
         ) : null}
 
         {activeTab === "historico" ? (
           <>
-            <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard
-                label="Movimento no mês"
-                value={formatNumber(summary.messages.month)}
-                helper={`${formatNumber(summary.messages.last7Days)} mensagens nos últimos 7 dias`}
-              />
-              <MetricCard
-                label="Leads no mês"
-                value={formatNumber(summary.leads.month)}
-                helper={`${formatNumber(summary.leads.last7Days)} nos últimos 7 dias`}
-              />
-              <MetricCard
-                label="Conversas ativas"
-                value={formatNumber(summary.conversations.active)}
-                helper={`${formatNumber(summary.conversations.humanActive)} com humano ativo`}
-              />
-              <MetricCard
-                label="Compromissos futuros"
-                value={formatNumber(summary.appointments.future)}
-                helper={`${formatNumber(summary.appointments.today)} para hoje`}
-              />
+            <div className="space-y-4">
+              <div className="grid min-w-0 gap-3 md:grid-cols-4">
+                {[
+                  ["messages", "Mensagens do mês", formatNumber(summary.messages.month)],
+                  ["leads", "Leads no mês", formatNumber(summary.leads.month)],
+                  ["conversations", "Conversas ativas", formatNumber(summary.conversations.active)],
+                  ["appointments", "Compromissos futuros", formatNumber(summary.appointments.future)],
+                ].map(([id, title, value]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() =>
+                      setHistoricalDetailDrawer(
+                        id as "messages" | "leads" | "conversations" | "appointments"
+                      )
+                    }
+                    className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  >
+                    <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                      {title}
+                    </p>
+                    <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                      {value}
+                    </p>
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid min-w-0 gap-4 xl:grid-cols-[1fr_0.9fr]">
+                <DashboardPanel>
+                  <PanelTitle
+                    title="Histórico dos meses anteriores"
+                    helper="Clique em um mês para ver vendas, meta, resultado e itens vendidos."
+                  />
+                  <div className="space-y-2">
+                    {historicalMonthItems.map((monthLabel) => (
+                      <button
+                        key={monthLabel}
+                        type="button"
+                        onClick={() => openHistoricalMonth(monthLabel)}
+                        className="grid w-full min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-sm transition hover:border-zinc-950 hover:bg-white sm:grid-cols-[minmax(0,1fr)_minmax(84px,0.5fr)_minmax(84px,0.5fr)_minmax(88px,0.55fr)_minmax(82px,0.5fr)_auto]"
+                      >
+                        <span className="min-w-0 break-words font-medium text-zinc-950">
+                          {monthLabel}
+                        </span>
+                        <span className="min-w-0 break-words text-zinc-700">
+                          Vendido: Sem dados
+                        </span>
+                        <span className="min-w-0 break-words text-zinc-700">
+                          Meta: Sem dados
+                        </span>
+                        <span className="min-w-0 break-words text-zinc-700">
+                          Resultado: Sem dados
+                        </span>
+                        <span className="min-w-0 break-words text-zinc-700">
+                          Itens: Sem dados
+                        </span>
+                        <span className="shrink-0 text-zinc-500">›</span>
+                      </button>
+                    ))}
+                  </div>
+                </DashboardPanel>
+
+                <button
+                  type="button"
+                  onClick={() => setHistoricalDetailDrawer("currentMonth")}
+                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                >
+                  <PanelTitle
+                    title="Resumo do mês atual"
+                    helper="Clique para ver o que cada indicador representa."
+                  />
+                  <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                    {[
+                      ["Vendido no mês", "Sem dados"],
+                      ["Meta do mês", "Não definida"],
+                      ["Resultado", "Sem dados"],
+                      ["Itens vendidos", "Sem dados"],
+                    ].map(([title, value]) => (
+                      <div
+                        key={title}
+                        className="rounded-[6px] border border-zinc-200 bg-zinc-50 p-3"
+                      >
+                        <p className="text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                          {title}
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-zinc-950">
+                          {value}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </button>
+              </div>
             </div>
 
-            <div className="grid min-w-0 gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-              <SectionCard
-                title="Resumo do período"
-                description="Leitura simples do movimento da loja."
-              >
-                <div className="grid min-w-0 gap-3">
-                  <InsightCard
-                    title="Movimento de atendimento"
-                    text={operationMovementText}
-                  />
-                  <InsightCard
-                    title="Ajuda da IA"
-                    text={aiSupportText}
-                  />
-                  <InsightCard
-                    title="Agenda"
-                    text={`A loja tem ${formatNumber(
-                      summary.appointments.future
-                    )} compromisso(s) futuro(s) registrado(s) e ${formatNumber(
-                      summary.followups.pending
-                    )} follow-up(s) pendente(s).`}
-                  />
-                </div>
-              </SectionCard>
-
-              <SectionCard
-                title="Atendimento no período"
-                description="Comparativo entre IA, loja e clientes."
-              >
-                <SplitProgress
-                  ai={summary.messages.ai}
-                  human={summary.messages.humanOperator}
-                  customer={summary.messages.customer}
-                />
-                <div className="mt-4 grid min-w-0 gap-3 sm:grid-cols-3">
-                  <MetricCard
-                    label="IA"
-                    value={formatNumber(summary.messages.ai)}
-                    helper="Mensagens enviadas"
-                  />
-                  <MetricCard
-                    label="Loja"
-                    value={formatNumber(summary.messages.humanOperator)}
-                    helper="Mensagens humanas"
-                  />
-                  <MetricCard
-                    label="Clientes"
-                    value={formatNumber(summary.messages.customer)}
-                    helper="Mensagens recebidas"
-                  />
-                </div>
-              </SectionCard>
-            </div>
-
-            <div className="grid min-w-0 gap-5 xl:grid-cols-2">
-              <SectionCard title="Leads por etapa">
-                <HorizontalBars items={summary.leads.byState} />
-              </SectionCard>
-
-              <SectionCard title="Conversas por status">
-                <HorizontalBars items={summary.conversations.byStatus} />
-              </SectionCard>
-            </div>
-
-            <SectionCard
-              title="Vendas e faturamento"
-              description="Este bloco ficará pronto quando o sistema tiver uma origem confiável de vendas, pedidos ou orçamentos aprovados."
+            <DashboardDetailDrawer
+              title={historicalDetailTitle}
+              description={historicalDetailDescription}
+              isOpen={historicalDetailDrawer !== null}
+              onClose={() => setHistoricalDetailDrawer(null)}
             >
-              <EmptyState text={salesPlaceholder} />
-            </SectionCard>
+              {historicalDetailDrawer === "messages" ? (
+                <div className="space-y-4">
+                  <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                    <ExecutiveNumberCard title="Mensagens no mês" value={formatNumber(summary.messages.month)} />
+                    <ExecutiveNumberCard title="Últimos 7 dias" value={formatNumber(summary.messages.last7Days)} />
+                    <ExecutiveNumberCard title="Hoje" value={formatNumber(summary.messages.today)} />
+                  </div>
+                  <DashboardPanel>
+                    <PanelTitle title="Quem participou" />
+                    <SplitProgress ai={summary.messages.ai} human={summary.messages.humanOperator} customer={summary.messages.customer} />
+                  </DashboardPanel>
+                  <DashboardPanel>
+                    <PanelTitle title="Mensagens recentes" />
+                    <InfoList
+                      emptyText="Nenhuma mensagem recente encontrada."
+                      items={lists.recentMessages.slice(0, 8).map((message) => ({
+                        id: message.id,
+                        title: message.isAi ? "IA" : message.isHumanOperator ? "Loja" : "Cliente",
+                        subtitle: compactText(message.content, 130),
+                        meta: <span>{formatLabel(message.direction)}</span>,
+                        right: <span className="text-xs text-zinc-500">{formatDateTime(message.createdAt)}</span>,
+                      }))}
+                    />
+                  </DashboardPanel>
+                </div>
+              ) : null}
+
+              {historicalDetailDrawer === "leads" ? (
+                <div className="space-y-4">
+                  <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                    <ExecutiveNumberCard title="Leads no mês" value={formatNumber(summary.leads.month)} />
+                    <ExecutiveNumberCard title="Últimos 7 dias" value={formatNumber(summary.leads.last7Days)} />
+                    <ExecutiveNumberCard title="Hoje" value={formatNumber(summary.leads.today)} />
+                  </div>
+                  <DashboardPanel>
+                    <PanelTitle title="Leads por etapa" />
+                    <HorizontalBars items={summary.leads.byState} />
+                  </DashboardPanel>
+                  <DashboardPanel>
+                    <PanelTitle title="Leads recentes" />
+                    <InfoList
+                      emptyText="Nenhum lead recente encontrado."
+                      items={lists.recentLeads.slice(0, 8).map((lead) => ({
+                        id: lead.id,
+                        title: lead.name || "Lead sem nome",
+                        subtitle: lead.phone || "Sem telefone",
+                        meta: (
+                          <>
+                            <StatusPill>{formatLabel(lead.state)}</StatusPill>
+                            <span>Criado em {formatDate(lead.createdAt)}</span>
+                          </>
+                        ),
+                      }))}
+                    />
+                  </DashboardPanel>
+                </div>
+              ) : null}
+
+              {historicalDetailDrawer === "conversations" ? (
+                <div className="space-y-4">
+                  <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                    <ExecutiveNumberCard title="Conversas ativas" value={formatNumber(summary.conversations.active)} />
+                    <ExecutiveNumberCard title="Humano ativo" value={formatNumber(summary.conversations.humanActive)} />
+                    <ExecutiveNumberCard title="Total" value={formatNumber(summary.conversations.total)} />
+                  </div>
+                  <DashboardPanel>
+                    <PanelTitle title="Conversas por status" />
+                    <HorizontalBars items={summary.conversations.byStatus} />
+                  </DashboardPanel>
+                  <DashboardPanel>
+                    <PanelTitle title="Conversas recentes" />
+                    <InfoList
+                      emptyText="Nenhuma conversa recente encontrada."
+                      items={lists.recentConversations.slice(0, 8).map((conversation) => ({
+                        id: conversation.id,
+                        title: conversation.customerName || "Cliente sem nome",
+                        subtitle: compactText(conversation.lastMessagePreview, 130),
+                        meta: (
+                          <>
+                            <StatusPill>{formatLabel(conversation.status)}</StatusPill>
+                            <span>Última mensagem: {formatDateTime(conversation.lastMessageAt)}</span>
+                            {conversation.isHumanActive ? <span>Humano ativo</span> : null}
+                          </>
+                        ),
+                      }))}
+                    />
+                  </DashboardPanel>
+                </div>
+              ) : null}
+
+              {historicalDetailDrawer === "appointments" ? (
+                <div className="space-y-4">
+                  <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                    <ExecutiveNumberCard title="Compromissos futuros" value={formatNumber(summary.appointments.future)} />
+                    <ExecutiveNumberCard title="Hoje" value={formatNumber(summary.appointments.today)} />
+                    <ExecutiveNumberCard title="Follow-ups pendentes" value={formatNumber(summary.followups.pending)} />
+                  </div>
+                  <DashboardPanel>
+                    <PanelTitle title="Próximos compromissos" />
+                    <InfoList
+                      emptyText="Nenhum compromisso futuro encontrado."
+                      items={lists.nextAppointments.slice(0, 10).map((appointment) => ({
+                        id: appointment.id,
+                        title: appointment.customerName || "Cliente sem nome",
+                        subtitle: appointment.title,
+                        meta: (
+                          <>
+                            <StatusPill>{formatLabel(appointment.status)}</StatusPill>
+                            <span>Tipo: {formatLabel(appointment.appointmentType)}</span>
+                            <span>Horário: {formatDateTime(appointment.scheduledStart)}</span>
+                            {appointment.customerPhone ? <span>Telefone: {appointment.customerPhone}</span> : null}
+                          </>
+                        ),
+                      }))}
+                    />
+                  </DashboardPanel>
+                </div>
+              ) : null}
+
+              {historicalDetailDrawer === "currentMonth" ? (
+                <div className="space-y-4">
+                  <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                    <ExecutiveNumberCard title="Vendido no mês" value="Sem dados" />
+                    <ExecutiveNumberCard title="Meta do mês" value="Não definida" />
+                    <ExecutiveNumberCard title="Resultado" value="Sem dados" />
+                    <ExecutiveNumberCard title="Itens vendidos" value="Sem dados" />
+                  </div>
+                  <DashboardPanel>
+                    <PanelTitle title="O que este bloco mostra" />
+                    <p className="text-sm leading-relaxed text-zinc-700">
+                      Este resumo deve mostrar o desempenho comercial do mês atual: quanto a loja vendeu, qual era a meta, se bateu a meta e quais itens foram vendidos.
+                    </p>
+                  </DashboardPanel>
+                  <DashboardPanel>
+                    <PanelTitle title="Dados que ainda faltam" />
+                    <p className="text-sm leading-relaxed text-zinc-700">
+                      Hoje ainda não existe uma origem confiável de vendas, pedidos, metas e itens vendidos conectada ao dashboard. Por isso, estes campos continuam como “Sem dados” ou “Não definida”.
+                    </p>
+                  </DashboardPanel>
+                </div>
+              ) : null}
+            </DashboardDetailDrawer>
+
+            <DashboardDetailDrawer
+              title={selectedHistoricalMonth}
+              description="Histórico comercial do mês selecionado."
+              isOpen={isHistoricalMonthDrawerOpen}
+              onClose={() => setIsHistoricalMonthDrawerOpen(false)}
+            >
+              <div className="space-y-4">
+                <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                  <ExecutiveNumberCard title="Quanto foi vendido" value="Sem dados" />
+                  <ExecutiveNumberCard title="Meta do mês" value="Sem dados" />
+                  <ExecutiveNumberCard title="Resultado" value="Sem dados" />
+                </div>
+
+                <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                  <ExecutiveNumberCard title="Vendas fechadas" value="Sem dados" />
+                  <ExecutiveNumberCard title="Ticket médio" value="Sem dados" />
+                  <ExecutiveNumberCard title="Itens vendidos" value="Sem dados" />
+                </div>
+
+                <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                  <ExecutiveNumberCard title="Leads gerados" value="Sem dados" />
+                  <ExecutiveNumberCard title="Conversas abertas" value="Sem dados" />
+                  <ExecutiveNumberCard title="Compromissos" value="Sem dados" />
+                </div>
+
+                <DashboardPanel>
+                  <PanelTitle title="Meta" />
+                  <p className="text-sm leading-relaxed text-zinc-700">
+                    Quando existir venda real e meta configurada, este resumo vai mostrar se a loja bateu a meta, quanto faltou ou quanto passou.
+                  </p>
+                </DashboardPanel>
+
+                <DashboardPanel>
+                  <PanelTitle title="O que foi vendido" />
+                  <EmptyState text="Ainda não há histórico real de itens vendidos para este mês." />
+                </DashboardPanel>
+              </div>
+            </DashboardDetailDrawer>
+
           </>
         ) : null}
       </div>

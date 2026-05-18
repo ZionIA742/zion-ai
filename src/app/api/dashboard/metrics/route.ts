@@ -110,8 +110,19 @@ type CatalogItemRow = {
   is_active: boolean;
   track_stock: boolean;
   stock_quantity: number | null;
+  metadata: Record<string, any> | null;
   created_at: string;
   updated_at: string;
+};
+
+type PoolRow = {
+  id: string;
+  name: string | null;
+  price: number | string | null;
+  is_active: boolean;
+  track_stock: boolean;
+  stock_quantity: number | null;
+  created_at: string | null;
 };
 
 function buildJsonResponse(body: unknown, status = 200) {
@@ -222,6 +233,84 @@ function getConversationDisplayName(
   return lead?.name || lead?.phone || "Cliente sem nome";
 }
 
+function normalizeCatalogCategory(value: string | null | undefined) {
+  const text = normalizeText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  if (text.includes("piscina") || text.includes("pool")) return "pools";
+  if (text.includes("quim") || text.includes("chemical") || text.includes("cloro")) return "chemicals";
+  if (text.includes("acessor") || text.includes("accessor")) return "accessories";
+  return "others";
+}
+
+function getCatalogCategory(item: CatalogItemRow) {
+  const metadata = item.metadata || {};
+  const rawCategory =
+    metadata.categoria ||
+    metadata.category ||
+    metadata.tipo ||
+    metadata.type ||
+    metadata.productCategory ||
+    metadata.product_category ||
+    null;
+
+  return normalizeCatalogCategory(rawCategory);
+}
+
+function getCatalogCategoryLabel(category: string) {
+  const dictionary: Record<string, string> = {
+    pools: "Piscinas",
+    chemicals: "Químicos",
+    accessories: "Acessórios",
+    others: "Outros",
+  };
+
+  return dictionary[category] || "Outros";
+}
+
+function mapCatalogItemForDashboard(item: CatalogItemRow) {
+  const category = getCatalogCategory(item);
+
+  return {
+    id: item.id,
+    sku: item.sku,
+    name: item.name,
+    category,
+    categoryLabel: getCatalogCategoryLabel(category),
+    priceCents: item.price_cents,
+    currency: item.currency,
+    stockQuantity: item.stock_quantity,
+    isActive: item.is_active,
+    trackStock: item.track_stock,
+  };
+}
+
+function poolPriceToCents(value: number | string | null | undefined) {
+  const numericValue = Number(value || 0);
+
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return 0;
+  }
+
+  return Math.round(numericValue * 100);
+}
+
+function mapPoolForDashboard(pool: PoolRow) {
+  return {
+    id: `pool:${pool.id}`,
+    sku: null,
+    name: pool.name || "Piscina sem nome",
+    category: "pools",
+    categoryLabel: "Piscinas",
+    priceCents: poolPriceToCents(pool.price),
+    currency: "BRL",
+    stockQuantity: pool.stock_quantity,
+    isActive: pool.is_active,
+    trackStock: pool.track_stock,
+  };
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
@@ -290,6 +379,7 @@ export async function GET(request: Request) {
       appointmentsResult,
       followupsResult,
       catalogResult,
+      poolsResult,
     ] = await Promise.all([
       supabase
         .from("leads")
@@ -380,10 +470,18 @@ export async function GET(request: Request) {
 
       supabase
         .from("store_catalog_items")
-        .select("id,sku,name,price_cents,currency,is_active,track_stock,stock_quantity,created_at,updated_at")
+        .select("id,sku,name,price_cents,currency,is_active,track_stock,stock_quantity,metadata,created_at,updated_at")
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
         .order("updated_at", { ascending: false })
+        .limit(10000),
+
+      supabase
+        .from("pools")
+        .select("id,name,price,is_active,track_stock,stock_quantity,created_at")
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .order("created_at", { ascending: false })
         .limit(10000),
     ]);
 
@@ -397,7 +495,8 @@ export async function GET(request: Request) {
       aiQueueResult.error ||
       appointmentsResult.error ||
       followupsResult.error ||
-      catalogResult.error;
+      catalogResult.error ||
+      poolsResult.error;
 
     if (queryError) {
       return buildJsonResponse(
@@ -420,6 +519,7 @@ export async function GET(request: Request) {
     const appointments = (appointmentsResult.data || []) as AppointmentRow[];
     const followups = (followupsResult.data || []) as FollowupRow[];
     const catalogItems = (catalogResult.data || []) as CatalogItemRow[];
+    const pools = (poolsResult.data || []) as PoolRow[];
 
     const leadById = new Map(leads.map((lead) => [lead.id, lead]));
 
@@ -533,21 +633,40 @@ export async function GET(request: Request) {
       return !followup.resolved_at && !["resolved", "resolvido", "confirmed", "confirmado"].includes(status);
     });
 
-    const activeCatalogItems = catalogItems.filter((item) => item.is_active);
-    const stockTrackedItems = catalogItems.filter((item) => item.track_stock);
-    const zeroStockItems = stockTrackedItems.filter((item) => (item.stock_quantity || 0) <= 0);
+    const dashboardCatalogItems = catalogItems.map(mapCatalogItemForDashboard);
+    const dashboardPoolItems = pools.map(mapPoolForDashboard);
+    const allDashboardCatalogItems = [...dashboardPoolItems, ...dashboardCatalogItems];
+
+    const activeCatalogItems = allDashboardCatalogItems.filter((item) => item.isActive);
+    const stockTrackedItems = allDashboardCatalogItems.filter((item) => item.trackStock);
+    const zeroStockItems = stockTrackedItems.filter((item) => (item.stockQuantity || 0) <= 0);
     const lowStockItems = stockTrackedItems
       .filter((item) => {
-        const stock = item.stock_quantity ?? 0;
+        const stock = item.stockQuantity ?? 0;
         return stock > 0 && stock <= 3;
       })
-      .sort((a, b) => (a.stock_quantity ?? 0) - (b.stock_quantity ?? 0));
+      .sort((a, b) => (a.stockQuantity ?? 0) - (b.stockQuantity ?? 0));
 
     const estimatedInventoryValueCents = stockTrackedItems.reduce((sum, item) => {
-      const price = item.price_cents || 0;
-      const quantity = item.stock_quantity || 0;
+      const price = item.priceCents || 0;
+      const quantity = item.stockQuantity || 0;
       return sum + price * quantity;
     }, 0);
+
+    const inventoryValueByCategoryCents = stockTrackedItems.reduce(
+      (acc, item) => {
+        const category = item.category;
+        const price = item.priceCents || 0;
+        const quantity = item.stockQuantity || 0;
+        acc[category] = (acc[category] || 0) + price * quantity;
+        return acc;
+      },
+      { pools: 0, chemicals: 0, accessories: 0, others: 0 } as Record<string, number>
+    );
+
+    const inStockItems = stockTrackedItems
+      .filter((item) => (item.stockQuantity || 0) > 0)
+      .sort((a, b) => (b.stockQuantity || 0) - (a.stockQuantity || 0));
 
     const successfulAiRuns = aiRuns.filter((run) => {
       const status = normalizeText(run.status);
@@ -669,12 +788,13 @@ export async function GET(request: Request) {
           byStatus: countBy(followups, "followup_status"),
         },
         catalog: {
-          totalItems: catalogItems.length,
+          totalItems: allDashboardCatalogItems.length,
           activeItems: activeCatalogItems.length,
           stockTrackedItems: stockTrackedItems.length,
           zeroStockItems: zeroStockItems.length,
           lowStockItems: lowStockItems.length,
           estimatedInventoryValueCents,
+          inventoryValueByCategoryCents,
         },
         sales: {
           available: false,
@@ -727,24 +847,10 @@ export async function GET(request: Request) {
           scheduledEnd: followup.scheduled_end,
           lastPromptedAt: followup.last_prompted_at,
         })),
-        lowStockItems: lowStockItems.slice(0, 8).map((item) => ({
-          id: item.id,
-          sku: item.sku,
-          name: item.name,
-          priceCents: item.price_cents,
-          currency: item.currency,
-          stockQuantity: item.stock_quantity,
-          isActive: item.is_active,
-        })),
-        zeroStockItems: zeroStockItems.slice(0, 8).map((item) => ({
-          id: item.id,
-          sku: item.sku,
-          name: item.name,
-          priceCents: item.price_cents,
-          currency: item.currency,
-          stockQuantity: item.stock_quantity,
-          isActive: item.is_active,
-        })),
+        allCatalogItems: allDashboardCatalogItems,
+        inStockItems,
+        lowStockItems,
+        zeroStockItems,
         operationalAlerts,
       },
     });
