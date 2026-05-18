@@ -10,6 +10,13 @@ type RequestBody = {
   conversationId?: string;
 };
 
+function isSafeSkippedAiReplyError(errorCode: string) {
+  return (
+    errorCode === "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE" ||
+    errorCode === "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE"
+  );
+}
+
 function isInternalRequestAuthorized(req: Request) {
   const secretFromEnv = process.env.AI_INTERNAL_ROUTE_SECRET;
   const secretFromHeader =
@@ -77,6 +84,18 @@ export async function POST(req: Request) {
     });
 
     if (!result.ok) {
+      if (isSafeSkippedAiReplyError(result.error)) {
+        return NextResponse.json({
+          ok: true,
+          skipped: true,
+          message: result.message,
+          bridge: {
+            route: "internal/ai-sales-reply",
+            authMode: auth.mode,
+          },
+        });
+      }
+
       return NextResponse.json(
         {
           ok: false,

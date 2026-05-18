@@ -170,10 +170,23 @@ export type GenerateAiSalesReplyParams = {
   conversationId: string;
 };
 
+export type GenerateAiSalesReplyUsage = {
+  provider: "openai";
+  model: string;
+  tokensPrompt: number | null;
+  tokensCompletion: number | null;
+  totalTokens: number | null;
+  costUsd: number | null;
+  inputTokenPriceUsdPer1M: number | null;
+  outputTokenPriceUsdPer1M: number | null;
+  pricingSource: string;
+};
+
 export type GenerateAiSalesReplyResult =
   | {
       ok: true;
       aiText: string;
+      usage: GenerateAiSalesReplyUsage;
       context: {
         leadName: string | null;
         lastCustomerMessage: string;
@@ -188,6 +201,130 @@ export type GenerateAiSalesReplyResult =
       error: string;
       message: string;
     };
+
+type OpenAiModelPricing = {
+  inputUsdPer1M: number;
+  outputUsdPer1M: number;
+};
+
+/**
+ * Tabela local de precificação usada apenas para registrar custo aproximado no ZION.
+ * Antes de vender em produção, revise estes valores na página oficial de pricing da OpenAI.
+ */
+const OPENAI_MODEL_PRICING_USD_PER_1M: Record<string, OpenAiModelPricing> = {
+  "gpt-4o-mini": {
+    inputUsdPer1M: 0.15,
+    outputUsdPer1M: 0.6,
+  },
+  "gpt-4.1-mini": {
+    inputUsdPer1M: 0.4,
+    outputUsdPer1M: 1.6,
+  },
+  "gpt-5": {
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 10,
+  },
+  "gpt-5-mini": {
+    inputUsdPer1M: 0.25,
+    outputUsdPer1M: 2,
+  },
+  "gpt-5-nano": {
+    inputUsdPer1M: 0.05,
+    outputUsdPer1M: 0.4,
+  },
+};
+
+function normalizeModelForPricing(model: string): string {
+  const normalized = String(model || "").trim().toLowerCase();
+
+  if (normalized.startsWith("gpt-4o-mini")) return "gpt-4o-mini";
+  if (normalized.startsWith("gpt-4.1-mini")) return "gpt-4.1-mini";
+  if (normalized.startsWith("gpt-5-mini")) return "gpt-5-mini";
+  if (normalized.startsWith("gpt-5-nano")) return "gpt-5-nano";
+  if (normalized.startsWith("gpt-5")) return "gpt-5";
+
+  return normalized;
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (value == null) return null;
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function calculateOpenAiCostUsd(args: {
+  model: string;
+  tokensPrompt: number | null;
+  tokensCompletion: number | null;
+}): {
+  costUsd: number | null;
+  inputTokenPriceUsdPer1M: number | null;
+  outputTokenPriceUsdPer1M: number | null;
+  pricingSource: string;
+} {
+  const pricingKey = normalizeModelForPricing(args.model);
+  const pricing = OPENAI_MODEL_PRICING_USD_PER_1M[pricingKey] || null;
+
+  if (!pricing) {
+    return {
+      costUsd: null,
+      inputTokenPriceUsdPer1M: null,
+      outputTokenPriceUsdPer1M: null,
+      pricingSource: "model_not_in_local_pricing_table",
+    };
+  }
+
+  if (args.tokensPrompt == null || args.tokensCompletion == null) {
+    return {
+      costUsd: null,
+      inputTokenPriceUsdPer1M: pricing.inputUsdPer1M,
+      outputTokenPriceUsdPer1M: pricing.outputUsdPer1M,
+      pricingSource: "missing_usage_tokens",
+    };
+  }
+
+  const inputCost = (args.tokensPrompt / 1_000_000) * pricing.inputUsdPer1M;
+  const outputCost = (args.tokensCompletion / 1_000_000) * pricing.outputUsdPer1M;
+
+  return {
+    costUsd: Number((inputCost + outputCost).toFixed(8)),
+    inputTokenPriceUsdPer1M: pricing.inputUsdPer1M,
+    outputTokenPriceUsdPer1M: pricing.outputUsdPer1M,
+    pricingSource: "zion_local_pricing_table_review_before_production",
+  };
+}
+
+function extractOpenAiUsage(response: unknown, model: string): GenerateAiSalesReplyUsage {
+  const usage = (response as any)?.usage || {};
+  const tokensPrompt = numberOrNull(usage.input_tokens);
+  const tokensCompletion = numberOrNull(usage.output_tokens);
+  const totalTokens =
+    numberOrNull(usage.total_tokens) ??
+    (tokensPrompt != null && tokensCompletion != null
+      ? tokensPrompt + tokensCompletion
+      : null);
+
+  const cost = calculateOpenAiCostUsd({
+    model,
+    tokensPrompt,
+    tokensCompletion,
+  });
+
+  return {
+    provider: "openai",
+    model,
+    tokensPrompt,
+    tokensCompletion,
+    totalTokens,
+    costUsd: cost.costUsd,
+    inputTokenPriceUsdPer1M: cost.inputTokenPriceUsdPer1M,
+    outputTokenPriceUsdPer1M: cost.outputTokenPriceUsdPer1M,
+    pricingSource: cost.pricingSource,
+  };
+}
+
 
 const ONBOARDING_KEYS = [
   "accepted_payment_methods",
@@ -839,11 +976,99 @@ function isAffirmativeReply(text: string): boolean {
     "mostra",
     "me mostra",
     "quero ver",
+    "quero sim",
+    "pode mostrar",
+    "manda ai",
+    "manda aí",
+    "manda as opcoes",
+    "manda as opções",
+    "pode ser",
     "isso",
     "ok",
     "beleza",
     "blz",
   ].some((signal) => t === signal || t.includes(signal));
+}
+
+function looksLikePoolRecommendationRequest(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("modelo") ||
+    t.includes("modelos") ||
+    t.includes("opcoes") ||
+    t.includes("opções") ||
+    t.includes("catalogo") ||
+    t.includes("catálogo") ||
+    t.includes("me mostra") ||
+    t.includes("mostrar") ||
+    t.includes("quero ver") ||
+    t.includes("basica") ||
+    t.includes("básica") ||
+    t.includes("basicas") ||
+    t.includes("básicas") ||
+    t.includes("mais em conta") ||
+    t.includes("economica") ||
+    t.includes("econômica") ||
+    t.includes("compacta") ||
+    t.includes("compactas") ||
+    t.includes("crianca") ||
+    t.includes("criança") ||
+    t.includes("criancas") ||
+    t.includes("crianças") ||
+    t.includes("familia") ||
+    t.includes("família") ||
+      t.includes("premium")
+  );
+}
+
+function asksToRepeatPoolOptions(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("me mostra as opcoes") ||
+    t.includes("me mostra as opções") ||
+    t.includes("manda de novo") ||
+    t.includes("mostra de novo") ||
+    t.includes("quais sao os modelos") ||
+    t.includes("quais são os modelos") ||
+    t.includes("quais opcoes") ||
+    t.includes("quais opções") ||
+    t.includes("compara eles") ||
+    t.includes("compare eles") ||
+    t.includes("me mostra os modelos") ||
+    t.includes("manda as opcoes") ||
+    t.includes("manda as opções")
+  );
+}
+
+function hasNewPoolRefinementSignal(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("filho") ||
+    t.includes("filhos") ||
+    t.includes("filha") ||
+    t.includes("filhas") ||
+    t.includes("crianca") ||
+    t.includes("criancas") ||
+    t.includes("familia") ||
+    t.includes("lazer") ||
+    t.includes("basico") ||
+    t.includes("simples") ||
+    t.includes("mais em conta") ||
+    t.includes("economico") ||
+    t.includes("premium") ||
+    t.includes("completo") ||
+    t.includes("espaco") ||
+    t.includes("medida") ||
+    t.includes("metro") ||
+    t.includes("m2") ||
+    t.includes("instalacao") ||
+    t.includes("preco") ||
+    t.includes("valor") ||
+    t.includes("compara")
+  );
 }
 
 function detectLastAiOfferedPoolOptions(lastAiMessage: string | null): boolean {
@@ -852,13 +1077,53 @@ function detectLastAiOfferedPoolOptions(lastAiMessage: string | null): boolean {
   const t = normalizeText(lastAiMessage);
 
   return (
-    (t.includes("quer que eu") || t.includes("posso te") || t.includes("vou separar")) &&
+    (
+      t.includes("quer que eu") ||
+      t.includes("posso te") ||
+      t.includes("vou separar") ||
+      t.includes("vou te mostrar") ||
+      t.includes("te mostro") ||
+      t.includes("aqui estao") ||
+      t.includes("eu olharia") ||
+      t.includes("eu indicaria") ||
+      t.includes("essas opcoes")
+    ) &&
     (t.includes("modelo") ||
       t.includes("modelos") ||
       t.includes("opcoes") ||
       t.includes("opções") ||
       t.includes("piscina") ||
       t.includes("piscinas"))
+  );
+}
+
+function hasUsefulPoolContext(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    looksLikePoolChoice(t) ||
+    looksLikePoolRecommendationRequest(t) ||
+    extractRequestedAreaM2(text) != null ||
+    t.includes("filho") ||
+    t.includes("filha") ||
+    t.includes("crianca") ||
+    t.includes("crianÃ§a") ||
+    t.includes("criancas") ||
+    t.includes("crianÃ§as") ||
+    t.includes("familia") ||
+    t.includes("famÃ­lia") ||
+    t.includes("espaco") ||
+    t.includes("espaÃ§o") ||
+    t.includes("quintal") ||
+    t.includes("lazer") ||
+    t.includes("compacta") ||
+    t.includes("compactas") ||
+    t.includes("basica") ||
+    t.includes("bÃ¡sica") ||
+    t.includes("mais em conta") ||
+    t.includes("economica") ||
+    t.includes("econÃ´mica") ||
+    t.includes("premium")
   );
 }
 
@@ -1578,9 +1843,20 @@ function inferResponseGoal(args: {
   nextBestQuestion: string | null;
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
+  lastCustomerMessage: string;
+  lastAiListedPools: boolean;
   patienceSignal: CustomerPatienceSignal;
 }): string {
-  const { intents, facts, nextBestQuestion, responseMode, explicitCatalogRequest, patienceSignal } = args;
+  const {
+    intents,
+    facts,
+    nextBestQuestion,
+    responseMode,
+    explicitCatalogRequest,
+    lastCustomerMessage,
+    lastAiListedPools,
+    patienceSignal,
+  } = args;
 
   if (patienceSignal.status === "not_interested") {
     return "respeitar o desinteresse, encerrar com educação e não tentar reabrir a venda nesta resposta";
@@ -1600,6 +1876,22 @@ function inferResponseGoal(args: {
 
   if (responseMode === "objective") {
     return "responder exatamente o que foi perguntado, com clareza, sem excesso de expansão e com no máximo um avanço curto";
+  }
+
+  if (
+    isAffirmativeReply(lastCustomerMessage) &&
+    (lastAiListedPools || looksLikePoolChoice(lastCustomerMessage) || looksLikePoolRecommendationRequest(lastCustomerMessage))
+  ) {
+    return "apresentar agora 2 ou 3 opções concretas e seguir com no máximo uma pergunta útil se ainda faltar um dado decisivo";
+  }
+
+  if (
+    lastAiListedPools &&
+    hasNewPoolRefinementSignal(lastCustomerMessage) &&
+    !asksToRepeatPoolOptions(lastCustomerMessage) &&
+    !looksLikePoolRecommendationRequest(lastCustomerMessage)
+  ) {
+    return "refinar a recomendação anterior com base no novo dado, destacando a melhor ou as 2 melhores opções, sem repetir lista completa";
   }
 
   if (explicitCatalogRequest || intents.includes("pool_choice")) {
@@ -1638,6 +1930,7 @@ function inferForbiddenInThisReply(args: {
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
+  lastCustomerMessage: string;
   patienceSignal: CustomerPatienceSignal;
 }): string[] {
   const out: string[] = [
@@ -1664,8 +1957,20 @@ function inferForbiddenInThisReply(args: {
     out.push("não inventar pergunta no final só para encerrar com interrogação");
   }
 
-  if (!args.explicitCatalogRequest && args.lastAiListedPools) {
+  if (!args.explicitCatalogRequest && args.lastAiListedPools && !isAffirmativeReply(args.lastCustomerMessage)) {
     out.push("não listar novos modelos novamente se o cliente não pediu isso explicitamente agora");
+  }
+
+  if (
+    args.lastAiListedPools &&
+    hasNewPoolRefinementSignal(args.lastCustomerMessage) &&
+    !asksToRepeatPoolOptions(args.lastCustomerMessage) &&
+    !looksLikePoolRecommendationRequest(args.lastCustomerMessage)
+  ) {
+    out.push("não repetir lista completa de modelos se a IA já listou opções antes");
+    out.push("não recomeçar a recomendação do zero; usar o novo dado do cliente para afunilar");
+    out.push("não ignorar a nova informação do cliente ao recomendar");
+    out.push("não listar 3 modelos novamente quando bastar destacar a melhor opção ou as 2 melhores");
   }
 
   if (args.responseMode === "objective") {
@@ -1723,6 +2028,8 @@ function buildCommercialObjective(args: {
       nextBestQuestion,
       responseMode,
       explicitCatalogRequest: args.explicitCatalogRequest,
+      lastCustomerMessage: args.lastCustomerMessage,
+      lastAiListedPools: args.lastAiListedPools,
       patienceSignal,
     }),
     forbiddenInThisReply: inferForbiddenInThisReply({
@@ -1731,6 +2038,7 @@ function buildCommercialObjective(args: {
       responseMode,
       explicitCatalogRequest: args.explicitCatalogRequest,
       lastAiListedPools: args.lastAiListedPools,
+      lastCustomerMessage: args.lastCustomerMessage,
       patienceSignal,
     }),
     responseMode,
@@ -1850,6 +2158,7 @@ function buildResponsePriorityBlock(args: {
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
+  lastCustomerMessage: string;
   hasCatalogEvidence: boolean;
   hasPoolEvidence: boolean;
   shouldPresentPoolRecommendations: boolean;
@@ -1890,9 +2199,18 @@ function buildResponsePriorityBlock(args: {
     instructions.push(
       "- O cliente já confirmou que quer ver modelos/opções de piscina. Nesta resposta, liste 2 ou 3 modelos concretos do catálogo pelo nome, com um motivo curto para cada um. Não responda apenas que vai separar ou que pode mostrar."
     );
-  } else if (args.explicitCatalogRequest) {
+  } else if (
+    args.lastAiListedPools &&
+    hasNewPoolRefinementSignal(args.lastCustomerMessage) &&
+    !asksToRepeatPoolOptions(args.lastCustomerMessage) &&
+    !looksLikePoolRecommendationRequest(args.lastCustomerMessage)
+  ) {
     instructions.push(
-      "- Se houver modelos compatíveis no contexto, liste 2 ou 3 opções concretas pelo nome quando o cliente pedir modelos/opções/fotos. Não fique só perguntando se ele quer ver."
+      "- A IA já apresentou modelos antes e o cliente trouxe um dado novo para qualificar melhor. Agora, em vez de repetir a lista, afunile a recomendação: destaque a melhor opção ou as 2 melhores e explique por que elas combinam mais com esse novo contexto."
+    );
+  } else if (args.explicitCatalogRequest || args.hasPoolEvidence) {
+    instructions.push(
+      "- Se já houver contexto suficiente de piscina e modelos compatíveis no contexto, recomende direto 2 ou 3 opções concretas pelo nome, mesmo quando a última mensagem for continuação curta. Não fique só perguntando se ele quer ver."
     );
   } else {
     instructions.push(
@@ -1900,7 +2218,11 @@ function buildResponsePriorityBlock(args: {
     );
   }
 
-  if (args.lastAiListedPools && !args.explicitCatalogRequest) {
+  if (
+    args.lastAiListedPools &&
+    !args.explicitCatalogRequest &&
+    !args.shouldPresentPoolRecommendations
+  ) {
     instructions.push(
       "- Como a IA já listou modelos antes, não repita nova lista nesta resposta sem pedido explícito do cliente."
     );
@@ -1912,6 +2234,10 @@ function buildResponsePriorityBlock(args: {
 
   instructions.push(
     "- Seja totalmente sincera: se a base não confirmar estoque, foto, marca, serviço ou disponibilidade, não invente."
+  );
+
+  instructions.push(
+    "- Quando o cliente mudar o contexto para espaço, filhos, básico, premium, preço, instalação ou comparação, use isso para evoluir a conversa. Não recomece a venda nem repita a mesma prateleira completa."
   );
 
   instructions.push(
@@ -1988,19 +2314,30 @@ Resposta boa: "Sim, aceitamos cartão. E fazemos visita técnica sim, com agenda
   examples.push(
     `EXEMPLO BOM:
 Cliente: "Vocês têm cloro da marca X?"
-Resposta boa: "Dessa marca específica eu não consegui confirmar aqui no catálogo agora. Mas temos outras opções de cloro e posso te mostrar a mais próxima do que você procura."`
+Resposta boa: "Dessa marca específica eu não consegui confirmar aqui no catálogo agora. Mas, olhando o que temos, eu começaria por 2 ou 3 opções parecidas e te digo qual faz mais sentido pro que você quer."`
   );
 
   examples.push(
     `EXEMPLO BOM:
 Cliente: "Tem foto dessa piscina?"
-Resposta boa: "Dessa piscina eu não tenho foto cadastrada aqui no momento. Se quiser, posso te mostrar outras opções que têm foto."`
+Resposta boa: "Dessa piscina eu não tenho foto cadastrada aqui no momento. As opções mais próximas com foto que eu priorizaria são estas, porque combinam melhor com o que você procura."`
   );
 
   examples.push(
     `EXEMPLO BOM:
 Cliente: "Quero ver modelos com foto"
-Resposta boa: "Tenho sim algumas opções com foto cadastrada aqui. Posso te mostrar as que mais combinam com o que você procura."`
+Resposta boa: "Para esse caso, eu olharia primeiro 2 ou 3 modelos com foto que combinam melhor com o que você quer e explico rapidinho o porquê de cada um."`
+  );
+
+  examples.push(
+    `EXEMPLO BOM:
+Cliente: "Tenho 10 m² e é para meus filhos brincarem. Quero modelos básicos"
+Resposta boa: "Para 10 m² e pensando nas crianças, eu olharia primeiro estas opções:
+1. [modelo vendável 1] — mais compacto e fácil de encaixar nesse espaço
+2. [modelo vendável 2] — boa opção para uso da família com proposta mais básica
+3. [modelo vendável 3] — alternativa prática para quem quer começar com algo mais enxuto
+
+Se a ideia for priorizar segurança para criança, eu começaria pelas opções mais rasas."`
   );
 
   examples.push(
@@ -2069,6 +2406,8 @@ EVIDÊNCIAS DE CATÁLOGO E MÍDIA
 - cliente perguntou por marca: ${args.analysis.asksForBrand ? "sim" : "não"}
 - marca identificada no texto: ${requestedBrand}
 - produto identificado no texto: ${requestedProduct}
+- use modelos e itens com disponibilidade vendável como recomendação principal
+- use modelos e itens sem disponibilidade vendável apenas como referência secundária, nunca como opção pronta para venda
 
 ITENS DE CATÁLOGO MAIS COMPATÍVEIS
 ${catalogLines}
@@ -2129,7 +2468,7 @@ REGRA MÁXIMA
 3. Se o cliente fez 2 ou mais perguntas, responda todas primeiro.
 4. Nunca abra a resposta com pergunta se já dá para responder algo.
 5. Nunca reabra a triagem ampla da conversa quando ela já está andando.
-6. Nunca repita catálogo/modelos sem pedido explícito na mensagem atual.
+6. Nunca repita catálogo/modelos sem necessidade real, mas use continuidade clara e contexto suficiente para avançar quando o cliente já estiver aceitando ou pedindo opções.
 7. Nunca invente estoque, foto, marca, serviço, disponibilidade ou informação ausente.
 8. Quando não houver confirmação no banco, seja sincera e diga isso.
 
@@ -2171,9 +2510,17 @@ REGRAS OPERACIONAIS
 - se faltar base para cravar algo, responda com cautela comercial em vez de inventar certeza
 - se houver regra clara de escalonamento humano, respeite
 - não prometa enviar mídia, PDF, catálogo ou fotos como se a entrega já estivesse acontecendo
-- só cite modelos concretos quando fizer sentido e quando houver pedido explícito atual
+- cite modelos concretos quando fizer sentido e quando houver pedido explícito atual, continuidade afirmativa clara ou contexto suficiente com catálogo compatível
 - quando o cliente já aceitou ver modelos ou pediu opções, não peça permissão de novo: use o catálogo e apresente 2 ou 3 recomendações reais com nome e motivo curto
 - se houver contexto suficiente como espaço, uso por crianças, família, básico/premium ou instalação, use esse contexto para justificar a recomendação
+- quando houver modelos compatíveis no contexto e o cliente pedir ou aceitar opções, apresente 2 ou 3 opções reais pelo nome, com um motivo curto para cada uma; só faça pergunta no fim se realmente faltar um dado decisivo
+- quando houver modelos vendáveis compatíveis, eles devem ser a recomendação principal da resposta
+- modelos sem disponibilidade vendável nunca devem entrar como opção principal se existirem modelos vendáveis compatíveis
+- modelos sem disponibilidade vendável podem aparecer apenas como referência secundária, com linguagem comercial cuidadosa e sem tratar como produto pronto para venda
+- se só houver referências sem disponibilidade confirmada, deixe claro que elas servem como referência de perfil e que a disponibilidade ainda precisa ser confirmada antes de fechar
+- quando já tiver apresentado modelos antes, use novas mensagens do cliente para afunilar a recomendação; não repita a mesma lista, destaque a melhor opção ou as 2 melhores e explique o motivo
+- quando houver opções úteis no catálogo, abra pela recomendação mais útil e só depois mencione limitação específica, se isso ainda for necessário para responder com honestidade
+- evite abrir com "não temos", "não há estoque confirmado" ou "não consegui localizar" quando ainda existir orientação útil, alternativa vendável ou referência relevante para apresentar primeiro
 
 REGRAS ESPECÍFICAS DE DESCONTO E NEGOCIAÇÃO
 - Desconto máximo, percentual máximo ou limite interno são informações de bastidor comercial; use para não ultrapassar limite, não para abrir a negociação.
@@ -2309,15 +2656,44 @@ function detectLastAiListedPools(lastAiMessage: string | null): boolean {
   if (!lastAiMessage) return false;
 
   const text = normalizeText(lastAiMessage);
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 
-  return (
-    text.includes("material") ||
-    text.includes("formato") ||
-    text.includes("valor de referencia") ||
-    text.includes("valor de referência") ||
-    text.includes("tamanho aproximado") ||
-    text.includes("modelo")
+  const enumeratedLines = lines.filter((line) => /^\d+\./.test(line)).length;
+  const bulletedPoolLines = lines.filter(
+    (line) =>
+      /^[-*•]/.test(line) &&
+      (line.includes("piscina") ||
+        /\b(fibra|vinil|pastilha|036|054|072)\b/.test(line))
+  ).length;
+  const namedPoolMatches = text.match(
+    /\bpiscina\s+[a-z0-9][a-z0-9\s/-]{1,40}\b/g
   );
+  const namedPoolCount = new Set(namedPoolMatches || []).size;
+  const recommendationLanguage =
+    text.includes("essas opcoes") ||
+    text.includes("essas opções") ||
+    text.includes("estas opcoes") ||
+    text.includes("estas opções") ||
+    text.includes("eu indicaria") ||
+    text.includes("eu recomendaria") ||
+    text.includes("eu olharia primeiro");
+  const comparisonSignals =
+    text.includes("material") &&
+    text.includes("formato") &&
+    (text.includes("valor de referencia") ||
+      text.includes("tamanho aproximado"));
+
+  if (namedPoolCount >= 2) return true;
+  if (enumeratedLines >= 2 && namedPoolCount >= 1) return true;
+  if (bulletedPoolLines >= 2) return true;
+  if (recommendationLanguage && (namedPoolCount >= 1 || enumeratedLines >= 2)) {
+    return true;
+  }
+
+  return comparisonSignals;
 }
 
 
@@ -2606,16 +2982,31 @@ export async function generateAiSalesReply(
     const explicitCatalogRequest = isExplicitCatalogRequest(lastCustomerMessage);
     const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
     const customerConversationText = buildCustomerConversationText(orderedMessages, lastCustomerMessage);
+    const affirmativeContinuation = isAffirmativeReply(lastCustomerMessage);
+    const customerAskedToRepeatPoolOptions =
+      asksToRepeatPoolOptions(lastCustomerMessage);
+    const recentPoolContext =
+      hasUsefulPoolContext(customerConversationText) ||
+      detectLastAiListedPools(lastAiMessage) ||
+      lastAiOfferedPoolOptions;
+    const directPoolRecommendationRequest =
+      catalogIntent.asksAboutPool &&
+      (explicitCatalogRequest || looksLikePoolRecommendationRequest(lastCustomerMessage));
     const shouldPresentPoolRecommendations =
-      (explicitCatalogRequest && catalogIntent.asksAboutPool) ||
-      (lastAiOfferedPoolOptions && isAffirmativeReply(lastCustomerMessage));
+      customerAskedToRepeatPoolOptions ||
+      (!lastAiListedPools &&
+        (directPoolRecommendationRequest ||
+          (lastAiOfferedPoolOptions && affirmativeContinuation) ||
+          (recentPoolContext && affirmativeContinuation) ||
+          (recentPoolContext &&
+            looksLikePoolRecommendationRequest(lastCustomerMessage))));
 
     const shouldLoadPools =
       explicitCatalogRequest ||
       (looksLikeComparisonQuestion(customerConversationText) && !lastAiListedPools) ||
       catalogIntent.asksAboutPool ||
       shouldPresentPoolRecommendations ||
-      (looksLikePoolChoice(customerConversationText) && isAffirmativeReply(lastCustomerMessage));
+      (recentPoolContext && affirmativeContinuation);
 
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
     let poolCountUsed = 0;
@@ -2855,6 +3246,7 @@ export async function generateAiSalesReply(
       responseMode: commercialObjective.responseMode,
       explicitCatalogRequest,
       lastAiListedPools,
+      lastCustomerMessage,
       hasCatalogEvidence: matchedCatalogItems.length > 0,
       hasPoolEvidence: matchedPools.length > 0,
       shouldPresentPoolRecommendations,
@@ -2908,6 +3300,8 @@ export async function generateAiSalesReply(
       max_output_tokens: commercialObjective.responseMode === "objective" ? 180 : 240,
     });
 
+    const usage = extractOpenAiUsage(response, model);
+
     const aiText = cleanupAiText(
       String(response.output_text || "").trim(),
       commercialObjective.responseMode,
@@ -2925,6 +3319,7 @@ export async function generateAiSalesReply(
     return {
       ok: true,
       aiText,
+      usage,
       context: {
         leadName: lead.name,
         lastCustomerMessage,

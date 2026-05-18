@@ -6,6 +6,7 @@ export async function middleware(req: NextRequest) {
 
   const isPublic =
     path === "/login" ||
+    path === "/zion-admin/login" ||
     path.startsWith("/_next") ||
     path.startsWith("/favicon") ||
 
@@ -49,6 +50,13 @@ export async function middleware(req: NextRequest) {
 
   if (!user) {
     const url = req.nextUrl.clone();
+
+    if (path.startsWith("/zion-admin")) {
+      url.pathname = "/zion-admin/login";
+      url.searchParams.set("redirectTo", path);
+      return NextResponse.redirect(url);
+    }
+
     url.pathname = "/login";
     url.searchParams.set("redirectTo", path);
     return NextResponse.redirect(url);

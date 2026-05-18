@@ -12,6 +12,7 @@ type GenerateAndSaveAiSalesReplyResult =
       ok: true;
       aiText: string;
       context?: any;
+      usage?: AiSalesReplyUsage | null;
       persisted: true;
       messageId: string | null;
     }
@@ -23,10 +24,36 @@ type GenerateAndSaveAiSalesReplyResult =
       context?: any;
     };
 
+type AiSalesReplyUsage = {
+  provider?: string;
+  model?: string;
+  tokensPrompt?: number | null;
+  tokensCompletion?: number | null;
+  totalTokens?: number | null;
+  costUsd?: number | null;
+  inputTokenPriceUsdPer1M?: number | null;
+  outputTokenPriceUsdPer1M?: number | null;
+  pricingSource?: string;
+};
+
 type ConversationRow = {
   id: string;
   organization_id: string;
   is_human_active: boolean | null;
+};
+
+type MessageBoundaryRow = {
+  id: string;
+  sender: string | null;
+  direction: string | null;
+  created_at: string | null;
+};
+
+type ConversationMessageBoundaryState = {
+  lastIncomingCustomerMessageId: string | null;
+  lastIncomingCustomerMessageAt: string | null;
+  lastAiMessageId: string | null;
+  lastAiMessageAt: string | null;
 };
 
 type OperationalTaskGuardResult =
@@ -119,6 +146,195 @@ async function detectOpenAssistantOperationalFlow(args: {
   };
 }
 
+function normalizeText(value: string | null | undefined): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function isCustomerIncomingMessage(row: MessageBoundaryRow): boolean {
+  return (
+    normalizeText(row.sender) === "user" &&
+    normalizeText(row.direction) === "incoming"
+  );
+}
+
+function isAiOutgoingMessage(row: MessageBoundaryRow): boolean {
+  const sender = normalizeText(row.sender);
+
+  return (
+    sender.includes("ai") ||
+    sender.includes("assistant") ||
+    sender.includes("bot")
+  );
+}
+
+function compareIsoDates(a: string | null, b: string | null): number {
+  if (!a && !b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+
+  const aTime = Date.parse(a);
+  const bTime = Date.parse(b);
+
+  if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0;
+  if (!Number.isFinite(aTime)) return -1;
+  if (!Number.isFinite(bTime)) return 1;
+
+  return aTime - bTime;
+}
+
+async function loadConversationMessageBoundaryState(args: {
+  supabase: any;
+  conversationId: string;
+}): Promise<ConversationMessageBoundaryState> {
+  const { supabase, conversationId } = args;
+
+  const { data, error } = await supabase
+    .from("messages")
+    .select("id, sender, direction, created_at")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    throw new Error(
+      `Falha ao verificar mensagens recentes da conversa: ${error.message}`
+    );
+  }
+
+  const rows = Array.isArray(data) ? (data as MessageBoundaryRow[]) : [];
+  const lastIncomingCustomerMessage =
+    rows.find(isCustomerIncomingMessage) || null;
+  const lastAiMessage = rows.find(isAiOutgoingMessage) || null;
+
+  return {
+    lastIncomingCustomerMessageId: lastIncomingCustomerMessage?.id || null,
+    lastIncomingCustomerMessageAt:
+      lastIncomingCustomerMessage?.created_at || null,
+    lastAiMessageId: lastAiMessage?.id || null,
+    lastAiMessageAt: lastAiMessage?.created_at || null,
+  };
+}
+
+function hasAiReplyAfterLatestCustomerMessage(
+  state: ConversationMessageBoundaryState
+): boolean {
+  if (!state.lastIncomingCustomerMessageAt || !state.lastAiMessageAt) {
+    return false;
+  }
+
+  return (
+    compareIsoDates(
+      state.lastAiMessageAt,
+      state.lastIncomingCustomerMessageAt
+    ) > 0
+  );
+}
+
+
+function cleanIntegerOrNull(value: unknown): number | null {
+  if (value == null) return null;
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) return null;
+
+  return Math.max(0, Math.round(parsed));
+}
+
+function cleanCostOrNull(value: unknown): number | null {
+  if (value == null) return null;
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) return null;
+
+  return Number(parsed.toFixed(8));
+}
+
+async function updateLatestRunningAiRunUsage(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  usage?: AiSalesReplyUsage | null;
+}) {
+  const { supabase, organizationId, storeId, conversationId, usage } = args;
+
+  if (!usage) {
+    return;
+  }
+
+  const updatePayload: Record<string, unknown> = {
+    provider: usage.provider || "openai",
+    model: usage.model || null,
+    tokens_prompt: cleanIntegerOrNull(usage.tokensPrompt),
+    tokens_completion: cleanIntegerOrNull(usage.tokensCompletion),
+    cost_usd: cleanCostOrNull(usage.costUsd),
+  };
+
+  const metadataPayload = {
+    usage_capture_source: "generate-and-save-ai-sales-reply",
+    total_tokens: cleanIntegerOrNull(usage.totalTokens),
+    input_token_price_usd_per_1m: cleanCostOrNull(
+      usage.inputTokenPriceUsdPer1M
+    ),
+    output_token_price_usd_per_1m: cleanCostOrNull(
+      usage.outputTokenPriceUsdPer1M
+    ),
+    pricing_source: usage.pricingSource || null,
+    captured_at: new Date().toISOString(),
+  };
+
+  const { data: activeRun, error: activeRunError } = await supabase
+    .from("ai_runs")
+    .select("id, input")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("conversation_id", conversationId)
+    .in("status", ["running", "queued"])
+    .order("started_at", { ascending: false, nullsFirst: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (activeRunError) {
+    throw new Error(
+      `Falha ao localizar ai_run ativo para registrar uso: ${activeRunError.message}`
+    );
+  }
+
+  if (!activeRun?.id) {
+    return;
+  }
+
+  const currentInput =
+    activeRun.input && typeof activeRun.input === "object"
+      ? activeRun.input
+      : {};
+
+  const { error: updateError } = await supabase
+    .from("ai_runs")
+    .update({
+      ...updatePayload,
+      input: {
+        ...currentInput,
+        usage_metadata: metadataPayload,
+      },
+    })
+    .eq("id", activeRun.id);
+
+  if (updateError) {
+    throw new Error(
+      `Falha ao registrar uso/custo no ai_run: ${updateError.message}`
+    );
+  }
+}
+
+
 export async function generateAndSaveAiSalesReply(
   params: GenerateAndSaveAiSalesReplyParams
 ): Promise<GenerateAndSaveAiSalesReplyResult> {
@@ -202,6 +418,29 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
+    const boundaryBeforeGeneration = await loadConversationMessageBoundaryState({
+      supabase,
+      conversationId,
+    });
+
+    if (!boundaryBeforeGeneration.lastIncomingCustomerMessageId) {
+      return {
+        ok: false,
+        error: "NO_RECENT_CUSTOMER_MESSAGE_FOR_AI_REPLY",
+        message:
+          "Nao encontrei mensagem recente do cliente para gerar resposta comercial.",
+      };
+    }
+
+    if (hasAiReplyAfterLatestCustomerMessage(boundaryBeforeGeneration)) {
+      return {
+        ok: false,
+        error: "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE",
+        message:
+          "Ja existe resposta da IA depois da ultima mensagem do cliente. Ignorando execucao duplicada.",
+      };
+    }
+
     const generationResult = await generateAiSalesReply({
       organizationId,
       storeId,
@@ -223,6 +462,51 @@ export async function generateAndSaveAiSalesReply(
         ok: false,
         error: "EMPTY_AI_TEXT",
         message: "A IA não retornou texto para salvar.",
+      };
+    }
+
+    try {
+      await updateLatestRunningAiRunUsage({
+        supabase,
+        organizationId,
+        storeId,
+        conversationId,
+        usage: generationResult.usage,
+      });
+    } catch (usageError: any) {
+      console.warn("[zion-ai-usage] Falha ao registrar uso/custo do ai_run", {
+        organizationId,
+        storeId,
+        conversationId,
+        error: usageError?.message || usageError,
+      });
+    }
+
+    const boundaryBeforeSave = await loadConversationMessageBoundaryState({
+      supabase,
+      conversationId,
+    });
+
+    if (
+      boundaryBeforeSave.lastIncomingCustomerMessageId !==
+      boundaryBeforeGeneration.lastIncomingCustomerMessageId
+    ) {
+      return {
+        ok: false,
+        error: "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE",
+        message:
+          "Entrou mensagem mais nova do cliente durante a geracao. Ignorando esta resposta antiga.",
+        aiText,
+      };
+    }
+
+    if (hasAiReplyAfterLatestCustomerMessage(boundaryBeforeSave)) {
+      return {
+        ok: false,
+        error: "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE",
+        message:
+          "Outra execucao ja respondeu a ultima mensagem do cliente. Ignorando duplicidade.",
+        aiText,
       };
     }
 
@@ -249,6 +533,7 @@ export async function generateAndSaveAiSalesReply(
       ok: true,
       aiText,
       context: generationResult.context,
+      usage: generationResult.usage,
       persisted: true,
       messageId: messageId ?? null,
     };
