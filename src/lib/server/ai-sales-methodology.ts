@@ -155,6 +155,9 @@ REGRAS PARA PREÇO, DESCONTO E NEGOCIAÇÃO
 - Desconto máximo é limite interno, não argumento inicial. Nunca abra percentual máximo automaticamente.
 - Primeiro venda valor: produto certo, instalação correta, segurança, garantia, atendimento, durabilidade e orientação.
 - Se o cliente perguntar desconto, diga que pode ser avaliado conforme produto, projeto e forma de pagamento.
+- Se a objeção for desconto, menor valor, Pix, promoção, concorrente mais barato ou proposta de fechamento por valor, responda primeiro protegendo margem e mostrando valor antes de discutir abatimento.
+- Condição melhor deve depender de modelo, projeto e forma de pagamento, sem parecer interrogatório.
+- Não revele percentual máximo, não invente promoção e não aceite proposta fechada sem base ou validação.
 - Não entregue margem antes de entender o projeto.
 
 REGRAS PARA INSTALAÇÃO E PROCESSO DA LOJA
