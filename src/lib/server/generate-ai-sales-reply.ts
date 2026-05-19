@@ -1022,6 +1022,56 @@ function looksLikePoolRecommendationRequest(text: string): boolean {
   );
 }
 
+function hasSpecificPoolReference(text: string): boolean {
+  const t = normalizeText(text);
+
+  if (
+    t.includes("anuncio") ||
+    t.includes("anúncio") ||
+    t.includes("vi o anuncio") ||
+    t.includes("vi o anúncio")
+  ) {
+    return true;
+  }
+
+  return (
+    /\bpiscina\s+[a-z0-9]{2,}(?:\s+[a-z0-9]{1,12}){0,2}\b/i.test(t) ||
+    /\b(?:fibra|vinil|pastilha|spa)\s+[a-z0-9]{2,}\b/i.test(t)
+  );
+}
+
+function isGenericPoolOpening(text: string): boolean {
+  const t = normalizeText(text);
+
+  const genericInterest =
+    t === "quero uma piscina" ||
+    t === "queria uma piscina" ||
+    t === "tenho interesse em piscina" ||
+    t === "estou procurando uma piscina" ||
+    t === "quero comprar uma piscina" ||
+    t === "tenho interesse em uma piscina";
+
+  if (!genericInterest) return false;
+  if (hasSpecificPoolReference(text)) return false;
+  if (isExplicitCatalogRequest(text)) return false;
+  if (looksLikePoolRecommendationRequest(text)) return false;
+  if (looksLikePriceQuestion(text)) return false;
+  if (looksLikeInstallationQuestion(text)) return false;
+  if (looksLikeComparisonQuestion(text)) return false;
+  if (looksLikeRegionQuestion(text)) return false;
+  if (looksLikeTechnicalVisitQuestion(text)) return false;
+
+  return (
+    !t.includes("foto") &&
+    !t.includes("imagem") &&
+    !t.includes("medida") &&
+    !t.includes("espaco") &&
+    !t.includes("espaço") &&
+    !t.includes("cabe") &&
+    !/\d/.test(t)
+  );
+}
+
 function asksToRepeatPoolOptions(text: string): boolean {
   const t = normalizeText(text);
 
@@ -1814,6 +1864,19 @@ function inferNextBestQuestion(args: {
   }
 
   if (
+    facts.needKnown &&
+    facts.sizeKnown &&
+    extractRequestedAreaM2(lastCustomerMessage) != null &&
+    !hasNewPoolRefinementSignal(lastCustomerMessage) &&
+    !looksLikePriceQuestion(lastCustomerMessage) &&
+    !looksLikeInstallationQuestion(lastCustomerMessage) &&
+    !looksLikeComparisonQuestion(lastCustomerMessage) &&
+    !hasSpecificPoolReference(lastCustomerMessage)
+  ) {
+    return "vai ser mais para crianças pequenas brincarem ou para adultos também usarem? E você prefere algo mais simples de manter ou uma opção com mais conforto?";
+  }
+
+  if (
     (intents.includes("installation") || intents.includes("technical_visit") || intents.includes("region")) &&
     !facts.locationKnown
   ) {
@@ -1876,6 +1939,10 @@ function inferResponseGoal(args: {
 
   if (responseMode === "objective") {
     return "responder exatamente o que foi perguntado, com clareza, sem excesso de expansão e com no máximo um avanço curto";
+  }
+
+  if (isGenericPoolOpening(lastCustomerMessage)) {
+    return "responder com naturalidade, sem listar catálogo ainda, e fazer uma triagem consultiva leve com uma única pergunta útil sobre espaço e uso principal";
   }
 
   if (
@@ -2192,6 +2259,12 @@ function buildResponsePriorityBlock(args: {
   if (args.intents.includes("region")) {
     instructions.push(
       "- Se o cliente perguntou sobre atendimento por cidade/região, responda isso antes de conduzir. Seja objetiva."
+    );
+  }
+
+  if (isGenericPoolOpening(args.lastCustomerMessage)) {
+    instructions.push(
+      "- Esta é uma abertura genérica de interesse em piscina. Não liste modelos nem catálogo ainda. Responda com naturalidade e faça só uma pergunta consultiva leve, de preferência juntando espaço/medida com uso principal."
     );
   }
 
@@ -2992,9 +3065,11 @@ export async function generateAiSalesReply(
     const directPoolRecommendationRequest =
       catalogIntent.asksAboutPool &&
       (explicitCatalogRequest || looksLikePoolRecommendationRequest(lastCustomerMessage));
+    const genericPoolOpening = isGenericPoolOpening(lastCustomerMessage);
     const shouldPresentPoolRecommendations =
-      customerAskedToRepeatPoolOptions ||
+      (!genericPoolOpening && customerAskedToRepeatPoolOptions) ||
       (!lastAiListedPools &&
+        !genericPoolOpening &&
         (directPoolRecommendationRequest ||
           (lastAiOfferedPoolOptions && affirmativeContinuation) ||
           (recentPoolContext && affirmativeContinuation) ||
@@ -3004,7 +3079,7 @@ export async function generateAiSalesReply(
     const shouldLoadPools =
       explicitCatalogRequest ||
       (looksLikeComparisonQuestion(customerConversationText) && !lastAiListedPools) ||
-      catalogIntent.asksAboutPool ||
+      (catalogIntent.asksAboutPool && !genericPoolOpening) ||
       shouldPresentPoolRecommendations ||
       (recentPoolContext && affirmativeContinuation);
 
