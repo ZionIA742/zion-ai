@@ -129,6 +129,7 @@ type ConversationFactState = {
 };
 
 type CommercialObjective = {
+  pattern: ConversationPattern;
   intents: DetectedIntent[];
   primaryIntent: string;
   mustAnswerFirst: string[];
@@ -140,6 +141,19 @@ type CommercialObjective = {
   responseMode: ResponseMode;
   patienceSignal: CustomerPatienceSignal;
 };
+
+type ConversationPattern =
+  | "generic_pool_opening"
+  | "pool_size_discovery"
+  | "pool_children_context"
+  | "specific_model_or_ad_request"
+  | "price_question"
+  | "discount_question"
+  | "photo_or_simulation_request"
+  | "chemical_problem"
+  | "pause_or_disinterest"
+  | "catalog_recommendation_or_refinement"
+  | "general_sales_conversation";
 
 type CatalogIntentAnalysis = {
   asksAboutCatalogProduct: boolean;
@@ -1815,6 +1829,131 @@ function inferPrimaryIntent(lastCustomerMessage: string): string {
   return "avançar a conversa comercial com resposta útil e natural";
 }
 
+function looksLikeDiscountQuestion(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("desconto") ||
+    t.includes("descontinho") ||
+    t.includes("melhora o valor") ||
+    t.includes("consegue melhorar") ||
+    t.includes("faz um preço melhor")
+  );
+}
+
+function looksLikePhotoOrSimulationRequest(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("foto") ||
+    t.includes("fotos") ||
+    t.includes("imagem") ||
+    t.includes("imagens") ||
+    t.includes("simulacao") ||
+    t.includes("simulação")
+  );
+}
+
+function looksLikeChemicalProblem(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("agua verde") ||
+    t.includes("água verde") ||
+    t.includes("cloro") ||
+    t.includes("barrilha") ||
+    t.includes("ph") ||
+    t.includes("piscina verde") ||
+    t.includes("produto quimico") ||
+    t.includes("produto químico")
+  );
+}
+
+function detectConversationPattern(args: {
+  facts: ConversationFactState;
+  intents: DetectedIntent[];
+  lastCustomerMessage: string;
+  explicitCatalogRequest: boolean;
+  patienceSignal: CustomerPatienceSignal;
+  shouldPresentPoolRecommendations: boolean;
+  lastAiListedPools: boolean;
+}): ConversationPattern {
+  const {
+    facts,
+    intents,
+    lastCustomerMessage,
+    explicitCatalogRequest,
+    patienceSignal,
+    shouldPresentPoolRecommendations,
+    lastAiListedPools,
+  } = args;
+  const normalizedLastCustomerMessage = normalizeText(lastCustomerMessage);
+
+  if (
+    patienceSignal.status === "not_interested" ||
+    patienceSignal.status === "follow_up_requested" ||
+    patienceSignal.status === "thinking" ||
+    patienceSignal.status === "unclear_pause"
+  ) {
+    return "pause_or_disinterest";
+  }
+
+  if (looksLikeDiscountQuestion(lastCustomerMessage)) {
+    return "discount_question";
+  }
+
+  if (looksLikePriceQuestion(lastCustomerMessage)) {
+    return "price_question";
+  }
+
+  if (looksLikePhotoOrSimulationRequest(lastCustomerMessage)) {
+    return "photo_or_simulation_request";
+  }
+
+  if (looksLikeChemicalProblem(lastCustomerMessage) && !intents.includes("pool_choice")) {
+    return "chemical_problem";
+  }
+
+  if (hasSpecificPoolReference(lastCustomerMessage)) {
+    return "specific_model_or_ad_request";
+  }
+
+  if (isGenericPoolOpening(lastCustomerMessage)) {
+    return "generic_pool_opening";
+  }
+
+  if (
+    (explicitCatalogRequest || shouldPresentPoolRecommendations || lastAiListedPools) &&
+    (intents.includes("catalog") || intents.includes("pool_choice") || facts.sizeKnown)
+  ) {
+    return "catalog_recommendation_or_refinement";
+  }
+
+  if (
+    (normalizedLastCustomerMessage.includes("filhos") ||
+      normalizedLastCustomerMessage.includes("filhas") ||
+      normalizedLastCustomerMessage.includes("crianca") ||
+      normalizedLastCustomerMessage.includes("criancas") ||
+      normalizedLastCustomerMessage.includes("brinc")) &&
+    !hasSpecificPoolReference(lastCustomerMessage)
+  ) {
+    return "pool_children_context";
+  }
+
+  if (
+    facts.sizeKnown &&
+    !looksLikePriceQuestion(lastCustomerMessage) &&
+    !looksLikeInstallationQuestion(lastCustomerMessage) &&
+    !looksLikePaymentQuestion(lastCustomerMessage) &&
+    !looksLikeTechnicalVisitQuestion(lastCustomerMessage) &&
+    !hasSpecificPoolReference(lastCustomerMessage)
+  ) {
+    return "pool_size_discovery";
+  }
+
+  return "general_sales_conversation";
+}
+
 function inferMustAnswerFirst(intents: DetectedIntent[]): string[] {
   const items: string[] = [];
 
@@ -1844,15 +1983,35 @@ function inferMustAnswerFirst(intents: DetectedIntent[]): string[] {
 }
 
 function inferNextBestQuestion(args: {
+  pattern: ConversationPattern;
   facts: ConversationFactState;
   intents: DetectedIntent[];
   lastCustomerMessage: string;
   explicitCatalogRequest: boolean;
   patienceSignal: CustomerPatienceSignal;
 }): string | null {
-  const { facts, intents, lastCustomerMessage, explicitCatalogRequest, patienceSignal } = args;
+  const { pattern, facts, intents, lastCustomerMessage, explicitCatalogRequest, patienceSignal } = args;
 
   if (patienceSignal.shouldAvoidNewQuestion) {
+    return null;
+  }
+
+  if (pattern === "generic_pool_opening") {
+    return "Beleza, você já tem algum modelo em mente? Se não tiver, posso te mostrar algumas opções. Me fala também mais ou menos o espaço que você tem pra colocar a piscina";
+  }
+
+  if (pattern === "pool_size_discovery") {
+    return "Com esse espaço faz sentido olhar modelos mais compactos. Você prefere algo mais simples de manter ou uma opção com mais conforto?";
+  }
+
+  if (pattern === "pool_children_context") {
+    if (facts.sizeKnown) {
+      return "Você prefere uma piscina mais rasa ou não tem preferência quanto à profundidade?";
+    }
+    return "me fala também mais ou menos o espaço que você tem pra colocar a piscina";
+  }
+
+  if (pattern === "specific_model_or_ad_request") {
     return null;
   }
 
@@ -1860,7 +2019,7 @@ function inferNextBestQuestion(args: {
     (explicitCatalogRequest || intents.includes("comparison") || looksLikePoolChoice(lastCustomerMessage)) &&
     !facts.sizeKnown
   ) {
-    return "qual espaço ou medida aproximada você tem aí para a piscina?";
+    return "me fala mais ou menos o espaço que você tem pra colocar a piscina";
   }
 
   if (
@@ -1873,7 +2032,7 @@ function inferNextBestQuestion(args: {
     !looksLikeComparisonQuestion(lastCustomerMessage) &&
     !hasSpecificPoolReference(lastCustomerMessage)
   ) {
-    return "vai ser mais para crianças pequenas brincarem ou para adultos também usarem? E você prefere algo mais simples de manter ou uma opção com mais conforto?";
+    return "Com esse espaço faz sentido olhar modelos mais compactos. Você prefere algo mais simples de manter ou uma opção com mais conforto?";
   }
 
   if (
@@ -1901,6 +2060,7 @@ function inferNextBestQuestion(args: {
 }
 
 function inferResponseGoal(args: {
+  pattern: ConversationPattern;
   intents: DetectedIntent[];
   facts: ConversationFactState;
   nextBestQuestion: string | null;
@@ -1911,6 +2071,7 @@ function inferResponseGoal(args: {
   patienceSignal: CustomerPatienceSignal;
 }): string {
   const {
+    pattern,
     intents,
     facts,
     nextBestQuestion,
@@ -1941,8 +2102,24 @@ function inferResponseGoal(args: {
     return "responder exatamente o que foi perguntado, com clareza, sem excesso de expansão e com no máximo um avanço curto";
   }
 
+  if (pattern === "generic_pool_opening") {
+    return "responder como vendedora de WhatsApp, sem listar catálogo, e puxar só o básico para sair do genérico: modelo em mente e espaço disponível";
+  }
+
+  if (pattern === "pool_size_discovery") {
+    return "interpretar o espaço, afunilar para modelos compactos quando fizer sentido e avançar com no máximo uma pergunta prática sobre manutenção ou conforto, sem reabrir motivação";
+  }
+
+  if (pattern === "pool_children_context") {
+    return "priorizar segurança, praticidade, supervisão fácil e manutenção simples. Se já houver espaço informado, afunilar para modelos compactos, seguros e simples de cuidar, sem puxar conforto premium ou recursos extras";
+  }
+
+  if (pattern === "specific_model_or_ad_request") {
+    return "responder primeiro a referência específica do cliente e só depois complementar com contexto útil, sem voltar para triagem genérica";
+  }
+
   if (isGenericPoolOpening(lastCustomerMessage)) {
-    return "responder com naturalidade, sem listar catálogo ainda, e fazer uma triagem consultiva leve com uma única pergunta útil sobre espaço e uso principal";
+    return "responder com naturalidade, sem listar catálogo ainda, e fazer uma triagem consultiva leve com uma única pergunta útil sobre espaço e objetivo do cliente";
   }
 
   if (
@@ -1992,6 +2169,7 @@ function inferResponseGoal(args: {
 }
 
 function inferForbiddenInThisReply(args: {
+  pattern: ConversationPattern;
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
   responseMode: ResponseMode;
@@ -2011,6 +2189,29 @@ function inferForbiddenInThisReply(args: {
     "não dizer que tem foto se não houver foto cadastrada",
     "não dizer que tem em estoque se a base não confirmar isso",
   ];
+
+  if (args.pattern === "generic_pool_opening") {
+    out.push("não listar 2 ou 3 modelos logo na abertura genérica");
+    out.push("não perguntar orçamento, lazer, uso da família ou outro motivo como primeira triagem");
+    out.push("não puxar spa, hidromassagem ou recursos extras cedo");
+  }
+
+  if (args.pattern === "pool_size_discovery") {
+    out.push("não voltar para pergunta ampla de motivação, uso ou perfil da família depois que o cliente já informou espaço");
+    out.push("não perguntar é para quê, uso dos filhos, lazer da família ou outro motivo");
+    out.push("não perguntar crianças ou adultos como padrão desta etapa");
+    out.push("não puxar spa, hidromassagem ou recursos extras cedo");
+  }
+
+  if (args.pattern === "pool_children_context") {
+    out.push("não vender luxo, spa, hidromassagem ou recurso extra cedo quando o contexto principal for filhos ou crianças");
+    out.push("não repetir pergunta sobre algo que o cliente já respondeu");
+  }
+
+  if (args.pattern === "specific_model_or_ad_request") {
+    out.push("não ignorar o modelo, anúncio ou referência específica citada pelo cliente");
+    out.push("não responder com triagem genérica antes de tratar a referência específica");
+  }
 
   if (args.intents.includes("price")) {
     out.push("não fugir da pergunta de preço");
@@ -2073,8 +2274,18 @@ function buildCommercialObjective(args: {
     ? "objective"
     : "consultative";
   const patienceSignal = analyzeCustomerPatienceSignal(args.lastCustomerMessage);
+  const pattern = detectConversationPattern({
+    facts,
+    intents,
+    lastCustomerMessage: args.lastCustomerMessage,
+    explicitCatalogRequest: args.explicitCatalogRequest,
+    patienceSignal,
+    shouldPresentPoolRecommendations: false,
+    lastAiListedPools: args.lastAiListedPools,
+  });
 
   const nextBestQuestion = inferNextBestQuestion({
+    pattern,
     facts,
     intents,
     lastCustomerMessage: args.lastCustomerMessage,
@@ -2083,6 +2294,7 @@ function buildCommercialObjective(args: {
   });
 
   return {
+    pattern,
     intents,
     primaryIntent: inferPrimaryIntent(args.lastCustomerMessage),
     mustAnswerFirst: inferMustAnswerFirst(intents),
@@ -2090,6 +2302,7 @@ function buildCommercialObjective(args: {
     missingFacts: summarizeMissingFacts(facts, args.lastCustomerMessage),
     nextBestQuestion,
     responseGoal: inferResponseGoal({
+      pattern,
       intents,
       facts,
       nextBestQuestion,
@@ -2100,6 +2313,7 @@ function buildCommercialObjective(args: {
       patienceSignal,
     }),
     forbiddenInThisReply: inferForbiddenInThisReply({
+      pattern,
       intents,
       nextBestQuestion,
       responseMode,
@@ -2184,6 +2398,7 @@ function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
 
   return `
 DIAGNÓSTICO COMERCIAL
+- padrão dominante: ${objective.pattern}
 - intenção principal: ${objective.primaryIntent}
 - modo de resposta: ${objective.responseMode}
 
@@ -2221,6 +2436,7 @@ ${forbiddenText}
 }
 
 function buildResponsePriorityBlock(args: {
+  pattern: ConversationPattern;
   intents: DetectedIntent[];
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
@@ -2231,6 +2447,36 @@ function buildResponsePriorityBlock(args: {
   shouldPresentPoolRecommendations: boolean;
 }) {
   const instructions: string[] = [];
+
+  if (args.pattern === "generic_pool_opening") {
+    instructions.push(
+      "- PADRÃO DOMINANTE: abertura genérica de piscina. Não liste catálogo agora. Pergunte de forma natural se o cliente já tem modelo em mente e peça o espaço disponível."
+    );
+  }
+
+  if (args.pattern === "pool_size_discovery") {
+    instructions.push(
+      "- PADRÃO DOMINANTE: cliente já informou espaço/medida. Interprete o espaço, afunile por praticidade, encaixe, manutenção e conforto. Não volte para pergunta ampla de uso, motivo, filhos, família, lazer ou outro motivo."
+    );
+    instructions.push(
+      "- Nesta etapa, faça no máximo uma pergunta prática e fechada. A pergunta preferida é sobre algo mais simples de manter versus uma opção com mais conforto."
+    );
+  }
+
+  if (args.pattern === "pool_children_context") {
+    instructions.push(
+      "- PADRÃO DOMINANTE: contexto de filhos/crianças. Priorize segurança, praticidade, supervisão e manutenção simples. Não puxe luxo, spa, hidromassagem, conforto premium ou recursos extras cedo."
+    );
+    instructions.push(
+      "- Se já houver espaço informado, diga que faz sentido olhar modelos compactos, seguros e simples de cuidar. Se precisar perguntar algo, prefira profundidade ou segurança, e não conforto ou recurso extra."
+    );
+  }
+
+  if (args.pattern === "specific_model_or_ad_request") {
+    instructions.push(
+      "- PADRÃO DOMINANTE: modelo específico ou anúncio. Responda a referência específica primeiro e não trate o cliente como lead genérico."
+    );
+  }
 
   if (args.intents.includes("payment")) {
     instructions.push(
@@ -2264,7 +2510,7 @@ function buildResponsePriorityBlock(args: {
 
   if (isGenericPoolOpening(args.lastCustomerMessage)) {
     instructions.push(
-      "- Esta é uma abertura genérica de interesse em piscina. Não liste modelos nem catálogo ainda. Responda com naturalidade e faça só uma pergunta consultiva leve, de preferência juntando espaço/medida com uso principal."
+      "- Esta é uma abertura genérica de interesse em piscina. Não liste modelos nem catálogo ainda. Responda com naturalidade e faça só uma pergunta consultiva leve, de preferência puxando espaço/medida ou se o cliente já tem algum modelo em mente."
     );
   }
 
@@ -2404,10 +2650,10 @@ Resposta boa: "Para esse caso, eu olharia primeiro 2 ou 3 modelos com foto que c
 
   examples.push(
     `EXEMPLO BOM:
-Cliente: "Tenho 10 m² e é para meus filhos brincarem. Quero modelos básicos"
-Resposta boa: "Para 10 m² e pensando nas crianças, eu olharia primeiro estas opções:
+Cliente: "Tenho 10 metros quadrados e é para meus filhos brincarem. Quero modelos básicos"
+Resposta boa: "Com esse espaço, eu olharia primeiro estas opções:
 1. [modelo vendável 1] — mais compacto e fácil de encaixar nesse espaço
-2. [modelo vendável 2] — boa opção para uso da família com proposta mais básica
+2. [modelo vendável 2] — opção prática e mais básica para quem quer algo fácil de acompanhar
 3. [modelo vendável 3] — alternativa prática para quem quer começar com algo mais enxuto
 
 Se a ideia for priorizar segurança para criança, eu começaria pelas opções mais rasas."`
@@ -2497,6 +2743,7 @@ ${unavailablePoolLines}
 }
 
 function buildInstructions(args: {
+  conversationPattern: ConversationPattern;
   storeDisplayName: string | null;
   storeName: string | null;
   leadName: string | null;
@@ -2585,7 +2832,7 @@ REGRAS OPERACIONAIS
 - não prometa enviar mídia, PDF, catálogo ou fotos como se a entrega já estivesse acontecendo
 - cite modelos concretos quando fizer sentido e quando houver pedido explícito atual, continuidade afirmativa clara ou contexto suficiente com catálogo compatível
 - quando o cliente já aceitou ver modelos ou pediu opções, não peça permissão de novo: use o catálogo e apresente 2 ou 3 recomendações reais com nome e motivo curto
-- se houver contexto suficiente como espaço, uso por crianças, família, básico/premium ou instalação, use esse contexto para justificar a recomendação
+- se houver contexto suficiente como espaço, contexto infantil já explícito, básico/premium ou instalação, use esse contexto para justificar a recomendação sem reabrir pergunta ampla de motivação
 - quando houver modelos compatíveis no contexto e o cliente pedir ou aceitar opções, apresente 2 ou 3 opções reais pelo nome, com um motivo curto para cada uma; só faça pergunta no fim se realmente faltar um dado decisivo
 - quando houver modelos vendáveis compatíveis, eles devem ser a recomendação principal da resposta
 - modelos sem disponibilidade vendável nunca devem entrar como opção principal se existirem modelos vendáveis compatíveis
@@ -2594,6 +2841,13 @@ REGRAS OPERACIONAIS
 - quando já tiver apresentado modelos antes, use novas mensagens do cliente para afunilar a recomendação; não repita a mesma lista, destaque a melhor opção ou as 2 melhores e explique o motivo
 - quando houver opções úteis no catálogo, abra pela recomendação mais útil e só depois mencione limitação específica, se isso ainda for necessário para responder com honestidade
 - evite abrir com "não temos", "não há estoque confirmado" ou "não consegui localizar" quando ainda existir orientação útil, alternativa vendável ou referência relevante para apresentar primeiro
+
+REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
+- padrão atual: ${args.conversationPattern}
+- este padrão deve mandar mais que instruções genéricas de descoberta
+- se o padrão for pool_size_discovery, não volte para perguntas amplas de uso, motivo, família, lazer, filhos ou outro motivo
+- se o padrão for generic_pool_opening, não liste catálogo cedo demais
+- se o padrão for specific_model_or_ad_request, responda a referência específica antes de qualquer triagem
 
 REGRAS ESPECÍFICAS DE DESCONTO E NEGOCIAÇÃO
 - Desconto máximo, percentual máximo ou limite interno são informações de bastidor comercial; use para não ultrapassar limite, não para abrir a negociação.
@@ -2826,6 +3080,7 @@ function cleanupAiText(text: string, responseMode: ResponseMode, leadName?: stri
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
   cleaned = cleaned.replace(/[ \t]+\n/g, "\n");
   cleaned = cleaned.replace(/\s{2,}/g, " ");
+  cleaned = cleaned.replace(/\bm²\b/gi, "metros quadrados");
 
   const bannedStarts = [
     /^claro[,!\s]*/i,
@@ -3317,6 +3572,7 @@ export async function generateAiSalesReply(
     });
 
     const responsePriorityBlock = buildResponsePriorityBlock({
+      pattern: commercialObjective.pattern,
       intents: commercialObjective.intents,
       responseMode: commercialObjective.responseMode,
       explicitCatalogRequest,
@@ -3341,6 +3597,7 @@ export async function generateAiSalesReply(
     });
 
     const instructions = buildInstructions({
+      conversationPattern: commercialObjective.pattern,
       storeDisplayName: onboardingMap.store_display_name || null,
       storeName: store.name,
       leadName: lead.name,
