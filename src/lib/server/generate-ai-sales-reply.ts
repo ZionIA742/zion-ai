@@ -199,6 +199,13 @@ type RecommendationPolicy = {
   reason: string;
 };
 
+type PhotoOrSimulationSubtype =
+  | "simulation_visual_request"
+  | "local_photo_context"
+  | "product_photo_specific"
+  | "product_photo_without_model"
+  | "general_photo_request";
+
 export type GenerateAiSalesReplyParams = {
   organizationId: string;
   storeId: string;
@@ -1636,6 +1643,7 @@ function classifyPoolReferenceMatch(
 
 function inferRecommendationPolicy(args: {
   pattern: ConversationPattern;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   facts: ConversationFactState;
   lastCustomerMessage: string;
   explicitCatalogRequest: boolean;
@@ -2155,9 +2163,87 @@ function looksLikePhotoOrSimulationRequest(text: string): boolean {
     t.includes("fotos") ||
     t.includes("imagem") ||
     t.includes("imagens") ||
+    t.includes("manda foto") ||
+    t.includes("mandar foto") ||
+    t.includes("pode mandar foto") ||
+    t.includes("foto do local") ||
+    t.includes("foto do quintal") ||
+    t.includes("quintal") ||
+    t.includes("cabe no quintal") ||
+    t.includes("cabe no espaco") ||
+    t.includes("cabe no espaço") ||
+    t.includes("como ficaria") ||
+    t.includes("montagem") ||
+    t.includes("render") ||
+    t.includes("visualizacao") ||
+    t.includes("visualização") ||
     t.includes("simulacao") ||
     t.includes("simulação")
   );
+}
+
+function detectPhotoOrSimulationSubtype(args: {
+  lastCustomerMessage: string;
+  customerConversationText: string;
+}): PhotoOrSimulationSubtype {
+  const normalized = normalizeText(args.lastCustomerMessage);
+  const recentPoolReference = extractRequestedPoolReference(args.customerConversationText);
+
+  const asksSimulation =
+    normalized.includes("simulacao") ||
+    normalized.includes("simulação") ||
+    normalized.includes("montagem") ||
+    normalized.includes("render") ||
+    normalized.includes("visualizacao") ||
+    normalized.includes("visualização") ||
+    normalized.includes("como ficaria");
+
+  if (asksSimulation) {
+    return "simulation_visual_request";
+  }
+
+  const localPhotoSignals =
+    normalized.includes("posso mandar foto") ||
+    normalized.includes("posso mandar uma foto") ||
+    normalized.includes("mandar foto do local") ||
+    normalized.includes("foto do local") ||
+    normalized.includes("foto do quintal") ||
+    normalized.includes("nao sei se cabe") ||
+    normalized.includes("não sei se cabe") ||
+    normalized.includes("cabe no quintal") ||
+    normalized.includes("cabe no espaco") ||
+    normalized.includes("cabe no espaço") ||
+    normalized.includes("quintal");
+
+  const asksPhoto =
+    normalized.includes("foto") ||
+    normalized.includes("fotos") ||
+    normalized.includes("imagem") ||
+    normalized.includes("imagens");
+
+  const deicticProductPhotoRequest =
+    normalized.includes("tem foto dessa piscina") ||
+    normalized.includes("tem foto dela") ||
+    normalized.includes("foto dessa piscina") ||
+    normalized.includes("foto dela") ||
+    normalized.includes("manda foto") ||
+    normalized.includes("manda fotos") ||
+    normalized.includes("quero foto") ||
+    normalized.includes("quero ver a foto");
+
+  if (localPhotoSignals) {
+    return "local_photo_context";
+  }
+
+  if (asksPhoto && recentPoolReference) {
+    return "product_photo_specific";
+  }
+
+  if (deicticProductPhotoRequest && !recentPoolReference) {
+    return "product_photo_without_model";
+  }
+
+  return "general_photo_request";
 }
 
 function looksLikeChemicalProblem(text: string): boolean {
@@ -2290,13 +2376,14 @@ function inferMustAnswerFirst(intents: DetectedIntent[]): string[] {
 
 function inferNextBestQuestion(args: {
   pattern: ConversationPattern;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   facts: ConversationFactState;
   intents: DetectedIntent[];
   lastCustomerMessage: string;
   explicitCatalogRequest: boolean;
   patienceSignal: CustomerPatienceSignal;
 }): string | null {
-  const { pattern, facts, intents, lastCustomerMessage, explicitCatalogRequest, patienceSignal } = args;
+  const { pattern, photoOrSimulationSubtype, facts, intents, lastCustomerMessage, explicitCatalogRequest, patienceSignal } = args;
 
   if (patienceSignal.shouldAvoidNewQuestion) {
     return null;
@@ -2315,6 +2402,22 @@ function inferNextBestQuestion(args: {
       return "Você prefere uma piscina mais rasa ou não tem preferência quanto à profundidade?";
     }
     return "me fala também mais ou menos o espaço que você tem pra colocar a piscina";
+  }
+
+  if (pattern === "photo_or_simulation_request") {
+    if (photoOrSimulationSubtype === "product_photo_without_model") {
+      return "Tenho como verificar sim. Qual modelo de piscina você quer ver a foto?";
+    }
+    if (photoOrSimulationSubtype === "product_photo_specific") {
+      return null;
+    }
+    if (photoOrSimulationSubtype === "simulation_visual_request") {
+      return "Consigo te orientar melhor com uma foto e as medidas do espaço. Se quiser, me manda a foto do local e mais ou menos o tamanho do espaço";
+    }
+    if (facts.sizeKnown) {
+      return "Se conseguir, me fala também se tem alguma limitação de acesso ou detalhe do espaço que te preocupa mais";
+    }
+    return "Pode mandar sim. Se conseguir, me manda também uma noção de medida do espaço, porque isso ajuda bastante a orientar melhor";
   }
 
   if (pattern === "specific_model_or_ad_request") {
@@ -2367,6 +2470,7 @@ function inferNextBestQuestion(args: {
 
 function inferResponseGoal(args: {
   pattern: ConversationPattern;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   intents: DetectedIntent[];
   facts: ConversationFactState;
   nextBestQuestion: string | null;
@@ -2382,6 +2486,7 @@ function inferResponseGoal(args: {
 }): string {
   const {
     pattern,
+    photoOrSimulationSubtype,
     intents,
     facts,
     nextBestQuestion,
@@ -2436,6 +2541,19 @@ function inferResponseGoal(args: {
 
   if (pattern === "pool_children_context") {
     return "priorizar segurança, praticidade, supervisão fácil e manutenção simples. Se já houver espaço informado, afunilar para modelos compactos, seguros e simples de cuidar, sem puxar conforto premium ou recursos extras";
+  }
+
+  if (pattern === "photo_or_simulation_request") {
+    if (photoOrSimulationSubtype === "simulation_visual_request") {
+      return "explicar com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas sem prometer montagem visual pronta, render ou simulação real por aqui, e manter um próximo passo comercial útil";
+    }
+    if (photoOrSimulationSubtype === "product_photo_without_model") {
+      return "descobrir primeiro qual modelo de piscina o cliente quer ver em foto, sem citar piscinas aleatórias nem supor produto por conta própria";
+    }
+    if (photoOrSimulationSubtype === "product_photo_specific") {
+      return "responder sobre a foto do modelo específico citado no contexto, usando apenas a evidência real de foto cadastrada desse modelo e sem trocar para outro produto sem necessidade";
+    }
+    return "tratar a foto do local como apoio comercial para orientar melhor por espaço, acesso e encaixe; pedir medida quando faltar; e ser totalmente sincera sem prometer simulação, render, montagem visual ou análise real da imagem";
   }
 
   if (pattern === "specific_model_or_ad_request") {
@@ -2505,6 +2623,7 @@ function inferResponseGoal(args: {
 
 function inferForbiddenInThisReply(args: {
   pattern: ConversationPattern;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
   responseMode: ResponseMode;
@@ -2544,6 +2663,26 @@ function inferForbiddenInThisReply(args: {
   if (args.pattern === "pool_children_context") {
     out.push("não vender luxo, spa, hidromassagem ou recurso extra cedo quando o contexto principal for filhos ou crianças");
     out.push("não repetir pergunta sobre algo que o cliente já respondeu");
+  }
+
+  if (args.pattern === "photo_or_simulation_request") {
+    out.push("não dizer que analisou a foto, o quintal, o terreno ou o local se não houve processamento real da imagem");
+    out.push("não usar frases como pela foto dá para ver, vendo sua foto ou analisando a imagem sem base real");
+    out.push("não prometer montagem visual, render, simulação pronta, foto editada ou visualização final");
+    out.push("não dizer que vai editar, montar ou gerar imagem do local");
+    out.push("não confundir foto cadastrada do produto com foto do local do cliente");
+    out.push("não tratar pedido de foto do local como se o sistema já recebesse, processasse e entendesse a imagem automaticamente");
+    out.push("não abrir catálogo cedo demais se ainda faltar medida ou contexto básico do espaço");
+    if (args.photoOrSimulationSubtype === "simulation_visual_request") {
+      out.push("não reduzir pedido de simulação a um simples pode mandar foto sem deixar claro que montagem visual pronta não está garantida");
+    }
+    if (args.photoOrSimulationSubtype === "product_photo_without_model") {
+      out.push("não escolher um modelo de piscina por conta própria quando o cliente pediu foto sem dizer qual modelo");
+      out.push("não citar fotos de piscinas aleatórias quando ainda falta identificar a piscina certa");
+    }
+    if (args.photoOrSimulationSubtype === "product_photo_specific") {
+      out.push("não trocar o modelo pedido por outro modelo só porque ele também tem foto cadastrada");
+    }
   }
 
   if (args.pattern === "specific_model_or_ad_request") {
@@ -2620,6 +2759,7 @@ function buildCommercialObjective(args: {
   facts: ConversationFactState;
   orderedMessages: MessageRow[];
   lastCustomerMessage: string;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
   shouldPresentPoolRecommendations: boolean;
@@ -2646,6 +2786,7 @@ function buildCommercialObjective(args: {
 
   const nextBestQuestion = inferNextBestQuestion({
     pattern,
+    photoOrSimulationSubtype: args.photoOrSimulationSubtype,
     facts,
     intents,
     lastCustomerMessage: args.lastCustomerMessage,
@@ -2663,6 +2804,7 @@ function buildCommercialObjective(args: {
     nextBestQuestion,
     responseGoal: inferResponseGoal({
       pattern,
+      photoOrSimulationSubtype: args.photoOrSimulationSubtype,
       intents,
       facts,
       nextBestQuestion,
@@ -2678,6 +2820,7 @@ function buildCommercialObjective(args: {
     }),
     forbiddenInThisReply: inferForbiddenInThisReply({
       pattern,
+      photoOrSimulationSubtype: args.photoOrSimulationSubtype,
       intents,
       nextBestQuestion,
       responseMode,
@@ -2804,6 +2947,7 @@ ${forbiddenText}
 
 function buildResponsePriorityBlock(args: {
   pattern: ConversationPattern;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   intents: DetectedIntent[];
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
@@ -2843,6 +2987,32 @@ function buildResponsePriorityBlock(args: {
     instructions.push(
       "- Se já houver espaço informado, diga que faz sentido olhar modelos compactos, seguros e simples de cuidar. Se precisar perguntar algo, prefira profundidade ou segurança, e não conforto ou recurso extra."
     );
+  }
+
+  if (args.pattern === "photo_or_simulation_request") {
+    if (args.photoOrSimulationSubtype === "simulation_visual_request") {
+      instructions.push(
+        "- PADRÃO DOMINANTE: pedido de simulação, montagem, render ou visualização. Diga com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas não prometa uma montagem visual pronta por aqui."
+      );
+    } else if (args.photoOrSimulationSubtype === "product_photo_without_model") {
+      instructions.push(
+        "- PADRÃO DOMINANTE: pedido de foto de produto sem modelo claro. Antes de citar qualquer piscina, pergunte qual modelo o cliente quer ver. Não escolha modelo por conta própria."
+      );
+    } else if (args.photoOrSimulationSubtype === "product_photo_specific") {
+      instructions.push(
+        "- PADRÃO DOMINANTE: pedido de foto de um modelo específico. Responda sobre a foto cadastrada desse modelo e não troque para outra piscina aleatoriamente."
+      );
+    } else {
+      instructions.push(
+        "- PADRÃO DOMINANTE: foto do local, dúvida de encaixe ou pedido de simulação. Trate a foto como apoio comercial para orientar melhor por espaço, acesso e encaixe."
+      );
+      instructions.push(
+        "- Peça medida junto com a foto quando isso ajudar. Não abra catálogo cedo demais se ainda faltar noção de espaço."
+      );
+      instructions.push(
+        "- Não prometa simulação, montagem visual, render, foto editada ou visualização pronta. Não finja análise visual real da imagem."
+      );
+    }
   }
 
   if (args.pattern === "specific_model_or_ad_request") {
@@ -3045,7 +3215,7 @@ Resposta boa: "Dessa marca específica eu não consegui confirmar aqui no catál
   examples.push(
     `EXEMPLO BOM:
 Cliente: "Tem foto dessa piscina?"
-Resposta boa: "Dessa piscina eu não tenho foto cadastrada aqui no momento. As opções mais próximas com foto que eu priorizaria são estas, porque combinam melhor com o que você procura."`
+Resposta boa: "Tenho como verificar sim. Qual modelo de piscina você quer ver a foto?"`
   );
 
   examples.push(
@@ -3165,6 +3335,7 @@ ${unavailablePoolLines}
 
 function buildInstructions(args: {
   conversationPattern: ConversationPattern;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   storeDisplayName: string | null;
   storeName: string | null;
   leadName: string | null;
@@ -3270,6 +3441,12 @@ REGRAS OPERACIONAIS
 - se o match do modelo/anúncio específico for weak ou none, diga que não encontrou esse nome exato e, se existir item próximo, apresente apenas como opção parecida
 - se o cliente perguntar preço de um modelo específico com match exato ou forte e houver preço confiável no catálogo, responda o preço primeiro usando o valor base cadastrado e a faixa do cadastro quando existir
 - nesse caso, não peça espaço antes de responder o preço; só depois faça uma pergunta curta de avanço, se ela realmente ajudar
+- quando o cliente pedir foto do local, falar de quintal, encaixe ou simulação, trate a foto como apoio comercial e não como análise visual automática
+- peça medida junto com a foto quando isso ajudar a orientar melhor
+- não diga que analisou a imagem, que viu o quintal pela foto ou que consegue montar/renderizar visualmente se esse recurso não existe no sistema atual
+- se o cliente pedir simulação, explique com sinceridade que a foto ajuda a orientar melhor, mas não prometa montagem visual pronta por aqui
+- se o cliente pedir foto de produto sem dizer qual piscina é, pergunte primeiro qual modelo ele quer ver e não liste fotos/modelos aleatórios
+- se houver modelo claro no histórico ou na mensagem, responda só sobre a foto desse modelo específico
 
 REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - padrão atual: ${args.conversationPattern}
@@ -3277,6 +3454,8 @@ REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - se o padrão for pool_size_discovery, não volte para perguntas amplas de uso, motivo, família, lazer, filhos ou outro motivo
 - se o padrão for generic_pool_opening, não liste catálogo cedo demais
 - se o padrão for specific_model_or_ad_request, responda a referência específica antes de qualquer triagem
+- se o padrão for photo_or_simulation_request, trate foto como apoio comercial, peça medida quando fizer sentido e não prometa análise visual real nem simulação pronta
+- subtipo de foto/simulação detectado: ${args.photoOrSimulationSubtype || "nenhum"}
 
 POLÍTICA DE RECOMENDAÇÃO DESTA RESPOSTA
 - pode recomendar agora: ${args.recommendationPolicy.allowRecommendations ? "sim" : "não"}
@@ -3752,6 +3931,12 @@ export async function generateAiSalesReply(
     const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
     const requestedPoolReference = extractRequestedPoolReference(lastCustomerMessage);
     const customerConversationText = buildCustomerConversationText(orderedMessages, lastCustomerMessage);
+    const photoOrSimulationSubtype = looksLikePhotoOrSimulationRequest(lastCustomerMessage)
+      ? detectPhotoOrSimulationSubtype({
+          lastCustomerMessage,
+          customerConversationText,
+        })
+      : null;
     const conversationFacts = collectConversationFacts(orderedMessages);
     const affirmativeContinuation = isAffirmativeReply(lastCustomerMessage);
     const customerAskedToRepeatPoolOptions =
@@ -3775,11 +3960,17 @@ export async function generateAiSalesReply(
             looksLikePoolRecommendationRequest(lastCustomerMessage))));
 
     const shouldLoadPools =
-      explicitCatalogRequest ||
+      (explicitCatalogRequest && photoOrSimulationSubtype !== "product_photo_without_model") ||
       (looksLikeComparisonQuestion(customerConversationText) && !lastAiListedPools) ||
-      (catalogIntent.asksAboutPool && !genericPoolOpening) ||
+      (catalogIntent.asksAboutPool &&
+        !genericPoolOpening &&
+        photoOrSimulationSubtype !== "product_photo_without_model" &&
+        photoOrSimulationSubtype !== "local_photo_context" &&
+        photoOrSimulationSubtype !== "simulation_visual_request") ||
       shouldPresentPoolRecommendations ||
-      (recentPoolContext && affirmativeContinuation);
+      (recentPoolContext && affirmativeContinuation) ||
+      photoOrSimulationSubtype === "product_photo_specific" ||
+      photoOrSimulationSubtype === "general_photo_request";
 
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
     let poolCountUsed = 0;
@@ -3790,7 +3981,14 @@ export async function generateAiSalesReply(
     let bestNamedPoolMatch: MatchedPool | null = null;
 
     let pools: PoolRow[] = [];
-    if (shouldLoadPools || catalogIntent.asksForPhoto || catalogIntent.asksAboutPool || shouldPresentPoolRecommendations) {
+    if (
+      shouldLoadPools ||
+      ((catalogIntent.asksForPhoto || catalogIntent.asksAboutPool) &&
+        photoOrSimulationSubtype !== "product_photo_without_model" &&
+        photoOrSimulationSubtype !== "local_photo_context" &&
+        photoOrSimulationSubtype !== "simulation_visual_request") ||
+      shouldPresentPoolRecommendations
+    ) {
       const { data: poolsData, error: poolsError } = await supabase
         .from("pools")
         .select(
@@ -3979,6 +4177,7 @@ export async function generateAiSalesReply(
       }),
       facts: conversationFacts,
       lastCustomerMessage,
+      photoOrSimulationSubtype,
       explicitCatalogRequest,
       shouldPresentPoolRecommendations,
       lastAiListedPools,
@@ -4070,6 +4269,7 @@ export async function generateAiSalesReply(
 
     const responsePriorityBlock = buildResponsePriorityBlock({
       pattern: commercialObjective.pattern,
+      photoOrSimulationSubtype,
       intents: commercialObjective.intents,
       responseMode: commercialObjective.responseMode,
       explicitCatalogRequest,
@@ -4099,6 +4299,7 @@ export async function generateAiSalesReply(
 
     const instructions = buildInstructions({
       conversationPattern: commercialObjective.pattern,
+      photoOrSimulationSubtype,
       storeDisplayName: onboardingMap.store_display_name || null,
       storeName: store.name,
       leadName: lead.name,
