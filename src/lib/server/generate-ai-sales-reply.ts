@@ -178,6 +178,27 @@ type MatchedPool = {
   score: number;
 };
 
+type RequestedPoolReference = {
+  raw: string;
+  normalized: string;
+  fromAd: boolean;
+};
+
+type PoolReferenceMatchStrength =
+  | "exact"
+  | "strong"
+  | "weak"
+  | "none";
+
+type RecommendationPolicy = {
+  allowRecommendations: boolean;
+  poolOptionCount: 0 | 1 | 2 | 3;
+  catalogOptionCount: 0 | 1 | 2 | 3;
+  allowOnlySimilarLanguage: boolean;
+  requireExactOrStrongMatchForNamedPool: boolean;
+  reason: string;
+};
+
 export type GenerateAiSalesReplyParams = {
   organizationId: string;
   storeId: string;
@@ -1263,6 +1284,35 @@ function formatCurrencyFromCents(priceCents: number | null | undefined, currency
   }
 }
 
+function formatCurrencyFromReais(value: number | null | undefined): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+
+  try {
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+      maximumFractionDigits: 0,
+    }).format(value);
+  } catch {
+    return `R$ ${Number(value).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
+  }
+}
+
+function extractPriceRangeFromText(text: string | null | undefined): string | null {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const match = raw.match(/(R\$\s*[\d\.\,]+)\s*a\s*(R\$\s*[\d\.\,]+)/i);
+  if (!match?.[1] || !match?.[2]) return null;
+
+  return `${match[1]} a ${match[2]}`;
+}
+
+function hasTrustedPoolPrice(match: MatchedPool | null): boolean {
+  if (!match) return false;
+  return match.pool.price != null || extractPriceRangeFromText(match.pool.description) != null;
+}
+
 function getMetadataText(metadata: Record<string, unknown> | null | undefined): string {
   if (!metadata || typeof metadata !== "object") return "";
   try {
@@ -1304,6 +1354,99 @@ function extractRequestedProductTerm(text: string): string | null {
     if (normalized.includes(normalizeText(keyword))) {
       return keyword;
     }
+  }
+
+  return null;
+}
+
+const GENERIC_POOL_REFERENCE_TOKENS = new Set([
+  "a",
+  "anuncio",
+  "anuncios",
+  "basica",
+  "basicas",
+  "basico",
+  "basicos",
+  "catologo",
+  "com",
+  "compacta",
+  "compactas",
+  "compacto",
+  "compactos",
+  "da",
+  "de",
+  "do",
+  "economica",
+  "economicas",
+  "economico",
+  "economicos",
+  "em",
+  "fibra",
+  "foto",
+  "fotos",
+  "hidromassagem",
+  "mais",
+  "modelo",
+  "modelos",
+  "mostra",
+  "opcao",
+  "opcoes",
+  "para",
+  "pastilha",
+  "piscina",
+  "piscinas",
+  "premium",
+  "simples",
+  "spa",
+  "tipo",
+  "um",
+  "uma",
+  "vinil",
+]);
+
+function isGenericPoolReferenceToken(token: string): boolean {
+  return GENERIC_POOL_REFERENCE_TOKENS.has(token);
+}
+
+function extractRequestedPoolReference(text: string): RequestedPoolReference | null {
+  const normalized = normalizeText(text);
+  const patterns = [
+    /\bvi o anuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bvi o anuncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\banuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\banuncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmodelo\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bpiscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const raw = match?.[1]?.trim();
+    if (!raw) continue;
+
+    const cleaned = raw
+      .replace(/\b(?:quanto|custa|valor|preco|preço|tem|foto|fotos|ai|aí)\b.*$/i, "")
+      .trim();
+
+    if (!cleaned) continue;
+
+    const tokens = cleaned.split(/\s+/).filter(Boolean);
+    const hasNamedSignal = tokens.some(
+      (token) => (/^\d{2,}$/.test(token) || token.length >= 4) && !isGenericPoolReferenceToken(token)
+    );
+    const hasCodeSignal =
+      tokens.some((token) => /^\d{2,}$/.test(token)) &&
+      tokens.some((token) => !isGenericPoolReferenceToken(token));
+
+    if (!hasNamedSignal && !hasCodeSignal) {
+      continue;
+    }
+
+    return {
+      raw: cleaned,
+      normalized: normalizeText(cleaned),
+      fromAd: normalized.includes("anuncio"),
+    };
   }
 
   return null;
@@ -1448,6 +1591,169 @@ function scorePool(pool: PoolRow, text: string): number {
   return score;
 }
 
+function classifyPoolReferenceMatch(
+  pool: PoolRow,
+  requestedReference: RequestedPoolReference | null
+): PoolReferenceMatchStrength {
+  if (!requestedReference) return "none";
+
+  const name = normalizeText(pool.name);
+  const haystack = normalizeText(
+    [pool.name, pool.material, pool.shape, pool.description].filter(Boolean).join(" | ")
+  );
+
+  if (!name || !haystack) return "none";
+
+  if (name.includes(requestedReference.normalized)) {
+    return "exact";
+  }
+
+  const tokens = requestedReference.normalized.split(/\s+/).filter(Boolean);
+  const strongTokens = tokens.filter(
+    (token) => (/^\d{2,}$/.test(token) || token.length >= 4) && !isGenericPoolReferenceToken(token)
+  );
+
+  if (strongTokens.length > 0) {
+    const strongNameHits = strongTokens.filter((token) => name.includes(token));
+    const strongHaystackHits = strongTokens.filter((token) => haystack.includes(token));
+
+    if (strongNameHits.length > 0) {
+      return "strong";
+    }
+
+    if (strongHaystackHits.length >= 2) {
+      return "strong";
+    }
+  }
+
+  const broadHits = tokens.filter((token) => token.length >= 3 && haystack.includes(token));
+  if (broadHits.length > 0) {
+    return "weak";
+  }
+
+  return "none";
+}
+
+function inferRecommendationPolicy(args: {
+  pattern: ConversationPattern;
+  facts: ConversationFactState;
+  lastCustomerMessage: string;
+  explicitCatalogRequest: boolean;
+  shouldPresentPoolRecommendations: boolean;
+  lastAiListedPools: boolean;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+}): RecommendationPolicy {
+  const explicitVarietyRequest =
+    looksLikeComparisonQuestion(args.lastCustomerMessage) ||
+    asksToRepeatPoolOptions(args.lastCustomerMessage) ||
+    /\b(variedade|comparar|comparacao|comparação|modelos|opcoes|opções)\b/i.test(
+      normalizeText(args.lastCustomerMessage)
+    );
+
+  if (args.pattern === "generic_pool_opening") {
+    return {
+      allowRecommendations: false,
+      poolOptionCount: 0,
+      catalogOptionCount: 0,
+      allowOnlySimilarLanguage: false,
+      requireExactOrStrongMatchForNamedPool: false,
+      reason: "abertura genérica: não listar opções cedo demais",
+    };
+  }
+
+  if (args.pattern === "specific_model_or_ad_request" && args.requestedPoolReference) {
+    const exactOrStrong =
+      args.strongestPoolReferenceMatch === "exact" || args.strongestPoolReferenceMatch === "strong";
+
+    return {
+      allowRecommendations: exactOrStrong,
+      poolOptionCount: exactOrStrong ? 1 : 0,
+      catalogOptionCount: exactOrStrong ? 1 : 0,
+      allowOnlySimilarLanguage: !exactOrStrong,
+      requireExactOrStrongMatchForNamedPool: true,
+      reason: exactOrStrong
+        ? "modelo específico com match confiável: tratar como modelo encontrado"
+        : "modelo específico sem match exato ou forte: não afirmar equivalência",
+    };
+  }
+
+  if (args.pattern === "pool_children_context") {
+    const canRecommend = args.facts.sizeKnown || args.shouldPresentPoolRecommendations || args.lastAiListedPools;
+    return {
+      allowRecommendations: canRecommend,
+      poolOptionCount: canRecommend ? 1 : 0,
+      catalogOptionCount: canRecommend ? 1 : 0,
+      allowOnlySimilarLanguage: false,
+      requireExactOrStrongMatchForNamedPool: false,
+      reason: canRecommend
+        ? "contexto infantil com dados suficientes: priorizar 1 opção principal segura e prática"
+        : "contexto infantil ainda sem base suficiente: afunilar antes de listar opções",
+    };
+  }
+
+  if (args.pattern === "pool_size_discovery") {
+    const canRecommend =
+      args.facts.sizeKnown &&
+      (args.facts.needKnown || args.explicitCatalogRequest || args.shouldPresentPoolRecommendations);
+
+    return {
+      allowRecommendations: canRecommend,
+      poolOptionCount: canRecommend ? 1 : 0,
+      catalogOptionCount: canRecommend ? 1 : 0,
+      allowOnlySimilarLanguage: false,
+      requireExactOrStrongMatchForNamedPool: false,
+      reason: canRecommend
+        ? "espaço definido e preferência suficiente: priorizar 1 opção principal"
+        : "espaço definido, mas ainda faltam preferências para recomendar com segurança",
+    };
+  }
+
+  if (args.pattern === "catalog_recommendation_or_refinement") {
+    const shouldTightenToOne =
+      args.lastAiListedPools ||
+      (args.facts.sizeKnown &&
+        hasNewPoolRefinementSignal(args.lastCustomerMessage) &&
+        !explicitVarietyRequest);
+    const count: 1 | 2 | 3 = explicitVarietyRequest ? 3 : shouldTightenToOne ? 1 : 2;
+    return {
+      allowRecommendations: true,
+      poolOptionCount: count,
+      catalogOptionCount: count,
+      allowOnlySimilarLanguage: false,
+      requireExactOrStrongMatchForNamedPool: false,
+      reason: explicitVarietyRequest
+        ? "cliente pediu comparação/variedade: até 3 opções são aceitáveis"
+        : shouldTightenToOne
+          ? "há contexto e opções já foram mostradas: afunilar para 1 opção principal"
+          : "há contexto suficiente: trabalhar com 1 ou 2 caminhos fortes, sem abrir 3 por padrão",
+    };
+  }
+
+  if (args.shouldPresentPoolRecommendations) {
+    const count: 2 | 3 = explicitVarietyRequest ? 3 : 2;
+    return {
+      allowRecommendations: true,
+      poolOptionCount: count,
+      catalogOptionCount: count,
+      allowOnlySimilarLanguage: false,
+      requireExactOrStrongMatchForNamedPool: false,
+      reason: explicitVarietyRequest
+        ? "pedido explícito de variedade/comparação: até 3 opções"
+        : "pedido de recomendação ativo: trabalhar com no máximo 2 opções fortes",
+    };
+  }
+
+  return {
+    allowRecommendations: false,
+    poolOptionCount: 0,
+    catalogOptionCount: 0,
+    allowOnlySimilarLanguage: false,
+    requireExactOrStrongMatchForNamedPool: false,
+    reason: "não há base suficiente para listar opções nesta resposta",
+  };
+}
+
 function buildCatalogItemContextLine(match: MatchedCatalogItem): string {
   const { item, photos } = match;
   const price = formatCurrencyFromCents(item.price_cents, item.currency);
@@ -1505,7 +1811,7 @@ function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
   }
 
   if (pool.price != null) {
-    parts.push(`valor de referência R$ ${pool.price}`);
+    parts.push(`valor de referência ${formatCurrencyFromReais(pool.price)}`);
   }
 
   if (pool.description) {
@@ -1902,10 +2208,6 @@ function detectConversationPattern(args: {
     return "discount_question";
   }
 
-  if (looksLikePriceQuestion(lastCustomerMessage)) {
-    return "price_question";
-  }
-
   if (looksLikePhotoOrSimulationRequest(lastCustomerMessage)) {
     return "photo_or_simulation_request";
   }
@@ -1916,6 +2218,10 @@ function detectConversationPattern(args: {
 
   if (hasSpecificPoolReference(lastCustomerMessage)) {
     return "specific_model_or_ad_request";
+  }
+
+  if (looksLikePriceQuestion(lastCustomerMessage)) {
+    return "price_question";
   }
 
   if (isGenericPoolOpening(lastCustomerMessage)) {
@@ -2069,6 +2375,10 @@ function inferResponseGoal(args: {
   lastCustomerMessage: string;
   lastAiListedPools: boolean;
   patienceSignal: CustomerPatienceSignal;
+  recommendationPolicy: RecommendationPolicy;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
 }): string {
   const {
     pattern,
@@ -2080,6 +2390,10 @@ function inferResponseGoal(args: {
     lastCustomerMessage,
     lastAiListedPools,
     patienceSignal,
+    recommendationPolicy,
+    requestedPoolReference,
+    strongestPoolReferenceMatch,
+    bestNamedPoolMatch,
   } = args;
 
   if (patienceSignal.status === "not_interested") {
@@ -2096,6 +2410,16 @@ function inferResponseGoal(args: {
 
   if (patienceSignal.status === "unclear_pause") {
     return "baixar a pressão comercial, responder com leveza e manter a porta aberta sem insistir";
+  }
+
+  if (
+    pattern === "specific_model_or_ad_request" &&
+    intents.includes("price") &&
+    requestedPoolReference &&
+    (strongestPoolReferenceMatch === "exact" || strongestPoolReferenceMatch === "strong") &&
+    hasTrustedPoolPrice(bestNamedPoolMatch)
+  ) {
+    return "responder o preço do modelo encontrado logo no começo, usando o valor base do catálogo e a faixa do cadastro quando existir, e só depois fazer uma pergunta curta de avanço";
   }
 
   if (responseMode === "objective") {
@@ -2115,6 +2439,13 @@ function inferResponseGoal(args: {
   }
 
   if (pattern === "specific_model_or_ad_request") {
+    if (
+      requestedPoolReference &&
+      recommendationPolicy.requireExactOrStrongMatchForNamedPool &&
+      (strongestPoolReferenceMatch === "weak" || strongestPoolReferenceMatch === "none")
+    ) {
+      return `responder a referência específica primeiro, dizer que o nome "${requestedPoolReference.raw}" não apareceu com esse nome exato no catálogo atual e, se houver opção próxima, apresentar apenas como parecida`;
+    }
     return "responder primeiro a referência específica do cliente e só depois complementar com contexto útil, sem voltar para triagem genérica";
   }
 
@@ -2126,7 +2457,9 @@ function inferResponseGoal(args: {
     isAffirmativeReply(lastCustomerMessage) &&
     (lastAiListedPools || looksLikePoolChoice(lastCustomerMessage) || looksLikePoolRecommendationRequest(lastCustomerMessage))
   ) {
-    return "apresentar agora 2 ou 3 opções concretas e seguir com no máximo uma pergunta útil se ainda faltar um dado decisivo";
+    return recommendationPolicy.poolOptionCount <= 1
+      ? "apresentar agora uma opção principal bem encaixada no contexto e só abrir segunda alternativa se ela realmente fizer diferença"
+      : "apresentar agora opções concretas e seguir com no máximo uma pergunta útil se ainda faltar um dado decisivo";
   }
 
   if (
@@ -2142,7 +2475,9 @@ function inferResponseGoal(args: {
     if (nextBestQuestion && !facts.sizeKnown) {
       return "responder o pedido de modelos com naturalidade e avançar para descobrir medida/espaço";
     }
-    return "responder o pedido de modelos e estreitar a escolha para uma recomendação mais assertiva";
+    return recommendationPolicy.poolOptionCount <= 1
+      ? "responder o pedido de modelos e já afunilar para uma opção principal mais assertiva"
+      : "responder o pedido de modelos e estreitar a escolha para uma recomendação mais assertiva";
   }
 
   if (intents.includes("comparison")) {
@@ -2177,6 +2512,9 @@ function inferForbiddenInThisReply(args: {
   lastAiListedPools: boolean;
   lastCustomerMessage: string;
   patienceSignal: CustomerPatienceSignal;
+  recommendationPolicy: RecommendationPolicy;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
 }): string[] {
   const out: string[] = [
     "não ignorar a pergunta principal do cliente",
@@ -2211,6 +2549,18 @@ function inferForbiddenInThisReply(args: {
   if (args.pattern === "specific_model_or_ad_request") {
     out.push("não ignorar o modelo, anúncio ou referência específica citada pelo cliente");
     out.push("não responder com triagem genérica antes de tratar a referência específica");
+    if (
+      args.requestedPoolReference &&
+      args.recommendationPolicy.requireExactOrStrongMatchForNamedPool &&
+      (args.strongestPoolReferenceMatch === "weak" || args.strongestPoolReferenceMatch === "none")
+    ) {
+      out.push(
+        `não dizer que "${args.requestedPoolReference.raw}" é o mesmo item de um modelo do catálogo sem match exato ou forte`
+      );
+      out.push(
+        "não tratar referência incerta como equivalência confirmada; no máximo apresente como opção parecida"
+      );
+    }
   }
 
   if (args.intents.includes("price")) {
@@ -2241,6 +2591,10 @@ function inferForbiddenInThisReply(args: {
     out.push("não listar 3 modelos novamente quando bastar destacar a melhor opção ou as 2 melhores");
   }
 
+  if (args.recommendationPolicy.poolOptionCount <= 1) {
+    out.push("não listar 3 modelos por padrão quando a política desta resposta pede afunilamento");
+  }
+
   if (args.responseMode === "objective") {
     out.push("não abrir explicação longa além do que o cliente perguntou");
     out.push("não adicionar vários assuntos extras na mesma resposta");
@@ -2263,12 +2617,18 @@ function inferForbiddenInThisReply(args: {
 }
 
 function buildCommercialObjective(args: {
+  facts: ConversationFactState;
   orderedMessages: MessageRow[];
   lastCustomerMessage: string;
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
+  shouldPresentPoolRecommendations: boolean;
+  recommendationPolicy: RecommendationPolicy;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
 }): CommercialObjective {
-  const facts = collectConversationFacts(args.orderedMessages);
+  const facts = args.facts;
   const intents = detectIntents(args.lastCustomerMessage);
   const responseMode: ResponseMode = isObjectiveQuestionMode(args.lastCustomerMessage)
     ? "objective"
@@ -2280,7 +2640,7 @@ function buildCommercialObjective(args: {
     lastCustomerMessage: args.lastCustomerMessage,
     explicitCatalogRequest: args.explicitCatalogRequest,
     patienceSignal,
-    shouldPresentPoolRecommendations: false,
+    shouldPresentPoolRecommendations: args.shouldPresentPoolRecommendations,
     lastAiListedPools: args.lastAiListedPools,
   });
 
@@ -2311,6 +2671,10 @@ function buildCommercialObjective(args: {
       lastCustomerMessage: args.lastCustomerMessage,
       lastAiListedPools: args.lastAiListedPools,
       patienceSignal,
+      recommendationPolicy: args.recommendationPolicy,
+      requestedPoolReference: args.requestedPoolReference,
+      strongestPoolReferenceMatch: args.strongestPoolReferenceMatch,
+      bestNamedPoolMatch: args.bestNamedPoolMatch,
     }),
     forbiddenInThisReply: inferForbiddenInThisReply({
       pattern,
@@ -2321,6 +2685,9 @@ function buildCommercialObjective(args: {
       lastAiListedPools: args.lastAiListedPools,
       lastCustomerMessage: args.lastCustomerMessage,
       patienceSignal,
+      recommendationPolicy: args.recommendationPolicy,
+      requestedPoolReference: args.requestedPoolReference,
+      strongestPoolReferenceMatch: args.strongestPoolReferenceMatch,
     }),
     responseMode,
     patienceSignal,
@@ -2445,8 +2812,14 @@ function buildResponsePriorityBlock(args: {
   hasCatalogEvidence: boolean;
   hasPoolEvidence: boolean;
   shouldPresentPoolRecommendations: boolean;
+  recommendationPolicy: RecommendationPolicy;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
 }) {
   const instructions: string[] = [];
+  const bestNamedPoolBasePrice = formatCurrencyFromReais(args.bestNamedPoolMatch?.pool.price || null);
+  const bestNamedPoolPriceRange = extractPriceRangeFromText(args.bestNamedPoolMatch?.pool.description);
 
   if (args.pattern === "generic_pool_opening") {
     instructions.push(
@@ -2476,6 +2849,27 @@ function buildResponsePriorityBlock(args: {
     instructions.push(
       "- PADRÃO DOMINANTE: modelo específico ou anúncio. Responda a referência específica primeiro e não trate o cliente como lead genérico."
     );
+    if (
+      args.intents.includes("price") &&
+      (args.strongestPoolReferenceMatch === "exact" || args.strongestPoolReferenceMatch === "strong") &&
+      hasTrustedPoolPrice(args.bestNamedPoolMatch)
+    ) {
+      instructions.push(
+        `- O cliente perguntou preço de um modelo específico encontrado no catálogo. Responda o preço primeiro. Use como base ${bestNamedPoolBasePrice || "o valor cadastrado"}${bestNamedPoolPriceRange ? ` e mencione também a faixa ${bestNamedPoolPriceRange}` : ""} antes de fazer qualquer pergunta.`
+      );
+      instructions.push(
+        "- Não fuja do preço com 'depende' se já existe valor confiável no catálogo. Se precisar conduzir, faça isso só depois, com uma pergunta curta como instalação ou acabamento."
+      );
+    }
+    if (
+      args.requestedPoolReference &&
+      args.recommendationPolicy.requireExactOrStrongMatchForNamedPool &&
+      (args.strongestPoolReferenceMatch === "weak" || args.strongestPoolReferenceMatch === "none")
+    ) {
+      instructions.push(
+        `- O nome "${args.requestedPoolReference.raw}" não teve match exato ou forte no catálogo. Não diga que ele é ${args.bestNamedPoolMatch?.pool.name || "outro modelo do catálogo"}. Diga que não encontrou esse nome exato e, se usar um item do contexto, trate apenas como opção parecida.`
+      );
+    }
   }
 
   if (args.intents.includes("payment")) {
@@ -2515,9 +2909,19 @@ function buildResponsePriorityBlock(args: {
   }
 
   if (args.shouldPresentPoolRecommendations) {
-    instructions.push(
-      "- O cliente já confirmou que quer ver modelos/opções de piscina. Nesta resposta, liste 2 ou 3 modelos concretos do catálogo pelo nome, com um motivo curto para cada um. Não responda apenas que vai separar ou que pode mostrar."
-    );
+    if (args.recommendationPolicy.poolOptionCount === 1) {
+      instructions.push(
+        "- O cliente já deu base suficiente para recomendação. Nesta resposta, priorize 1 opção principal do catálogo e só abra uma segunda se ela realmente representar um caminho diferente e útil."
+      );
+    } else if (args.recommendationPolicy.poolOptionCount === 2) {
+      instructions.push(
+        "- O cliente já confirmou que quer ver modelos/opções de piscina. Nesta resposta, trabalhe com no máximo 2 modelos concretos do catálogo, com motivo curto para cada um."
+      );
+    } else {
+      instructions.push(
+        "- O cliente já confirmou que quer ver modelos/opções de piscina. Nesta resposta, até 3 modelos são aceitáveis porque houve pedido claro de variedade/comparação."
+      );
+    }
   } else if (
     args.lastAiListedPools &&
     hasNewPoolRefinementSignal(args.lastCustomerMessage) &&
@@ -2529,7 +2933,9 @@ function buildResponsePriorityBlock(args: {
     );
   } else if (args.explicitCatalogRequest || args.hasPoolEvidence) {
     instructions.push(
-      "- Se já houver contexto suficiente de piscina e modelos compatíveis no contexto, recomende direto 2 ou 3 opções concretas pelo nome, mesmo quando a última mensagem for continuação curta. Não fique só perguntando se ele quer ver."
+      args.recommendationPolicy.poolOptionCount <= 1
+        ? "- Se já houver contexto suficiente de piscina e modelos compatíveis no contexto, abra pela melhor opção principal. Só use segunda alternativa se houver um segundo caminho forte."
+        : "- Se já houver contexto suficiente de piscina e modelos compatíveis no contexto, recomende direto 1 ou 2 opções concretas pelo nome. Até 3 só quando houver pedido explícito de variedade ou comparação."
     );
   } else {
     instructions.push(
@@ -2688,9 +3094,17 @@ function buildCatalogEvidenceBlock(args: {
   matchedPools: MatchedPool[];
   unavailableCatalogItems: MatchedCatalogItem[];
   unavailablePools: MatchedPool[];
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
+  recommendationPolicy: RecommendationPolicy;
 }): string {
   const requestedBrand = args.analysis.requestedBrand || "nenhuma marca claramente identificada";
   const requestedProduct = args.analysis.requestedProductTerm || "nenhum produto claramente identificado";
+  const requestedPoolReference = args.requestedPoolReference?.raw || "nenhum nome/modelo específico identificado";
+  const bestNamedPoolMatch = args.bestNamedPoolMatch?.pool.name || "nenhum modelo próximo relevante";
+  const bestNamedPoolBasePrice = formatCurrencyFromReais(args.bestNamedPoolMatch?.pool.price || null);
+  const bestNamedPoolPriceRange = extractPriceRangeFromText(args.bestNamedPoolMatch?.pool.description);
 
   const catalogLines =
     args.matchedCatalogItems.length > 0
@@ -2725,6 +3139,13 @@ EVIDÊNCIAS DE CATÁLOGO E MÍDIA
 - cliente perguntou por marca: ${args.analysis.asksForBrand ? "sim" : "não"}
 - marca identificada no texto: ${requestedBrand}
 - produto identificado no texto: ${requestedProduct}
+- nome/modelo específico citado: ${requestedPoolReference}
+- força do match do nome citado: ${args.strongestPoolReferenceMatch}
+- política desta resposta: ${args.recommendationPolicy.reason}
+- se o match do nome citado for weak ou none, trate apenas como opção parecida e não como equivalência
+- modelo mais próximo para referência, se existir: ${bestNamedPoolMatch}
+- preço base do modelo mais próximo, se existir: ${bestNamedPoolBasePrice || "não cadastrado"}
+- faixa de preço detectada na descrição, se existir: ${bestNamedPoolPriceRange || "não identificada"}
 - use modelos e itens com disponibilidade vendável como recomendação principal
 - use modelos e itens sem disponibilidade vendável apenas como referência secundária, nunca como opção pronta para venda
 
@@ -2767,6 +3188,10 @@ function buildInstructions(args: {
   responsePriorityBlock: string;
   examplesBlock: string;
   shouldPresentPoolRecommendations: boolean;
+  recommendationPolicy: RecommendationPolicy;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
 }) {
   const storeLabel = args.storeDisplayName || args.storeName || "a loja";
   const leadLabel = args.leadName || "cliente";
@@ -2831,9 +3256,9 @@ REGRAS OPERACIONAIS
 - se houver regra clara de escalonamento humano, respeite
 - não prometa enviar mídia, PDF, catálogo ou fotos como se a entrega já estivesse acontecendo
 - cite modelos concretos quando fizer sentido e quando houver pedido explícito atual, continuidade afirmativa clara ou contexto suficiente com catálogo compatível
-- quando o cliente já aceitou ver modelos ou pediu opções, não peça permissão de novo: use o catálogo e apresente 2 ou 3 recomendações reais com nome e motivo curto
+- quando o cliente já aceitou ver modelos ou pediu opções, não peça permissão de novo: use o catálogo e siga a política desta resposta para apresentar 1, 2 ou até 3 recomendações reais com nome e motivo curto
 - se houver contexto suficiente como espaço, contexto infantil já explícito, básico/premium ou instalação, use esse contexto para justificar a recomendação sem reabrir pergunta ampla de motivação
-- quando houver modelos compatíveis no contexto e o cliente pedir ou aceitar opções, apresente 2 ou 3 opções reais pelo nome, com um motivo curto para cada uma; só faça pergunta no fim se realmente faltar um dado decisivo
+- quando houver modelos compatíveis no contexto e o cliente pedir ou aceitar opções, prefira 1 opção principal quando o contexto estiver claro; use 2 se houver dois caminhos fortes; use até 3 apenas quando houver pedido explícito de variedade ou comparação
 - quando houver modelos vendáveis compatíveis, eles devem ser a recomendação principal da resposta
 - modelos sem disponibilidade vendável nunca devem entrar como opção principal se existirem modelos vendáveis compatíveis
 - modelos sem disponibilidade vendável podem aparecer apenas como referência secundária, com linguagem comercial cuidadosa e sem tratar como produto pronto para venda
@@ -2841,6 +3266,10 @@ REGRAS OPERACIONAIS
 - quando já tiver apresentado modelos antes, use novas mensagens do cliente para afunilar a recomendação; não repita a mesma lista, destaque a melhor opção ou as 2 melhores e explique o motivo
 - quando houver opções úteis no catálogo, abra pela recomendação mais útil e só depois mencione limitação específica, se isso ainda for necessário para responder com honestidade
 - evite abrir com "não temos", "não há estoque confirmado" ou "não consegui localizar" quando ainda existir orientação útil, alternativa vendável ou referência relevante para apresentar primeiro
+- se o cliente citar um modelo/anúncio específico, só trate como modelo encontrado quando houver match exato ou forte no catálogo
+- se o match do modelo/anúncio específico for weak ou none, diga que não encontrou esse nome exato e, se existir item próximo, apresente apenas como opção parecida
+- se o cliente perguntar preço de um modelo específico com match exato ou forte e houver preço confiável no catálogo, responda o preço primeiro usando o valor base cadastrado e a faixa do cadastro quando existir
+- nesse caso, não peça espaço antes de responder o preço; só depois faça uma pergunta curta de avanço, se ela realmente ajudar
 
 REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - padrão atual: ${args.conversationPattern}
@@ -2848,6 +3277,17 @@ REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - se o padrão for pool_size_discovery, não volte para perguntas amplas de uso, motivo, família, lazer, filhos ou outro motivo
 - se o padrão for generic_pool_opening, não liste catálogo cedo demais
 - se o padrão for specific_model_or_ad_request, responda a referência específica antes de qualquer triagem
+
+POLÍTICA DE RECOMENDAÇÃO DESTA RESPOSTA
+- pode recomendar agora: ${args.recommendationPolicy.allowRecommendations ? "sim" : "não"}
+- quantidade máxima de opções de piscina nesta resposta: ${args.recommendationPolicy.poolOptionCount}
+- quantidade máxima de opções de catálogo nesta resposta: ${args.recommendationPolicy.catalogOptionCount}
+- motivo da política: ${args.recommendationPolicy.reason}
+- só pode afirmar equivalência de modelo específico com match exato/forte: ${args.recommendationPolicy.requireExactOrStrongMatchForNamedPool ? "sim" : "não"}
+- se o cliente citou nome/modelo específico: ${args.requestedPoolReference?.raw || "não"}
+- força do match do nome citado: ${args.strongestPoolReferenceMatch}
+- modelo mais próximo no contexto, se existir: ${args.bestNamedPoolMatch?.pool.name || "nenhum"}
+- se o match for weak ou none, não diga que o nome citado é o mesmo item do catálogo; trate no máximo como opção parecida
 
 REGRAS ESPECÍFICAS DE DESCONTO E NEGOCIAÇÃO
 - Desconto máximo, percentual máximo ou limite interno são informações de bastidor comercial; use para não ultrapassar limite, não para abrir a negociação.
@@ -2907,6 +3347,7 @@ SINAIS DO CONTEXTO
 - múltiplas intenções na última mensagem: ${args.questionIntentCount >= 2 ? "sim" : "não"}
 - pedido explícito atual de catálogo/fotos/modelos: ${args.explicitCatalogRequest ? "sim" : "não"}
 - deve apresentar recomendações de piscina agora: ${args.shouldPresentPoolRecommendations ? "sim" : "não"}
+- quantidade máxima de modelos de piscina agora: ${args.recommendationPolicy.poolOptionCount}
 - pergunta sobre instalação: ${looksLikeInstallationQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - pergunta sobre visita técnica: ${looksLikeTechnicalVisitQuestion(args.lastCustomerMessage) ? "sim" : "não"}
 - pergunta sobre preço: ${looksLikePriceQuestion(args.lastCustomerMessage) ? "sim" : "não"}
@@ -3309,7 +3750,9 @@ export async function generateAiSalesReply(
     const lastAiOfferedPoolOptions = detectLastAiOfferedPoolOptions(lastAiMessage);
     const explicitCatalogRequest = isExplicitCatalogRequest(lastCustomerMessage);
     const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
+    const requestedPoolReference = extractRequestedPoolReference(lastCustomerMessage);
     const customerConversationText = buildCustomerConversationText(orderedMessages, lastCustomerMessage);
+    const conversationFacts = collectConversationFacts(orderedMessages);
     const affirmativeContinuation = isAffirmativeReply(lastCustomerMessage);
     const customerAskedToRepeatPoolOptions =
       asksToRepeatPoolOptions(lastCustomerMessage);
@@ -3342,6 +3785,9 @@ export async function generateAiSalesReply(
     let poolCountUsed = 0;
     let matchedPools: MatchedPool[] = [];
     let unavailableMatchedPools: MatchedPool[] = [];
+    let scoredPools: MatchedPool[] = [];
+    let strongestPoolReferenceMatch: PoolReferenceMatchStrength = "none";
+    let bestNamedPoolMatch: MatchedPool | null = null;
 
     let pools: PoolRow[] = [];
     if (shouldLoadPools || catalogIntent.asksForPhoto || catalogIntent.asksAboutPool || shouldPresentPoolRecommendations) {
@@ -3390,7 +3836,7 @@ export async function generateAiSalesReply(
     }
 
     if (pools.length > 0) {
-      const scoredPools = pools
+      scoredPools = pools
         .map((pool) => ({
           pool,
           hasPhoto: (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url,
@@ -3399,57 +3845,24 @@ export async function generateAiSalesReply(
         .filter((match) => shouldLoadPools || match.score > 0)
         .sort((a, b) => b.score - a.score);
 
-      matchedPools = scoredPools
-        .filter((match) =>
-          isSellableInventoryState({
-            isActive: match.pool.is_active,
-            trackStock: match.pool.track_stock,
-            stockQuantity: match.pool.stock_quantity,
-          }).isSellable
-        )
-        .slice(0, 3);
+      if (requestedPoolReference && scoredPools.length > 0) {
+        const rankedByReference = scoredPools
+          .map((match) => ({
+            match,
+            strength: classifyPoolReferenceMatch(match.pool, requestedPoolReference),
+          }))
+          .sort((a, b) => {
+            const rank: Record<PoolReferenceMatchStrength, number> = {
+              exact: 4,
+              strong: 3,
+              weak: 2,
+              none: 1,
+            };
+            return rank[b.strength] - rank[a.strength] || b.match.score - a.match.score;
+          });
 
-      const matchedPoolIds = new Set(matchedPools.map((match) => match.pool.id));
-      const matchedPoolNames = new Set(
-        matchedPools
-          .map((match) => normalizeText(match.pool.name))
-          .filter(Boolean)
-      );
-
-      unavailableMatchedPools = scoredPools
-        .filter((match) =>
-          !isSellableInventoryState({
-            isActive: match.pool.is_active,
-            trackStock: match.pool.track_stock,
-            stockQuantity: match.pool.stock_quantity,
-          }).isSellable
-        )
-        .filter((match) => {
-          if (matchedPoolIds.has(match.pool.id)) return false;
-          const normalizedName = normalizeText(match.pool.name);
-          return !normalizedName || !matchedPoolNames.has(normalizedName);
-        })
-        .slice(0, 3);
-
-      const usablePools = pools.filter((pool) =>
-        isSellableInventoryState({
-          isActive: pool.is_active,
-          trackStock: pool.track_stock,
-          stockQuantity: pool.stock_quantity,
-        }).isSellable
-      );
-
-      poolCountUsed = usablePools.length;
-
-      if (matchedPools.length > 0) {
-        availablePoolsText = matchedPools
-          .map((match) => formatPoolLine(match.pool, match.hasPhoto))
-          .join("\n");
-      } else if (usablePools.length > 0 && shouldLoadPools) {
-        availablePoolsText = usablePools
-          .slice(0, 3)
-          .map((pool) => formatPoolLine(pool, (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url))
-          .join("\n");
+        strongestPoolReferenceMatch = rankedByReference[0]?.strength || "none";
+        bestNamedPoolMatch = rankedByReference[0]?.match || null;
       }
     }
 
@@ -3554,11 +3967,91 @@ export async function generateAiSalesReply(
       })
       .slice(0, 5);
 
+    const recommendationPolicy = inferRecommendationPolicy({
+      pattern: detectConversationPattern({
+        facts: conversationFacts,
+        intents: detectIntents(lastCustomerMessage),
+        lastCustomerMessage,
+        explicitCatalogRequest,
+        patienceSignal: analyzeCustomerPatienceSignal(lastCustomerMessage),
+        shouldPresentPoolRecommendations,
+        lastAiListedPools,
+      }),
+      facts: conversationFacts,
+      lastCustomerMessage,
+      explicitCatalogRequest,
+      shouldPresentPoolRecommendations,
+      lastAiListedPools,
+      requestedPoolReference,
+      strongestPoolReferenceMatch,
+    });
+
+    if (scoredPools.length > 0) {
+      matchedPools = scoredPools
+        .filter((match) =>
+          isSellableInventoryState({
+            isActive: match.pool.is_active,
+            trackStock: match.pool.track_stock,
+            stockQuantity: match.pool.stock_quantity,
+          }).isSellable
+        )
+        .slice(0, recommendationPolicy.poolOptionCount);
+
+      const matchedPoolIds = new Set(matchedPools.map((match) => match.pool.id));
+      const matchedPoolNames = new Set(
+        matchedPools
+          .map((match) => normalizeText(match.pool.name))
+          .filter(Boolean)
+      );
+
+      unavailableMatchedPools = scoredPools
+        .filter((match) =>
+          !isSellableInventoryState({
+            isActive: match.pool.is_active,
+            trackStock: match.pool.track_stock,
+            stockQuantity: match.pool.stock_quantity,
+          }).isSellable
+        )
+        .filter((match) => {
+          if (matchedPoolIds.has(match.pool.id)) return false;
+          const normalizedName = normalizeText(match.pool.name);
+          return !normalizedName || !matchedPoolNames.has(normalizedName);
+        })
+        .slice(0, recommendationPolicy.poolOptionCount);
+
+      const usablePools = pools.filter((pool) =>
+        isSellableInventoryState({
+          isActive: pool.is_active,
+          trackStock: pool.track_stock,
+          stockQuantity: pool.stock_quantity,
+        }).isSellable
+      );
+
+      poolCountUsed = usablePools.length;
+
+      if (matchedPools.length > 0) {
+        availablePoolsText = matchedPools
+          .map((match) => formatPoolLine(match.pool, match.hasPhoto))
+          .join("\n");
+      } else if (usablePools.length > 0 && shouldLoadPools && recommendationPolicy.poolOptionCount > 0) {
+        availablePoolsText = usablePools
+          .slice(0, recommendationPolicy.poolOptionCount)
+          .map((pool) => formatPoolLine(pool, (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url))
+          .join("\n");
+      }
+    }
+
     const commercialObjective = buildCommercialObjective({
+      facts: conversationFacts,
       orderedMessages,
       lastCustomerMessage,
       explicitCatalogRequest,
       lastAiListedPools,
+      shouldPresentPoolRecommendations,
+      recommendationPolicy,
+      requestedPoolReference,
+      strongestPoolReferenceMatch,
+      bestNamedPoolMatch,
     });
 
     const commercialObjectiveBlock = buildCommercialObjectiveBlock(commercialObjective);
@@ -3569,6 +4062,10 @@ export async function generateAiSalesReply(
       matchedPools,
       unavailableCatalogItems: unavailableMatchedCatalogItems,
       unavailablePools: unavailableMatchedPools,
+      requestedPoolReference,
+      strongestPoolReferenceMatch,
+      bestNamedPoolMatch,
+      recommendationPolicy,
     });
 
     const responsePriorityBlock = buildResponsePriorityBlock({
@@ -3581,6 +4078,10 @@ export async function generateAiSalesReply(
       hasCatalogEvidence: matchedCatalogItems.length > 0,
       hasPoolEvidence: matchedPools.length > 0,
       shouldPresentPoolRecommendations,
+      recommendationPolicy,
+      requestedPoolReference,
+      strongestPoolReferenceMatch,
+      bestNamedPoolMatch,
     });
 
     const examplesBlock = buildExamplesBlock({
@@ -3621,6 +4122,10 @@ export async function generateAiSalesReply(
       responsePriorityBlock,
       examplesBlock,
       shouldPresentPoolRecommendations,
+      recommendationPolicy,
+      requestedPoolReference,
+      strongestPoolReferenceMatch,
+      bestNamedPoolMatch,
     });
 
     const input = buildModelInput(orderedMessages);
