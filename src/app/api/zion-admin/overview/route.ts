@@ -22,13 +22,37 @@ type StoreMetricRow = {
 };
 
 type AiRunRow = {
+  id: string;
   store_id: string | null;
+  conversation_id: string | null;
+  lead_id: string | null;
+  model: string | null;
   status: string | null;
   error: string | null;
+  input: Record<string, unknown> | null;
+  output: Record<string, unknown> | null;
   tokens_prompt: number | string | null;
   tokens_completion: number | string | null;
   cost_usd: number | string | null;
   created_at: string | null;
+  finished_at: string | null;
+};
+
+type AiUsageBreakdown = {
+  salesChatUsd: number;
+  assistantChatUsd: number;
+  imageGenerationUsd: number;
+  visualCatalogUsd: number;
+  unclassifiedUsd: number;
+};
+
+type AiRunEvent = {
+  id: string;
+  model: string | null;
+  status: string | null;
+  error: string | null;
+  createdAt: string | null;
+  finishedAt: string | null;
 };
 
 type QueueMetricRow = {
@@ -50,7 +74,16 @@ type StoreOverviewMetrics = {
   totalTokensCompletion: number;
   totalTokens: number;
   totalCostUsd: number;
+  costUsdToday: number;
+  costUsdLast7Days: number;
+  costUsdMonth: number;
+  costBreakdownTotal: AiUsageBreakdown;
+  costBreakdownToday: AiUsageBreakdown;
+  costBreakdownLast7Days: AiUsageBreakdown;
+  costBreakdownMonth: AiUsageBreakdown;
   lastAiRunAt: string | null;
+  recentAiErrors: AiRunEvent[];
+  recentAiSuccesses: AiRunEvent[];
   pendingAiRuns: number;
   aiRunQueueErrors: number;
   pendingSalesActions: number;
@@ -77,7 +110,7 @@ async function getAuthenticatedUser() {
           // Route Handler: não alteramos cookies aqui.
         },
       },
-    }
+    },
   );
 
   const {
@@ -110,7 +143,7 @@ function getServiceSupabaseClient() {
 
 async function getExactCount(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-  table: string
+  table: string,
 ) {
   const { count, error } = await supabase
     .from(table)
@@ -130,8 +163,47 @@ async function getExactCount(
 }
 
 function toNumber(value: number | string | null | undefined) {
-  const parsed = typeof value === "string" ? Number(value) : value ?? 0;
+  const parsed = typeof value === "string" ? Number(value) : (value ?? 0);
   return Number.isFinite(parsed) ? Number(parsed) : 0;
+}
+
+function createEmptyAiUsageBreakdown(): AiUsageBreakdown {
+  return {
+    salesChatUsd: 0,
+    assistantChatUsd: 0,
+    imageGenerationUsd: 0,
+    visualCatalogUsd: 0,
+    unclassifiedUsd: 0,
+  };
+}
+
+function addCostToBreakdown(
+  breakdown: AiUsageBreakdown,
+  category: keyof AiUsageBreakdown,
+  costUsd: number,
+) {
+  breakdown[category] += costUsd;
+}
+
+function sumAiUsageBreakdown(
+  target: AiUsageBreakdown,
+  source: AiUsageBreakdown,
+) {
+  target.salesChatUsd += source.salesChatUsd;
+  target.assistantChatUsd += source.assistantChatUsd;
+  target.imageGenerationUsd += source.imageGenerationUsd;
+  target.visualCatalogUsd += source.visualCatalogUsd;
+  target.unclassifiedUsd += source.unclassifiedUsd;
+}
+
+function roundAiUsageBreakdown(breakdown: AiUsageBreakdown): AiUsageBreakdown {
+  return {
+    salesChatUsd: Number(breakdown.salesChatUsd.toFixed(6)),
+    assistantChatUsd: Number(breakdown.assistantChatUsd.toFixed(6)),
+    imageGenerationUsd: Number(breakdown.imageGenerationUsd.toFixed(6)),
+    visualCatalogUsd: Number(breakdown.visualCatalogUsd.toFixed(6)),
+    unclassifiedUsd: Number(breakdown.unclassifiedUsd.toFixed(6)),
+  };
 }
 
 function createEmptyStoreMetrics(): StoreOverviewMetrics {
@@ -148,7 +220,16 @@ function createEmptyStoreMetrics(): StoreOverviewMetrics {
     totalTokensCompletion: 0,
     totalTokens: 0,
     totalCostUsd: 0,
+    costUsdToday: 0,
+    costUsdLast7Days: 0,
+    costUsdMonth: 0,
+    costBreakdownTotal: createEmptyAiUsageBreakdown(),
+    costBreakdownToday: createEmptyAiUsageBreakdown(),
+    costBreakdownLast7Days: createEmptyAiUsageBreakdown(),
+    costBreakdownMonth: createEmptyAiUsageBreakdown(),
     lastAiRunAt: null,
+    recentAiErrors: [],
+    recentAiSuccesses: [],
     pendingAiRuns: 0,
     aiRunQueueErrors: 0,
     pendingSalesActions: 0,
@@ -160,7 +241,7 @@ function createEmptyStoreMetrics(): StoreOverviewMetrics {
 
 function getStoreMetrics(
   metricsByStore: Map<string, StoreOverviewMetrics>,
-  storeId: string | null | undefined
+  storeId: string | null | undefined,
 ) {
   const safeStoreId = String(storeId || "").trim();
 
@@ -237,6 +318,140 @@ function applyQueueMetrics(args: {
   }
 }
 
+function getSaoPauloDateParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const get = (type: string) =>
+    Number(parts.find((part) => part.type === type)?.value || 0);
+
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+  };
+}
+
+function startOfSaoPauloDateUtc(year: number, month: number, day: number) {
+  // São Paulo está em UTC-3. Usamos 03:00 UTC para representar 00:00 em America/Sao_Paulo.
+  return new Date(Date.UTC(year, month - 1, day, 3, 0, 0, 0));
+}
+
+function addDaysToSaoPauloDate(
+  year: number,
+  month: number,
+  day: number,
+  amount: number,
+) {
+  const date = new Date(Date.UTC(year, month - 1, day + amount, 12, 0, 0, 0));
+  return getSaoPauloDateParts(date);
+}
+
+function getPeriodBoundaries() {
+  const nowParts = getSaoPauloDateParts(new Date());
+  const startOfToday = startOfSaoPauloDateUtc(
+    nowParts.year,
+    nowParts.month,
+    nowParts.day,
+  );
+
+  const noonForDay = new Date(
+    Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day, 12, 0, 0, 0),
+  );
+  const dayOfWeek = noonForDay.getUTCDay();
+  const mondayOffset = (dayOfWeek + 6) % 7;
+  const weekParts = addDaysToSaoPauloDate(
+    nowParts.year,
+    nowParts.month,
+    nowParts.day,
+    -mondayOffset,
+  );
+
+  const startOfLast7Days = startOfSaoPauloDateUtc(
+    weekParts.year,
+    weekParts.month,
+    weekParts.day,
+  );
+  const startOfMonth = startOfSaoPauloDateUtc(nowParts.year, nowParts.month, 1);
+
+  return {
+    startOfToday,
+    startOfLast7Days,
+    startOfMonth,
+  };
+}
+
+function isOnOrAfter(value: string | null | undefined, boundary: Date) {
+  if (!value) return false;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return false;
+  return parsed >= boundary.getTime();
+}
+
+function stringifyForClassification(value: unknown) {
+  if (!value) return "";
+
+  try {
+    return JSON.stringify(value).toLowerCase();
+  } catch {
+    return String(value).toLowerCase();
+  }
+}
+
+function classifyAiRunUsage(row: AiRunRow): keyof AiUsageBreakdown {
+  const inputText = stringifyForClassification(row.input);
+  const outputText = stringifyForClassification(row.output);
+  const allText = `${inputText} ${outputText}`;
+
+  if (
+    allText.includes("pool_image_generation") ||
+    allText.includes("image_generation") ||
+    allText.includes("geracao_imagem") ||
+    allText.includes("geração de imagem") ||
+    allText.includes("montagem") ||
+    allText.includes("piscina instalada")
+  ) {
+    return "imageGenerationUsd";
+  }
+
+  if (
+    allText.includes("visual_catalog") ||
+    allText.includes("visual-catalog") ||
+    allText.includes("catalog_document") ||
+    allText.includes("catalogo_visual") ||
+    allText.includes("catálogo visual")
+  ) {
+    return "visualCatalogUsd";
+  }
+
+  if (
+    allText.includes("assistant_chat") ||
+    allText.includes("assistant_operational") ||
+    allText.includes("operational_assistant") ||
+    allText.includes("store_assistant") ||
+    allText.includes("ia_assistente") ||
+    allText.includes("assistant/reply")
+  ) {
+    return "assistantChatUsd";
+  }
+
+  if (
+    allText.includes("ai_sales") ||
+    allText.includes("sales_reply") ||
+    allText.includes("generate-and-save-ai-sales-reply") ||
+    allText.includes("internal_ai_sales_reply_bridge") ||
+    (row.conversation_id && row.lead_id)
+  ) {
+    return "salesChatUsd";
+  }
+
+  return "unclassifiedUsd";
+}
+
 function compareIsoDateDesc(a: string | null, b: string | null) {
   if (!a && !b) return 0;
   if (!a) return 1;
@@ -254,7 +469,7 @@ function compareIsoDateDesc(a: string | null, b: string | null) {
 
 async function loadStoreIdRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-  table: string
+  table: string,
 ): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
   const { data, error } = await supabase.from(table).select("store_id");
 
@@ -273,7 +488,7 @@ async function loadStoreIdRows(
 
 async function loadQueueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
-  table: string
+  table: string,
 ): Promise<{ rows: QueueMetricRow[]; error: string | null }> {
   const { data, error } = await supabase
     .from(table)
@@ -293,12 +508,12 @@ async function loadQueueRows(
 }
 
 async function loadAiRunRows(
-  supabase: ReturnType<typeof getServiceSupabaseClient>
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: AiRunRow[]; error: string | null }> {
   const { data, error } = await supabase
     .from("ai_runs")
     .select(
-      "store_id, status, error, tokens_prompt, tokens_completion, cost_usd, created_at"
+      "id, store_id, conversation_id, lead_id, model, status, error, input, output, tokens_prompt, tokens_completion, cost_usd, created_at, finished_at",
     );
 
   if (error) {
@@ -323,7 +538,7 @@ export async function GET() {
         {
           error: "Não autenticado.",
         },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -341,7 +556,7 @@ export async function GET() {
         {
           error: "Acesso interno não autorizado.",
         },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
@@ -407,12 +622,13 @@ export async function GET() {
             stores: storesError?.message ?? null,
           },
         },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
     const organizations = (organizationsResult.data ?? []) as OrganizationRow[];
     const stores = (storesResult.data ?? []) as StoreRow[];
+    const periodBoundaries = getPeriodBoundaries();
 
     const organizationMap = new Map<string, OrganizationRow>();
 
@@ -476,7 +692,9 @@ export async function GET() {
       const promptTokens = toNumber(row.tokens_prompt);
       const completionTokens = toNumber(row.tokens_completion);
       const costUsd = toNumber(row.cost_usd);
-      const normalizedStatus = String(row.status || "").trim().toLowerCase();
+      const normalizedStatus = String(row.status || "")
+        .trim()
+        .toLowerCase();
 
       metrics.totalAiRuns += 1;
       metrics.totalTokensPrompt += promptTokens;
@@ -484,12 +702,49 @@ export async function GET() {
       metrics.totalTokens += promptTokens + completionTokens;
       metrics.totalCostUsd += costUsd;
 
+      const usageCategory = classifyAiRunUsage(row);
+      addCostToBreakdown(metrics.costBreakdownTotal, usageCategory, costUsd);
+
+      if (isOnOrAfter(row.created_at, periodBoundaries.startOfToday)) {
+        metrics.costUsdToday += costUsd;
+        addCostToBreakdown(metrics.costBreakdownToday, usageCategory, costUsd);
+      }
+
+      if (isOnOrAfter(row.created_at, periodBoundaries.startOfLast7Days)) {
+        metrics.costUsdLast7Days += costUsd;
+        addCostToBreakdown(metrics.costBreakdownLast7Days, usageCategory, costUsd);
+      }
+
+      if (isOnOrAfter(row.created_at, periodBoundaries.startOfMonth)) {
+        metrics.costUsdMonth += costUsd;
+        addCostToBreakdown(metrics.costBreakdownMonth, usageCategory, costUsd);
+      }
+
       if (normalizedStatus === "succeeded") {
         metrics.successfulAiRuns += 1;
       }
 
       if (normalizedStatus === "failed" || isErroredText(row.error)) {
         metrics.failedAiRuns += 1;
+        metrics.recentAiErrors.push({
+          id: row.id,
+          model: row.model,
+          status: row.status,
+          error: row.error,
+          createdAt: row.created_at,
+          finishedAt: row.finished_at,
+        });
+      }
+
+      if (normalizedStatus === "succeeded") {
+        metrics.recentAiSuccesses.push({
+          id: row.id,
+          model: row.model,
+          status: row.status,
+          error: row.error,
+          createdAt: row.created_at,
+          finishedAt: row.finished_at,
+        });
       }
 
       if (compareIsoDateDesc(row.created_at, metrics.lastAiRunAt) < 0) {
@@ -520,8 +775,7 @@ export async function GET() {
 
     const storesList = stores.map((store) => {
       const organization = organizationMap.get(store.organization_id);
-      const metrics =
-        metricsByStore.get(store.id) ?? createEmptyStoreMetrics();
+      const metrics = metricsByStore.get(store.id) ?? createEmptyStoreMetrics();
 
       const totalOperationalIssues =
         metrics.pendingAiRuns +
@@ -552,6 +806,13 @@ export async function GET() {
         totalTokensCompletion: metrics.totalTokensCompletion,
         totalTokens: metrics.totalTokens,
         totalCostUsd: Number(metrics.totalCostUsd.toFixed(6)),
+        costUsdToday: Number(metrics.costUsdToday.toFixed(6)),
+        costUsdLast7Days: Number(metrics.costUsdLast7Days.toFixed(6)),
+        costUsdMonth: Number(metrics.costUsdMonth.toFixed(6)),
+        costBreakdownTotal: roundAiUsageBreakdown(metrics.costBreakdownTotal),
+        costBreakdownToday: roundAiUsageBreakdown(metrics.costBreakdownToday),
+        costBreakdownLast7Days: roundAiUsageBreakdown(metrics.costBreakdownLast7Days),
+        costBreakdownMonth: roundAiUsageBreakdown(metrics.costBreakdownMonth),
         lastAiRunAt: metrics.lastAiRunAt,
 
         pendingAiRuns: metrics.pendingAiRuns,
@@ -561,6 +822,13 @@ export async function GET() {
         pendingWhatsappEvents: metrics.pendingWhatsappEvents,
         whatsappErrors: metrics.whatsappErrors,
         totalOperationalIssues,
+
+        recentAiErrors: [...metrics.recentAiErrors]
+          .sort((a, b) => compareIsoDateDesc(a.createdAt, b.createdAt))
+          .slice(0, 20),
+        recentAiSuccesses: [...metrics.recentAiSuccesses]
+          .sort((a, b) => compareIsoDateDesc(a.createdAt, b.createdAt))
+          .slice(0, 20),
       };
     });
 
@@ -570,7 +838,7 @@ export async function GET() {
         acc[key] = (acc[key] || 0) + 1;
         return acc;
       },
-      {}
+      {},
     );
 
     const aiUsageTotals = storesList.reduce(
@@ -582,6 +850,13 @@ export async function GET() {
         acc.totalTokensCompletion += store.totalTokensCompletion;
         acc.totalTokens += store.totalTokens;
         acc.totalCostUsd += store.totalCostUsd;
+        acc.costUsdToday += store.costUsdToday;
+        acc.costUsdLast7Days += store.costUsdLast7Days;
+        acc.costUsdMonth += store.costUsdMonth;
+        sumAiUsageBreakdown(acc.costBreakdownTotal, store.costBreakdownTotal);
+        sumAiUsageBreakdown(acc.costBreakdownToday, store.costBreakdownToday);
+        sumAiUsageBreakdown(acc.costBreakdownLast7Days, store.costBreakdownLast7Days);
+        sumAiUsageBreakdown(acc.costBreakdownMonth, store.costBreakdownMonth);
         acc.pendingAiRuns += store.pendingAiRuns;
         acc.aiRunQueueErrors += store.aiRunQueueErrors;
         acc.pendingSalesActions += store.pendingSalesActions;
@@ -604,6 +879,13 @@ export async function GET() {
         totalTokensCompletion: 0,
         totalTokens: 0,
         totalCostUsd: 0,
+        costUsdToday: 0,
+        costUsdLast7Days: 0,
+        costUsdMonth: 0,
+        costBreakdownTotal: createEmptyAiUsageBreakdown(),
+        costBreakdownToday: createEmptyAiUsageBreakdown(),
+        costBreakdownLast7Days: createEmptyAiUsageBreakdown(),
+        costBreakdownMonth: createEmptyAiUsageBreakdown(),
         lastAiRunAt: null as string | null,
         pendingAiRuns: 0,
         aiRunQueueErrors: 0,
@@ -612,7 +894,7 @@ export async function GET() {
         pendingWhatsappEvents: 0,
         whatsappErrors: 0,
         totalOperationalIssues: 0,
-      }
+      },
     );
 
     return NextResponse.json({
@@ -641,6 +923,13 @@ export async function GET() {
         totalTokensCompletion: aiUsageTotals.totalTokensCompletion,
         totalTokens: aiUsageTotals.totalTokens,
         totalCostUsd: Number(aiUsageTotals.totalCostUsd.toFixed(6)),
+        costUsdToday: Number(aiUsageTotals.costUsdToday.toFixed(6)),
+        costUsdLast7Days: Number(aiUsageTotals.costUsdLast7Days.toFixed(6)),
+        costUsdMonth: Number(aiUsageTotals.costUsdMonth.toFixed(6)),
+        costBreakdownTotal: roundAiUsageBreakdown(aiUsageTotals.costBreakdownTotal),
+        costBreakdownToday: roundAiUsageBreakdown(aiUsageTotals.costBreakdownToday),
+        costBreakdownLast7Days: roundAiUsageBreakdown(aiUsageTotals.costBreakdownLast7Days),
+        costBreakdownMonth: roundAiUsageBreakdown(aiUsageTotals.costBreakdownMonth),
         pendingAiRuns: aiUsageTotals.pendingAiRuns,
         aiRunQueueErrors: aiUsageTotals.aiRunQueueErrors,
         pendingSalesActions: aiUsageTotals.pendingSalesActions,
@@ -697,7 +986,7 @@ export async function GET() {
         error: "Erro inesperado ao carregar dashboard interno.",
         details: error?.message ?? "Erro desconhecido.",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
