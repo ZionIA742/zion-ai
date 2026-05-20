@@ -99,6 +99,17 @@ type DetectedIntent =
   | "pool_choice"
   | "comparison";
 
+type PaymentOrClosingSubtype =
+  | "payment_info"
+  | "pix_key_request"
+  | "payment_submitted"
+  | "receipt_submitted"
+  | "reservation_or_hold"
+  | "closing_or_buying"
+  | "contract_request"
+  | "down_payment_or_entry"
+  | "none";
+
 type ResponseMode = "objective" | "consultative";
 
 type CustomerPatienceStatus =
@@ -130,6 +141,7 @@ type ConversationFactState = {
 
 type CommercialObjective = {
   pattern: ConversationPattern;
+  paymentOrClosingSubtype: PaymentOrClosingSubtype;
   intents: DetectedIntent[];
   primaryIntent: string;
   mustAnswerFirst: string[];
@@ -149,6 +161,7 @@ type ConversationPattern =
   | "specific_model_or_ad_request"
   | "price_question"
   | "discount_question"
+  | "payment_or_closing_flow"
   | "photo_or_simulation_request"
   | "chemical_problem"
   | "pause_or_disinterest"
@@ -1153,6 +1166,89 @@ function isGenericPoolOpening(text: string): boolean {
   );
 }
 
+function detectPaymentOrClosingSubtype(text: string): PaymentOrClosingSubtype {
+  const t = normalizeText(text);
+
+  if (!t || isGenericPoolOpening(text) || looksLikeDiscountQuestionV2(text) || looksLikePriceQuestion(text)) {
+    return "none";
+  }
+
+  if (
+    t.includes("comprovante") ||
+    t.includes("comprov") ||
+    t.includes("mandei o comprovante") ||
+    t.includes("enviei o comprovante")
+  ) {
+    return "receipt_submitted";
+  }
+
+  if (
+    t.includes("ja fiz o pix") ||
+    t.includes("fiz o pix") ||
+    t.includes("ja paguei") ||
+    t.includes("confirma ai o pagamento") ||
+    t.includes("confirma o pagamento") ||
+    t.includes("confirma ai meu pagamento")
+  ) {
+    return "payment_submitted";
+  }
+
+  if (
+    t.includes("reservar") ||
+    t.includes("reserva") ||
+    t.includes("separar essa") ||
+    t.includes("separa essa") ||
+    t.includes("separar pra mim") ||
+    t.includes("segurar pra mim")
+  ) {
+    return "reservation_or_hold";
+  }
+
+  if (t.includes("emitir o contrato") || t.includes("emite o contrato") || t.includes("contrato")) {
+    return "contract_request";
+  }
+
+  if (t.includes("dar uma entrada") || t.includes("entrada") || t.includes("sinal")) {
+    return "down_payment_or_entry";
+  }
+
+  if (
+    t.includes("me manda o pix") ||
+    t.includes("manda o pix") ||
+    t.includes("passa o pix") ||
+    t.includes("envia o pix") ||
+    t.includes("manda a chave pix") ||
+    t.includes("passa a chave pix") ||
+    t.includes("qual e o pix") ||
+    t.includes("qual eh o pix")
+  ) {
+    return "pix_key_request";
+  }
+
+  if (
+    t === "quero fechar" ||
+    t === "quero comprar" ||
+    t.includes("quero comprar essa") ||
+    t.includes("quero fechar essa") ||
+    t.includes("vamos fechar") ||
+    t.includes("vou ficar com essa")
+  ) {
+    return "closing_or_buying";
+  }
+
+  if (
+    looksLikePaymentQuestion(text) ||
+    t.includes("como faço para pagar") ||
+    t.includes("como faco para pagar") ||
+    t.includes("forma de pagamento") ||
+    t.includes("formas de pagamento")
+  ) {
+    return "payment_info";
+  }
+
+  return "none";
+}
+
 function looksLikeDiscountQuestion(text: string): boolean {
   const t = normalizeText(text);
 
@@ -1247,8 +1343,18 @@ function detectConversationPattern(args: {
   patienceSignal: CustomerPatienceSignal;
   shouldPresentPoolRecommendations: boolean;
   lastAiListedPools: boolean;
+  paymentOrClosingSubtype?: PaymentOrClosingSubtype;
 }): ConversationPattern {
-  const { facts, intents, lastCustomerMessage, explicitCatalogRequest, patienceSignal, shouldPresentPoolRecommendations, lastAiListedPools } = args;
+  const {
+    facts,
+    intents,
+    lastCustomerMessage,
+    explicitCatalogRequest,
+    patienceSignal,
+    shouldPresentPoolRecommendations,
+    lastAiListedPools,
+    paymentOrClosingSubtype,
+  } = args;
   const normalized = normalizeText(lastCustomerMessage);
 
   if (patienceSignal.status !== "active_interest") {
@@ -1257,6 +1363,10 @@ function detectConversationPattern(args: {
 
   if (looksLikeDiscountQuestionV2(lastCustomerMessage)) {
     return "discount_question";
+  }
+
+  if (paymentOrClosingSubtype && paymentOrClosingSubtype !== "none") {
+    return "payment_or_closing_flow";
   }
 
   if (looksLikePhotoOrSimulationRequest(lastCustomerMessage)) {
@@ -1879,6 +1989,7 @@ function inferPrimaryIntent(text: string): string {
   if (looksLikePriceQuestion(text)) return "price";
   if (looksLikePhotoOrSimulationRequest(text)) return "photo_or_simulation";
   if (hasSpecificPoolReference(text)) return "specific_model";
+  if (detectPaymentOrClosingSubtype(text) !== "none") return "payment_or_closing";
 
   const intents = detectIntents(text);
   return intents[0] || "general_sales_conversation";
@@ -2074,6 +2185,7 @@ function inferRecommendationPolicy(args: {
 
 function inferNextBestQuestion(args: {
   pattern: ConversationPattern;
+  paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   facts: ConversationFactState;
   intents: DetectedIntent[];
@@ -2081,7 +2193,16 @@ function inferNextBestQuestion(args: {
   explicitCatalogRequest: boolean;
   patienceSignal: CustomerPatienceSignal;
 }): string | null {
-  const { pattern, photoOrSimulationSubtype, facts, intents, lastCustomerMessage, explicitCatalogRequest, patienceSignal } = args;
+  const {
+    pattern,
+    paymentOrClosingSubtype,
+    photoOrSimulationSubtype,
+    facts,
+    intents,
+    lastCustomerMessage,
+    explicitCatalogRequest,
+    patienceSignal,
+  } = args;
 
   if (patienceSignal.shouldAvoidNewQuestion) {
     return null;
@@ -2127,6 +2248,13 @@ function inferNextBestQuestion(args: {
     }
 
     return "Qual modelo voce esta pensando pra eu ver a condicao mais real?";
+  }
+
+  if (pattern === "payment_or_closing_flow") {
+    if (paymentOrClosingSubtype === "closing_or_buying") {
+      return "Me fala qual condicao faz mais sentido pra voce hoje que eu te oriento no proximo passo";
+    }
+    return null;
   }
 
   if (pattern === "photo_or_simulation_request") {
@@ -2195,6 +2323,7 @@ function inferNextBestQuestion(args: {
 
 function inferResponseGoal(args: {
   pattern: ConversationPattern;
+  paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   intents: DetectedIntent[];
   facts: ConversationFactState;
@@ -2211,6 +2340,7 @@ function inferResponseGoal(args: {
 }): string {
   const {
     pattern,
+    paymentOrClosingSubtype,
     photoOrSimulationSubtype,
     intents,
     facts,
@@ -2249,6 +2379,28 @@ function inferResponseGoal(args: {
 
   if (pattern === "discount_question") {
     return "responder a objecao de preco ou pedido de desconto de forma comercial, proteger margem, vender valor antes de reduzir preco e tratar a condicao como dependente de modelo, projeto e forma de pagamento, sempre respeitando a configuracao da loja";
+  }
+
+  if (pattern === "payment_or_closing_flow") {
+    if (paymentOrClosingSubtype === "payment_submitted" || paymentOrClosingSubtype === "receipt_submitted") {
+      return "agradecer a sinalizacao de pagamento ou comprovante, informar com naturalidade que a conferencia sera feita pela loja ou responsavel e nao tratar pagamento como validado ou confirmado antes disso";
+    }
+    if (paymentOrClosingSubtype === "pix_key_request") {
+      return "orientar sobre Pix apenas com base na configuracao viva da loja; se a chave ou instrucao exata nao estiver clara no contexto, nao inventar e dizer que a loja ou responsavel vai passar a forma correta";
+    }
+    if (paymentOrClosingSubtype === "reservation_or_hold") {
+      return "tratar reserva ou separacao como proximo passo dependente de validacao real, sem afirmar que o produto ja ficou reservado ou separado";
+    }
+    if (paymentOrClosingSubtype === "contract_request") {
+      return "explicar de forma comercial e simples que contrato pode exigir encaminhamento ou preparacao pela loja, sem dizer que a IA emitiu, assinou ou concluiu esse passo";
+    }
+    if (paymentOrClosingSubtype === "closing_or_buying") {
+      return "reconhecer intencao forte de compra, orientar o proximo passo com base nas condicoes configuradas da loja e conduzir para validacao segura, sem declarar venda fechada antes de confirmacao real";
+    }
+    if (paymentOrClosingSubtype === "down_payment_or_entry") {
+      return "explicar entrada, sinal ou condicao inicial apenas com base na configuracao viva da loja e, se faltar base, tratar como condicao a confirmar em vez de inventar regra";
+    }
+    return "orientar pagamento ou fechamento com base nas configuracoes vivas da loja, responder o ponto principal do cliente e conduzir o proximo passo sem confirmar pagamento, comprovante, reserva, contrato ou venda como concluidos";
   }
 
   if (
@@ -2317,6 +2469,7 @@ function inferResponseGoal(args: {
 
 function inferForbiddenInThisReply(args: {
   pattern: ConversationPattern;
+  paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   intents: DetectedIntent[];
   nextBestQuestion: string | null;
@@ -2358,6 +2511,18 @@ function inferForbiddenInThisReply(args: {
     out.push("nao responder so com depende; primeiro defenda valor e depois explique a condicao com criterio");
   }
 
+  if (args.pattern === "payment_or_closing_flow") {
+    out.push("nao inventar forma de pagamento que nao esteja configurada na loja");
+    out.push("nao inventar chave Pix, QR Code, link de pagamento ou instrucao transacional");
+    out.push("nao inventar parcelamento, numero de parcelas, entrada, sinal ou condicao especial");
+    out.push("nao confirmar pagamento, Pix ou comprovante sem validacao real");
+    out.push("nao escrever pagamento confirmado, Pix confirmado ou comprovante validado");
+    out.push("nao dizer que a venda esta fechada antes da confirmacao real da loja ou sistema");
+    out.push("nao dizer que o produto foi reservado, separado ou segurado sem base real");
+    out.push("nao dizer que o contrato foi emitido, enviado para assinatura ou assinado pela IA");
+    out.push("nao aceitar condicao comercial sensivel sem configuracao, aprovacao ou validacao real");
+  }
+
   if (args.pattern === "photo_or_simulation_request") {
     out.push("nao dizer que analisou a foto, o quintal, o terreno ou o local se nao houve processamento real da imagem");
     out.push("nao usar frases como pela foto da para ver, vendo sua foto ou analisando a imagem sem base real");
@@ -2393,6 +2558,10 @@ function inferForbiddenInThisReply(args: {
 
   if (args.intents.includes("price")) {
     out.push("nao fugir da pergunta de preco");
+  }
+
+  if (args.intents.includes("payment")) {
+    out.push("nao inventar forma de pagamento, chave Pix, parcelamento ou condicao de entrada");
   }
 
   if (args.intents.includes("comparison")) {
@@ -2459,6 +2628,7 @@ function buildCommercialObjective(args: {
 }): CommercialObjective {
   const facts = args.facts;
   const intents = detectIntents(args.lastCustomerMessage);
+  const paymentOrClosingSubtype = detectPaymentOrClosingSubtype(args.lastCustomerMessage);
   const responseMode: ResponseMode = isObjectiveQuestionMode(args.lastCustomerMessage)
     ? "objective"
     : "consultative";
@@ -2471,10 +2641,12 @@ function buildCommercialObjective(args: {
     patienceSignal,
     shouldPresentPoolRecommendations: args.shouldPresentPoolRecommendations,
     lastAiListedPools: args.lastAiListedPools,
+    paymentOrClosingSubtype,
   });
 
   const nextBestQuestion = inferNextBestQuestion({
     pattern,
+    paymentOrClosingSubtype,
     photoOrSimulationSubtype: args.photoOrSimulationSubtype,
     facts,
     intents,
@@ -2485,6 +2657,7 @@ function buildCommercialObjective(args: {
 
   return {
     pattern,
+    paymentOrClosingSubtype,
     intents,
     primaryIntent: inferPrimaryIntent(args.lastCustomerMessage),
     mustAnswerFirst: inferMustAnswerFirst(intents),
@@ -2493,6 +2666,7 @@ function buildCommercialObjective(args: {
     nextBestQuestion,
     responseGoal: inferResponseGoal({
       pattern,
+      paymentOrClosingSubtype,
       photoOrSimulationSubtype: args.photoOrSimulationSubtype,
       intents,
       facts,
@@ -2509,6 +2683,7 @@ function buildCommercialObjective(args: {
     }),
     forbiddenInThisReply: inferForbiddenInThisReply({
       pattern,
+      paymentOrClosingSubtype,
       photoOrSimulationSubtype: args.photoOrSimulationSubtype,
       intents,
       nextBestQuestion,
@@ -2598,6 +2773,7 @@ function buildCommercialObjectiveBlock(objective: CommercialObjective): string {
   return `
 DIAGNÓSTICO COMERCIAL
 - padrão dominante: ${objective.pattern}
+- subtipo de pagamento/fechamento: ${objective.paymentOrClosingSubtype}
 - intenção principal: ${objective.primaryIntent}
 - modo de resposta: ${objective.responseMode}
 
@@ -2636,6 +2812,7 @@ ${forbiddenText}
 
 function buildResponsePriorityBlock(args: {
   pattern: ConversationPattern;
+  paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   intents: DetectedIntent[];
   responseMode: ResponseMode;
@@ -2645,6 +2822,8 @@ function buildResponsePriorityBlock(args: {
   hasCatalogEvidence: boolean;
   hasPoolEvidence: boolean;
   shouldPresentPoolRecommendations: boolean;
+  hasConfiguredPixKey?: boolean;
+  hasConfiguredDownPaymentRule?: boolean;
   recommendationPolicy: RecommendationPolicy;
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
@@ -2692,6 +2871,41 @@ function buildResponsePriorityBlock(args: {
     ) {
       instructions.push(
         "- Como esta mensagem mistura preco com desconto ou Pix, responda primeiro o preco do modelo encontrado e so depois trate a condicao comercial."
+      );
+    }
+  }
+
+  if (args.pattern === "payment_or_closing_flow") {
+    instructions.push(
+      "- PADRAO DOMINANTE: pagamento, Pix, comprovante, reserva, contrato ou fechamento. Oriente com base nas configuracoes vivas da loja e conduza o proximo passo, mas nunca confirme pagamento, comprovante, reserva, contrato ou venda sem validacao real."
+    );
+    if (args.paymentOrClosingSubtype === "payment_submitted" || args.paymentOrClosingSubtype === "receipt_submitted") {
+      instructions.push(
+        "- O cliente disse que pagou ou enviou comprovante. Agradeca e diga que a conferencia sera feita pela loja ou responsavel. Nao trate isso como validado."
+      );
+    } else if (args.paymentOrClosingSubtype === "pix_key_request") {
+      instructions.push(
+        args.hasConfiguredPixKey
+          ? "- O cliente pediu o Pix. So diga que pode passar a chave se a chave real estiver no contexto ou configuracao viva."
+          : "- O cliente pediu o Pix. Mesmo que Pix seja aceito, nao diga que pode passar a chave agora quando ela nao estiver configurada. Diga que a chave certa precisa ser confirmada pela loja ou responsavel."
+      );
+    } else if (args.paymentOrClosingSubtype === "down_payment_or_entry") {
+      instructions.push(
+        args.hasConfiguredDownPaymentRule
+          ? "- Se houver regra explicita de entrada ou sinal na configuracao, use com cautela e sem extrapolar o que esta definido."
+          : "- O cliente perguntou sobre entrada ou sinal. Nao responda 'pode sim' sem base. Trate essa condicao como algo que precisa ser confirmado pela loja conforme modelo, projeto e forma de pagamento."
+      );
+    } else if (args.paymentOrClosingSubtype === "reservation_or_hold") {
+      instructions.push(
+        "- Se o cliente pedir reserva ou separacao, trate como encaminhamento e validacao de proximo passo; nao afirme reserva concluida."
+      );
+    } else if (args.paymentOrClosingSubtype === "contract_request") {
+      instructions.push(
+        "- Se o cliente pedir contrato, diga que esse passo pode ser preparado ou encaminhado pela loja, sem falar como se a IA emitisse ou assinasse."
+      );
+    } else if (args.paymentOrClosingSubtype === "closing_or_buying") {
+      instructions.push(
+        "- O cliente demonstrou intencao forte de compra. Conduza para o proximo passo comercial real, sem declarar venda fechada antes da validacao."
       );
     }
   }
@@ -3057,8 +3271,32 @@ function buildRawOnboardingSummary(onboardingMap: Record<string, string>): strin
   return entries.length ? entries.join("\n") : "- Sem respostas configuradas no onboarding.";
 }
 
+function hasConfiguredPixKey(onboardingMap: Record<string, string>): boolean {
+  return Object.entries(onboardingMap).some(([key, value]) => {
+    const normalizedKey = normalizeText(key);
+    const normalizedValue = normalizeText(value);
+    return (
+      normalizedValue.length > 0 &&
+      ((normalizedKey.includes("pix") && (normalizedKey.includes("key") || normalizedKey.includes("chave"))) ||
+        normalizedKey.includes("dados bancarios"))
+    );
+  });
+}
+
+function hasConfiguredDownPaymentRule(onboardingMap: Record<string, string>): boolean {
+  return Object.entries(onboardingMap).some(([key, value]) => {
+    const normalizedKey = normalizeText(key);
+    const normalizedValue = normalizeText(value);
+    return (
+      normalizedValue.length > 0 &&
+      (normalizedKey.includes("entrada") || normalizedKey.includes("sinal") || normalizedKey.includes("down_payment"))
+    );
+  });
+}
+
 function buildInstructions(args: {
   conversationPattern: ConversationPattern;
+  paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   storeDisplayName: string | null;
   storeName: string | null;
@@ -3092,6 +3330,8 @@ function buildInstructions(args: {
   const leadLabel = args.leadName || "cliente";
   const operationalBlock = buildOperationalOnboardingBlock(args.onboardingMap);
   const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
+  const hasPixKey = hasConfiguredPixKey(args.onboardingMap);
+  const hasDownPaymentRule = hasConfiguredDownPaymentRule(args.onboardingMap);
 
   return `
 Você é a IA comercial real do projeto ZION atendendo a loja ${storeLabel}.
@@ -3142,6 +3382,15 @@ REGRAS OPERACIONAIS
 - use a Configuração viva da loja como fonte principal de verdade; tecnicamente ela pode vir das respostas scoped do onboarding/configurações
 - use as evidências de catálogo, estoque e foto fornecidas abaixo como fonte de verdade para produto e mídia
 - não prometa preço, prazo, instalação, visita, desconto, pagamento ou cobertura regional sem base
+- quando a conversa entrar em pagamento, Pix, comprovante, reserva, contrato, sinal/entrada ou fechamento, trate a configuração viva da loja como fonte soberana
+- se a forma de pagamento, chave Pix, parcelamento, entrada, sinal ou regra de contrato não estiver clara nas configurações, não invente
+- Pix aceito não significa chave Pix disponível; só diga que pode passar a chave se ela existir de forma real no contexto/configuração
+- se não houver chave Pix configurada, diga que o Pix é aceito quando isso estiver configurado, mas que a chave certa precisa ser confirmada pela loja ou responsável
+- entrada ou sinal só podem ser afirmados quando houver configuração explícita; sem isso, trate como condição a confirmar com a loja
+- se o cliente disser que já pagou, fez o Pix ou mandou comprovante, agradeça e diga que a conferência será feita pela loja ou responsável; não confirme pagamento
+- se o cliente pedir reserva, separação ou para segurar produto, trate isso como encaminhamento e próximo passo dependente de validação real; não afirme reserva concluída
+- se o cliente pedir contrato, diga que a loja pode preparar ou encaminhar esse fluxo quando necessário, mas a IA não emite, não assina e não conclui contrato sozinha
+- se o cliente disser que quer fechar ou comprar, conduza com postura comercial e segura para o próximo passo real, sem declarar venda concluída antes da confirmação
 - trate desconto máximo/percentual máximo como limite interno de negociação, não como oferta inicial para o cliente
 - nunca revele automaticamente o percentual máximo de desconto configurado, como "até 18%", "até X%" ou equivalente, a menos que a configuração diga explicitamente para divulgar esse número ao cliente
 - se o cliente perguntar sobre desconto, responda de forma comercial e protegendo margem: diga que a loja consegue avaliar desconto conforme produto, projeto, forma de pagamento ou condição configurada
@@ -3178,13 +3427,19 @@ REGRAS OPERACIONAIS
 
 REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - padrão atual: ${args.conversationPattern}
+- subtipo de pagamento/fechamento detectado: ${args.paymentOrClosingSubtype || "none"}
 - este padrão deve mandar mais que instruções genéricas de descoberta
 - se o padrão for pool_size_discovery, não volte para perguntas amplas de uso, motivo, família, lazer, filhos ou outro motivo
 - se o padrão for generic_pool_opening, não liste catálogo cedo demais
 - se o padrão for specific_model_or_ad_request, responda a referência específica antes de qualquer triagem
 - se o padrão for discount_question, responda a objeção comercial primeiro, proteja margem, venda valor antes de desconto e não revele limite interno
+- se o padrão for payment_or_closing_flow, oriente com base nas configurações vivas da loja e não confirme pagamento, comprovante, reserva, contrato ou venda sem validação real
+- se o subtipo for pix_key_request e não houver chave Pix configurada, não diga que pode passar a chave; diga que ela precisa ser confirmada pela loja/responsável
+- se o subtipo for down_payment_or_entry e não houver regra explícita de entrada/sinal, não diga "pode sim"; trate como condição a confirmar
 - se o padrão for photo_or_simulation_request, trate foto como apoio comercial, peça medida quando fizer sentido e não prometa análise visual real nem simulação pronta
 - subtipo de foto/simulação detectado: ${args.photoOrSimulationSubtype || "nenhum"}
+- chave Pix configurada no contexto: ${hasPixKey ? "sim" : "não"}
+- regra explícita de entrada/sinal no contexto: ${hasDownPaymentRule ? "sim" : "não"}
 
 POLÍTICA DE RECOMENDAÇÃO DESTA RESPOSTA
 - pode recomendar agora: ${args.recommendationPolicy.allowRecommendations ? "sim" : "não"}
@@ -3903,6 +4158,7 @@ export async function generateAiSalesReply(
         patienceSignal: analyzeCustomerPatienceSignal(lastCustomerMessage),
         shouldPresentPoolRecommendations,
         lastAiListedPools,
+        paymentOrClosingSubtype: detectPaymentOrClosingSubtype(lastCustomerMessage),
       }),
       facts: conversationFacts,
       lastCustomerMessage,
@@ -3998,6 +4254,7 @@ export async function generateAiSalesReply(
 
     const responsePriorityBlock = buildResponsePriorityBlock({
       pattern: commercialObjective.pattern,
+      paymentOrClosingSubtype: commercialObjective.paymentOrClosingSubtype,
       photoOrSimulationSubtype,
       intents: commercialObjective.intents,
       responseMode: commercialObjective.responseMode,
@@ -4007,6 +4264,8 @@ export async function generateAiSalesReply(
       hasCatalogEvidence: matchedCatalogItems.length > 0,
       hasPoolEvidence: matchedPools.length > 0,
       shouldPresentPoolRecommendations,
+      hasConfiguredPixKey: hasConfiguredPixKey(onboardingMap),
+      hasConfiguredDownPaymentRule: hasConfiguredDownPaymentRule(onboardingMap),
       recommendationPolicy,
       requestedPoolReference,
       strongestPoolReferenceMatch,
@@ -4028,6 +4287,7 @@ export async function generateAiSalesReply(
 
     const instructions = buildInstructions({
       conversationPattern: commercialObjective.pattern,
+      paymentOrClosingSubtype: commercialObjective.paymentOrClosingSubtype,
       photoOrSimulationSubtype,
       storeDisplayName: onboardingMap.store_display_name || null,
       storeName: store.name,
