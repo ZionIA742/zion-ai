@@ -1,5 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
-import { generateAiSalesReply } from "./generate-ai-sales-reply";
+import {
+  generateAiSalesReply,
+  type OperationalFollowUpDecision,
+} from "./generate-ai-sales-reply";
 
 type GenerateAndSaveAiSalesReplyParams = {
   organizationId: string;
@@ -39,8 +42,15 @@ type AiSalesReplyUsage = {
 type ConversationRow = {
   id: string;
   organization_id: string;
+  lead_id: string | null;
   is_human_active: boolean | null;
 };
+
+type StoreScheduleSettingsRow = {
+  timezone_name: string | null;
+};
+
+const NO_RESUME_REASON = "none";
 
 type MessageBoundaryRow = {
   id: string;
@@ -234,6 +244,447 @@ function hasAiReplyAfterLatestCustomerMessage(
   );
 }
 
+function isValidTimeZone(timeZone: string | null | undefined): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: String(timeZone || "").trim() || "America/Sao_Paulo",
+    }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeTimeZone(timeZone: string | null | undefined): string {
+  return isValidTimeZone(timeZone) ? String(timeZone).trim() : "America/Sao_Paulo";
+}
+
+function getTimeZoneOffsetMinutes(timeZone: string, date: Date): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: safeTimeZone(timeZone),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+
+  const values: Record<string, number> = {};
+
+  for (const part of parts) {
+    if (part.type !== "literal") values[part.type] = Number(part.value);
+  }
+
+  const localAsUtc = Date.UTC(
+    values.year || date.getUTCFullYear(),
+    (values.month || 1) - 1,
+    values.day || 1,
+    values.hour || 0,
+    values.minute || 0,
+    values.second || 0
+  );
+
+  return Math.round((localAsUtc - date.getTime()) / 60000);
+}
+
+function getLocalDateParts(value: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: safeTimeZone(timeZone),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+
+  const values: Record<string, number> = {};
+
+  for (const part of parts) {
+    if (part.type !== "literal") values[part.type] = Number(part.value);
+  }
+
+  return {
+    year: values.year || value.getUTCFullYear(),
+    month: values.month || value.getUTCMonth() + 1,
+    day: values.day || value.getUTCDate(),
+  };
+}
+
+function localDateTimePartsToUtcIso(args: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  timeZone: string;
+}) {
+  const approximateUtc = new Date(
+    Date.UTC(args.year, args.month - 1, args.day, args.hour, args.minute, 0)
+  );
+  const offsetMinutes = getTimeZoneOffsetMinutes(args.timeZone, approximateUtc);
+  return new Date(approximateUtc.getTime() - offsetMinutes * 60000).toISOString();
+}
+
+function addDaysToLocalDateParts(parts: {
+  year: number;
+  month: number;
+  day: number;
+}, days: number) {
+  const utcDate = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12, 0, 0));
+  utcDate.setUTCDate(utcDate.getUTCDate() + days);
+  return {
+    year: utcDate.getUTCFullYear(),
+    month: utcDate.getUTCMonth() + 1,
+    day: utcDate.getUTCDate(),
+  };
+}
+
+function formatQueueTimestamp(value: string, timeZone: string): string {
+  const date = new Date(value);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: safeTimeZone(timeZone),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+
+  const values: Record<string, string> = {};
+
+  for (const part of parts) {
+    if (part.type !== "literal") values[part.type] = part.value;
+  }
+
+  return `${values.year || "0000"}${values.month || "00"}${values.day || "00"}${values.hour || "00"}${values.minute || "00"}`;
+}
+
+function formatLocalAuditStamp(value: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: safeTimeZone(timeZone),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(value);
+}
+
+function isFutureIso(value: string | null | undefined, now = new Date()): boolean {
+  if (!value) return false;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return false;
+  return parsed > now.getTime();
+}
+
+function resolveResumeAtFromDecision(args: {
+  decision: OperationalFollowUpDecision;
+  timeZone: string;
+  now?: Date;
+}): string | null {
+  if (args.decision.kind !== "schedule_resume") {
+    return null;
+  }
+
+  const baseDateParts = getLocalDateParts(args.now || new Date(), args.timeZone);
+
+  if (args.decision.reason === "customer_requested_tomorrow") {
+    const target = addDaysToLocalDateParts(baseDateParts, 1);
+    return localDateTimePartsToUtcIso({
+      ...target,
+      hour: 9,
+      minute: 0,
+      timeZone: args.timeZone,
+    });
+  }
+
+  if (args.decision.reason === "customer_requested_next_week") {
+    const target = addDaysToLocalDateParts(baseDateParts, 7);
+    return localDateTimePartsToUtcIso({
+      ...target,
+      hour: 9,
+      minute: 0,
+      timeZone: args.timeZone,
+    });
+  }
+
+  if (args.decision.reason === "customer_requested_next_month") {
+    const target = addDaysToLocalDateParts(baseDateParts, 30);
+    return localDateTimePartsToUtcIso({
+      ...target,
+      hour: 9,
+      minute: 0,
+      timeZone: args.timeZone,
+    });
+  }
+
+  return null;
+}
+
+async function loadStoreTimeZone(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+}): Promise<string> {
+  const { data, error } = await args.supabase
+    .from("store_schedule_settings")
+    .select("timezone_name")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("[ai-sales-followup] Falha ao carregar timezone da loja", {
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      error: error.message,
+    });
+    return "America/Sao_Paulo";
+  }
+
+  return safeTimeZone((data as StoreScheduleSettingsRow | null)?.timezone_name);
+}
+
+async function clearPendingResumeArtifacts(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  customerMessageAt?: string | null;
+  preserveReason?: boolean;
+  nextResumeReason?: string | null;
+  queueCancelReason: string;
+}) {
+  const {
+    supabase,
+    organizationId,
+    storeId,
+    conversationId,
+    customerMessageAt,
+    preserveReason,
+    nextResumeReason,
+    queueCancelReason,
+  } = args;
+  const nowIso = new Date().toISOString();
+
+  const windowPatch: Record<string, unknown> = {
+    conversation_id: conversationId,
+    organization_id: organizationId,
+    store_id: storeId,
+    waiting_next_day: false,
+    next_resume_at: null,
+    updated_at: nowIso,
+  };
+
+  if (customerMessageAt) {
+    windowPatch.last_customer_message_at = customerMessageAt;
+  }
+
+  if (preserveReason) {
+    windowPatch.resume_reason = nextResumeReason || NO_RESUME_REASON;
+  } else {
+    windowPatch.resume_reason = NO_RESUME_REASON;
+  }
+
+  const { error: windowError } = await supabase
+    .from("conversation_ai_window_state")
+    .upsert(windowPatch, { onConflict: "conversation_id" });
+
+  if (windowError) {
+    throw new Error(
+      `Falha ao limpar estado pendente de retomada: ${windowError.message}`
+    );
+  }
+
+  const queuePrefix = `resume:${conversationId}:`;
+  const { error: queueError } = await supabase
+    .from("ai_run_queue")
+    .update({
+      processed_at: nowIso,
+      processing_error: queueCancelReason,
+    })
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("conversation_id", conversationId)
+    .is("processed_at", null)
+    .like("queue_key", `${queuePrefix}%`);
+
+  if (queueError) {
+    throw new Error(
+      `Falha ao invalidar retomadas pendentes: ${queueError.message}`
+    );
+  }
+}
+
+async function persistOperationalFollowUpDecision(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  decision: OperationalFollowUpDecision;
+  lastCustomerMessageAt: string | null;
+  lastAiMessageAt: string | null;
+}) {
+  const {
+    supabase,
+    organizationId,
+    storeId,
+    conversationId,
+    leadId,
+    decision,
+    lastCustomerMessageAt,
+    lastAiMessageAt,
+  } = args;
+
+  if (!decision || decision.kind === "none") {
+    return;
+  }
+
+  const timeZone = await loadStoreTimeZone({
+    supabase,
+    organizationId,
+    storeId,
+  });
+
+  if (decision.kind === "stop_contact") {
+    await clearPendingResumeArtifacts({
+      supabase,
+      organizationId,
+      storeId,
+      conversationId,
+      customerMessageAt: lastCustomerMessageAt,
+      preserveReason: true,
+      nextResumeReason: decision.reason,
+      queueCancelReason: "cancelled_by_stop_contact",
+    });
+
+    const { error: stopWindowError } = await supabase
+      .from("conversation_ai_window_state")
+      .update({
+        resume_reason: decision.reason,
+        last_ai_message_at: lastAiMessageAt,
+        pending_supervisor: false,
+        waiting_next_day: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("conversation_id", conversationId);
+
+    if (stopWindowError) {
+      throw new Error(
+        `Falha ao marcar bloqueio de retomada: ${stopWindowError.message}`
+      );
+    }
+
+    return;
+  }
+
+  const nextResumeAt = resolveResumeAtFromDecision({
+    decision,
+    timeZone,
+  });
+
+  const windowPayload: Record<string, unknown> = {
+    conversation_id: conversationId,
+    organization_id: organizationId,
+    store_id: storeId,
+    waiting_next_day: decision.reason === "customer_requested_tomorrow",
+    pending_supervisor: false,
+    last_ai_message_at: lastAiMessageAt,
+    last_customer_message_at: lastCustomerMessageAt,
+    next_resume_at: nextResumeAt,
+    resume_reason: decision.reason,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: upsertError } = await supabase
+    .from("conversation_ai_window_state")
+    .upsert(windowPayload, { onConflict: "conversation_id" });
+
+  if (upsertError) {
+    throw new Error(
+      `Falha ao persistir janela operacional da conversa: ${upsertError.message}`
+    );
+  }
+
+  if (decision.kind !== "schedule_resume" || !nextResumeAt) {
+    return;
+  }
+
+  await clearPendingResumeArtifacts({
+    supabase,
+    organizationId,
+    storeId,
+    conversationId,
+    customerMessageAt: lastCustomerMessageAt,
+    preserveReason: true,
+    nextResumeReason: decision.reason,
+    queueCancelReason: "replaced_by_new_resume_schedule",
+  });
+
+  const refreshedWindowPayload = {
+    ...windowPayload,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: refreshWindowError } = await supabase
+    .from("conversation_ai_window_state")
+    .upsert(refreshedWindowPayload, { onConflict: "conversation_id" });
+
+  if (refreshWindowError) {
+    throw new Error(
+      `Falha ao restaurar janela operacional apos deduplicacao: ${refreshWindowError.message}`
+    );
+  }
+
+  const now = new Date();
+
+  if (isFutureIso(nextResumeAt, now)) {
+    return;
+  }
+
+  const queueKey = `resume:${conversationId}:${decision.reason}:${formatQueueTimestamp(nextResumeAt, timeZone)}`;
+  const input = {
+    type: "resume_sales_conversation",
+    reason: decision.reason,
+    resumeAt: nextResumeAt,
+    system_event: "ai_window_resume",
+    resume_mode: decision.reason,
+    style_hint: "Retomar de forma natural, humana e sem pressão. Não justificar atraso.",
+    created_at_iso: now.toISOString(),
+    created_at_local: formatLocalAuditStamp(now, timeZone),
+    created_at_sp: formatLocalAuditStamp(now, "America/Sao_Paulo"),
+    queue_key: queueKey,
+    next_resume_at: nextResumeAt,
+    timing_label: decision.timingLabel || null,
+    requested_timing: decision.requestedTiming || null,
+    timezone_name: timeZone,
+  };
+
+  const { error: insertQueueError } = await supabase
+    .from("ai_run_queue")
+    .insert({
+      organization_id: organizationId,
+      store_id: storeId,
+      conversation_id: conversationId,
+      lead_id: leadId,
+      queue_key: queueKey,
+      input,
+      enqueued_at: now.toISOString(),
+      processed_at: null,
+      processing_error: null,
+    });
+
+  if (insertQueueError) {
+    throw new Error(
+      `Falha ao enfileirar retomada operacional: ${insertQueueError.message}`
+    );
+  }
+}
+
 
 function cleanIntegerOrNull(value: unknown): number | null {
   if (value == null) return null;
@@ -367,7 +818,7 @@ export async function generateAndSaveAiSalesReply(
 
     const { data: conversation, error: conversationError } = await supabase
       .from("conversations")
-      .select("id, organization_id, is_human_active")
+      .select("id, organization_id, lead_id, is_human_active")
       .eq("id", conversationId)
       .eq("organization_id", organizationId)
       .maybeSingle();
@@ -440,6 +891,17 @@ export async function generateAndSaveAiSalesReply(
           "Ja existe resposta da IA depois da ultima mensagem do cliente. Ignorando execucao duplicada.",
       };
     }
+
+    await clearPendingResumeArtifacts({
+      supabase,
+      organizationId,
+      storeId,
+      conversationId,
+      customerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
+      preserveReason: false,
+      nextResumeReason: null,
+      queueCancelReason: "cancelled_by_new_customer_message",
+    });
 
     const generationResult = await generateAiSalesReply({
       organizationId,
@@ -528,6 +990,23 @@ export async function generateAndSaveAiSalesReply(
         aiText,
       };
     }
+
+    const aiMessageTimestamp = new Date().toISOString();
+
+    await persistOperationalFollowUpDecision({
+      supabase,
+      organizationId,
+      storeId,
+      conversationId,
+      leadId: normalizedConversation.lead_id || null,
+      decision:
+        generationResult.context?.operationalFollowUpDecision || {
+          kind: "none",
+          reason: "none",
+        },
+      lastCustomerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
+      lastAiMessageAt: aiMessageTimestamp,
+    });
 
     return {
       ok: true,

@@ -127,6 +127,29 @@ type CustomerPatienceSignal = {
   shouldCloseSoftly: boolean;
 };
 
+export type OperationalFollowUpDecisionKind =
+  | "none"
+  | "schedule_resume"
+  | "soft_pause"
+  | "stop_contact";
+
+export type OperationalFollowUpDecisionReason =
+  | "customer_requested_tomorrow"
+  | "customer_requested_next_week"
+  | "customer_requested_next_month"
+  | "customer_thinking"
+  | "customer_not_interested"
+  | "customer_hard_stop"
+  | "unclear_pause"
+  | "none";
+
+export type OperationalFollowUpDecision = {
+  kind: OperationalFollowUpDecisionKind;
+  reason: OperationalFollowUpDecisionReason;
+  timingLabel?: string | null;
+  requestedTiming?: string | null;
+};
+
 type ConversationFactState = {
   budgetKnown: boolean;
   authorityKnown: boolean;
@@ -249,6 +272,7 @@ export type GenerateAiSalesReplyResult =
         poolCountUsed: number;
         resolvedStoreId: string;
         requestedStoreId: string | null;
+        operationalFollowUpDecision: OperationalFollowUpDecision;
       };
     }
   | {
@@ -956,6 +980,98 @@ function analyzeCustomerPatienceSignal(text: string): CustomerPatienceSignal {
     followUpTiming: null,
     shouldAvoidNewQuestion: false,
     shouldCloseSoftly: false,
+  };
+}
+
+function isHardStopMessage(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("pare de mandar") ||
+    t.includes("para de mandar") ||
+    t.includes("me tira") ||
+    t.includes("remove meu contato")
+  );
+}
+
+function inferOperationalFollowUpDecision(args: {
+  lastCustomerMessage: string;
+  patienceSignal: CustomerPatienceSignal;
+}): OperationalFollowUpDecision {
+  const { lastCustomerMessage, patienceSignal } = args;
+
+  if (patienceSignal.status === "not_interested") {
+    return {
+      kind: "stop_contact",
+      reason: isHardStopMessage(lastCustomerMessage)
+        ? "customer_hard_stop"
+        : "customer_not_interested",
+      timingLabel: patienceSignal.followUpTiming || null,
+      requestedTiming: patienceSignal.followUpTiming || null,
+    };
+  }
+
+  if (patienceSignal.status === "follow_up_requested") {
+    const requestedTiming = patienceSignal.followUpTiming || null;
+
+    if (requestedTiming === "amanhã") {
+      return {
+        kind: "schedule_resume",
+        reason: "customer_requested_tomorrow",
+        timingLabel: requestedTiming,
+        requestedTiming,
+      };
+    }
+
+    if (requestedTiming === "semana que vem") {
+      return {
+        kind: "schedule_resume",
+        reason: "customer_requested_next_week",
+        timingLabel: requestedTiming,
+        requestedTiming,
+      };
+    }
+
+    if (requestedTiming === "mês que vem") {
+      return {
+        kind: "schedule_resume",
+        reason: "customer_requested_next_month",
+        timingLabel: requestedTiming,
+        requestedTiming,
+      };
+    }
+
+    return {
+      kind: "soft_pause",
+      reason: "unclear_pause",
+      timingLabel: requestedTiming,
+      requestedTiming,
+    };
+  }
+
+  if (patienceSignal.status === "thinking") {
+    return {
+      kind: "soft_pause",
+      reason: "customer_thinking",
+      timingLabel: patienceSignal.followUpTiming || null,
+      requestedTiming: patienceSignal.followUpTiming || null,
+    };
+  }
+
+  if (patienceSignal.status === "unclear_pause") {
+    return {
+      kind: "soft_pause",
+      reason: "unclear_pause",
+      timingLabel: patienceSignal.followUpTiming || null,
+      requestedTiming: patienceSignal.followUpTiming || null,
+    };
+  }
+
+  return {
+    kind: "none",
+    reason: "none",
+    timingLabel: null,
+    requestedTiming: null,
   };
 }
 
@@ -2352,19 +2468,22 @@ function inferResponseGoal(args: {
   } = args;
 
   if (patienceSignal.status === "not_interested") {
+    if (isHardStopMessage(args.lastCustomerMessage)) {
+      return "parar imediatamente, reconhecer o pedido do cliente sem discutir e encerrar sem deixar gancho comercial insistente";
+    }
     return "respeitar o desinteresse, encerrar com educacao e nao tentar reabrir a venda nesta resposta";
   }
 
   if (patienceSignal.status === "thinking") {
-    return "acolher o tempo do cliente, nao pressionar e deixar um proximo passo leve sem nova triagem";
+    return "acolher o tempo do cliente ou a decisao compartilhada, nao pressionar e deixar no maximo uma porta aberta leve e humana, sem nova triagem nem tentativa de fechamento";
   }
 
   if (patienceSignal.status === "follow_up_requested") {
-    return "confirmar que vai respeitar a retomada futura indicada pelo cliente, sem forcar fechamento agora";
+    return "reconhecer o prazo ou retorno futuro pedido pelo cliente, respeitar esse momento e nao forcar fechamento nem prometer follow-up automatico real se nao existe scheduler conectado";
   }
 
   if (patienceSignal.status === "unclear_pause") {
-    return "baixar a pressao comercial, responder com leveza e manter a porta aberta sem insistir";
+    return "baixar a pressao comercial, tratar pesquisa fria ou pausa sem aquecer artificialmente o lead e manter a porta aberta de forma curta, sem insistir";
   }
 
   if (
@@ -2431,7 +2550,7 @@ function inferResponseGoal(args: {
 
   if (pattern === "photo_or_simulation_request") {
     if (photoOrSimulationSubtype === "simulation_visual_request") {
-      return "explicar com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas sem prometer montagem visual pronta, render ou simulacao real por aqui, e manter um proximo passo comercial util";
+      return "explicar com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas sem prometer montagem visual pronta, render ou simulacao real neste momento, e manter um proximo passo comercial util";
     }
     if (photoOrSimulationSubtype === "product_photo_without_model") {
       return "descobrir primeiro qual modelo de piscina o cliente quer ver em foto, sem citar piscinas aleatorias nem supor produto por conta propria";
@@ -2603,11 +2722,26 @@ function inferForbiddenInThisReply(args: {
     out.push("nao fazer nova pergunta comercial quando o cliente pediu tempo, indicou pausa ou demonstrou desinteresse");
     out.push("nao insistir, pressionar, criar urgencia falsa ou tentar contornar a pausa do cliente");
     out.push("nao listar novos modelos, condicoes ou beneficios para tentar vencer a pausa nesta resposta");
+    out.push("nao cobrar resposta, retorno ou decisao do cliente");
   }
 
   if (args.patienceSignal.status === "not_interested") {
     out.push("nao tentar recuperar a venda nesta resposta; apenas encerrar com educacao e deixar a porta aberta");
     out.push("nao escrever quando mudar de ideia; use se mudar de ideia");
+    out.push("nao oferecer catalogo, comparacao, desconto ou nova chamada comercial");
+    if (isHardStopMessage(args.lastCustomerMessage)) {
+      out.push("nao deixar porta comercial insistente quando o cliente pediu para parar contato");
+    }
+  }
+
+  if (args.patienceSignal.status === "follow_up_requested") {
+    out.push("nao prometer que vai chamar em data futura como tarefa automatica garantida se nao existe scheduler real conectado");
+    out.push("nao agir como se ja tivesse criado lembrete, agendamento ou follow-up automatico");
+  }
+
+  if (args.patienceSignal.status === "unclear_pause") {
+    out.push("nao tratar so pesquisando, agora nao ou mais pra frente como lead quente");
+    out.push("nao empurrar fechamento, catalogo ou condicao comercial como se o cliente estivesse pronto para decidir");
   }
 
   return out;
@@ -2706,19 +2840,18 @@ function formatPatienceToneGuidance(signal: CustomerPatienceSignal): string {
   if (signal.status === "not_interested") {
     return [
       "- tom recomendado: curto, leve e sem tentativa de recuperação",
-      "- frase segura: Tudo bem, sem problema. Se mudar de ideia ou precisar de algo, me avisa.",
+      "- frase segura: Tudo bem, sem problema. Se precisar de algo no futuro, me avisa.",
       "- nunca usar: Quando mudar de ideia",
       "- não adicionar pergunta, catálogo, benefício, urgência ou tentativa de convencer",
     ].join("\n");
   }
 
   if (signal.status === "follow_up_requested") {
-    const timing = signal.followUpTiming ? ` ${signal.followUpTiming}` : "";
-
     return [
       "- tom recomendado: bem leve, curto e natural",
-      `- frase segura: Blz, qualquer coisa me avisa${timing ? `. A gente continua${timing}.` : "."}`,
-      "- alternativa segura: Ok, se precisar de algo, me avisa.",
+      `- frase segura: ${signal.followUpTiming === "amanhã" ? "Ok, amanhã eu te chamo." : signal.followUpTiming === "semana que vem" ? "Beleza, semana que vem eu retorno." : signal.followUpTiming === "mês que vem" ? "Ok, mês que vem eu retorno." : "Ok, eu retorno depois."}`,
+      "- alternativa segura: Beleza, vou considerar esse prazo.",
+      "- não prometer agendamento automático, lembrete criado ou contato garantido em data futura se isso não existe de verdade",
       "- não fazer nova pergunta comercial nesta resposta",
     ].join("\n");
   }
@@ -2726,7 +2859,7 @@ function formatPatienceToneGuidance(signal: CustomerPatienceSignal): string {
   if (signal.status === "thinking") {
     return [
       "- tom recomendado: acolher sem pressionar e sem alongar",
-      "- frase segura: Tranquilo, pode ver com calma. Se precisar de algo, me avisa.",
+      "- frase segura: Ok, sem pressa. Se precisar estou aqui.",
       "- se houver decisão compartilhada, não ofereça resumo automaticamente a menos que isso ajude muito; mantenha leve",
       "- não fazer nova pergunta comercial nesta resposta",
     ].join("\n");
@@ -2735,7 +2868,8 @@ function formatPatienceToneGuidance(signal: CustomerPatienceSignal): string {
   if (signal.status === "unclear_pause") {
     return [
       "- tom recomendado: baixar a pressão e manter a porta aberta",
-      "- frase segura: Ok, sem problema. Se precisar de alguma coisa, me avisa.",
+      "- frase segura: Beleza, se precisar de mais alguma coisa me avisa.",
+      "- não tratar esse momento como fechamento quente",
       "- não fazer nova pergunta comercial nesta resposta",
     ].join("\n");
   }
@@ -2875,6 +3009,17 @@ function buildResponsePriorityBlock(args: {
     }
   }
 
+  if (args.pattern === "pause_or_disinterest") {
+    instructions.push(
+      "- PADRAO DOMINANTE: pausa, pedido de tempo, pesquisa fria, retorno futuro ou desinteresse. Responda curto, humano e sem pressao. Se pediu para parar, encerre. Se pediu retorno em data futura, reconheca o prazo sem prometer automacao inexistente."
+    );
+    if (args.lastCustomerMessage && isHardStopMessage(args.lastCustomerMessage)) {
+      instructions.push(
+        "- O cliente pediu para parar contato. Pare imediatamente, agradeca o aviso e nao deixe gancho comercial insistente."
+      );
+    }
+  }
+
   if (args.pattern === "payment_or_closing_flow") {
     instructions.push(
       "- PADRAO DOMINANTE: pagamento, Pix, comprovante, reserva, contrato ou fechamento. Oriente com base nas configuracoes vivas da loja e conduza o proximo passo, mas nunca confirme pagamento, comprovante, reserva, contrato ou venda sem validacao real."
@@ -2913,7 +3058,7 @@ function buildResponsePriorityBlock(args: {
   if (args.pattern === "photo_or_simulation_request") {
     if (args.photoOrSimulationSubtype === "simulation_visual_request") {
       instructions.push(
-        "- PADRÃO DOMINANTE: pedido de simulação, montagem, render ou visualização. Diga com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas não prometa uma montagem visual pronta por aqui."
+        "- PADRÃO DOMINANTE: pedido de simulação, montagem, render ou visualização. Diga com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas não prometa uma montagem visual pronta neste momento."
       );
     } else if (args.photoOrSimulationSubtype === "product_photo_without_model") {
       instructions.push(
@@ -3382,6 +3527,8 @@ REGRAS OPERACIONAIS
 - use a Configuração viva da loja como fonte principal de verdade; tecnicamente ela pode vir das respostas scoped do onboarding/configurações
 - use as evidências de catálogo, estoque e foto fornecidas abaixo como fonte de verdade para produto e mídia
 - não prometa preço, prazo, instalação, visita, desconto, pagamento ou cobertura regional sem base
+- follow-up proativo real, cadência automática, agendamento de retomada e cancelamento automático ainda dependem de Configurações/CRM/worker; não fale como se isso já estivesse conectado aqui
+- se o cliente pedir para chamar amanhã, semana que vem ou mês que vem, reconheça o prazo, mas não diga que um agendamento automático já foi criado se isso não aconteceu de fato
 - quando a conversa entrar em pagamento, Pix, comprovante, reserva, contrato, sinal/entrada ou fechamento, trate a configuração viva da loja como fonte soberana
 - se a forma de pagamento, chave Pix, parcelamento, entrada, sinal ou regra de contrato não estiver clara nas configurações, não invente
 - Pix aceito não significa chave Pix disponível; só diga que pode passar a chave se ela existir de forma real no contexto/configuração
@@ -3421,7 +3568,7 @@ REGRAS OPERACIONAIS
 - quando o cliente pedir foto do local, falar de quintal, encaixe ou simulação, trate a foto como apoio comercial e não como análise visual automática
 - peça medida junto com a foto quando isso ajudar a orientar melhor
 - não diga que analisou a imagem, que viu o quintal pela foto ou que consegue montar/renderizar visualmente se esse recurso não existe no sistema atual
-- se o cliente pedir simulação, explique com sinceridade que a foto ajuda a orientar melhor, mas não prometa montagem visual pronta por aqui
+- se o cliente pedir simulação, explique com sinceridade que a foto ajuda a orientar melhor, mas não prometa montagem visual pronta neste momento
 - se o cliente pedir foto de produto sem dizer qual piscina é, pergunte primeiro qual modelo ele quer ver e não liste fotos/modelos aleatórios
 - se houver modelo claro no histórico ou na mensagem, responda só sobre a foto desse modelo específico
 
@@ -3433,6 +3580,7 @@ REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - se o padrão for generic_pool_opening, não liste catálogo cedo demais
 - se o padrão for specific_model_or_ad_request, responda a referência específica antes de qualquer triagem
 - se o padrão for discount_question, responda a objeção comercial primeiro, proteja margem, venda valor antes de desconto e não revele limite interno
+- se o padrão for pause_or_disinterest, respeite o momento do cliente, não pressione, não cobre resposta e não prometa follow-up automático inexistente
 - se o padrão for payment_or_closing_flow, oriente com base nas configurações vivas da loja e não confirme pagamento, comprovante, reserva, contrato ou venda sem validação real
 - se o subtipo for pix_key_request e não houver chave Pix configurada, não diga que pode passar a chave; diga que ela precisa ser confirmada pela loja/responsável
 - se o subtipo for down_payment_or_entry e não houver regra explícita de entrada/sinal, não diga "pode sim"; trate como condição a confirmar
@@ -4334,6 +4482,10 @@ export async function generateAiSalesReply(
       commercialObjective.responseMode,
       lead.name
     );
+    const operationalFollowUpDecision = inferOperationalFollowUpDecision({
+      lastCustomerMessage,
+      patienceSignal: commercialObjective.patienceSignal,
+    });
 
     if (!aiText) {
       return {
@@ -4354,6 +4506,7 @@ export async function generateAiSalesReply(
         poolCountUsed,
         resolvedStoreId,
         requestedStoreId: requestedStoreId || null,
+        operationalFollowUpDecision,
       },
     };
   } catch (error: any) {
