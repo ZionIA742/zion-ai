@@ -172,6 +172,39 @@ export default function Sidebar() {
     };
   }, [canLoadInboxCounter, canLoadAssistantCounter, loadInboxCounter, loadAssistantCounter]);
 
+  useEffect(() => {
+    if (!canLoadInboxCounter && !canLoadAssistantCounter) return;
+
+    let lastRefreshAt = 0;
+
+    const triggerRefresh = () => {
+      const now = Date.now();
+      if (now - lastRefreshAt < 1000) return;
+      lastRefreshAt = now;
+
+      if (canLoadInboxCounter) void loadInboxCounter();
+      if (canLoadAssistantCounter) void loadAssistantCounter();
+    };
+
+    const handleFocus = () => {
+      triggerRefresh();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        triggerRefresh();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [canLoadInboxCounter, canLoadAssistantCounter, loadInboxCounter, loadAssistantCounter]);
+
   return (
     <aside className="flex h-screen w-64 flex-col border-r border-gray-200 bg-white">
       <div className="border-b border-gray-200 px-6 py-5">

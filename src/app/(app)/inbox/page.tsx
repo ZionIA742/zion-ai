@@ -407,6 +407,37 @@ export default function InboxPage() {
   }, [canLoadInbox, loadInbox]);
 
   useEffect(() => {
+    if (!canLoadInbox) return;
+
+    let lastRefreshAt = 0;
+
+    const triggerSilentRefresh = () => {
+      const now = Date.now();
+      if (now - lastRefreshAt < 1000) return;
+      lastRefreshAt = now;
+      void loadInbox({ silent: true });
+    };
+
+    const handleFocus = () => {
+      triggerSilentRefresh();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        triggerSilentRefresh();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [canLoadInbox, loadInbox]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     if (loading || storeLoading) return;
     if (restoredScrollRef.current) return;

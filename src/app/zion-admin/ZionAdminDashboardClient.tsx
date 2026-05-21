@@ -720,25 +720,32 @@ function OverviewButton({
   value,
   helper,
   onClick,
+  active,
 }: {
   label: string;
   value: string;
   helper: string;
   onClick: () => void;
+  active?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="min-h-[64px] rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-left transition hover:border-white/25 hover:bg-white/[0.07]"
+      className={[
+        "min-h-[112px] rounded-3xl border px-5 py-4 text-left transition",
+        active
+          ? "border-white/35 bg-white/[0.09]"
+          : "border-white/10 bg-white/[0.04] hover:border-white/25 hover:bg-white/[0.07]",
+      ].join(" ")}
     >
-      <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-zinc-500">
         {label}
       </div>
-      <div className="mt-1 text-xl font-semibold tracking-tight text-zinc-50">
+      <div className="mt-2 text-3xl font-semibold tracking-tight text-zinc-50">
         {value}
       </div>
-      <div className="mt-0.5 truncate text-[11px] text-zinc-500">{helper}</div>
+      <div className="mt-1 text-sm leading-5 text-zinc-500">{helper}</div>
     </button>
   );
 }
@@ -1750,6 +1757,230 @@ function OverviewDetailsDrawer({
   );
 }
 
+function OverviewInlineDetails({
+  type,
+  data,
+  stores,
+  onClose,
+}: {
+  type: OverviewPanelKey | null;
+  data: ZionAdminOverview | null;
+  stores: ZionAdminStore[];
+  onClose: () => void;
+}) {
+  const [pendingSearch, setPendingSearch] = useState("");
+
+  if (!type) return null;
+
+  const totalAiRuns = numberValue(data?.totals.aiRuns);
+  const successfulAiRuns = numberValue(data?.totals.successfulAiRuns);
+  const failedAiRuns = numberValue(data?.totals.failedAiRuns);
+  const storesWithPending = stores.filter(
+    (store) => getOperationalSummary(store).total > 0,
+  );
+  const filteredPendingStores = storesWithPending.filter((store) =>
+    matchesSearch(store, pendingSearch),
+  );
+  if (type === "pending") {
+    return (
+      <section className="mt-4 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-xl font-semibold text-zinc-50">Pendências</h3>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              Lojas com erros, filas travadas ou pontos que precisam de atenção.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-fit rounded-2xl border border-white/10 bg-zinc-950/50 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-white/[0.06]"
+          >
+            Ocultar detalhes
+          </button>
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <DetailItem
+            label="Total de pendências"
+            value={formatNumber(data?.totals.totalOperationalIssues)}
+            help="Soma das pendências e erros nas filas monitoradas"
+          />
+          <DetailItem
+            label="Lojas com pendência"
+            value={formatNumber(storesWithPending.length)}
+            help="Lojas com ao menos uma ocorrência crítica"
+          />
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-white/10 bg-zinc-950/40 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <span className="text-zinc-500">⌕</span>
+            <input
+              value={pendingSearch}
+              onChange={(event) => setPendingSearch(event.target.value)}
+              placeholder="Procurar loja com pendência"
+              className="w-full bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+            />
+          </div>
+        </div>
+
+        <div className="mt-5 space-y-3">
+          {filteredPendingStores.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
+              Nenhuma loja com pendência encontrada.
+            </div>
+          ) : (
+            filteredPendingStores.map((store) => {
+              const operational = getOperationalSummary(store);
+              return (
+                <div
+                  key={store.id}
+                  className="rounded-2xl border border-white/10 bg-zinc-950/35 p-4"
+                >
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-zinc-100">
+                        {store.name}
+                      </div>
+                      <div className="mt-1 truncate text-xs text-zinc-500">
+                        {store.organizationName}
+                      </div>
+                    </div>
+
+                    <span className="w-fit shrink-0 rounded-full border border-white/10 bg-zinc-950/50 px-2.5 py-1 text-[11px] text-zinc-400">
+                      {getStoreStatusLabel(store.subscriptionStatus)}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 text-xl font-semibold text-zinc-50">
+                    {operational.label}
+                  </div>
+                  <div className="mt-1 text-xs leading-5 text-zinc-500">
+                    {operational.details}
+                  </div>
+
+                  {store.pendingIssueDetails?.length ? (
+                    <div className="mt-4 space-y-2">
+                      {store.pendingIssueDetails.slice(0, 3).map((issue) => (
+                        <div
+                          key={`${issue.source}-${issue.id}`}
+                          className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-50"
+                        >
+                          <div className="font-semibold">
+                            {issue.label || issue.source || "Pendência"}
+                          </div>
+                          <div className="mt-1 text-amber-100/80">
+                            {issue.error || "Erro sem detalhe registrado."}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  if (type === "ia") {
+    return (
+      <section className="mt-4 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-xl font-semibold text-zinc-50">
+              Trabalho da IA
+            </h3>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              Soma das execuções, mensagens, custo e tokens das lojas monitoradas.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-fit rounded-2xl border border-white/10 bg-zinc-950/50 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-white/[0.06]"
+          >
+            Ocultar detalhes
+          </button>
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <DetailItem
+            label="Execuções"
+            value={formatNumber(totalAiRuns)}
+            help={`${formatPercent(successfulAiRuns, totalAiRuns)} de sucesso`}
+          />
+          <DetailItem
+            label="Sucessos"
+            value={formatNumber(successfulAiRuns)}
+          />
+          <DetailItem label="Erros" value={formatNumber(failedAiRuns)} />
+          <DetailItem
+            label="Última atividade"
+            value={formatDateTime(
+              stores
+                .map((store) => store.lastAiRunAt)
+                .filter(Boolean)
+                .sort()
+                .at(-1),
+            )}
+            help="Última execução de IA registrada"
+          />
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-2">
+          <section className="rounded-3xl border border-white/10 bg-zinc-950/30 p-4">
+            <h4 className="text-sm font-semibold text-zinc-200">
+              Custo da IA
+            </h4>
+            <div className="mt-3">
+              <CostPeriodBlocks
+                today={data?.totals.costUsdToday}
+                week={data?.totals.costUsdLast7Days}
+                month={data?.totals.costUsdMonth}
+              />
+            </div>
+            <div className="mt-3">
+              <CostBreakdownGrid breakdown={data?.totals.costBreakdownTotal} />
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-white/10 bg-zinc-950/30 p-4">
+            <h4 className="text-sm font-semibold text-zinc-200">
+              Tokens usados
+            </h4>
+            <div className="mt-3">
+              <TokenPeriodBlocks
+                today={data?.totals.tokensToday}
+                week={data?.totals.tokensLast7Days}
+                month={data?.totals.tokensMonth}
+                todayPrompt={data?.totals.tokensPromptToday}
+                todayCompletion={data?.totals.tokensCompletionToday}
+                weekPrompt={data?.totals.tokensPromptLast7Days}
+                weekCompletion={data?.totals.tokensCompletionLast7Days}
+                monthPrompt={data?.totals.tokensPromptMonth}
+                monthCompletion={data?.totals.tokensCompletionMonth}
+              />
+            </div>
+            <div className="mt-3">
+              <TokenBreakdownGrid breakdown={data?.totals.tokenBreakdownTotal} />
+            </div>
+          </section>
+        </div>
+
+      </section>
+    );
+  }
+
+  return null;
+}
+
+
 function StoreListSection({
   title,
   stores,
@@ -1879,56 +2110,37 @@ export default function ZionAdminDashboardClient({
             </div>
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+          <div className="grid gap-3 lg:grid-cols-2">
             <OverviewButton
               label="Trabalho da IA"
               value={formatNumber(totalAiRuns)}
-              helper={`${formatPercent(successfulAiRuns, totalAiRuns)} sucesso · ${formatNumber(failedAiRuns)} erro(s)`}
-              onClick={() => setSelectedOverview("ia")}
-            />
-            <OverviewButton
-              label="Custo da IA"
-              value={formatUsd(data?.totals.totalCostUsd)}
-              helper={`Hoje ${formatUsd(data?.totals.costUsdToday)} · semana ${formatUsd(data?.totals.costUsdLast7Days)} · mês ${formatUsd(data?.totals.costUsdMonth)}`}
-              onClick={() => setSelectedOverview("cost")}
-            />
-            <OverviewButton
-              label="Tokens usados"
-              value={formatCompactNumber(data?.totals.totalTokens)}
-              helper={`${formatNumber(data?.totals.totalTokensPrompt)} entrada · ${formatNumber(data?.totals.totalTokensCompletion)} saída`}
-              onClick={() => setSelectedOverview("tokens")}
+              helper={`${formatPercent(successfulAiRuns, totalAiRuns)} sucesso · ${formatNumber(failedAiRuns)} erro(s) · ${formatUsd(data?.totals.totalCostUsd)} em custo registrado`}
+              active={selectedOverview === "ia"}
+              onClick={() =>
+                setSelectedOverview((current) =>
+                  current === "ia" ? null : "ia",
+                )
+              }
             />
             <OverviewButton
               label="Pendências"
               value={formatNumber(data?.totals.totalOperationalIssues)}
-              helper={`${formatNumber(data?.totals.aiRunQueueErrors)} IA · ${formatNumber(data?.totals.whatsappErrors)} WhatsApp`}
-              onClick={() => setSelectedOverview("pending")}
-            />
-            <OverviewButton
-              label="Conversas"
-              value={formatNumber(data?.totals.conversations)}
-              helper="Conversas comerciais"
-              onClick={() => setSelectedOverview("conversations")}
-            />
-            <OverviewButton
-              label="Mensagens"
-              value={formatNumber(data?.totals.messages)}
-              helper="Mensagens globais"
-              onClick={() => setSelectedOverview("messages")}
-            />
-            <OverviewButton
-              label="Leads"
-              value={formatNumber(data?.totals.leads)}
-              helper="Leads cadastrados"
-              onClick={() => setSelectedOverview("leads")}
-            />
-            <OverviewButton
-              label="Compromissos"
-              value={formatNumber(data?.totals.appointments)}
-              helper="Agenda das lojas"
-              onClick={() => setSelectedOverview("appointments")}
+              helper={`${formatNumber(data?.totals.aiRunQueueErrors)} IA · ${formatNumber(data?.totals.whatsappErrors)} WhatsApp · ${formatNumber(data?.totals.salesActionErrors)} ações comerciais`}
+              active={selectedOverview === "pending"}
+              onClick={() =>
+                setSelectedOverview((current) =>
+                  current === "pending" ? null : "pending",
+                )
+              }
             />
           </div>
+
+          <OverviewInlineDetails
+            type={selectedOverview}
+            data={data}
+            stores={stores}
+            onClose={() => setSelectedOverview(null)}
+          />
         </section>
 
         <StoreListSection
@@ -1954,12 +2166,6 @@ export default function ZionAdminDashboardClient({
       <StoreDetailsDrawer
         store={selectedStore}
         onClose={() => setSelectedStore(null)}
-      />
-      <OverviewDetailsDrawer
-        type={selectedOverview}
-        data={data}
-        stores={stores}
-        onClose={() => setSelectedOverview(null)}
       />
     </main>
   );

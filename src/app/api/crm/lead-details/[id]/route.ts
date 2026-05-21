@@ -7,6 +7,7 @@ export const runtime = "nodejs";
 type LeadRow = {
   id: string;
   organization_id: string;
+  store_id: string | null;
   name: string | null;
   phone: string | null;
   state: string;
@@ -19,6 +20,12 @@ type ConversationRow = {
   created_at: string | null;
   status: string | null;
   is_human_active: boolean | null;
+  last_status_reason: string | null;
+  last_status_metadata: Record<string, unknown> | null;
+  last_message_at: string | null;
+  last_message_preview: string | null;
+  last_message_direction: string | null;
+  last_message_sender: string | null;
 };
 
 type MessageRow = {
@@ -28,6 +35,59 @@ type MessageRow = {
   direction: string | null;
   message_type: string | null;
   created_at: string | null;
+};
+
+type CommercialTaskPayload = {
+  intent?: string | null;
+  next_step?: string | null;
+  space_text?: string | null;
+  handoff_type?: string | null;
+  location_text?: string | null;
+  handoff_origin?: string | null;
+  recommended_model?: string | null;
+  requested_area_m2?: number | string | null;
+  needs_human_action?: boolean | null;
+  relevant_objection?: string | null;
+  conversation_summary?: string | null;
+  customer_preferences?: string | null;
+  last_customer_message?: string | null;
+  preferred_period_text?: string | null;
+  ad_model_or_requested_model?: string | null;
+  allow_sales_ai_while_pending?: boolean | null;
+};
+
+type CommercialTaskRow = {
+  id: string;
+  organization_id: string;
+  store_id: string | null;
+  task_type: string;
+  status: string | null;
+  priority: string | null;
+  title: string | null;
+  description: string | null;
+  related_lead_id: string | null;
+  related_conversation_id: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  task_payload: CommercialTaskPayload | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type AppointmentRow = {
+  id: string;
+  organization_id: string;
+  store_id: string | null;
+  lead_id: string | null;
+  conversation_id: string | null;
+  appointment_type: string | null;
+  status: string | null;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  address_text: string | null;
+  notes: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 export async function GET(request: Request) {
@@ -66,7 +126,7 @@ export async function GET(request: Request) {
 
     const { data: leadData, error: leadError } = await supabase
       .from("leads")
-      .select("id, organization_id, name, phone, state")
+      .select("id, organization_id, store_id, name, phone, state")
       .eq("id", leadId)
       .maybeSingle<LeadRow>();
 
@@ -94,7 +154,10 @@ export async function GET(request: Request) {
 
     const { data: conversationsData, error: conversationsError } = await supabase
       .from("conversations")
-      .select("id, organization_id, lead_id, created_at, status, is_human_active")
+      .select(
+        "id, organization_id, lead_id, created_at, status, is_human_active, last_status_reason, last_status_metadata, last_message_at, last_message_preview, last_message_direction, last_message_sender"
+      )
+      .eq("organization_id", leadData.organization_id)
       .eq("lead_id", leadId)
       .order("created_at", { ascending: false })
       .limit(1);
@@ -116,6 +179,8 @@ export async function GET(request: Request) {
         : null;
 
     let messages: MessageRow[] = [];
+    let commercialTasks: CommercialTaskRow[] = [];
+    let appointments: AppointmentRow[] = [];
 
     if (conversation) {
       const { data: messagesData, error: messagesError } = await supabase
@@ -138,11 +203,102 @@ export async function GET(request: Request) {
       messages = (messagesData || []) as MessageRow[];
     }
 
+    const tasksQuery = supabase
+      .from("store_assistant_operational_tasks")
+      .select(
+        "id, organization_id, store_id, task_type, status, priority, title, description, related_lead_id, related_conversation_id, customer_name, customer_phone, task_payload, created_at, updated_at"
+      )
+      .eq("organization_id", leadData.organization_id)
+      .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
+      .order("updated_at", { ascending: false })
+      .limit(10);
+
+    if (leadData.store_id) {
+      tasksQuery.eq("store_id", leadData.store_id);
+    }
+
+    if (conversation) {
+      tasksQuery.or(
+        `related_lead_id.eq.${leadId},related_conversation_id.eq.${conversation.id}`
+      );
+    } else {
+      tasksQuery.eq("related_lead_id", leadId);
+    }
+
+    const { data: commercialTasksData, error: commercialTasksError } =
+      await tasksQuery;
+
+    if (commercialTasksError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LOAD_COMMERCIAL_TASKS_FAILED",
+          message: commercialTasksError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    commercialTasks = Array.from(
+      new Map(
+        ((commercialTasksData || []) as CommercialTaskRow[]).map((task) => [
+          task.id,
+          task,
+        ])
+      ).values()
+    );
+
+    const appointmentsQuery = supabase
+      .from("store_appointments")
+      .select(
+        "id, organization_id, store_id, lead_id, conversation_id, appointment_type, status, scheduled_start, scheduled_end, address_text, notes, created_at, updated_at"
+      )
+      .eq("organization_id", leadData.organization_id)
+      .order("updated_at", { ascending: false })
+      .limit(10);
+
+    if (leadData.store_id) {
+      appointmentsQuery.eq("store_id", leadData.store_id);
+    }
+
+    if (conversation) {
+      appointmentsQuery.or(
+        `lead_id.eq.${leadId},conversation_id.eq.${conversation.id}`
+      );
+    } else {
+      appointmentsQuery.eq("lead_id", leadId);
+    }
+
+    const { data: appointmentsData, error: appointmentsError } =
+      await appointmentsQuery;
+
+    if (appointmentsError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LOAD_APPOINTMENTS_FAILED",
+          message: appointmentsError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    appointments = Array.from(
+      new Map(
+        ((appointmentsData || []) as AppointmentRow[]).map((appointment) => [
+          appointment.id,
+          appointment,
+        ])
+      ).values()
+    );
+
     return NextResponse.json({
       ok: true,
       lead: leadData,
       conversation,
       messages,
+      commercialTasks,
+      appointments,
     });
   } catch (error: any) {
     return NextResponse.json(

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase as supabaseClient } from "@/lib/supabaseBrowser";
 import { COLUNAS, nivelBaseDaColuna } from "@/config/crm";
 import { useStoreContext } from "@/components/StoreProvider";
@@ -134,6 +134,9 @@ export default function CrmPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
+  const canAutoRefresh = useMemo(() => {
+    return !storeLoading && !!organizationId;
+  }, [storeLoading, organizationId]);
 
   const columns = useMemo(() => {
     return (COLUNAS as any[]).map((c) => {
@@ -193,17 +196,23 @@ export default function CrmPage() {
     });
   }, [cards, searchText]);
 
-  async function fetchPageData() {
-    if (!organizationId) {
-      setCards([]);
-      setLoading(false);
-      return;
-    }
+  const fetchPageData = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const silent = options?.silent ?? false;
 
-    setErrorMsg(null);
-    setLoading(true);
+      if (!organizationId) {
+        setCards([]);
+        setCommercialHandoffByCardKey({});
+        setLoading(false);
+        return;
+      }
 
-    try {
+      setErrorMsg(null);
+      if (!silent) {
+        setLoading(true);
+      }
+
+      try {
       const { data, error } = await supabaseClient.rpc(
         "panel_list_crm_cards_scoped",
         {
@@ -290,14 +299,18 @@ export default function CrmPage() {
           setCommercialHandoffByCardKey(nextIndicators);
         }
       }
-    } catch (error: any) {
-      setErrorMsg(error?.message ?? "Erro ao carregar CRM.");
-      setCards([]);
-      setCommercialHandoffByCardKey({});
-    } finally {
-      setLoading(false);
-    }
-  }
+      } catch (error: any) {
+        setErrorMsg(error?.message ?? "Erro ao carregar CRM.");
+        setCards([]);
+        setCommercialHandoffByCardKey({});
+      } finally {
+        if (!silent) {
+          setLoading(false);
+        }
+      }
+    },
+    [organizationId, activeStoreId]
+  );
 
   async function updateConversationState(card: UiCardRow, toColumnId: string) {
     if (!organizationId) {
@@ -341,10 +354,51 @@ export default function CrmPage() {
   }
 
   useEffect(() => {
-    if (!storeLoading) {
+    if (canAutoRefresh) {
       void fetchPageData();
     }
-  }, [storeLoading, organizationId, activeStoreId]);
+  }, [canAutoRefresh, fetchPageData]);
+
+  useEffect(() => {
+    if (!canAutoRefresh) return;
+
+    const interval = window.setInterval(() => {
+      void fetchPageData({ silent: true });
+    }, 10000);
+
+    return () => window.clearInterval(interval);
+  }, [canAutoRefresh, fetchPageData]);
+
+  useEffect(() => {
+    if (!canAutoRefresh) return;
+
+    let lastRefreshAt = 0;
+
+    const triggerSilentRefresh = () => {
+      const now = Date.now();
+      if (now - lastRefreshAt < 1000) return;
+      lastRefreshAt = now;
+      void fetchPageData({ silent: true });
+    };
+
+    const handleFocus = () => {
+      triggerSilentRefresh();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        triggerSilentRefresh();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [canAutoRefresh, fetchPageData]);
 
   function leadTitle(card: UiCardRow) {
     return String(card.name || "Lead sem nome").trim();
