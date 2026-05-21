@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import {
   generateAiSalesReply,
+  type CommercialHandoffContext,
   type OperationalFollowUpDecision,
 } from "./generate-ai-sales-reply";
 
@@ -46,6 +47,13 @@ type ConversationRow = {
   is_human_active: boolean | null;
 };
 
+type OpenOperationalTaskRow = {
+  id: string;
+  task_type: string | null;
+  status: string | null;
+  task_payload?: Record<string, unknown> | null;
+};
+
 type StoreScheduleSettingsRow = {
   timezone_name: string | null;
 };
@@ -80,6 +88,270 @@ type OperationalTaskGuardResult =
       queueStatus?: string | null;
     };
 
+function isAiSalesCommercialHandoffTask(task: OpenOperationalTaskRow | null | undefined) {
+  const taskType = normalizeText(task?.task_type);
+  const payload =
+    task?.task_payload && typeof task.task_payload === "object"
+      ? task.task_payload
+      : null;
+
+  return (
+    taskType === "commercial_visit_request" ||
+    taskType === "commercial_quote_request" ||
+    normalizeText(String(payload?.["handoff_origin"] || "")) === "ai_sales"
+  );
+}
+
+function getOpenCommercialHandoffStatuses() {
+  return [
+    "open",
+    "waiting_user_choice",
+    "waiting_customer_response",
+    "ready_to_execute",
+    "in_progress",
+  ];
+}
+
+async function findExistingCommercialHandoffTask(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  taskType: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id, task_type, status, task_payload")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("related_conversation_id", args.conversationId)
+    .in("status", getOpenCommercialHandoffStatuses())
+    .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(5);
+
+  if (error) {
+    throw new Error(`Falha ao verificar handoff comercial existente: ${error.message}`);
+  }
+
+  return ((data || []) as OpenOperationalTaskRow[]).find(
+    (task) => normalizeText(task.task_type) === normalizeText(args.taskType)
+  );
+}
+
+function buildCommercialHandoffNotificationBody(handoff: CommercialHandoffContext) {
+  const headline =
+    handoff.taskType === "commercial_quote_request"
+      ? `${handoff.customerName || "Cliente"} pediu um orcamento. Revise o contexto antes de retornar ao cliente.`
+      : `${handoff.customerName || "Cliente"} pediu uma visita. Verifique disponibilidade e procedimento da loja antes de confirmar qualquer horario.`;
+
+  const details = [
+    handoff.spaceText ? `Espaco informado: ${handoff.spaceText}.` : null,
+    handoff.customerPreferences
+      ? `Preferencia: ${handoff.customerPreferences}.`
+      : null,
+    handoff.recommendedModel
+      ? `Modelo recomendado: ${handoff.recommendedModel}.`
+      : null,
+    handoff.relevantObjection
+      ? `Ponto relevante: ${handoff.relevantObjection}.`
+      : null,
+  ].filter(Boolean);
+
+  return [headline, ...details].join(" ");
+}
+
+async function findExistingCommercialHandoffNotification(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  taskId: string;
+  notificationType: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_notification_queue")
+    .select("id, notification_type, status, context")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("related_conversation_id", args.conversationId)
+    .eq("related_lead_id", args.leadId || null)
+    .eq("notification_type", args.notificationType)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    throw new Error(
+      `Falha ao verificar notificacao comercial existente: ${error.message}`
+    );
+  }
+
+  return ((data || []) as Array<{
+    id?: string | null;
+    context?: Record<string, unknown> | null;
+    related_lead_id?: string | null;
+  }>).find((row) => {
+    const context =
+      row.context && typeof row.context === "object" ? row.context : null;
+    const sameTaskId = String(context?.["task_id"] || "").trim() === args.taskId;
+    const sameSource = String(context?.["source"] || "").trim() === "ai_sales";
+    return sameTaskId && sameSource;
+  });
+}
+
+async function enqueueCommercialHandoffNotification(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  taskId: string;
+  handoff: CommercialHandoffContext;
+}) {
+  const notificationType = "important_alert";
+  const title =
+    args.handoff.taskType === "commercial_quote_request"
+      ? "Novo pedido comercial de orcamento"
+      : "Novo pedido comercial de visita";
+  const body = buildCommercialHandoffNotificationBody(args.handoff);
+  const eventKey = `ai_sales_handoff:${args.handoff.taskType}:${args.taskId}`;
+  const context = {
+    source: "ai_sales",
+    reason: args.handoff.taskType,
+    task_id: args.taskId,
+    task_type: args.handoff.taskType,
+    handoff_type: args.handoff.taskType,
+    event_key: eventKey,
+    conversation_id: args.conversationId,
+    lead_id: args.leadId || null,
+    customer_name: args.handoff.customerName || null,
+    customer_phone: args.handoff.customerPhone || null,
+    needs_human_action: true,
+    space_text: args.handoff.spaceText || null,
+    recommended_model: args.handoff.recommendedModel || null,
+    customer_preferences: args.handoff.customerPreferences || null,
+    relevant_objection: args.handoff.relevantObjection || null,
+  };
+
+  try {
+    console.info("[zion-ai-sales-handoff] tentando criar notificacao interna", {
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      leadId: args.leadId || null,
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      notificationType,
+      payload: {
+        p_notification_type: notificationType,
+        p_title: title,
+        p_body: body,
+        p_priority: "high",
+        p_context: context,
+      },
+    });
+
+    const existingNotification = await findExistingCommercialHandoffNotification({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      leadId: args.leadId || null,
+      taskId: args.taskId,
+      notificationType,
+    });
+
+    if (existingNotification?.id) {
+      console.info("[zion-ai-sales-handoff] notificacao interna ignorada por dedupe", {
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        leadId: args.leadId || null,
+        taskId: args.taskId,
+        taskType: args.handoff.taskType,
+        notificationId: existingNotification.id,
+      });
+
+      return {
+        created: false,
+        error: null,
+        reason: "similar_notification_already_exists",
+      };
+    }
+
+    const { error } = await args.supabase.rpc("assistant_enqueue_internal_notification", {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_notification_type: notificationType,
+      p_title: title,
+      p_body: body,
+      p_priority: "high",
+      p_context: context,
+      p_related_lead_id: args.leadId || null,
+      p_related_conversation_id: args.conversationId,
+      p_related_appointment_id: null,
+      p_event_key: eventKey,
+    });
+
+    if (error) {
+      console.warn(
+        "[zion-ai-sales-handoff] assistant_enqueue_internal_notification error:",
+        {
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          conversationId: args.conversationId,
+          leadId: args.leadId || null,
+          taskId: args.taskId,
+          taskType: args.handoff.taskType,
+          notificationType,
+          error,
+        }
+      );
+      return {
+        created: false,
+        error: error.message || "COMMERCIAL_HANDOFF_NOTIFICATION_RPC_FAILED",
+      };
+    }
+
+    console.info("[zion-ai-sales-handoff] notificacao interna criada via rpc", {
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      leadId: args.leadId || null,
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      notificationType,
+    });
+
+    return {
+      created: true,
+      error: null,
+      reason: "notification_created",
+    };
+  } catch (error: any) {
+    console.warn(
+      "[zion-ai-sales-handoff] commercial handoff notification exception:",
+      {
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        leadId: args.leadId || null,
+        taskId: args.taskId,
+        taskType: args.handoff.taskType,
+        notificationType,
+        error,
+      }
+    );
+    return {
+      created: false,
+      error:
+        error?.message || "COMMERCIAL_HANDOFF_NOTIFICATION_EXCEPTION",
+    };
+  }
+}
+
 async function detectOpenAssistantOperationalFlow(args: {
   supabase: any;
   organizationId: string;
@@ -96,17 +368,16 @@ async function detectOpenAssistantOperationalFlow(args: {
     "in_progress",
   ];
 
-  const { data: openTask, error: openTaskError } = await supabase
+  const { data: openTasks, error: openTaskError } = await supabase
     .from("store_assistant_operational_tasks")
-    .select("id, task_type, status")
+    .select("id, task_type, status, task_payload")
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
     .eq("related_conversation_id", conversationId)
     .in("status", openTaskStatuses)
     .order("updated_at", { ascending: false })
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(10);
 
   if (openTaskError) {
     throw new Error(
@@ -114,13 +385,17 @@ async function detectOpenAssistantOperationalFlow(args: {
     );
   }
 
-  if (openTask) {
+  const blockingTask = ((openTasks || []) as OpenOperationalTaskRow[]).find(
+    (task) => !isAiSalesCommercialHandoffTask(task)
+  );
+
+  if (blockingTask) {
     return {
       blocked: true,
       reason: "open_operational_task",
-      taskId: openTask.id || null,
-      taskType: openTask.task_type || null,
-      taskStatus: openTask.status || null,
+      taskId: blockingTask.id || null,
+      taskType: blockingTask.task_type || null,
+      taskStatus: blockingTask.status || null,
     };
   }
 
@@ -785,6 +1060,117 @@ async function updateLatestRunningAiRunUsage(args: {
   }
 }
 
+async function createCommercialAssistantHandoff(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  handoff: CommercialHandoffContext | null | undefined;
+}) {
+  const handoff = args.handoff;
+
+  if (!handoff || !handoff.shouldCreateTask) {
+    return { created: false, skipped: true, reason: "handoff_not_requested" };
+  }
+
+  const similarTask = await findExistingCommercialHandoffTask({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    taskType: handoff.taskType,
+  });
+
+  if (similarTask) {
+    return {
+      created: false,
+      skipped: true,
+      reason: "similar_open_handoff_already_exists",
+      taskId: similarTask.id || null,
+    };
+  }
+
+  const title =
+    handoff.taskType === "commercial_quote_request"
+      ? `Orçamento comercial pendente${handoff.customerName ? `: ${handoff.customerName}` : ""}`
+      : `Visita comercial pendente${handoff.customerName ? `: ${handoff.customerName}` : ""}`;
+
+  const payload = {
+    handoff_origin: "ai_sales",
+    allow_sales_ai_while_pending: true,
+    intent: handoff.intent,
+    needs_human_action: true,
+    handoff_created: true,
+    handoff_type: handoff.taskType,
+    space_text: handoff.spaceText,
+    requested_area_m2: handoff.requestedAreaM2,
+    location_text: handoff.locationText,
+    preferred_period_text: handoff.preferredPeriodText,
+    recommended_model: handoff.recommendedModel,
+    relevant_objection: handoff.relevantObjection,
+    customer_preferences: handoff.customerPreferences,
+    ad_model_or_requested_model: handoff.adModelOrRequestedModel,
+    last_customer_message: handoff.lastCustomerMessage,
+    conversation_summary: handoff.conversationSummary,
+    next_step: handoff.nextStep,
+    created_by: "generate-and-save-ai-sales-reply",
+  };
+
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .insert({
+      organization_id: args.organizationId,
+      store_id: args.storeId,
+      thread_id: null,
+      task_type: handoff.taskType,
+      status: "open",
+      priority: handoff.taskType === "commercial_visit_request" ? "high" : "normal",
+      title,
+      description: handoff.conversationSummary || handoff.nextStep,
+      related_lead_id: args.leadId || null,
+      related_conversation_id: args.conversationId,
+      related_appointment_id: null,
+      customer_name: handoff.customerName || null,
+      customer_phone: handoff.customerPhone || null,
+      target_date: null,
+      target_time: null,
+      target_start_at: null,
+      target_end_at: null,
+      timezone_name: "America/Sao_Paulo",
+      task_payload: payload,
+      last_action_at: new Date().toISOString(),
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (error || !data?.id) {
+    throw new Error(
+      error?.message || "TASK_INSERT_NOT_CONFIRMED_FOR_COMMERCIAL_HANDOFF"
+    );
+  }
+
+  const notificationResult = await enqueueCommercialHandoffNotification({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    leadId: args.leadId || null,
+    taskId: String(data.id),
+    handoff,
+  });
+
+  return {
+    created: true,
+    skipped: false,
+    reason: "handoff_created",
+    taskId: String(data.id),
+    taskType: handoff.taskType,
+    notificationCreated: notificationResult.created,
+    notificationError: notificationResult.error,
+  };
+}
+
 
 export async function generateAndSaveAiSalesReply(
   params: GenerateAndSaveAiSalesReplyParams
@@ -917,7 +1303,7 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    const aiText = String(generationResult.aiText || "").trim();
+    let aiText = String(generationResult.aiText || "").trim();
 
     if (!aiText) {
       return {
@@ -972,6 +1358,37 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
+    const requestedCommercialHandoff = generationResult.context?.commercialHandoff || null;
+
+    if (requestedCommercialHandoff?.shouldCreateTask) {
+      try {
+        const similarOpenHandoff = await findExistingCommercialHandoffTask({
+          supabase,
+          organizationId,
+          storeId,
+          conversationId,
+          taskType: requestedCommercialHandoff.taskType,
+        });
+
+        if (similarOpenHandoff) {
+          aiText =
+            requestedCommercialHandoff.taskType === "commercial_quote_request"
+              ? "Seu pedido de orcamento ja esta aberto por aqui. Se quiser, eu tambem posso organizar os detalhes do que voce procura para facilitar o retorno da loja."
+              : "Essa solicitacao de visita ja esta aberta por aqui. Se quiser, me confirma sua cidade e um bom dia ou periodo que isso ajuda no retorno da loja.";
+        }
+      } catch (handoffLookupError) {
+        console.warn("[zion-ai-sales-handoff] Falha ao verificar handoff comercial antes do envio", {
+          organizationId,
+          storeId,
+          conversationId,
+          error:
+            handoffLookupError instanceof Error
+              ? handoffLookupError.message
+              : String(handoffLookupError || ""),
+        });
+      }
+    }
+
     const { data: messageId, error: sendError } = await supabase.rpc(
       "panel_send_message",
       {
@@ -1008,10 +1425,39 @@ export async function generateAndSaveAiSalesReply(
       lastAiMessageAt: aiMessageTimestamp,
     });
 
+    let commercialHandoffResult: Record<string, unknown> | null = null;
+
+    try {
+      commercialHandoffResult = await createCommercialAssistantHandoff({
+        supabase,
+        organizationId,
+        storeId,
+        conversationId,
+        leadId: normalizedConversation.lead_id || null,
+        handoff: generationResult.context?.commercialHandoff || null,
+      });
+    } catch (handoffError: any) {
+      commercialHandoffResult = {
+        created: false,
+        skipped: false,
+        reason: "handoff_creation_failed",
+        error: handoffError?.message || String(handoffError || ""),
+      };
+      console.warn("[zion-ai-sales-handoff] Falha ao criar pendência comercial", {
+        organizationId,
+        storeId,
+        conversationId,
+        error: handoffError?.message || handoffError,
+      });
+    }
+
     return {
       ok: true,
       aiText,
-      context: generationResult.context,
+      context: {
+        ...generationResult.context,
+        commercialHandoffResult,
+      },
       usage: generationResult.usage,
       persisted: true,
       messageId: messageId ?? null,

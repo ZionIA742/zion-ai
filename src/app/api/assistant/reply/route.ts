@@ -112,6 +112,102 @@ function normalizeText(value: string | null | undefined): string {
     .trim();
 }
 
+function truncateForAiRunLog(value: unknown, maxLength = 1200): string | null {
+  const text = asText(value);
+  return !text ? null : text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
+}
+
+function aiRunNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function estimateAssistantAiCostUsd(modelName: string, inputTokens: number | null, outputTokens: number | null) {
+  const modelKey = String(modelName || "").toLowerCase();
+  const pricing =
+    modelKey.includes("gpt-4.1-mini") || modelKey.includes("gpt-4o-mini")
+      ? { input: 0.4, output: 1.6 }
+      : modelKey.includes("gpt-4.1")
+        ? { input: 2, output: 8 }
+        : null;
+
+  if (!pricing || (!inputTokens && !outputTokens)) return null;
+
+  return Number(
+    ((((inputTokens || 0) / 1_000_000) * pricing.input) +
+      (((outputTokens || 0) / 1_000_000) * pricing.output)).toFixed(6)
+  );
+}
+
+async function recordAssistantAiRun(params: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  model: string;
+  status: "succeeded" | "failed";
+  startedAt: string;
+  finishedAt: string;
+  response?: any;
+  error?: string | null;
+  lastHumanMessage?: string | null;
+  outputText?: string | null;
+  detectedIntent?: string | null;
+}) {
+  try {
+    const usage = params.response?.usage || {};
+    const inputTokens =
+      aiRunNumber(usage.input_tokens) ??
+      aiRunNumber(usage.prompt_tokens) ??
+      aiRunNumber(usage.inputTokens);
+    const outputTokens =
+      aiRunNumber(usage.output_tokens) ??
+      aiRunNumber(usage.completion_tokens) ??
+      aiRunNumber(usage.outputTokens);
+    const startedMs = new Date(params.startedAt).getTime();
+    const finishedMs = new Date(params.finishedAt).getTime();
+
+    const { error } = await params.supabase.from("ai_runs").insert({
+      organization_id: params.organizationId,
+      store_id: params.storeId,
+      conversation_id: null,
+      lead_id: null,
+      provider: "openai",
+      model: params.model,
+      input: {
+        type: "assistant_chat",
+        usage_capture_source: "assistant-reply-route",
+        route: "/api/assistant/reply",
+        detected_intent: params.detectedIntent || null,
+        last_human_message_preview: truncateForAiRunLog(params.lastHumanMessage, 500),
+      },
+      output: {
+        response_id: params.response?.id || null,
+        text_preview: truncateForAiRunLog(params.outputText, 1000),
+      },
+      error: params.error || null,
+      status: params.status,
+      started_at: params.startedAt,
+      finished_at: params.finishedAt,
+      latency_ms:
+        Number.isFinite(startedMs) && Number.isFinite(finishedMs)
+          ? Math.max(0, finishedMs - startedMs)
+          : null,
+      tokens_prompt: inputTokens,
+      tokens_completion: outputTokens,
+      cost_usd: estimateAssistantAiCostUsd(params.model, inputTokens, outputTokens),
+    });
+
+    if (error) console.error("[assistant-ai-run-capture] insert failed", error);
+  } catch (error) {
+    console.error("[assistant-ai-run-capture] unexpected failure", error);
+  }
+}
+
+
 function formatAppointmentRangeInTimeZone(args: {
   appointment?: Pick<AppointmentRow, "scheduled_start" | "scheduled_end"> | null;
   scheduleSettings?: StoreScheduleSettingsRow | null;
@@ -7732,18 +7828,59 @@ async function generateAssistantReply(params: {
         lastHumanMessage,
       });
     } else {
-      const response = await openai.responses.create({
-        model,
-        input,
-        max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 140 : 240,
-      });
+      const startedAt = new Date().toISOString();
 
-      aiTextFromModel = true;
-      aiText = cleanupAiText(String(response.output_text || "").trim(), {
-        genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
-        morningReportMode,
-        eveningReportMode,
-      });
+      try {
+        const response = await openai.responses.create({
+          model,
+          input,
+          max_output_tokens: asksAboutMaterialsOrDocuments(lastHumanMessage) ? 140 : 240,
+        });
+        const finishedAt = new Date().toISOString();
+        const rawOutputText = String(response.output_text || "").trim();
+
+        aiTextFromModel = true;
+        aiText = cleanupAiText(rawOutputText, {
+          genericMaterialMode: asksAboutMaterialsOrDocuments(lastHumanMessage) || nextVisitMode,
+          morningReportMode,
+          eveningReportMode,
+        });
+
+        await recordAssistantAiRun({
+          supabase,
+          organizationId,
+          storeId,
+          model,
+          status: aiText ? "succeeded" : "failed",
+          startedAt,
+          finishedAt,
+          response,
+          error: aiText ? null : "EMPTY_AI_RESPONSE",
+          lastHumanMessage,
+          outputText: aiText || rawOutputText,
+          detectedIntent,
+        });
+      } catch (openAiError: any) {
+        const finishedAt = new Date().toISOString();
+
+        await recordAssistantAiRun({
+          supabase,
+          organizationId,
+          storeId,
+          model,
+          status: "failed",
+          startedAt,
+          finishedAt,
+          error:
+            openAiError?.message ||
+            "Erro desconhecido ao chamar a OpenAI pela IA assistente.",
+          lastHumanMessage,
+          outputText: null,
+          detectedIntent,
+        });
+
+        throw openAiError;
+      }
     }
 
     if (!aiText) {

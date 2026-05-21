@@ -55,10 +55,65 @@ type AiRunEvent = {
   finishedAt: string | null;
 };
 
+type PendingIssueDetail = {
+  id: string;
+  source: "ai_run_queue" | "ai_sales_action_queue" | "channel_whatsapp_inbox";
+  label: string;
+  storeId: string | null;
+  error: string | null;
+  occurredAt: string | null;
+  processedAt: string | null;
+  queueKey?: string | null;
+  externalEventId?: string | null;
+  conversationId?: string | null;
+  leadId?: string | null;
+  aiRunId?: string | null;
+  nextAction?: string | null;
+  actionKey?: string | null;
+  provider?: string | null;
+  inputPreview?: string | null;
+  payloadPreview?: string | null;
+};
+
 type QueueMetricRow = {
   store_id: string | null;
   processed_at: string | null;
   processing_error: string | null;
+};
+
+type AiRunQueueIssueRow = QueueMetricRow & {
+  id: string;
+  lead_id: string | null;
+  conversation_id: string | null;
+  queue_key: string | null;
+  input: Record<string, unknown> | null;
+  enqueued_at: string | null;
+};
+
+type SalesActionQueueIssueRow = QueueMetricRow & {
+  id: string;
+  conversation_id: string | null;
+  ai_run_id: string | null;
+  next_action: string | null;
+  action_key: string | null;
+  payload: Record<string, unknown> | null;
+  enqueued_at: string | null;
+};
+
+type WhatsappInboxIssueRow = QueueMetricRow & {
+  id: string;
+  provider: string | null;
+  external_event_id: string | null;
+  payload: Record<string, unknown> | null;
+  received_at: string | null;
+};
+
+type TokenUsageBreakdown = {
+  salesChatTokens: number;
+  assistantChatTokens: number;
+  imageGenerationTokens: number;
+  visualCatalogTokens: number;
+  unclassifiedTokens: number;
 };
 
 type StoreOverviewMetrics = {
@@ -73,6 +128,19 @@ type StoreOverviewMetrics = {
   totalTokensPrompt: number;
   totalTokensCompletion: number;
   totalTokens: number;
+  tokensPromptToday: number;
+  tokensCompletionToday: number;
+  tokensToday: number;
+  tokensPromptLast7Days: number;
+  tokensCompletionLast7Days: number;
+  tokensLast7Days: number;
+  tokensPromptMonth: number;
+  tokensCompletionMonth: number;
+  tokensMonth: number;
+  tokenBreakdownTotal: TokenUsageBreakdown;
+  tokenBreakdownToday: TokenUsageBreakdown;
+  tokenBreakdownLast7Days: TokenUsageBreakdown;
+  tokenBreakdownMonth: TokenUsageBreakdown;
   totalCostUsd: number;
   costUsdToday: number;
   costUsdLast7Days: number;
@@ -84,6 +152,7 @@ type StoreOverviewMetrics = {
   lastAiRunAt: string | null;
   recentAiErrors: AiRunEvent[];
   recentAiSuccesses: AiRunEvent[];
+  pendingIssueDetails: PendingIssueDetail[];
   pendingAiRuns: number;
   aiRunQueueErrors: number;
   pendingSalesActions: number;
@@ -206,6 +275,55 @@ function roundAiUsageBreakdown(breakdown: AiUsageBreakdown): AiUsageBreakdown {
   };
 }
 
+function createEmptyTokenUsageBreakdown(): TokenUsageBreakdown {
+  return {
+    salesChatTokens: 0,
+    assistantChatTokens: 0,
+    imageGenerationTokens: 0,
+    visualCatalogTokens: 0,
+    unclassifiedTokens: 0,
+  };
+}
+
+function addTokensToBreakdown(
+  breakdown: TokenUsageBreakdown,
+  category: keyof AiUsageBreakdown,
+  tokens: number,
+) {
+  const map: Record<keyof AiUsageBreakdown, keyof TokenUsageBreakdown> = {
+    salesChatUsd: "salesChatTokens",
+    assistantChatUsd: "assistantChatTokens",
+    imageGenerationUsd: "imageGenerationTokens",
+    visualCatalogUsd: "visualCatalogTokens",
+    unclassifiedUsd: "unclassifiedTokens",
+  };
+
+  breakdown[map[category]] += tokens;
+}
+
+function sumTokenUsageBreakdown(
+  target: TokenUsageBreakdown,
+  source: TokenUsageBreakdown,
+) {
+  target.salesChatTokens += source.salesChatTokens;
+  target.assistantChatTokens += source.assistantChatTokens;
+  target.imageGenerationTokens += source.imageGenerationTokens;
+  target.visualCatalogTokens += source.visualCatalogTokens;
+  target.unclassifiedTokens += source.unclassifiedTokens;
+}
+
+function roundTokenUsageBreakdown(
+  breakdown: TokenUsageBreakdown,
+): TokenUsageBreakdown {
+  return {
+    salesChatTokens: Math.round(breakdown.salesChatTokens),
+    assistantChatTokens: Math.round(breakdown.assistantChatTokens),
+    imageGenerationTokens: Math.round(breakdown.imageGenerationTokens),
+    visualCatalogTokens: Math.round(breakdown.visualCatalogTokens),
+    unclassifiedTokens: Math.round(breakdown.unclassifiedTokens),
+  };
+}
+
 function createEmptyStoreMetrics(): StoreOverviewMetrics {
   return {
     totalLeads: 0,
@@ -219,6 +337,19 @@ function createEmptyStoreMetrics(): StoreOverviewMetrics {
     totalTokensPrompt: 0,
     totalTokensCompletion: 0,
     totalTokens: 0,
+    tokensPromptToday: 0,
+    tokensCompletionToday: 0,
+    tokensToday: 0,
+    tokensPromptLast7Days: 0,
+    tokensCompletionLast7Days: 0,
+    tokensLast7Days: 0,
+    tokensPromptMonth: 0,
+    tokensCompletionMonth: 0,
+    tokensMonth: 0,
+    tokenBreakdownTotal: createEmptyTokenUsageBreakdown(),
+    tokenBreakdownToday: createEmptyTokenUsageBreakdown(),
+    tokenBreakdownLast7Days: createEmptyTokenUsageBreakdown(),
+    tokenBreakdownMonth: createEmptyTokenUsageBreakdown(),
     totalCostUsd: 0,
     costUsdToday: 0,
     costUsdLast7Days: 0,
@@ -230,6 +361,7 @@ function createEmptyStoreMetrics(): StoreOverviewMetrics {
     lastAiRunAt: null,
     recentAiErrors: [],
     recentAiSuccesses: [],
+    pendingIssueDetails: [],
     pendingAiRuns: 0,
     aiRunQueueErrors: 0,
     pendingSalesActions: 0,
@@ -315,6 +447,104 @@ function applyQueueMetrics(args: {
     if (isErroredText(row.processing_error)) {
       metrics[args.errorKey] += 1;
     }
+  }
+}
+
+function stringifyPreview(value: unknown, maxLength = 320) {
+  if (value == null) return null;
+
+  let text = "";
+
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+
+  const normalized = text.replace(/\s+/g, " " ).trim();
+
+  if (!normalized) return null;
+  if (normalized.length <= maxLength) return normalized;
+
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+function shouldExposeIssueDetail(row: QueueMetricRow) {
+  return isPendingQueueItem(row) || isErroredText(row.processing_error);
+}
+
+function pushPendingIssueDetail(
+  metricsByStore: Map<string, StoreOverviewMetrics>,
+  storeId: string | null | undefined,
+  issue: PendingIssueDetail,
+) {
+  const metrics = getStoreMetrics(metricsByStore, storeId);
+
+  if (!metrics) {
+    return;
+  }
+
+  metrics.pendingIssueDetails.push(issue);
+}
+
+function applyPendingIssueDetails(args: {
+  metricsByStore: Map<string, StoreOverviewMetrics>;
+  aiRunQueueRows: AiRunQueueIssueRow[];
+  salesActionQueueRows: SalesActionQueueIssueRow[];
+  whatsappQueueRows: WhatsappInboxIssueRow[];
+}) {
+  for (const row of args.aiRunQueueRows) {
+    if (!shouldExposeIssueDetail(row)) continue;
+
+    pushPendingIssueDetail(args.metricsByStore, row.store_id, {
+      id: row.id,
+      source: "ai_run_queue",
+      label: "Fila de IA",
+      storeId: row.store_id,
+      error: row.processing_error || (row.processed_at ? null : "Item ainda pendente de processamento"),
+      occurredAt: row.enqueued_at,
+      processedAt: row.processed_at,
+      queueKey: row.queue_key,
+      conversationId: row.conversation_id,
+      leadId: row.lead_id,
+      inputPreview: stringifyPreview(row.input),
+    });
+  }
+
+  for (const row of args.salesActionQueueRows) {
+    if (!shouldExposeIssueDetail(row)) continue;
+
+    pushPendingIssueDetail(args.metricsByStore, row.store_id, {
+      id: row.id,
+      source: "ai_sales_action_queue",
+      label: "Ações comerciais da IA",
+      storeId: row.store_id,
+      error: row.processing_error || (row.processed_at ? null : "Ação comercial ainda pendente de processamento"),
+      occurredAt: row.enqueued_at,
+      processedAt: row.processed_at,
+      conversationId: row.conversation_id,
+      aiRunId: row.ai_run_id,
+      nextAction: row.next_action,
+      actionKey: row.action_key,
+      payloadPreview: stringifyPreview(row.payload),
+    });
+  }
+
+  for (const row of args.whatsappQueueRows) {
+    if (!shouldExposeIssueDetail(row)) continue;
+
+    pushPendingIssueDetail(args.metricsByStore, row.store_id, {
+      id: row.id,
+      source: "channel_whatsapp_inbox",
+      label: "WhatsApp de entrada",
+      storeId: row.store_id,
+      error: row.processing_error || (row.processed_at ? null : "Evento de WhatsApp ainda pendente de processamento"),
+      occurredAt: row.received_at,
+      processedAt: row.processed_at,
+      provider: row.provider,
+      externalEventId: row.external_event_id,
+      payloadPreview: stringifyPreview(row.payload),
+    });
   }
 }
 
@@ -507,6 +737,72 @@ async function loadQueueRows(
   };
 }
 
+async function loadAiRunQueueIssueRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: AiRunQueueIssueRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from("ai_run_queue")
+    .select(
+      "id, store_id, lead_id, conversation_id, queue_key, input, enqueued_at, processed_at, processing_error",
+    );
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as AiRunQueueIssueRow[],
+    error: null,
+  };
+}
+
+async function loadSalesActionQueueIssueRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: SalesActionQueueIssueRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from("ai_sales_action_queue")
+    .select(
+      "id, store_id, conversation_id, ai_run_id, next_action, action_key, payload, enqueued_at, processed_at, processing_error",
+    );
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as SalesActionQueueIssueRow[],
+    error: null,
+  };
+}
+
+async function loadWhatsappInboxIssueRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: WhatsappInboxIssueRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from("channel_whatsapp_inbox")
+    .select(
+      "id, store_id, provider, external_event_id, payload, received_at, processed_at, processing_error",
+    );
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as WhatsappInboxIssueRow[],
+    error: null,
+  };
+}
+
 async function loadAiRunRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: AiRunRow[]; error: string | null }> {
@@ -580,6 +876,9 @@ export async function GET() {
       aiRunQueueRows,
       salesActionQueueRows,
       whatsappQueueRows,
+      aiRunQueueIssueRows,
+      salesActionQueueIssueRows,
+      whatsappIssueRows,
     ] = await Promise.all([
       getExactCount(serviceSupabase, "organizations"),
       getExactCount(serviceSupabase, "stores"),
@@ -608,6 +907,9 @@ export async function GET() {
       loadQueueRows(serviceSupabase, "ai_run_queue"),
       loadQueueRows(serviceSupabase, "ai_sales_action_queue"),
       loadQueueRows(serviceSupabase, "channel_whatsapp_inbox"),
+      loadAiRunQueueIssueRows(serviceSupabase),
+      loadSalesActionQueueIssueRows(serviceSupabase),
+      loadWhatsappInboxIssueRows(serviceSupabase),
     ]);
 
     const organizationsError = organizationsResult.error;
@@ -703,21 +1005,35 @@ export async function GET() {
       metrics.totalCostUsd += costUsd;
 
       const usageCategory = classifyAiRunUsage(row);
+      const totalTokensForRun = promptTokens + completionTokens;
       addCostToBreakdown(metrics.costBreakdownTotal, usageCategory, costUsd);
+      addTokensToBreakdown(metrics.tokenBreakdownTotal, usageCategory, totalTokensForRun);
 
       if (isOnOrAfter(row.created_at, periodBoundaries.startOfToday)) {
         metrics.costUsdToday += costUsd;
+        metrics.tokensPromptToday += promptTokens;
+        metrics.tokensCompletionToday += completionTokens;
+        metrics.tokensToday += totalTokensForRun;
         addCostToBreakdown(metrics.costBreakdownToday, usageCategory, costUsd);
+        addTokensToBreakdown(metrics.tokenBreakdownToday, usageCategory, totalTokensForRun);
       }
 
       if (isOnOrAfter(row.created_at, periodBoundaries.startOfLast7Days)) {
         metrics.costUsdLast7Days += costUsd;
+        metrics.tokensPromptLast7Days += promptTokens;
+        metrics.tokensCompletionLast7Days += completionTokens;
+        metrics.tokensLast7Days += totalTokensForRun;
         addCostToBreakdown(metrics.costBreakdownLast7Days, usageCategory, costUsd);
+        addTokensToBreakdown(metrics.tokenBreakdownLast7Days, usageCategory, totalTokensForRun);
       }
 
       if (isOnOrAfter(row.created_at, periodBoundaries.startOfMonth)) {
         metrics.costUsdMonth += costUsd;
+        metrics.tokensPromptMonth += promptTokens;
+        metrics.tokensCompletionMonth += completionTokens;
+        metrics.tokensMonth += totalTokensForRun;
         addCostToBreakdown(metrics.costBreakdownMonth, usageCategory, costUsd);
+        addTokensToBreakdown(metrics.tokenBreakdownMonth, usageCategory, totalTokensForRun);
       }
 
       if (normalizedStatus === "succeeded") {
@@ -773,6 +1089,13 @@ export async function GET() {
       errorKey: "whatsappErrors",
     });
 
+    applyPendingIssueDetails({
+      metricsByStore,
+      aiRunQueueRows: aiRunQueueIssueRows.rows,
+      salesActionQueueRows: salesActionQueueIssueRows.rows,
+      whatsappQueueRows: whatsappIssueRows.rows,
+    });
+
     const storesList = stores.map((store) => {
       const organization = organizationMap.get(store.organization_id);
       const metrics = metricsByStore.get(store.id) ?? createEmptyStoreMetrics();
@@ -805,6 +1128,19 @@ export async function GET() {
         totalTokensPrompt: metrics.totalTokensPrompt,
         totalTokensCompletion: metrics.totalTokensCompletion,
         totalTokens: metrics.totalTokens,
+        tokensPromptToday: metrics.tokensPromptToday,
+        tokensCompletionToday: metrics.tokensCompletionToday,
+        tokensToday: metrics.tokensToday,
+        tokensPromptLast7Days: metrics.tokensPromptLast7Days,
+        tokensCompletionLast7Days: metrics.tokensCompletionLast7Days,
+        tokensLast7Days: metrics.tokensLast7Days,
+        tokensPromptMonth: metrics.tokensPromptMonth,
+        tokensCompletionMonth: metrics.tokensCompletionMonth,
+        tokensMonth: metrics.tokensMonth,
+        tokenBreakdownTotal: roundTokenUsageBreakdown(metrics.tokenBreakdownTotal),
+        tokenBreakdownToday: roundTokenUsageBreakdown(metrics.tokenBreakdownToday),
+        tokenBreakdownLast7Days: roundTokenUsageBreakdown(metrics.tokenBreakdownLast7Days),
+        tokenBreakdownMonth: roundTokenUsageBreakdown(metrics.tokenBreakdownMonth),
         totalCostUsd: Number(metrics.totalCostUsd.toFixed(6)),
         costUsdToday: Number(metrics.costUsdToday.toFixed(6)),
         costUsdLast7Days: Number(metrics.costUsdLast7Days.toFixed(6)),
@@ -822,6 +1158,10 @@ export async function GET() {
         pendingWhatsappEvents: metrics.pendingWhatsappEvents,
         whatsappErrors: metrics.whatsappErrors,
         totalOperationalIssues,
+
+        pendingIssueDetails: [...metrics.pendingIssueDetails]
+          .sort((a, b) => compareIsoDateDesc(a.occurredAt, b.occurredAt))
+          .slice(0, 50),
 
         recentAiErrors: [...metrics.recentAiErrors]
           .sort((a, b) => compareIsoDateDesc(a.createdAt, b.createdAt))
@@ -849,6 +1189,19 @@ export async function GET() {
         acc.totalTokensPrompt += store.totalTokensPrompt;
         acc.totalTokensCompletion += store.totalTokensCompletion;
         acc.totalTokens += store.totalTokens;
+        acc.tokensPromptToday += store.tokensPromptToday;
+        acc.tokensCompletionToday += store.tokensCompletionToday;
+        acc.tokensToday += store.tokensToday;
+        acc.tokensPromptLast7Days += store.tokensPromptLast7Days;
+        acc.tokensCompletionLast7Days += store.tokensCompletionLast7Days;
+        acc.tokensLast7Days += store.tokensLast7Days;
+        acc.tokensPromptMonth += store.tokensPromptMonth;
+        acc.tokensCompletionMonth += store.tokensCompletionMonth;
+        acc.tokensMonth += store.tokensMonth;
+        sumTokenUsageBreakdown(acc.tokenBreakdownTotal, store.tokenBreakdownTotal);
+        sumTokenUsageBreakdown(acc.tokenBreakdownToday, store.tokenBreakdownToday);
+        sumTokenUsageBreakdown(acc.tokenBreakdownLast7Days, store.tokenBreakdownLast7Days);
+        sumTokenUsageBreakdown(acc.tokenBreakdownMonth, store.tokenBreakdownMonth);
         acc.totalCostUsd += store.totalCostUsd;
         acc.costUsdToday += store.costUsdToday;
         acc.costUsdLast7Days += store.costUsdLast7Days;
@@ -878,6 +1231,19 @@ export async function GET() {
         totalTokensPrompt: 0,
         totalTokensCompletion: 0,
         totalTokens: 0,
+        tokensPromptToday: 0,
+        tokensCompletionToday: 0,
+        tokensToday: 0,
+        tokensPromptLast7Days: 0,
+        tokensCompletionLast7Days: 0,
+        tokensLast7Days: 0,
+        tokensPromptMonth: 0,
+        tokensCompletionMonth: 0,
+        tokensMonth: 0,
+        tokenBreakdownTotal: createEmptyTokenUsageBreakdown(),
+        tokenBreakdownToday: createEmptyTokenUsageBreakdown(),
+        tokenBreakdownLast7Days: createEmptyTokenUsageBreakdown(),
+        tokenBreakdownMonth: createEmptyTokenUsageBreakdown(),
         totalCostUsd: 0,
         costUsdToday: 0,
         costUsdLast7Days: 0,
@@ -922,6 +1288,19 @@ export async function GET() {
         totalTokensPrompt: aiUsageTotals.totalTokensPrompt,
         totalTokensCompletion: aiUsageTotals.totalTokensCompletion,
         totalTokens: aiUsageTotals.totalTokens,
+        tokensPromptToday: aiUsageTotals.tokensPromptToday,
+        tokensCompletionToday: aiUsageTotals.tokensCompletionToday,
+        tokensToday: aiUsageTotals.tokensToday,
+        tokensPromptLast7Days: aiUsageTotals.tokensPromptLast7Days,
+        tokensCompletionLast7Days: aiUsageTotals.tokensCompletionLast7Days,
+        tokensLast7Days: aiUsageTotals.tokensLast7Days,
+        tokensPromptMonth: aiUsageTotals.tokensPromptMonth,
+        tokensCompletionMonth: aiUsageTotals.tokensCompletionMonth,
+        tokensMonth: aiUsageTotals.tokensMonth,
+        tokenBreakdownTotal: roundTokenUsageBreakdown(aiUsageTotals.tokenBreakdownTotal),
+        tokenBreakdownToday: roundTokenUsageBreakdown(aiUsageTotals.tokenBreakdownToday),
+        tokenBreakdownLast7Days: roundTokenUsageBreakdown(aiUsageTotals.tokenBreakdownLast7Days),
+        tokenBreakdownMonth: roundTokenUsageBreakdown(aiUsageTotals.tokenBreakdownMonth),
         totalCostUsd: Number(aiUsageTotals.totalCostUsd.toFixed(6)),
         costUsdToday: Number(aiUsageTotals.costUsdToday.toFixed(6)),
         costUsdLast7Days: Number(aiUsageTotals.costUsdLast7Days.toFixed(6)),
@@ -957,6 +1336,9 @@ export async function GET() {
         aiRunQueue: aiRunQueueRows.error,
         salesActionQueue: salesActionQueueRows.error,
         whatsappQueue: whatsappQueueRows.error,
+        aiRunQueueDetails: aiRunQueueIssueRows.error,
+        salesActionQueueDetails: salesActionQueueIssueRows.error,
+        whatsappQueueDetails: whatsappIssueRows.error,
       },
       stores: storesList,
       future: {

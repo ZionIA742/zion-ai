@@ -35,6 +35,19 @@ export type ZionAdminOverview = {
     totalTokensPrompt?: number | null;
     totalTokensCompletion?: number | null;
     totalTokens?: number | null;
+    tokensPromptToday?: number | null;
+    tokensCompletionToday?: number | null;
+    tokensToday?: number | null;
+    tokensPromptLast7Days?: number | null;
+    tokensCompletionLast7Days?: number | null;
+    tokensLast7Days?: number | null;
+    tokensPromptMonth?: number | null;
+    tokensCompletionMonth?: number | null;
+    tokensMonth?: number | null;
+    tokenBreakdownTotal?: TokenUsageBreakdown | null;
+    tokenBreakdownToday?: TokenUsageBreakdown | null;
+    tokenBreakdownLast7Days?: TokenUsageBreakdown | null;
+    tokenBreakdownMonth?: TokenUsageBreakdown | null;
     totalCostUsd?: number | string | null;
     costUsdToday?: number | string | null;
     costUsdLast7Days?: number | string | null;
@@ -72,12 +85,38 @@ type AiRunEvent = {
   finishedAt: string | null;
 };
 
+type PendingIssueDetail = {
+  id: string;
+  source: string;
+  label: string;
+  error: string | null;
+  occurredAt: string | null;
+  queueKey?: string | null;
+  externalEventId?: string | null;
+  conversationId?: string | null;
+  leadId?: string | null;
+  aiRunId?: string | null;
+  nextAction?: string | null;
+  actionKey?: string | null;
+  provider?: string | null;
+  inputPreview?: string | null;
+  payloadPreview?: string | null;
+};
+
 type AiUsageBreakdown = {
   salesChatUsd?: number | string | null;
   assistantChatUsd?: number | string | null;
   imageGenerationUsd?: number | string | null;
   visualCatalogUsd?: number | string | null;
   unclassifiedUsd?: number | string | null;
+};
+
+type TokenUsageBreakdown = {
+  salesChatTokens?: number | string | null;
+  assistantChatTokens?: number | string | null;
+  imageGenerationTokens?: number | string | null;
+  visualCatalogTokens?: number | string | null;
+  unclassifiedTokens?: number | string | null;
 };
 
 export type ZionAdminStore = {
@@ -98,6 +137,19 @@ export type ZionAdminStore = {
   totalTokensPrompt?: number | null;
   totalTokensCompletion?: number | null;
   totalTokens?: number | null;
+  tokensPromptToday?: number | null;
+  tokensCompletionToday?: number | null;
+  tokensToday?: number | null;
+  tokensPromptLast7Days?: number | null;
+  tokensCompletionLast7Days?: number | null;
+  tokensLast7Days?: number | null;
+  tokensPromptMonth?: number | null;
+  tokensCompletionMonth?: number | null;
+  tokensMonth?: number | null;
+  tokenBreakdownTotal?: TokenUsageBreakdown | null;
+  tokenBreakdownToday?: TokenUsageBreakdown | null;
+  tokenBreakdownLast7Days?: TokenUsageBreakdown | null;
+  tokenBreakdownMonth?: TokenUsageBreakdown | null;
   totalCostUsd?: number | string | null;
   costUsdToday?: number | string | null;
   costUsdLast7Days?: number | string | null;
@@ -116,6 +168,7 @@ export type ZionAdminStore = {
   totalOperationalIssues?: number | null;
   recentAiErrors?: AiRunEvent[];
   recentAiSuccesses?: AiRunEvent[];
+  pendingIssueDetails?: PendingIssueDetail[];
 };
 
 type Props = {
@@ -228,6 +281,86 @@ function CostBreakdownGrid({ breakdown }: { breakdown?: AiUsageBreakdown | null 
         label="Outros / não classificado"
         value={formatUsd(safeBreakdown.unclassifiedUsd)}
         help="Custo sem marcação confiável de origem"
+      />
+    </div>
+  );
+}
+
+function TokenPeriodBlocks({
+  today,
+  week,
+  month,
+  todayPrompt,
+  todayCompletion,
+  weekPrompt,
+  weekCompletion,
+  monthPrompt,
+  monthCompletion,
+}: {
+  today: number | string | null | undefined;
+  week: number | string | null | undefined;
+  month: number | string | null | undefined;
+  todayPrompt?: number | string | null | undefined;
+  todayCompletion?: number | string | null | undefined;
+  weekPrompt?: number | string | null | undefined;
+  weekCompletion?: number | string | null | undefined;
+  monthPrompt?: number | string | null | undefined;
+  monthCompletion?: number | string | null | undefined;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <DetailItem
+        label="Hoje"
+        value={formatCompactNumber(today)}
+        help={`${formatNumber(todayPrompt)} entrada · ${formatNumber(todayCompletion)} saída`}
+      />
+      <DetailItem
+        label="Semana"
+        value={formatCompactNumber(week)}
+        help={`${formatNumber(weekPrompt)} entrada · ${formatNumber(weekCompletion)} saída`}
+      />
+      <DetailItem
+        label="Mês"
+        value={formatCompactNumber(month)}
+        help={`${formatNumber(monthPrompt)} entrada · ${formatNumber(monthCompletion)} saída`}
+      />
+    </div>
+  );
+}
+
+function TokenBreakdownGrid({
+  breakdown,
+}: {
+  breakdown?: TokenUsageBreakdown | null;
+}) {
+  const safeBreakdown = breakdown ?? {};
+
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <DetailItem
+        label="IA vendedora"
+        value={formatCompactNumber(safeBreakdown.salesChatTokens)}
+        help="Tokens do atendimento comercial e decisões de venda"
+      />
+      <DetailItem
+        label="IA assistente"
+        value={formatCompactNumber(safeBreakdown.assistantChatTokens)}
+        help="Tokens do chat operacional quando houver marcação"
+      />
+      <DetailItem
+        label="Geração de imagem"
+        value={formatCompactNumber(safeBreakdown.imageGenerationTokens)}
+        help="Tokens/imagem quando o módulo registrar uso confiável"
+      />
+      <DetailItem
+        label="Catálogo visual"
+        value={formatCompactNumber(safeBreakdown.visualCatalogTokens)}
+        help="Leitura visual de documentos e catálogos"
+      />
+      <DetailItem
+        label="Outros / não classificado"
+        value={formatCompactNumber(safeBreakdown.unclassifiedTokens)}
+        help="Uso sem marcação confiável de origem"
       />
     </div>
   );
@@ -459,6 +592,111 @@ function getOperationalDetails(store: ZionAdminStore) {
   ].filter(Boolean) as string[];
 
   return items;
+}
+
+function PendingIssueRootCauseList({ store }: { store: ZionAdminStore }) {
+  const issueDetails = store.pendingIssueDetails ?? [];
+  const operationalDetails = getOperationalDetails(store);
+
+  if (issueDetails.length === 0) {
+    return (
+      <section>
+        <h3 className="text-sm font-semibold text-zinc-200">
+          Raiz das pendências
+        </h3>
+
+        <div className="mt-3 space-y-2">
+          {operationalDetails.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">
+              Nenhuma pendência crítica encontrada nas filas monitoradas.
+            </div>
+          ) : (
+            operationalDetails.map((item) => (
+              <div
+                key={item}
+                className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-50"
+              >
+                {item}
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h3 className="text-sm font-semibold text-zinc-200">
+        Raiz das pendências
+      </h3>
+
+      <div className="mt-3 space-y-3">
+        {issueDetails.map((issue) => {
+          const identifiers = [
+            issue.queueKey ? `Queue key: ${issue.queueKey}` : null,
+            issue.externalEventId ? `Evento externo: ${issue.externalEventId}` : null,
+            issue.conversationId ? `Conversa: ${issue.conversationId}` : null,
+            issue.leadId ? `Lead: ${issue.leadId}` : null,
+            issue.aiRunId ? `AI run: ${issue.aiRunId}` : null,
+            issue.nextAction ? `Ação: ${issue.nextAction}` : null,
+            issue.actionKey ? `Action key: ${issue.actionKey}` : null,
+            issue.provider ? `Provider: ${issue.provider}` : null,
+          ].filter(Boolean) as string[];
+
+          const preview = issue.inputPreview || issue.payloadPreview || null;
+
+          return (
+            <div
+              key={`${issue.source}-${issue.id}`}
+              className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-semibold text-amber-50">
+                    {issue.label || issue.source || "Pendência"}
+                  </div>
+
+                  <div className="mt-1 break-words text-xs leading-5 text-amber-100/80">
+                    {issue.error || "Erro sem detalhe registrado."}
+                  </div>
+                </div>
+
+                <div className="shrink-0 rounded-full border border-white/10 bg-zinc-950/40 px-3 py-1 text-xs text-zinc-400">
+                  {formatDateTime(issue.occurredAt)}
+                </div>
+              </div>
+
+              {identifiers.length > 0 ? (
+                <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-zinc-400">
+                  {identifiers.map((identifier) => (
+                    <div
+                      key={identifier}
+                      className="break-words rounded-xl border border-white/10 bg-zinc-950/35 px-3 py-2"
+                    >
+                      {identifier}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {preview ? (
+                <div className="mt-3 rounded-xl border border-white/10 bg-zinc-950/50 p-3">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                    Preview técnico
+                  </div>
+
+                  <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-zinc-400">
+                    {preview}
+                  </pre>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function matchesSearch(store: ZionAdminStore, term: string) {
@@ -727,7 +965,7 @@ function StoreDetailsDrawer({
 
         <section>
           <h3 className="text-sm font-semibold text-zinc-200">
-            IA trabalhando
+            Trabalho da IA
           </h3>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <DetailItem
@@ -860,11 +1098,14 @@ function OverviewDetailsDrawer({
   const [selectedAiStore, setSelectedAiStore] = useState<ZionAdminStore | null>(
     null,
   );
+  const [selectedPendingStore, setSelectedPendingStore] =
+    useState<ZionAdminStore | null>(null);
+  const [pendingSearch, setPendingSearch] = useState("");
 
   if (!type) return null;
 
   const titleMap: Record<OverviewPanelKey, string> = {
-    ia: "IA trabalhando",
+    ia: "Trabalho da IA",
     cost: "Custo total da IA",
     tokens: "Tokens usados",
     pending: "Pendências gerais",
@@ -876,7 +1117,7 @@ function OverviewDetailsDrawer({
   };
 
   const subtitleMap: Record<OverviewPanelKey, string> = {
-    ia: "Uso da IA separado por loja.",
+    ia: "Uso da IA vendedora e da IA assistente separado por loja.",
     cost: "Custo real registrado em dólar por loja.",
     tokens: "Tokens de entrada e saída por loja.",
     pending: "Lojas com pendências ou erros monitorados.",
@@ -895,7 +1136,7 @@ function OverviewDetailsDrawer({
 
     return (
       <DrawerShell
-        title={`IA trabalhando · ${selectedAiStore.name}`}
+        title={`Trabalho da IA · ${selectedAiStore.name}`}
         subtitle={selectedAiStore.organizationName}
         onClose={onClose}
       >
@@ -929,6 +1170,34 @@ function OverviewDetailsDrawer({
 
           <section>
             <h3 className="text-sm font-semibold text-zinc-200">
+              IA assistente operacional
+            </h3>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DetailItem
+                label="Conversas internas"
+                value={formatNumber(selectedAiStore.totalAssistantThreads)}
+                help="Threads da assistente operacional nesta loja"
+              />
+              <DetailItem
+                label="Mensagens da assistente"
+                value={formatNumber(selectedAiStore.totalAssistantMessages)}
+                help="Mensagens trocadas no chat operacional"
+              />
+              <DetailItem
+                label="Custo identificado"
+                value={formatUsd(selectedAiStore.costBreakdownTotal?.assistantChatUsd)}
+                help="Só aparece quando o fluxo da assistente registrar custo com marcação confiável"
+              />
+              <DetailItem
+                label="Tokens identificados"
+                value={formatCompactNumber(selectedAiStore.tokenBreakdownTotal?.assistantChatTokens)}
+                help="Só aparece quando o fluxo da assistente registrar tokens com marcação confiável"
+              />
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
               Custo e tokens da IA
             </h3>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -944,20 +1213,6 @@ function OverviewDetailsDrawer({
               />
             </div>
           </section>
-
-          <AiRunEventList
-            title="Últimos erros da IA"
-            emptyText="Nenhum erro recente registrado para esta loja."
-            events={selectedAiStore.recentAiErrors}
-            variant="error"
-          />
-
-          <AiRunEventList
-            title="Últimas execuções com sucesso"
-            emptyText="Nenhuma execução recente com sucesso registrada para esta loja."
-            events={selectedAiStore.recentAiSuccesses}
-            variant="success"
-          />
         </div>
       </DrawerShell>
     );
@@ -1020,6 +1275,145 @@ function OverviewDetailsDrawer({
       </DrawerShell>
     );
   }
+
+
+  if (type === "tokens" && selectedAiStore) {
+    return (
+      <DrawerShell
+        title={`Tokens usados · ${selectedAiStore.name}`}
+        subtitle={selectedAiStore.organizationName}
+        onClose={onClose}
+      >
+        <button
+          type="button"
+          onClick={() => setSelectedAiStore(null)}
+          className="mb-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-zinc-200 hover:bg-white/[0.08]"
+        >
+          ← Voltar para lojas
+        </button>
+
+        <div className="space-y-5">
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              Tokens por período nesta loja
+            </h3>
+            <div className="mt-3">
+              <TokenPeriodBlocks
+                today={selectedAiStore.tokensToday}
+                week={selectedAiStore.tokensLast7Days}
+                month={selectedAiStore.tokensMonth}
+                todayPrompt={selectedAiStore.tokensPromptToday}
+                todayCompletion={selectedAiStore.tokensCompletionToday}
+                weekPrompt={selectedAiStore.tokensPromptLast7Days}
+                weekCompletion={selectedAiStore.tokensCompletionLast7Days}
+                monthPrompt={selectedAiStore.tokensPromptMonth}
+                monthCompletion={selectedAiStore.tokensCompletionMonth}
+              />
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              No que essa loja usou tokens
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">
+              A separação usa a mesma marcação confiável do custo em ai_runs. O que ainda não tiver origem clara aparece como não classificado.
+            </p>
+            <div className="mt-3">
+              <TokenBreakdownGrid breakdown={selectedAiStore.tokenBreakdownTotal} />
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              Entrada e saída
+            </h3>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DetailItem label="Total" value={formatCompactNumber(selectedAiStore.totalTokens)} />
+              <DetailItem label="Entrada" value={formatNumber(selectedAiStore.totalTokensPrompt)} />
+              <DetailItem label="Saída" value={formatNumber(selectedAiStore.totalTokensCompletion)} />
+              <DetailItem label="Execuções" value={formatNumber(selectedAiStore.totalAiRuns)} />
+            </div>
+          </section>
+        </div>
+      </DrawerShell>
+    );
+  }
+
+  if (type === "pending" && selectedPendingStore) {
+    const operational = getOperationalSummary(selectedPendingStore);
+
+    return (
+      <DrawerShell
+        title={`Pendências · ${selectedPendingStore.name}`}
+        subtitle={selectedPendingStore.organizationName}
+        onClose={onClose}
+      >
+        <button
+          type="button"
+          onClick={() => setSelectedPendingStore(null)}
+          className="mb-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-zinc-200 hover:bg-white/[0.08]"
+        >
+          ← Voltar para lojas
+        </button>
+
+        <div className="space-y-5">
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              Resumo das pendências
+            </h3>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DetailItem
+                label="Total de pendências"
+                value={formatNumber(operational.total)}
+                help={operational.details}
+              />
+              <DetailItem
+                label="Status da loja"
+                value={getStoreStatusLabel(selectedPendingStore.subscriptionStatus)}
+                help="Status atual registrado para esta loja"
+              />
+            </div>
+          </section>
+
+          <PendingIssueRootCauseList store={selectedPendingStore} />
+
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              Contagem por área monitorada
+            </h3>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DetailItem
+                label="IA pendente"
+                value={formatNumber(selectedPendingStore.pendingAiRuns)}
+              />
+              <DetailItem
+                label="Erro na fila de IA"
+                value={formatNumber(selectedPendingStore.aiRunQueueErrors)}
+              />
+              <DetailItem
+                label="Ações comerciais pendentes"
+                value={formatNumber(selectedPendingStore.pendingSalesActions)}
+              />
+              <DetailItem
+                label="Erro em ações comerciais"
+                value={formatNumber(selectedPendingStore.salesActionErrors)}
+              />
+              <DetailItem
+                label="Eventos WhatsApp pendentes"
+                value={formatNumber(selectedPendingStore.pendingWhatsappEvents)}
+              />
+              <DetailItem
+                label="Erros no WhatsApp"
+                value={formatNumber(selectedPendingStore.whatsappErrors)}
+              />
+            </div>
+          </section>
+        </div>
+      </DrawerShell>
+    );
+  }
+
   const sortedStores = [...stores].sort((a, b) => {
     if (type === "pending")
       return (
@@ -1031,7 +1425,11 @@ function OverviewDetailsDrawer({
     if (type === "tokens")
       return numberValue(b.totalTokens) - numberValue(a.totalTokens);
     if (type === "ia")
-      return numberValue(b.totalAiRuns) - numberValue(a.totalAiRuns);
+      return (
+        numberValue(b.totalAiRuns) +
+        numberValue(b.totalAssistantMessages) -
+        (numberValue(a.totalAiRuns) + numberValue(a.totalAssistantMessages))
+      );
     if (type === "messages")
       return numberValue(b.totalMessages) - numberValue(a.totalMessages);
     if (type === "leads")
@@ -1069,7 +1467,7 @@ function OverviewDetailsDrawer({
       help = `${formatNumber(store.totalTokensPrompt)} entrada · ${formatNumber(store.totalTokensCompletion)} saída`;
     } else if (type === "ia") {
       main = `${formatNumber(store.totalAiRuns)} execuções`;
-      help = `${formatPercent(store.successfulAiRuns, store.totalAiRuns)} sucesso · ${formatNumber(store.failedAiRuns)} erro(s)`;
+      help = `${formatPercent(store.successfulAiRuns, store.totalAiRuns)} sucesso · ${formatNumber(store.failedAiRuns)} erro(s) · ${formatNumber(store.totalAssistantMessages)} msg assistente`;
     } else if (type === "messages") {
       main = `${formatNumber(store.totalMessages)} mensagens`;
       help = `${formatNumber(store.totalLeads)} leads relacionados`;
@@ -1105,10 +1503,32 @@ function OverviewDetailsDrawer({
         </div>
         <div className="mt-4 text-xl font-semibold text-zinc-50">{main}</div>
         <div className="mt-1 text-xs leading-5 text-zinc-500">{help}</div>
+        {type === "ia" ? (
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="rounded-xl border border-white/10 bg-zinc-950/35 px-3 py-2">
+              <div className="text-[11px] text-zinc-500">IA vendedora</div>
+              <div className="mt-1 text-sm font-semibold text-zinc-100">
+                {formatNumber(store.totalAiRuns)} execuções
+              </div>
+              <div className="mt-0.5 text-xs text-zinc-500">
+                {formatNumber(store.successfulAiRuns)} sucesso · {formatNumber(store.failedAiRuns)} erro(s)
+              </div>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-zinc-950/35 px-3 py-2">
+              <div className="text-[11px] text-zinc-500">IA assistente</div>
+              <div className="mt-1 text-sm font-semibold text-zinc-100">
+                {formatNumber(store.totalAssistantMessages)} mensagens
+              </div>
+              <div className="mt-0.5 text-xs text-zinc-500">
+                {formatNumber(store.totalAssistantThreads)} conversa(s) internas
+              </div>
+            </div>
+          </div>
+        ) : null}
       </>
     );
 
-    if (type === "ia" || type === "cost") {
+    if (type === "ia" || type === "cost" || type === "tokens") {
       return (
         <button
           key={store.id}
@@ -1118,7 +1538,11 @@ function OverviewDetailsDrawer({
         >
           {content}
           <div className="mt-3 text-xs font-semibold text-zinc-400">
-            {type === "ia" ? "Ver erros e sucessos →" : "Ver detalhes do custo →"}
+            {type === "ia"
+              ? "Ver IA vendedora e assistente →"
+              : type === "cost"
+                ? "Ver detalhes do custo →"
+                : "Ver detalhes dos tokens →"}
           </div>
         </button>
       );
@@ -1131,6 +1555,98 @@ function OverviewDetailsDrawer({
       >
         {content}
       </div>
+    );
+  }
+
+  if (type === "pending") {
+    const storesWithPending = sortedStores.filter(
+      (store) => getOperationalSummary(store).total > 0,
+    );
+    const filteredPendingStores = storesWithPending.filter((store) =>
+      matchesSearch(store, pendingSearch),
+    );
+
+    return (
+      <DrawerShell
+        title={titleMap[type]}
+        subtitle={subtitleMap[type]}
+        onClose={onClose}
+      >
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <DetailItem
+              label="Total de pendências"
+              value={formatNumber(data?.totals.totalOperationalIssues)}
+              help="Soma das pendências e erros nas filas monitoradas"
+            />
+            <DetailItem
+              label="Lojas com pendência"
+              value={formatNumber(storesWithPending.length)}
+              help="Lojas com ao menos uma ocorrência crítica"
+            />
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-zinc-950/40 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-zinc-500">⌕</span>
+              <input
+                value={pendingSearch}
+                onChange={(event) => setPendingSearch(event.target.value)}
+                placeholder="Procurar loja com pendência"
+                className="w-full bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+              />
+            </div>
+          </div>
+
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              Lojas com pendências
+            </h3>
+            <div className="mt-3 space-y-3">
+              {filteredPendingStores.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
+                  Nenhuma loja com pendência encontrada.
+                </div>
+              ) : (
+                filteredPendingStores.map((store) => {
+                  const operational = getOperationalSummary(store);
+                  return (
+                    <button
+                      key={store.id}
+                      type="button"
+                      onClick={() => setSelectedPendingStore(store)}
+                      className="w-full rounded-2xl border border-white/10 bg-white/[0.035] p-4 text-left transition hover:border-white/25 hover:bg-white/[0.06]"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="truncate font-semibold text-zinc-100">
+                            {store.name}
+                          </div>
+                          <div className="mt-1 truncate text-xs text-zinc-500">
+                            {store.organizationName}
+                          </div>
+                        </div>
+                        <span className="shrink-0 rounded-full border border-white/10 bg-zinc-950/50 px-2.5 py-1 text-[11px] text-zinc-400">
+                          {getStoreStatusLabel(store.subscriptionStatus)}
+                        </span>
+                      </div>
+                      <div className="mt-4 text-xl font-semibold text-zinc-50">
+                        {operational.label}
+                      </div>
+                      <div className="mt-1 text-xs leading-5 text-zinc-500">
+                        {operational.details}
+                      </div>
+                      <div className="mt-3 text-xs font-semibold text-zinc-400">
+                        Ver onde estão as pendências →
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        </div>
+      </DrawerShell>
     );
   }
 
@@ -1185,6 +1701,37 @@ function OverviewDetailsDrawer({
             </h3>
             <div className="mt-3">
               <CostBreakdownGrid breakdown={data?.totals.costBreakdownTotal} />
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {type === "tokens" ? (
+        <div className="mb-5 space-y-5">
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              Total de todas as lojas
+            </h3>
+            <div className="mt-3">
+              <TokenPeriodBlocks
+                today={data?.totals.tokensToday}
+                week={data?.totals.tokensLast7Days}
+                month={data?.totals.tokensMonth}
+                todayPrompt={data?.totals.tokensPromptToday}
+                todayCompletion={data?.totals.tokensCompletionToday}
+                weekPrompt={data?.totals.tokensPromptLast7Days}
+                weekCompletion={data?.totals.tokensCompletionLast7Days}
+                monthPrompt={data?.totals.tokensPromptMonth}
+                monthCompletion={data?.totals.tokensCompletionMonth}
+              />
+            </div>
+          </section>
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              No que o ZION está usando tokens
+            </h3>
+            <div className="mt-3">
+              <TokenBreakdownGrid breakdown={data?.totals.tokenBreakdownTotal} />
             </div>
           </section>
         </div>
@@ -1334,7 +1881,7 @@ export default function ZionAdminDashboardClient({
 
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
             <OverviewButton
-              label="IA trabalhando"
+              label="Trabalho da IA"
               value={formatNumber(totalAiRuns)}
               helper={`${formatPercent(successfulAiRuns, totalAiRuns)} sucesso · ${formatNumber(failedAiRuns)} erro(s)`}
               onClick={() => setSelectedOverview("ia")}
@@ -1380,12 +1927,6 @@ export default function ZionAdminDashboardClient({
               value={formatNumber(data?.totals.appointments)}
               helper="Agenda das lojas"
               onClick={() => setSelectedOverview("appointments")}
-            />
-            <OverviewButton
-              label="Assistente"
-              value={formatNumber(data?.totals.assistantMessages)}
-              helper={`${formatNumber(data?.totals.assistantThreads)} thread(s)`}
-              onClick={() => setSelectedOverview("assistant")}
             />
           </div>
         </section>

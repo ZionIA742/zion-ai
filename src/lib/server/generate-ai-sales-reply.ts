@@ -150,6 +150,34 @@ export type OperationalFollowUpDecision = {
   requestedTiming?: string | null;
 };
 
+export type CommercialHandoffType =
+  | "commercial_visit_request"
+  | "commercial_quote_request";
+
+export type CommercialHandoffContext = {
+  taskType: CommercialHandoffType;
+  intent: "visit_request" | "quote_request";
+  reason:
+    | "direct_visit_request"
+    | "direct_quote_request"
+    | "visit_after_commercial_momentum";
+  shouldCreateTask: boolean;
+  replyOverride: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  lastCustomerMessage: string;
+  conversationSummary: string;
+  spaceText: string | null;
+  requestedAreaM2: number | null;
+  locationText: string | null;
+  preferredPeriodText: string | null;
+  recommendedModel: string | null;
+  relevantObjection: string | null;
+  customerPreferences: string | null;
+  adModelOrRequestedModel: string | null;
+  nextStep: string;
+};
+
 type ConversationFactState = {
   budgetKnown: boolean;
   authorityKnown: boolean;
@@ -273,6 +301,7 @@ export type GenerateAiSalesReplyResult =
         resolvedStoreId: string;
         requestedStoreId: string | null;
         operationalFollowUpDecision: OperationalFollowUpDecision;
+        commercialHandoff: CommercialHandoffContext | null;
       };
     }
   | {
@@ -781,6 +810,36 @@ function looksLikePaymentQuestion(text: string): boolean {
   return detectIntents(text).includes("payment");
 }
 
+function hasConfiguredTechnicalVisit(onboardingMap: Record<string, string>): boolean {
+  const rawValue = String(onboardingMap.offers_technical_visit || "").trim();
+  const normalizedValue = normalizeText(rawValue);
+  if (["sim", "yes", "true", "1"].includes(normalizedValue)) return true;
+
+  const summary = normalizeText(onboardingMap.technical_visit_rules_summary || "");
+  const rules = normalizeText(onboardingMap.technical_visit_rules || "");
+
+  return Boolean(summary || rules);
+}
+
+function shouldSuggestVisitAdvance(args: {
+  facts: ConversationFactState;
+  intents: DetectedIntent[];
+  pattern: ConversationPattern;
+  lastCustomerMessage: string;
+  offersTechnicalVisit: boolean;
+  lastAiListedPools: boolean;
+  lastAiMessage?: string | null;
+}): boolean {
+  if (!args.offersTechnicalVisit) return false;
+  if (looksLikeExplicitVisitRequest(args.lastCustomerMessage)) return true;
+  if (looksLikeVisitAcceptanceAfterSuggestion(args.lastCustomerMessage, args.lastAiMessage || null)) {
+    return true;
+  }
+  if (looksLikePaymentQuestion(args.lastCustomerMessage)) return false;
+  if (hasSpecificPoolReference(args.lastCustomerMessage) && !args.lastAiListedPools) return false;
+  return false;
+}
+
 function looksLikeRegionQuestion(text: string): boolean {
   return detectIntents(text).includes("region");
 }
@@ -867,6 +926,7 @@ function detectFollowUpTiming(text: string): string | null {
 function analyzeCustomerPatienceSignal(text: string): CustomerPatienceSignal {
   const t = normalizeText(text);
   const followUpTiming = detectFollowUpTiming(text);
+  const hasBudgetConstraintSignal = looksLikeDiscountQuestionV2(text);
 
   const notInterestedSignals = [
     "nao quero",
@@ -886,7 +946,38 @@ function analyzeCustomerPatienceSignal(text: string): CustomerPatienceSignal {
     "remove meu contato",
   ];
 
-  if (notInterestedSignals.some((signal) => t.includes(signal))) {
+  void notInterestedSignals;
+
+  const strongNotInterestedSignals = [
+    "nao quero mais",
+    "nÃ£o quero mais",
+    "nao tenho interesse",
+    "nÃ£o tenho interesse",
+    "sem interesse",
+    "desisti",
+    "nao precisa",
+    "nÃ£o precisa",
+    "pode deixar",
+    "pode parar",
+    "cancela",
+    "nao vou comprar",
+    "nÃ£o vou comprar",
+    "pare de mandar",
+    "para de mandar",
+    "nao me chama",
+    "nÃ£o me chama",
+    "nao me manda mensagem",
+    "nÃ£o me manda mensagem",
+    "ja resolvi",
+    "jÃ¡ resolvi",
+    "ja resolvi em outro lugar",
+    "jÃ¡ resolvi em outro lugar",
+    "comprei em outro lugar",
+    "me tira",
+    "remove meu contato",
+  ];
+
+  if (!hasBudgetConstraintSignal && strongNotInterestedSignals.some((signal) => t.includes(signal))) {
     return {
       status: "not_interested",
       summary: "cliente demonstrou desinteresse ou pediu para não seguir com a venda",
@@ -1135,6 +1226,311 @@ function countQuestionIntents(lastCustomerMessage: string): number {
   return lastCustomerMessage.includes("?") ? 1 : 0;
 }
 
+function looksLikeDirectQuoteRequest(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("quero orcamento") ||
+    t.includes("quero orçamento") ||
+    t.includes("faz um orcamento") ||
+    t.includes("faz um orçamento") ||
+    t.includes("me manda um orcamento") ||
+    t.includes("me manda um orçamento") ||
+    t.includes("preciso de um orcamento") ||
+    t.includes("preciso de um orçamento")
+  );
+}
+
+function looksLikeExplicitVisitRequest(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("agendar uma visita") ||
+    t.includes("marcar uma visita") ||
+    t.includes("marca uma visita") ||
+    t.includes("pode agendar uma visita") ||
+    t.includes("da pra agendar uma visita") ||
+    t.includes("pode vir aqui ver") ||
+    t.includes("quero uma visita tecnica") ||
+    t.includes("quero que alguem venha avaliar")
+  );
+}
+
+function looksLikeVisitAcceptanceAfterSuggestion(
+  text: string,
+  lastAiMessage: string | null | undefined
+): boolean {
+  const normalizedCustomerText = normalizeText(text);
+  const normalizedLastAiMessage = normalizeText(lastAiMessage || "");
+
+  if (!normalizedCustomerText || !normalizedLastAiMessage) return false;
+
+  const aiSuggestedVisit =
+    normalizedLastAiMessage.includes("visita") &&
+    (normalizedLastAiMessage.includes("verificar") ||
+      normalizedLastAiMessage.includes("horario") ||
+      normalizedLastAiMessage.includes("cidade") ||
+      normalizedLastAiMessage.includes("periodo"));
+
+  if (!aiSuggestedVisit) return false;
+
+  return (
+    normalizedCustomerText === "sim" ||
+    normalizedCustomerText === "sim pode verificar" ||
+    normalizedCustomerText === "pode verificar" ||
+    normalizedCustomerText === "pode ver um horario" ||
+    normalizedCustomerText === "pode marcar" ||
+    normalizedCustomerText === "pode agendar" ||
+    normalizedCustomerText === "vamos fazer a visita"
+  );
+}
+
+function looksLikeExtendedQuoteRequest(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    looksLikeDirectQuoteRequest(text) ||
+    t.includes("me passa um orcamento") ||
+    t.includes("pode mandar orcamento") ||
+    t.includes("quero proposta") ||
+    t.includes("faz uma proposta")
+  );
+}
+
+function extractLocationSnippet(text: string): string | null {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const patterns = [
+    /(?:moro em|sou de|fica em|aqui em|na cidade de|cidade)\s+([a-z0-9\u00c0-\u017f\s\-]{2,60})/i,
+    /(?:bairro)\s+([a-z0-9\u00c0-\u017f\s\-]{2,60})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    const value = String(match?.[1] || "").trim().replace(/[.!?,;:]+$/g, "");
+    if (value) return value;
+  }
+
+  return null;
+}
+
+function extractPreferredPeriodSnippet(text: string): string | null {
+  const raw = String(text || "").trim();
+  const normalized = normalizeText(raw);
+
+  if (!normalized) return null;
+  if (normalized.includes("manha") || normalized.includes("manhã")) return "manhã";
+  if (normalized.includes("tarde")) return "tarde";
+  if (normalized.includes("noite")) return "noite";
+  if (normalized.includes("fim de semana") || normalized.includes("final de semana")) {
+    return "fim de semana";
+  }
+  if (normalized.includes("amanha") || normalized.includes("amanhã")) return "amanhã";
+  if (normalized.includes("semana que vem")) return "semana que vem";
+
+  const explicitDay = raw.match(
+    /\b(?:segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b/i
+  );
+  return explicitDay?.[0] || null;
+}
+
+function extractRelevantObjection(text: string): string | null {
+  const normalized = normalizeText(text);
+  if (!normalized) return null;
+  if (looksLikeDiscountQuestionV2(text)) return "objeção de preço/orçamento";
+  if (normalized.includes("caro")) return "cliente achou caro";
+  if (normalized.includes("mais barato") || normalized.includes("barato")) {
+    return "cliente quer opção mais barata";
+  }
+  return null;
+}
+
+function extractSpaceText(text: string): string | null {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const areaPatterns = [
+    /\b\d{1,2}(?:[.,]\d+)?\s*(?:m|metro|metros)\s*(?:x|por)\s*\d{1,2}(?:[.,]\d+)?\s*(?:m|metro|metros)\b/i,
+    /\b\d{1,2}(?:[.,]\d+)?\s*(?:x|por)\s*\d{1,2}(?:[.,]\d+)?\b/i,
+    /\b\d{1,3}(?:[.,]\d+)?\s*m[²2]\b/i,
+  ];
+
+  for (const pattern of areaPatterns) {
+    const match = raw.match(pattern);
+    const value = String(match?.[0] || "").trim();
+    if (value) return value;
+  }
+
+  return null;
+}
+
+function extractCustomerPreferencesText(text: string): string | null {
+  const normalized = normalizeText(text);
+  if (!normalized) return null;
+
+  const preferences: string[] = [];
+
+  if (normalized.includes("pequena") || normalized.includes("compacta")) {
+    preferences.push("piscina pequena/compacta");
+  }
+  if (
+    normalized.includes("barata") ||
+    normalized.includes("mais barata") ||
+    normalized.includes("mais em conta") ||
+    normalized.includes("economica") ||
+    normalized.includes("nao quero gastar muito")
+  ) {
+    preferences.push("opcao mais economica");
+  }
+
+  if (preferences.length === 0) return null;
+  return Array.from(new Set(preferences)).join(" e ");
+}
+
+function buildCommercialConversationSummary(args: {
+  leadName?: string | null;
+  lastCustomerMessage: string;
+  adModelOrRequestedModel: string | null;
+  spaceText: string | null;
+  requestedAreaM2: number | null;
+  locationText: string | null;
+  preferredPeriodText: string | null;
+  recommendedModel: string | null;
+  relevantObjection: string | null;
+  customerPreferences: string | null;
+  nextStep: string;
+}) {
+  const parts = [
+    args.leadName ? `Cliente: ${args.leadName}.` : null,
+    args.adModelOrRequestedModel ? `Modelo citado pelo cliente/anuncio: ${args.adModelOrRequestedModel}.` : null,
+    args.spaceText ? `Espaco informado: ${args.spaceText}.` : null,
+    args.lastCustomerMessage ? `Última mensagem: "${args.lastCustomerMessage}".` : null,
+    args.requestedAreaM2 != null ? `Espaço informado: ${args.requestedAreaM2} m².` : null,
+    args.locationText ? `Local: ${args.locationText}.` : null,
+    args.customerPreferences ? `Preferencias do cliente: ${args.customerPreferences}.` : null,
+    args.preferredPeriodText ? `Melhor período citado: ${args.preferredPeriodText}.` : null,
+    args.recommendedModel ? `Modelo recomendado no contexto: ${args.recommendedModel}.` : null,
+    args.relevantObjection ? `Ponto comercial relevante: ${args.relevantObjection}.` : null,
+    args.nextStep ? `Proximo passo: ${args.nextStep}` : null,
+  ].filter(Boolean);
+
+  return parts.join(" ");
+}
+
+function buildCommercialHandoffReply(args: {
+  handoffType: CommercialHandoffType;
+  locationText: string | null;
+  preferredPeriodText: string | null;
+  requestedAreaM2: number | null;
+}): string {
+  if (args.handoffType === "commercial_visit_request") {
+    if (args.locationText && args.preferredPeriodText) {
+      return "Perfeito. Vou verificar a disponibilidade com a loja e te retorno com o melhor horário.";
+    }
+
+    if (!args.locationText && !args.preferredPeriodText) {
+      return "Posso te ajudar com isso. Me confirma sua cidade e qual dia/período costuma ser melhor para você que eu verifico com a loja.";
+    }
+
+    if (!args.locationText) {
+      return "Posso te ajudar com isso. Me confirma sua cidade que eu verifico com a loja o melhor horário para a visita.";
+    }
+
+    return "Posso te ajudar com isso. Me confirma qual dia ou período costuma ser melhor para você que eu verifico com a loja.";
+  }
+
+  if (args.requestedAreaM2 != null || args.locationText) {
+    return "Perfeito. Vou encaminhar seu pedido de orçamento para a loja e te retorno com as informações certas.";
+  }
+
+  return "Posso te ajudar com isso. Me confirma sua cidade e, se já tiver, o espaço ou medida que você quer aproveitar que eu encaminho para a loja da forma certa.";
+}
+
+function inferCommercialHandoff(args: {
+  lastCustomerMessage: string;
+  customerConversationText: string;
+  lastAiMessage: string | null;
+  leadName: string | null;
+  leadPhone: string | null;
+  facts: ConversationFactState;
+  intents: DetectedIntent[];
+  pattern: ConversationPattern;
+  patienceSignal: CustomerPatienceSignal;
+  offersTechnicalVisit: boolean;
+  lastAiListedPools: boolean;
+  recommendedModel: string | null;
+}): CommercialHandoffContext | null {
+  if (args.patienceSignal.status === "not_interested") return null;
+
+  const handoffSourceText = args.customerConversationText || args.lastCustomerMessage;
+  const requestedAreaM2 = extractRequestedAreaM2(handoffSourceText);
+  const spaceText = extractSpaceText(handoffSourceText);
+  const locationText = extractLocationSnippet(handoffSourceText);
+  const preferredPeriodText = extractPreferredPeriodSnippet(handoffSourceText);
+  const relevantObjection =
+    extractRelevantObjection(args.lastCustomerMessage) || extractRelevantObjection(handoffSourceText);
+  const customerPreferences = extractCustomerPreferencesText(handoffSourceText);
+  const adModelOrRequestedModel = extractRequestedPoolReference(handoffSourceText)?.raw || null;
+  const directVisitRequest =
+    looksLikeExplicitVisitRequest(args.lastCustomerMessage) ||
+    looksLikeVisitAcceptanceAfterSuggestion(args.lastCustomerMessage, args.lastAiMessage);
+  const directQuoteRequest = looksLikeExtendedQuoteRequest(args.lastCustomerMessage);
+
+  if (!directVisitRequest && !directQuoteRequest) {
+    return null;
+  }
+
+  const taskType: CommercialHandoffType = directQuoteRequest
+    ? "commercial_quote_request"
+    : "commercial_visit_request";
+  const nextStepSummary =
+    taskType === "commercial_quote_request"
+      ? "responsavel deve revisar o pedido, confirmar o procedimento comercial correto e retornar ao cliente sem prometer orcamento emitido antes da validacao real."
+      : "responsavel deve avaliar visita e disponibilidade, confirmar o procedimento da loja e retornar ao cliente sem prometer agenda antes da confirmacao real.";
+
+  return {
+    taskType,
+    intent: taskType === "commercial_quote_request" ? "quote_request" : "visit_request",
+    reason: directQuoteRequest ? "direct_quote_request" : "direct_visit_request",
+    shouldCreateTask: true,
+    replyOverride: buildCommercialHandoffReply({
+      handoffType: taskType,
+      locationText,
+      preferredPeriodText,
+      requestedAreaM2,
+    }),
+    customerName: args.leadName,
+    customerPhone: args.leadPhone,
+    lastCustomerMessage: args.lastCustomerMessage,
+    conversationSummary: buildCommercialConversationSummary({
+      leadName: args.leadName,
+      lastCustomerMessage: args.lastCustomerMessage,
+      adModelOrRequestedModel,
+      spaceText,
+      requestedAreaM2,
+      locationText,
+      preferredPeriodText,
+      recommendedModel: args.recommendedModel,
+      relevantObjection,
+      customerPreferences,
+      nextStep: nextStepSummary,
+    }),
+    spaceText,
+    requestedAreaM2,
+    locationText,
+    preferredPeriodText,
+    recommendedModel: args.recommendedModel,
+    relevantObjection,
+    customerPreferences,
+    adModelOrRequestedModel,
+    nextStep:
+      taskType === "commercial_quote_request"
+        ? "Responsável deve revisar o pedido, confirmar procedimento comercial e retornar ao cliente com o orçamento correto."
+        : "Responsável deve verificar disponibilidade, confirmar o procedimento da loja e retornar ao cliente sem prometer agenda antes da confirmação real.",
+  };
+}
+
 function isObjectiveQuestionMode(lastCustomerMessage: string): boolean {
   const text = normalizeText(lastCustomerMessage);
   const intents = detectIntents(text);
@@ -1204,6 +1600,7 @@ function looksLikePoolRecommendationRequest(text: string): boolean {
   const t = normalizeText(text);
 
   return (
+    looksLikePoolPreferenceLanguage(text) ||
     t.includes("modelo") ||
     t.includes("modelos") ||
     t.includes("opcoes") ||
@@ -1232,6 +1629,52 @@ function looksLikePoolRecommendationRequest(text: string): boolean {
   );
 }
 
+function looksLikePoolPreferenceLanguage(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    t.includes("pequena") ||
+    t.includes("pequeno") ||
+    t.includes("pequenas") ||
+    t.includes("pequenos") ||
+    t.includes("barata") ||
+    t.includes("barato") ||
+    t.includes("baratas") ||
+    t.includes("baratos") ||
+    t.includes("economica") ||
+    t.includes("econÃ´mica") ||
+    t.includes("economico") ||
+    t.includes("econÃ´mico") ||
+    t.includes("compacta") ||
+    t.includes("compacto") ||
+    t.includes("compactas") ||
+    t.includes("compactos") ||
+    t.includes("simples") ||
+    t.includes("menor") ||
+    t.includes("menores") ||
+    t.includes("mais barata") ||
+    t.includes("mais barato") ||
+    t.includes("mais em conta") ||
+    t.includes("nao quero gastar muito") ||
+    t.includes("nÃ£o quero gastar muito") ||
+    t.includes("pouco espaco") ||
+    t.includes("pouco espaÃ§o") ||
+    t.includes("espaco pequeno") ||
+    t.includes("espaÃ§o pequeno") ||
+    t.includes("qual voce recomenda") ||
+    t.includes("qual vocÃª recomenda") ||
+    t.includes("qual recomenda") ||
+    t.includes("facil de manter") ||
+    t.includes("fÃ¡cil de manter") ||
+    t.includes("boa para crianca") ||
+    t.includes("boa para crianÃ§a") ||
+    t.includes("bom custo beneficio") ||
+    t.includes("bom custo-beneficio") ||
+    t.includes("custo beneficio") ||
+    t.includes("custo-beneficio")
+  );
+}
+
 function hasSpecificPoolReference(text: string): boolean {
   const t = normalizeText(text);
 
@@ -1244,9 +1687,17 @@ function hasSpecificPoolReference(text: string): boolean {
     return true;
   }
 
+  if (
+    looksLikePoolPreferenceLanguage(text) &&
+    !/\b(?:modelo|cod(?:igo)?|sku)\s+/i.test(t) &&
+    !/\b\d{2,}\b/.test(t)
+  ) {
+    return false;
+  }
+
   return (
-    /\bpiscina\s+[a-z0-9]{2,}(?:\s+[a-z0-9]{1,12}){0,2}\b/i.test(t) ||
-    /\b(?:fibra|vinil|pastilha|spa)\s+[a-z0-9]{2,}\b/i.test(t)
+    extractRequestedPoolReference(text) != null ||
+    /\b(?:quero|tem|vi|sobre|fala da|me fala da|quanto custa a)\s+(?:o\s+modelo\s+|a\s+modelo\s+|a\s+|o\s+)([a-z0-9][a-z0-9-]{1,30})\b/i.test(t)
   );
 }
 
@@ -1384,18 +1835,48 @@ function looksLikeDiscountQuestionV2(text: string): boolean {
     looksLikeDiscountQuestion(text) ||
     t.includes("menor valor") ||
     t.includes("mais barato") ||
+    t.includes("mais em conta") ||
     t.includes("ta caro") ||
     t.includes("esta caro") ||
     t.includes("vi mais barato") ||
     t.includes("concorrente") ||
     t.includes("fecha por") ||
     t.includes("consegue fazer por menos") ||
+    t.includes("nao quero gastar muito") ||
+    t.includes("nao quero gastar tanto") ||
+    t.includes("quero economizar") ||
+    t.includes("tem algo mais em conta") ||
+    t.includes("opcao mais economica") ||
+    t.includes("opcao economica") ||
+    t.includes("meu orcamento e baixo") ||
+    t.includes("nao posso pagar tudo isso") ||
     t.includes("tem promocao") ||
     t.includes("promocao") ||
     t.includes("no pix melhora") ||
     t.includes("pix melhora") ||
     t.includes("a vista melhora") ||
     t.includes("avista melhora")
+  );
+}
+
+function hasExplicitPaymentConditionSignal(text: string): boolean {
+  const t = normalizeText(text);
+
+  return (
+    looksLikePaymentQuestion(text) ||
+    t.includes("pix melhora") ||
+    t.includes("no pix melhora") ||
+    t.includes("a vista melhora") ||
+    t.includes("avista melhora") ||
+    t.includes("parcelado") ||
+    t.includes("parcelamento") ||
+    t.includes("cartao") ||
+    t.includes("cartão") ||
+    t.includes("boleto") ||
+    t.includes("entrada") ||
+    t.includes("sinal") ||
+    t.includes("forma de pagamento") ||
+    t.includes("formas de pagamento")
   );
 }
 
@@ -1472,13 +1953,14 @@ function detectConversationPattern(args: {
     paymentOrClosingSubtype,
   } = args;
   const normalized = normalizeText(lastCustomerMessage);
+  const hasClearBudgetObjection = looksLikeDiscountQuestionV2(lastCustomerMessage);
+
+  if (hasClearBudgetObjection && patienceSignal.status !== "not_interested") {
+    return "discount_question";
+  }
 
   if (patienceSignal.status !== "active_interest") {
     return "pause_or_disinterest";
-  }
-
-  if (looksLikeDiscountQuestionV2(lastCustomerMessage)) {
-    return "discount_question";
   }
 
   if (paymentOrClosingSubtype && paymentOrClosingSubtype !== "none") {
@@ -1804,6 +2286,9 @@ const GENERIC_POOL_REFERENCE_TOKENS = new Set([
   "compactas",
   "compacto",
   "compactos",
+  "crianca",
+  "criancas",
+  "custo",
   "da",
   "de",
   "do",
@@ -1812,11 +2297,16 @@ const GENERIC_POOL_REFERENCE_TOKENS = new Set([
   "economico",
   "economicos",
   "em",
+  "espaco",
+  "facil",
   "fibra",
   "foto",
   "fotos",
   "hidromassagem",
   "mais",
+  "manter",
+  "menor",
+  "menores",
   "modelo",
   "modelos",
   "mostra",
@@ -1824,6 +2314,10 @@ const GENERIC_POOL_REFERENCE_TOKENS = new Set([
   "opcoes",
   "para",
   "pastilha",
+  "pequena",
+  "pequenas",
+  "pequeno",
+  "pequenos",
   "piscina",
   "piscinas",
   "premium",
@@ -1833,6 +2327,10 @@ const GENERIC_POOL_REFERENCE_TOKENS = new Set([
   "um",
   "uma",
   "vinil",
+  "barata",
+  "baratas",
+  "barato",
+  "baratos",
 ]);
 
 function isGenericPoolReferenceToken(token: string): boolean {
@@ -1846,6 +2344,11 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
     /\bvi o anuncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\banuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\banuncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bquero\s+o\s+modelo\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bquero\s+a\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bquero\s+o\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\btem\s+a\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\btem\s+o\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bmodelo\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bpiscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
   ];
@@ -1862,6 +2365,9 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
     if (!cleaned) continue;
 
     const tokens = cleaned.split(/\s+/).filter(Boolean);
+    const descriptiveOnly =
+      looksLikePoolPreferenceLanguage(cleaned) &&
+      !tokens.some((token) => /^\d{2,}$/.test(token));
     const hasNamedSignal = tokens.some(
       (token) => (/^\d{2,}$/.test(token) || token.length >= 4) && !isGenericPoolReferenceToken(token)
     );
@@ -1869,7 +2375,7 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
       tokens.some((token) => /^\d{2,}$/.test(token)) &&
       tokens.some((token) => !isGenericPoolReferenceToken(token));
 
-    if (!hasNamedSignal && !hasCodeSignal) {
+    if (descriptiveOnly || (!hasNamedSignal && !hasCodeSignal)) {
       continue;
     }
 
@@ -2308,6 +2814,8 @@ function inferNextBestQuestion(args: {
   lastCustomerMessage: string;
   explicitCatalogRequest: boolean;
   patienceSignal: CustomerPatienceSignal;
+  offersTechnicalVisit: boolean;
+  lastAiListedPools: boolean;
 }): string | null {
   const {
     pattern,
@@ -2318,6 +2826,8 @@ function inferNextBestQuestion(args: {
     lastCustomerMessage,
     explicitCatalogRequest,
     patienceSignal,
+    offersTechnicalVisit,
+    lastAiListedPools,
   } = args;
 
   if (patienceSignal.shouldAvoidNewQuestion) {
@@ -2341,6 +2851,7 @@ function inferNextBestQuestion(args: {
 
   if (pattern === "discount_question") {
     const normalizedDiscountMessage = normalizeText(lastCustomerMessage);
+    const explicitPaymentCondition = hasExplicitPaymentConditionSignal(lastCustomerMessage);
     const askedPixImprovement =
       normalizedDiscountMessage.includes("pix melhora") ||
       normalizedDiscountMessage.includes("no pix melhora") ||
@@ -2351,6 +2862,11 @@ function inferNextBestQuestion(args: {
       if (!facts.installationInterestKnown && !looksLikeInstallationQuestion(lastCustomerMessage)) {
         return "Voce esta olhando so a piscina ou tambem instalacao?";
       }
+      if (!explicitPaymentCondition) {
+        return facts.sizeKnown || facts.needKnown
+          ? "Voce quer priorizar o menor preco ou uma opcao pequena com um pouco mais de conforto?"
+          : "Quer que eu te mostre as opcoes mais em conta?";
+      }
       if (!askedPixImprovement && !facts.paymentInterestKnown) {
         return "Seria no Pix/a vista ou parcelado?";
       }
@@ -2358,12 +2874,16 @@ function inferNextBestQuestion(args: {
     }
 
     if (facts.needKnown) {
-      return askedPixImprovement
-        ? "Qual modelo voce esta pensando pra eu ver a condicao mais real?"
-        : "Seria no Pix/a vista ou parcelado?";
+      return explicitPaymentCondition
+        ? askedPixImprovement
+          ? "Qual modelo voce esta pensando pra eu ver a condicao mais real?"
+          : "Seria no Pix/a vista ou parcelado?"
+        : "Voce quer priorizar o menor preco ou uma opcao com um pouco mais de conforto?";
     }
 
-    return "Qual modelo voce esta pensando pra eu ver a condicao mais real?";
+    return explicitPaymentCondition
+      ? "Qual modelo voce esta pensando pra eu ver a condicao mais real?"
+      : "Quer que eu te mostre as opcoes mais acessiveis?";
   }
 
   if (pattern === "payment_or_closing_flow") {
@@ -2371,6 +2891,12 @@ function inferNextBestQuestion(args: {
       return "Me fala qual condicao faz mais sentido pra voce hoje que eu te oriento no proximo passo";
     }
     return null;
+  }
+
+  if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
+    return facts.locationKnown
+      ? "Posso verificar um horario pra visita. Qual dia ou periodo costuma ser melhor pra voce?"
+      : "Posso te ajudar com isso. Me confirma sua cidade ou bairro e qual dia ou periodo costuma ser melhor pra voce?";
   }
 
   if (pattern === "photo_or_simulation_request") {
@@ -2453,6 +2979,7 @@ function inferResponseGoal(args: {
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
   bestNamedPoolMatch: MatchedPool | null;
+  offersTechnicalVisit: boolean;
 }): string {
   const {
     pattern,
@@ -2465,7 +2992,19 @@ function inferResponseGoal(args: {
     requestedPoolReference,
     strongestPoolReferenceMatch,
     bestNamedPoolMatch,
+    offersTechnicalVisit,
+    lastCustomerMessage,
+    lastAiListedPools,
   } = args;
+
+  const suggestVisitAdvance = shouldSuggestVisitAdvance({
+    facts,
+    intents,
+    pattern,
+    lastCustomerMessage,
+    offersTechnicalVisit,
+    lastAiListedPools,
+  });
 
   if (patienceSignal.status === "not_interested") {
     if (isHardStopMessage(args.lastCustomerMessage)) {
@@ -2497,7 +3036,15 @@ function inferResponseGoal(args: {
   }
 
   if (pattern === "discount_question") {
-    return "responder a objecao de preco ou pedido de desconto de forma comercial, proteger margem, vender valor antes de reduzir preco e tratar a condicao como dependente de modelo, projeto e forma de pagamento, sempre respeitando a configuracao da loja";
+    return hasExplicitPaymentConditionSignal(args.lastCustomerMessage)
+      ? "responder a objecao de preco ou pedido de desconto de forma comercial, proteger margem, vender valor antes de reduzir preco e tratar a condicao como dependente de modelo, projeto e forma de pagamento, sempre respeitando a configuracao da loja"
+      : "responder a objecao de preco ou limite de orcamento de forma comercial, reconhecer a limitacao, sugerir alternativa mais economica real quando houver base e usar contexto ja conhecido antes de perguntar algo novo, sem puxar forma de pagamento como saida generica";
+  }
+
+  if (looksLikeTechnicalVisitQuestion(args.lastCustomerMessage)) {
+    return offersTechnicalVisit
+      ? "tratar visita como proximo passo comercial seguro, coletar cidade ou bairro e melhor dia ou periodo, dizer que vai verificar a disponibilidade e nao afirmar que a visita ja foi agendada ou confirmada"
+      : "explicar com sinceridade que a visita precisa ser confirmada com a loja ou responsavel, coletar cidade ou bairro e melhor dia ou periodo e nao prometer agendamento como se estivesse executado";
   }
 
   if (pattern === "payment_or_closing_flow") {
@@ -2600,6 +3147,7 @@ function inferForbiddenInThisReply(args: {
   recommendationPolicy: RecommendationPolicy;
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  offersTechnicalVisit: boolean;
 }): string[] {
   const out: string[] = [];
 
@@ -2628,6 +3176,12 @@ function inferForbiddenInThisReply(args: {
     out.push("nao entrar em guerra de preco com concorrente");
     out.push("nao confirmar condicao sensivel de pagamento, Pix, comprovante ou contrato sem base/configuracao");
     out.push("nao responder so com depende; primeiro defenda valor e depois explique a condicao com criterio");
+    if (!hasExplicitPaymentConditionSignal(args.lastCustomerMessage)) {
+      out.push("nao puxar formas de pagamento, Pix, parcelamento, cartao, entrada ou condicao especial se o cliente nao trouxe pagamento");
+      out.push("nao sugerir frases como formas de pagamento que podem ajudar no orcamento ou condicao de pagamento que pode ajudar");
+      out.push("nao usar frases vagas como se quiser seguir por esse caminho");
+      out.push("nao escrever forma de pagamento, formas de pagamento, condicoes de pagamento, Pix ou parcelado, a vista ou parcelado, facilitar no pagamento, ajudar no orcamento, no Pix ou entrada");
+    }
   }
 
   if (args.pattern === "payment_or_closing_flow") {
@@ -2640,6 +3194,14 @@ function inferForbiddenInThisReply(args: {
     out.push("nao dizer que o produto foi reservado, separado ou segurado sem base real");
     out.push("nao dizer que o contrato foi emitido, enviado para assinatura ou assinado pela IA");
     out.push("nao aceitar condicao comercial sensivel sem configuracao, aprovacao ou validacao real");
+  }
+
+  if (looksLikeTechnicalVisitQuestion(args.lastCustomerMessage)) {
+    out.push("nao escrever posso agendar sim, agendei, visita agendada, visita confirmada, horario marcado, ja marquei, esta marcado ou ficou agendado");
+    out.push("nao prometer disponibilidade como se a agenda ja tivesse sido verificada");
+    if (!args.offersTechnicalVisit) {
+      out.push("nao inventar que a loja faz visita tecnica se isso nao estiver configurado");
+    }
   }
 
   if (args.pattern === "photo_or_simulation_request") {
@@ -2755,6 +3317,7 @@ function buildCommercialObjective(args: {
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
   shouldPresentPoolRecommendations: boolean;
+  offersTechnicalVisit: boolean;
   recommendationPolicy: RecommendationPolicy;
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
@@ -2787,6 +3350,8 @@ function buildCommercialObjective(args: {
     lastCustomerMessage: args.lastCustomerMessage,
     explicitCatalogRequest: args.explicitCatalogRequest,
     patienceSignal,
+    offersTechnicalVisit: args.offersTechnicalVisit,
+    lastAiListedPools: args.lastAiListedPools,
   });
 
   return {
@@ -2814,6 +3379,7 @@ function buildCommercialObjective(args: {
       requestedPoolReference: args.requestedPoolReference,
       strongestPoolReferenceMatch: args.strongestPoolReferenceMatch,
       bestNamedPoolMatch: args.bestNamedPoolMatch,
+      offersTechnicalVisit: args.offersTechnicalVisit,
     }),
     forbiddenInThisReply: inferForbiddenInThisReply({
       pattern,
@@ -2829,6 +3395,7 @@ function buildCommercialObjective(args: {
       recommendationPolicy: args.recommendationPolicy,
       requestedPoolReference: args.requestedPoolReference,
       strongestPoolReferenceMatch: args.strongestPoolReferenceMatch,
+      offersTechnicalVisit: args.offersTechnicalVisit,
     }),
     responseMode,
     patienceSignal,
@@ -2948,6 +3515,7 @@ function buildResponsePriorityBlock(args: {
   pattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  facts: ConversationFactState;
   intents: DetectedIntent[];
   responseMode: ResponseMode;
   explicitCatalogRequest: boolean;
@@ -2958,6 +3526,7 @@ function buildResponsePriorityBlock(args: {
   shouldPresentPoolRecommendations: boolean;
   hasConfiguredPixKey?: boolean;
   hasConfiguredDownPaymentRule?: boolean;
+  offersTechnicalVisit?: boolean;
   recommendationPolicy: RecommendationPolicy;
   requestedPoolReference: RequestedPoolReference | null;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
@@ -2966,6 +3535,14 @@ function buildResponsePriorityBlock(args: {
   const instructions: string[] = [];
   const bestNamedPoolBasePrice = formatCurrencyFromReais(args.bestNamedPoolMatch?.pool.price || null);
   const bestNamedPoolPriceRange = extractPriceRangeFromText(args.bestNamedPoolMatch?.pool.description);
+  const suggestVisitAdvance = shouldSuggestVisitAdvance({
+    facts: args.facts,
+    intents: args.intents,
+    pattern: args.pattern,
+    lastCustomerMessage: args.lastCustomerMessage,
+    offersTechnicalVisit: Boolean(args.offersTechnicalVisit),
+    lastAiListedPools: args.lastAiListedPools,
+  });
 
   if (args.pattern === "generic_pool_opening") {
     instructions.push(
@@ -2995,7 +3572,9 @@ function buildResponsePriorityBlock(args: {
       "- PADRAO DOMINANTE: desconto, menor valor, Pix melhor, promocao ou objecao de preco. Responda de forma comercial, proteja margem e venda valor antes de reduzir preco."
     );
     instructions.push(
-      "- Use condicao dependente de modelo, projeto e forma de pagamento. Nunca revele desconto maximo nem aceite proposta automaticamente."
+      hasExplicitPaymentConditionSignal(args.lastCustomerMessage)
+        ? "- Como o cliente trouxe pagamento junto, trate a condicao como dependente de modelo, projeto e forma de pagamento. Nunca revele desconto maximo nem aceite proposta automaticamente."
+        : "- Em objecao de orcamento pura, resolva primeiro com produto mais acessivel, comparacao util ou prioridade do cliente. Nao puxe forma de pagamento como saida generica."
     );
     if (
       args.intents.includes("price") &&
@@ -3005,6 +3584,11 @@ function buildResponsePriorityBlock(args: {
     ) {
       instructions.push(
         "- Como esta mensagem mistura preco com desconto ou Pix, responda primeiro o preco do modelo encontrado e so depois trate a condicao comercial."
+      );
+    }
+    if (suggestVisitAdvance && !hasExplicitPaymentConditionSignal(args.lastCustomerMessage)) {
+      instructions.push(
+        "- Se a loja fizer visita tecnica e ja houver espaco + instalacao/interesse suficiente, a visita pode ser o proximo passo natural para confirmar acesso, medidas e instalacao, sem prometer agendamento concluido."
       );
     }
   }
@@ -3055,6 +3639,12 @@ function buildResponsePriorityBlock(args: {
     }
   }
 
+  if (args.intents.includes("technical_visit")) {
+    instructions.push(
+      "- Se o cliente pedir visita, trate como verificacao ou encaminhamento. Nao escreva que ja agendou, confirmou horario ou marcou a visita antes de existir acao real."
+    );
+  }
+
   if (args.pattern === "photo_or_simulation_request") {
     if (args.photoOrSimulationSubtype === "simulation_visual_request") {
       instructions.push(
@@ -3103,7 +3693,7 @@ function buildResponsePriorityBlock(args: {
       (args.strongestPoolReferenceMatch === "weak" || args.strongestPoolReferenceMatch === "none")
     ) {
       instructions.push(
-        `- O nome "${args.requestedPoolReference.raw}" não teve match exato ou forte no catálogo. Não diga que ele é ${args.bestNamedPoolMatch?.pool.name || "outro modelo do catálogo"}. Diga que não encontrou esse nome exato e, se usar um item do contexto, trate apenas como opção parecida.`
+        `- O nome "${args.requestedPoolReference.raw}" não teve match exato ou forte no catálogo. Não diga que ele é ${args.bestNamedPoolMatch?.pool.name || "outro modelo do catálogo"}. Responda de forma humana, como "essa eu não tenho aqui" ou "com esse nome eu não achei aqui". Se existir item próximo, trate só como opção parecida e continue a venda usando o contexto já conhecido antes de fazer nova pergunta.`
       );
     }
   }
@@ -3231,7 +3821,7 @@ function buildResponsePriorityBlock(args: {
 
   if (!args.hasCatalogEvidence) {
     instructions.push(
-      "- Para produto de catálogo sem item compatível encontrado, não diga que tem. Diga que você não conseguiu localizar esse item específico no catálogo atual."
+      "- Para produto de catálogo sem item compatível encontrado, não diga que tem. Responda de forma humana e curta, como 'essa eu não tenho aqui' ou 'com esse nome eu não achei aqui', sem falar em catálogo atual ou busca técnica."
     );
   }
 
@@ -3268,7 +3858,7 @@ function buildExamplesBlock(args: {
     examples.push(
       `EXEMPLO BOM:
 Cliente: "Aceita cartão? E vocês fazem visita técnica?"
-Resposta boa: "Sim, aceitamos cartão. E fazemos visita técnica sim, com agendamento. ${args.nextBestQuestion || "Me fala sua cidade ou bairro que eu te oriento certinho."}"`
+Resposta boa: "Sim, aceitamos cartão. E a visita eu posso verificar pra você. ${args.nextBestQuestion || "Me fala sua cidade ou bairro e um bom dia ou período pra eu te orientar certinho."}"`
     );
   }
 
@@ -3292,9 +3882,15 @@ Resposta boa: "Para esse caso, eu olharia primeiro 2 ou 3 modelos com foto que c
 
   examples.push(
     `EXEMPLO BOM:
+Cliente: "Tem a Leblon?"
+Resposta boa: "Essa eu não tenho aqui. Mas, com o que você já me falou, dá para olhar opções que façam mais sentido para o seu caso. ${args.nextBestQuestion || "Quer que eu te passe as que fazem mais sentido para o que você quer?"}"`
+  );
+
+  examples.push(
+    `EXEMPLO BOM:
 Cliente: "Tenho 10 metros quadrados e é para meus filhos brincarem. Quero modelos básicos"
 Resposta boa: "Com esse espaço, eu olharia primeiro estas opções:
-1. [modelo vendável 1] — mais compacto e fácil de encaixar nesse espaço
+1. [modelo vendável 1] — mais compacto e pode fazer sentido para esse espaço
 2. [modelo vendável 2] — opção prática e mais básica para quem quer algo fácil de acompanhar
 3. [modelo vendável 3] — alternativa prática para quem quer começar com algo mais enxuto
 
@@ -3477,6 +4073,7 @@ function buildInstructions(args: {
   const rawOnboardingSummary = buildRawOnboardingSummary(args.onboardingMap);
   const hasPixKey = hasConfiguredPixKey(args.onboardingMap);
   const hasDownPaymentRule = hasConfiguredDownPaymentRule(args.onboardingMap);
+  const hasTechnicalVisit = hasConfiguredTechnicalVisit(args.onboardingMap);
 
   return `
 Você é a IA comercial real do projeto ZION atendendo a loja ${storeLabel}.
@@ -3549,6 +4146,8 @@ REGRAS OPERACIONAIS
 - cite modelos concretos quando fizer sentido e quando houver pedido explícito atual, continuidade afirmativa clara ou contexto suficiente com catálogo compatível
 - quando o cliente já aceitou ver modelos ou pediu opções, não peça permissão de novo: use o catálogo e siga a política desta resposta para apresentar 1, 2 ou até 3 recomendações reais com nome e motivo curto
 - se houver contexto suficiente como espaço, contexto infantil já explícito, básico/premium ou instalação, use esse contexto para justificar a recomendação sem reabrir pergunta ampla de motivação
+- quando faltar o modelo específico pedido pelo cliente, use o melhor contexto já conhecido da conversa antes de perguntar algo novo: espaço, medida, orçamento, cidade, instalação, preferência por preço, conforto ou perfil de uso
+- não repita pergunta que o cliente já respondeu só porque o modelo citado não existe
 - quando houver modelos compatíveis no contexto e o cliente pedir ou aceitar opções, prefira 1 opção principal quando o contexto estiver claro; use 2 se houver dois caminhos fortes; use até 3 apenas quando houver pedido explícito de variedade ou comparação
 - quando houver modelos vendáveis compatíveis, eles devem ser a recomendação principal da resposta
 - modelos sem disponibilidade vendável nunca devem entrar como opção principal se existirem modelos vendáveis compatíveis
@@ -3558,13 +4157,22 @@ REGRAS OPERACIONAIS
 - quando houver opções úteis no catálogo, abra pela recomendação mais útil e só depois mencione limitação específica, se isso ainda for necessário para responder com honestidade
 - evite abrir com "não temos", "não há estoque confirmado" ou "não consegui localizar" quando ainda existir orientação útil, alternativa vendável ou referência relevante para apresentar primeiro
 - se o cliente citar um modelo/anúncio específico, só trate como modelo encontrado quando houver match exato ou forte no catálogo
-- se o match do modelo/anúncio específico for weak ou none, diga que não encontrou esse nome exato e, se existir item próximo, apresente apenas como opção parecida
+- se o match do modelo/anúncio específico for weak ou none, diga de forma humana que a loja não tem essa com esse nome e, se existir item próximo, apresente apenas como opção parecida
 - se o cliente perguntar preço de um modelo específico com match exato ou forte e houver preço confiável no catálogo, responda o preço primeiro usando o valor base cadastrado e a faixa do cadastro quando existir
 - nesse caso, não peça espaço antes de responder o preço; só depois faça uma pergunta curta de avanço, se ela realmente ajudar
 - quando o cliente pedir desconto, menor valor, Pix melhor, promoção ou disser que está caro, responda a objeção primeiro, proteja margem e venda valor antes de reduzir preço
 - nunca revele desconto máximo, percentual interno, margem da loja ou condição não confirmada
-- trate condição melhor como dependente de modelo, projeto e forma de pagamento, usando as configurações vivas da loja quando existirem
+- em objeção de orçamento pura, resolva primeiro com produto mais barato, menor, mais simples, comparação útil ou pergunta de prioridade; não puxe pagamento como saída genérica
+- em objeção de orçamento pura, não mencione pagamento, forma de pagamento, condição de pagamento, Pix, parcelamento, entrada, cartão, boleto ou à vista se o cliente não trouxe esse assunto
+- nesse cenário, feche com produto, comparação ou próxima pergunta sobre opções, nunca com convite para falar de pagamento
+- só trate condição melhor como dependente de modelo, projeto e forma de pagamento quando o cliente realmente trouxer Pix, parcelamento, entrada, cartão, boleto ou outra forma de pagamento, usando as configurações vivas da loja quando existirem
 - se a mensagem misturar preço com desconto ou Pix, responda primeiro o preço quando houver base real e só depois trate a condição comercial com segurança
+- em recomendações por espaço, não diga cabe no seu espaço, vai caber ou se encaixa; prefira pode fazer sentido para esse espaço, pelo tamanho parece uma boa opção ou pode combinar com esse espaço
+- se a loja fizer visita técnica e já houver espaço, interesse em instalação ou necessidade de confirmar acesso/medidas, visita ou avaliação pode ser um próximo passo comercial natural
+- nesse caso, trate visita como verificação ou encaminhamento: peça cidade/bairro e melhor dia/período e diga que vai verificar disponibilidade; não diga que já agendou
+- se a loja não tiver visita técnica configurada com clareza, não invente que faz visita; diga que vai confirmar com a loja ou responsável
+- nunca escreva posso agendar sim, agendei, visita confirmada, horário marcado, já marquei ou ficou agendado sem ação real de agenda
+- quando o cliente pedir visita diretamente, prefira posso te ajudar com isso ou posso verificar um horário pra visita
 - quando o cliente pedir foto do local, falar de quintal, encaixe ou simulação, trate a foto como apoio comercial e não como análise visual automática
 - peça medida junto com a foto quando isso ajudar a orientar melhor
 - não diga que analisou a imagem, que viu o quintal pela foto ou que consegue montar/renderizar visualmente se esse recurso não existe no sistema atual
@@ -3586,6 +4194,7 @@ REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - se o subtipo for down_payment_or_entry e não houver regra explícita de entrada/sinal, não diga "pode sim"; trate como condição a confirmar
 - se o padrão for photo_or_simulation_request, trate foto como apoio comercial, peça medida quando fizer sentido e não prometa análise visual real nem simulação pronta
 - subtipo de foto/simulação detectado: ${args.photoOrSimulationSubtype || "nenhum"}
+- visita tecnica configurada no contexto: ${hasTechnicalVisit ? "sim" : "não"}
 - chave Pix configurada no contexto: ${hasPixKey ? "sim" : "não"}
 - regra explícita de entrada/sinal no contexto: ${hasDownPaymentRule ? "sim" : "não"}
 
@@ -3610,7 +4219,7 @@ REGRAS ESPECÍFICAS DE DESCONTO E NEGOCIAÇÃO
 - A postura comercial é vender bem e proteger margem: não entregue o maior desconto possível logo no começo.
 
 REGRAS ESPECÍFICAS DE SINCERIDADE
-- Se o cliente pedir um produto específico e ele não aparecer entre os itens compatíveis, diga que você não conseguiu localizar esse item específico no catálogo atual.
+- Se o cliente pedir um produto específico e ele não aparecer entre os itens compatíveis, diga isso de forma humana, sem falar em catálogo atual, match ou busca técnica.
 - Se o cliente pedir uma marca específica e a marca não estiver claramente confirmada nos itens compatíveis, não diga que tem essa marca.
 - Se houver item compatível ativo com estoque controlado positivo, você pode dizer que há disponibilidade confirmada, sem revelar a quantidade exata em estoque.
 - Se houver item compatível ativo com estoque controlado e quantidade zero ou nula, diga que está em falta ou sem estoque confirmado.
@@ -4380,6 +4989,7 @@ export async function generateAiSalesReply(
       explicitCatalogRequest,
       lastAiListedPools,
       shouldPresentPoolRecommendations,
+      offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
       recommendationPolicy,
       requestedPoolReference,
       strongestPoolReferenceMatch,
@@ -4404,6 +5014,7 @@ export async function generateAiSalesReply(
       pattern: commercialObjective.pattern,
       paymentOrClosingSubtype: commercialObjective.paymentOrClosingSubtype,
       photoOrSimulationSubtype,
+      facts: conversationFacts,
       intents: commercialObjective.intents,
       responseMode: commercialObjective.responseMode,
       explicitCatalogRequest,
@@ -4414,6 +5025,7 @@ export async function generateAiSalesReply(
       shouldPresentPoolRecommendations,
       hasConfiguredPixKey: hasConfiguredPixKey(onboardingMap),
       hasConfiguredDownPaymentRule: hasConfiguredDownPaymentRule(onboardingMap),
+      offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
       recommendationPolicy,
       requestedPoolReference,
       strongestPoolReferenceMatch,
@@ -4482,12 +5094,31 @@ export async function generateAiSalesReply(
       commercialObjective.responseMode,
       lead.name
     );
+    const commercialHandoff = inferCommercialHandoff({
+      lastCustomerMessage,
+      customerConversationText,
+      lastAiMessage,
+      leadName: lead.name,
+      leadPhone: lead.phone,
+      facts: conversationFacts,
+      intents: commercialObjective.intents,
+      pattern: commercialObjective.pattern,
+      patienceSignal: commercialObjective.patienceSignal,
+      offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
+      lastAiListedPools,
+      recommendedModel: matchedPools[0]?.pool?.name || null,
+    });
     const operationalFollowUpDecision = inferOperationalFollowUpDecision({
       lastCustomerMessage,
       patienceSignal: commercialObjective.patienceSignal,
     });
 
-    if (!aiText) {
+    const finalAiText =
+      commercialHandoff?.replyOverride && commercialHandoff.shouldCreateTask
+        ? commercialHandoff.replyOverride
+        : aiText;
+
+    if (!finalAiText) {
       return {
         ok: false,
         error: "EMPTY_AI_RESPONSE",
@@ -4497,7 +5128,7 @@ export async function generateAiSalesReply(
 
     return {
       ok: true,
-      aiText,
+      aiText: finalAiText,
       usage,
       context: {
         leadName: lead.name,
@@ -4507,6 +5138,7 @@ export async function generateAiSalesReply(
         resolvedStoreId,
         requestedStoreId: requestedStoreId || null,
         operationalFollowUpDecision,
+        commercialHandoff,
       },
     };
   } catch (error: any) {
