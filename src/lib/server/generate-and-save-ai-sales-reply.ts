@@ -81,6 +81,18 @@ const AUTO_PROGRESS_TO_ORCAMENTO_BLOCKED = new Set([
   "perdido",
   "humano_assumiu",
 ]);
+const AUTO_PROGRESS_TO_QUALIFICACAO_ALLOWED_FROM = new Set(["novo_lead"]);
+const AUTO_PROGRESS_TO_QUALIFICACAO_BLOCKED = new Set([
+  "qualificacao",
+  "orcamento",
+  "negociacao",
+  "fechamento_pagamento",
+  "pagamento_pendente_confirmacao",
+  "agendar_instalacao",
+  "pos_venda_nps",
+  "perdido",
+  "humano_assumiu",
+]);
 
 type MessageBoundaryRow = {
   id: string;
@@ -461,6 +473,99 @@ function normalizeText(value: string | null | undefined): string {
     .toLowerCase();
 }
 
+function hasClearCommercialQualificationSignal(message: string | null | undefined): boolean {
+  const raw = String(message || "").trim();
+  const text = normalizeText(raw);
+
+  if (!text) return false;
+  if (text.length < 6) return false;
+
+  const blockedExact = new Set([
+    "oi",
+    "ola",
+    "olá",
+    "bom dia",
+    "boa tarde",
+    "boa noite",
+    "teste",
+    "?",
+    "ta ai",
+    "tá aí",
+    "chama",
+    "preciso falar",
+    "me chama",
+  ]);
+
+  if (blockedExact.has(text)) return false;
+
+  const blockedPatterns = [
+    /^o+i+$/,
+    /^ola+$/,
+    /^ol+a+$/,
+    /^bom dia+$/,
+    /^boa tarde+$/,
+    /^boa noite+$/,
+    /^ta ai\??$/,
+    /^to ai\??$/,
+    /^tem alguem ai\??$/,
+    /^me chama+$/,
+    /^chama+$/,
+    /^preciso falar+$/,
+    /^[?!. ]+$/,
+  ];
+
+  if (blockedPatterns.some((pattern) => pattern.test(text))) {
+    return false;
+  }
+
+  const commercialPatterns = [
+    /\bpiscina\b/,
+    /\bpreco\b/,
+    /\bvalor\b/,
+    /\bquanto custa\b/,
+    /\borcamento\b/,
+    /\binstalac(?:ao|oes|ao)\b/,
+    /\binstalar\b/,
+    /\bfibra\b/,
+    /\bvinil\b/,
+    /\bpequena\b/,
+    /\bgrande\b/,
+    /\bchacara\b/,
+    /\bcasa\b/,
+    /\bespaco\b/,
+    /\bmedida\b/,
+    /\bmedidas\b/,
+    /\bmetro\b/,
+    /\bmetros\b/,
+    /\bcabe\b/,
+    /\banuncio\b/,
+    /\bmodelo\b/,
+    /\bcatalogo\b/,
+    /\bentrega\b/,
+    /\bmanutencao\b/,
+    /\bproduto\b/,
+    /\bacessorio\b/,
+    /\bacessorios\b/,
+    /\bquimico\b/,
+    /\bquimicos\b/,
+    /\bcloro\b/,
+    /\bparecida\b/,
+    /\bopcao\b/,
+    /\bopcoes\b/,
+    /\bminha cidade\b/,
+    /\batendem\b/,
+    /\batende\b/,
+    /\bvi o anuncio\b/,
+    /\bqueria saber\b/,
+    /\bquero saber\b/,
+    /\bquero uma piscina\b/,
+    /\btenho um espaco\b/,
+    /\btenho espaco\b/,
+  ];
+
+  return commercialPatterns.some((pattern) => pattern.test(text));
+}
+
 async function loadConservativeCrmStateForQuoteAutoProgress(args: {
   supabase: any;
   organizationId: string;
@@ -740,6 +845,162 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
     conversationId: args.conversationId,
     fromState: stateSnapshot.currentState,
     toState: "orcamento",
+  });
+
+  return {
+    attempted: true,
+    progressed: true,
+    reason: "crm_auto_progress_completed",
+    previousState: stateSnapshot.currentState,
+  };
+}
+
+async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  lastCustomerMessage: string | null | undefined;
+  requestedCommercialHandoff: CommercialHandoffContext | null | undefined;
+}) {
+  if (!args.organizationId || !args.conversationId) {
+    console.info("[zion-ai-sales-qualification] autoavanço ignorado", {
+      reason: "missing_organization_or_conversation",
+      conversationId: args.conversationId,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "missing_organization_or_conversation",
+    };
+  }
+
+  if (
+    args.requestedCommercialHandoff?.shouldCreateTask &&
+    args.requestedCommercialHandoff.taskType === "commercial_quote_request"
+  ) {
+    console.info("[zion-ai-sales-qualification] autoavanço ignorado", {
+      reason: "quote_handoff_will_handle_budget_progress",
+      conversationId: args.conversationId,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "quote_handoff_will_handle_budget_progress",
+    };
+  }
+
+  if (!hasClearCommercialQualificationSignal(args.lastCustomerMessage)) {
+    console.info("[zion-ai-sales-qualification] autoavanço ignorado", {
+      reason: "no_clear_commercial_signal",
+      conversationId: args.conversationId,
+      lastCustomerMessage: args.lastCustomerMessage || null,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "no_clear_commercial_signal",
+    };
+  }
+
+  const stateSnapshot = await loadConservativeCrmStateForQuoteAutoProgress({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    leadId: args.leadId || null,
+  });
+
+  if (!stateSnapshot.currentState) {
+    console.info("[zion-ai-sales-qualification] autoavanço ignorado", {
+      reason: stateSnapshot.source,
+      conversationId: args.conversationId,
+      leadState: stateSnapshot.leadState,
+      conversationStatus: stateSnapshot.conversationStatus,
+      isHumanActive: stateSnapshot.isHumanActive,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: stateSnapshot.source,
+    };
+  }
+
+  if (AUTO_PROGRESS_TO_QUALIFICACAO_BLOCKED.has(stateSnapshot.currentState)) {
+    console.info("[zion-ai-sales-qualification] autoavanço ignorado", {
+      reason: "current_state_blocked",
+      conversationId: args.conversationId,
+      currentState: stateSnapshot.currentState,
+      leadState: stateSnapshot.leadState,
+      conversationStatus: stateSnapshot.conversationStatus,
+      isHumanActive: stateSnapshot.isHumanActive,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "current_state_blocked",
+      currentState: stateSnapshot.currentState,
+    };
+  }
+
+  if (!AUTO_PROGRESS_TO_QUALIFICACAO_ALLOWED_FROM.has(stateSnapshot.currentState)) {
+    console.info("[zion-ai-sales-qualification] autoavanço ignorado", {
+      reason: "current_state_not_allowed",
+      conversationId: args.conversationId,
+      currentState: stateSnapshot.currentState,
+      leadState: stateSnapshot.leadState,
+      conversationStatus: stateSnapshot.conversationStatus,
+      isHumanActive: stateSnapshot.isHumanActive,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "current_state_not_allowed",
+      currentState: stateSnapshot.currentState,
+    };
+  }
+
+  console.info("[zion-ai-sales-qualification] autoavanço tentando mover para qualificação", {
+    conversationId: args.conversationId,
+    currentState: stateSnapshot.currentState,
+    leadState: stateSnapshot.leadState,
+    conversationStatus: stateSnapshot.conversationStatus,
+    isHumanActive: stateSnapshot.isHumanActive,
+  });
+
+  const { error } = await args.supabase.rpc(
+    "panel_transition_conversation_state_scoped",
+    {
+      p_organization_id: args.organizationId,
+      p_conversation_id: args.conversationId,
+      p_to_state: "qualificacao",
+      p_reason: "auto_progress_from_ai_sales_qualification_signal",
+    }
+  );
+
+  if (error) {
+    console.warn("[zion-ai-sales-qualification] erro ao autoavançar CRM para qualificação", {
+      conversationId: args.conversationId,
+      currentState: stateSnapshot.currentState,
+      error: error.message,
+      details: (error as any)?.details ?? null,
+      hint: (error as any)?.hint ?? null,
+      code: (error as any)?.code ?? null,
+    });
+    return {
+      attempted: true,
+      progressed: false,
+      reason: "crm_transition_rpc_failed",
+      currentState: stateSnapshot.currentState,
+      error: error.message,
+    };
+  }
+
+  console.info("[zion-ai-sales-qualification] autoavanço concluído", {
+    conversationId: args.conversationId,
+    fromState: stateSnapshot.currentState,
+    toState: "qualificacao",
   });
 
   return {
@@ -1760,6 +2021,43 @@ export async function generateAndSaveAiSalesReply(
 
     const aiMessageTimestamp = new Date().toISOString();
 
+    let qualificationAutoProgressResult: Record<string, unknown> | null = null;
+
+    try {
+      qualificationAutoProgressResult =
+        await maybeAutoProgressCrmToQualificationFromSalesSignal({
+          supabase,
+          organizationId,
+          storeId,
+          conversationId,
+          leadId: normalizedConversation.lead_id || null,
+          lastCustomerMessage:
+            generationResult.context?.lastCustomerMessage ||
+            generationResult.context?.commercialHandoff?.lastCustomerMessage ||
+            null,
+          requestedCommercialHandoff,
+        });
+    } catch (qualificationProgressError: any) {
+      qualificationAutoProgressResult = {
+        attempted: true,
+        progressed: false,
+        reason: "crm_auto_progress_unexpected_failure",
+        error:
+          qualificationProgressError?.message ||
+          String(qualificationProgressError || ""),
+      };
+      console.warn(
+        "[zion-ai-sales-qualification] falha inesperada no autoavanço para qualificação",
+        {
+          organizationId,
+          storeId,
+          conversationId,
+          error:
+            qualificationProgressError?.message || qualificationProgressError,
+        }
+      );
+    }
+
     await persistOperationalFollowUpDecision({
       supabase,
       organizationId,
@@ -1806,6 +2104,7 @@ export async function generateAndSaveAiSalesReply(
       aiText,
       context: {
         ...generationResult.context,
+        qualificationAutoProgressResult,
         commercialHandoffResult,
       },
       usage: generationResult.usage,

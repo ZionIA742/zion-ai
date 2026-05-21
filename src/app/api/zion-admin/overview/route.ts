@@ -258,6 +258,27 @@ async function getExactCount(
   };
 }
 
+async function getActiveMessagesExactCount(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+) {
+  const { count, error } = await supabase
+    .from("messages")
+    .select("id", { count: "exact", head: true })
+    .is("deleted_at", null);
+
+  if (error) {
+    return {
+      count: null,
+      error: error.message,
+    };
+  }
+
+  return {
+    count: count ?? 0,
+    error: null,
+  };
+}
+
 function toNumber(value: number | string | null | undefined) {
   const parsed = typeof value === "string" ? Number(value) : (value ?? 0);
   return Number.isFinite(parsed) ? Number(parsed) : 0;
@@ -875,6 +896,27 @@ async function loadStoreIdRows(
   };
 }
 
+async function loadActiveMessageRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from("messages")
+    .select("store_id")
+    .is("deleted_at", null);
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as StoreMetricRow[],
+    error: null,
+  };
+}
+
 async function loadSalesAiMessageRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
 ): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
@@ -1154,7 +1196,7 @@ export async function GET() {
       getExactCount(serviceSupabase, "stores"),
       getExactCount(serviceSupabase, "leads"),
       getExactCount(serviceSupabase, "conversations"),
-      getExactCount(serviceSupabase, "messages"),
+      getActiveMessagesExactCount(serviceSupabase),
       getExactCount(serviceSupabase, "store_appointments"),
       getExactCount(serviceSupabase, "store_assistant_threads"),
       getExactCount(serviceSupabase, "store_assistant_messages"),
@@ -1169,7 +1211,7 @@ export async function GET() {
         .order("created_at", { ascending: false })
         .limit(200),
       loadStoreIdRows(serviceSupabase, "leads"),
-      loadStoreIdRows(serviceSupabase, "messages"),
+      loadActiveMessageRows(serviceSupabase),
       loadSalesAiMessageRows(serviceSupabase),
       loadStoreIdRows(serviceSupabase, "store_appointments"),
       loadStoreIdRows(serviceSupabase, "store_assistant_threads"),

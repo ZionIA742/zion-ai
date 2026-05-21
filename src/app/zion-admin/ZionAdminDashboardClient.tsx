@@ -985,6 +985,12 @@ function StoreDetailsDrawer({
             <DetailItem
               label="Compromissos"
               value={formatNumber(store.totalAppointments)}
+              help="Total de compromissos cadastrados na agenda"
+            />
+            <DetailItem
+              label="Marcados pela IA"
+              value="Aguardando base"
+              help="A agenda ainda não marca com segurança quais compromissos foram criados pela IA"
             />
           </div>
         </section>
@@ -1041,6 +1047,30 @@ function StoreDetailsDrawer({
 
         <section>
           <h3 className="text-sm font-semibold text-zinc-200">
+            Custo por origem da IA
+          </h3>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">
+            Separação por IA vendedora, assistente, catálogo visual, imagem e uso sem marcação confiável.
+          </p>
+          <div className="mt-3">
+            <CostBreakdownGrid breakdown={store.costBreakdownTotal} />
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold text-zinc-200">
+            Tokens por origem da IA
+          </h3>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">
+            Ajuda a entender onde esta loja está consumindo tokens de IA.
+          </p>
+          <div className="mt-3">
+            <TokenBreakdownGrid breakdown={store.tokenBreakdownTotal} />
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-sm font-semibold text-zinc-200">
             Pendências da loja
           </h3>
           <div className="mt-3 rounded-3xl border border-white/10 bg-white/[0.04] p-4">
@@ -1084,6 +1114,28 @@ function StoreDetailsDrawer({
                 value={formatNumber(store.configurationIssues)}
               />
             </div>
+          </div>
+        </section>
+
+        <PendingIssueRootCauseList store={store} />
+
+        <section>
+          <h3 className="text-sm font-semibold text-zinc-200">
+            Histórico recente da IA
+          </h3>
+          <div className="mt-3 grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <AiRunEventList
+              title="Erros recentes"
+              emptyText="Nenhum erro recente registrado para esta loja."
+              events={store.recentAiErrors}
+              variant="error"
+            />
+            <AiRunEventList
+              title="Sucessos recentes"
+              emptyText="Nenhuma execução recente registrada para esta loja."
+              events={store.recentAiSuccesses}
+              variant="success"
+            />
           </div>
         </section>
 
