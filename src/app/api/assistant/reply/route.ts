@@ -170,6 +170,18 @@ async function recordAssistantAiRun(params: {
     const startedMs = new Date(params.startedAt).getTime();
     const finishedMs = new Date(params.finishedAt).getTime();
 
+    console.log("[assistant-ai-run-capture] insert attempt", {
+      organizationId: params.organizationId,
+      storeId: params.storeId,
+      model: params.model,
+      status: params.status,
+      usageKeys: Object.keys(usage || {}),
+      inputTokens,
+      outputTokens,
+      estimatedCostUsd: estimateAssistantAiCostUsd(params.model, inputTokens, outputTokens),
+      detectedIntent: params.detectedIntent || null,
+    });
+
     const { error } = await params.supabase.from("ai_runs").insert({
       organization_id: params.organizationId,
       store_id: params.storeId,
@@ -201,7 +213,16 @@ async function recordAssistantAiRun(params: {
       cost_usd: estimateAssistantAiCostUsd(params.model, inputTokens, outputTokens),
     });
 
-    if (error) console.error("[assistant-ai-run-capture] insert failed", error);
+    if (error) {
+      console.error("[assistant-ai-run-capture] insert failed", error);
+    } else {
+      console.log("[assistant-ai-run-capture] insert succeeded", {
+        organizationId: params.organizationId,
+        storeId: params.storeId,
+        model: params.model,
+        status: params.status,
+      });
+    }
   } catch (error) {
     console.error("[assistant-ai-run-capture] unexpected failure", error);
   }
@@ -7831,6 +7852,15 @@ async function generateAssistantReply(params: {
       const startedAt = new Date().toISOString();
 
       try {
+        console.log("[assistant-ai-run-capture] calling openai", {
+          organizationId,
+          storeId,
+          model,
+          detectedIntent,
+          lastHumanMessagePreview: truncateForAiRunLog(lastHumanMessage, 180),
+          inputMessages: Array.isArray(input) ? input.length : null,
+        });
+
         const response = await openai.responses.create({
           model,
           input,
@@ -7838,6 +7868,17 @@ async function generateAssistantReply(params: {
         });
         const finishedAt = new Date().toISOString();
         const rawOutputText = String(response.output_text || "").trim();
+
+        console.log("[assistant-ai-run-capture] openai responded", {
+          organizationId,
+          storeId,
+          model,
+          responseId: response.id || null,
+          usageKeys: Object.keys(response.usage || {}),
+          inputTokens: aiRunNumber(response.usage?.input_tokens),
+          outputTokens: aiRunNumber(response.usage?.output_tokens),
+          outputTextLength: rawOutputText.length,
+        });
 
         aiTextFromModel = true;
         aiText = cleanupAiText(rawOutputText, {
@@ -7882,6 +7923,44 @@ async function generateAssistantReply(params: {
         throw openAiError;
       }
     }
+
+    console.log("[assistant-ai-run-capture] reply path resolved", {
+      organizationId,
+      storeId,
+      usedOpenAi: aiTextFromModel,
+      replyPath: aiTextFromModel
+        ? "openai_model"
+        : suggestedTimeApprovalReply
+          ? "suggested_time_approval"
+          : pendingCancellationTargetReply
+            ? "pending_cancellation_target"
+            : blockAdjustmentReply
+              ? "block_adjustment"
+              : blockDayReply
+                ? "block_day"
+                : postAppointmentActionReply
+                  ? "post_appointment_action"
+                  : customerRescheduleWorkflowReply
+                    ? "customer_reschedule_workflow"
+                    : customerAvailabilityContextReply
+                      ? "customer_availability_context"
+                      : scheduleActionReply
+                        ? "schedule_action"
+                        : specificDayScheduleMode && specificScheduleQueryDateParts
+                          ? "specific_day_schedule"
+                          : generalTodayOverviewMode
+                            ? "general_today_overview"
+                            : morningReportMode
+                              ? "morning_report"
+                              : eveningReportMode
+                                ? "evening_report"
+                                : nextVisitMode
+                                  ? "next_visit"
+                                  : postAppointmentMode
+                                    ? "post_appointment"
+                                    : "unknown_non_model_path",
+      aiTextLength: aiText.length,
+    });
 
     if (!aiText) {
       return {

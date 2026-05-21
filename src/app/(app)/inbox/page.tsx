@@ -37,8 +37,49 @@ type FollowupCandidateRow = {
   blocked_reason: string | null;
 };
 
+type CommercialHandoffTaskRow = {
+  related_conversation_id: string | null;
+  task_type: string | null;
+  status: string | null;
+};
+
+type CommercialHandoffIndicator = {
+  hasVisitRequest: boolean;
+  hasQuoteRequest: boolean;
+};
+
 const INBOX_OPEN_SECTION_KEY = "zion:inbox:open-section";
 const INBOX_SCROLL_KEY = "zion:inbox:scroll";
+const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
+  "open",
+  "waiting_user_choice",
+  "waiting_customer_response",
+  "ready_to_execute",
+  "in_progress",
+];
+
+function getCommercialHandoffBadgeLabel(indicator: CommercialHandoffIndicator | null | undefined) {
+  if (!indicator) return null;
+  if (indicator.hasVisitRequest && indicator.hasQuoteRequest) {
+    return "Visita e orçamento pendentes";
+  }
+  if (indicator.hasVisitRequest) {
+    return "Pedido de visita pendente";
+  }
+  if (indicator.hasQuoteRequest) {
+    return "Orçamento pendente";
+  }
+  return null;
+}
+
+function formatCommercialPendingCounter(count: number) {
+  return formatCounter(
+    count,
+    "conversa com pendência",
+    "conversas com pendências",
+    "Sem pendências"
+  );
+}
 
 function formatDateTime(value: string | null) {
   if (!value) return "-";
@@ -144,6 +185,9 @@ export default function InboxPage() {
   const [followupStatusText, setFollowupStatusText] = useState<string | null>(null);
   const [triggeringConversationId, setTriggeringConversationId] = useState<string | null>(null);
   const [openSection, setOpenSection] = useState<"followup" | "messages" | null>(null);
+  const [commercialHandoffByConversation, setCommercialHandoffByConversation] = useState<
+    Record<string, CommercialHandoffIndicator>
+  >({});
 
   const restoredSectionRef = useRef(false);
   const restoredScrollRef = useRef(false);
@@ -212,6 +256,72 @@ export default function InboxPage() {
     setFollowupRows((data || []) as FollowupCandidateRow[]);
   }, [organizationId, activeStoreId]);
 
+  const loadCommercialHandoffIndicators = useCallback(
+    async (inboxRows: InboxRow[]) => {
+      if (!organizationId) {
+        setCommercialHandoffByConversation({});
+        return;
+      }
+
+      const conversationIds = [...new Set(inboxRows.map((row) => row.conversation_id).filter(Boolean))];
+
+      if (conversationIds.length === 0) {
+        setCommercialHandoffByConversation({});
+        return;
+      }
+
+      let query = supabase
+        .from("store_assistant_operational_tasks")
+        .select("related_conversation_id, task_type, status")
+        .eq("organization_id", organizationId)
+        .in("related_conversation_id", conversationIds)
+        .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
+        .in("status", OPEN_COMMERCIAL_HANDOFF_STATUSES);
+
+      if (activeStoreId) {
+        query = query.eq("store_id", activeStoreId);
+      } else {
+        const storeIds = [...new Set(inboxRows.map((row) => row.store_id).filter(Boolean))];
+        if (storeIds.length > 0) {
+          query = query.in("store_id", storeIds);
+        }
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        console.warn("[InboxPage] erro ao carregar handoffs comerciais:", error);
+        setCommercialHandoffByConversation({});
+        return;
+      }
+
+      const nextMap: Record<string, CommercialHandoffIndicator> = {};
+
+      for (const task of (data || []) as CommercialHandoffTaskRow[]) {
+        const conversationId = String(task.related_conversation_id || "").trim();
+        if (!conversationId) continue;
+
+        if (!nextMap[conversationId]) {
+          nextMap[conversationId] = {
+            hasVisitRequest: false,
+            hasQuoteRequest: false,
+          };
+        }
+
+        if (task.task_type === "commercial_visit_request") {
+          nextMap[conversationId].hasVisitRequest = true;
+        }
+
+        if (task.task_type === "commercial_quote_request") {
+          nextMap[conversationId].hasQuoteRequest = true;
+        }
+      }
+
+      setCommercialHandoffByConversation(nextMap);
+    },
+    [organizationId, activeStoreId]
+  );
+
   const loadInbox = useCallback(
     async (options?: { silent?: boolean }) => {
       const silent = options?.silent ?? false;
@@ -247,6 +357,7 @@ export default function InboxPage() {
 
       const inboxRows = (data || []) as InboxRow[];
       setRows(inboxRows);
+      await loadCommercialHandoffIndicators(inboxRows);
 
       const leadIds = [...new Set(inboxRows.map((row) => row.lead_id).filter(Boolean))];
 
@@ -277,7 +388,7 @@ export default function InboxPage() {
         setLoading(false);
       }
     },
-    [canLoadInbox, organizationId, activeStoreId, loadFollowupCandidates]
+    [canLoadInbox, organizationId, activeStoreId, loadCommercialHandoffIndicators, loadFollowupCandidates]
   );
 
   useEffect(() => {
@@ -310,6 +421,10 @@ export default function InboxPage() {
   }, [loading, storeLoading]);
 
   const pendingReplyCount = useMemo(() => rows.filter(isPendingReply).length, [rows]);
+  const commercialPendingConversationCount = useMemo(
+    () => Object.keys(commercialHandoffByConversation).length,
+    [commercialHandoffByConversation]
+  );
 
   const actionableFollowupCount = useMemo(
     () => followupRows.filter((row) => !row.blocked_reason).length,
@@ -459,7 +574,9 @@ export default function InboxPage() {
                 </div>
 
                 <span className="shrink-0 rounded-full bg-white px-3 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-black/10">
-                  {formatCounter(pendingReplyCount, "pendência", "pendências", "Sem pendências")}
+                  {commercialPendingConversationCount > 0
+                    ? formatCommercialPendingCounter(commercialPendingConversationCount)
+                    : formatCounter(pendingReplyCount, "pendência", "pendências", "Sem pendências")}
                 </span>
               </div>
 
@@ -506,6 +623,9 @@ export default function InboxPage() {
                 ) : (
                   rows.map((row) => {
                     const pending = isPendingReply(row);
+                    const handoffLabel = getCommercialHandoffBadgeLabel(
+                      commercialHandoffByConversation[row.conversation_id]
+                    );
 
                     return (
                       <div
@@ -542,6 +662,12 @@ export default function InboxPage() {
                                   {row.last_message_sender ? ` • ${row.last_message_sender}` : ""}
                                 </span>
                               )}
+
+                              {handoffLabel ? (
+                                <span className="rounded-full bg-orange-50 px-2.5 py-1 font-medium text-orange-800 ring-1 ring-orange-200">
+                                  {handoffLabel}
+                                </span>
+                              ) : null}
                             </div>
 
                             <div className="mt-2 grid gap-1">

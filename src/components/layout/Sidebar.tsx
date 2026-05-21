@@ -19,6 +19,12 @@ type InboxRow = {
   last_message_sender: string | null;
 };
 
+type CommercialHandoffTaskRow = {
+  related_conversation_id: string | null;
+  task_type: string | null;
+  status: string | null;
+};
+
 type AssistantThreadSummary = {
   pending_notifications?: number | null;
 };
@@ -33,6 +39,14 @@ const items = [
   { label: "Onboarding", href: "/onboarding" },
 ];
 
+const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
+  "open",
+  "waiting_user_choice",
+  "waiting_customer_response",
+  "ready_to_execute",
+  "in_progress",
+];
+
 function isPendingReply(row: InboxRow) {
   return String(row.last_message_direction || "").toLowerCase() === "incoming";
 }
@@ -42,6 +56,7 @@ export default function Sidebar() {
   const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
 
   const [pendingReplyCount, setPendingReplyCount] = useState(0);
+  const [commercialPendingConversationCount, setCommercialPendingConversationCount] = useState(0);
   const [assistantPendingCount, setAssistantPendingCount] = useState(0);
 
   const canLoadInboxCounter = useMemo(() => {
@@ -70,6 +85,46 @@ export default function Sidebar() {
     const rows = (data || []) as InboxRow[];
     const count = rows.filter(isPendingReply).length;
     setPendingReplyCount(count);
+
+    const conversationIds = [...new Set(rows.map((row) => row.conversation_id).filter(Boolean))];
+
+    if (conversationIds.length === 0) {
+      setCommercialPendingConversationCount(0);
+      return;
+    }
+
+    let query = supabase
+      .from("store_assistant_operational_tasks")
+      .select("related_conversation_id, task_type, status")
+      .eq("organization_id", organizationId)
+      .in("related_conversation_id", conversationIds)
+      .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
+      .in("status", OPEN_COMMERCIAL_HANDOFF_STATUSES);
+
+    if (activeStoreId) {
+      query = query.eq("store_id", activeStoreId);
+    } else {
+      const storeIds = [...new Set(rows.map((row) => row.store_id).filter(Boolean))];
+      if (storeIds.length > 0) {
+        query = query.in("store_id", storeIds);
+      }
+    }
+
+    const { data: tasks, error: tasksError } = await query;
+
+    if (tasksError) {
+      console.warn("[Sidebar] erro ao carregar handoffs comerciais do Inbox:", tasksError);
+      setCommercialPendingConversationCount(0);
+      return;
+    }
+
+    const conversationCount = new Set(
+      ((tasks || []) as CommercialHandoffTaskRow[])
+        .map((task) => String(task.related_conversation_id || "").trim())
+        .filter(Boolean)
+    ).size;
+
+    setCommercialPendingConversationCount(conversationCount);
   }, [canLoadInboxCounter, organizationId, activeStoreId]);
 
   const loadAssistantCounter = useCallback(async () => {
@@ -129,9 +184,13 @@ export default function Sidebar() {
           const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
           const isInboxItem = item.href === "/inbox";
           const isAssistantItem = item.href === "/assistant";
-          const showInboxBadge = isInboxItem && pendingReplyCount > 0;
+          const inboxBadgeCount =
+            commercialPendingConversationCount > 0
+              ? commercialPendingConversationCount
+              : pendingReplyCount;
+          const showInboxBadge = isInboxItem && inboxBadgeCount > 0;
           const showAssistantBadge = isAssistantItem && assistantPendingCount > 0;
-          const badgeCount = showInboxBadge ? pendingReplyCount : showAssistantBadge ? assistantPendingCount : 0;
+          const badgeCount = showInboxBadge ? inboxBadgeCount : showAssistantBadge ? assistantPendingCount : 0;
 
           return (
             <Link
