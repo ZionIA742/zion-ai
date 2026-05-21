@@ -58,7 +58,29 @@ type StoreScheduleSettingsRow = {
   timezone_name: string | null;
 };
 
+type CrmCardStateRow = {
+  conversation_id: string | null;
+  effective_state: string | null;
+  lead_state: string | null;
+  conversation_status: string | null;
+  is_human_active: boolean | null;
+};
+
 const NO_RESUME_REASON = "none";
+const AUTO_PROGRESS_TO_ORCAMENTO_ALLOWED_FROM = new Set([
+  "novo_lead",
+  "qualificacao",
+]);
+const AUTO_PROGRESS_TO_ORCAMENTO_BLOCKED = new Set([
+  "orcamento",
+  "negociacao",
+  "fechamento_pagamento",
+  "pagamento_pendente_confirmacao",
+  "agendar_instalacao",
+  "pos_venda_nps",
+  "perdido",
+  "humano_assumiu",
+]);
 
 type MessageBoundaryRow = {
   id: string;
@@ -437,6 +459,295 @@ function normalizeText(value: string | null | undefined): string {
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase();
+}
+
+async function loadConservativeCrmStateForQuoteAutoProgress(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+}) {
+  let rpcRow: CrmCardStateRow | null = null;
+
+  try {
+    const { data, error } = await args.supabase.rpc(
+      "panel_list_crm_cards_scoped",
+      {
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId || null,
+        p_limit: 500,
+        p_offset: 0,
+      }
+    );
+
+    if (error) {
+      console.warn("[zion-ai-sales-handoff] falha ao consultar estado efetivo do CRM", {
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        error: error.message,
+      });
+    } else {
+      rpcRow =
+        ((data || []) as CrmCardStateRow[]).find(
+          (row) => String(row.conversation_id || "").trim() === args.conversationId
+        ) || null;
+    }
+  } catch (error: any) {
+    console.warn("[zion-ai-sales-handoff] erro inesperado ao consultar estado efetivo do CRM", {
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      error: error?.message || String(error),
+    });
+  }
+
+  const { data: conversationRow, error: conversationError } = await args.supabase
+    .from("conversations")
+    .select("status, is_human_active")
+    .eq("id", args.conversationId)
+    .eq("organization_id", args.organizationId)
+    .maybeSingle();
+
+  if (conversationError) {
+    throw new Error(
+      `Falha ao consultar status atual da conversa para autoavanço do CRM: ${conversationError.message}`
+    );
+  }
+
+  let leadState = "";
+
+  if (args.leadId) {
+    const { data: leadRow, error: leadError } = await args.supabase
+      .from("leads")
+      .select("state")
+      .eq("id", args.leadId)
+      .eq("organization_id", args.organizationId)
+      .maybeSingle();
+
+    if (leadError) {
+      throw new Error(
+        `Falha ao consultar estado atual do lead para autoavanço do CRM: ${leadError.message}`
+      );
+    }
+
+    leadState = normalizeText(String(leadRow?.state || ""));
+  }
+
+  const effectiveState = normalizeText(rpcRow?.effective_state);
+  const conversationStatus = normalizeText(
+    String(conversationRow?.status || rpcRow?.conversation_status || "")
+  );
+  const rpcLeadState = normalizeText(rpcRow?.lead_state);
+  const bestLeadState = leadState || rpcLeadState;
+  const isHumanActive =
+    conversationRow?.is_human_active === true || rpcRow?.is_human_active === true;
+
+  if (effectiveState) {
+    return {
+      currentState: effectiveState,
+      source: "crm_rpc_effective_state",
+      isHumanActive,
+      leadState: bestLeadState || null,
+      conversationStatus: conversationStatus || null,
+    };
+  }
+
+  if (isHumanActive || conversationStatus === "humano_assumiu") {
+    return {
+      currentState: "humano_assumiu",
+      source: "conversation_human_control",
+      isHumanActive,
+      leadState: bestLeadState || null,
+      conversationStatus: conversationStatus || null,
+    };
+  }
+
+  const candidates = [conversationStatus, bestLeadState].filter(Boolean);
+  const blockedCandidate = candidates.find((state) =>
+    AUTO_PROGRESS_TO_ORCAMENTO_BLOCKED.has(state)
+  );
+
+  if (blockedCandidate) {
+    return {
+      currentState: blockedCandidate,
+      source: "fallback_blocked_state",
+      isHumanActive,
+      leadState: bestLeadState || null,
+      conversationStatus: conversationStatus || null,
+    };
+  }
+
+  if (candidates.length === 0) {
+    return {
+      currentState: null,
+      source: "state_not_found",
+      isHumanActive,
+      leadState: bestLeadState || null,
+      conversationStatus: conversationStatus || null,
+    };
+  }
+
+  const allAllowed = candidates.every((state) =>
+    AUTO_PROGRESS_TO_ORCAMENTO_ALLOWED_FROM.has(state)
+  );
+
+  if (!allAllowed) {
+    return {
+      currentState: null,
+      source: "state_not_safe_for_auto_progress",
+      isHumanActive,
+      leadState: bestLeadState || null,
+      conversationStatus: conversationStatus || null,
+    };
+  }
+
+  return {
+    currentState:
+      conversationStatus === "qualificacao" || bestLeadState === "qualificacao"
+        ? "qualificacao"
+        : "novo_lead",
+    source: "fallback_allowed_state",
+    isHumanActive,
+    leadState: bestLeadState || null,
+    conversationStatus: conversationStatus || null,
+  };
+}
+
+async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  taskId: string;
+  handoff: CommercialHandoffContext;
+}) {
+  if (args.handoff.taskType !== "commercial_quote_request") {
+    console.info("[zion-ai-sales-handoff] autoavanço do CRM ignorado", {
+      reason: "handoff_is_not_quote_request",
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+    });
+    return { attempted: false, progressed: false, reason: "handoff_is_not_quote_request" };
+  }
+
+  if (!args.organizationId || !args.conversationId) {
+    console.info("[zion-ai-sales-handoff] autoavanço do CRM ignorado", {
+      reason: "missing_organization_or_conversation",
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "missing_organization_or_conversation",
+    };
+  }
+
+  const stateSnapshot = await loadConservativeCrmStateForQuoteAutoProgress({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    leadId: args.leadId || null,
+  });
+
+  if (!stateSnapshot.currentState) {
+    console.info("[zion-ai-sales-handoff] autoavanço do CRM ignorado", {
+      reason: stateSnapshot.source,
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+      leadState: stateSnapshot.leadState,
+      conversationStatus: stateSnapshot.conversationStatus,
+      isHumanActive: stateSnapshot.isHumanActive,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: stateSnapshot.source,
+    };
+  }
+
+  if (!AUTO_PROGRESS_TO_ORCAMENTO_ALLOWED_FROM.has(stateSnapshot.currentState)) {
+    console.info("[zion-ai-sales-handoff] autoavanço do CRM ignorado", {
+      reason: "current_state_not_allowed",
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+      currentState: stateSnapshot.currentState,
+      stateSource: stateSnapshot.source,
+      leadState: stateSnapshot.leadState,
+      conversationStatus: stateSnapshot.conversationStatus,
+      isHumanActive: stateSnapshot.isHumanActive,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "current_state_not_allowed",
+      currentState: stateSnapshot.currentState,
+    };
+  }
+
+  console.info("[zion-ai-sales-handoff] autoavanço do CRM tentando mover para orçamento", {
+    taskId: args.taskId,
+    taskType: args.handoff.taskType,
+    conversationId: args.conversationId,
+    currentState: stateSnapshot.currentState,
+    stateSource: stateSnapshot.source,
+    leadState: stateSnapshot.leadState,
+    conversationStatus: stateSnapshot.conversationStatus,
+  });
+
+  const { error } = await args.supabase.rpc(
+    "panel_transition_conversation_state_scoped",
+    {
+      p_organization_id: args.organizationId,
+      p_conversation_id: args.conversationId,
+      p_to_state: "orcamento",
+      p_reason: "auto_progress_from_ai_sales_quote_request",
+    }
+  );
+
+  if (error) {
+    console.warn("[zion-ai-sales-handoff] erro ao autoavancar CRM para orçamento", {
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+      currentState: stateSnapshot.currentState,
+      stateSource: stateSnapshot.source,
+      error: error.message,
+      details: (error as any)?.details ?? null,
+      hint: (error as any)?.hint ?? null,
+      code: (error as any)?.code ?? null,
+    });
+    return {
+      attempted: true,
+      progressed: false,
+      reason: "crm_transition_rpc_failed",
+      currentState: stateSnapshot.currentState,
+      error: error.message,
+    };
+  }
+
+  console.info("[zion-ai-sales-handoff] autoavanço do CRM concluído", {
+    taskId: args.taskId,
+    taskType: args.handoff.taskType,
+    conversationId: args.conversationId,
+    fromState: stateSnapshot.currentState,
+    toState: "orcamento",
+  });
+
+  return {
+    attempted: true,
+    progressed: true,
+    reason: "crm_auto_progress_completed",
+    previousState: stateSnapshot.currentState,
+  };
 }
 
 function isCustomerIncomingMessage(row: MessageBoundaryRow): boolean {
@@ -1160,6 +1471,42 @@ async function createCommercialAssistantHandoff(args: {
     handoff,
   });
 
+  let crmAutoProgressResult:
+    | {
+        attempted: boolean;
+        progressed: boolean;
+        reason: string;
+        currentState?: string | null;
+        previousState?: string | null;
+        error?: string | null;
+      }
+    | undefined;
+
+  try {
+    crmAutoProgressResult = await maybeAutoProgressCrmToBudgetFromQuoteHandoff({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      leadId: args.leadId || null,
+      taskId: String(data.id),
+      handoff,
+    });
+  } catch (error: any) {
+    console.warn("[zion-ai-sales-handoff] falha inesperada no autoavanço do CRM", {
+      taskId: String(data.id),
+      taskType: handoff.taskType,
+      conversationId: args.conversationId,
+      error: error?.message || String(error),
+    });
+    crmAutoProgressResult = {
+      attempted: true,
+      progressed: false,
+      reason: "crm_auto_progress_unexpected_failure",
+      error: error?.message || String(error),
+    };
+  }
+
   return {
     created: true,
     skipped: false,
@@ -1168,6 +1515,9 @@ async function createCommercialAssistantHandoff(args: {
     taskType: handoff.taskType,
     notificationCreated: notificationResult.created,
     notificationError: notificationResult.error,
+    crmAutoProgressAttempted: crmAutoProgressResult?.attempted === true,
+    crmAutoProgressed: crmAutoProgressResult?.progressed === true,
+    crmAutoProgressReason: crmAutoProgressResult?.reason || null,
   };
 }
 

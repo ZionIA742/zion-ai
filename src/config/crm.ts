@@ -15,12 +15,12 @@ export type Nivel = "ok" | "pendente" | "critico";
 
 export const COLUNAS: { id: ColunaId; titulo: string }[] = [
   { id: "novo_lead", titulo: "Novo Lead" },
-  { id: "qualificacao", titulo: "Qualificacao" },
-  { id: "orcamento", titulo: "Orcamento" },
-  { id: "negociacao", titulo: "Negociacao" },
+  { id: "qualificacao", titulo: "Qualificação" },
+  { id: "orcamento", titulo: "Orçamento" },
+  { id: "negociacao", titulo: "Negociação" },
   { id: "fechamento_pagamento", titulo: "Fechamento / Pagamento" },
-  { id: "agendar_instalacao", titulo: "Instalacao / Entrega" },
-  { id: "pos_venda_nps", titulo: "Pos-venda / Follow-up" },
+  { id: "agendar_instalacao", titulo: "Instalação / Entrega" },
+  { id: "pos_venda_nps", titulo: "Pós-venda / Follow-up" },
   { id: "perdido", titulo: "Perdido" },
 ];
 
