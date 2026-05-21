@@ -28,7 +28,27 @@ type UiCardRow = {
   isHumanActive: boolean;
 };
 
+type CommercialHandoffTaskRow = {
+  related_lead_id: string | null;
+  related_conversation_id: string | null;
+  task_type: string | null;
+  status: string | null;
+};
+
+type CommercialHandoffIndicator = {
+  hasVisitRequest: boolean;
+  hasQuoteRequest: boolean;
+};
+
 type Nivel = "ok" | "pendente" | "critico";
+
+const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
+  "open",
+  "waiting_user_choice",
+  "waiting_customer_response",
+  "ready_to_execute",
+  "in_progress",
+];
 
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   agendar_instalacao: ["pos_venda_nps"],
@@ -88,11 +108,28 @@ function canMoveTo(fromState: string, toState: string | null) {
   return (ALLOWED_TRANSITIONS[fromState] || []).includes(toState);
 }
 
+function getCommercialHandoffBadgeLabel(indicator: CommercialHandoffIndicator | null | undefined) {
+  if (!indicator) return null;
+  if (indicator.hasVisitRequest && indicator.hasQuoteRequest) {
+    return "Visita e orçamento pendentes";
+  }
+  if (indicator.hasVisitRequest) {
+    return "Pedido de visita pendente";
+  }
+  if (indicator.hasQuoteRequest) {
+    return "Orçamento pendente";
+  }
+  return null;
+}
+
 export default function CrmPage() {
   const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
 
   const [loading, setLoading] = useState(true);
   const [cards, setCards] = useState<UiCardRow[]>([]);
+  const [commercialHandoffByCardKey, setCommercialHandoffByCardKey] = useState<
+    Record<string, CommercialHandoffIndicator>
+  >({});
   const [movingId, setMovingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
@@ -190,9 +227,73 @@ export default function CrmPage() {
       }));
 
       setCards(nextCards);
+
+      const leadIds = [...new Set(nextCards.map((card) => card.leadId).filter(Boolean))];
+      const conversationIds = [
+        ...new Set(nextCards.map((card) => card.conversationId).filter(Boolean)),
+      ] as string[];
+
+      if (leadIds.length === 0 && conversationIds.length === 0) {
+        setCommercialHandoffByCardKey({});
+      } else {
+        let query = supabaseClient
+          .from("store_assistant_operational_tasks")
+          .select("related_lead_id, related_conversation_id, task_type, status")
+          .eq("organization_id", organizationId)
+          .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
+          .in("status", OPEN_COMMERCIAL_HANDOFF_STATUSES);
+
+        if (activeStoreId) {
+          query = query.eq("store_id", activeStoreId);
+        }
+
+        if (leadIds.length > 0) {
+          query = query.in("related_lead_id", leadIds);
+        } else if (conversationIds.length > 0) {
+          query = query.in("related_conversation_id", conversationIds);
+        }
+
+        const { data: handoffTasks, error: handoffError } = await query;
+
+        if (handoffError) {
+          console.warn("[CrmPage] erro ao carregar handoffs comerciais:", handoffError);
+          setCommercialHandoffByCardKey({});
+        } else {
+          const nextIndicators: Record<string, CommercialHandoffIndicator> = {};
+
+          for (const task of (handoffTasks || []) as CommercialHandoffTaskRow[]) {
+            const leadId = String(task.related_lead_id || "").trim();
+            const conversationId = String(task.related_conversation_id || "").trim();
+            const keys = [
+              leadId ? `lead:${leadId}` : null,
+              conversationId ? `conversation:${conversationId}` : null,
+            ].filter(Boolean) as string[];
+
+            for (const key of keys) {
+              if (!nextIndicators[key]) {
+                nextIndicators[key] = {
+                  hasVisitRequest: false,
+                  hasQuoteRequest: false,
+                };
+              }
+
+              if (task.task_type === "commercial_visit_request") {
+                nextIndicators[key].hasVisitRequest = true;
+              }
+
+              if (task.task_type === "commercial_quote_request") {
+                nextIndicators[key].hasQuoteRequest = true;
+              }
+            }
+          }
+
+          setCommercialHandoffByCardKey(nextIndicators);
+        }
+      }
     } catch (error: any) {
       setErrorMsg(error?.message ?? "Erro ao carregar CRM.");
       setCards([]);
+      setCommercialHandoffByCardKey({});
     } finally {
       setLoading(false);
     }
@@ -269,6 +370,13 @@ export default function CrmPage() {
     const canGoNext = canMoveTo(current, nextColumnId);
     const cardColumn = getColumnForCard(card);
     const ui = cardColumn?.ui || nivelToUI("ok");
+    const handoffLabel =
+      getCommercialHandoffBadgeLabel(
+        commercialHandoffByCardKey[
+          card.conversationId ? `conversation:${card.conversationId}` : `lead:${card.leadId}`
+        ]
+      ) ||
+      getCommercialHandoffBadgeLabel(commercialHandoffByCardKey[`lead:${card.leadId}`]);
 
     return (
       <div
@@ -312,6 +420,11 @@ export default function CrmPage() {
             <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-black/10">
               modo: {card.isHumanActive ? "humano" : "IA"}
             </span>
+            {handoffLabel ? (
+              <span className="rounded-full bg-orange-50 px-2 py-1 text-orange-800 ring-1 ring-orange-200">
+                {handoffLabel}
+              </span>
+            ) : null}
           </div>
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
