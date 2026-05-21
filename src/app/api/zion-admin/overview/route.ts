@@ -57,7 +57,11 @@ type AiRunEvent = {
 
 type PendingIssueDetail = {
   id: string;
-  source: "ai_run_queue" | "ai_sales_action_queue" | "channel_whatsapp_inbox";
+  source:
+    | "ai_run_queue"
+    | "ai_sales_action_queue"
+    | "channel_whatsapp_inbox"
+    | "store_configuration";
   label: string;
   storeId: string | null;
   error: string | null;
@@ -108,6 +112,27 @@ type WhatsappInboxIssueRow = QueueMetricRow & {
   received_at: string | null;
 };
 
+type StoreOnboardingConfigRow = {
+  store_id: string | null;
+  organization_id: string | null;
+  status: string | null;
+  completed_at: string | null;
+  updated_at: string | null;
+};
+
+type StoreBooleanConfigRow = {
+  store_id: string | null;
+  organization_id: string | null;
+};
+
+type StoreAuthConfigRow = StoreBooleanConfigRow & {
+  is_active: boolean | null;
+};
+
+type StoreCatalogConfigRow = StoreBooleanConfigRow & {
+  is_active: boolean | null;
+};
+
 type TokenUsageBreakdown = {
   salesChatTokens: number;
   assistantChatTokens: number;
@@ -119,6 +144,7 @@ type TokenUsageBreakdown = {
 type StoreOverviewMetrics = {
   totalLeads: number;
   totalMessages: number;
+  totalSalesAiMessages: number;
   totalAppointments: number;
   totalAssistantThreads: number;
   totalAssistantMessages: number;
@@ -153,6 +179,7 @@ type StoreOverviewMetrics = {
   recentAiErrors: AiRunEvent[];
   recentAiSuccesses: AiRunEvent[];
   pendingIssueDetails: PendingIssueDetail[];
+  configurationIssues: number;
   pendingAiRuns: number;
   aiRunQueueErrors: number;
   pendingSalesActions: number;
@@ -328,6 +355,7 @@ function createEmptyStoreMetrics(): StoreOverviewMetrics {
   return {
     totalLeads: 0,
     totalMessages: 0,
+    totalSalesAiMessages: 0,
     totalAppointments: 0,
     totalAssistantThreads: 0,
     totalAssistantMessages: 0,
@@ -362,6 +390,7 @@ function createEmptyStoreMetrics(): StoreOverviewMetrics {
     recentAiErrors: [],
     recentAiSuccesses: [],
     pendingIssueDetails: [],
+    configurationIssues: 0,
     pendingAiRuns: 0,
     aiRunQueueErrors: 0,
     pendingSalesActions: 0,
@@ -399,6 +428,7 @@ function incrementStoreCounter(args: {
     StoreOverviewMetrics,
     | "totalLeads"
     | "totalMessages"
+    | "totalSalesAiMessages"
     | "totalAppointments"
     | "totalAssistantThreads"
     | "totalAssistantMessages"
@@ -485,6 +515,135 @@ function pushPendingIssueDetail(
   }
 
   metrics.pendingIssueDetails.push(issue);
+}
+
+function pushStoreConfigurationIssue(
+  metricsByStore: Map<string, StoreOverviewMetrics>,
+  store: StoreRow,
+  label: string,
+  error: string,
+) {
+  const metrics = getStoreMetrics(metricsByStore, store.id);
+
+  if (!metrics) {
+    return;
+  }
+
+  metrics.configurationIssues += 1;
+  metrics.pendingIssueDetails.push({
+    id: `${store.id}:${label}`,
+    source: "store_configuration",
+    label,
+    storeId: store.id,
+    error,
+    occurredAt: store.created_at,
+    processedAt: null,
+  });
+}
+
+function buildStoreKey(organizationId: string | null | undefined, storeId: string | null | undefined) {
+  return `${String(organizationId || "").trim()}:${String(storeId || "").trim()}`;
+}
+
+function buildStoreKeySet(rows: StoreBooleanConfigRow[]) {
+  const set = new Set<string>();
+
+  for (const row of rows) {
+    set.add(buildStoreKey(row.organization_id, row.store_id));
+  }
+
+  return set;
+}
+
+function applyStoreConfigurationIssues(args: {
+  metricsByStore: Map<string, StoreOverviewMetrics>;
+  stores: StoreRow[];
+  onboardingRows: StoreOnboardingConfigRow[];
+  responsibleRows: StoreBooleanConfigRow[];
+  scheduleSettingsRows: StoreBooleanConfigRow[];
+  discountSettingsRows: StoreBooleanConfigRow[];
+  authSettingsRows: StoreAuthConfigRow[];
+  catalogRows: StoreCatalogConfigRow[];
+}) {
+  const onboardingByStore = new Map<string, StoreOnboardingConfigRow>();
+  const responsibleStoreKeys = buildStoreKeySet(args.responsibleRows);
+  const scheduleSettingsStoreKeys = buildStoreKeySet(args.scheduleSettingsRows);
+  const discountSettingsStoreKeys = buildStoreKeySet(args.discountSettingsRows);
+  const activeAuthStoreKeys = buildStoreKeySet(
+    args.authSettingsRows.filter((row) => row.is_active === true),
+  );
+  const activeCatalogCountsByStore = new Map<string, number>();
+
+  for (const row of args.onboardingRows) {
+    onboardingByStore.set(buildStoreKey(row.organization_id, row.store_id), row);
+  }
+
+  for (const row of args.catalogRows) {
+    if (row.is_active !== true) continue;
+
+    const key = buildStoreKey(row.organization_id, row.store_id);
+    activeCatalogCountsByStore.set(key, (activeCatalogCountsByStore.get(key) || 0) + 1);
+  }
+
+  for (const store of args.stores) {
+    const key = buildStoreKey(store.organization_id, store.id);
+    const onboarding = onboardingByStore.get(key);
+    const onboardingStatus = String(onboarding?.status || "").trim().toLowerCase();
+
+    if (!onboarding || onboardingStatus !== "completed" || !onboarding.completed_at) {
+      pushStoreConfigurationIssue(
+        args.metricsByStore,
+        store,
+        "Onboarding não concluído",
+        "A loja ainda não concluiu o onboarding obrigatório.",
+      );
+    }
+
+    if (!responsibleStoreKeys.has(key)) {
+      pushStoreConfigurationIssue(
+        args.metricsByStore,
+        store,
+        "Responsável não cadastrado",
+        "A loja ainda não tem responsável cadastrado para receber alertas e acompanhar a operação.",
+      );
+    }
+
+    if (!scheduleSettingsStoreKeys.has(key)) {
+      pushStoreConfigurationIssue(
+        args.metricsByStore,
+        store,
+        "Agenda não configurada",
+        "A loja ainda não tem configuração de agenda e horários de atendimento.",
+      );
+    }
+
+    if (!discountSettingsStoreKeys.has(key)) {
+      pushStoreConfigurationIssue(
+        args.metricsByStore,
+        store,
+        "Configuração de desconto ausente",
+        "A loja ainda não tem regra de desconto configurada.",
+      );
+    }
+
+    if (!activeAuthStoreKeys.has(key)) {
+      pushStoreConfigurationIssue(
+        args.metricsByStore,
+        store,
+        "Configuração de acesso ausente",
+        "A loja ainda não tem configuração de autenticação/acesso ativa.",
+      );
+    }
+
+    if ((activeCatalogCountsByStore.get(key) || 0) <= 0) {
+      pushStoreConfigurationIssue(
+        args.metricsByStore,
+        store,
+        "Catálogo sem itens ativos",
+        "A loja ainda não tem itens ativos no catálogo.",
+      );
+    }
+  }
 }
 
 function applyPendingIssueDetails(args: {
@@ -716,6 +875,110 @@ async function loadStoreIdRows(
   };
 }
 
+async function loadSalesAiMessageRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: StoreMetricRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from("messages")
+    .select("store_id")
+    .eq("sender", "ai")
+    .eq("direction", "outgoing")
+    .is("deleted_at", null);
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as StoreMetricRow[],
+    error: null,
+  };
+}
+
+async function loadStoreOnboardingConfigRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: StoreOnboardingConfigRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from("store_onboarding")
+    .select("store_id, organization_id, status, completed_at, updated_at");
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as StoreOnboardingConfigRow[],
+    error: null,
+  };
+}
+
+async function loadStoreBooleanConfigRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+  table: string,
+): Promise<{ rows: StoreBooleanConfigRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from(table)
+    .select("store_id, organization_id");
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as StoreBooleanConfigRow[],
+    error: null,
+  };
+}
+
+async function loadStoreAuthConfigRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: StoreAuthConfigRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from("store_auth_settings")
+    .select("store_id, organization_id, is_active");
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as StoreAuthConfigRow[],
+    error: null,
+  };
+}
+
+async function loadStoreCatalogConfigRows(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+): Promise<{ rows: StoreCatalogConfigRow[]; error: string | null }> {
+  const { data, error } = await supabase
+    .from("store_catalog_items")
+    .select("store_id, organization_id, is_active");
+
+  if (error) {
+    return {
+      rows: [],
+      error: error.message,
+    };
+  }
+
+  return {
+    rows: (data ?? []) as StoreCatalogConfigRow[],
+    error: null,
+  };
+}
+
 async function loadQueueRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   table: string,
@@ -869,6 +1132,7 @@ export async function GET() {
       storesResult,
       leadRows,
       messageRows,
+      salesAiMessageRows,
       appointmentRows,
       assistantThreadRows,
       assistantMessageRows,
@@ -879,6 +1143,12 @@ export async function GET() {
       aiRunQueueIssueRows,
       salesActionQueueIssueRows,
       whatsappIssueRows,
+      onboardingConfigRows,
+      responsibleConfigRows,
+      scheduleSettingsConfigRows,
+      discountSettingsConfigRows,
+      authSettingsConfigRows,
+      catalogConfigRows,
     ] = await Promise.all([
       getExactCount(serviceSupabase, "organizations"),
       getExactCount(serviceSupabase, "stores"),
@@ -900,6 +1170,7 @@ export async function GET() {
         .limit(200),
       loadStoreIdRows(serviceSupabase, "leads"),
       loadStoreIdRows(serviceSupabase, "messages"),
+      loadSalesAiMessageRows(serviceSupabase),
       loadStoreIdRows(serviceSupabase, "store_appointments"),
       loadStoreIdRows(serviceSupabase, "store_assistant_threads"),
       loadStoreIdRows(serviceSupabase, "store_assistant_messages"),
@@ -910,6 +1181,12 @@ export async function GET() {
       loadAiRunQueueIssueRows(serviceSupabase),
       loadSalesActionQueueIssueRows(serviceSupabase),
       loadWhatsappInboxIssueRows(serviceSupabase),
+      loadStoreOnboardingConfigRows(serviceSupabase),
+      loadStoreBooleanConfigRows(serviceSupabase, "store_responsibles"),
+      loadStoreBooleanConfigRows(serviceSupabase, "store_schedule_settings"),
+      loadStoreBooleanConfigRows(serviceSupabase, "store_discount_settings"),
+      loadStoreAuthConfigRows(serviceSupabase),
+      loadStoreCatalogConfigRows(serviceSupabase),
     ]);
 
     const organizationsError = organizationsResult.error;
@@ -957,6 +1234,14 @@ export async function GET() {
         metricsByStore,
         storeId: row.store_id,
         key: "totalMessages",
+      });
+    }
+
+    for (const row of salesAiMessageRows.rows) {
+      incrementStoreCounter({
+        metricsByStore,
+        storeId: row.store_id,
+        key: "totalSalesAiMessages",
       });
     }
 
@@ -1096,11 +1381,23 @@ export async function GET() {
       whatsappQueueRows: whatsappIssueRows.rows,
     });
 
+    applyStoreConfigurationIssues({
+      metricsByStore,
+      stores,
+      onboardingRows: onboardingConfigRows.rows,
+      responsibleRows: responsibleConfigRows.rows,
+      scheduleSettingsRows: scheduleSettingsConfigRows.rows,
+      discountSettingsRows: discountSettingsConfigRows.rows,
+      authSettingsRows: authSettingsConfigRows.rows,
+      catalogRows: catalogConfigRows.rows,
+    });
+
     const storesList = stores.map((store) => {
       const organization = organizationMap.get(store.organization_id);
       const metrics = metricsByStore.get(store.id) ?? createEmptyStoreMetrics();
 
       const totalOperationalIssues =
+        metrics.configurationIssues +
         metrics.pendingAiRuns +
         metrics.aiRunQueueErrors +
         metrics.pendingSalesActions +
@@ -1118,6 +1415,7 @@ export async function GET() {
 
         totalLeads: metrics.totalLeads,
         totalMessages: metrics.totalMessages,
+        totalSalesAiMessages: metrics.totalSalesAiMessages,
         totalAppointments: metrics.totalAppointments,
         totalAssistantThreads: metrics.totalAssistantThreads,
         totalAssistantMessages: metrics.totalAssistantMessages,
@@ -1151,6 +1449,7 @@ export async function GET() {
         costBreakdownMonth: roundAiUsageBreakdown(metrics.costBreakdownMonth),
         lastAiRunAt: metrics.lastAiRunAt,
 
+        configurationIssues: metrics.configurationIssues,
         pendingAiRuns: metrics.pendingAiRuns,
         aiRunQueueErrors: metrics.aiRunQueueErrors,
         pendingSalesActions: metrics.pendingSalesActions,
@@ -1210,6 +1509,7 @@ export async function GET() {
         sumAiUsageBreakdown(acc.costBreakdownToday, store.costBreakdownToday);
         sumAiUsageBreakdown(acc.costBreakdownLast7Days, store.costBreakdownLast7Days);
         sumAiUsageBreakdown(acc.costBreakdownMonth, store.costBreakdownMonth);
+        acc.configurationIssues += store.configurationIssues;
         acc.pendingAiRuns += store.pendingAiRuns;
         acc.aiRunQueueErrors += store.aiRunQueueErrors;
         acc.pendingSalesActions += store.pendingSalesActions;
@@ -1217,6 +1517,7 @@ export async function GET() {
         acc.pendingWhatsappEvents += store.pendingWhatsappEvents;
         acc.whatsappErrors += store.whatsappErrors;
         acc.totalOperationalIssues += store.totalOperationalIssues;
+        acc.totalSalesAiMessages += store.totalSalesAiMessages;
 
         if (compareIsoDateDesc(store.lastAiRunAt, acc.lastAiRunAt) < 0) {
           acc.lastAiRunAt = store.lastAiRunAt;
@@ -1225,6 +1526,7 @@ export async function GET() {
         return acc;
       },
       {
+        totalSalesAiMessages: 0,
         totalAiRuns: 0,
         successfulAiRuns: 0,
         failedAiRuns: 0,
@@ -1253,6 +1555,7 @@ export async function GET() {
         costBreakdownLast7Days: createEmptyAiUsageBreakdown(),
         costBreakdownMonth: createEmptyAiUsageBreakdown(),
         lastAiRunAt: null as string | null,
+        configurationIssues: 0,
         pendingAiRuns: 0,
         aiRunQueueErrors: 0,
         pendingSalesActions: 0,
@@ -1279,6 +1582,7 @@ export async function GET() {
         leads: leadsCount.count,
         conversations: conversationsCount.count,
         messages: messagesCount.count,
+        salesAiMessages: aiUsageTotals.totalSalesAiMessages,
         appointments: appointmentsCount.count,
         assistantThreads: assistantThreadsCount.count,
         assistantMessages: assistantMessagesCount.count,
@@ -1309,6 +1613,7 @@ export async function GET() {
         costBreakdownToday: roundAiUsageBreakdown(aiUsageTotals.costBreakdownToday),
         costBreakdownLast7Days: roundAiUsageBreakdown(aiUsageTotals.costBreakdownLast7Days),
         costBreakdownMonth: roundAiUsageBreakdown(aiUsageTotals.costBreakdownMonth),
+        configurationIssues: aiUsageTotals.configurationIssues,
         pendingAiRuns: aiUsageTotals.pendingAiRuns,
         aiRunQueueErrors: aiUsageTotals.aiRunQueueErrors,
         pendingSalesActions: aiUsageTotals.pendingSalesActions,
@@ -1329,6 +1634,7 @@ export async function GET() {
         assistantMessages: assistantMessagesCount.error,
         storeLeads: leadRows.error,
         storeMessages: messageRows.error,
+        storeSalesAiMessages: salesAiMessageRows.error,
         storeAppointments: appointmentRows.error,
         storeAssistantThreads: assistantThreadRows.error,
         storeAssistantMessages: assistantMessageRows.error,
@@ -1339,6 +1645,12 @@ export async function GET() {
         aiRunQueueDetails: aiRunQueueIssueRows.error,
         salesActionQueueDetails: salesActionQueueIssueRows.error,
         whatsappQueueDetails: whatsappIssueRows.error,
+        storeOnboardingConfig: onboardingConfigRows.error,
+        storeResponsiblesConfig: responsibleConfigRows.error,
+        storeScheduleSettingsConfig: scheduleSettingsConfigRows.error,
+        storeDiscountSettingsConfig: discountSettingsConfigRows.error,
+        storeAuthSettingsConfig: authSettingsConfigRows.error,
+        storeCatalogConfig: catalogConfigRows.error,
       },
       stores: storesList,
       future: {

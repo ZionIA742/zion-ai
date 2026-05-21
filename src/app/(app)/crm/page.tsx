@@ -24,6 +24,10 @@ type UiCardRow = {
   name: string | null;
   phone: string | null;
   state: string;
+  rawState: string;
+  leadState: string | null;
+  conversationStatus: string | null;
+  visualState: string;
   createdAt: string | null;
   isHumanActive: boolean;
 };
@@ -49,6 +53,17 @@ const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
   "ready_to_execute",
   "in_progress",
 ];
+
+const VISIBLE_COLUMN_IDS = new Set([
+  "novo_lead",
+  "qualificacao",
+  "orcamento",
+  "negociacao",
+  "fechamento_pagamento",
+  "agendar_instalacao",
+  "pos_venda_nps",
+  "perdido",
+]);
 
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   agendar_instalacao: ["pos_venda_nps"],
@@ -108,6 +123,103 @@ function canMoveTo(fromState: string, toState: string | null) {
   return (ALLOWED_TRANSITIONS[fromState] || []).includes(toState);
 }
 
+function normalizeState(value: string | null | undefined) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isVisibleBoardState(value: string | null | undefined) {
+  return VISIBLE_COLUMN_IDS.has(normalizeState(value));
+}
+
+function getVisualStateForCard(args: {
+  rawState: string | null | undefined;
+  leadState: string | null | undefined;
+  conversationStatus: string | null | undefined;
+}) {
+  const rawState = normalizeState(args.rawState);
+  const leadState = normalizeState(args.leadState);
+  const conversationStatus = normalizeState(args.conversationStatus);
+
+  if (rawState === "pagamento_pendente_confirmacao") return "fechamento_pagamento";
+  if (rawState === "agendar_visita") return "qualificacao";
+  if (rawState === "pagamento_confirmado") return "agendar_instalacao";
+  if (rawState === "aguardando_aprovacao") return "orcamento";
+
+  if (rawState === "humano_assumiu") {
+    if (isVisibleBoardState(leadState) && leadState !== "humano_assumiu") {
+      return leadState;
+    }
+
+    if (isVisibleBoardState(conversationStatus) && conversationStatus !== "humano_assumiu") {
+      return conversationStatus;
+    }
+
+    return "qualificacao";
+  }
+
+  if (isVisibleBoardState(rawState)) return rawState;
+  if (isVisibleBoardState(leadState)) return leadState;
+  return "qualificacao";
+}
+
+function getOperationalBadgesForCard(card: UiCardRow) {
+  const badges: string[] = [];
+  const rawState = normalizeState(card.rawState);
+  const conversationStatus = normalizeState(card.conversationStatus);
+
+  if (
+    card.isHumanActive ||
+    rawState === "humano_assumiu" ||
+    conversationStatus === "humano_assumiu"
+  ) {
+    badges.push("Humano no controle");
+  }
+
+  if (rawState === "pagamento_pendente_confirmacao") {
+    badges.push("Pagamento pendente");
+  }
+
+  if (rawState === "agendar_visita") {
+    badges.push("Etapa interna: agendar visita");
+  }
+
+  if (rawState === "aguardando_aprovacao") {
+    badges.push("Aguardando aprovacao");
+  }
+
+  if (rawState === "pagamento_confirmado") {
+    badges.push("Pagamento confirmado");
+  }
+
+  return badges;
+}
+
+function resolveTransitionTarget(card: UiCardRow, toVisualColumnId: string | null) {
+  if (!toVisualColumnId) return null;
+
+  if (canMoveTo(card.rawState, toVisualColumnId)) {
+    return toVisualColumnId;
+  }
+
+  if (
+    toVisualColumnId === "agendar_instalacao" &&
+    card.rawState === "fechamento_pagamento" &&
+    canMoveTo(card.rawState, "pagamento_pendente_confirmacao")
+  ) {
+    return "pagamento_pendente_confirmacao";
+  }
+
+  if (
+    toVisualColumnId === "agendar_instalacao" &&
+    card.rawState === "pagamento_pendente_confirmacao" &&
+    canMoveTo(card.rawState, "pagamento_confirmado")
+  ) {
+    return "pagamento_confirmado";
+  }
+
+  return null;
+}
+
 function getCommercialHandoffBadgeLabel(indicator: CommercialHandoffIndicator | null | undefined) {
   if (!indicator) return null;
   if (indicator.hasVisitRequest && indicator.hasQuoteRequest) {
@@ -158,7 +270,7 @@ export default function CrmPage() {
     }
 
     for (const card of cards) {
-      const colId = String(card.state || "novo_lead");
+      const colId = String(card.visualState || "novo_lead");
       if (!map.has(colId)) map.set(colId, []);
       map.get(colId)!.push(card);
     }
@@ -231,6 +343,14 @@ export default function CrmPage() {
         name: row.name || null,
         phone: row.phone || null,
         state: String(row.effective_state || "novo_lead"),
+        rawState: String(row.effective_state || "novo_lead"),
+        leadState: row.lead_state || null,
+        conversationStatus: row.conversation_status || null,
+        visualState: getVisualStateForCard({
+          rawState: row.effective_state,
+          leadState: row.lead_state,
+          conversationStatus: row.conversation_status,
+        }),
         createdAt: row.created_at || null,
         isHumanActive: row.is_human_active === true,
       }));
@@ -325,8 +445,8 @@ export default function CrmPage() {
       return;
     }
 
-    if (!canMoveTo(card.state, toColumnId)) {
-      setErrorMsg(`Transição inválida de ${card.state} para ${toColumnId}.`);
+    if (!canMoveTo(card.rawState, toColumnId)) {
+      setErrorMsg(`Transição inválida de ${card.rawState} para ${toColumnId}.`);
       return;
     }
 
@@ -409,21 +529,24 @@ export default function CrmPage() {
   }
 
   function getColumnForCard(card: UiCardRow) {
-    return columns.find((col) => String(col.id) === String(card.state)) || null;
+    return columns.find((col) => String(col.id) === String(card.visualState)) || null;
   }
 
   function renderLeadCard(card: UiCardRow, options?: { compact?: boolean; showStage?: boolean }) {
     const compact = options?.compact === true;
     const showStage = options?.showStage === true;
-    const current = String(card.state || "novo_lead");
+    const current = String(card.visualState || "novo_lead");
     const currentIndex = columns.findIndex((c) => String(c.id) === current);
     const cidx = currentIndex >= 0 ? currentIndex : 0;
     const previousColumnId = cidx > 0 ? String(columns[cidx - 1].id) : null;
     const nextColumnId = cidx < columns.length - 1 ? String(columns[cidx + 1].id) : null;
-    const canGoBack = canMoveTo(current, previousColumnId);
-    const canGoNext = canMoveTo(current, nextColumnId);
+    const previousTargetState = resolveTransitionTarget(card, previousColumnId);
+    const nextTargetState = resolveTransitionTarget(card, nextColumnId);
+    const canGoBack = Boolean(previousTargetState);
+    const canGoNext = Boolean(nextTargetState);
     const cardColumn = getColumnForCard(card);
     const ui = cardColumn?.ui || nivelToUI("ok");
+    const operationalBadges = getOperationalBadgesForCard(card);
     const handoffLabel =
       getCommercialHandoffBadgeLabel(
         commercialHandoffByCardKey[
@@ -474,6 +597,14 @@ export default function CrmPage() {
             <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-black/10">
               modo: {card.isHumanActive ? "humano" : "IA"}
             </span>
+            {operationalBadges.map((badge) => (
+              <span
+                key={badge}
+                className="rounded-full bg-sky-50 px-2 py-1 text-sky-800 ring-1 ring-sky-200"
+              >
+                {badge}
+              </span>
+            ))}
             {handoffLabel ? (
               <span className="rounded-full bg-orange-50 px-2 py-1 text-orange-800 ring-1 ring-orange-200">
                 {handoffLabel}
@@ -493,9 +624,9 @@ export default function CrmPage() {
               <button
                 disabled={!canGoBack || movingId === card.leadId}
                 onClick={() =>
-                  previousColumnId &&
+                  previousTargetState &&
                   canGoBack &&
-                  updateConversationState(card, previousColumnId)
+                  updateConversationState(card, previousTargetState)
                 }
                 className={cx(
                   "rounded-lg px-3 py-2 text-xs font-semibold shadow-sm ring-1 ring-black/10",
@@ -510,9 +641,9 @@ export default function CrmPage() {
               <button
                 disabled={!canGoNext || movingId === card.leadId}
                 onClick={() =>
-                  nextColumnId &&
+                  nextTargetState &&
                   canGoNext &&
-                  updateConversationState(card, nextColumnId)
+                  updateConversationState(card, nextTargetState)
                 }
                 className={cx(
                   "rounded-lg px-3 py-2 text-xs font-semibold shadow-sm ring-1 ring-black/10",

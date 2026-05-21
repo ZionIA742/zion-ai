@@ -26,6 +26,7 @@ export type ZionAdminOverview = {
     leads: number | null;
     conversations: number | null;
     messages: number | null;
+    salesAiMessages?: number | null;
     appointments: number | null;
     assistantThreads: number | null;
     assistantMessages: number | null;
@@ -60,6 +61,7 @@ export type ZionAdminOverview = {
     aiRunQueueErrors?: number | null;
     pendingSalesActions?: number | null;
     salesActionErrors?: number | null;
+    configurationIssues?: number | null;
     pendingWhatsappEvents?: number | null;
     whatsappErrors?: number | null;
     totalOperationalIssues?: number | null;
@@ -128,6 +130,7 @@ export type ZionAdminStore = {
   createdAt: string | null;
   totalLeads?: number | null;
   totalMessages?: number | null;
+  totalSalesAiMessages?: number | null;
   totalAppointments?: number | null;
   totalAssistantThreads?: number | null;
   totalAssistantMessages?: number | null;
@@ -163,6 +166,7 @@ export type ZionAdminStore = {
   aiRunQueueErrors?: number | null;
   pendingSalesActions?: number | null;
   salesActionErrors?: number | null;
+  configurationIssues?: number | null;
   pendingWhatsappEvents?: number | null;
   whatsappErrors?: number | null;
   totalOperationalIssues?: number | null;
@@ -530,6 +534,7 @@ function getOperationalSummary(store: ZionAdminStore) {
   const aiErrors = numberValue(store.aiRunQueueErrors);
   const whatsappErrors = numberValue(store.whatsappErrors);
   const salesErrors = numberValue(store.salesActionErrors);
+  const configurationIssues = numberValue(store.configurationIssues);
   const pendingAi = numberValue(store.pendingAiRuns);
   const pendingSales = numberValue(store.pendingSalesActions);
   const pendingWhatsapp = numberValue(store.pendingWhatsappEvents);
@@ -537,6 +542,7 @@ function getOperationalSummary(store: ZionAdminStore) {
     aiErrors +
     whatsappErrors +
     salesErrors +
+    configurationIssues +
     pendingAi +
     pendingSales +
     pendingWhatsapp;
@@ -555,6 +561,9 @@ function getOperationalSummary(store: ZionAdminStore) {
       ? `${whatsappErrors} erro(s) no WhatsApp de entrada`
       : null,
     salesErrors > 0 ? `${salesErrors} erro(s) em ações comerciais` : null,
+    configurationIssues > 0
+      ? `${configurationIssues} pendência(s) de configuração`
+      : null,
     pendingAi > 0 ? `${pendingAi} IA pendente` : null,
     pendingSales > 0 ? `${pendingSales} ação comercial pendente` : null,
     pendingWhatsapp > 0 ? `${pendingWhatsapp} evento WhatsApp pendente` : null,
@@ -579,6 +588,9 @@ function getOperationalDetails(store: ZionAdminStore) {
       : null,
     numberValue(store.salesActionErrors) > 0
       ? `${numberValue(store.salesActionErrors)} erro(s) em ações comerciais`
+      : null,
+    numberValue(store.configurationIssues) > 0
+      ? `${numberValue(store.configurationIssues)} pendência(s) de configuração`
       : null,
     numberValue(store.pendingAiRuns) > 0
       ? `${numberValue(store.pendingAiRuns)} IA pendente`
@@ -803,7 +815,7 @@ function StoreRowCard({
             {formatNumber(store.totalMessages)} msg
           </div>
           <div className="mt-1 text-zinc-500">
-            {formatNumber(store.totalLeads)} leads
+            {formatNumber(store.totalSalesAiMessages)} msg IA · {formatNumber(store.totalLeads)} leads
           </div>
         </div>
 
@@ -958,14 +970,21 @@ function StoreDetailsDrawer({
             <DetailItem
               label="Mensagens"
               value={formatNumber(store.totalMessages)}
+              help="Mensagens comerciais totais da loja"
+            />
+            <DetailItem
+              label="Mensagens IA vendedora"
+              value={formatNumber(store.totalSalesAiMessages)}
+              help="Mensagens comerciais enviadas pela IA"
+            />
+            <DetailItem
+              label="Mensagens IA assistente"
+              value={formatNumber(store.totalAssistantMessages)}
+              help="Mensagens do chat operacional interno"
             />
             <DetailItem
               label="Compromissos"
               value={formatNumber(store.totalAppointments)}
-            />
-            <DetailItem
-              label="Mensagens assistente"
-              value={formatNumber(store.totalAssistantMessages)}
             />
           </div>
         </section>
@@ -1059,6 +1078,10 @@ function StoreDetailsDrawer({
               <DetailItem
                 label="Erro WhatsApp"
                 value={formatNumber(store.whatsappErrors)}
+              />
+              <DetailItem
+                label="Configuração"
+                value={formatNumber(store.configurationIssues)}
               />
             </div>
           </div>
@@ -1171,6 +1194,24 @@ function OverviewDetailsDrawer({
               <DetailItem
                 label="Última IA"
                 value={formatDateTime(selectedAiStore.lastAiRunAt)}
+              />
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-sm font-semibold text-zinc-200">
+              IA vendedora
+            </h3>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DetailItem
+                label="Mensagens IA vendedora"
+                value={formatNumber(selectedAiStore.totalSalesAiMessages)}
+                help="Mensagens comerciais enviadas pela IA para clientes"
+              />
+              <DetailItem
+                label="Execuções comerciais"
+                value={formatNumber(selectedAiStore.totalAiRuns)}
+                help="Execuções registradas em ai_runs para esta loja"
               />
             </div>
           </section>
@@ -1407,6 +1448,10 @@ function OverviewDetailsDrawer({
                 value={formatNumber(selectedPendingStore.salesActionErrors)}
               />
               <DetailItem
+                label="Configuração da loja"
+                value={formatNumber(selectedPendingStore.configurationIssues)}
+              />
+              <DetailItem
                 label="Eventos WhatsApp pendentes"
                 value={formatNumber(selectedPendingStore.pendingWhatsappEvents)}
               />
@@ -1519,6 +1564,9 @@ function OverviewDetailsDrawer({
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
                 {formatNumber(store.successfulAiRuns)} sucesso · {formatNumber(store.failedAiRuns)} erro(s)
+              </div>
+              <div className="mt-0.5 text-xs text-zinc-500">
+                {formatNumber(store.totalSalesAiMessages)} mensagens comerciais
               </div>
             </div>
             <div className="rounded-xl border border-white/10 bg-zinc-950/35 px-3 py-2">
@@ -1801,11 +1849,16 @@ function OverviewInlineDetails({
           </button>
         </div>
 
-        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <DetailItem
             label="Total de pendências"
             value={formatNumber(data?.totals.totalOperationalIssues)}
             help="Soma das pendências e erros nas filas monitoradas"
+          />
+          <DetailItem
+            label="Configuração"
+            value={formatNumber(data?.totals.configurationIssues)}
+            help="Onboarding, responsável, agenda, acesso, desconto ou catálogo"
           />
           <DetailItem
             label="Lojas com pendência"
@@ -1863,19 +1916,36 @@ function OverviewInlineDetails({
 
                   {store.pendingIssueDetails?.length ? (
                     <div className="mt-4 space-y-2">
-                      {store.pendingIssueDetails.slice(0, 3).map((issue) => (
-                        <div
-                          key={`${issue.source}-${issue.id}`}
-                          className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-50"
-                        >
-                          <div className="font-semibold">
-                            {issue.label || issue.source || "Pendência"}
+                      {store.pendingIssueDetails.slice(0, 4).map((issue) => {
+                        const isConfigurationIssue =
+                          issue.source === "store_configuration";
+
+                        return (
+                          <div
+                            key={`${issue.source}-${issue.id}`}
+                            className={[
+                              "rounded-2xl border p-3 text-xs leading-5",
+                              isConfigurationIssue
+                                ? "border-sky-500/20 bg-sky-500/5 text-sky-50"
+                                : "border-amber-500/20 bg-amber-500/5 text-amber-50",
+                            ].join(" ")}
+                          >
+                            <div className="font-semibold">
+                              {issue.label || issue.source || "Pendência"}
+                            </div>
+                            <div
+                              className={[
+                                "mt-1",
+                                isConfigurationIssue
+                                  ? "text-sky-100/80"
+                                  : "text-amber-100/80",
+                              ].join(" ")}
+                            >
+                              {issue.error || "Erro sem detalhe registrado."}
+                            </div>
                           </div>
-                          <div className="mt-1 text-amber-100/80">
-                            {issue.error || "Erro sem detalhe registrado."}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : null}
                 </div>
@@ -1934,6 +2004,24 @@ function OverviewInlineDetails({
         </div>
 
         <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-2">
+          <section className="rounded-3xl border border-white/10 bg-zinc-950/30 p-4">
+            <h4 className="text-sm font-semibold text-zinc-200">
+              Mensagens por IA
+            </h4>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DetailItem
+                label="IA vendedora"
+                value={formatNumber(data?.totals.salesAiMessages)}
+                help="Mensagens comerciais enviadas pela IA para clientes"
+              />
+              <DetailItem
+                label="IA assistente"
+                value={formatNumber(data?.totals.assistantMessages)}
+                help="Mensagens do chat operacional interno"
+              />
+            </div>
+          </section>
+
           <section className="rounded-3xl border border-white/10 bg-zinc-950/30 p-4">
             <h4 className="text-sm font-semibold text-zinc-200">
               Custo da IA
@@ -2114,7 +2202,7 @@ export default function ZionAdminDashboardClient({
             <OverviewButton
               label="Trabalho da IA"
               value={formatNumber(totalAiRuns)}
-              helper={`${formatPercent(successfulAiRuns, totalAiRuns)} sucesso · ${formatNumber(failedAiRuns)} erro(s) · ${formatUsd(data?.totals.totalCostUsd)} em custo registrado`}
+              helper={`${formatPercent(successfulAiRuns, totalAiRuns)} sucesso · ${formatNumber(failedAiRuns)} erro(s) · ${formatNumber(data?.totals.salesAiMessages)} msg IA vendedora`}
               active={selectedOverview === "ia"}
               onClick={() =>
                 setSelectedOverview((current) =>
@@ -2125,7 +2213,7 @@ export default function ZionAdminDashboardClient({
             <OverviewButton
               label="Pendências"
               value={formatNumber(data?.totals.totalOperationalIssues)}
-              helper={`${formatNumber(data?.totals.aiRunQueueErrors)} IA · ${formatNumber(data?.totals.whatsappErrors)} WhatsApp · ${formatNumber(data?.totals.salesActionErrors)} ações comerciais`}
+              helper={`${formatNumber(data?.totals.aiRunQueueErrors)} IA · ${formatNumber(data?.totals.whatsappErrors)} WhatsApp · ${formatNumber(data?.totals.configurationIssues)} configuração`}
               active={selectedOverview === "pending"}
               onClick={() =>
                 setSelectedOverview((current) =>
