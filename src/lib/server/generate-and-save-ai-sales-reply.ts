@@ -66,6 +66,33 @@ type CrmCardStateRow = {
   is_human_active: boolean | null;
 };
 
+type CrmAutoProgressResult = {
+  attempted: boolean;
+  progressed: boolean;
+  reason: string;
+  skippedReason?: string | null;
+  currentState?: string | null;
+  previousState?: string | null;
+  error?: string | null;
+};
+
+type CommercialHandoffCreationResult = {
+  created: boolean;
+  skipped: boolean;
+  reason: string;
+  error?: string | null;
+  taskId?: string | null;
+  taskType?: string | null;
+  notificationCreated?: boolean;
+  notificationError?: string | null;
+  crmAutoProgressAttempted?: boolean;
+  crmAutoProgressed?: boolean;
+  crmAutoProgressReason?: string | null;
+  crmAutoProgressSkippedReason?: string | null;
+  crmAutoProgressError?: string | null;
+  crmAutoProgressResult?: CrmAutoProgressResult | null;
+};
+
 const NO_RESUME_REASON = "none";
 const AUTO_PROGRESS_TO_ORCAMENTO_ALLOWED_FROM = new Set([
   "novo_lead",
@@ -728,7 +755,7 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
   leadId: string | null;
   taskId: string;
   handoff: CommercialHandoffContext;
-}) {
+}): Promise<CrmAutoProgressResult> {
   if (args.handoff.taskType !== "commercial_quote_request") {
     console.info("[zion-ai-sales-handoff] autoavanço do CRM ignorado", {
       reason: "handoff_is_not_quote_request",
@@ -736,7 +763,12 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
       taskType: args.handoff.taskType,
       conversationId: args.conversationId,
     });
-    return { attempted: false, progressed: false, reason: "handoff_is_not_quote_request" };
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "handoff_is_not_quote_request",
+      skippedReason: "handoff_is_not_quote_request",
+    };
   }
 
   if (!args.organizationId || !args.conversationId) {
@@ -750,6 +782,7 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
       attempted: false,
       progressed: false,
       reason: "missing_organization_or_conversation",
+      skippedReason: "missing_organization_or_conversation",
     };
   }
 
@@ -775,6 +808,7 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
       attempted: false,
       progressed: false,
       reason: stateSnapshot.source,
+      skippedReason: stateSnapshot.source,
     };
   }
 
@@ -794,7 +828,107 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
       attempted: false,
       progressed: false,
       reason: "current_state_not_allowed",
+      skippedReason: "current_state_not_allowed",
       currentState: stateSnapshot.currentState,
+    };
+  }
+
+  if (stateSnapshot.currentState === "novo_lead") {
+    console.info("[zion-ai-sales-handoff] autoavanço do CRM tentando transição em duas etapas", {
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+      currentState: stateSnapshot.currentState,
+      stateSource: stateSnapshot.source,
+      leadState: stateSnapshot.leadState,
+      conversationStatus: stateSnapshot.conversationStatus,
+    });
+
+    const { error: qualificationError } = await args.supabase.rpc(
+      "panel_transition_conversation_state_scoped",
+      {
+        p_organization_id: args.organizationId,
+        p_conversation_id: args.conversationId,
+        p_to_state: "qualificacao",
+        p_reason: "auto_progress_from_ai_sales_quote_request_prepare_qualification",
+      }
+    );
+
+    if (qualificationError) {
+      console.warn("[zion-ai-sales-handoff] falha na primeira etapa do autoavanço para orçamento", {
+        taskId: args.taskId,
+        taskType: args.handoff.taskType,
+        conversationId: args.conversationId,
+        fromState: stateSnapshot.currentState,
+        toState: "qualificacao",
+        error: qualificationError.message,
+        details: (qualificationError as any)?.details ?? null,
+        hint: (qualificationError as any)?.hint ?? null,
+        code: (qualificationError as any)?.code ?? null,
+      });
+      return {
+        attempted: true,
+        progressed: false,
+        reason: "crm_transition_to_qualification_failed",
+        currentState: stateSnapshot.currentState,
+        error: qualificationError.message,
+      };
+    }
+
+    console.info("[zion-ai-sales-handoff] primeira etapa do autoavanço concluída", {
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+      fromState: "novo_lead",
+      toState: "qualificacao",
+    });
+
+    const { error: budgetAfterQualificationError } = await args.supabase.rpc(
+      "panel_transition_conversation_state_scoped",
+      {
+        p_organization_id: args.organizationId,
+        p_conversation_id: args.conversationId,
+        p_to_state: "orcamento",
+        p_reason: "auto_progress_from_ai_sales_quote_request",
+      }
+    );
+
+    if (budgetAfterQualificationError) {
+      console.warn("[zion-ai-sales-handoff] falha na segunda etapa do autoavanço para orçamento", {
+        taskId: args.taskId,
+        taskType: args.handoff.taskType,
+        conversationId: args.conversationId,
+        fromState: "qualificacao",
+        toState: "orcamento",
+        error: budgetAfterQualificationError.message,
+        details: (budgetAfterQualificationError as any)?.details ?? null,
+        hint: (budgetAfterQualificationError as any)?.hint ?? null,
+        code: (budgetAfterQualificationError as any)?.code ?? null,
+      });
+      return {
+        attempted: true,
+        progressed: false,
+        reason: "crm_transition_to_budget_failed_after_qualification",
+        previousState: "qualificacao",
+        currentState: "qualificacao",
+        error: budgetAfterQualificationError.message,
+      };
+    }
+
+    console.info("[zion-ai-sales-handoff] segunda etapa do autoavanço concluída", {
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+      fromState: "qualificacao",
+      toState: "orcamento",
+    });
+
+    return {
+      attempted: true,
+      progressed: true,
+      reason: "crm_auto_progress_completed_via_qualification",
+      previousState: stateSnapshot.currentState,
+      currentState: "orcamento",
     };
   }
 
@@ -852,6 +986,7 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
     progressed: true,
     reason: "crm_auto_progress_completed",
     previousState: stateSnapshot.currentState,
+    currentState: "orcamento",
   };
 }
 
@@ -862,8 +997,7 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
   conversationId: string;
   leadId: string | null;
   lastCustomerMessage: string | null | undefined;
-  requestedCommercialHandoff: CommercialHandoffContext | null | undefined;
-}) {
+}): Promise<CrmAutoProgressResult> {
   if (!args.organizationId || !args.conversationId) {
     console.info("[zion-ai-sales-qualification] autoavanço ignorado", {
       reason: "missing_organization_or_conversation",
@@ -873,21 +1007,7 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
       attempted: false,
       progressed: false,
       reason: "missing_organization_or_conversation",
-    };
-  }
-
-  if (
-    args.requestedCommercialHandoff?.shouldCreateTask &&
-    args.requestedCommercialHandoff.taskType === "commercial_quote_request"
-  ) {
-    console.info("[zion-ai-sales-qualification] autoavanço ignorado", {
-      reason: "quote_handoff_will_handle_budget_progress",
-      conversationId: args.conversationId,
-    });
-    return {
-      attempted: false,
-      progressed: false,
-      reason: "quote_handoff_will_handle_budget_progress",
+      skippedReason: "missing_organization_or_conversation",
     };
   }
 
@@ -901,6 +1021,7 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
       attempted: false,
       progressed: false,
       reason: "no_clear_commercial_signal",
+      skippedReason: "no_clear_commercial_signal",
     };
   }
 
@@ -924,6 +1045,7 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
       attempted: false,
       progressed: false,
       reason: stateSnapshot.source,
+      skippedReason: stateSnapshot.source,
     };
   }
 
@@ -940,6 +1062,7 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
       attempted: false,
       progressed: false,
       reason: "current_state_blocked",
+      skippedReason: "current_state_blocked",
       currentState: stateSnapshot.currentState,
     };
   }
@@ -957,6 +1080,7 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
       attempted: false,
       progressed: false,
       reason: "current_state_not_allowed",
+      skippedReason: "current_state_not_allowed",
       currentState: stateSnapshot.currentState,
     };
   }
@@ -1639,7 +1763,7 @@ async function createCommercialAssistantHandoff(args: {
   conversationId: string;
   leadId: string | null;
   handoff: CommercialHandoffContext | null | undefined;
-}) {
+}): Promise<CommercialHandoffCreationResult> {
   const handoff = args.handoff;
 
   if (!handoff || !handoff.shouldCreateTask) {
@@ -1732,16 +1856,7 @@ async function createCommercialAssistantHandoff(args: {
     handoff,
   });
 
-  let crmAutoProgressResult:
-    | {
-        attempted: boolean;
-        progressed: boolean;
-        reason: string;
-        currentState?: string | null;
-        previousState?: string | null;
-        error?: string | null;
-      }
-    | undefined;
+  let crmAutoProgressResult: CrmAutoProgressResult | undefined;
 
   try {
     crmAutoProgressResult = await maybeAutoProgressCrmToBudgetFromQuoteHandoff({
@@ -1779,6 +1894,9 @@ async function createCommercialAssistantHandoff(args: {
     crmAutoProgressAttempted: crmAutoProgressResult?.attempted === true,
     crmAutoProgressed: crmAutoProgressResult?.progressed === true,
     crmAutoProgressReason: crmAutoProgressResult?.reason || null,
+    crmAutoProgressSkippedReason: crmAutoProgressResult?.skippedReason || null,
+    crmAutoProgressError: crmAutoProgressResult?.error || null,
+    crmAutoProgressResult: crmAutoProgressResult || null,
   };
 }
 
@@ -2021,43 +2139,6 @@ export async function generateAndSaveAiSalesReply(
 
     const aiMessageTimestamp = new Date().toISOString();
 
-    let qualificationAutoProgressResult: Record<string, unknown> | null = null;
-
-    try {
-      qualificationAutoProgressResult =
-        await maybeAutoProgressCrmToQualificationFromSalesSignal({
-          supabase,
-          organizationId,
-          storeId,
-          conversationId,
-          leadId: normalizedConversation.lead_id || null,
-          lastCustomerMessage:
-            generationResult.context?.lastCustomerMessage ||
-            generationResult.context?.commercialHandoff?.lastCustomerMessage ||
-            null,
-          requestedCommercialHandoff,
-        });
-    } catch (qualificationProgressError: any) {
-      qualificationAutoProgressResult = {
-        attempted: true,
-        progressed: false,
-        reason: "crm_auto_progress_unexpected_failure",
-        error:
-          qualificationProgressError?.message ||
-          String(qualificationProgressError || ""),
-      };
-      console.warn(
-        "[zion-ai-sales-qualification] falha inesperada no autoavanço para qualificação",
-        {
-          organizationId,
-          storeId,
-          conversationId,
-          error:
-            qualificationProgressError?.message || qualificationProgressError,
-        }
-      );
-    }
-
     await persistOperationalFollowUpDecision({
       supabase,
       organizationId,
@@ -2073,7 +2154,7 @@ export async function generateAndSaveAiSalesReply(
       lastAiMessageAt: aiMessageTimestamp,
     });
 
-    let commercialHandoffResult: Record<string, unknown> | null = null;
+    let commercialHandoffResult: CommercialHandoffCreationResult | null = null;
 
     try {
       commercialHandoffResult = await createCommercialAssistantHandoff({
@@ -2097,6 +2178,61 @@ export async function generateAndSaveAiSalesReply(
         conversationId,
         error: handoffError?.message || handoffError,
       });
+    }
+
+    const shouldSkipQualificationBecauseBudgetProgressed =
+      requestedCommercialHandoff?.shouldCreateTask === true &&
+      requestedCommercialHandoff?.taskType === "commercial_quote_request" &&
+      commercialHandoffResult?.crmAutoProgressed === true;
+
+    let qualificationAutoProgressResult: CrmAutoProgressResult | null = null;
+
+    if (shouldSkipQualificationBecauseBudgetProgressed) {
+      qualificationAutoProgressResult = {
+        attempted: false,
+        progressed: false,
+        reason: "budget_auto_progress_already_completed",
+        skippedReason: "budget_auto_progress_already_completed",
+      };
+      console.info("[zion-ai-sales-qualification] fallback ignorado", {
+        reason: "budget_auto_progress_already_completed",
+        conversationId,
+        taskId: commercialHandoffResult?.taskId || null,
+      });
+    } else {
+      try {
+        qualificationAutoProgressResult =
+          await maybeAutoProgressCrmToQualificationFromSalesSignal({
+            supabase,
+            organizationId,
+            storeId,
+            conversationId,
+            leadId: normalizedConversation.lead_id || null,
+            lastCustomerMessage:
+              generationResult.context?.lastCustomerMessage ||
+              generationResult.context?.commercialHandoff?.lastCustomerMessage ||
+              null,
+          });
+      } catch (qualificationProgressError: any) {
+        qualificationAutoProgressResult = {
+          attempted: true,
+          progressed: false,
+          reason: "crm_auto_progress_unexpected_failure",
+          error:
+            qualificationProgressError?.message ||
+            String(qualificationProgressError || ""),
+        };
+        console.warn(
+          "[zion-ai-sales-qualification] falha inesperada no autoavanço para qualificação",
+          {
+            organizationId,
+            storeId,
+            conversationId,
+            error:
+              qualificationProgressError?.message || qualificationProgressError,
+          }
+        );
+      }
     }
 
     return {
