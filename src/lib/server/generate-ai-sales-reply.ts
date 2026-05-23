@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { isSellableInventoryState } from "../catalog/availability";
 import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
 import { buildSalesMethodologyInstructionBlock } from "./ai-sales-methodology";
+import { buildSalesResponseBrain } from "./ai-sales-response-brain";
 
 type ConversationRow = {
   id: string;
@@ -1447,6 +1448,35 @@ function buildCommercialHandoffReply(args: {
   return "Posso te ajudar com isso. Me confirma sua cidade e, se já tiver, o espaço ou medida que você quer aproveitar que eu encaminho para a loja da forma certa.";
 }
 
+function buildCommercialHandoffReplyV2(args: {
+  handoffType: CommercialHandoffType;
+  locationText: string | null;
+  preferredPeriodText: string | null;
+  requestedAreaM2: number | null;
+}): string {
+  if (args.handoffType === "commercial_visit_request") {
+    if (args.locationText && args.preferredPeriodText) {
+      return `Perfeito. Vou verificar na agenda os horarios disponiveis para ${args.preferredPeriodText} e te falo em seguida.`;
+    }
+
+    if (!args.locationText && !args.preferredPeriodText) {
+      return "Posso te ajudar com isso. Vou verificar na agenda os dias que temos disponiveis. Me confirma sua cidade e qual dia ou periodo costuma ser melhor para voce.";
+    }
+
+    if (!args.locationText) {
+      return "Posso te ajudar com isso. Me confirma sua cidade que eu vejo na agenda os melhores horarios para a visita.";
+    }
+
+    return "Posso te ajudar com isso. Vou verificar na agenda os dias que temos disponiveis. Qual dia ou periodo costuma ser melhor para voce?";
+  }
+
+  if (args.requestedAreaM2 != null || args.locationText) {
+    return "Perfeito. Ja tenho parte das informacoes para montar isso certinho. So me confirma se voce quer incluir instalacao e se tem mais algum item que quer colocar no orcamento.";
+  }
+
+  return "Posso te ajudar com isso. Me confirma sua cidade e, se ja tiver, o espaco ou medida que voce quer aproveitar para eu montar isso certinho.";
+}
+
 function inferCommercialHandoff(args: {
   lastCustomerMessage: string;
   customerConversationText: string;
@@ -1494,7 +1524,7 @@ function inferCommercialHandoff(args: {
     intent: taskType === "commercial_quote_request" ? "quote_request" : "visit_request",
     reason: directQuoteRequest ? "direct_quote_request" : "direct_visit_request",
     shouldCreateTask: true,
-    replyOverride: buildCommercialHandoffReply({
+    replyOverride: buildCommercialHandoffReplyV2({
       handoffType: taskType,
       locationText,
       preferredPeriodText,
@@ -2839,7 +2869,7 @@ function inferNextBestQuestion(args: {
   }
 
   if (pattern === "pool_size_discovery") {
-    return "Com esse espaco faz sentido olhar modelos mais compactos. Voce prefere algo mais simples de manter ou uma opcao com mais conforto?";
+    return "Com esse espaco ja da para afunilar melhor as opcoes. Voce prefere algo mais simples de manter ou uma opcao com mais conforto?";
   }
 
   if (pattern === "pool_children_context") {
@@ -2895,8 +2925,8 @@ function inferNextBestQuestion(args: {
 
   if (looksLikeTechnicalVisitQuestion(lastCustomerMessage)) {
     return facts.locationKnown
-      ? "Posso verificar um horario pra visita. Qual dia ou periodo costuma ser melhor pra voce?"
-      : "Posso te ajudar com isso. Me confirma sua cidade ou bairro e qual dia ou periodo costuma ser melhor pra voce?";
+      ? "Vou verificar na agenda os horarios disponiveis. Qual dia ou periodo costuma ser melhor pra voce?"
+      : "Vou verificar na agenda os dias que temos disponiveis. Me confirma sua cidade ou bairro e qual dia ou periodo costuma ser melhor pra voce?";
   }
 
   if (pattern === "photo_or_simulation_request") {
@@ -3043,16 +3073,16 @@ function inferResponseGoal(args: {
 
   if (looksLikeTechnicalVisitQuestion(args.lastCustomerMessage)) {
     return offersTechnicalVisit
-      ? "tratar visita como proximo passo comercial seguro, coletar cidade ou bairro e melhor dia ou periodo, dizer que vai verificar a disponibilidade e nao afirmar que a visita ja foi agendada ou confirmada"
-      : "explicar com sinceridade que a visita precisa ser confirmada com a loja ou responsavel, coletar cidade ou bairro e melhor dia ou periodo e nao prometer agendamento como se estivesse executado";
+      ? "tratar visita como proximo passo comercial seguro, coletar cidade ou bairro e melhor dia ou periodo, dizer que vai verificar na agenda a disponibilidade e nao afirmar que a visita ja foi agendada ou confirmada"
+      : "explicar com sinceridade que a visita depende de validacao interna, coletar cidade ou bairro e melhor dia ou periodo e nao prometer agendamento como se estivesse executado";
   }
 
   if (pattern === "payment_or_closing_flow") {
     if (paymentOrClosingSubtype === "payment_submitted" || paymentOrClosingSubtype === "receipt_submitted") {
-      return "agradecer a sinalizacao de pagamento ou comprovante, informar com naturalidade que a conferencia sera feita pela loja ou responsavel e nao tratar pagamento como validado ou confirmado antes disso";
+      return "agradecer a sinalizacao de pagamento ou comprovante, informar com naturalidade que voce vai pedir a validacao do responsavel e nao tratar pagamento como validado ou confirmado antes disso";
     }
     if (paymentOrClosingSubtype === "pix_key_request") {
-      return "orientar sobre Pix apenas com base na configuracao viva da loja; se a chave ou instrucao exata nao estiver clara no contexto, nao inventar e dizer que a loja ou responsavel vai passar a forma correta";
+      return "orientar sobre Pix apenas com base na configuracao viva da loja; se a chave ou instrucao exata nao estiver clara no contexto, nao inventar e dizer que a chave correta precisa ser confirmada antes de passar";
     }
     if (paymentOrClosingSubtype === "reservation_or_hold") {
       return "tratar reserva ou separacao como proximo passo dependente de validacao real, sem afirmar que o produto ja ficou reservado ou separado";
@@ -3088,7 +3118,7 @@ function inferResponseGoal(args: {
   }
 
   if (pattern === "pool_size_discovery") {
-    return "interpretar o espaco, afunilar para modelos compactos quando fizer sentido e avancar com no maximo uma pergunta pratica sobre manutencao ou conforto, sem reabrir motivacao";
+    return "interpretar o espaco, afunilar melhor as opcoes pelo tamanho e avancar com no maximo uma pergunta pratica sobre manutencao, conforto, custo ou proximo passo, sem reabrir motivacao";
   }
 
   if (pattern === "pool_children_context") {
@@ -3511,6 +3541,198 @@ ${forbiddenText}
 `.trim();
 }
 
+function collectRecentCustomerMessages(messages: MessageRow[], limit = 4): string[] {
+  return messages
+    .filter(
+      (msg) =>
+        normalizeText(msg.sender) === "user" &&
+        normalizeText(msg.direction) === "incoming" &&
+        String(msg.content || "").trim().length > 0
+    )
+    .slice(-limit)
+    .map((msg) => String(msg.content || "").trim());
+}
+
+function isVagueGreetingOrPing(text: string): boolean {
+  const normalized = normalizeText(text);
+
+  if (!normalized) return false;
+
+  const vagueMessages = new Set([
+    "oi",
+    "ola",
+    "olá",
+    "bom dia",
+    "boa tarde",
+    "boa noite",
+    "teste",
+    "?",
+    "ta ai",
+    "tá aí",
+    "preciso falar",
+  ]);
+
+  if (vagueMessages.has(normalized)) return true;
+
+  return (
+    /^o+i+$/i.test(normalized) ||
+    /^ola+$/i.test(normalized) ||
+    /^ol+a+$/i.test(normalized) ||
+    /^ta ai\??$/i.test(normalized) ||
+    /^tem alguem ai\??$/i.test(normalized) ||
+    /^[?!. ]+$/.test(normalized)
+  );
+}
+
+function buildCustomerSituationInstructionBlock(args: {
+  orderedMessages: MessageRow[];
+  lastCustomerMessage: string;
+  lastAiMessage: string | null;
+  customerConversationText: string;
+  leadName: string | null;
+}): string {
+  const recentCustomerMessages = collectRecentCustomerMessages(args.orderedMessages, 4);
+  const locationText = extractLocationSnippet(args.customerConversationText);
+  const spaceText = extractSpaceText(args.customerConversationText);
+  const requestedAreaM2 = extractRequestedAreaM2(args.customerConversationText);
+  const preferredPeriodText = extractPreferredPeriodSnippet(args.customerConversationText);
+  const requestedModel = extractRequestedPoolReference(args.customerConversationText)?.raw || null;
+  const relevantObjection = extractRelevantObjection(args.customerConversationText);
+  const customerPreferences = extractCustomerPreferencesText(args.customerConversationText);
+
+  return [
+    "LEITURA DA SITUACAO DO CLIENTE",
+    `- ultimas falas do cliente para considerar como uma conversa unica: ${recentCustomerMessages.length > 0 ? recentCustomerMessages.map((item) => `"${item}"`).join(" | ") : `"${args.lastCustomerMessage}"`}`,
+    `- nome do cliente: ${args.leadName || "nao informado"}`,
+    `- cidade/regiao ja informada: ${locationText || "nao identificado"}`,
+    `- espaco/medida ja informados: ${spaceText || (requestedAreaM2 != null ? `${requestedAreaM2} m2` : "nao identificado")}`,
+    `- modelo ou anuncio citado: ${requestedModel || "nao identificado"}`,
+    `- preferencia comercial percebida: ${customerPreferences || "nao identificado"}`,
+    `- objecao ou sensibilidade comercial percebida: ${relevantObjection || "nao identificado"}`,
+    `- melhor periodo citado: ${preferredPeriodText || "nao identificado"}`,
+    `- ultima resposta da IA para evitar repeticao: ${args.lastAiMessage || "nenhuma resposta anterior relevante"}`,
+  ].join("\n");
+}
+
+function buildSalesResponseBrainInstructionBlock(args: {
+  orderedMessages: MessageRow[];
+  lastCustomerMessage: string;
+  lastAiMessage: string | null;
+  customerConversationText: string;
+  nextBestQuestion: string | null;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+}): string {
+  const vagueGreeting = isVagueGreetingOrPing(args.lastCustomerMessage);
+  const hasIntegratedCustomerContext = collectRecentCustomerMessages(args.orderedMessages, 4).length >= 2;
+  const requestedModel = args.requestedPoolReference?.raw || null;
+  const modelNotWorked =
+    requestedModel &&
+    (args.strongestPoolReferenceMatch === "weak" || args.strongestPoolReferenceMatch === "none");
+
+  const instructions = [
+    "CEREBRO COMERCIAL V1",
+    "- responda exatamente o que o cliente pediu antes de puxar qualquer nova pergunta",
+    "- use o historico recente como memoria ativa; se cidade, espaco, periodo, modelo, preferencia, objecao, pagamento, visita ou orcamento ja apareceram, aproveite isso na resposta e nao pergunte de novo",
+    "- quando o cliente mandar varias mensagens curtas em sequencia, trate o conjunto como uma conversa unica e devolva uma resposta integrada, sem responder cada frase isoladamente",
+    "- toda resposta deve ter resposta direta + contexto + proximo passo natural",
+    "- faça no maximo uma pergunta principal, e so se ela realmente destravar a venda",
+    "- se a ultima resposta da IA ja fez uma pergunta ou listou opcoes, nao repita a mesma estrutura sem motivo novo",
+    "- nao fale como chatbot, suporte tecnico, sistema interno ou consulta de banco de dados",
+    "- em duvida entre soar vendedor e soar sistema, escolha soar vendedor mantendo sinceridade comercial",
+  ];
+
+  if (hasIntegratedCustomerContext) {
+    instructions.push(
+      "- nesta resposta, una as ultimas mensagens do cliente em uma unica linha de raciocinio e mostre que voce entendeu o conjunto antes de avancar"
+    );
+  }
+
+  if (vagueGreeting) {
+    instructions.push(
+      "- a mensagem atual e vaga ou so um cumprimento; responda curto, humano e receptivo, sem forcar venda, sem pedir medida/cidade e sem puxar pagamento, visita ou orcamento"
+    );
+  }
+
+  if (modelNotWorked) {
+    instructions.push(
+      `- o cliente citou "${requestedModel}". Nao use frases como "nao encontrei no catalogo", "nao localizei no sistema" ou "nao achei esse modelo". Prefira linguagem de vendedor, como "esse modelo nao trabalhamos hoje", "esse modelo nao temos hoje" ou "esse modelo especifico nao esta disponivel na loja".`
+    );
+    instructions.push(
+      "- depois de explicar isso, nao trave a conversa: ofereca opcao parecida, compare caminho mais compacto/confortavel/economico ou use o espaco ja conhecido para conduzir a proxima recomendacao"
+    );
+  }
+
+  if (looksLikePriceQuestion(args.lastCustomerMessage)) {
+    instructions.push(
+      "- se o cliente perguntou preco, responda de forma util sem fugir; se o valor depender de projeto, modelo ou instalacao, explique isso em uma frase simples e continue a venda"
+    );
+  }
+
+  if (looksLikeDiscountQuestionV2(args.lastCustomerMessage)) {
+    instructions.push(
+      "- se o cliente trouxe objecao de preco, reconheca o peso do investimento, defenda valor sem discutir, e quando fizer sentido ofereca caminho mais simples ou condicao sujeita a confirmacao"
+    );
+  }
+
+  if (looksLikePaymentQuestion(args.lastCustomerMessage)) {
+    instructions.push(
+      "- se a pergunta for sobre Pix, pagamento ou condicao, nao invente chave, desconto, parcelamento ou confirmacao; se faltar configuracao, diga que a loja precisa confirmar a condicao correta"
+    );
+  }
+
+  if (looksLikeExplicitVisitRequest(args.lastCustomerMessage)) {
+    instructions.push(
+      "- em pedido de visita, fale como quem vai verificar disponibilidade na agenda; nao prometa agenda pronta e nao pergunte de novo dia/periodo se isso ja estiver no historico"
+    );
+  }
+
+  if (looksLikeExtendedQuoteRequest(args.lastCustomerMessage)) {
+    instructions.push(
+      "- em pedido de orcamento, use o contexto ja conhecido para encaminhar a solicitação sem pedir tudo de novo; so peca a informacao critica que realmente estiver faltando"
+    );
+  }
+
+  if (args.nextBestQuestion) {
+    instructions.push(
+      `- se ainda faltar um unico dado para avancar, a melhor pergunta e: ${args.nextBestQuestion}`
+    );
+  } else {
+    instructions.push("- se ja houver contexto suficiente, nao invente pergunta so para terminar a mensagem com interrogacao");
+  }
+
+  return instructions.join("\n");
+}
+
+function buildSalesReplyQualityRules(args: {
+  lastCustomerMessage: string;
+  lastAiMessage: string | null;
+}): string {
+  const instructions = [
+    "REGRAS DE QUALIDADE DA RESPOSTA",
+    "- gere uma unica mensagem final de WhatsApp, clara e pronta para envio",
+    "- prefira 1 bloco curto ou 2 paragrafos curtos; nao transforme em texto longo",
+    "- nao repita abertura, negativa, fechamento ou pergunta da mensagem anterior da IA",
+    "- nao responda como se cada mensagem do cliente fosse isolada quando houver contexto recente suficiente",
+    "- nao repita perguntas ja respondidas pelo cliente",
+    "- nao use linguagem fria como software, cadastro, sistema, fluxo interno, banco de dados ou catalogo interno",
+  ];
+
+  if (args.lastAiMessage) {
+    instructions.push(
+      "- compare mentalmente com a ultima resposta da IA e evite reciclar a mesma formula, especialmente se ela ja negou um modelo ou ja pediu contexto parecido"
+    );
+  }
+
+  if (isVagueGreetingOrPing(args.lastCustomerMessage)) {
+    instructions.push(
+      "- para cumprimento vago, responda curto, tipo 'Oi, posso te ajudar com algo?' ou equivalente natural, sem empurrar venda"
+    );
+  }
+
+  return instructions.join("\n");
+}
+
 function buildResponsePriorityBlock(args: {
   pattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
@@ -3610,19 +3832,19 @@ function buildResponsePriorityBlock(args: {
     );
     if (args.paymentOrClosingSubtype === "payment_submitted" || args.paymentOrClosingSubtype === "receipt_submitted") {
       instructions.push(
-        "- O cliente disse que pagou ou enviou comprovante. Agradeca e diga que a conferencia sera feita pela loja ou responsavel. Nao trate isso como validado."
+        "- O cliente disse que pagou ou enviou comprovante. Agradeca e diga que voce vai pedir a conferencia do responsavel. Nao trate isso como validado."
       );
     } else if (args.paymentOrClosingSubtype === "pix_key_request") {
       instructions.push(
         args.hasConfiguredPixKey
           ? "- O cliente pediu o Pix. So diga que pode passar a chave se a chave real estiver no contexto ou configuracao viva."
-          : "- O cliente pediu o Pix. Mesmo que Pix seja aceito, nao diga que pode passar a chave agora quando ela nao estiver configurada. Diga que a chave certa precisa ser confirmada pela loja ou responsavel."
+          : "- O cliente pediu o Pix. Mesmo que Pix seja aceito, nao diga que pode passar a chave agora quando ela nao estiver configurada. Diga que a chave certa precisa ser confirmada antes de passar."
       );
     } else if (args.paymentOrClosingSubtype === "down_payment_or_entry") {
       instructions.push(
         args.hasConfiguredDownPaymentRule
           ? "- Se houver regra explicita de entrada ou sinal na configuracao, use com cautela e sem extrapolar o que esta definido."
-          : "- O cliente perguntou sobre entrada ou sinal. Nao responda 'pode sim' sem base. Trate essa condicao como algo que precisa ser confirmado pela loja conforme modelo, projeto e forma de pagamento."
+          : "- O cliente perguntou sobre entrada ou sinal. Nao responda 'pode sim' sem base. Trate essa condicao como algo que precisa de confirmacao interna conforme modelo, projeto e forma de pagamento."
       );
     } else if (args.paymentOrClosingSubtype === "reservation_or_hold") {
       instructions.push(
@@ -3684,7 +3906,7 @@ function buildResponsePriorityBlock(args: {
         `- O cliente perguntou preço de um modelo específico encontrado no catálogo. Responda o preço primeiro. Use como base ${bestNamedPoolBasePrice || "o valor cadastrado"}${bestNamedPoolPriceRange ? ` e mencione também a faixa ${bestNamedPoolPriceRange}` : ""} antes de fazer qualquer pergunta.`
       );
       instructions.push(
-        "- Não fuja do preço com 'depende' se já existe valor confiável no catálogo. Se precisar conduzir, faça isso só depois, com uma pergunta curta como instalação ou acabamento."
+        "- Não fuja do preço com 'depende' se já existe valor confiável no catálogo. Se precisar conduzir, faça isso só depois, com uma pergunta curta sobre instalação ou itens do pedido."
       );
     }
     if (
@@ -3693,7 +3915,7 @@ function buildResponsePriorityBlock(args: {
       (args.strongestPoolReferenceMatch === "weak" || args.strongestPoolReferenceMatch === "none")
     ) {
       instructions.push(
-        `- O nome "${args.requestedPoolReference.raw}" não teve match exato ou forte no catálogo. Não diga que ele é ${args.bestNamedPoolMatch?.pool.name || "outro modelo do catálogo"}. Responda de forma humana, como "essa eu não tenho aqui" ou "com esse nome eu não achei aqui". Se existir item próximo, trate só como opção parecida e continue a venda usando o contexto já conhecido antes de fazer nova pergunta.`
+        `- O nome "${args.requestedPoolReference.raw}" não teve match exato ou forte no catálogo. Não diga que ele é ${args.bestNamedPoolMatch?.pool.name || "outro modelo do catálogo"}. Responda como vendedora, com linguagem de loja, por exemplo: "esse modelo a gente não trabalha", "esse modelo específico não temos" ou "não trabalhamos com esse modelo, mas tenho opções parecidas". Se existir item próximo, trate só como opção parecida e continue a venda usando o contexto já conhecido antes de fazer nova pergunta.`
       );
     }
   }
@@ -3821,13 +4043,13 @@ function buildResponsePriorityBlock(args: {
 
   if (!args.hasCatalogEvidence) {
     instructions.push(
-      "- Para produto de catálogo sem item compatível encontrado, não diga que tem. Responda de forma humana e curta, como 'essa eu não tenho aqui' ou 'com esse nome eu não achei aqui', sem falar em catálogo atual ou busca técnica."
+      "- Para produto de catálogo sem item compatível encontrado, não diga que tem. Responda como vendedora, por exemplo 'esse modelo a gente não trabalha', 'esse modelo específico não temos' ou 'não trabalhamos com esse modelo, mas tenho opções parecidas', sem falar em catálogo atual ou busca técnica."
     );
   }
 
   if (!args.hasPoolEvidence) {
     instructions.push(
-      "- Para piscina específica sem modelo/foto compatível encontrado, não invente. Diga que não conseguiu localizar esse modelo específico ou que não há foto cadastrada dele."
+      "- Para piscina específica sem modelo/foto compatível encontrado, não invente. Se faltar o modelo, diga de forma comercial que esse modelo a gente não trabalha e ofereça caminho próximo. Se o problema for só foto, diga apenas que não há foto disponível dele agora."
     );
   }
 
@@ -4049,6 +4271,7 @@ function buildInstructions(args: {
   lastCustomerMessage: string;
   behaviorInstructionBlock: string;
   salesMethodologyInstructionBlock: string;
+  salesBrainPromptBlock: string;
   commercialObjectiveBlock: string;
   shouldLoadPools: boolean;
   lastAiMessage: string | null;
@@ -4130,7 +4353,7 @@ REGRAS OPERACIONAIS
 - se a forma de pagamento, chave Pix, parcelamento, entrada, sinal ou regra de contrato não estiver clara nas configurações, não invente
 - Pix aceito não significa chave Pix disponível; só diga que pode passar a chave se ela existir de forma real no contexto/configuração
 - se não houver chave Pix configurada, diga que o Pix é aceito quando isso estiver configurado, mas que a chave certa precisa ser confirmada pela loja ou responsável
-- entrada ou sinal só podem ser afirmados quando houver configuração explícita; sem isso, trate como condição a confirmar com a loja
+- entrada ou sinal só podem ser afirmados quando houver configuração explícita; sem isso, trate como condição a confirmar internamente antes de responder
 - se o cliente disser que já pagou, fez o Pix ou mandou comprovante, agradeça e diga que a conferência será feita pela loja ou responsável; não confirme pagamento
 - se o cliente pedir reserva, separação ou para segurar produto, trate isso como encaminhamento e próximo passo dependente de validação real; não afirme reserva concluída
 - se o cliente pedir contrato, diga que a loja pode preparar ou encaminhar esse fluxo quando necessário, mas a IA não emite, não assina e não conclui contrato sozinha
@@ -4170,7 +4393,7 @@ REGRAS OPERACIONAIS
 - em recomendações por espaço, não diga cabe no seu espaço, vai caber ou se encaixa; prefira pode fazer sentido para esse espaço, pelo tamanho parece uma boa opção ou pode combinar com esse espaço
 - se a loja fizer visita técnica e já houver espaço, interesse em instalação ou necessidade de confirmar acesso/medidas, visita ou avaliação pode ser um próximo passo comercial natural
 - nesse caso, trate visita como verificação ou encaminhamento: peça cidade/bairro e melhor dia/período e diga que vai verificar disponibilidade; não diga que já agendou
-- se a loja não tiver visita técnica configurada com clareza, não invente que faz visita; diga que vai confirmar com a loja ou responsável
+- se a visita técnica não estiver configurada com clareza, não invente que faz visita; diga que isso precisa de confirmação interna antes de responder
 - nunca escreva posso agendar sim, agendei, visita confirmada, horário marcado, já marquei ou ficou agendado sem ação real de agenda
 - quando o cliente pedir visita diretamente, prefira posso te ajudar com isso ou posso verificar um horário pra visita
 - quando o cliente pedir foto do local, falar de quintal, encaixe ou simulação, trate a foto como apoio comercial e não como análise visual automática
@@ -4244,6 +4467,9 @@ ${args.salesMethodologyInstructionBlock}
 
 COMPORTAMENTO OFICIAL DO ZION
 ${args.behaviorInstructionBlock}
+
+CEREBRO COMERCIAL DO TURNO
+${args.salesBrainPromptBlock}
 
 EXEMPLOS DE TOM
 ${args.examplesBlock}
@@ -4997,6 +5223,25 @@ export async function generateAiSalesReply(
     });
 
     const commercialObjectiveBlock = buildCommercialObjectiveBlock(commercialObjective);
+    const salesBrain = buildSalesResponseBrain({
+      customerName: lead.name,
+      crmStage: lead.state,
+      conversationStatus: conversation.status,
+      humanActive: conversation.is_human_active,
+      lastCustomerMessage,
+      lastAiMessage,
+      orderedMessages,
+      recommendedModel: matchedPools[0]?.pool?.name || null,
+      requestedPoolReferenceRaw: requestedPoolReference?.raw || null,
+      strongestPoolReferenceMatch,
+      hasConfiguredPixKey: hasConfiguredPixKey(onboardingMap),
+      offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
+      suggestedNextQuestion: commercialObjective.nextBestQuestion,
+      acceptedPaymentMethodsSummary:
+        onboardingMap.accepted_payment_methods_summary ||
+        onboardingMap.accepted_payment_methods ||
+        null,
+    });
 
     const catalogEvidenceBlock = buildCatalogEvidenceBlock({
       analysis: catalogIntent,
@@ -5059,6 +5304,7 @@ export async function generateAiSalesReply(
       lastCustomerMessage,
       behaviorInstructionBlock,
       salesMethodologyInstructionBlock,
+      salesBrainPromptBlock: salesBrain.promptBlock,
       commercialObjectiveBlock,
       shouldLoadPools,
       lastAiMessage,
@@ -5113,10 +5359,17 @@ export async function generateAiSalesReply(
       patienceSignal: commercialObjective.patienceSignal,
     });
 
-    const finalAiText =
-      commercialHandoff?.replyOverride && commercialHandoff.shouldCreateTask
-        ? commercialHandoff.replyOverride
-        : aiText;
+    const shouldUseCommercialReplyOverride = Boolean(
+      commercialHandoff?.replyOverride &&
+        commercialHandoff.shouldCreateTask &&
+        !(
+          commercialHandoff.taskType === "commercial_visit_request" &&
+          salesBrain.snapshot.visitNeedsQualificationBeforeAgenda
+        )
+    );
+    const finalAiText = shouldUseCommercialReplyOverride
+      ? String(commercialHandoff?.replyOverride || "").trim()
+      : aiText;
 
     if (!finalAiText) {
       return {
