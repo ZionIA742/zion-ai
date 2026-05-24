@@ -7,6 +7,7 @@ type OverviewPanelKey =
   | "cost"
   | "tokens"
   | "pending"
+  | "compare"
   | "conversations"
   | "messages"
   | "leads"
@@ -166,7 +167,6 @@ export type ZionAdminStore = {
   aiRunQueueErrors?: number | null;
   pendingSalesActions?: number | null;
   salesActionErrors?: number | null;
-  configurationIssues?: number | null;
   pendingWhatsappEvents?: number | null;
   whatsappErrors?: number | null;
   totalOperationalIssues?: number | null;
@@ -244,7 +244,7 @@ function CostPeriodBlocks({
   month: number | string | null | undefined;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
       <DetailItem label="Hoje" value={formatUsd(today)} help="Gasto do dia atual" />
       <DetailItem
         label="Semana"
@@ -260,7 +260,7 @@ function CostBreakdownGrid({ breakdown }: { breakdown?: AiUsageBreakdown | null 
   const safeBreakdown = breakdown ?? {};
 
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
       <DetailItem
         label="IA vendedora"
         value={formatUsd(safeBreakdown.salesChatUsd)}
@@ -312,7 +312,7 @@ function TokenPeriodBlocks({
   monthCompletion?: number | string | null | undefined;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
       <DetailItem
         label="Hoje"
         value={formatCompactNumber(today)}
@@ -340,7 +340,7 @@ function TokenBreakdownGrid({
   const safeBreakdown = breakdown ?? {};
 
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
       <DetailItem
         label="IA vendedora"
         value={formatCompactNumber(safeBreakdown.salesChatTokens)}
@@ -418,6 +418,54 @@ function getReadableAiError(error: string | null | undefined) {
   return value;
 }
 
+function getPendingIssueResolutionHelp(issue: PendingIssueDetail) {
+  const label = String(issue.label || "").toLowerCase();
+  const source = String(issue.source || "").toLowerCase();
+  const error = String(issue.error || "").toLowerCase();
+
+  if (source === "store_configuration") {
+    if (label.includes("onboarding")) {
+      return "Como resolver: abrir o Onboarding da loja e concluir as etapas obrigatórias. Sem isso, a loja pode ficar com configurações mínimas incompletas.";
+    }
+
+    if (label.includes("responsável") || label.includes("responsavel")) {
+      return "Como resolver: cadastrar pelo menos um responsável da loja nas Configurações para receber alertas e acompanhar a operação.";
+    }
+
+    if (label.includes("agenda")) {
+      return "Como resolver: configurar dias de atendimento, horários, regras de capacidade e janela operacional da agenda da loja.";
+    }
+
+    if (label.includes("desconto")) {
+      return "Como resolver: preencher as regras de desconto/negociação da loja para a IA não operar sem limite comercial claro.";
+    }
+
+    if (label.includes("acesso") || label.includes("autenticação") || label.includes("autenticacao")) {
+      return "Como resolver: revisar as configurações de acesso/autenticação da loja e deixar a configuração ativa.";
+    }
+
+    if (label.includes("catálogo") || label.includes("catalogo")) {
+      return "Como resolver: cadastrar ou importar itens no catálogo da loja e manter pelo menos um item ativo.";
+    }
+
+    return "Como resolver: abrir as Configurações da loja e completar a configuração indicada nesta pendência.";
+  }
+
+  if (source.includes("whatsapp") || error.includes("conversation") || error.includes("payload")) {
+    return "Como resolver: revisar o evento de entrada do WhatsApp, confirmar se o payload tem conversa/lead válido e reprocessar quando existir ação segura. Se for erro antigo de teste, deve entrar futuramente em arquivar/ignorar pendência.";
+  }
+
+  if (source.includes("ai_run") || error.includes("ai_run") || error.includes("output")) {
+    return "Como resolver: verificar a execução/fila da IA, confirmar se houve resposta gerada e reprocessar somente se ainda for relevante. Se for teste antigo, futuramente deve poder ser arquivado sem apagar o histórico.";
+  }
+
+  if (source.includes("sales") || label.includes("ação") || label.includes("acao")) {
+    return "Como resolver: revisar a ação comercial pendente, conferir se ainda precisa ser executada e reprocessar/cancelar com segurança conforme o contexto da conversa.";
+  }
+
+  return "Como resolver: revisar a origem da pendência, confirmar se ainda é atual e tratar manualmente até existir ação automática segura no Dashboard ADM.";
+}
+
 function AiRunEventList({
   title,
   emptyText,
@@ -453,7 +501,7 @@ function AiRunEventList({
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="font-semibold text-zinc-100">
-                  {variant === "error" ? "Erro da IA" : "Execução com sucesso"}
+                  {variant === "error" ? "Erro da IA" : "Execução concluída"}
                 </div>
                 <div className="text-xs text-zinc-500">
                   {getAiRunEventDate(event)}
@@ -534,7 +582,6 @@ function getOperationalSummary(store: ZionAdminStore) {
   const aiErrors = numberValue(store.aiRunQueueErrors);
   const whatsappErrors = numberValue(store.whatsappErrors);
   const salesErrors = numberValue(store.salesActionErrors);
-  const configurationIssues = numberValue(store.configurationIssues);
   const pendingAi = numberValue(store.pendingAiRuns);
   const pendingSales = numberValue(store.pendingSalesActions);
   const pendingWhatsapp = numberValue(store.pendingWhatsappEvents);
@@ -542,7 +589,6 @@ function getOperationalSummary(store: ZionAdminStore) {
     aiErrors +
     whatsappErrors +
     salesErrors +
-    configurationIssues +
     pendingAi +
     pendingSales +
     pendingWhatsapp;
@@ -561,9 +607,6 @@ function getOperationalSummary(store: ZionAdminStore) {
       ? `${whatsappErrors} erro(s) no WhatsApp de entrada`
       : null,
     salesErrors > 0 ? `${salesErrors} erro(s) em ações comerciais` : null,
-    configurationIssues > 0
-      ? `${configurationIssues} pendência(s) de configuração`
-      : null,
     pendingAi > 0 ? `${pendingAi} IA pendente` : null,
     pendingSales > 0 ? `${pendingSales} ação comercial pendente` : null,
     pendingWhatsapp > 0 ? `${pendingWhatsapp} evento WhatsApp pendente` : null,
@@ -588,9 +631,6 @@ function getOperationalDetails(store: ZionAdminStore) {
       : null,
     numberValue(store.salesActionErrors) > 0
       ? `${numberValue(store.salesActionErrors)} erro(s) em ações comerciais`
-      : null,
-    numberValue(store.configurationIssues) > 0
-      ? `${numberValue(store.configurationIssues)} pendência(s) de configuração`
       : null,
     numberValue(store.pendingAiRuns) > 0
       ? `${numberValue(store.pendingAiRuns)} IA pendente`
@@ -643,7 +683,7 @@ function PendingIssueRootCauseList({ store }: { store: ZionAdminStore }) {
         Raiz das pendências
       </h3>
 
-      <div className="mt-3 space-y-3">
+      <div className="mt-3 space-y-2.5">
         {issueDetails.map((issue) => {
           const identifiers = [
             issue.queueKey ? `Queue key: ${issue.queueKey}` : null,
@@ -694,7 +734,7 @@ function PendingIssueRootCauseList({ store }: { store: ZionAdminStore }) {
 
               {preview ? (
                 <div className="mt-3 rounded-xl border border-white/10 bg-zinc-950/50 p-3">
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                  <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
                     Preview técnico
                   </div>
 
@@ -745,19 +785,19 @@ function OverviewButton({
       type="button"
       onClick={onClick}
       className={[
-        "min-h-[112px] rounded-3xl border px-5 py-4 text-left transition",
+        "min-h-[88px] rounded-2xl border px-4 py-3 text-left transition",
         active
           ? "border-white/35 bg-white/[0.09]"
           : "border-white/10 bg-white/[0.04] hover:border-white/25 hover:bg-white/[0.07]",
       ].join(" ")}
     >
-      <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-zinc-500">
+      <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
         {label}
       </div>
-      <div className="mt-2 text-3xl font-semibold tracking-tight text-zinc-50">
+      <div className="mt-1.5 text-2xl font-semibold tracking-tight text-zinc-50">
         {value}
       </div>
-      <div className="mt-1 text-sm leading-5 text-zinc-500">{helper}</div>
+      <div className="mt-0.5 text-xs leading-4 text-zinc-500">{helper}</div>
     </button>
   );
 }
@@ -782,26 +822,26 @@ function StoreRowCard({
       type="button"
       onClick={onClick}
       className={[
-        "w-full rounded-2xl border p-3 text-left transition",
+        "w-full rounded-xl border p-2.5 text-left transition",
         selected
           ? "border-white/35 bg-white/[0.08]"
           : "border-white/10 bg-zinc-950/35 hover:border-white/25 hover:bg-white/[0.055]",
       ].join(" ")}
     >
-      <div className="flex flex-col gap-3 xl:grid xl:grid-cols-[1.2fr_0.85fr_0.85fr_0.85fr_1.1fr] xl:items-stretch">
+      <div className="flex flex-col gap-2 xl:grid xl:grid-cols-[1.2fr_0.85fr_0.85fr_0.85fr_1.1fr] xl:items-stretch">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate text-base font-semibold text-zinc-50">
+            <h3 className="truncate text-sm font-semibold text-zinc-50">
               {store.name}
             </h3>
-            <span className="rounded-full border border-white/10 bg-zinc-950/60 px-2.5 py-1 text-[11px] text-zinc-400">
+            <span className="rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[10px] text-zinc-400">
               {getStoreStatusLabel(store.subscriptionStatus)}
             </span>
           </div>
-          <div className="mt-1 truncate text-sm text-zinc-400">
+          <div className="mt-0.5 truncate text-xs text-zinc-400">
             {store.organizationName}
           </div>
-          <div className="mt-1 truncate text-xs text-zinc-600">{store.id}</div>
+          <div className="mt-0.5 truncate text-[11px] text-zinc-600">{store.id}</div>
           {inactive ? (
             <div className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500">
               {getInactiveReason(store)}
@@ -809,7 +849,7 @@ function StoreRowCard({
           ) : null}
         </div>
 
-        <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2.5 text-xs">
+        <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
           <div className="text-zinc-500">Uso</div>
           <div className="mt-1 font-semibold text-zinc-100">
             {formatNumber(store.totalMessages)} msg
@@ -819,17 +859,17 @@ function StoreRowCard({
           </div>
         </div>
 
-        <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2.5 text-xs">
+        <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
           <div className="text-zinc-500">IA</div>
           <div className="mt-1 font-semibold text-zinc-100">
             {formatNumber(aiRuns)} exec.
           </div>
           <div className="mt-1 text-zinc-500">
-            {formatPercent(successfulRuns, aiRuns)} sucesso
+            {formatPercent(successfulRuns, aiRuns)} concluídas
           </div>
         </div>
 
-        <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2.5 text-xs">
+        <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
           <div className="text-zinc-500">Custo</div>
           <div className="mt-1 font-semibold text-zinc-100">
             {formatUsd(store.totalCostUsd)}
@@ -839,7 +879,7 @@ function StoreRowCard({
           </div>
         </div>
 
-        <div className="rounded-xl border border-white/10 bg-white/[0.035] p-2.5 text-xs">
+        <div className="rounded-lg border border-white/10 bg-white/[0.035] p-2 text-[11px]">
           <div className="text-zinc-500">Pendências</div>
           <div className="mt-1 font-semibold text-zinc-100">
             {operational.label}
@@ -863,19 +903,93 @@ function DetailItem({
   help?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-zinc-950/35 p-3">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+    <div className="rounded-xl border border-white/10 bg-zinc-950/35 p-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
         {label}
       </div>
-      <div className="mt-1.5 break-words text-lg font-semibold text-zinc-50">
+      <div className="mt-1 break-words text-base font-semibold text-zinc-50">
         {value}
       </div>
       {help ? (
-        <div className="mt-1 text-xs leading-5 text-zinc-500">{help}</div>
+        <div className="mt-0.5 text-[11px] leading-4 text-zinc-500">{help}</div>
       ) : null}
     </div>
   );
 }
+
+function ClickableDetailItem({
+  label,
+  value,
+  help,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  help?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-xl border border-white/10 bg-zinc-950/35 p-2.5 text-left transition hover:border-white/25 hover:bg-white/[0.06]"
+    >
+      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+        {label}
+      </div>
+      <div className="mt-1 break-words text-base font-semibold text-zinc-50">
+        {value}
+      </div>
+      {help ? (
+        <div className="mt-0.5 text-[11px] leading-4 text-zinc-500">{help}</div>
+      ) : null}
+      <div className="mt-2 text-[11px] font-semibold text-zinc-400">
+        Ver detalhes →
+      </div>
+    </button>
+  );
+}
+
+function DetailModal({
+  title,
+  description,
+  children,
+  onClose,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+      <div className="max-h-[82vh] w-full max-w-2xl overflow-hidden rounded-3xl border border-white/10 bg-zinc-950 text-zinc-50 shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-4 py-4">
+          <div className="min-w-0">
+            <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+              Detalhes
+            </div>
+            <h3 className="mt-1 text-lg font-semibold leading-tight">{title}</h3>
+            {description ? (
+              <p className="mt-1 text-[11px] leading-4 text-zinc-500">{description}</p>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/[0.08]"
+          >
+            Fechar
+          </button>
+        </div>
+
+        <div className="max-h-[66vh] overflow-y-auto px-4 py-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 
 function DrawerShell({
   title,
@@ -897,14 +1011,14 @@ function DrawerShell({
         onClick={onClose}
       />
 
-      <aside className="flex h-full w-full flex-col overflow-hidden border-l border-white/10 bg-zinc-950 text-zinc-50 shadow-2xl md:max-w-[620px]">
-        <div className="shrink-0 border-b border-white/10 bg-zinc-950 px-5 py-5">
+      <aside className="flex h-full w-full flex-col overflow-hidden border-l border-white/10 bg-zinc-950 text-zinc-50 shadow-2xl md:max-w-[88vw] xl:max-w-[1120px]">
+        <div className="shrink-0 border-b border-white/10 bg-zinc-950 px-4 py-4">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="text-xs font-semibold uppercase tracking-[0.24em] text-zinc-500">
                 ZION Interno
               </div>
-              <h2 className="mt-2 break-words text-2xl font-semibold leading-tight">
+              <h2 className="mt-2 break-words text-xl font-semibold leading-tight">
                 {title}
               </h2>
               {subtitle ? (
@@ -924,7 +1038,7 @@ function DrawerShell({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {children}
         </div>
       </aside>
@@ -962,10 +1076,10 @@ function StoreDetailsDrawer({
         </span>
       </div>
 
-      <div className="space-y-5">
+      <div className="space-y-4">
         <section>
           <h3 className="text-sm font-semibold text-zinc-200">Uso da loja</h3>
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DetailItem label="Leads" value={formatNumber(store.totalLeads)} />
             <DetailItem
               label="Mensagens"
@@ -985,12 +1099,6 @@ function StoreDetailsDrawer({
             <DetailItem
               label="Compromissos"
               value={formatNumber(store.totalAppointments)}
-              help="Total de compromissos cadastrados na agenda"
-            />
-            <DetailItem
-              label="Marcados pela IA"
-              value="Aguardando base"
-              help="A agenda ainda não marca com segurança quais compromissos foram criados pela IA"
             />
           </div>
         </section>
@@ -999,13 +1107,13 @@ function StoreDetailsDrawer({
           <h3 className="text-sm font-semibold text-zinc-200">
             Trabalho da IA
           </h3>
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DetailItem
               label="Execuções"
               value={formatNumber(aiRuns)}
-              help={`${formatPercent(successfulRuns, aiRuns)} de sucesso`}
+              help={`${formatPercent(successfulRuns, aiRuns)} concluídas`}
             />
-            <DetailItem label="Sucesso" value={formatNumber(successfulRuns)} />
+            <DetailItem label="Execuções concluídas" value={formatNumber(successfulRuns)} />
             <DetailItem label="Erros" value={formatNumber(failedRuns)} />
             <DetailItem
               label="Última IA"
@@ -1019,7 +1127,7 @@ function StoreDetailsDrawer({
             Custo e tokens
           </h3>
           <div className="mt-3 grid grid-cols-1 gap-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
               <DetailItem label="Hoje" value={formatUsd(store.costUsdToday)} />
               <DetailItem
                 label="7 dias"
@@ -1032,7 +1140,7 @@ function StoreDetailsDrawer({
               value={formatUsd(store.totalCostUsd)}
               help="Custo real em dólar salvo em ai_runs para execuções monitoradas."
             />
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Tokens totais"
                 value={formatCompactNumber(store.totalTokens)}
@@ -1047,33 +1155,9 @@ function StoreDetailsDrawer({
 
         <section>
           <h3 className="text-sm font-semibold text-zinc-200">
-            Custo por origem da IA
-          </h3>
-          <p className="mt-1 text-xs leading-5 text-zinc-500">
-            Separação por IA vendedora, assistente, catálogo visual, imagem e uso sem marcação confiável.
-          </p>
-          <div className="mt-3">
-            <CostBreakdownGrid breakdown={store.costBreakdownTotal} />
-          </div>
-        </section>
-
-        <section>
-          <h3 className="text-sm font-semibold text-zinc-200">
-            Tokens por origem da IA
-          </h3>
-          <p className="mt-1 text-xs leading-5 text-zinc-500">
-            Ajuda a entender onde esta loja está consumindo tokens de IA.
-          </p>
-          <div className="mt-3">
-            <TokenBreakdownGrid breakdown={store.tokenBreakdownTotal} />
-          </div>
-        </section>
-
-        <section>
-          <h3 className="text-sm font-semibold text-zinc-200">
             Pendências da loja
           </h3>
-          <div className="mt-3 rounded-3xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
             <div className="text-2xl font-semibold">{operational.label}</div>
             <p className="mt-2 text-xs leading-5 text-zinc-400">
               {operational.details}
@@ -1109,39 +1193,13 @@ function StoreDetailsDrawer({
                 label="Erro WhatsApp"
                 value={formatNumber(store.whatsappErrors)}
               />
-              <DetailItem
-                label="Configuração"
-                value={formatNumber(store.configurationIssues)}
-              />
             </div>
-          </div>
-        </section>
-
-        <PendingIssueRootCauseList store={store} />
-
-        <section>
-          <h3 className="text-sm font-semibold text-zinc-200">
-            Histórico recente da IA
-          </h3>
-          <div className="mt-3 grid grid-cols-1 gap-5 lg:grid-cols-2">
-            <AiRunEventList
-              title="Erros recentes"
-              emptyText="Nenhum erro recente registrado para esta loja."
-              events={store.recentAiErrors}
-              variant="error"
-            />
-            <AiRunEventList
-              title="Sucessos recentes"
-              emptyText="Nenhuma execução recente registrada para esta loja."
-              events={store.recentAiSuccesses}
-              variant="success"
-            />
           </div>
         </section>
 
         <section>
           <h3 className="text-sm font-semibold text-zinc-200">Identificação</h3>
-          <div className="mt-3 rounded-3xl border border-white/10 bg-white/[0.04] p-4 text-sm leading-6 text-zinc-400">
+          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-zinc-400">
             <div>
               <span className="text-zinc-500">Store ID:</span> {store.id}
             </div>
@@ -1183,7 +1241,6 @@ function OverviewDetailsDrawer({
   const [selectedPendingStore, setSelectedPendingStore] =
     useState<ZionAdminStore | null>(null);
   const [pendingSearch, setPendingSearch] = useState("");
-
   if (!type) return null;
 
   const titleMap: Record<OverviewPanelKey, string> = {
@@ -1191,6 +1248,7 @@ function OverviewDetailsDrawer({
     cost: "Custo total da IA",
     tokens: "Tokens usados",
     pending: "Pendências gerais",
+    compare: "Comparar lojas",
     conversations: "Conversas",
     messages: "Mensagens",
     leads: "Leads",
@@ -1203,6 +1261,7 @@ function OverviewDetailsDrawer({
     cost: "Custo real registrado em dólar por loja.",
     tokens: "Tokens de entrada e saída por loja.",
     pending: "Lojas com pendências ou erros monitorados.",
+    compare: "Comparação lado a lado entre duas lojas.",
     conversations:
       "Visão de conversas comerciais por loja quando houver base confiável.",
     messages: "Mensagens comerciais por loja.",
@@ -1230,18 +1289,18 @@ function OverviewDetailsDrawer({
           ← Voltar para lojas
         </button>
 
-        <div className="space-y-5">
+        <div className="space-y-4">
           <section>
             <h3 className="text-sm font-semibold text-zinc-200">
               Resumo da IA nesta loja
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Execuções"
                 value={formatNumber(aiRuns)}
-                help={`${formatPercent(successfulRuns, aiRuns)} de sucesso`}
+                help={`${formatPercent(successfulRuns, aiRuns)} concluídas`}
               />
-              <DetailItem label="Sucessos" value={formatNumber(successfulRuns)} />
+              <DetailItem label="Execuções concluídas" value={formatNumber(successfulRuns)} />
               <DetailItem label="Erros" value={formatNumber(failedRuns)} />
               <DetailItem
                 label="Última IA"
@@ -1254,7 +1313,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               IA vendedora
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Mensagens IA vendedora"
                 value={formatNumber(selectedAiStore.totalSalesAiMessages)}
@@ -1272,7 +1331,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               IA assistente operacional
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Conversas internas"
                 value={formatNumber(selectedAiStore.totalAssistantThreads)}
@@ -1300,7 +1359,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               Custo e tokens da IA
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Custo total"
                 value={formatUsd(selectedAiStore.totalCostUsd)}
@@ -1334,7 +1393,7 @@ function OverviewDetailsDrawer({
           ← Voltar para lojas
         </button>
 
-        <div className="space-y-5">
+        <div className="space-y-4">
           <section>
             <h3 className="text-sm font-semibold text-zinc-200">
               Custo por período nesta loja
@@ -1352,7 +1411,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               No que essa loja gastou
             </h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">
+            <p className="mt-1 text-[11px] leading-4 text-zinc-500">
               A separação usa as marcações registradas em ai_runs. O que ainda não tiver marcação confiável aparece como não classificado.
             </p>
             <div className="mt-3">
@@ -1364,7 +1423,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               Resumo de uso ligado ao custo
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem label="Custo total" value={formatUsd(selectedAiStore.totalCostUsd)} />
               <DetailItem label="Tokens" value={formatCompactNumber(selectedAiStore.totalTokens)} help={`${formatNumber(selectedAiStore.totalTokensPrompt)} entrada · ${formatNumber(selectedAiStore.totalTokensCompletion)} saída`} />
               <DetailItem label="Execuções" value={formatNumber(selectedAiStore.totalAiRuns)} />
@@ -1392,7 +1451,7 @@ function OverviewDetailsDrawer({
           ← Voltar para lojas
         </button>
 
-        <div className="space-y-5">
+        <div className="space-y-4">
           <section>
             <h3 className="text-sm font-semibold text-zinc-200">
               Tokens por período nesta loja
@@ -1416,7 +1475,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               No que essa loja usou tokens
             </h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">
+            <p className="mt-1 text-[11px] leading-4 text-zinc-500">
               A separação usa a mesma marcação confiável do custo em ai_runs. O que ainda não tiver origem clara aparece como não classificado.
             </p>
             <div className="mt-3">
@@ -1428,7 +1487,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               Entrada e saída
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem label="Total" value={formatCompactNumber(selectedAiStore.totalTokens)} />
               <DetailItem label="Entrada" value={formatNumber(selectedAiStore.totalTokensPrompt)} />
               <DetailItem label="Saída" value={formatNumber(selectedAiStore.totalTokensCompletion)} />
@@ -1457,12 +1516,12 @@ function OverviewDetailsDrawer({
           ← Voltar para lojas
         </button>
 
-        <div className="space-y-5">
+        <div className="space-y-4">
           <section>
             <h3 className="text-sm font-semibold text-zinc-200">
               Resumo das pendências
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="Total de pendências"
                 value={formatNumber(operational.total)}
@@ -1482,7 +1541,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               Contagem por área monitorada
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <DetailItem
                 label="IA pendente"
                 value={formatNumber(selectedPendingStore.pendingAiRuns)}
@@ -1498,10 +1557,6 @@ function OverviewDetailsDrawer({
               <DetailItem
                 label="Erro em ações comerciais"
                 value={formatNumber(selectedPendingStore.salesActionErrors)}
-              />
-              <DetailItem
-                label="Configuração da loja"
-                value={formatNumber(selectedPendingStore.configurationIssues)}
               />
               <DetailItem
                 label="Eventos WhatsApp pendentes"
@@ -1571,7 +1626,7 @@ function OverviewDetailsDrawer({
       help = `${formatNumber(store.totalTokensPrompt)} entrada · ${formatNumber(store.totalTokensCompletion)} saída`;
     } else if (type === "ia") {
       main = `${formatNumber(store.totalAiRuns)} execuções`;
-      help = `${formatPercent(store.successfulAiRuns, store.totalAiRuns)} sucesso · ${formatNumber(store.failedAiRuns)} erro(s) · ${formatNumber(store.totalAssistantMessages)} msg assistente`;
+      help = `${formatPercent(store.successfulAiRuns, store.totalAiRuns)} concluídas · ${formatNumber(store.failedAiRuns)} erro(s) · ${formatNumber(store.totalAssistantMessages)} msg assistente`;
     } else if (type === "messages") {
       main = `${formatNumber(store.totalMessages)} mensagens`;
       help = `${formatNumber(store.totalLeads)} leads relacionados`;
@@ -1601,12 +1656,12 @@ function OverviewDetailsDrawer({
               {store.organizationName}
             </div>
           </div>
-          <span className="shrink-0 rounded-full border border-white/10 bg-zinc-950/50 px-2.5 py-1 text-[11px] text-zinc-400">
+          <span className="shrink-0 rounded-full border border-white/10 bg-zinc-950/50 px-2 py-0.5 text-[10px] text-zinc-400">
             {getStoreStatusLabel(store.subscriptionStatus)}
           </span>
         </div>
-        <div className="mt-4 text-xl font-semibold text-zinc-50">{main}</div>
-        <div className="mt-1 text-xs leading-5 text-zinc-500">{help}</div>
+        <div className="mt-4 text-lg font-semibold text-zinc-50">{main}</div>
+        <div className="mt-1 text-[11px] leading-4 text-zinc-500">{help}</div>
         {type === "ia" ? (
           <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
             <div className="rounded-xl border border-white/10 bg-zinc-950/35 px-3 py-2">
@@ -1615,7 +1670,7 @@ function OverviewDetailsDrawer({
                 {formatNumber(store.totalAiRuns)} execuções
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
-                {formatNumber(store.successfulAiRuns)} sucesso · {formatNumber(store.failedAiRuns)} erro(s)
+                {formatNumber(store.successfulAiRuns)} concluídas · {formatNumber(store.failedAiRuns)} erro(s)
               </div>
               <div className="mt-0.5 text-xs text-zinc-500">
                 {formatNumber(store.totalSalesAiMessages)} mensagens comerciais
@@ -1679,8 +1734,8 @@ function OverviewDetailsDrawer({
         subtitle={subtitleMap[type]}
         onClose={onClose}
       >
-        <div className="space-y-5">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <DetailItem
               label="Total de pendências"
               value={formatNumber(data?.totals.totalOperationalIssues)}
@@ -1693,7 +1748,7 @@ function OverviewDetailsDrawer({
             />
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-zinc-950/40 px-3 py-2">
+          <div className="rounded-xl border border-white/10 bg-zinc-950/40 px-3 py-1.5">
             <div className="flex items-center gap-2">
               <span className="text-zinc-500">⌕</span>
               <input
@@ -1709,7 +1764,7 @@ function OverviewDetailsDrawer({
             <h3 className="text-sm font-semibold text-zinc-200">
               Lojas com pendências
             </h3>
-            <div className="mt-3 space-y-3">
+            <div className="mt-3 space-y-2.5">
               {filteredPendingStores.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
                   Nenhuma loja com pendência encontrada.
@@ -1733,14 +1788,14 @@ function OverviewDetailsDrawer({
                             {store.organizationName}
                           </div>
                         </div>
-                        <span className="shrink-0 rounded-full border border-white/10 bg-zinc-950/50 px-2.5 py-1 text-[11px] text-zinc-400">
+                        <span className="shrink-0 rounded-full border border-white/10 bg-zinc-950/50 px-2 py-0.5 text-[10px] text-zinc-400">
                           {getStoreStatusLabel(store.subscriptionStatus)}
                         </span>
                       </div>
-                      <div className="mt-4 text-xl font-semibold text-zinc-50">
+                      <div className="mt-4 text-lg font-semibold text-zinc-50">
                         {operational.label}
                       </div>
-                      <div className="mt-1 text-xs leading-5 text-zinc-500">
+                      <div className="mt-1 text-[11px] leading-4 text-zinc-500">
                         {operational.details}
                       </div>
                       <div className="mt-3 text-xs font-semibold text-zinc-400">
@@ -1768,7 +1823,7 @@ function OverviewDetailsDrawer({
           <div className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
             Total global
           </div>
-          <div className="mt-2 text-3xl font-semibold text-zinc-50">
+          <div className="mt-2 text-2xl font-semibold text-zinc-50">
             {formatNumber(data?.totals.conversations)} conversas
           </div>
           <p className="mt-2 text-sm leading-6 text-zinc-400">
@@ -1789,7 +1844,7 @@ function OverviewDetailsDrawer({
       onClose={onClose}
     >
       {type === "cost" ? (
-        <div className="mb-5 space-y-5">
+        <div className="mb-5 space-y-4">
           <section>
             <h3 className="text-sm font-semibold text-zinc-200">
               Total de todas as lojas
@@ -1814,7 +1869,7 @@ function OverviewDetailsDrawer({
       ) : null}
 
       {type === "tokens" ? (
-        <div className="mb-5 space-y-5">
+        <div className="mb-5 space-y-4">
           <section>
             <h3 className="text-sm font-semibold text-zinc-200">
               Total de todas as lojas
@@ -1844,7 +1899,7 @@ function OverviewDetailsDrawer({
         </div>
       ) : null}
 
-      <div className="space-y-3">
+      <div className="space-y-2.5">
         {sortedStores.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
             Nenhuma loja encontrada.
@@ -1869,6 +1924,14 @@ function OverviewInlineDetails({
   onClose: () => void;
 }) {
   const [pendingSearch, setPendingSearch] = useState("");
+  const [selectedPendingStoreId, setSelectedPendingStoreId] = useState("");
+  const [selectedAiDetail, setSelectedAiDetail] = useState<
+    "executions" | "errors" | "messages" | "cost" | "tokens" | null
+  >(null);
+  const [compareLeftStoreId, setCompareLeftStoreId] = useState("");
+  const [compareRightStoreId, setCompareRightStoreId] = useState("");
+  const [compareLeftSearch, setCompareLeftSearch] = useState("");
+  const [compareRightSearch, setCompareRightSearch] = useState("");
 
   if (!type) return null;
 
@@ -1881,27 +1944,219 @@ function OverviewInlineDetails({
   const filteredPendingStores = storesWithPending.filter((store) =>
     matchesSearch(store, pendingSearch),
   );
-  if (type === "pending") {
+  const selectedPendingStore =
+    storesWithPending.find((store) => store.id === selectedPendingStoreId) ?? null;
+  const compareLeftStore =
+    stores.find((store) => store.id === compareLeftStoreId) ?? null;
+  const compareRightStore =
+    stores.find((store) => store.id === compareRightStoreId) ?? null;
+
+  if (type === "compare") {
+    function renderComparisonColumn(side: "left" | "right") {
+      const selectedStore = side === "left" ? compareLeftStore : compareRightStore;
+      const selectedId = side === "left" ? compareLeftStoreId : compareRightStoreId;
+      const otherSelectedId = side === "left" ? compareRightStoreId : compareLeftStoreId;
+      const searchValue = side === "left" ? compareLeftSearch : compareRightSearch;
+      const setSearch =
+        side === "left" ? setCompareLeftSearch : setCompareRightSearch;
+      const setSelectedId =
+        side === "left" ? setCompareLeftStoreId : setCompareRightStoreId;
+
+      const normalizedSearch = searchValue.trim().toLowerCase();
+      const filteredOptions = stores
+        .filter((store) => store.id !== otherSelectedId)
+        .filter((store) => {
+          if (!normalizedSearch) return true;
+
+          return [store.name, store.organizationName, store.id]
+            .filter(Boolean)
+            .some((value) =>
+              String(value).toLowerCase().includes(normalizedSearch),
+            );
+        })
+        .slice(0, 8);
+
+      function chooseStore(store: ZionAdminStore) {
+        setSelectedId(store.id);
+        setSearch(`${store.name} · ${store.organizationName}`);
+      }
+
+      return (
+        <div className="rounded-xl border border-white/10 bg-zinc-950/35 p-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            {side === "left" ? "Loja A" : "Loja B"}
+          </div>
+
+          <div className="mt-2 rounded-xl border border-white/10 bg-zinc-950/70 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-zinc-500">⌕</span>
+              <input
+                value={searchValue}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setSelectedId("");
+                }}
+                placeholder="Procurar loja pelo nome"
+                className="w-full bg-transparent text-xs text-zinc-100 outline-none placeholder:text-zinc-600"
+              />
+            </div>
+          </div>
+
+          <div className="mt-2 h-28 space-y-1 overflow-y-auto rounded-xl border border-white/10 bg-black/10 p-1 pr-1">
+            {filteredOptions.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-white/10 px-3 py-2 text-xs text-zinc-500">
+                Nenhuma loja encontrada.
+              </div>
+            ) : (
+              filteredOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => chooseStore(option)}
+                  className={[
+                    "w-full rounded-xl border px-3 py-2 text-left text-xs transition",
+                    selectedId === option.id
+                      ? "border-white/30 bg-white/[0.08]"
+                      : "border-white/10 bg-white/[0.025] hover:border-white/25 hover:bg-white/[0.055]",
+                  ].join(" ")}
+                >
+                  <div className="truncate font-semibold text-zinc-100">
+                    {option.name}
+                  </div>
+                  <div className="mt-0.5 truncate text-[11px] text-zinc-500">
+                    {option.organizationName}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+
+          {selectedStore ? (
+            <div className="mt-3 max-h-[310px] space-y-2 overflow-y-auto pr-1">
+              <div>
+                <div className="text-sm font-semibold text-zinc-100">
+                  {selectedStore.name}
+                </div>
+                <div className="text-[11px] text-zinc-500">
+                  {selectedStore.organizationName}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <DetailItem
+                  label="Msg IA vend."
+                  value={formatNumber(selectedStore.totalSalesAiMessages)}
+                />
+                <DetailItem
+                  label="Msg assist."
+                  value={formatNumber(selectedStore.totalAssistantMessages)}
+                />
+                <DetailItem
+                  label="Execuções"
+                  value={formatNumber(selectedStore.totalAiRuns)}
+                />
+                <DetailItem
+                  label="Concluídas"
+                  value={formatNumber(selectedStore.successfulAiRuns)}
+                />
+                <DetailItem
+                  label="Erros"
+                  value={formatNumber(selectedStore.failedAiRuns)}
+                />
+                <DetailItem
+                  label="Pendências"
+                  value={formatNumber(selectedStore.totalOperationalIssues)}
+                />
+                <DetailItem
+                  label="Custo"
+                  value={formatUsd(selectedStore.totalCostUsd)}
+                />
+                <DetailItem
+                  label="Tokens"
+                  value={formatCompactNumber(selectedStore.totalTokens)}
+                />
+                <DetailItem
+                  label="Leads"
+                  value={formatNumber(selectedStore.totalLeads)}
+                />
+                <DetailItem
+                  label="Compromissos"
+                  value={formatNumber(selectedStore.totalAppointments)}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 rounded-xl border border-dashed border-white/10 p-4 text-xs text-zinc-500">
+              Procure e escolha uma loja para comparar.
+            </div>
+          )}
+        </div>
+      );
+    }
+
     return (
-      <section className="mt-4 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <section className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
           <div>
-            <h3 className="text-xl font-semibold text-zinc-50">Pendências</h3>
-            <p className="mt-1 text-sm leading-6 text-zinc-500">
-              Lojas com erros, filas travadas ou pontos que precisam de atenção.
+            <h3 className="text-lg font-semibold text-zinc-50">Comparar lojas</h3>
+            <p className="mt-0.5 text-xs leading-5 text-zinc-500">
+              Procure duas lojas pelo nome e compare os dados lado a lado.
             </p>
           </div>
 
           <button
             type="button"
             onClick={onClose}
-            className="w-fit rounded-2xl border border-white/10 bg-zinc-950/50 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-white/[0.06]"
+            className="w-fit rounded-xl border border-white/10 bg-zinc-950/50 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/[0.06]"
+          >
+            Ocultar
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {renderComparisonColumn("left")}
+          {renderComparisonColumn("right")}
+        </div>
+      </section>
+    );
+  }
+
+  if (type === "pending") {
+    function renderIssueTechnicalDetails(issue: PendingIssueDetail) {
+      const identifiers = [
+        issue.queueKey ? `Queue key: ${issue.queueKey}` : null,
+        issue.externalEventId ? `Evento externo: ${issue.externalEventId}` : null,
+        issue.conversationId ? `Conversa: ${issue.conversationId}` : null,
+        issue.leadId ? `Lead: ${issue.leadId}` : null,
+        issue.aiRunId ? `AI run: ${issue.aiRunId}` : null,
+        issue.nextAction ? `Ação: ${issue.nextAction}` : null,
+        issue.actionKey ? `Action key: ${issue.actionKey}` : null,
+        issue.provider ? `Provider: ${issue.provider}` : null,
+      ].filter(Boolean) as string[];
+
+      return identifiers;
+    }
+
+    return (
+      <section className="mt-4 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-zinc-50">Pendências</h3>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">
+              Lojas em lista. Clique em uma loja para ver as pendências, detalhes e sugestão de resolução.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-fit rounded-xl border border-white/10 bg-zinc-950/50 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/[0.06]"
           >
             Ocultar detalhes
           </button>
         </div>
 
-        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
           <DetailItem
             label="Total de pendências"
             value={formatNumber(data?.totals.totalOperationalIssues)}
@@ -1919,105 +2174,271 @@ function OverviewInlineDetails({
           />
         </div>
 
-        <div className="mt-5 rounded-2xl border border-white/10 bg-zinc-950/40 px-3 py-2">
+        <div className="mt-4 rounded-xl border border-white/10 bg-zinc-950/40 px-3 py-1.5">
           <div className="flex items-center gap-2">
             <span className="text-zinc-500">⌕</span>
             <input
               value={pendingSearch}
-              onChange={(event) => setPendingSearch(event.target.value)}
+              onChange={(event) => {
+                setPendingSearch(event.target.value);
+                setSelectedPendingStoreId("");
+              }}
               placeholder="Procurar loja com pendência"
               className="w-full bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
             />
           </div>
         </div>
 
-        <div className="mt-5 space-y-3">
-          {filteredPendingStores.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
-              Nenhuma loja com pendência encontrada.
+        <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[0.9fr_1.35fr]">
+          <div className="rounded-2xl border border-white/10 bg-zinc-950/30 p-3">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+              Lojas com pendência
             </div>
-          ) : (
-            filteredPendingStores.map((store) => {
-              const operational = getOperationalSummary(store);
-              return (
-                <div
-                  key={store.id}
-                  className="rounded-2xl border border-white/10 bg-zinc-950/35 p-4"
-                >
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
-                      <div className="truncate font-semibold text-zinc-100">
-                        {store.name}
+            <div className="max-h-[330px] space-y-2 overflow-y-auto pr-1">
+              {filteredPendingStores.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-zinc-500">
+                  Nenhuma loja com pendência encontrada.
+                </div>
+              ) : (
+                filteredPendingStores.map((store) => {
+                  const operational = getOperationalSummary(store);
+                  const selected = selectedPendingStoreId === store.id;
+
+                  return (
+                    <button
+                      key={store.id}
+                      type="button"
+                      onClick={() => setSelectedPendingStoreId(store.id)}
+                      className={[
+                        "w-full rounded-xl border px-3 py-2 text-left transition",
+                        selected
+                          ? "border-white/35 bg-white/[0.08]"
+                          : "border-white/10 bg-white/[0.025] hover:border-white/25 hover:bg-white/[0.055]",
+                      ].join(" ")}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-zinc-100">
+                            {store.name}
+                          </div>
+                          <div className="mt-0.5 truncate text-[11px] text-zinc-500">
+                            {store.organizationName}
+                          </div>
+                        </div>
+                        <span className="shrink-0 rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[11px] font-semibold text-zinc-200">
+                          {formatNumber(operational.total)}
+                        </span>
                       </div>
-                      <div className="mt-1 truncate text-xs text-zinc-500">
-                        {store.organizationName}
+                      <div className="mt-1 line-clamp-1 text-[11px] text-zinc-500">
+                        {operational.details}
                       </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-zinc-950/30 p-3">
+            {selectedPendingStore ? (
+              <div>
+                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-zinc-100">
+                      {selectedPendingStore.name}
                     </div>
-
-                    <span className="w-fit shrink-0 rounded-full border border-white/10 bg-zinc-950/50 px-2.5 py-1 text-[11px] text-zinc-400">
-                      {getStoreStatusLabel(store.subscriptionStatus)}
-                    </span>
+                    <div className="mt-0.5 text-xs text-zinc-500">
+                      {selectedPendingStore.organizationName}
+                    </div>
                   </div>
+                  <span className="w-fit rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[10px] text-zinc-400">
+                    {getOperationalSummary(selectedPendingStore).label}
+                  </span>
+                </div>
 
-                  <div className="mt-4 text-xl font-semibold text-zinc-50">
-                    {operational.label}
-                  </div>
-                  <div className="mt-1 text-xs leading-5 text-zinc-500">
-                    {operational.details}
-                  </div>
+                <div className="mt-3 max-h-[430px] space-y-2 overflow-y-auto pr-1">
+                  {(selectedPendingStore.pendingIssueDetails ?? []).length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-white/10 p-4 text-xs text-zinc-500">
+                      Esta loja tem contagem de pendência, mas não trouxe detalhes técnicos no recorte atual.
+                    </div>
+                  ) : (
+                    (selectedPendingStore.pendingIssueDetails ?? []).map((issue) => {
+                      const isConfigurationIssue = issue.source === "store_configuration";
+                      const identifiers = renderIssueTechnicalDetails(issue);
+                      const preview = issue.inputPreview || issue.payloadPreview || null;
 
-                  {store.pendingIssueDetails?.length ? (
-                    <div className="mt-4 space-y-2">
-                      {store.pendingIssueDetails.slice(0, 4).map((issue) => {
-                        const isConfigurationIssue =
-                          issue.source === "store_configuration";
-
-                        return (
-                          <div
-                            key={`${issue.source}-${issue.id}`}
-                            className={[
-                              "rounded-2xl border p-3 text-xs leading-5",
-                              isConfigurationIssue
-                                ? "border-sky-500/20 bg-sky-500/5 text-sky-50"
-                                : "border-amber-500/20 bg-amber-500/5 text-amber-50",
-                            ].join(" ")}
-                          >
+                      return (
+                        <div
+                          key={`${issue.source}-${issue.id}`}
+                          className={[
+                            "rounded-xl border p-3 text-xs leading-5",
+                            isConfigurationIssue
+                              ? "border-sky-500/20 bg-sky-500/5 text-sky-50"
+                              : "border-amber-500/20 bg-amber-500/5 text-amber-50",
+                          ].join(" ")}
+                        >
+                          <div className="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">
                             <div className="font-semibold">
                               {issue.label || issue.source || "Pendência"}
                             </div>
-                            <div
-                              className={[
-                                "mt-1",
-                                isConfigurationIssue
-                                  ? "text-sky-100/80"
-                                  : "text-amber-100/80",
-                              ].join(" ")}
-                            >
-                              {issue.error || "Erro sem detalhe registrado."}
+                            <div className="shrink-0 text-[11px] text-zinc-500">
+                              {formatDateTime(issue.occurredAt)}
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  ) : null}
+
+                          <div className="mt-1 text-zinc-300">
+                            {issue.error || "Erro sem detalhe registrado."}
+                          </div>
+
+                          <div className="mt-2 rounded-xl border border-white/10 bg-black/20 p-2 text-zinc-300">
+                            {getPendingIssueResolutionHelp(issue)}
+                          </div>
+
+                          {identifiers.length > 0 ? (
+                            <div className="mt-2 grid grid-cols-1 gap-1">
+                              {identifiers.map((identifier) => (
+                                <div
+                                  key={identifier}
+                                  className="break-words rounded-lg border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-zinc-400"
+                                >
+                                  {identifier}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {preview ? (
+                            <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/10 bg-black/25 p-2 text-[11px] text-zinc-400">
+                              {preview}
+                            </pre>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
-              );
-            })
-          )}
+              </div>
+            ) : (
+              <div className="flex min-h-[240px] items-center justify-center rounded-xl border border-dashed border-white/10 p-4 text-center text-sm text-zinc-500">
+                Selecione uma loja na lista para ver as pendências, detalhes técnicos e sugestão de resolução.
+              </div>
+            )}
+          </div>
         </div>
       </section>
     );
   }
 
   if (type === "ia") {
+    const detailModal = selectedAiDetail ? (
+      <DetailModal
+        title={
+          selectedAiDetail === "executions"
+            ? "Execuções da IA"
+            : selectedAiDetail === "errors"
+              ? "Erros da IA"
+              : selectedAiDetail === "messages"
+                ? "Mensagens por IA"
+                : selectedAiDetail === "cost"
+                  ? "Custo da IA"
+                  : "Tokens usados"
+        }
+        description={
+          selectedAiDetail === "executions"
+            ? "Total de execuções de IA registradas em ai_runs, incluindo quantas concluíram sem erro técnico."
+            : selectedAiDetail === "errors"
+              ? "Execuções que falharam ou registraram erro técnico."
+              : selectedAiDetail === "messages"
+                ? "Separação entre mensagens da IA vendedora e mensagens da IA assistente."
+                : selectedAiDetail === "cost"
+                  ? "Custo real salvo em ai_runs, separado por período e origem."
+                  : "Tokens de entrada e saída salvos em ai_runs, separados por período e origem."
+        }
+        onClose={() => setSelectedAiDetail(null)}
+      >
+        {selectedAiDetail === "executions" ? (
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <DetailItem label="Total" value={formatNumber(totalAiRuns)} />
+            <DetailItem
+              label="Taxa concluída"
+              value={formatPercent(successfulAiRuns, totalAiRuns)}
+              help="Percentual de execuções sem erro técnico"
+            />
+            <DetailItem label="Concluídas" value={formatNumber(successfulAiRuns)} />
+            <DetailItem label="Erros" value={formatNumber(failedAiRuns)} />
+          </div>
+        ) : null}
+
+
+        {selectedAiDetail === "errors" ? (
+          <div className="space-y-2.5">
+            <DetailItem
+              label="Erros"
+              value={formatNumber(failedAiRuns)}
+              help="Execuções registradas com falha técnica"
+            />
+            <AiRunEventList
+              title="Erros recentes por loja"
+              emptyText="Nenhum erro recente disponível no recorte carregado."
+              events={stores.flatMap((store) => store.recentAiErrors ?? []).slice(0, 6)}
+              variant="error"
+            />
+          </div>
+        ) : null}
+
+        {selectedAiDetail === "messages" ? (
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <DetailItem
+              label="IA vendedora"
+              value={formatNumber(data?.totals.salesAiMessages)}
+              help="Mensagens comerciais enviadas pela IA para clientes"
+            />
+            <DetailItem
+              label="IA assistente"
+              value={formatNumber(data?.totals.assistantMessages)}
+              help="Mensagens do chat operacional interno"
+            />
+          </div>
+        ) : null}
+
+        {selectedAiDetail === "cost" ? (
+          <div className="space-y-4">
+            <CostPeriodBlocks
+              today={data?.totals.costUsdToday}
+              week={data?.totals.costUsdLast7Days}
+              month={data?.totals.costUsdMonth}
+            />
+            <CostBreakdownGrid breakdown={data?.totals.costBreakdownTotal} />
+          </div>
+        ) : null}
+
+        {selectedAiDetail === "tokens" ? (
+          <div className="space-y-4">
+            <TokenPeriodBlocks
+              today={data?.totals.tokensToday}
+              week={data?.totals.tokensLast7Days}
+              month={data?.totals.tokensMonth}
+              todayPrompt={data?.totals.tokensPromptToday}
+              todayCompletion={data?.totals.tokensCompletionToday}
+              weekPrompt={data?.totals.tokensPromptLast7Days}
+              weekCompletion={data?.totals.tokensCompletionLast7Days}
+              monthPrompt={data?.totals.tokensPromptMonth}
+              monthCompletion={data?.totals.tokensCompletionMonth}
+            />
+            <TokenBreakdownGrid breakdown={data?.totals.tokenBreakdownTotal} />
+          </div>
+        ) : null}
+      </DetailModal>
+    ) : null;
+
     return (
-      <section className="mt-4 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <section className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
           <div>
-            <h3 className="text-xl font-semibold text-zinc-50">
+            <h3 className="text-lg font-semibold text-zinc-50">
               Trabalho da IA
             </h3>
-            <p className="mt-1 text-sm leading-6 text-zinc-500">
+            <p className="mt-0.5 text-xs leading-5 text-zinc-500">
               Soma das execuções, mensagens, custo e tokens das lojas monitoradas.
             </p>
           </div>
@@ -2025,59 +2446,43 @@ function OverviewInlineDetails({
           <button
             type="button"
             onClick={onClose}
-            className="w-fit rounded-2xl border border-white/10 bg-zinc-950/50 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-white/[0.06]"
+            className="w-fit rounded-xl border border-white/10 bg-zinc-950/50 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/[0.06]"
           >
-            Ocultar detalhes
+            Ocultar
           </button>
         </div>
 
-        <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <DetailItem
+        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <ClickableDetailItem
             label="Execuções"
             value={formatNumber(totalAiRuns)}
-            help={`${formatPercent(successfulAiRuns, totalAiRuns)} de sucesso`}
+            help={`${formatPercent(successfulAiRuns, totalAiRuns)} concluídas`}
+            onClick={() => setSelectedAiDetail("executions")}
           />
-          <DetailItem
-            label="Sucessos"
-            value={formatNumber(successfulAiRuns)}
+          <ClickableDetailItem
+            label="Erros"
+            value={formatNumber(failedAiRuns)}
+            help="Chamadas de IA com falha"
+            onClick={() => setSelectedAiDetail("errors")}
           />
-          <DetailItem label="Erros" value={formatNumber(failedAiRuns)} />
-          <DetailItem
-            label="Última atividade"
-            value={formatDateTime(
-              stores
-                .map((store) => store.lastAiRunAt)
-                .filter(Boolean)
-                .sort()
-                .at(-1),
-            )}
-            help="Última execução de IA registrada"
+          <ClickableDetailItem
+            label="Mensagens por IA"
+            value={`${formatNumber(data?.totals.salesAiMessages)} / ${formatNumber(data?.totals.assistantMessages)}`}
+            help="Vendedora / assistente"
+            onClick={() => setSelectedAiDetail("messages")}
           />
         </div>
 
-        <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-2">
-          <section className="rounded-3xl border border-white/10 bg-zinc-950/30 p-4">
-            <h4 className="text-sm font-semibold text-zinc-200">
-              Mensagens por IA
-            </h4>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <DetailItem
-                label="IA vendedora"
-                value={formatNumber(data?.totals.salesAiMessages)}
-                help="Mensagens comerciais enviadas pela IA para clientes"
-              />
-              <DetailItem
-                label="IA assistente"
-                value={formatNumber(data?.totals.assistantMessages)}
-                help="Mensagens do chat operacional interno"
-              />
+        <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
+          <section className="rounded-2xl border border-white/10 bg-zinc-950/30 p-3">
+            <div>
+              <h4 className="text-sm font-semibold text-zinc-200">
+                Custo da IA
+              </h4>
+              <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">
+                Hoje, semana, mês e origem do gasto.
+              </p>
             </div>
-          </section>
-
-          <section className="rounded-3xl border border-white/10 bg-zinc-950/30 p-4">
-            <h4 className="text-sm font-semibold text-zinc-200">
-              Custo da IA
-            </h4>
             <div className="mt-3">
               <CostPeriodBlocks
                 today={data?.totals.costUsdToday}
@@ -2090,10 +2495,15 @@ function OverviewInlineDetails({
             </div>
           </section>
 
-          <section className="rounded-3xl border border-white/10 bg-zinc-950/30 p-4">
-            <h4 className="text-sm font-semibold text-zinc-200">
-              Tokens usados
-            </h4>
+          <section className="rounded-2xl border border-white/10 bg-zinc-950/30 p-3">
+            <div>
+              <h4 className="text-sm font-semibold text-zinc-200">
+                Tokens usados
+              </h4>
+              <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">
+                Entrada, saída, período e origem do uso.
+              </p>
+            </div>
             <div className="mt-3">
               <TokenPeriodBlocks
                 today={data?.totals.tokensToday}
@@ -2113,6 +2523,7 @@ function OverviewInlineDetails({
           </section>
         </div>
 
+        {detailModal}
       </section>
     );
   }
@@ -2141,17 +2552,17 @@ function StoreListSection({
   const filteredStores = stores.filter((store) => matchesSearch(store, search));
 
   return (
-    <section className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+    <section className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-xl font-semibold">{title}</h2>
+          <h2 className="text-lg font-semibold">{title}</h2>
         </div>
         <span className="w-fit rounded-full border border-white/10 bg-zinc-950/50 px-3 py-1 text-xs text-zinc-400">
           {formatNumber(stores.length)} loja(s)
         </span>
       </div>
 
-      <div className="mt-4 rounded-2xl border border-white/10 bg-zinc-950/40 px-3 py-2">
+      <div className="mt-4 rounded-xl border border-white/10 bg-zinc-950/40 px-3 py-1.5">
         <div className="flex items-center gap-2">
           <span className="text-zinc-500">⌕</span>
           <input
@@ -2163,7 +2574,7 @@ function StoreListSection({
         </div>
       </div>
 
-      <div className="mt-4 max-h-[350px] space-y-3 overflow-y-auto pr-1">
+      <div className="mt-3 max-h-[290px] space-y-2 overflow-y-auto pr-1">
         {filteredStores.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
             Nenhuma loja encontrada.
@@ -2210,19 +2621,19 @@ export default function ZionAdminDashboardClient({
   const failedAiRuns = numberValue(data?.totals.failedAiRuns);
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-zinc-950 px-4 py-6 text-zinc-50 sm:px-6 lg:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="flex flex-col gap-4 border-b border-white/10 pb-5 md:flex-row md:items-end md:justify-between">
+    <main className="min-h-screen overflow-x-hidden bg-zinc-950 px-4 py-5 text-zinc-50 sm:px-6 lg:px-8">
+      <div className="mx-auto flex max-w-7xl flex-col gap-3">
+        <header className="flex flex-col gap-4 border-b border-white/10 pb-4 md:flex-row md:items-end md:justify-between">
           <div>
             <div className="text-xs font-semibold uppercase tracking-[0.28em] text-zinc-500">
               ZION Interno
             </div>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight">
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">
               Dashboard interno do ZION
             </h1>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-zinc-300">
+          <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300">
             Acesso:{" "}
             <span className="font-semibold text-zinc-50">{adminRole}</span>
           </div>
@@ -2250,15 +2661,26 @@ export default function ZionAdminDashboardClient({
             </div>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-3 lg:grid-cols-3">
             <OverviewButton
               label="Trabalho da IA"
               value={formatNumber(totalAiRuns)}
-              helper={`${formatPercent(successfulAiRuns, totalAiRuns)} sucesso · ${formatNumber(failedAiRuns)} erro(s) · ${formatNumber(data?.totals.salesAiMessages)} msg IA vendedora`}
+              helper={`${formatPercent(successfulAiRuns, totalAiRuns)} concluídas · ${formatNumber(failedAiRuns)} erro(s) · ${formatNumber(data?.totals.salesAiMessages)} msg IA vendedora`}
               active={selectedOverview === "ia"}
               onClick={() =>
                 setSelectedOverview((current) =>
                   current === "ia" ? null : "ia",
+                )
+              }
+            />
+            <OverviewButton
+              label="Comparar lojas"
+              value={formatNumber(stores.length)}
+              helper="Escolha duas lojas e compare lado a lado"
+              active={selectedOverview === "compare"}
+              onClick={() =>
+                setSelectedOverview((current) =>
+                  current === "compare" ? null : "compare",
                 )
               }
             />

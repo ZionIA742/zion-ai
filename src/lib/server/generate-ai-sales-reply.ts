@@ -28,6 +28,8 @@ type MessageRow = {
   content: string | null;
   direction: string | null;
   message_type: string | null;
+  media_url: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string | null;
 };
 
@@ -88,6 +90,12 @@ type CatalogItemPhotoRow = {
 type PoolPhotoRow = {
   id: string;
   pool_id: string;
+  organization_id: string | null;
+  store_id: string | null;
+  storage_path: string | null;
+  file_name: string | null;
+  file_size_bytes: number | null;
+  sort_order: number | null;
 };
 
 type DetectedIntent =
@@ -243,10 +251,47 @@ type MatchedPool = {
   score: number;
 };
 
+type ProductPhotoRequestContext =
+  | { kind: "not_applicable" }
+  | {
+      kind: "resolved_with_photo" | "resolved_without_photo";
+      source: "explicit" | "history";
+      targetType: "pool" | "catalog_item";
+      modelName: string;
+    }
+  | {
+      kind: "ambiguous";
+      source: "history" | "request";
+    }
+  | {
+      kind: "generic_request";
+    };
+
+export type CatalogPhotoActionContext = {
+  shouldSend: true;
+  reason: "explicit_strong_product_photo_request";
+  poolId: string;
+  poolName: string;
+  organizationId: string;
+  storeId: string;
+  source: "pool_photos" | "pool_photo_url";
+  bucket: "pool-photos" | null;
+  storagePath: string | null;
+  publicUrl: string;
+  caption: string;
+};
+
+type CanonicalPoolModelKey = {
+  type: string;
+  number: number;
+  key: string;
+};
+
 type RequestedPoolReference = {
   raw: string;
   normalized: string;
   fromAd: boolean;
+  canonicalModelKey: CanonicalPoolModelKey | null;
 };
 
 type PoolReferenceMatchStrength =
@@ -303,6 +348,7 @@ export type GenerateAiSalesReplyResult =
         requestedStoreId: string | null;
         operationalFollowUpDecision: OperationalFollowUpDecision;
         commercialHandoff: CommercialHandoffContext | null;
+        catalogPhotoAction: CatalogPhotoActionContext | null;
       };
     }
   | {
@@ -342,6 +388,8 @@ const OPENAI_MODEL_PRICING_USD_PER_1M: Record<string, OpenAiModelPricing> = {
     outputUsdPer1M: 0.4,
   },
 };
+
+const POOL_PHOTOS_PUBLIC_BUCKET = "pool-photos";
 
 function normalizeModelForPricing(model: string): string {
   const normalized = String(model || "").trim().toLowerCase();
@@ -2367,9 +2415,65 @@ function isGenericPoolReferenceToken(token: string): boolean {
   return GENERIC_POOL_REFERENCE_TOKENS.has(token);
 }
 
+const KNOWN_POOL_MODEL_TYPES = new Set([
+  "vinil",
+  "fibra",
+  "spa",
+  "pastilha",
+  "alvenaria",
+]);
+
+function buildCanonicalPoolModelKey(
+  text: string | null | undefined
+): CanonicalPoolModelKey | null {
+  const normalized = normalizeText(text);
+
+  if (!normalized) return null;
+
+  const sanitized = normalized.replace(
+    /\b(?:piscina|piscinas|modelo|modelos|produto|produtos|foto|fotos|imagem|imagens|ver|mostrar|mostra|mandar|manda|mande|tem|quero|me|da|do|de|o|a|um|uma)\b/g,
+    " "
+  );
+
+  const tokens = sanitized.split(/\s+/).filter(Boolean);
+  const type = tokens.find((token) => KNOWN_POOL_MODEL_TYPES.has(token)) || null;
+  const numberToken = tokens.find((token) => /^\d{1,4}$/.test(token)) || null;
+
+  if (!type || !numberToken) return null;
+
+  const number = Number.parseInt(numberToken, 10);
+
+  if (!Number.isFinite(number)) return null;
+
+  return {
+    type,
+    number,
+    key: `${type}:${number}`,
+  };
+}
+
+function compareCanonicalPoolModelKey(
+  a: CanonicalPoolModelKey | null | undefined,
+  b: CanonicalPoolModelKey | null | undefined
+): boolean {
+  return !!a && !!b && a.type === b.type && a.number === b.number;
+}
+
 function extractRequestedPoolReference(text: string): RequestedPoolReference | null {
   const normalized = normalizeText(text);
   const patterns = [
+    /\btem\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\btem\s+imagem\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bme\s+manda\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bme\s+mande\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmanda\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmande\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bquero\s+ver\s+a\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bquero\s+ver\s+o\s+modelo\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmostra\s+a\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmostrar\s+a\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bfoto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bimagem\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bvi o anuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bvi o anuncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\banuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
@@ -2392,17 +2496,22 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
       .replace(/\b(?:quanto|custa|valor|preco|preço|tem|foto|fotos|ai|aí)\b.*$/i, "")
       .trim();
 
-    if (!cleaned) continue;
+    const refinedCleaned = cleaned
+      .replace(/\b(?:imagem|imagens|ver|mostrar|mostra|manda|mande|mandar)\b.*$/i, "")
+      .trim();
+    const effectiveCleaned = refinedCleaned || cleaned;
 
-    const tokens = cleaned.split(/\s+/).filter(Boolean);
+    if (!effectiveCleaned) continue;
+
+    const tokens = effectiveCleaned.split(/\s+/).filter(Boolean);
     const descriptiveOnly =
-      looksLikePoolPreferenceLanguage(cleaned) &&
-      !tokens.some((token) => /^\d{2,}$/.test(token));
+      looksLikePoolPreferenceLanguage(effectiveCleaned) &&
+      !tokens.some((token) => /^\d{1,4}$/.test(token));
     const hasNamedSignal = tokens.some(
-      (token) => (/^\d{2,}$/.test(token) || token.length >= 4) && !isGenericPoolReferenceToken(token)
+      (token) => (/^\d{1,4}$/.test(token) || token.length >= 4) && !isGenericPoolReferenceToken(token)
     );
     const hasCodeSignal =
-      tokens.some((token) => /^\d{2,}$/.test(token)) &&
+      tokens.some((token) => /^\d{1,4}$/.test(token)) &&
       tokens.some((token) => !isGenericPoolReferenceToken(token));
 
     if (descriptiveOnly || (!hasNamedSignal && !hasCodeSignal)) {
@@ -2410,9 +2519,10 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
     }
 
     return {
-      raw: cleaned,
-      normalized: normalizeText(cleaned),
+      raw: effectiveCleaned,
+      normalized: normalizeText(effectiveCleaned),
       fromAd: normalized.includes("anuncio"),
+      canonicalModelKey: buildCanonicalPoolModelKey(effectiveCleaned),
     };
   }
 
@@ -2423,6 +2533,7 @@ function analyzeCatalogIntent(text: string): CatalogIntentAnalysis {
   const normalized = normalizeText(text);
   const requestedBrand = extractRequestedBrand(text);
   const requestedProductTerm = extractRequestedProductTerm(text);
+  const requestedPoolReference = extractRequestedPoolReference(text);
 
   const asksForPhoto =
     normalized.includes("foto") ||
@@ -2446,6 +2557,7 @@ function analyzeCatalogIntent(text: string): CatalogIntentAnalysis {
 
   const asksAboutCatalogProduct =
     !!requestedProductTerm ||
+    !!requestedPoolReference?.canonicalModelKey ||
     PRODUCT_KEYWORDS.some((keyword) => normalized.includes(normalizeText(keyword))) ||
     normalized.includes("marca");
 
@@ -2475,9 +2587,28 @@ function buildCatalogSearchText(item: CatalogItemRow): string {
   );
 }
 
-function scoreCatalogItem(item: CatalogItemRow, analysis: CatalogIntentAnalysis): number {
+function scoreCatalogItem(
+  item: CatalogItemRow,
+  analysis: CatalogIntentAnalysis,
+  requestedPoolReference?: RequestedPoolReference | null
+): number {
   const haystack = buildCatalogSearchText(item);
   let score = 0;
+  const requestedCanonicalKey = requestedPoolReference?.canonicalModelKey || null;
+  const itemCanonicalKey =
+    buildCanonicalPoolModelKey(item.name) || buildCanonicalPoolModelKey(item.sku);
+
+  if (compareCanonicalPoolModelKey(requestedCanonicalKey, itemCanonicalKey)) {
+    score += 20;
+  }
+
+  if (
+    !requestedCanonicalKey &&
+    requestedPoolReference?.normalized &&
+    haystack.includes(requestedPoolReference.normalized)
+  ) {
+    score += 10;
+  }
 
   if (analysis.requestedProductTerm && haystack.includes(normalizeText(analysis.requestedProductTerm))) {
     score += 8;
@@ -2538,6 +2669,498 @@ function formatPoolLine(pool: PoolRow, hasPhoto: boolean): string {
       : "estoque livre";
 
   return `- ${pool.name || "Piscina sem nome"}${price ? ` | preco base: ${price}` : ""} | ${dimensions} | ${availability} | ${hasPhoto ? "com foto" : "sem foto"}`;
+}
+
+function looksLikeHistoricalProductPhotoReference(text: string): boolean {
+  const normalized = normalizeText(text);
+
+  return (
+    normalized.includes("dessa piscina") ||
+    normalized.includes("desse modelo") ||
+    normalized.includes("desse produto") ||
+    normalized.includes("essa piscina") ||
+    normalized.includes("esse modelo") ||
+    normalized.includes("esse produto") ||
+    normalized.includes("essa opcao") ||
+    normalized.includes("essa opção") ||
+    normalized.includes("aquele modelo") ||
+    normalized.includes("aquela piscina") ||
+    /^ela(?:\s|$|[?!.,])/.test(normalized) ||
+    /^esse(?:\s|$|[?!.,])/.test(normalized) ||
+    /^essa(?:\s|$|[?!.,])/.test(normalized) ||
+    /^aquele(?:\s|$|[?!.,])/.test(normalized) ||
+    /^aquela(?:\s|$|[?!.,])/.test(normalized)
+  );
+}
+
+function findStrongCatalogPhotoMatch(
+  matches: MatchedCatalogItem[],
+  requestedPoolReference?: RequestedPoolReference | null
+): MatchedCatalogItem | null {
+  const requestedCanonicalKey = requestedPoolReference?.canonicalModelKey || null;
+  const requestedNormalized = requestedPoolReference?.normalized || "";
+
+  if (requestedCanonicalKey) {
+    const canonicalMatches = matches.filter((match) =>
+      compareCanonicalPoolModelKey(
+        buildCanonicalPoolModelKey(match.item.name) || buildCanonicalPoolModelKey(match.item.sku),
+        requestedCanonicalKey
+      )
+    );
+
+    if (canonicalMatches.length > 0) {
+      return canonicalMatches
+        .slice()
+        .sort((a, b) => b.photos.length - a.photos.length || b.score - a.score)[0];
+    }
+
+    return null;
+  }
+
+  if (requestedNormalized) {
+    const normalizedMatches = matches.filter((match) => {
+      const haystack = normalizeText(
+        [match.item.name, match.item.sku, match.item.description].filter(Boolean).join(" | ")
+      );
+      return haystack.includes(requestedNormalized);
+    });
+
+    if (normalizedMatches.length > 0) {
+      return normalizedMatches
+        .slice()
+        .sort((a, b) => b.photos.length - a.photos.length || b.score - a.score)[0];
+    }
+  }
+
+  const first = matches[0] || null;
+  const second = matches[1] || null;
+
+  if (!first) return null;
+
+  const identifier = normalizeText(first.item.name || first.item.sku || "");
+
+  if (!identifier) return null;
+  if (first.score < 8) return null;
+  if (second && first.score < second.score + 3) return null;
+
+  return first;
+}
+
+function buildCatalogPhotoEvidence(args: {
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
+  availablePools: MatchedPool[];
+  matchedCatalogItems: MatchedCatalogItem[];
+}): {
+  poolMatch: MatchedPool | null;
+  catalogItemMatch: MatchedCatalogItem | null;
+  hasPhoto: boolean;
+  modelName: string | null;
+  targetType: "pool" | "catalog_item" | null;
+} {
+  const requestedCanonicalKey = args.requestedPoolReference?.canonicalModelKey || null;
+  const resolvedPoolMatch =
+    requestedCanonicalKey
+      ? args.availablePools
+          .filter((match) =>
+            compareCanonicalPoolModelKey(
+              buildCanonicalPoolModelKey(match.pool.name),
+              requestedCanonicalKey
+            )
+          )
+          .sort((a, b) => Number(b.hasPhoto) - Number(a.hasPhoto) || b.score - a.score)[0] || null
+      : args.strongestPoolReferenceMatch === "exact" || args.strongestPoolReferenceMatch === "strong"
+        ? args.bestNamedPoolMatch
+        : null;
+
+  const resolvedCatalogItemMatch = findStrongCatalogPhotoMatch(
+    args.matchedCatalogItems,
+    args.requestedPoolReference
+  );
+
+  const poolHasPhoto = !!resolvedPoolMatch?.hasPhoto;
+  const catalogItemPhotosCount = resolvedCatalogItemMatch?.photos.length || 0;
+  const catalogHasPhoto = catalogItemPhotosCount > 0;
+  const hasPhoto = poolHasPhoto || catalogHasPhoto;
+
+  if (!resolvedPoolMatch && !resolvedCatalogItemMatch) {
+    return {
+      poolMatch: null,
+      catalogItemMatch: null,
+      hasPhoto: false,
+      modelName: null,
+      targetType: null,
+    };
+  }
+
+  const preferredTargetType: "pool" | "catalog_item" =
+    resolvedPoolMatch ? "pool" : "catalog_item";
+  const modelName =
+    preferredTargetType === "pool"
+      ? String(
+          resolvedPoolMatch?.pool.name ||
+            resolvedCatalogItemMatch?.item.name ||
+            resolvedCatalogItemMatch?.item.sku ||
+            args.requestedPoolReference?.raw ||
+            "Modelo"
+        ).trim()
+      : String(
+          resolvedCatalogItemMatch?.item.name ||
+            resolvedCatalogItemMatch?.item.sku ||
+            resolvedPoolMatch?.pool.name ||
+            args.requestedPoolReference?.raw ||
+            "Produto"
+        ).trim();
+
+  return {
+    poolMatch: resolvedPoolMatch || null,
+    catalogItemMatch: resolvedCatalogItemMatch || null,
+    hasPhoto,
+    modelName,
+    targetType: preferredTargetType,
+  };
+}
+
+function selectPrimaryPoolPhoto(
+  poolPhotos: PoolPhotoRow[],
+  organizationId: string,
+  storeId: string,
+  poolId: string
+): PoolPhotoRow | null {
+  return (
+    poolPhotos
+      .filter(
+        (photo) =>
+          photo.pool_id === poolId &&
+          photo.organization_id === organizationId &&
+          photo.store_id === storeId &&
+          typeof photo.storage_path === "string" &&
+          photo.storage_path.trim().length > 0
+      )
+      .slice()
+      .sort((a, b) => {
+        const sortOrderA =
+          typeof a.sort_order === "number" ? a.sort_order : Number.MAX_SAFE_INTEGER;
+        const sortOrderB =
+          typeof b.sort_order === "number" ? b.sort_order : Number.MAX_SAFE_INTEGER;
+
+        if (sortOrderA !== sortOrderB) {
+          return sortOrderA - sortOrderB;
+        }
+
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      })[0] || null
+  );
+}
+
+function buildCatalogPhotoAction(args: {
+  productPhotoRequestContext: ProductPhotoRequestContext;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
+  availablePools: MatchedPool[];
+  matchedCatalogItems: MatchedCatalogItem[];
+  poolPhotosByPoolId: Map<string, PoolPhotoRow[]>;
+  organizationId: string;
+  storeId: string;
+  supabase: any;
+}): CatalogPhotoActionContext | null {
+  if (
+    args.productPhotoRequestContext.kind !== "resolved_with_photo" ||
+    args.productPhotoRequestContext.source !== "explicit" ||
+    args.photoOrSimulationSubtype !== "product_photo_specific"
+  ) {
+    return null;
+  }
+
+  const explicitPhotoEvidence = buildCatalogPhotoEvidence({
+    requestedPoolReference: args.requestedPoolReference,
+    strongestPoolReferenceMatch: args.strongestPoolReferenceMatch,
+    bestNamedPoolMatch: args.bestNamedPoolMatch,
+    availablePools: args.availablePools,
+    matchedCatalogItems: args.matchedCatalogItems,
+  });
+
+  const resolvedPool = explicitPhotoEvidence.poolMatch?.pool || null;
+
+  if (!resolvedPool || !explicitPhotoEvidence.hasPhoto) {
+    return null;
+  }
+
+  const availability = isSellableInventoryState({
+    isActive: resolvedPool.is_active,
+    trackStock: resolvedPool.track_stock,
+    stockQuantity: resolvedPool.stock_quantity,
+  });
+
+  if (!availability.isSellable) {
+    return null;
+  }
+
+  const poolPhotos = args.poolPhotosByPoolId.get(resolvedPool.id) || [];
+  const primaryPoolPhoto = selectPrimaryPoolPhoto(
+    poolPhotos,
+    args.organizationId,
+    args.storeId,
+    resolvedPool.id
+  );
+
+  const storagePath = primaryPoolPhoto?.storage_path?.trim() || null;
+  const fallbackUrl = String(resolvedPool.photo_url || "").trim() || null;
+  let publicUrl = "";
+  let source: CatalogPhotoActionContext["source"] | null = null;
+  let bucket: CatalogPhotoActionContext["bucket"] = null;
+
+  if (storagePath) {
+    const { data } = args.supabase.storage
+      .from(POOL_PHOTOS_PUBLIC_BUCKET)
+      .getPublicUrl(storagePath);
+    publicUrl = String(data?.publicUrl || "").trim();
+    source = "pool_photos";
+    bucket = POOL_PHOTOS_PUBLIC_BUCKET;
+  } else if (fallbackUrl) {
+    publicUrl = fallbackUrl;
+    source = "pool_photo_url";
+  }
+
+  if (!source || !/^https?:\/\//i.test(publicUrl)) {
+    return null;
+  }
+
+  const poolName = String(resolvedPool.name || args.productPhotoRequestContext.modelName || "").trim();
+
+  if (!poolName) {
+    return null;
+  }
+
+  return {
+    shouldSend: true,
+    reason: "explicit_strong_product_photo_request",
+    poolId: resolvedPool.id,
+    poolName,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    source,
+    bucket,
+    storagePath,
+    publicUrl,
+    caption: `Foto da ${poolName}`,
+  };
+}
+
+function findSingleRecentProductInFocus(args: {
+  orderedMessages: MessageRow[];
+  matchedPools: MatchedPool[];
+  matchedCatalogItems: MatchedCatalogItem[];
+}):
+  | {
+      targetType: "pool" | "catalog_item";
+      modelName: string;
+      hasPhoto: boolean;
+    }
+  | "ambiguous"
+  | null {
+  const candidates = [
+    ...args.matchedPools.slice(0, 5).map((match) => ({
+      targetType: "pool" as const,
+      modelName: String(match.pool.name || "").trim(),
+      normalizedName: normalizeText(match.pool.name || ""),
+      canonicalModelKey: buildCanonicalPoolModelKey(match.pool.name),
+      hasPhoto: match.hasPhoto,
+    })),
+    ...args.matchedCatalogItems.slice(0, 5).map((match) => ({
+      targetType: "catalog_item" as const,
+      modelName: String(match.item.name || match.item.sku || "").trim(),
+      normalizedName: normalizeText(match.item.name || match.item.sku || ""),
+      canonicalModelKey: buildCanonicalPoolModelKey(match.item.name) || buildCanonicalPoolModelKey(match.item.sku),
+      hasPhoto: match.photos.length > 0,
+    })),
+  ].filter((candidate) => candidate.modelName && candidate.normalizedName.length >= 3);
+
+  if (candidates.length === 0) return null;
+
+  const uniqueCandidates = candidates.filter(
+    (candidate, index, array) =>
+      array.findIndex(
+        (item) =>
+          (item.canonicalModelKey?.key || `${item.targetType}:${item.normalizedName}`) ===
+          (candidate.canonicalModelKey?.key || `${candidate.targetType}:${candidate.normalizedName}`)
+      ) === index
+  );
+
+  const recentMessages = args.orderedMessages
+    .filter((message) => String(message.content || "").trim().length > 0)
+    .slice(-8);
+
+  const matches = uniqueCandidates
+    .map((candidate) => {
+      let mentions = 0;
+
+      for (const message of recentMessages) {
+        const content = normalizeText(message.content || "");
+        const messageCanonicalKey = buildCanonicalPoolModelKey(message.content || "");
+        if (
+          content.includes(candidate.normalizedName) ||
+          compareCanonicalPoolModelKey(candidate.canonicalModelKey, messageCanonicalKey)
+        ) {
+          mentions += 1;
+        }
+      }
+
+      return {
+        ...candidate,
+        mentions,
+      };
+    })
+    .filter((candidate) => candidate.mentions > 0)
+    .sort((a, b) => b.mentions - a.mentions || b.normalizedName.length - a.normalizedName.length);
+
+  if (matches.length === 0) return null;
+  if (matches.length > 1) return "ambiguous";
+
+  const single = matches[0];
+
+  return {
+    targetType: single.targetType,
+    modelName: single.modelName,
+    hasPhoto: single.hasPhoto,
+  };
+}
+
+function buildProductPhotoRequestContext(args: {
+  lastCustomerMessage: string;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  catalogIntent: CatalogIntentAnalysis;
+  requestedPoolReference: RequestedPoolReference | null;
+  strongestPoolReferenceMatch: PoolReferenceMatchStrength;
+  bestNamedPoolMatch: MatchedPool | null;
+  photoCandidatePools: MatchedPool[];
+  matchedCatalogItems: MatchedCatalogItem[];
+  orderedMessages: MessageRow[];
+}): ProductPhotoRequestContext {
+  const asksForPhoto = args.catalogIntent.asksForPhoto;
+
+  if (!asksForPhoto) {
+    return { kind: "not_applicable" };
+  }
+
+  if (
+    args.photoOrSimulationSubtype === "simulation_visual_request" ||
+    args.photoOrSimulationSubtype === "local_photo_context"
+  ) {
+    return { kind: "not_applicable" };
+  }
+
+  const explicitPhotoEvidence = buildCatalogPhotoEvidence({
+    requestedPoolReference: args.requestedPoolReference,
+    strongestPoolReferenceMatch: args.strongestPoolReferenceMatch,
+    bestNamedPoolMatch: args.bestNamedPoolMatch,
+    availablePools: args.photoCandidatePools,
+    matchedCatalogItems: args.matchedCatalogItems,
+  });
+
+  if (explicitPhotoEvidence.poolMatch || explicitPhotoEvidence.catalogItemMatch) {
+    return {
+      kind: explicitPhotoEvidence.hasPhoto ? "resolved_with_photo" : "resolved_without_photo",
+      source: "explicit",
+      targetType: explicitPhotoEvidence.targetType || "pool",
+      modelName: explicitPhotoEvidence.modelName || String(args.requestedPoolReference?.raw || "Modelo").trim(),
+    };
+  }
+
+  if (
+    args.requestedPoolReference &&
+    args.requestedPoolReference.canonicalModelKey &&
+    args.strongestPoolReferenceMatch === "weak"
+  ) {
+    return { kind: "ambiguous", source: "request" };
+  }
+
+  if (looksLikeHistoricalProductPhotoReference(args.lastCustomerMessage)) {
+    const recentTarget = findSingleRecentProductInFocus({
+      orderedMessages: args.orderedMessages,
+      matchedPools: args.photoCandidatePools,
+      matchedCatalogItems: args.matchedCatalogItems,
+    });
+
+    if (recentTarget === "ambiguous") {
+      return { kind: "ambiguous", source: "history" };
+    }
+
+    if (recentTarget) {
+      return {
+        kind: recentTarget.hasPhoto ? "resolved_with_photo" : "resolved_without_photo",
+        source: "history",
+        targetType: recentTarget.targetType,
+        modelName: recentTarget.modelName,
+      };
+    }
+
+    return { kind: "ambiguous", source: "history" };
+  }
+
+  if (
+    looksLikePoolPreferenceLanguage(args.lastCustomerMessage) ||
+    looksLikePoolChoice(args.lastCustomerMessage)
+  ) {
+    return { kind: "generic_request" };
+  }
+
+  if (args.photoOrSimulationSubtype === "product_photo_without_model") {
+    return { kind: "ambiguous", source: "request" };
+  }
+
+  return { kind: "generic_request" };
+}
+
+function buildProductPhotoRequestContextBlock(
+  context: ProductPhotoRequestContext
+): string {
+  if (context.kind === "not_applicable") {
+    return "";
+  }
+
+  if (context.kind === "resolved_with_photo") {
+    return [
+      "CONTEXTO DE PEDIDO DE FOTO DE PRODUTO",
+      "- o cliente pediu foto de produto/modelo",
+      `- modelo identificado com seguranca: ${context.modelName}`,
+      "- existe foto real cadastrada para esse modelo no catalogo da loja",
+      "- para esta resposta, a prioridade e confirmar a foto cadastrada do modelo correto; nao troque o modelo por parecido e nao transforme isso em resposta principal de disponibilidade",
+      "- responda com honestidade que ha foto real cadastrada desse modelo, de preferencia com frase curta e neutra, mas nao diga que a foto ja foi enviada nem que o envio automatico aconteceu agora",
+      "- nao confunda este pedido com foto do local do cliente",
+    ].join("\n");
+  }
+
+  if (context.kind === "resolved_without_photo") {
+    return [
+      "CONTEXTO DE PEDIDO DE FOTO DE PRODUTO",
+      "- o cliente pediu foto de produto/modelo",
+      `- modelo identificado com seguranca: ${context.modelName}`,
+      "- nao ha foto cadastrada para esse modelo no catalogo da loja",
+      "- para esta resposta, a prioridade e dizer se ha ou nao foto cadastrada do modelo correto; nao troque o modelo por parecido e nao use disponibilidade como resposta principal",
+      "- responda com honestidade, sem inventar imagem, e continue ajudando com informacoes do modelo",
+      "- nao confunda este pedido com foto do local do cliente",
+    ].join("\n");
+  }
+
+  if (context.kind === "ambiguous") {
+    return [
+      "CONTEXTO DE PEDIDO DE FOTO DE PRODUTO",
+      "- o cliente pediu foto de produto/modelo, mas o modelo ainda nao esta claro com seguranca",
+      "- pergunte qual modelo ele quer ver antes de prometer qualquer foto",
+      "- nao escolha piscina aleatoria e nao confunda este pedido com foto do local do cliente",
+    ].join("\n");
+  }
+
+  return [
+    "CONTEXTO DE PEDIDO DE FOTO DE PRODUTO",
+    "- o cliente pediu foto de produto/modelo de forma generica",
+    "- nao escolha foto aleatoria nem afirme foto de um modelo especifico sem match forte",
+    "- primeiro afunile ou sugira opcoes reais antes de falar de foto de um modelo especifico",
+  ].join("\n");
 }
 
 function scorePool(pool: PoolRow, text: string): number {
@@ -2603,8 +3226,17 @@ function classifyPoolReferenceMatch(
   const haystack = normalizeText(
     [pool.name, pool.material, pool.shape, pool.description].filter(Boolean).join(" | ")
   );
+  const poolCanonicalKey = buildCanonicalPoolModelKey(pool.name);
 
   if (!name || !haystack) return "none";
+
+  if (compareCanonicalPoolModelKey(poolCanonicalKey, requestedReference.canonicalModelKey)) {
+    return "exact";
+  }
+
+  if (requestedReference.canonicalModelKey) {
+    return "none";
+  }
 
   if (name.includes(requestedReference.normalized)) {
     return "exact";
@@ -2612,7 +3244,7 @@ function classifyPoolReferenceMatch(
 
   const tokens = requestedReference.normalized.split(/\s+/).filter(Boolean);
   const strongTokens = tokens.filter(
-    (token) => (/^\d{2,}$/.test(token) || token.length >= 4) && !isGenericPoolReferenceToken(token)
+    (token) => (/^\d{1,4}$/.test(token) || token.length >= 4) && !isGenericPoolReferenceToken(token)
   );
 
   if (strongTokens.length > 0) {
@@ -2835,10 +3467,76 @@ function inferRecommendationPolicy(args: {
   };
 }
 
+function shouldAskForCustomerLocationPhoto(args: {
+  pattern: ConversationPattern;
+  paymentOrClosingSubtype?: PaymentOrClosingSubtype;
+  photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  facts: ConversationFactState;
+  lastCustomerMessage: string;
+  explicitCatalogRequest: boolean;
+  patienceSignal: CustomerPatienceSignal;
+  hasCustomerLocationPhoto: boolean;
+}): boolean {
+  if (args.hasCustomerLocationPhoto || args.patienceSignal.shouldAvoidNewQuestion) {
+    return false;
+  }
+
+  if (
+    args.pattern === "payment_or_closing_flow" ||
+    args.pattern === "price_question" ||
+    args.pattern === "discount_question" ||
+    args.pattern === "specific_model_or_ad_request" ||
+    args.pattern === "chemical_problem" ||
+    args.pattern === "pause_or_disinterest" ||
+    (args.paymentOrClosingSubtype && args.paymentOrClosingSubtype !== "none")
+  ) {
+    return false;
+  }
+
+  if (
+    args.pattern === "photo_or_simulation_request" ||
+    args.explicitCatalogRequest ||
+    looksLikeTechnicalVisitQuestion(args.lastCustomerMessage) ||
+    looksLikeExplicitVisitRequest(args.lastCustomerMessage) ||
+    looksLikeExtendedQuoteRequest(args.lastCustomerMessage) ||
+    isVagueGreetingOrPing(args.lastCustomerMessage) ||
+    hasSpecificPoolReference(args.lastCustomerMessage)
+  ) {
+    return false;
+  }
+
+  if (args.photoOrSimulationSubtype === "product_photo_specific") {
+    return false;
+  }
+
+  const text = normalizeText(args.lastCustomerMessage);
+  const mentionsSpaceContext =
+    args.facts.sizeKnown ||
+    text.includes("quintal") ||
+    text.includes("espaco") ||
+    text.includes("espaço") ||
+    text.includes("local") ||
+    text.includes("lugar") ||
+    text.includes("area") ||
+    text.includes("área") ||
+    text.includes("medida") ||
+    text.includes("medidas") ||
+    text.includes("metros") ||
+    text.includes("cabe") ||
+    text.includes("encaixe");
+
+  const asksRecommendationHelp =
+    looksLikePoolRecommendationRequest(args.lastCustomerMessage) &&
+    !hasSpecificPoolReference(args.lastCustomerMessage);
+
+  return mentionsSpaceContext || asksRecommendationHelp;
+}
+
 function inferNextBestQuestion(args: {
   pattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  productPhotoRequestContext?: ProductPhotoRequestContext | null;
   facts: ConversationFactState;
   intents: DetectedIntent[];
   lastCustomerMessage: string;
@@ -2846,11 +3544,13 @@ function inferNextBestQuestion(args: {
   patienceSignal: CustomerPatienceSignal;
   offersTechnicalVisit: boolean;
   lastAiListedPools: boolean;
+  hasCustomerLocationPhoto: boolean;
 }): string | null {
   const {
     pattern,
     paymentOrClosingSubtype,
     photoOrSimulationSubtype,
+    productPhotoRequestContext,
     facts,
     intents,
     lastCustomerMessage,
@@ -2858,10 +3558,26 @@ function inferNextBestQuestion(args: {
     patienceSignal,
     offersTechnicalVisit,
     lastAiListedPools,
+    hasCustomerLocationPhoto,
   } = args;
 
   if (patienceSignal.shouldAvoidNewQuestion) {
     return null;
+  }
+
+  if (
+    shouldAskForCustomerLocationPhoto({
+      pattern,
+      paymentOrClosingSubtype,
+      photoOrSimulationSubtype,
+      facts,
+      lastCustomerMessage,
+      explicitCatalogRequest,
+      patienceSignal,
+      hasCustomerLocationPhoto,
+    })
+  ) {
+    return "Você tem uma foto do lugar? Com a foto dá pra entender melhor o espaço e me ajuda a te sugerir piscinas melhores";
   }
 
   if (pattern === "generic_pool_opening") {
@@ -2930,6 +3646,18 @@ function inferNextBestQuestion(args: {
   }
 
   if (pattern === "photo_or_simulation_request") {
+    if (productPhotoRequestContext?.kind === "ambiguous") {
+      return "Qual modelo voce quer ver na foto?";
+    }
+    if (productPhotoRequestContext?.kind === "generic_request") {
+      return "Se quiser, eu posso te indicar algumas opcoes reais antes. Voce prefere algo mais compacto ou ja tem algum modelo em mente?";
+    }
+    if (
+      productPhotoRequestContext?.kind === "resolved_with_photo" ||
+      productPhotoRequestContext?.kind === "resolved_without_photo"
+    ) {
+      return null;
+    }
     if (photoOrSimulationSubtype === "product_photo_without_model") {
       return "Tenho como verificar sim. Qual modelo de piscina voce quer ver a foto?";
     }
@@ -2937,7 +3665,7 @@ function inferNextBestQuestion(args: {
       return null;
     }
     if (photoOrSimulationSubtype === "simulation_visual_request") {
-      return "Consigo te orientar melhor com uma foto e as medidas do espaco. Se quiser, me manda a foto do local e mais ou menos o tamanho do espaco";
+      return "Com uma foto do espaço dá pra entender melhor o local e indicar modelos que combinam melhor. Me manda uma foto do lugar que eu te ajudo por aqui";
     }
     if (facts.sizeKnown) {
       return "Se conseguir, me fala tambem se tem alguma limitacao de acesso ou detalhe do espaco que te preocupa mais";
@@ -2997,6 +3725,7 @@ function inferResponseGoal(args: {
   pattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  productPhotoRequestContext?: ProductPhotoRequestContext | null;
   intents: DetectedIntent[];
   facts: ConversationFactState;
   nextBestQuestion: string | null;
@@ -3015,6 +3744,7 @@ function inferResponseGoal(args: {
     pattern,
     paymentOrClosingSubtype,
     photoOrSimulationSubtype,
+    productPhotoRequestContext,
     intents,
     facts,
     responseMode,
@@ -3126,6 +3856,18 @@ function inferResponseGoal(args: {
   }
 
   if (pattern === "photo_or_simulation_request") {
+    if (productPhotoRequestContext?.kind === "resolved_with_photo") {
+      return "responder com honestidade que existe foto real cadastrada para o modelo identificado, sem dizer que ja enviou a foto e sem prometer envio automatico nesta etapa";
+    }
+    if (productPhotoRequestContext?.kind === "resolved_without_photo") {
+      return "responder com honestidade que nao ha foto cadastrada para o modelo identificado no momento, sem inventar imagem, e continuar ajudando com informacoes do produto";
+    }
+    if (productPhotoRequestContext?.kind === "ambiguous") {
+      return "descobrir primeiro qual modelo o cliente quer ver em foto antes de prometer qualquer imagem, sem escolher produto aleatorio";
+    }
+    if (productPhotoRequestContext?.kind === "generic_request") {
+      return "afunilar primeiro o tipo de modelo ou sugerir opcoes reais antes de falar em foto especifica, sem escolher imagem aleatoria";
+    }
     if (photoOrSimulationSubtype === "simulation_visual_request") {
       return "explicar com naturalidade que foto e medidas ajudam bastante a orientar melhor, mas sem prometer montagem visual pronta, render ou simulacao real neste momento, e manter um proximo passo comercial util";
     }
@@ -3239,6 +3981,8 @@ function inferForbiddenInThisReply(args: {
     out.push("nao usar frases como pela foto da para ver, vendo sua foto ou analisando a imagem sem base real");
     out.push("nao prometer montagem visual, render, simulacao pronta, foto editada ou visualizacao final");
     out.push("nao dizer que vai editar, montar ou gerar imagem do local");
+    out.push("nao dizer que ja enviou, mandou, anexou ou mostrou a foto se isso nao aconteceu de fato");
+    out.push("nao prometer envio automatico de foto nesta etapa");
     out.push("nao confundir foto cadastrada do produto com foto do local do cliente");
     out.push("nao tratar pedido de foto do local como se o sistema ja recebesse, processasse e entendesse a imagem automaticamente");
     out.push("nao abrir catalogo cedo demais se ainda faltar medida ou contexto basico do espaco");
@@ -3344,6 +4088,7 @@ function buildCommercialObjective(args: {
   orderedMessages: MessageRow[];
   lastCustomerMessage: string;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
+  productPhotoRequestContext?: ProductPhotoRequestContext | null;
   explicitCatalogRequest: boolean;
   lastAiListedPools: boolean;
   shouldPresentPoolRecommendations: boolean;
@@ -3354,6 +4099,7 @@ function buildCommercialObjective(args: {
   bestNamedPoolMatch: MatchedPool | null;
 }): CommercialObjective {
   const facts = args.facts;
+  const alreadyHasCustomerLocationPhoto = hasCustomerLocationPhoto(args.orderedMessages);
   const intents = detectIntents(args.lastCustomerMessage);
   const paymentOrClosingSubtype = detectPaymentOrClosingSubtype(args.lastCustomerMessage);
   const responseMode: ResponseMode = isObjectiveQuestionMode(args.lastCustomerMessage)
@@ -3375,6 +4121,7 @@ function buildCommercialObjective(args: {
     pattern,
     paymentOrClosingSubtype,
     photoOrSimulationSubtype: args.photoOrSimulationSubtype,
+    productPhotoRequestContext: args.productPhotoRequestContext,
     facts,
     intents,
     lastCustomerMessage: args.lastCustomerMessage,
@@ -3382,6 +4129,7 @@ function buildCommercialObjective(args: {
     patienceSignal,
     offersTechnicalVisit: args.offersTechnicalVisit,
     lastAiListedPools: args.lastAiListedPools,
+    hasCustomerLocationPhoto: alreadyHasCustomerLocationPhoto,
   });
 
   return {
@@ -3397,6 +4145,7 @@ function buildCommercialObjective(args: {
       pattern,
       paymentOrClosingSubtype,
       photoOrSimulationSubtype: args.photoOrSimulationSubtype,
+      productPhotoRequestContext: args.productPhotoRequestContext,
       intents,
       facts,
       nextBestQuestion,
@@ -3733,6 +4482,41 @@ function buildSalesReplyQualityRules(args: {
   return instructions.join("\n");
 }
 
+function isCustomerLocationPhotoMessage(message: MessageRow): boolean {
+  if (normalizeText(message.message_type) !== "image") {
+    return false;
+  }
+
+  const metadata =
+    message.metadata && typeof message.metadata === "object" ? message.metadata : null;
+
+  return normalizeText(asText(metadata?.media_purpose)) === "customer_location_photo";
+}
+
+function hasCustomerLocationPhoto(messages: MessageRow[]): boolean {
+  return messages.some(isCustomerLocationPhotoMessage);
+}
+
+function buildCustomerMediaContextBlock(messages: MessageRow[]): string {
+  const hasCustomerLocationPhotoInConversation = hasCustomerLocationPhoto(messages);
+
+  if (!hasCustomerLocationPhotoInConversation) {
+    return "";
+  }
+
+  return [
+    "CONTEXTO MULTIMODAL SEGURO",
+    "- o cliente ja enviou uma foto do local",
+    "- use isso apenas como sinal de contexto comercial: a foto pode ajudar a entender melhor o espaco e orientar perguntas ou recomendacoes",
+    "- nao diga que analisou detalhes visuais da imagem",
+    "- nao prometa montagem, simulacao visual, previa visual ou que vai mostrar como vai ficar",
+    "- nao invente acabamento, deck, piso, paisagismo, iluminacao, obra externa ou servicos de entorno",
+    "- nao afirme medidas, inclinacao, estrutura, drenagem ou detalhes tecnicos visuais que nao foram validados",
+    "- nao diga que vai mandar imagem ao cliente",
+    "- se precisar de mais precisao, peca dados objetivos como medida aproximada, cidade/regiao, tipo de espaco e uso desejado",
+  ].join("\n");
+}
+
 function buildResponsePriorityBlock(args: {
   pattern: ConversationPattern;
   paymentOrClosingSubtype?: PaymentOrClosingSubtype;
@@ -3879,6 +4663,9 @@ function buildResponsePriorityBlock(args: {
     } else if (args.photoOrSimulationSubtype === "product_photo_specific") {
       instructions.push(
         "- PADRÃO DOMINANTE: pedido de foto de um modelo específico. Responda sobre a foto cadastrada desse modelo e não troque para outra piscina aleatoriamente."
+      );
+      instructions.push(
+        "- Quando a pergunta for so sobre foto de um modelo especifico, confirme primeiro se ha ou nao foto cadastrada desse modelo. Nao transforme disponibilidade, estoque ou vendabilidade na resposta principal."
       );
     } else {
       instructions.push(
@@ -4267,6 +5054,9 @@ function buildInstructions(args: {
   leadState: string | null;
   onboardingMap: Record<string, string>;
   recentHistory: string;
+  customerMediaContextBlock: string;
+  productPhotoRequestContextBlock: string;
+  hasCustomerLocationPhoto: boolean;
   availablePoolsText: string;
   lastCustomerMessage: string;
   behaviorInstructionBlock: string;
@@ -4397,11 +5187,14 @@ REGRAS OPERACIONAIS
 - nunca escreva posso agendar sim, agendei, visita confirmada, horário marcado, já marquei ou ficou agendado sem ação real de agenda
 - quando o cliente pedir visita diretamente, prefira posso te ajudar com isso ou posso verificar um horário pra visita
 - quando o cliente pedir foto do local, falar de quintal, encaixe ou simulação, trate a foto como apoio comercial e não como análise visual automática
+- quando fizer sentido comercial pedir foto do local para orientar melhor a recomendação, prefira uma frase natural como: "Você tem uma foto do lugar? Com a foto dá pra entender melhor o espaço e me ajuda a te sugerir piscinas melhores"
 - peça medida junto com a foto quando isso ajudar a orientar melhor
 - não diga que analisou a imagem, que viu o quintal pela foto ou que consegue montar/renderizar visualmente se esse recurso não existe no sistema atual
 - se o cliente pedir simulação, explique com sinceridade que a foto ajuda a orientar melhor, mas não prometa montagem visual pronta neste momento
+- se o cliente pedir simulação ou montagem, você pode responder de forma natural no espírito de: "Com uma foto do espaço dá pra entender melhor o local e indicar modelos que combinam melhor. Me manda uma foto do lugar que eu te ajudo por aqui"
 - se o cliente pedir foto de produto sem dizer qual piscina é, pergunte primeiro qual modelo ele quer ver e não liste fotos/modelos aleatórios
 - se houver modelo claro no histórico ou na mensagem, responda só sobre a foto desse modelo específico
+- se o cliente já enviou foto do local nesta conversa (${args.hasCustomerLocationPhoto ? "sim" : "não"}), não peça outra foto; use a que já existe apenas como apoio comercial e siga pedindo dados objetivos quando faltar precisão
 
 REGRA DOMINANTE DE CENÁRIO DESTA RESPOSTA
 - padrão atual: ${args.conversationPattern}
@@ -4468,8 +5261,10 @@ ${args.salesMethodologyInstructionBlock}
 COMPORTAMENTO OFICIAL DO ZION
 ${args.behaviorInstructionBlock}
 
-CEREBRO COMERCIAL DO TURNO
+${args.customerMediaContextBlock ? `${args.customerMediaContextBlock}\n\n` : ""}CEREBRO COMERCIAL DO TURNO
 ${args.salesBrainPromptBlock}
+
+${args.productPhotoRequestContextBlock ? `\n\n${args.productPhotoRequestContextBlock}` : ""}
 
 EXEMPLOS DE TOM
 ${args.examplesBlock}
@@ -4854,7 +5649,7 @@ export async function generateAiSalesReply(
 
     const { data: recentMessages, error: recentMessagesError } = await supabase
       .from("messages")
-      .select("id, sender, content, direction, message_type, created_at")
+      .select("id, sender, content, direction, message_type, media_url, metadata, created_at")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: false })
       .limit(12);
@@ -4868,6 +5663,8 @@ export async function generateAiSalesReply(
     }
 
     const orderedMessages = ([...(recentMessages || [])] as MessageRow[]).reverse();
+    const alreadyHasCustomerLocationPhoto = hasCustomerLocationPhoto(orderedMessages);
+    const customerMediaContextBlock = buildCustomerMediaContextBlock(orderedMessages);
 
     const lastCustomerMessage =
       [...orderedMessages]
@@ -4979,12 +5776,15 @@ export async function generateAiSalesReply(
     }
 
     let poolPhotoMap = new Map<string, number>();
+    let poolPhotosByPoolId = new Map<string, PoolPhotoRow[]>();
     if (pools.length > 0) {
       const poolIds = pools.map((pool) => pool.id);
 
       const { data: poolPhotosData, error: poolPhotosError } = await supabase
         .from("pool_photos")
-        .select("id, pool_id")
+        .select(
+          "id, pool_id, organization_id, store_id, storage_path, file_name, file_size_bytes, sort_order"
+        )
         .in("pool_id", poolIds);
 
       if (poolPhotosError) {
@@ -4997,6 +5797,9 @@ export async function generateAiSalesReply(
 
       for (const row of (poolPhotosData || []) as PoolPhotoRow[]) {
         poolPhotoMap.set(row.pool_id, (poolPhotoMap.get(row.pool_id) || 0) + 1);
+        const currentRows = poolPhotosByPoolId.get(row.pool_id) || [];
+        currentRows.push(row);
+        poolPhotosByPoolId.set(row.pool_id, currentRows);
       }
     }
 
@@ -5095,7 +5898,7 @@ export async function generateAiSalesReply(
       .map((item) => ({
         item,
         photos: photoMap.get(item.id) || [],
-        score: scoreCatalogItem(item, catalogIntent),
+        score: scoreCatalogItem(item, catalogIntent, requestedPoolReference),
       }))
       .filter((match) => match.score > 0)
       .sort((a, b) => b.score - a.score);
@@ -5208,10 +6011,42 @@ export async function generateAiSalesReply(
       }
     }
 
+    const photoCandidatePools = scoredPools;
+
+    const productPhotoRequestContext = buildProductPhotoRequestContext({
+      lastCustomerMessage,
+      photoOrSimulationSubtype,
+      catalogIntent,
+      requestedPoolReference,
+      strongestPoolReferenceMatch,
+      bestNamedPoolMatch,
+      photoCandidatePools,
+      matchedCatalogItems,
+      orderedMessages,
+    });
+    const productPhotoRequestContextBlock = buildProductPhotoRequestContextBlock(
+      productPhotoRequestContext
+    );
+    const catalogPhotoAction = buildCatalogPhotoAction({
+      productPhotoRequestContext,
+      photoOrSimulationSubtype,
+      requestedPoolReference,
+      strongestPoolReferenceMatch,
+      bestNamedPoolMatch,
+      availablePools: photoCandidatePools,
+      matchedCatalogItems,
+      poolPhotosByPoolId,
+      organizationId,
+      storeId: resolvedStoreId,
+      supabase,
+    });
+
     const commercialObjective = buildCommercialObjective({
       facts: conversationFacts,
       orderedMessages,
       lastCustomerMessage,
+      photoOrSimulationSubtype,
+      productPhotoRequestContext,
       explicitCatalogRequest,
       lastAiListedPools,
       shouldPresentPoolRecommendations,
@@ -5300,6 +6135,9 @@ export async function generateAiSalesReply(
       leadState: lead.state,
       onboardingMap,
       recentHistory,
+      customerMediaContextBlock,
+      productPhotoRequestContextBlock,
+      hasCustomerLocationPhoto: alreadyHasCustomerLocationPhoto,
       availablePoolsText,
       lastCustomerMessage,
       behaviorInstructionBlock,
@@ -5367,9 +6205,11 @@ export async function generateAiSalesReply(
           salesBrain.snapshot.visitNeedsQualificationBeforeAgenda
         )
     );
-    const finalAiText = shouldUseCommercialReplyOverride
-      ? String(commercialHandoff?.replyOverride || "").trim()
-      : aiText;
+    const finalAiText = catalogPhotoAction
+      ? `Sim, temos foto da ${catalogPhotoAction.poolName}.`
+      : shouldUseCommercialReplyOverride
+        ? String(commercialHandoff?.replyOverride || "").trim()
+        : aiText;
 
     if (!finalAiText) {
       return {
@@ -5392,6 +6232,7 @@ export async function generateAiSalesReply(
         requestedStoreId: requestedStoreId || null,
         operationalFollowUpDecision,
         commercialHandoff,
+        catalogPhotoAction,
       },
     };
   } catch (error: any) {

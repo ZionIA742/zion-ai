@@ -35,6 +35,8 @@ type MessageRow = {
   content: string | null;
   direction: string | null;
   message_type: string | null;
+  media_url: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string | null;
 };
 
@@ -125,6 +127,14 @@ type SimulateCustomerResponse = {
   debug?: Record<string, unknown>;
 };
 
+type SignedMediaUrlResponse = {
+  ok: boolean;
+  signedUrl?: string;
+  expiresInSeconds?: number;
+  error?: string;
+  message?: string;
+};
+
 function formatSender(message: MessageRow) {
   const sender = String(message.sender || "").toLowerCase();
   const direction = String(message.direction || "").toLowerCase();
@@ -180,6 +190,38 @@ function formatDateTime(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Data invalida";
   return date.toLocaleString("pt-BR");
+}
+
+function isCustomerLocationPhotoMessage(message: MessageRow) {
+  if (String(message.message_type || "").trim().toLowerCase() !== "image") {
+    return false;
+  }
+
+  const metadata =
+    message.metadata && typeof message.metadata === "object"
+      ? message.metadata
+      : null;
+  const mediaPurpose = String(metadata?.media_purpose || "")
+    .trim()
+    .toLowerCase();
+
+  return mediaPurpose === "customer_location_photo";
+}
+
+function getMessageDisplayContent(message: MessageRow) {
+  if (isCustomerLocationPhotoMessage(message)) {
+    return "Foto do local recebida";
+  }
+
+  return message.content || "(mensagem sem conteudo textual)";
+}
+
+function getMessageSecondaryContent(message: MessageRow) {
+  if (isCustomerLocationPhotoMessage(message)) {
+    return "A imagem foi salva com segurança para ajudar na recomendação. A visualização da foto será habilitada em uma próxima etapa.";
+  }
+
+  return null;
 }
 
 function formatFriendlyLabel(value: string | null | undefined) {
@@ -360,6 +402,7 @@ export default function LeadPage() {
   const [working, setWorking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [simulatingCustomer, setSimulatingCustomer] = useState(false);
+  const [viewingPhotoMessageId, setViewingPhotoMessageId] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
 
@@ -645,6 +688,49 @@ export default function LeadPage() {
     }
   }
 
+  async function openCustomerLocationPhoto(messageId: string) {
+    const safeMessageId = String(messageId || "").trim();
+
+    if (!safeMessageId) {
+      setErrorText("Nao foi possivel identificar a mensagem da foto.");
+      setStatusText(null);
+      return;
+    }
+
+    setViewingPhotoMessageId(safeMessageId);
+    setErrorText(null);
+    setStatusText(null);
+
+    try {
+      const response = await fetch(
+        `/api/crm/messages/${encodeURIComponent(safeMessageId)}/signed-media-url`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+
+      const result = (await response.json()) as SignedMediaUrlResponse;
+
+      if (!response.ok || !result?.ok || !result?.signedUrl) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            "Nao foi possivel gerar a visualizacao segura da foto."
+        );
+      }
+
+      window.open(result.signedUrl, "_blank", "noopener,noreferrer");
+    } catch (error: any) {
+      setErrorText(
+        error?.message || "Erro ao abrir a foto recebida com seguranca."
+      );
+      setStatusText(null);
+    } finally {
+      setViewingPhotoMessageId(null);
+    }
+  }
+
   useEffect(() => {
     void fetchLeadConversationAndMessages();
   }, [leadId]);
@@ -786,6 +872,8 @@ export default function LeadPage() {
                         content: null,
                         direction: conversation.last_message_direction,
                         message_type: null,
+                        media_url: null,
+                        metadata: null,
                         created_at: conversation.last_message_at,
                       })}`
                     : ""}
@@ -1046,8 +1134,27 @@ export default function LeadPage() {
                     </div>
 
                     <div className="whitespace-pre-wrap break-words text-sm">
-                      {message.content || "(mensagem sem conteudo textual)"}
+                      {getMessageDisplayContent(message)}
                     </div>
+
+                    {getMessageSecondaryContent(message) ? (
+                      <div className="mt-2 whitespace-pre-wrap break-words text-xs opacity-80">
+                        {getMessageSecondaryContent(message)}
+                      </div>
+                    ) : null}
+
+                    {isCustomerLocationPhotoMessage(message) ? (
+                      <div className="mt-3">
+                        <button
+                          type="button"
+                          onClick={() => void openCustomerLocationPhoto(message.id)}
+                          disabled={viewingPhotoMessageId === message.id}
+                          className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {viewingPhotoMessageId === message.id ? "Abrindo..." : "Ver foto"}
+                        </button>
+                      </div>
+                    ) : null}
 
                     <div className="mt-2 text-[11px] opacity-70">
                       {formatDateTime(message.created_at)}

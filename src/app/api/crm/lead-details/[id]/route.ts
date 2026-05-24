@@ -34,6 +34,8 @@ type MessageRow = {
   content: string | null;
   direction: string | null;
   message_type: string | null;
+  media_url: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string | null;
 };
 
@@ -185,7 +187,9 @@ export async function GET(request: Request) {
     if (conversation) {
       const { data: messagesData, error: messagesError } = await supabase
         .from("messages")
-        .select("id, sender, content, direction, message_type, created_at")
+        .select(
+          "id, sender, content, direction, message_type, media_url, metadata, created_at"
+        )
         .eq("conversation_id", conversation.id)
         .order("created_at", { ascending: true });
 

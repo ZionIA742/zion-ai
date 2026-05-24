@@ -40,6 +40,20 @@ type AiSalesReplyUsage = {
   pricingSource?: string;
 };
 
+type CatalogPhotoAction = {
+  shouldSend: true;
+  reason: "explicit_strong_product_photo_request";
+  poolId: string;
+  poolName: string;
+  organizationId: string;
+  storeId: string;
+  source: "pool_photos" | "pool_photo_url";
+  bucket: "pool-photos" | null;
+  storagePath: string | null;
+  publicUrl: string;
+  caption: string;
+};
+
 type ConversationRow = {
   id: string;
   organization_id: string;
@@ -120,6 +134,59 @@ const AUTO_PROGRESS_TO_QUALIFICACAO_BLOCKED = new Set([
   "perdido",
   "humano_assumiu",
 ]);
+
+function normalizeCatalogPhotoAction(action: unknown): CatalogPhotoAction | null {
+  if (!action || typeof action !== "object") {
+    return null;
+  }
+
+  const candidate = action as Record<string, unknown>;
+  const shouldSend = candidate.shouldSend === true;
+  const poolId = String(candidate.poolId || "").trim();
+  const poolName = String(candidate.poolName || "").trim();
+  const organizationId = String(candidate.organizationId || "").trim();
+  const storeId = String(candidate.storeId || "").trim();
+  const publicUrl = String(candidate.publicUrl || "").trim();
+  const source =
+    candidate.source === "pool_photo_url"
+      ? "pool_photo_url"
+      : candidate.source === "pool_photos"
+        ? "pool_photos"
+        : null;
+  const bucket = candidate.bucket === "pool-photos" ? "pool-photos" : null;
+  const storagePath =
+    typeof candidate.storagePath === "string" && candidate.storagePath.trim().length > 0
+      ? candidate.storagePath.trim()
+      : null;
+  const caption = String(candidate.caption || "").trim();
+
+  if (
+    !shouldSend ||
+    !poolId ||
+    !poolName ||
+    !organizationId ||
+    !storeId ||
+    !source ||
+    !caption ||
+    !/^https?:\/\//i.test(publicUrl)
+  ) {
+    return null;
+  }
+
+  return {
+    shouldSend: true,
+    reason: "explicit_strong_product_photo_request",
+    poolId,
+    poolName,
+    organizationId,
+    storeId,
+    source,
+    bucket,
+    storagePath,
+    publicUrl,
+    caption,
+  };
+}
 
 type MessageBoundaryRow = {
   id: string;
@@ -2135,6 +2202,63 @@ export async function generateAndSaveAiSalesReply(
         message: sendError.message,
         aiText,
       };
+    }
+
+    const catalogPhotoAction = normalizeCatalogPhotoAction(
+      generationResult.context?.catalogPhotoAction
+    );
+
+    if (
+      catalogPhotoAction &&
+      catalogPhotoAction.organizationId === organizationId &&
+      catalogPhotoAction.storeId === storeId
+    ) {
+      try {
+        const imageMetadata: Record<string, unknown> = {
+          media_purpose: "catalog_product_photo",
+          catalog_photo_action: true,
+          source: catalogPhotoAction.source,
+          pool_id: catalogPhotoAction.poolId,
+          pool_name: catalogPhotoAction.poolName,
+          storage_bucket: catalogPhotoAction.bucket,
+          storage_path: catalogPhotoAction.storagePath,
+          generated_by: "ai_sales",
+          auto_sent: true,
+          reason: catalogPhotoAction.reason,
+        };
+
+        const { error: imageInsertError } = await supabase.rpc("insert_message", {
+          p_conversation_id: conversationId,
+          p_sender: "ai",
+          p_direction: "outgoing",
+          p_message_type: "image",
+          p_content: catalogPhotoAction.caption,
+          p_media_url: catalogPhotoAction.publicUrl,
+          p_external_message_id: null,
+          p_metadata: imageMetadata,
+        });
+
+        if (imageInsertError) {
+          console.warn("[zion-ai-sales-photo] Falha ao persistir imagem de catalogo", {
+            organizationId,
+            storeId,
+            conversationId,
+            poolId: catalogPhotoAction.poolId,
+            error: imageInsertError.message,
+          });
+        }
+      } catch (catalogPhotoInsertError: any) {
+        console.warn("[zion-ai-sales-photo] Erro inesperado ao persistir imagem de catalogo", {
+          organizationId,
+          storeId,
+          conversationId,
+          poolId: catalogPhotoAction.poolId,
+          error:
+            catalogPhotoInsertError instanceof Error
+              ? catalogPhotoInsertError.message
+              : String(catalogPhotoInsertError || ""),
+        });
+      }
     }
 
     const aiMessageTimestamp = new Date().toISOString();
