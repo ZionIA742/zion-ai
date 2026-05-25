@@ -4613,8 +4613,12 @@ function buildCustomerMediaContextBlock(messages: MessageRow[]): string {
       `- analise visual interna disponivel: ${latestLocationPhotoAnalysisText}`,
       "- use essa leitura visual apenas como apoio comercial cauteloso",
       "- voce pode responder com frases como 'pela foto, parece...' ou 'pelo que da para ver...'",
-      "- nao afirme que cabe com certeza, nao invente medidas exatas e nao trate instalacao como garantida",
+      "- trate a foto como indicio comercial, nunca como validacao tecnica definitiva",
+      "- nao diga 'otimo para instalacao', 'perfeito para instalacao', 'da para instalar', 'cabe com certeza', 'a piscina cabe', 'instalacao garantida', 'confirmado pela foto' ou equivalentes",
+      "- nao afirme que cabe com certeza, nao invente medidas exatas e nao trate instalacao, encaixe, acesso, viabilidade tecnica ou obra como confirmados so pela imagem",
+      "- sempre que a resposta usar a foto como base, deixe claro que a confirmacao depende das medidas e detalhes objetivos do local",
       "- nao prometa simulacao visual, previa visual ou que vai mostrar como vai ficar",
+      "- prefira linguagem como 'parece favoravel para estudar opcoes' em vez de frases que soem como garantia tecnica",
       "- se precisar de confirmacao, peca largura, comprimento, profundidade desejada e informacoes objetivas do espaco",
     ].join("\n");
   }
