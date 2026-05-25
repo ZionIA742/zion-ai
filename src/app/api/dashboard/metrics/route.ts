@@ -81,6 +81,7 @@ type AppointmentRow = {
   scheduled_end: string;
   customer_name: string | null;
   customer_phone: string | null;
+  address_text: string | null;
   source: string;
   created_by_user_id: string | null;
   created_at: string;
@@ -449,7 +450,7 @@ export async function GET(request: Request) {
       supabase
         .from("store_appointments")
         .select(
-          "id,lead_id,conversation_id,title,appointment_type,status,scheduled_start,scheduled_end,customer_name,customer_phone,source,created_by_user_id,created_at,updated_at"
+          "id,lead_id,conversation_id,title,appointment_type,status,scheduled_start,scheduled_end,customer_name,customer_phone,address_text,source,created_by_user_id,created_at,updated_at"
         )
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
@@ -623,6 +624,7 @@ export async function GET(request: Request) {
       appointmentType: appointment.appointment_type,
       customerName: appointment.customer_name,
       customerPhone: appointment.customer_phone,
+      addressText: appointment.address_text,
       scheduledStart: appointment.scheduled_start,
       scheduledEnd: appointment.scheduled_end,
       source: appointment.source,

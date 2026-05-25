@@ -31,13 +31,15 @@ type LeadRow = {
   store_id: string | null;
 };
 
+type AttachmentKind = "image" | "audio" | "video" | "file";
+
 function createSupabaseAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseServiceKey) {
     throw new Error(
-      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variáveis de ambiente."
+      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente."
     );
   }
 
@@ -62,6 +64,41 @@ function buildJsonResponse(body: unknown, status = 200) {
   });
 }
 
+function normalizeMessageType(value: string | null | undefined) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeAttachmentKind(value: unknown): AttachmentKind | null {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (
+    normalized === "image" ||
+    normalized === "audio" ||
+    normalized === "video" ||
+    normalized === "file"
+  ) {
+    return normalized;
+  }
+
+  return null;
+}
+
+function resolveAttachmentKind(
+  messageType: string,
+  metadata: Record<string, unknown> | null
+) {
+  const metadataAttachmentKind = normalizeAttachmentKind(metadata?.attachment_kind);
+  if (metadataAttachmentKind) {
+    return metadataAttachmentKind;
+  }
+
+  if (messageType === "image" || messageType === "audio" || messageType === "video") {
+    return messageType;
+  }
+
+  return null;
+}
+
 export async function GET(
   _request: Request,
   context: { params: Promise<{ messageId: string }> }
@@ -75,7 +112,7 @@ export async function GET(
         {
           ok: false,
           error: "MISSING_MESSAGE_ID",
-          message: "Message ID não informado na rota.",
+          message: "Message ID nao informado na rota.",
         },
         400
       );
@@ -92,7 +129,7 @@ export async function GET(
         {
           ok: false,
           error: "UNAUTHENTICATED",
-          message: "Usuário não autenticado.",
+          message: "Usuario nao autenticado.",
         },
         401
       );
@@ -124,7 +161,7 @@ export async function GET(
         {
           ok: false,
           error: "MESSAGE_NOT_FOUND",
-          message: "Mensagem não encontrada.",
+          message: "Mensagem nao encontrada.",
         },
         404
       );
@@ -133,23 +170,39 @@ export async function GET(
     const metadata = isObjectRecord(message.metadata) ? message.metadata : null;
     const mediaPurpose = String(metadata?.media_purpose || "").trim().toLowerCase();
     const storageBucket = String(metadata?.storage_bucket || "").trim();
-    const storagePath = String(metadata?.storage_path || "").trim();
+    const metadataStoragePath = String(metadata?.storage_path || "").trim();
     const mediaUrl = String(message.media_url || "").trim();
-    const messageType = String(message.message_type || "").trim().toLowerCase();
+    const messageType = normalizeMessageType(message.message_type);
+    const attachmentKind = resolveAttachmentKind(messageType, metadata);
+    const mimeType = String(metadata?.mime_type || "").trim() || null;
+    const fileName = String(metadata?.original_file_name || "").trim() || null;
+    const storagePath =
+      metadataStoragePath ||
+      (storageBucket === STORAGE_BUCKET && mediaUrl && !/^https?:\/\//i.test(mediaUrl)
+        ? mediaUrl
+        : "");
+    const isLegacyCustomerLocationPhoto =
+      messageType === "image" && mediaPurpose === "customer_location_photo";
+    const isSupportedPrivateAttachment =
+      attachmentKind === "image" ||
+      attachmentKind === "audio" ||
+      attachmentKind === "video" ||
+      attachmentKind === "file" ||
+      messageType === "image" ||
+      messageType === "audio" ||
+      messageType === "video";
 
     if (
-      messageType !== "image" ||
-      mediaPurpose !== "customer_location_photo" ||
       storageBucket !== STORAGE_BUCKET ||
       !storagePath ||
-      !mediaUrl ||
-      mediaUrl !== storagePath
+      (!isLegacyCustomerLocationPhoto && !isSupportedPrivateAttachment)
     ) {
       return buildJsonResponse(
         {
           ok: false,
           error: "INVALID_MEDIA_MESSAGE",
-          message: "A mensagem informada não é uma foto de local válida para visualização segura.",
+          message:
+            "A mensagem informada nao possui um anexo privado valido para visualizacao segura.",
         },
         422
       );
@@ -162,7 +215,7 @@ export async function GET(
         {
           ok: false,
           error: "MESSAGE_RELATION_INCONSISTENT",
-          message: "A mensagem não possui conversa válida vinculada.",
+          message: "A mensagem nao possui conversa valida vinculada.",
         },
         403
       );
@@ -190,7 +243,7 @@ export async function GET(
         {
           ok: false,
           error: "CONVERSATION_NOT_FOUND",
-          message: "Conversa vinculada à mensagem não encontrada.",
+          message: "Conversa vinculada a mensagem nao encontrada.",
         },
         403
       );
@@ -203,7 +256,7 @@ export async function GET(
         {
           ok: false,
           error: "LEAD_RELATION_INCONSISTENT",
-          message: "Não foi possível identificar o lead vinculado à mensagem.",
+          message: "Nao foi possivel identificar o lead vinculado a mensagem.",
         },
         403
       );
@@ -231,7 +284,7 @@ export async function GET(
         {
           ok: false,
           error: "LEAD_NOT_FOUND",
-          message: "Lead vinculado à mensagem não encontrado.",
+          message: "Lead vinculado a mensagem nao encontrado.",
         },
         403
       );
@@ -254,7 +307,7 @@ export async function GET(
         {
           ok: false,
           error: "RELATION_SCOPE_INCONSISTENT",
-          message: "Os vínculos internos da mensagem estão inconsistentes para visualização segura.",
+          message: "Os vinculos internos da mensagem estao inconsistentes para visualizacao segura.",
         },
         403
       );
@@ -265,7 +318,7 @@ export async function GET(
         {
           ok: false,
           error: "STORE_SCOPE_INCONSISTENT",
-          message: "Os vínculos de loja da mensagem estão inconsistentes para visualização segura.",
+          message: "Os vinculos de loja da mensagem estao inconsistentes para visualizacao segura.",
         },
         403
       );
@@ -282,7 +335,7 @@ export async function GET(
           error: "SIGNED_URL_GENERATION_FAILED",
           message:
             signedError?.message ||
-            "Não foi possível gerar o link temporário desta foto.",
+            "Nao foi possivel gerar o link temporario deste anexo.",
         },
         500
       );
@@ -291,6 +344,9 @@ export async function GET(
     return buildJsonResponse({
       ok: true,
       signedUrl: signedData.signedUrl,
+      mimeType,
+      attachmentKind,
+      fileName,
       expiresInSeconds: SIGNED_URL_EXPIRATION_SECONDS,
     });
   } catch (error: any) {
@@ -298,7 +354,7 @@ export async function GET(
       {
         ok: false,
         error: "UNEXPECTED_ERROR",
-        message: error?.message || "Erro inesperado ao gerar a visualização segura da foto.",
+        message: error?.message || "Erro inesperado ao gerar a visualizacao segura do anexo.",
       },
       500
     );

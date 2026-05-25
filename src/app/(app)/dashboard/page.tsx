@@ -125,6 +125,9 @@ type DashboardMetrics = {
       appointmentType: string;
       customerName: string | null;
       customerPhone: string | null;
+      addressText?: string | null;
+      address?: string | null;
+      location?: string | null;
       scheduledStart: string;
       scheduledEnd: string;
       source: string;
@@ -1112,6 +1115,59 @@ function isSameLocalDate(value: string | null | undefined, referenceDate = new D
   );
 }
 
+function getAppointmentRouteAddress(
+  appointment: DashboardMetrics["lists"]["nextAppointments"][number]
+) {
+  return String(
+    appointment.addressText || appointment.address || appointment.location || ""
+  ).trim();
+}
+
+function buildGoogleMapsRouteUrl(addressText: string | null | undefined) {
+  const normalizedAddress = String(addressText || "").trim();
+
+  if (!normalizedAddress) return null;
+
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+    normalizedAddress
+  )}`;
+}
+
+function MapsRouteButton({
+  addressText,
+  compact = false,
+}: {
+  addressText: string | null | undefined;
+  compact?: boolean;
+}) {
+  const mapsUrl = buildGoogleMapsRouteUrl(addressText);
+  const disabled = !mapsUrl;
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={disabled ? "Falta endereço para abrir a rota" : "Abrir rota no Google Maps"}
+      onClick={(event) => {
+        event.stopPropagation();
+
+        if (!mapsUrl) return;
+
+        window.open(mapsUrl, "_blank", "noopener,noreferrer");
+      }}
+      className={[
+        "shrink-0 rounded-full border font-semibold transition",
+        compact ? "px-2 py-0.5 text-[10px]" : "px-3 py-1.5 text-xs",
+        disabled
+          ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400"
+          : "border-zinc-950 bg-zinc-950 text-white hover:bg-zinc-800",
+      ].join(" ")}
+    >
+      {compact ? "Rota" : "Abrir rota"}
+    </button>
+  );
+}
+
 function TodayAppointmentsDrawer({
   appointments,
   isOpen,
@@ -1170,9 +1226,15 @@ function TodayAppointmentsDrawer({
                       </p>
                     </div>
 
-                    <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
-                      {formatLabel(appointment.status)}
-                    </span>
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                      <span className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
+                        {formatLabel(appointment.status)}
+                      </span>
+                      <MapsRouteButton
+                        addressText={getAppointmentRouteAddress(appointment)}
+                        compact
+                      />
+                    </div>
                   </div>
 
                   <div className="mt-3 grid gap-2 text-sm text-zinc-600 sm:grid-cols-2">
@@ -1190,6 +1252,10 @@ function TodayAppointmentsDrawer({
                         {appointment.customerPhone}
                       </div>
                     ) : null}
+                    <div className="sm:col-span-2">
+                      <span className="font-medium text-zinc-950">Endereço: </span>
+                      {getAppointmentRouteAddress(appointment) || "Não informado"}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -2116,6 +2182,10 @@ export default function DashboardPage() {
                                 <span>Tipo: {formatLabel(appointment.appointmentType)}</span>
                                 <span>Horário: {formatDateTime(appointment.scheduledStart)}</span>
                                 {appointment.customerPhone ? <span>Telefone: {appointment.customerPhone}</span> : null}
+                                <MapsRouteButton
+                                  addressText={getAppointmentRouteAddress(appointment)}
+                                  compact
+                                />
                               </>
                             ),
                           }))}
@@ -2507,19 +2577,26 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="grid min-w-0 gap-3 content-start">
-                  <button
-                    type="button"
+                  <div
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setIsNextAppointmentsDrawerOpen(true)}
-                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setIsNextAppointmentsDrawerOpen(true);
+                      }
+                    }}
+                    className="block w-full min-w-0 cursor-pointer rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
                   >
                     <PanelTitle title="Próximos compromissos" />
                     {lists.nextAppointments.length ? (
-                      <div className="max-h-[145px] overflow-hidden pr-1">
+                      <div className="max-h-[178px] overflow-y-auto pr-1">
                         <div className="space-y-2">
-                          {lists.nextAppointments.slice(0, 3).map((appointment) => (
+                          {lists.nextAppointments.map((appointment) => (
                             <div
                               key={appointment.id}
-                              className="grid min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(95px,0.65fr)_minmax(82px,0.5fr)_minmax(92px,0.6fr)]"
+                              className="grid min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(92px,0.6fr)_minmax(78px,0.5fr)_minmax(88px,0.55fr)_auto] sm:items-center"
                             >
                               <span className="min-w-0 break-words font-medium text-zinc-950">
                                 {appointment.customerName || "Cliente sem nome"}
@@ -2533,6 +2610,12 @@ export default function DashboardPage() {
                               <span className="min-w-0 break-words text-zinc-700">
                                 {formatDateTime(appointment.scheduledStart)}
                               </span>
+                              <div className="flex min-w-0 justify-start sm:justify-end">
+                                <MapsRouteButton
+                                  addressText={getAppointmentRouteAddress(appointment)}
+                                  compact
+                                />
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -2540,7 +2623,7 @@ export default function DashboardPage() {
                     ) : (
                       <EmptyState text="Nenhum compromisso futuro encontrado." />
                     )}
-                  </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2574,9 +2657,15 @@ export default function DashboardPage() {
                           </p>
                         </div>
 
-                        <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
-                          {formatLabel(appointment.status)}
-                        </span>
+                        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                          <span className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
+                            {formatLabel(appointment.status)}
+                          </span>
+                          <MapsRouteButton
+                            addressText={getAppointmentRouteAddress(appointment)}
+                            compact
+                          />
+                        </div>
                       </div>
 
                       <div className="mt-3 grid gap-2 text-sm text-zinc-600 sm:grid-cols-2">
@@ -2597,6 +2686,10 @@ export default function DashboardPage() {
                         <div>
                           <span className="font-medium text-zinc-950">Origem: </span>
                           {formatLabel(appointment.source)}
+                        </div>
+                        <div className="sm:col-span-2">
+                          <span className="font-medium text-zinc-950">Endereço: </span>
+                          {getAppointmentRouteAddress(appointment) || "Não informado"}
                         </div>
                       </div>
 
@@ -3235,6 +3328,10 @@ export default function DashboardPage() {
                             <span>Tipo: {formatLabel(appointment.appointmentType)}</span>
                             <span>Horário: {formatDateTime(appointment.scheduledStart)}</span>
                             {appointment.customerPhone ? <span>Telefone: {appointment.customerPhone}</span> : null}
+                            <MapsRouteButton
+                              addressText={getAppointmentRouteAddress(appointment)}
+                              compact
+                            />
                           </>
                         ),
                       }))}

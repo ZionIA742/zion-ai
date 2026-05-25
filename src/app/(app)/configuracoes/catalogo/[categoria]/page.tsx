@@ -463,6 +463,11 @@ export default function CatalogCategoryPage() {
   const [selectedCatalogFilesByItemId, setSelectedCatalogFilesByItemId] = useState<Record<string, File[]>>({});
   const [uploadingPhotosItemId, setUploadingPhotosItemId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedCatalogPhoto, setSelectedCatalogPhoto] = useState<{
+    url: string;
+    fileName: string;
+    itemName: string;
+  } | null>(null);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -1445,11 +1450,24 @@ async function handleDeleteItem(itemId: string) {
                                   key={photo.id}
                                   className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
                                 >
-                                  <img
-                                    src={getPublicImageUrl(photo.storage_path)}
-                                    alt={photo.file_name || item.name}
-                                    className="block h-24 w-full object-cover"
-                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSelectedCatalogPhoto({
+                                        url: getPublicImageUrl(photo.storage_path),
+                                        fileName: photo.file_name || "Foto",
+                                        itemName: item.name,
+                                      })
+                                    }
+                                    className="block w-full cursor-zoom-in text-left"
+                                    aria-label={`Abrir foto ${photo.file_name || item.name}`}
+                                  >
+                                    <img
+                                      src={getPublicImageUrl(photo.storage_path)}
+                                      alt={photo.file_name || item.name}
+                                      className="block h-24 w-full object-cover"
+                                    />
+                                  </button>
                                   <div className="space-y-2 p-2.5">
                                     <div className="truncate text-[11px] text-gray-600">
                                       {photo.file_name || "Foto"}
@@ -1480,11 +1498,24 @@ async function handleDeleteItem(itemId: string) {
                             key={photo.id}
                             className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
                           >
-                            <img
-                              src={getPublicImageUrl(photo.storage_path)}
-                              alt={photo.file_name || item.name}
-                              className="block h-16 w-full object-cover"
-                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedCatalogPhoto({
+                                  url: getPublicImageUrl(photo.storage_path),
+                                  fileName: photo.file_name || "Foto",
+                                  itemName: item.name,
+                                })
+                              }
+                              className="block w-full cursor-zoom-in text-left"
+                              aria-label={`Abrir foto ${photo.file_name || item.name}`}
+                            >
+                              <img
+                                src={getPublicImageUrl(photo.storage_path)}
+                                alt={photo.file_name || item.name}
+                                className="block h-16 w-full object-cover"
+                              />
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -1496,6 +1527,48 @@ async function handleDeleteItem(itemId: string) {
           })}
         </div>
       )}
+
+      {selectedCatalogPhoto ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-6"
+          onClick={() => setSelectedCatalogPhoto(null)}
+        >
+          <div
+            className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-500">
+                  Foto do item
+                </div>
+                <h2 className="mt-1 truncate text-base font-bold text-gray-900">
+                  {selectedCatalogPhoto.fileName}
+                </h2>
+                <div className="mt-0.5 truncate text-xs text-gray-500">
+                  {selectedCatalogPhoto.itemName}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSelectedCatalogPhoto(null)}
+                className="shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 hover:bg-gray-50"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-gray-50 p-4">
+              <img
+                src={selectedCatalogPhoto.url}
+                alt={selectedCatalogPhoto.fileName}
+                className="max-h-[72vh] max-w-full rounded-xl object-contain shadow-sm"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

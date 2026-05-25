@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { classifyIncomingMediaMessage } from "@/lib/server/media-classification";
+import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
+import { analyzeCustomerLocationPhotoFromStorage } from "@/lib/server/analyze-customer-location-photo";
+import { transcribeCustomerAudioFromStorage } from "@/lib/server/transcribe-customer-audio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,6 +62,11 @@ type LeadRow = {
   store_id: string | null;
 };
 
+type PersistedMessageRow = {
+  id: string;
+  metadata: Record<string, unknown> | null;
+};
+
 function isInternalRequestAuthorized(req: Request) {
   const secretFromEnv = process.env.AI_INTERNAL_ROUTE_SECRET;
   const secretFromHeader =
@@ -107,12 +115,20 @@ function createSupabaseAdminClient() {
   return createClient(supabaseUrl, supabaseServiceKey);
 }
 
+function normalizeMimeType(value: string | null | undefined) {
+  return String(value || "").split(";")[0].trim().toLowerCase();
+}
+
+function isCustomerLocationPhotoPurpose(value: string | null | undefined) {
+  return String(value || "").trim().toLowerCase() === "customer_location_photo";
+}
+
 function isAllowedImageMimeType(value: string | null | undefined) {
-  return ALLOWED_IMAGE_MIME_TYPES.has(String(value || "").trim().toLowerCase());
+  return ALLOWED_IMAGE_MIME_TYPES.has(normalizeMimeType(value));
 }
 
 function getAttachmentKindFromMimeType(value: string | null | undefined) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = normalizeMimeType(value);
 
   if (ALLOWED_IMAGE_MIME_TYPES.has(normalized)) return "image" as const;
   if (ALLOWED_AUDIO_MIME_TYPES.has(normalized)) return "audio" as const;
@@ -414,6 +430,10 @@ export async function POST(req: Request) {
       direction: "incoming",
       sourceChannel: "panel_simulation",
     });
+    const isCustomerLocationPhoto =
+      attachmentKind === "image" &&
+      (isCustomerLocationPhotoPurpose(classification.mediaPurpose) ||
+        isCustomerLocationPhotoPurpose(purpose));
 
     const metadata = {
       media_purpose: purpose,
@@ -437,6 +457,18 @@ export async function POST(req: Request) {
       media_requires_human_review: classification.requiresHumanReview,
       media_classified_by: "rule_engine_v1",
       pillar: "pilar_10_multimodal",
+      ...(attachmentKind === "audio"
+        ? {
+            transcription_status: "pending",
+            transcription_error: null,
+          }
+        : {}),
+      ...(isCustomerLocationPhoto
+        ? {
+            visual_analysis_status: "pending",
+            visual_analysis_error: null,
+          }
+        : {}),
     };
 
     const { data: insertData, error: insertError } = await supabase.rpc(
@@ -476,9 +508,360 @@ export async function POST(req: Request) {
     }
 
     const messageId = extractInsertMessageId(insertData);
+    const shouldTranscribeAudio = attachmentKind === "audio";
+    const shouldAnalyzeLocationPhoto = isCustomerLocationPhoto;
+
+    if (!shouldTranscribeAudio && !shouldAnalyzeLocationPhoto) {
+      return NextResponse.json({
+        ok: true,
+        customerMessageSaved: true,
+        aiReplySaved: false,
+        messageId,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadId: normalizedLead.id,
+        conversationId,
+        storageBucket: STORAGE_BUCKET,
+        storagePath,
+        mediaPurpose: purpose,
+      });
+    }
+
+    if (!messageId) {
+      return NextResponse.json({
+        ok: true,
+        customerMessageSaved: true,
+        aiReplySaved: false,
+        ...(shouldTranscribeAudio
+          ? {
+              transcriptionStatus: "failed",
+              message:
+                "Audio salvo com sucesso, mas a transcricao nao pode continuar porque o ID da mensagem nao foi retornado.",
+            }
+          : {
+              visualAnalysisStatus: "failed",
+              message:
+                "Imagem salva com sucesso, mas a analise visual nao pode continuar porque o ID da mensagem nao foi retornado.",
+            }),
+        messageId: null,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadId: normalizedLead.id,
+        conversationId,
+        storageBucket: STORAGE_BUCKET,
+        storagePath,
+        mediaPurpose: purpose,
+      });
+    }
+
+    const { data: persistedMessage, error: persistedMessageError } = await supabase
+      .from("messages")
+      .select("id, metadata")
+      .eq("id", messageId)
+      .eq("conversation_id", conversationId)
+      .maybeSingle<PersistedMessageRow>();
+
+    const persistedMetadata =
+      persistedMessage?.metadata && typeof persistedMessage.metadata === "object"
+        ? persistedMessage.metadata
+        : metadata;
+    const persistedMetadataRecord = persistedMetadata as Record<string, unknown>;
+
+    if (persistedMessageError) {
+      console.error("[simulate-customer-media] failed to load persisted media message:", {
+        messageId,
+        conversationId,
+        error: persistedMessageError.message,
+      });
+    }
+
+    if (shouldAnalyzeLocationPhoto) {
+      const existingLocationPhotoAnalysis =
+        persistedMetadataRecord.location_photo_analysis &&
+        typeof persistedMetadataRecord.location_photo_analysis === "object"
+          ? (persistedMetadataRecord.location_photo_analysis as Record<string, unknown>)
+          : null;
+      const existingVisualSummary = String(
+        existingLocationPhotoAnalysis?.summary || ""
+      ).trim();
+      const existingVisualStatus = String(
+        persistedMetadataRecord.visual_analysis_status || ""
+      ).trim();
+
+      if (existingVisualSummary || existingVisualStatus === "succeeded") {
+        const aiResult = await generateAndSaveAiSalesReply({
+          organizationId,
+          storeId: resolvedStoreId,
+          conversationId,
+        });
+
+        return NextResponse.json({
+          ok: true,
+          customerMessageSaved: true,
+          aiReplySaved: aiResult.ok,
+          messageId,
+          organizationId,
+          storeId: resolvedStoreId,
+          leadId: normalizedLead.id,
+          conversationId,
+          storageBucket: STORAGE_BUCKET,
+          storagePath,
+          mediaPurpose: purpose,
+          visualAnalysisStatus: "succeeded",
+          aiText: aiResult.ok ? aiResult.aiText : null,
+          aiError: aiResult.ok ? null : aiResult.error,
+          aiMessage: aiResult.ok ? null : aiResult.message,
+        });
+      }
+
+      const visualAnalysisResult = await analyzeCustomerLocationPhotoFromStorage({
+        supabase,
+        bucket: STORAGE_BUCKET,
+        storagePath,
+        fileName: fileEntry.name,
+        mimeType: fileEntry.type,
+      });
+
+      if (!visualAnalysisResult.ok) {
+        const failedMetadata = {
+          ...persistedMetadata,
+          visual_analysis_status: "failed",
+          visual_analysis_provider: visualAnalysisResult.provider,
+          visual_analysis_model: visualAnalysisResult.model,
+          visual_analysis_error: visualAnalysisResult.message,
+          visual_analysis_completed_at: new Date().toISOString(),
+        };
+
+        const { error: failedUpdateError } = await supabase
+          .from("messages")
+          .update({
+            metadata: failedMetadata,
+          })
+          .eq("id", messageId)
+          .eq("conversation_id", conversationId);
+
+        if (failedUpdateError) {
+          console.error("[simulate-customer-media] failed to persist visual analysis error:", {
+            messageId,
+            conversationId,
+            error: failedUpdateError.message,
+          });
+        }
+
+        return NextResponse.json({
+          ok: true,
+          customerMessageSaved: true,
+          aiReplySaved: false,
+          messageId,
+          organizationId,
+          storeId: resolvedStoreId,
+          leadId: normalizedLead.id,
+          conversationId,
+          storageBucket: STORAGE_BUCKET,
+          storagePath,
+          mediaPurpose: purpose,
+          visualAnalysisStatus: "failed",
+          message:
+            "Foto do local salva com sucesso, mas a analise visual falhou e a IA nao respondeu nesta tentativa.",
+        });
+      }
+
+      const succeededMetadata = {
+        ...persistedMetadata,
+        location_photo_analysis: visualAnalysisResult.analysis,
+        visual_analysis_status: "succeeded",
+        visual_analysis_provider: visualAnalysisResult.provider,
+        visual_analysis_model: visualAnalysisResult.model,
+        visual_analysis_error: null,
+        visual_analysis_completed_at: new Date().toISOString(),
+      };
+
+      const { error: succeededUpdateError } = await supabase
+        .from("messages")
+        .update({
+          metadata: succeededMetadata,
+        })
+        .eq("id", messageId)
+        .eq("conversation_id", conversationId);
+
+      if (succeededUpdateError) {
+        console.error("[simulate-customer-media] failed to persist visual analysis metadata:", {
+          messageId,
+          conversationId,
+          error: succeededUpdateError.message,
+        });
+
+        return NextResponse.json({
+          ok: true,
+          customerMessageSaved: true,
+          aiReplySaved: false,
+          messageId,
+          organizationId,
+          storeId: resolvedStoreId,
+          leadId: normalizedLead.id,
+          conversationId,
+          storageBucket: STORAGE_BUCKET,
+          storagePath,
+          mediaPurpose: purpose,
+          visualAnalysisStatus: "failed",
+          message:
+            "Foto do local foi salva, mas a analise visual nao conseguiu ser persistida e a IA nao respondeu.",
+        });
+      }
+
+      const aiResult = await generateAndSaveAiSalesReply({
+        organizationId,
+        storeId: resolvedStoreId,
+        conversationId,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        customerMessageSaved: true,
+        aiReplySaved: aiResult.ok,
+        messageId,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadId: normalizedLead.id,
+        conversationId,
+        storageBucket: STORAGE_BUCKET,
+        storagePath,
+        mediaPurpose: purpose,
+        visualAnalysisStatus: "succeeded",
+        aiText: aiResult.ok ? aiResult.aiText : null,
+        aiError: aiResult.ok ? null : aiResult.error,
+        aiMessage: aiResult.ok ? null : aiResult.message,
+      });
+    }
+
+    if (String(persistedMetadataRecord.audio_transcript || "").trim()) {
+      const aiResult = await generateAndSaveAiSalesReply({
+        organizationId,
+        storeId: resolvedStoreId,
+        conversationId,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        customerMessageSaved: true,
+        aiReplySaved: aiResult.ok,
+        messageId,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadId: normalizedLead.id,
+        conversationId,
+        storageBucket: STORAGE_BUCKET,
+        storagePath,
+        mediaPurpose: purpose,
+        aiText: aiResult.ok ? aiResult.aiText : null,
+        transcriptionStatus: "succeeded",
+      });
+    }
+
+    const transcriptionResult = await transcribeCustomerAudioFromStorage({
+      supabase,
+      bucket: STORAGE_BUCKET,
+      storagePath,
+      fileName: fileEntry.name,
+      mimeType: fileEntry.type,
+    });
+
+    if (!transcriptionResult.ok) {
+      const failedMetadata = {
+        ...persistedMetadata,
+        transcription_status: "failed",
+        transcription_provider: transcriptionResult.provider,
+        transcription_model: transcriptionResult.model,
+        transcription_error: transcriptionResult.message,
+      };
+
+      const { error: failedUpdateError } = await supabase
+        .from("messages")
+        .update({
+          metadata: failedMetadata,
+        })
+        .eq("id", messageId)
+        .eq("conversation_id", conversationId);
+
+      if (failedUpdateError) {
+        console.error("[simulate-customer-media] failed to persist audio transcription error:", {
+          messageId,
+          conversationId,
+          error: failedUpdateError.message,
+        });
+      }
+
+      return NextResponse.json({
+        ok: true,
+        customerMessageSaved: true,
+        aiReplySaved: false,
+        messageId,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadId: normalizedLead.id,
+        conversationId,
+        storageBucket: STORAGE_BUCKET,
+        storagePath,
+        mediaPurpose: purpose,
+        transcriptionStatus: "failed",
+        message:
+          "Audio do cliente salvo com sucesso, mas a transcricao falhou e a IA nao respondeu nesta tentativa.",
+      });
+    }
+
+    const succeededMetadata = {
+      ...persistedMetadata,
+      audio_transcript: transcriptionResult.transcript,
+      transcription_status: "succeeded",
+      transcription_provider: transcriptionResult.provider,
+      transcription_model: transcriptionResult.model,
+      transcription_error: null,
+      transcription_completed_at: new Date().toISOString(),
+    };
+
+    const { error: succeededUpdateError } = await supabase
+      .from("messages")
+      .update({
+        metadata: succeededMetadata,
+      })
+      .eq("id", messageId)
+      .eq("conversation_id", conversationId);
+
+    if (succeededUpdateError) {
+      console.error("[simulate-customer-media] failed to persist audio transcript metadata:", {
+        messageId,
+        conversationId,
+        error: succeededUpdateError.message,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        customerMessageSaved: true,
+        aiReplySaved: false,
+        messageId,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadId: normalizedLead.id,
+        conversationId,
+        storageBucket: STORAGE_BUCKET,
+        storagePath,
+        mediaPurpose: purpose,
+        transcriptionStatus: "failed",
+        message:
+          "Audio do cliente foi salvo, mas a transcricao nao conseguiu ser persistida e a IA nao respondeu.",
+      });
+    }
+
+    const aiResult = await generateAndSaveAiSalesReply({
+      organizationId,
+      storeId: resolvedStoreId,
+      conversationId,
+    });
 
     return NextResponse.json({
       ok: true,
+      customerMessageSaved: true,
+      aiReplySaved: aiResult.ok,
       messageId,
       organizationId,
       storeId: resolvedStoreId,
@@ -487,6 +870,10 @@ export async function POST(req: Request) {
       storageBucket: STORAGE_BUCKET,
       storagePath,
       mediaPurpose: purpose,
+      transcriptionStatus: "succeeded",
+      aiText: aiResult.ok ? aiResult.aiText : null,
+      aiError: aiResult.ok ? null : aiResult.error,
+      aiMessage: aiResult.ok ? null : aiResult.message,
     });
   } catch (err: any) {
     if (uploadedStoragePath) {

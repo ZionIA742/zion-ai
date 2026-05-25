@@ -1233,7 +1233,7 @@ function looksLikeNeedSignal(text: string): boolean {
 function collectConversationFacts(messages: MessageRow[]): ConversationFactState {
   const history = messages
     .filter((msg) => normalizeText(msg.sender) !== "ai_sales")
-    .map((msg) => String(msg.content || ""))
+    .map((msg) => getEffectiveMessageContent(msg))
     .join(" \n ");
   const text = normalizeText(history);
 
@@ -2209,9 +2209,9 @@ function buildCustomerConversationText(messages: MessageRow[], lastCustomerMessa
       (msg) =>
         normalizeText(msg.sender) === "user" &&
         normalizeText(msg.direction) === "incoming" &&
-        String(msg.content || "").trim().length > 0
+        getEffectiveMessageContent(msg).length > 0
     )
-    .map((msg) => String(msg.content || "").trim());
+    .map((msg) => getEffectiveMessageContent(msg));
 
   if (!userTexts.includes(lastCustomerMessage)) {
     userTexts.push(lastCustomerMessage);
@@ -4296,10 +4296,10 @@ function collectRecentCustomerMessages(messages: MessageRow[], limit = 4): strin
       (msg) =>
         normalizeText(msg.sender) === "user" &&
         normalizeText(msg.direction) === "incoming" &&
-        String(msg.content || "").trim().length > 0
+        getEffectiveMessageContent(msg).length > 0
     )
     .slice(-limit)
-    .map((msg) => String(msg.content || "").trim());
+    .map((msg) => getEffectiveMessageContent(msg));
 }
 
 function isVagueGreetingOrPing(text: string): boolean {
@@ -4497,11 +4497,126 @@ function hasCustomerLocationPhoto(messages: MessageRow[]): boolean {
   return messages.some(isCustomerLocationPhotoMessage);
 }
 
+function getLocationPhotoAnalysisText(message: MessageRow): string {
+  if (!isCustomerLocationPhotoMessage(message)) {
+    return "";
+  }
+
+  const metadata =
+    message.metadata && typeof message.metadata === "object" ? message.metadata : null;
+  const analysis =
+    metadata?.location_photo_analysis &&
+    typeof metadata.location_photo_analysis === "object"
+      ? (metadata.location_photo_analysis as Record<string, unknown>)
+      : null;
+
+  if (!analysis) {
+    return "";
+  }
+
+  const summary = String(analysis.summary || "").trim();
+  if (!summary) {
+    return "";
+  }
+
+  const spaceSizeSignal = normalizeText(asText(analysis.space_size_signal));
+  const environmentType = normalizeText(asText(analysis.environment_type));
+  const confidence = normalizeText(asText(analysis.confidence));
+  const needsMeasurementsConfirmation =
+    analysis.needs_measurements_confirmation !== false;
+  const safeCommercialHints = Array.isArray(analysis.safe_commercial_hints)
+    ? analysis.safe_commercial_hints
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .slice(0, 4)
+    : [];
+
+  const signalParts: string[] = [];
+
+  if (spaceSizeSignal === "small") {
+    signalParts.push("espaco percebido como mais compacto");
+  } else if (spaceSizeSignal === "medium") {
+    signalParts.push("espaco percebido como intermediario");
+  } else if (spaceSizeSignal === "large") {
+    signalParts.push("espaco percebido como mais amplo");
+  }
+
+  if (environmentType === "outdoor") {
+    signalParts.push("ambiente aparenta ser externo");
+  } else if (environmentType === "indoor") {
+    signalParts.push("ambiente aparenta ser interno");
+  } else if (environmentType === "mixed") {
+    signalParts.push("ambiente com sinais mistos");
+  }
+
+  if (confidence === "low") {
+    signalParts.push("leitura visual com baixa confianca");
+  } else if (confidence === "medium") {
+    signalParts.push("leitura visual com confianca moderada");
+  }
+
+  const parts = [
+    "Cliente enviou uma foto do local.",
+    `Analise visual segura: ${summary}.`,
+  ];
+
+  if (signalParts.length > 0) {
+    parts.push(`Sinais visuais: ${signalParts.join("; ")}.`);
+  }
+
+  if (safeCommercialHints.length > 0) {
+    parts.push(`Pistas comerciais seguras: ${safeCommercialHints.join("; ")}.`);
+  }
+
+  if (needsMeasurementsConfirmation) {
+    parts.push("As medidas precisam ser confirmadas antes de qualquer recomendacao conclusiva.");
+  }
+
+  return parts.join(" ");
+}
+
+function getEffectiveMessageContent(message: MessageRow): string {
+  const metadata =
+    message.metadata && typeof message.metadata === "object" ? message.metadata : null;
+  const messageType = normalizeText(message.message_type);
+  const audioTranscript = String(metadata?.audio_transcript || "").trim();
+
+  if (messageType === "audio" && audioTranscript) {
+    return audioTranscript;
+  }
+
+  const locationPhotoAnalysisText = getLocationPhotoAnalysisText(message);
+  if (locationPhotoAnalysisText) {
+    return locationPhotoAnalysisText;
+  }
+
+  return String(message.content || "").trim();
+}
+
 function buildCustomerMediaContextBlock(messages: MessageRow[]): string {
   const hasCustomerLocationPhotoInConversation = hasCustomerLocationPhoto(messages);
 
   if (!hasCustomerLocationPhotoInConversation) {
     return "";
+  }
+
+  const latestLocationPhotoAnalysisText =
+    [...messages]
+      .reverse()
+      .map((message) => getLocationPhotoAnalysisText(message))
+      .find((value) => value.length > 0) || "";
+
+  if (latestLocationPhotoAnalysisText) {
+    return [
+      "CONTEXTO MULTIMODAL SEGURO",
+      "- o cliente ja enviou uma foto do local",
+      `- analise visual interna disponivel: ${latestLocationPhotoAnalysisText}`,
+      "- use essa leitura visual apenas como apoio comercial cauteloso",
+      "- voce pode responder com frases como 'pela foto, parece...' ou 'pelo que da para ver...'",
+      "- nao afirme que cabe com certeza, nao invente medidas exatas e nao trate instalacao como garantida",
+      "- nao prometa simulacao visual, previa visual ou que vai mostrar como vai ficar",
+      "- se precisar de confirmacao, peca largura, comprimento, profundidade desejada e informacoes objetivas do espaco",
+    ].join("\n");
   }
 
   return [
@@ -5322,7 +5437,7 @@ SAÍDA OBRIGATÓRIA
 
 function formatRecentHistory(messages: MessageRow[]): string {
   return messages
-    .filter((msg) => String(msg.content || "").trim().length > 0)
+    .filter((msg) => getEffectiveMessageContent(msg).length > 0)
     .slice(-8)
     .map((msg) => {
       const sender = normalizeText(msg.sender);
@@ -5336,13 +5451,13 @@ function formatRecentHistory(messages: MessageRow[]): string {
         label = "Humano";
       }
 
-      return `${label}: ${String(msg.content || "").trim()}`;
+      return `${label}: ${getEffectiveMessageContent(msg)}`;
     })
     .join("\n");
 }
 
 function detectLastAiMessage(orderedMessages: MessageRow[]): string | null {
-  return (
+  const lastAiMessage =
     [...orderedMessages]
       .reverse()
       .find((msg) => {
@@ -5350,15 +5465,15 @@ function detectLastAiMessage(orderedMessages: MessageRow[]): string | null {
         const direction = normalizeText(msg.direction);
 
         return (
-          String(msg.content || "").trim().length > 0 &&
+          getEffectiveMessageContent(msg).length > 0 &&
           (sender.includes("ai") ||
             sender.includes("assistant") ||
             sender.includes("bot") ||
             direction === "outgoing")
         );
-      })
-      ?.content?.trim() || null
-  );
+      }) || null;
+
+  return lastAiMessage ? getEffectiveMessageContent(lastAiMessage) : null;
 }
 
 function detectLastAiListedPools(lastAiMessage: string | null): boolean {
@@ -5490,7 +5605,7 @@ function cleanupAiText(text: string, responseMode: ResponseMode, leadName?: stri
 
 function buildModelInput(messages: MessageRow[]) {
   return messages
-    .filter((msg) => String(msg.content || "").trim().length > 0)
+    .filter((msg) => getEffectiveMessageContent(msg).length > 0)
     .map((msg) => {
       const sender = normalizeText(msg.sender);
       const direction = normalizeText(msg.direction);
@@ -5504,7 +5619,7 @@ function buildModelInput(messages: MessageRow[]) {
 
       return {
         role: role as "user" | "assistant",
-        content: String(msg.content || "").trim(),
+        content: getEffectiveMessageContent(msg),
       };
     });
 }
@@ -5666,16 +5781,18 @@ export async function generateAiSalesReply(
     const alreadyHasCustomerLocationPhoto = hasCustomerLocationPhoto(orderedMessages);
     const customerMediaContextBlock = buildCustomerMediaContextBlock(orderedMessages);
 
-    const lastCustomerMessage =
+    const lastCustomerMessageRow =
       [...orderedMessages]
         .reverse()
         .find(
           (msg) =>
             normalizeText(msg.sender) === "user" &&
             normalizeText(msg.direction) === "incoming" &&
-            String(msg.content || "").trim().length > 0
-        )
-        ?.content?.trim() || "";
+            getEffectiveMessageContent(msg).length > 0
+        ) || null;
+    const lastCustomerMessage = lastCustomerMessageRow
+      ? getEffectiveMessageContent(lastCustomerMessageRow)
+      : "";
 
     if (!lastCustomerMessage) {
       return {

@@ -136,6 +136,16 @@ function formatPhone(value: string | null) {
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`;
 }
 
+function buildGoogleMapsDirectionsUrl(address: string | null | undefined) {
+  const normalizedAddress = String(address || "").trim();
+
+  if (!normalizedAddress) return null;
+
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+    normalizedAddress
+  )}`;
+}
+
 function normalizePhoneForSave(value: string | null | undefined) {
   const digits = String(value || "").replace(/\D/g, "").slice(0, 11);
   return digits || null;
@@ -1867,7 +1877,7 @@ export default function SchedulePage() {
   return (
     <div className="h-[calc(100vh-151px)] overflow-hidden bg-gray-100 text-sm">
       <div className="mx-auto flex h-full min-h-0 max-w-[1320px] flex-col overflow-hidden px-3 py-1.5 lg:px-4 lg:py-1.5">
-        <div className="-mt-1 mb-0.5 flex shrink-0 justify-end gap-1.5">
+        <div className="-mt-1 mb-2 flex shrink-0 justify-end gap-1.5">
           <div className="flex flex-wrap items-center justify-end gap-1.5">
             <button
               onClick={openCreateAppointmentPanel}
@@ -2065,53 +2075,93 @@ export default function SchedulePage() {
                         Nenhum item nesse dia.
                       </div>
                     ) : (
-                      selectedDateItems.map((item) => (
-                        <button
-                          key={item.itemId}
-                          type="button"
-                          onClick={() => openItemDetails(item)}
-                          className="w-full rounded-xl border border-black/10 bg-white p-2.5 text-left transition hover:bg-gray-50"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <div className="text-xs font-bold text-gray-900">
-                                {item.title}
+                      selectedDateItems.map((item) => {
+                        const mapsUrl =
+                          item.itemKind === "appointment"
+                            ? buildGoogleMapsDirectionsUrl(item.addressText)
+                            : null;
+
+                        return (
+                          <div
+                            key={item.itemId}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openItemDetails(item)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                openItemDetails(item);
+                              }
+                            }}
+                            className="w-full cursor-pointer rounded-xl border border-black/10 bg-white p-2.5 text-left transition hover:bg-gray-50"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="text-xs font-bold text-gray-900">
+                                  {item.title}
+                                </div>
+                                <div className="mt-0.5 text-[10px] text-gray-500">
+                                  {formatItemKind(item.itemKind)} • {" "}
+                                  {formatItemType(item.itemType)}
+                                </div>
+                                {item.itemKind === "appointment" && getHighlightedStatusLabel(item.status) ? (
+                                  <div
+                                    className={`mt-1 text-[11px] font-bold uppercase tracking-wide ${getHighlightedStatusTextClass(
+                                      item.status
+                                    )}`}
+                                  >
+                                    {getHighlightedStatusLabel(item.status)}
+                                  </div>
+                                ) : null}
                               </div>
-                              <div className="mt-0.5 text-[10px] text-gray-500">
-                                {formatItemKind(item.itemKind)} • {" "}
-                                {formatItemType(item.itemType)}
-                              </div>
-                              {item.itemKind === "appointment" && getHighlightedStatusLabel(item.status) ? (
-                                <div
-                                  className={`mt-1 text-[11px] font-bold uppercase tracking-wide ${getHighlightedStatusTextClass(
-                                    item.status
-                                  )}`}
-                                >
-                                  {getHighlightedStatusLabel(item.status)}
+
+                              <span
+                                className={`rounded-full px-2 py-1 text-[10px] font-semibold ring-1 ${getStatusBadgeClass(
+                                  item.status
+                                )}`}
+                              >
+                                {formatStatus(item.status)}
+                              </span>
+                            </div>
+
+                            <div className="mt-1.5 text-[11px] text-gray-600">
+                              {formatDateTime(item.startAt)} até {formatDateTime(item.endAt)}
+                            </div>
+
+                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                              {item.customerName ? (
+                                <div className="text-[10px] text-gray-500">
+                                  Cliente: {item.customerName}
                                 </div>
                               ) : null}
+
+                              {item.itemKind === "appointment" ? (
+                                mapsUrl ? (
+                                  <a
+                                    href={mapsUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(event) => event.stopPropagation()}
+                                    className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-200"
+                                  >
+                                    Rota
+                                  </a>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled
+                                    title="Adicione um endereço ao compromisso para abrir a rota no Maps."
+                                    onClick={(event) => event.stopPropagation()}
+                                    className="cursor-not-allowed rounded-full bg-gray-50 px-2 py-0.5 text-[10px] font-semibold text-gray-400 ring-1 ring-black/5"
+                                  >
+                                    Rota
+                                  </button>
+                                )
+                              ) : null}
                             </div>
-
-                            <span
-                              className={`rounded-full px-2 py-1 text-[10px] font-semibold ring-1 ${getStatusBadgeClass(
-                                item.status
-                              )}`}
-                            >
-                              {formatStatus(item.status)}
-                            </span>
                           </div>
-
-                          <div className="mt-1.5 text-[11px] text-gray-600">
-                            {formatDateTime(item.startAt)} até {formatDateTime(item.endAt)}
-                          </div>
-
-                          {item.customerName ? (
-                            <div className="mt-0.5 text-[10px] text-gray-500">
-                              Cliente: {item.customerName}
-                            </div>
-                          ) : null}
-                        </button>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -2229,6 +2279,26 @@ export default function SchedulePage() {
                     >
                       Cancelar compromisso
                     </button>
+
+                    {buildGoogleMapsDirectionsUrl(selectedItem.addressText) ? (
+                      <a
+                        href={buildGoogleMapsDirectionsUrl(selectedItem.addressText) || "#"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                      >
+                        Abrir rota no Maps
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        title="Adicione um endereço ao compromisso para abrir a rota no Maps."
+                        className="cursor-not-allowed rounded-lg bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-400 ring-1 ring-black/5"
+                      >
+                        Abrir rota no Maps
+                      </button>
+                    )}
                   </div>
                 ) : null}
 

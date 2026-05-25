@@ -327,6 +327,11 @@ export default function PiscinasPage() {
   const [deletingPoolPhotoId, setDeletingPoolPhotoId] = useState<string | null>(null);
   const [selectedPoolFilesByPoolId, setSelectedPoolFilesByPoolId] = useState<Record<string, File[]>>({});
   const [uploadingPoolPhotosId, setUploadingPoolPhotosId] = useState<string | null>(null);
+  const [expandedPoolPhoto, setExpandedPoolPhoto] = useState<{
+    url: string;
+    alt: string;
+    fileName: string;
+  } | null>(null);
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
@@ -1168,11 +1173,24 @@ export default function PiscinasPage() {
                                   key={photo.id}
                                   className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50"
                                 >
-                                  <img
-                                    src={getPublicImageUrl(photo.storage_path)}
-                                    alt={photo.file_name || pool.name || "Foto da piscina"}
-                                    className="block h-24 w-full object-cover"
-                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedPoolPhoto({
+                                        url: getPublicImageUrl(photo.storage_path),
+                                        alt: photo.file_name || pool.name || "Foto da piscina",
+                                        fileName: photo.file_name || pool.name || "Foto da piscina",
+                                      })
+                                    }
+                                    className="block w-full cursor-zoom-in bg-gray-100 text-left"
+                                    aria-label="Abrir foto da piscina em tamanho grande"
+                                  >
+                                    <img
+                                      src={getPublicImageUrl(photo.storage_path)}
+                                      alt={photo.file_name || pool.name || "Foto da piscina"}
+                                      className="block h-24 w-full object-cover"
+                                    />
+                                  </button>
                                   <div className="space-y-2 p-2.5">
                                     <div className="truncate text-[11px] text-gray-600">
                                       {photo.file_name || "Foto"}
@@ -1203,11 +1221,24 @@ export default function PiscinasPage() {
                             key={photo.id}
                             className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
                           >
-                            <img
-                              src={getPublicImageUrl(photo.storage_path)}
-                              alt={photo.file_name || pool.name || "Foto da piscina"}
-                              className="block h-16 w-full object-cover"
-                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedPoolPhoto({
+                                  url: getPublicImageUrl(photo.storage_path),
+                                  alt: photo.file_name || pool.name || "Foto da piscina",
+                                  fileName: photo.file_name || pool.name || "Foto da piscina",
+                                })
+                              }
+                              className="block w-full cursor-zoom-in bg-gray-100 text-left"
+                              aria-label="Abrir foto da piscina em tamanho grande"
+                            >
+                              <img
+                                src={getPublicImageUrl(photo.storage_path)}
+                                alt={photo.file_name || pool.name || "Foto da piscina"}
+                                className="block h-16 w-full object-cover"
+                              />
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -1219,6 +1250,45 @@ export default function PiscinasPage() {
           })}
         </div>
       )}
+
+      {expandedPoolPhoto ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-6"
+          onClick={() => setExpandedPoolPhoto(null)}
+        >
+          <div
+            className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                  Foto da piscina
+                </div>
+                <div className="truncate text-sm font-bold text-gray-900">
+                  {expandedPoolPhoto.fileName}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setExpandedPoolPhoto(null)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="flex min-h-0 flex-1 items-center justify-center bg-gray-50 p-3">
+              <img
+                src={expandedPoolPhoto.url}
+                alt={expandedPoolPhoto.alt}
+                className="max-h-[78vh] max-w-full rounded-xl object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

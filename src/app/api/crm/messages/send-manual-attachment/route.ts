@@ -70,8 +70,12 @@ function createSupabaseAdminClient() {
   });
 }
 
+function normalizeMimeType(value: string | null | undefined) {
+  return String(value || "").split(";")[0].trim().toLowerCase();
+}
+
 function getAttachmentKindFromMimeType(value: string | null | undefined) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = normalizeMimeType(value);
 
   if (ALLOWED_IMAGE_MIME_TYPES.has(normalized)) return "image" as const;
   if (ALLOWED_AUDIO_MIME_TYPES.has(normalized)) return "audio" as const;

@@ -130,9 +130,19 @@ type SimulateCustomerResponse = {
 type SignedMediaUrlResponse = {
   ok: boolean;
   signedUrl?: string;
+  mimeType?: string | null;
+  attachmentKind?: string | null;
+  fileName?: string | null;
   expiresInSeconds?: number;
   error?: string;
   message?: string;
+};
+
+type SignedMediaState = {
+  signedUrl: string;
+  mimeType: string | null;
+  attachmentKind: string | null;
+  fileName: string | null;
 };
 
 type PendingCustomerAttachment = {
@@ -210,6 +220,28 @@ function formatFileSize(sizeBytes: number) {
   }
 
   return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+}
+
+function buildGoogleMapsRouteUrl(addressText: string | null | undefined) {
+  const safeAddress = String(addressText || "").trim();
+
+  if (!safeAddress) {
+    return null;
+  }
+
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+    safeAddress
+  )}`;
+}
+
+function openGoogleMapsRoute(addressText: string | null | undefined) {
+  const routeUrl = buildGoogleMapsRouteUrl(addressText);
+
+  if (!routeUrl) {
+    return;
+  }
+
+  window.open(routeUrl, "_blank", "noopener,noreferrer");
 }
 
 
@@ -343,8 +375,21 @@ function getOriginalFileName(message: MessageRow) {
   return String(metadata?.original_file_name || "").trim();
 }
 
+function getMimeType(message: MessageRow) {
+  const metadata = getMessageMetadata(message);
+  return String(metadata?.mime_type || "").trim();
+}
+
 function isStoredAttachmentMessage(message: MessageRow) {
   return Boolean(getAttachmentKind(message));
+}
+
+function getStoredAttachmentLabel(kind: string) {
+  if (kind === "image") return "Imagem";
+  if (kind === "audio") return "Audio";
+  if (kind === "video") return "Video";
+  if (kind === "file") return "Documento";
+  return "Anexo";
 }
 
 function formatMessageTime(value: string | null) {
@@ -526,9 +571,15 @@ export default function LeadPage() {
   const leadId = params.id as string;
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const customerAttachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const hasScrolledMessagesInitiallyRef = useRef(false);
   const audioRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
+  const simulatedAudioRecorderRef = useRef<MediaRecorder | null>(null);
+  const simulatedAudioStreamRef = useRef<MediaStream | null>(null);
+  const simulatedAudioChunksRef = useRef<BlobPart[]>([]);
 
   const [lead, setLead] = useState<Lead | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -546,6 +597,8 @@ export default function LeadPage() {
   const [uploadingManualAttachment, setUploadingManualAttachment] = useState(false);
   const [recordingAudio, setRecordingAudio] = useState(false);
   const [recordingAudioSeconds, setRecordingAudioSeconds] = useState(0);
+  const [simulatedRecordingAudio, setSimulatedRecordingAudio] = useState(false);
+  const [simulatedRecordingAudioSeconds, setSimulatedRecordingAudioSeconds] = useState(0);
   const [customerAttachmentPurpose, setCustomerAttachmentPurpose] =
     useState("customer_location_photo");
   const [simulatedPendingAttachment, setSimulatedPendingAttachment] =
@@ -556,6 +609,12 @@ export default function LeadPage() {
   const [imagePreviewErrors, setImagePreviewErrors] = useState<Record<string, boolean>>(
     {}
   );
+  const [signedMediaByMessageId, setSignedMediaByMessageId] = useState<
+    Record<string, SignedMediaState>
+  >({});
+  const [signedMediaErrorByMessageId, setSignedMediaErrorByMessageId] = useState<
+    Record<string, string>
+  >({});
   const [viewingPhotoMessageId, setViewingPhotoMessageId] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
@@ -578,6 +637,7 @@ export default function LeadPage() {
     hasConversation &&
     !working &&
     !simulatingCustomer &&
+    !simulatedRecordingAudio &&
     !uploadingCustomerAttachment &&
     (
       simulatedCustomerMessage.trim().length > 0 ||
@@ -588,6 +648,7 @@ export default function LeadPage() {
     hasConversation &&
     !working &&
     !simulatingCustomer &&
+    !simulatedRecordingAudio &&
     !uploadingCustomerAttachment;
 
   useEffect(() => {
@@ -619,6 +680,18 @@ export default function LeadPage() {
   }, [recordingAudio]);
 
   useEffect(() => {
+    if (!simulatedRecordingAudio) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setSimulatedRecordingAudioSeconds((current) => current + 1);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [simulatedRecordingAudio]);
+
+  useEffect(() => {
     return () => {
       if (audioRecorderRef.current?.state === "recording") {
         audioRecorderRef.current.stop();
@@ -627,6 +700,29 @@ export default function LeadPage() {
       audioStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (simulatedAudioRecorderRef.current?.state === "recording") {
+        simulatedAudioRecorderRef.current.stop();
+      }
+
+      simulatedAudioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  function scrollMessagesToBottom(behavior: ScrollBehavior = "smooth") {
+    window.requestAnimationFrame(() => {
+      const container = messagesContainerRef.current;
+      if (!container) return;
+
+      const targetTop = messagesEndRef.current?.offsetTop ?? container.scrollHeight;
+      container.scrollTo({
+        top: targetTop,
+        behavior,
+      });
+    });
+  }
 
   async function fetchLeadConversationAndMessages(options?: { silent?: boolean }) {
     const silent = options?.silent ?? false;
@@ -1287,6 +1383,98 @@ export default function LeadPage() {
     recorder.stop();
   }
 
+  async function startSimulatedCustomerAudioRecording() {
+    if (!conversation) {
+      setErrorText("Nao foi possivel gravar: conversa nao encontrada para este lead.");
+      setStatusText(null);
+      return;
+    }
+
+    if (simulatedRecordingAudio) {
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setErrorText("Este navegador nao permite gravar audio diretamente por aqui.");
+      setStatusText(null);
+      return;
+    }
+
+    try {
+      setErrorText(null);
+      setStatusText(null);
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      simulatedAudioStreamRef.current = stream;
+      simulatedAudioChunksRef.current = [];
+
+      const preferredMimeType =
+        typeof MediaRecorder !== "undefined" &&
+        MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm";
+
+      const recorder = new MediaRecorder(stream, { mimeType: preferredMimeType });
+      simulatedAudioRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          simulatedAudioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        setErrorText("Nao foi possivel concluir a gravacao do audio do cliente.");
+        setStatusText(null);
+        cleanupSimulatedCustomerAudioRecording();
+      };
+
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || preferredMimeType || "audio/webm";
+        const audioBlob = new Blob(simulatedAudioChunksRef.current, { type: mimeType });
+
+        cleanupSimulatedCustomerAudioRecording();
+
+        if (audioBlob.size <= 0) {
+          setErrorText("A gravacao do cliente ficou vazia. Tente gravar novamente.");
+          setStatusText(null);
+          return;
+        }
+
+        const extension = mimeType.includes("ogg") ? "ogg" : "webm";
+        const fileName = `audio-cliente-${new Date()
+          .toISOString()
+          .replace(/[:.]/g, "-")}.${extension}`;
+        const audioFile = new File([audioBlob], fileName, { type: mimeType });
+
+        prepareCustomerAttachment(audioFile, "unknown", "audio");
+        setStatusText("Audio gravado. Aperte simular cliente para enviar.");
+      };
+
+      recorder.start();
+      setSimulatedRecordingAudio(true);
+      setSimulatedRecordingAudioSeconds(0);
+    } catch (error: any) {
+      setErrorText(
+        error?.message ||
+          "Nao foi possivel acessar o microfone. Verifique a permissao do navegador."
+      );
+      setStatusText(null);
+      cleanupSimulatedCustomerAudioRecording();
+    }
+  }
+
+  function stopSimulatedCustomerAudioRecording() {
+    const recorder = simulatedAudioRecorderRef.current;
+
+    if (!recorder || recorder.state !== "recording") {
+      cleanupSimulatedCustomerAudioRecording();
+      return;
+    }
+
+    recorder.stop();
+  }
+
   function formatRecordingDuration(seconds: number) {
     const safeSeconds = Math.max(0, seconds);
     const minutes = Math.floor(safeSeconds / 60);
@@ -1340,24 +1528,38 @@ export default function LeadPage() {
   function handleSimulatedCustomerKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      if (!simulatingCustomer && !uploadingCustomerAttachment) {
+      if (
+        !simulatingCustomer &&
+        !uploadingCustomerAttachment &&
+        !simulatedRecordingAudio
+      ) {
         void submitSimulatedCustomerComposer();
       }
     }
   }
 
-  async function openCustomerLocationPhoto(messageId: string) {
-    const safeMessageId = String(messageId || "").trim();
+  async function loadSignedMediaUrl(message: MessageRow) {
+    const safeMessageId = String(message.id || "").trim();
 
     if (!safeMessageId) {
-      setErrorText("Nao foi possivel identificar a mensagem da foto.");
-      setStatusText(null);
-      return;
+      throw new Error("Nao foi possivel identificar a mensagem do anexo.");
+    }
+
+    const cached = signedMediaByMessageId[safeMessageId];
+    if (cached?.signedUrl) {
+      return cached;
     }
 
     setViewingPhotoMessageId(safeMessageId);
-    setErrorText(null);
-    setStatusText(null);
+    setSignedMediaErrorByMessageId((current) => {
+      if (!current[safeMessageId]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[safeMessageId];
+      return next;
+    });
 
     try {
       const response = await fetch(
@@ -1374,19 +1576,53 @@ export default function LeadPage() {
         throw new Error(
           result?.message ||
             result?.error ||
-            "Nao foi possivel gerar a visualizacao segura da foto."
+            "Nao foi possivel gerar a visualizacao segura do anexo."
         );
       }
 
-      window.open(result.signedUrl, "_blank", "noopener,noreferrer");
+      const nextState: SignedMediaState = {
+        signedUrl: result.signedUrl,
+        mimeType: result.mimeType || null,
+        attachmentKind: result.attachmentKind || null,
+        fileName: result.fileName || null,
+      };
+
+      setSignedMediaByMessageId((current) => ({
+        ...current,
+        [safeMessageId]: nextState,
+      }));
+
+      return nextState;
     } catch (error: any) {
-      setErrorText(
-        error?.message || "Erro ao abrir a foto recebida com seguranca."
-      );
-      setStatusText(null);
+      const messageText =
+        error?.message || "Erro ao abrir o anexo com seguranca.";
+      setSignedMediaErrorByMessageId((current) => ({
+        ...current,
+        [safeMessageId]: messageText,
+      }));
+      throw error;
     } finally {
-      setViewingPhotoMessageId(null);
+      setViewingPhotoMessageId((current) =>
+        current === safeMessageId ? null : current
+      );
     }
+  }
+
+  async function openSignedAttachment(message: MessageRow, fallbackErrorText: string) {
+    try {
+      const signedMedia = await loadSignedMediaUrl(message);
+      window.open(signedMedia.signedUrl, "_blank", "noopener,noreferrer");
+    } catch (error: any) {
+      setErrorText(error?.message || fallbackErrorText);
+      setStatusText(null);
+    }
+  }
+
+  async function openCustomerLocationPhoto(message: MessageRow) {
+    await openSignedAttachment(
+      message,
+      "Erro ao abrir a foto recebida com seguranca."
+    );
   }
 
   function openCatalogProductPhoto(mediaUrl: string | null) {
@@ -1399,6 +1635,15 @@ export default function LeadPage() {
     }
 
     window.open(safeMediaUrl, "_blank", "noopener,noreferrer");
+  }
+
+  function cleanupSimulatedCustomerAudioRecording() {
+    simulatedAudioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    simulatedAudioStreamRef.current = null;
+    simulatedAudioRecorderRef.current = null;
+    simulatedAudioChunksRef.current = [];
+    setSimulatedRecordingAudio(false);
+    setSimulatedRecordingAudioSeconds(0);
   }
 
   function handleCatalogPreviewError(messageId: string) {
@@ -1423,6 +1668,15 @@ export default function LeadPage() {
   useEffect(() => {
     void fetchLeadConversationAndMessages();
   }, [leadId]);
+
+  useEffect(() => {
+    if (loading) return;
+
+    scrollMessagesToBottom(
+      hasScrolledMessagesInitiallyRef.current ? "smooth" : "auto"
+    );
+    hasScrolledMessagesInitiallyRef.current = true;
+  }, [messages.length, loading]);
 
   if (loading) {
     return <div className="p-6">Carregando lead e mensagens...</div>;
@@ -1790,8 +2044,23 @@ export default function LeadPage() {
                                   </div>
                                 </div>
 
-                                <div className="text-xs text-gray-500">
-                                  {formatDateTime(appointment.scheduled_start || appointment.scheduled_end)}
+                                <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-gray-500">
+                                  <span>
+                                    {formatDateTime(appointment.scheduled_start || appointment.scheduled_end)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => openGoogleMapsRoute(appointment.address_text)}
+                                    disabled={!buildGoogleMapsRouteUrl(appointment.address_text)}
+                                    title={
+                                      buildGoogleMapsRouteUrl(appointment.address_text)
+                                        ? "Abrir rota no Google Maps"
+                                        : "Falta endereco para abrir a rota"
+                                    }
+                                    className="rounded-lg bg-black px-3 py-1.5 text-[11px] font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
+                                  >
+                                    Rota
+                                  </button>
                                 </div>
                               </div>
 
@@ -1817,7 +2086,10 @@ export default function LeadPage() {
           ) : null}
 
           <div className="flex h-[620px] flex-col">
-            <div className="flex-1 overflow-y-auto bg-[#f2f0ea] px-4 py-4 lg:px-5">
+            <div
+              ref={messagesContainerRef}
+              className="flex-1 overflow-y-auto bg-[#f2f0ea] px-4 py-4 lg:px-5"
+            >
               {!conversation ? (
                 <div className="rounded-2xl bg-white p-4 text-sm text-gray-600 ring-1 ring-black/10">
                   Este lead ainda nao possui conversa criada.
@@ -1845,6 +2117,12 @@ export default function LeadPage() {
                           const catalogMediaUrl = String(message.media_url || "").trim();
                           const attachmentKind = getAttachmentKind(message);
                           const originalFileName = getOriginalFileName(message);
+                          const mimeType = getMimeType(message);
+                          const signedMedia = signedMediaByMessageId[message.id] || null;
+                          const signedMediaError =
+                            signedMediaErrorByMessageId[message.id] || null;
+                          const isLoadingSignedMedia =
+                            viewingPhotoMessageId === message.id;
 
                           return (
                             <>
@@ -1859,20 +2137,100 @@ export default function LeadPage() {
                               {isStoredAttachmentMessage(message) && !isCatalogProductPhoto ? (
                                 <div className="mt-2 rounded-xl bg-white/70 p-3 text-xs text-gray-900 ring-1 ring-black/10">
                                   <div className="font-semibold">
-                                    {attachmentKind === "file"
-                                      ? "Arquivo"
-                                      : attachmentKind === "audio"
-                                        ? "Audio"
-                                        : attachmentKind === "video"
-                                          ? "Video"
-                                          : "Anexo"}
+                                    {getStoredAttachmentLabel(attachmentKind)}
                                   </div>
                                   <div className="mt-1 break-words text-gray-600">
                                     {originalFileName || "Anexo salvo com seguranca"}
                                   </div>
-                                  <div className="mt-2 text-[11px] text-gray-500">
-                                    Visualizacao segura sera ligada na proxima etapa do Pilar 10.
+                                  {mimeType ? (
+                                    <div className="mt-1 break-words text-[11px] text-gray-500">
+                                      {mimeType}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {attachmentKind === "image" ? (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void openSignedAttachment(
+                                            message,
+                                            "Erro ao abrir a imagem com seguranca."
+                                          )
+                                        }
+                                        disabled={isLoadingSignedMedia}
+                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isLoadingSignedMedia ? "Abrindo..." : "Abrir imagem"}
+                                      </button>
+                                    ) : null}
+
+                                    {attachmentKind === "audio" ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => void loadSignedMediaUrl(message)}
+                                        disabled={isLoadingSignedMedia}
+                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isLoadingSignedMedia ? "Carregando..." : "Ouvir audio"}
+                                      </button>
+                                    ) : null}
+
+                                    {attachmentKind === "video" ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => void loadSignedMediaUrl(message)}
+                                        disabled={isLoadingSignedMedia}
+                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isLoadingSignedMedia ? "Carregando..." : "Assistir video"}
+                                      </button>
+                                    ) : null}
+
+                                    {attachmentKind === "file" ? (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void openSignedAttachment(
+                                            message,
+                                            "Erro ao abrir o arquivo com seguranca."
+                                          )
+                                        }
+                                        disabled={isLoadingSignedMedia}
+                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isLoadingSignedMedia ? "Abrindo..." : "Abrir arquivo"}
+                                      </button>
+                                    ) : null}
                                   </div>
+
+                                  {attachmentKind === "audio" && signedMedia?.signedUrl ? (
+                                    <div className="mt-3">
+                                      <audio
+                                        controls
+                                        preload="none"
+                                        src={signedMedia.signedUrl}
+                                        className="h-10 w-full max-w-[320px]"
+                                      />
+                                    </div>
+                                  ) : null}
+
+                                  {attachmentKind === "video" && signedMedia?.signedUrl ? (
+                                    <div className="mt-3 max-w-full">
+                                      <video
+                                        controls
+                                        preload="metadata"
+                                        src={signedMedia.signedUrl}
+                                        className="block h-auto max-h-[240px] w-full max-w-[320px] rounded-xl ring-1 ring-black/10"
+                                      />
+                                    </div>
+                                  ) : null}
+
+                                  {signedMediaError ? (
+                                    <div className="mt-2 text-[11px] text-red-600">
+                                      {signedMediaError}
+                                    </div>
+                                  ) : null}
                                 </div>
                               ) : null}
 
@@ -1903,11 +2261,11 @@ export default function LeadPage() {
                                 <div className="mt-3">
                                   <button
                                     type="button"
-                                    onClick={() => void openCustomerLocationPhoto(message.id)}
-                                    disabled={viewingPhotoMessageId === message.id}
+                                    onClick={() => void openCustomerLocationPhoto(message)}
+                                    disabled={isLoadingSignedMedia}
                                     className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-60"
                                   >
-                                    {viewingPhotoMessageId === message.id ? "Abrindo..." : "Ver foto"}
+                                    {isLoadingSignedMedia ? "Abrindo..." : "Ver foto"}
                                   </button>
                                 </div>
                               ) : null}
@@ -1935,6 +2293,7 @@ export default function LeadPage() {
                   ))}
                 </div>
               )}
+              <div ref={messagesEndRef} aria-hidden="true" />
             </div>
 
             <div className="border-t border-gray-100 bg-white px-4 py-3 lg:px-5">
@@ -2088,7 +2447,12 @@ export default function LeadPage() {
               value={simulatedCustomerMessage}
               onChange={(event) => setSimulatedCustomerMessage(event.target.value)}
               onKeyDown={handleSimulatedCustomerKeyDown}
-              disabled={!conversation || simulatingCustomer || uploadingCustomerAttachment}
+              disabled={
+                !conversation ||
+                simulatingCustomer ||
+                uploadingCustomerAttachment ||
+                simulatedRecordingAudio
+              }
               className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-4 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
               placeholder="Digite como se fosse o cliente"
             />
@@ -2096,7 +2460,12 @@ export default function LeadPage() {
             <select
               value={customerAttachmentPurpose}
               onChange={(event) => setCustomerAttachmentPurpose(event.target.value)}
-              disabled={!conversation || simulatingCustomer || uploadingCustomerAttachment}
+              disabled={
+                !conversation ||
+                simulatingCustomer ||
+                uploadingCustomerAttachment ||
+                simulatedRecordingAudio
+              }
               className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
             >
               <option value="customer_location_photo">Foto do local</option>
@@ -2147,6 +2516,40 @@ export default function LeadPage() {
           ) : null}
 
           <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                simulatedRecordingAudio
+                  ? stopSimulatedCustomerAudioRecording()
+                  : void startSimulatedCustomerAudioRecording()
+              }
+              disabled={!conversation || simulatingCustomer || uploadingCustomerAttachment}
+              className={`flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl px-3 text-xs font-semibold ring-1 ring-black/10 transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                simulatedRecordingAudio
+                  ? "bg-red-600 text-white hover:bg-red-700"
+                  : "bg-white text-gray-900 hover:bg-gray-50"
+              }`}
+              aria-label={
+                simulatedRecordingAudio
+                  ? "Parar gravacao do cliente"
+                  : "Gravar audio como cliente"
+              }
+              title={
+                simulatedRecordingAudio
+                  ? "Parar gravacao do cliente"
+                  : "Gravar audio como cliente"
+              }
+            >
+              {simulatedRecordingAudio ? (
+                <>
+                  <StopRecordingComposerIcon />
+                  <span>{formatRecordingDuration(simulatedRecordingAudioSeconds)}</span>
+                </>
+              ) : (
+                <MicrophoneComposerIcon />
+              )}
+            </button>
+
             <button
               type="button"
               onClick={() => customerAttachmentInputRef.current?.click()}
