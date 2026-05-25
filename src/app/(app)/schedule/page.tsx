@@ -662,10 +662,8 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
 export default function SchedulePage() {
   const {
     loading: storeLoading,
-    error: storeError,
     organizationId,
     activeStoreId,
-    activeStore,
   } = useStoreContext();
 
   const [viewMonth, setViewMonth] = useState<Date>(() => startOfMonth(new Date()));
@@ -1869,22 +1867,8 @@ export default function SchedulePage() {
   return (
     <div className="h-[calc(100vh-151px)] overflow-hidden bg-gray-100 text-sm">
       <div className="mx-auto flex h-full min-h-0 max-w-[1320px] flex-col overflow-hidden px-3 py-1.5 lg:px-4 lg:py-1.5">
-        <div className="mb-1.5 flex shrink-0 items-start justify-between gap-3">
-          <div>
-            <h1 className="text-lg font-bold text-gray-900">Agenda</h1>
-
-            <div className="mt-0.5 text-[11px] text-gray-500">
-              {storeLoading
-                ? "Carregando contexto da loja..."
-                : storeError
-                  ? `Erro no contexto da loja: ${storeError}`
-                  : `Loja ativa: ${activeStore?.name ?? "Sem loja ativa"} • Organização: ${
-                      organizationId ?? "-"
-                    }`}
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
+        <div className="-mt-1 mb-0.5 flex shrink-0 justify-end gap-1.5">
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
             <button
               onClick={openCreateAppointmentPanel}
               disabled={storeLoading || !organizationId || !activeStoreId}

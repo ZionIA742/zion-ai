@@ -1,23 +1,26 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { classifyIncomingMediaMessage } from "@/lib/server/media-classification";
+import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const STORAGE_BUCKET = "zion-store-files";
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
 const ALLOWED_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
   "image/jpg",
 ]);
+
 const ALLOWED_VIDEO_MIME_TYPES = new Set([
   "video/mp4",
   "video/webm",
   "video/quicktime",
 ]);
+
 const ALLOWED_AUDIO_MIME_TYPES = new Set([
   "audio/mpeg",
   "audio/mp4",
@@ -26,6 +29,7 @@ const ALLOWED_AUDIO_MIME_TYPES = new Set([
   "audio/wav",
   "audio/x-wav",
 ]);
+
 const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
   "application/pdf",
   "application/msword",
@@ -35,17 +39,6 @@ const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
   "application/vnd.ms-powerpoint",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 ]);
-const ALLOWED_PURPOSES = new Set([
-  "customer_location_photo",
-  "customer_product_photo",
-  "payment_receipt",
-  "screenshot",
-  "operational_image",
-  "unknown",
-]);
-const DEFAULT_PURPOSE = "customer_location_photo";
-const DEFAULT_CONTENT = "Cliente enviou uma foto do local.";
-const GENERIC_ATTACHMENT_CONTENT = "Cliente enviou um anexo.";
 
 type ConversationRow = {
   id: string;
@@ -59,56 +52,22 @@ type LeadRow = {
   store_id: string | null;
 };
 
-function isInternalRequestAuthorized(req: Request) {
-  const secretFromEnv = process.env.AI_INTERNAL_ROUTE_SECRET;
-  const secretFromHeader =
-    req.headers.get("x-zion-internal-secret") ||
-    req.headers.get("x-internal-secret") ||
-    "";
-  const nodeEnv = process.env.NODE_ENV || "development";
-
-  if (nodeEnv !== "production") {
-    return {
-      ok: true,
-      mode: "dev_bypass" as const,
-    };
-  }
-
-  if (!secretFromEnv) {
-    return {
-      ok: false,
-      mode: "missing_env_secret" as const,
-    };
-  }
-
-  if (secretFromHeader !== secretFromEnv) {
-    return {
-      ok: false,
-      mode: "invalid_header_secret" as const,
-    };
-  }
-
-  return {
-    ok: true,
-    mode: "authorized_by_secret" as const,
-  };
-}
-
 function createSupabaseAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseServiceKey) {
     throw new Error(
-      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variáveis de ambiente."
+      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente."
     );
   }
 
-  return createClient(supabaseUrl, supabaseServiceKey);
-}
-
-function isAllowedImageMimeType(value: string | null | undefined) {
-  return ALLOWED_IMAGE_MIME_TYPES.has(String(value || "").trim().toLowerCase());
+  return createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
 }
 
 function getAttachmentKindFromMimeType(value: string | null | undefined) {
@@ -127,7 +86,11 @@ function extractFileExtension(fileName: string | null | undefined) {
   if (!normalized.includes(".")) return null;
 
   const extension = normalized.split(".").pop() || "";
-  const safeExtension = extension.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 10);
+  const safeExtension = extension
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, 10);
+
   return safeExtension || null;
 }
 
@@ -158,7 +121,6 @@ function sanitizeFileName(fileName: string) {
 function buildStoragePath(args: {
   organizationId: string;
   storeId: string;
-  leadId: string;
   conversationId: string;
   fileName: string;
 }) {
@@ -174,8 +136,7 @@ function buildStoragePath(args: {
   return [
     args.organizationId,
     args.storeId,
-    "customer-media",
-    args.leadId,
+    "manual-attachments",
     args.conversationId,
     `${timestamp}-${random}-${safeFileName}`,
   ].join("/");
@@ -201,83 +162,111 @@ function extractInsertMessageId(data: unknown) {
   return null;
 }
 
-export async function POST(req: Request) {
+function buildDefaultContent(messageType: "image" | "audio" | "video" | "text") {
+  if (messageType === "image") return "A loja enviou uma imagem.";
+  if (messageType === "audio") return "A loja enviou um audio.";
+  if (messageType === "video") return "A loja enviou um video.";
+  return "A loja enviou um arquivo.";
+}
+
+function buildJsonResponse(body: unknown, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+export async function POST(request: Request) {
   let uploadedStoragePath: string | null = null;
 
   try {
-    const auth = isInternalRequestAuthorized(req);
+    const sessionSupabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await sessionSupabase.auth.getUser();
 
-    if (!auth.ok) {
-      return NextResponse.json(
+    if (userError || !user) {
+      return buildJsonResponse(
         {
           ok: false,
-          error: "UNAUTHORIZED_INTERNAL_ROUTE",
-          message:
-            "Acesso interno não autorizado. Verifique AI_INTERNAL_ROUTE_SECRET e o header x-zion-internal-secret.",
+          error: "UNAUTHENTICATED",
+          message: "Usuario nao autenticado.",
         },
-        { status: 401 }
+        401
       );
     }
 
-    const formData = await req.formData();
+    const formData = await request.formData();
 
     const organizationId = String(formData.get("organizationId") || "").trim();
     const requestedStoreId = String(formData.get("storeId") || "").trim();
     const conversationId = String(formData.get("conversationId") || "").trim();
-    const purpose = String(formData.get("purpose") || DEFAULT_PURPOSE).trim();
+    const rawContent = String(formData.get("content") || "").trim();
     const fileEntry = formData.get("file");
 
-    if (!organizationId || !conversationId || !(fileEntry instanceof File)) {
-      return NextResponse.json(
+    if (!organizationId || !requestedStoreId || !conversationId) {
+      return buildJsonResponse(
         {
           ok: false,
           error: "MISSING_FIELDS",
-          message: "Envie organizationId, conversationId e file.",
+          message: "Envie organizationId, storeId, conversationId e file.",
         },
-        { status: 400 }
+        400
       );
     }
 
-    if (!ALLOWED_PURPOSES.has(purpose)) {
-      return NextResponse.json(
+    if (!(fileEntry instanceof File)) {
+      return buildJsonResponse(
         {
           ok: false,
-          error: "INVALID_MEDIA_PURPOSE",
-          message: "purpose inválido para esta rota de teste controlado.",
+          error: "FILE_REQUIRED",
+          message: "Selecione um arquivo valido para envio.",
         },
-        { status: 400 }
+        400
+      );
+    }
+
+    if (fileEntry.size <= 0) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "EMPTY_FILE",
+          message: "O arquivo enviado esta vazio.",
+        },
+        400
+      );
+    }
+
+    if (fileEntry.size > MAX_FILE_SIZE_BYTES) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "FILE_TOO_LARGE",
+          message: "O anexo deve ter no maximo 10 MB.",
+        },
+        400
       );
     }
 
     const attachmentKind = getAttachmentKindFromMimeType(fileEntry.type);
 
     if (!attachmentKind) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
-          error: "INVALID_FILE_TYPE",
-          message:
-            "Envie um anexo suportado: imagem, video, audio, PDF, Word, Excel ou PowerPoint.",
+          error: "UNSUPPORTED_FILE_TYPE",
+          message: "Tipo de arquivo nao suportado para envio manual.",
         },
-        { status: 400 }
+        415
       );
     }
 
-    if (fileEntry.size <= 0 || fileEntry.size > MAX_FILE_SIZE_BYTES) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "INVALID_FILE_SIZE",
-          message: "A imagem deve ter no máximo 10 MB.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const messageType = attachmentKind;
-    const defaultContent =
-      attachmentKind === "image" ? DEFAULT_CONTENT : GENERIC_ATTACHMENT_CONTENT;
-
+    const messageType =
+      attachmentKind === "file" ? ("text" as const) : attachmentKind;
+    const content = rawContent || buildDefaultContent(messageType);
     const supabase = createSupabaseAdminClient();
 
     const { data: conversation, error: conversationError } = await supabase
@@ -285,40 +274,40 @@ export async function POST(req: Request) {
       .select("id, organization_id, lead_id")
       .eq("id", conversationId)
       .eq("organization_id", organizationId)
-      .maybeSingle();
+      .maybeSingle<ConversationRow>();
 
     if (conversationError) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "CONVERSATION_LOOKUP_FAILED",
           message: conversationError.message,
         },
-        { status: 400 }
+        500
       );
     }
 
     if (!conversation) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "CONVERSATION_NOT_FOUND_OR_FORBIDDEN",
-          message: "Conversa não encontrada para a organização informada.",
+          message: "Conversa nao encontrada para a organizacao informada.",
         },
-        { status: 404 }
+        404
       );
     }
 
     const normalizedConversation = conversation as ConversationRow;
 
     if (!normalizedConversation.lead_id) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "CONVERSATION_WITHOUT_LEAD",
-          message: "A conversa não possui lead vinculada.",
+          message: "A conversa nao possui lead vinculada.",
         },
-        { status: 400 }
+        400
       );
     }
 
@@ -327,27 +316,27 @@ export async function POST(req: Request) {
       .select("id, organization_id, store_id")
       .eq("id", normalizedConversation.lead_id)
       .eq("organization_id", organizationId)
-      .maybeSingle();
+      .maybeSingle<LeadRow>();
 
     if (leadError) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "LEAD_LOOKUP_FAILED",
           message: leadError.message,
         },
-        { status: 400 }
+        500
       );
     }
 
     if (!lead) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "LEAD_NOT_FOUND_OR_FORBIDDEN",
-          message: "Lead não encontrada para a conversa informada.",
+          message: "Lead nao encontrado para a conversa informada.",
         },
-        { status: 404 }
+        404
       );
     }
 
@@ -355,34 +344,34 @@ export async function POST(req: Request) {
     const resolvedStoreId = String(normalizedLead.store_id || "").trim();
 
     if (!resolvedStoreId) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "LEAD_STORE_ID_MISSING",
-          message: "store_id não encontrado para este lead.",
+          message: "store_id nao encontrado para este lead.",
         },
-        { status: 400 }
+        400
       );
     }
 
-    if (requestedStoreId && requestedStoreId !== resolvedStoreId) {
-      return NextResponse.json(
+    if (requestedStoreId !== resolvedStoreId) {
+      return buildJsonResponse(
         {
           ok: false,
           error: "STORE_ID_MISMATCH",
-          message: "O storeId informado não corresponde ao store_id real da lead.",
+          message: "O storeId informado nao corresponde ao store_id real da lead.",
         },
-        { status: 400 }
+        400
       );
     }
 
     const storagePath = buildStoragePath({
       organizationId,
       storeId: resolvedStoreId,
-      leadId: normalizedLead.id,
       conversationId,
       fileName: fileEntry.name,
     });
+    const mediaUrl = attachmentKind === "file" ? null : storagePath;
 
     uploadedStoragePath = storagePath;
 
@@ -394,121 +383,121 @@ export async function POST(req: Request) {
       });
 
     if (uploadError) {
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
           error: "MEDIA_UPLOAD_FAILED",
           message: uploadError.message,
         },
-        { status: 500 }
+        500
       );
     }
 
-    const classification = classifyIncomingMediaMessage({
-      messageType,
-      mimeType: fileEntry.type,
-      fileName: fileEntry.name,
-      content: defaultContent,
-      explicitPurpose: purpose,
-      sender: "user",
-      direction: "incoming",
-      sourceChannel: "panel_simulation",
-    });
-
     const metadata = {
-      media_purpose: purpose,
-      media_purpose_normalized: classification.mediaPurpose,
-      attachment_kind: attachmentKind,
-      media_origin: "customer",
+      media_origin: "store_user",
+      source_channel: "panel_manual",
       storage_bucket: STORAGE_BUCKET,
       storage_path: storagePath,
       original_file_name: fileEntry.name,
       original_extension: extractFileExtension(fileEntry.name),
       mime_type: fileEntry.type,
       size_bytes: fileEntry.size,
-      source_channel: "panel_simulation",
-      visual_simulation_status: "received",
-      can_be_used_for_recommendation: true,
-      can_be_sent_to_customer: false,
-      requires_human_review: classification.requiresHumanReview,
-      media_classification_confidence: classification.confidence,
-      media_classification_reason: classification.reason,
-      media_requires_ai_analysis: classification.requiresAiAnalysis,
-      media_requires_human_review: classification.requiresHumanReview,
-      media_classified_by: "rule_engine_v1",
+      attachment_kind: attachmentKind,
+      can_be_sent_to_customer: true,
+      requires_human_review: false,
+      sent_by: "panel_user",
+      sent_by_user_id: user.id,
       pillar: "pilar_10_multimodal",
+      send_external: false,
     };
 
     const { data: insertData, error: insertError } = await supabase.rpc(
       "insert_message",
       {
         p_conversation_id: conversationId,
-        p_sender: "user",
-        p_direction: "incoming",
+        p_sender: "human",
+        p_direction: "outgoing",
         p_message_type: messageType,
-        p_content: defaultContent,
+        p_content: content,
         p_external_message_id: null,
-        p_media_url: storagePath,
+        p_media_url: mediaUrl,
         p_metadata: metadata,
       }
     );
 
     if (insertError) {
+      console.error("[send-manual-attachment] insert_message failed", {
+        code: insertError.code,
+        message: insertError.message,
+        details: insertError.details,
+        hint: insertError.hint,
+        conversationId,
+        organizationId,
+        requestedStoreId,
+        sender: "human",
+        direction: "outgoing",
+        messageType,
+        metadataKeys: Object.keys(metadata),
+      });
+
       const { error: cleanupError } = await supabase.storage
         .from(STORAGE_BUCKET)
         .remove([storagePath]);
 
       if (cleanupError) {
-        console.error("[simulate-customer-media] cleanup after insert_message failed:", {
-          storagePath,
-          message: cleanupError.message,
-        });
+        console.error(
+          "[send-manual-attachment] cleanup after insert_message failed:",
+          {
+            storagePath,
+            message: cleanupError.message,
+          }
+        );
       }
 
-      return NextResponse.json(
+      return buildJsonResponse(
         {
           ok: false,
-          error: "INSERT_CUSTOMER_MEDIA_MESSAGE_FAILED",
+          error: "INSERT_MANUAL_ATTACHMENT_FAILED",
           message: "O anexo foi enviado, mas nao foi possivel registrar a mensagem.",
         },
-        { status: 500 }
+        500
       );
     }
 
     const messageId = extractInsertMessageId(insertData);
 
-    return NextResponse.json({
+    return buildJsonResponse({
       ok: true,
       messageId,
-      organizationId,
-      storeId: resolvedStoreId,
-      leadId: normalizedLead.id,
-      conversationId,
-      storageBucket: STORAGE_BUCKET,
-      storagePath,
-      mediaPurpose: purpose,
+      messageType,
+      attachmentKind,
     });
-  } catch (err: any) {
+  } catch (error) {
     if (uploadedStoragePath) {
       try {
         const supabase = createSupabaseAdminClient();
         await supabase.storage.from(STORAGE_BUCKET).remove([uploadedStoragePath]);
       } catch (cleanupError) {
-        console.error("[simulate-customer-media] cleanup after unexpected error failed:", {
+        console.error("[send-manual-attachment] cleanup after unexpected error failed:", {
           storagePath: uploadedStoragePath,
-          cleanupError,
+          error:
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError || ""),
         });
       }
     }
 
-    return NextResponse.json(
+    const message =
+      error instanceof Error ? error.message : "Erro interno ao enviar anexo manual.";
+
+    return buildJsonResponse(
       {
         ok: false,
-        error: "SIMULATE_CUSTOMER_MEDIA_ROUTE_FAILED",
-        message:
-          err?.message || "Erro interno ao registrar foto do local do cliente.",
+        error: "SEND_MANUAL_ATTACHMENT_ROUTE_FAILED",
+        message,
       },
-      { status: 500 }
+      500
     );
   }
 }

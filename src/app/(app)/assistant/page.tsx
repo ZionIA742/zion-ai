@@ -111,6 +111,25 @@ function bubbleClass(message: AssistantMessage) {
   return "bg-[#f7f7f7] text-gray-800 ring-1 ring-black/8 rounded-2xl";
 }
 
+function formatFileSize(size: number) {
+  if (!Number.isFinite(size) || size <= 0) return "-";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatAttachmentKind(file: File | null) {
+  if (!file) return "Arquivo";
+  const type = file.type.toLowerCase();
+  const name = file.name.toLowerCase();
+
+  if (type.startsWith("image/")) return "Imagem";
+  if (type.startsWith("audio/")) return "Áudio";
+  if (type.startsWith("video/")) return "Vídeo";
+  if (type === "application/pdf" || name.endsWith(".pdf")) return "PDF";
+  return "Documento";
+}
+
 function normalizeText(value: string | null | undefined): string {
   return String(value || "")
     .normalize("NFD")
@@ -162,10 +181,8 @@ function renderHighlightedText(text: string, query: string) {
 export default function AssistantPage() {
   const {
     loading: storeLoading,
-    error: storeError,
     organizationId,
     activeStoreId,
-    activeStore,
   } = useStoreContext();
 
   const [summary, setSummary] = useState<AssistantThreadSummary | null>(null);
@@ -176,8 +193,14 @@ export default function AssistantPage() {
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState("");
+  const [pendingAttachment, setPendingAttachment] = useState<File | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [recordingErrorText, setRecordingErrorText] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -338,10 +361,85 @@ export default function AssistantPage() {
     shouldStickToBottomRef.current = distanceFromBottom <= 80;
   }, []);
 
+  function clearPendingAttachment() {
+    setPendingAttachment(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  async function startAudioRecording() {
+    setRecordingErrorText(null);
+
+    if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setRecordingErrorText("Este navegador não liberou gravação de áudio.");
+      return;
+    }
+
+    if (typeof MediaRecorder === "undefined") {
+      setRecordingErrorText("A gravação de áudio não está disponível neste navegador.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+
+      recordedChunksRef.current = [];
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || "audio/webm";
+        const extension = mimeType.includes("mp4") ? "m4a" : "webm";
+        const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+        const file = new File([blob], `audio-assistente-${Date.now()}.${extension}`, {
+          type: mimeType,
+        });
+
+        stream.getTracks().forEach((track) => track.stop());
+        mediaRecorderRef.current = null;
+        recordedChunksRef.current = [];
+        setPendingAttachment(file);
+        setRecording(false);
+      };
+
+      recorder.start();
+      setRecording(true);
+    } catch (error: any) {
+      setRecordingErrorText(error?.message || "Não foi possível iniciar a gravação de áudio.");
+      setRecording(false);
+    }
+  }
+
+  function stopAudioRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      setRecording(false);
+      return;
+    }
+
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+    } else {
+      setRecording(false);
+    }
+  }
+
   async function sendMessageToAssistant() {
     const text = newMessage.trim();
 
-    if (!text) return;
+    if (!text && !pendingAttachment) return;
+
+    if (pendingAttachment) {
+      setErrorText("A interface de anexos já está preparada, mas o envio real de arquivos ainda precisa ser conectado ao backend da Assistente.");
+      return;
+    }
     if (!organizationId || !activeStoreId) {
       setErrorText("Organização ou loja ativa não carregada.");
       return;
@@ -455,125 +553,87 @@ export default function AssistantPage() {
   }, []);
 
   if (loading) {
-    return <div className="p-6">Carregando assistente...</div>;
+    return <div className="p-4 text-sm text-gray-600">Carregando assistente...</div>;
   }
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-white">
-      <div className="mx-auto max-w-7xl px-4 py-4 md:px-6">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Assistente operacional</h1>
-            <div className="mt-1 text-xs text-gray-500">
-              {storeLoading
-                ? "Carregando contexto da loja..."
-                : storeError
-                  ? `Erro no contexto da loja: ${storeError}`
-                  : `Loja ativa: ${activeStore?.name ?? "-"} • Organização: ${organizationId ?? "-"}`}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {refreshing ? (
-              <div className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-black/10">
-                Atualizando...
-              </div>
-            ) : null}
-
-            <button
-              onClick={() => void loadAssistant()}
-              disabled={loading || storeLoading || !organizationId || !activeStoreId}
-              className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Recarregar
-            </button>
-          </div>
-        </div>
-
+    <div className="h-[calc(100dvh-132px)] overflow-hidden bg-gray-100 text-sm text-gray-900">
+      <div className="mx-auto flex h-full min-h-0 max-w-[1120px] flex-col px-2 py-2 md:px-4">
         {errorText ? (
-          <div className="mb-4 rounded-xl bg-red-50 p-4 text-red-800 ring-1 ring-red-200">{errorText}</div>
+          <div className="mb-2 shrink-0 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800 ring-1 ring-red-200">
+            {errorText}
+          </div>
         ) : null}
 
-        {statusText ? (
-          <div className="mb-4 rounded-xl bg-gray-100 p-4 text-sm text-gray-800 ring-1 ring-black/10">{statusText}</div>
+        {statusText || recordingErrorText ? (
+          <div className="mb-2 shrink-0 rounded-xl bg-white px-3 py-2 text-xs text-gray-700 ring-1 ring-black/10">
+            {recordingErrorText || statusText}
+          </div>
         ) : null}
 
-        <section className="mb-4 rounded-3xl bg-white shadow-sm ring-1 ring-black/10 overflow-hidden">
-          <div className="px-4 py-3 md:px-5">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div className="min-w-0">
-                <div className="text-base font-bold text-gray-900">Canal do responsável</div>
-                <div className="mt-1 inline-flex items-center rounded-full bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-600 ring-1 ring-black/5">
-                  Thread principal da assistente
-                </div>
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/10">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-black/10 bg-white px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gray-900 text-[11px] font-bold text-white">
+                IA
               </div>
-
-              <div className="grid grid-cols-3 gap-2 md:flex md:flex-wrap md:items-center">
-                <div className="rounded-2xl border border-black/10 bg-white px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-gray-500">Thread</div>
-                  <div className="mt-1 text-sm font-semibold text-gray-900">{summary?.title || "Assistente da Loja"}</div>
-                </div>
-
-                <div className="rounded-2xl border border-black/10 bg-white px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-gray-500">Mensagens</div>
-                  <div className="mt-1 text-lg font-bold text-gray-900">{summary?.total_messages ?? messages.length}</div>
-                </div>
-
-                <div className="rounded-2xl border border-black/10 bg-white px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-wide text-gray-500">Pendências</div>
-                  <div className="mt-1 text-lg font-bold text-gray-900">{summary?.pending_notifications ?? 0}</div>
+              <div className="min-w-0">
+                <div className="truncate text-sm font-bold text-gray-900">Assistente da loja</div>
+                <div className="truncate text-[11px] text-gray-500">
+                  {refreshing
+                    ? "Atualizando..."
+                    : `${summary?.total_messages ?? messages.length} mensagens • ${summary?.pending_notifications ?? 0} pendências`}
                 </div>
               </div>
             </div>
-          </div>
-        </section>
 
-        <section className="min-w-0 rounded-3xl bg-white shadow-sm ring-1 ring-black/10 overflow-hidden">
-          <div className="border-b border-black/10 bg-white px-4 py-3 md:px-5">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-lg font-semibold text-gray-900">Assistente da loja</div>
-                <div className="text-xs text-gray-500">Mensagens da assistente à esquerda e do responsável à direita.</div>
-              </div>
-
+            <div className="flex shrink-0 items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => {
                   setSearchOpen((current) => !current);
                   if (searchOpen) setSearchText("");
                 }}
-                className="inline-flex items-center gap-2 self-start rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-800 ring-1 ring-black/10 hover:bg-gray-50"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
+                aria-label="Buscar na conversa"
               >
                 <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="11" cy="11" r="7" />
                   <path d="m20 20-3.5-3.5" />
                 </svg>
-                Buscar na conversa
+              </button>
+
+              <button
+                onClick={() => void loadAssistant()}
+                disabled={loading || storeLoading || !organizationId || !activeStoreId}
+                className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Recarregar
               </button>
             </div>
           </div>
 
-          <div className="relative grid min-h-[68vh] grid-cols-1">
+          <div className="relative flex min-h-0 flex-1 overflow-hidden">
             <div
               ref={chatScrollRef}
               onScroll={handleChatScroll}
-              className={`overflow-y-auto px-3 py-4 md:px-5 ${searchOpen ? "md:pr-[380px]" : ""}`}
-              style={{ height: "58vh", background: "#f8f8f8" }}
+              className={`min-h-0 flex-1 overflow-y-auto px-2.5 py-3 md:px-4 ${searchOpen ? "md:pr-[380px]" : ""}`}
+              style={{ background: "#f7f7f7" }}
             >
               {groupedMessages.length === 0 ? (
-                <div className="mx-auto max-w-md rounded-2xl bg-white px-4 py-6 text-center text-sm text-gray-500 ring-1 ring-black/10">
-                  Nenhuma mensagem ainda. Você já pode enviar a primeira mensagem para a assistente.
+                <div className="mx-auto mt-8 max-w-sm rounded-2xl bg-white px-4 py-5 text-center text-xs text-gray-500 ring-1 ring-black/10">
+                  Nenhuma mensagem ainda. Envie a primeira mensagem para a assistente.
                 </div>
               ) : (
                 groupedMessages.map((group) => (
-                  <div key={group.dayKey} className="mb-5">
-                    <div className="mb-4 flex justify-center">
-                      <div className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-black/10">
+                  <div key={group.dayKey} className="mb-4">
+                    <div className="mb-3 flex justify-center">
+                      <div className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-gray-500 shadow-sm ring-1 ring-black/10">
                         {group.dayLabel}
                       </div>
                     </div>
 
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       {group.items.map((message) => (
                         <div
                           key={message.id}
@@ -582,17 +642,19 @@ export default function AssistantPage() {
                           }}
                           className={`flex transition-shadow duration-200 ${bubbleWrapperClass(message)}`}
                         >
-                          <div className={`max-w-[92%] md:max-w-[75%] px-4 py-3 shadow-sm ${bubbleClass(message)}`}>
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-500">
+                          <div className={`max-w-[88%] px-3 py-2 shadow-sm md:max-w-[72%] ${bubbleClass(message)}`}>
+                            <div className="mb-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-gray-500">
                               <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
                               <span>•</span>
                               <span>{formatMessageType(message.message_type)}</span>
-                              <span>•</span>
-                              <span>{formatTime(message.created_at)}</span>
                             </div>
 
-                            <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-gray-900">
+                            <div className="whitespace-pre-wrap break-words text-[13px] leading-5 text-gray-900">
                               {message.content}
+                            </div>
+
+                            <div className="mt-1 text-right text-[10px] text-gray-400">
+                              {formatTime(message.created_at)}
                             </div>
                           </div>
                         </div>
@@ -699,26 +761,105 @@ export default function AssistantPage() {
             ) : null}
           </div>
 
-          <div className="border-t border-black/10 bg-white p-3 md:p-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-end">
-              <div className="min-w-0 flex-1">
-                <textarea
-                  value={newMessage}
-                  onChange={(event) => setNewMessage(event.target.value)}
-                  placeholder="Ex.: Me atualize sobre os atendimentos mais urgentes de hoje."
-                  className="min-h-[96px] w-full resize-none rounded-3xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400"
-                />
-              </div>
+          <div className="shrink-0 border-t border-black/10 bg-white px-2.5 py-2 md:px-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.csv,.txt"
+              onChange={(event) => {
+                const file = event.target.files?.[0] || null;
+                setPendingAttachment(file);
+                setErrorText(null);
+              }}
+            />
 
-              <div className="flex justify-end md:pb-1">
+            {pendingAttachment ? (
+              <div className="mb-2 flex items-center justify-between gap-2 rounded-2xl bg-gray-50 px-3 py-2 text-xs ring-1 ring-black/10">
+                <div className="min-w-0">
+                  <div className="truncate font-semibold text-gray-900">
+                    {formatAttachmentKind(pendingAttachment)} selecionado
+                  </div>
+                  <div className="truncate text-[11px] text-gray-500">
+                    {pendingAttachment.name} • {formatFileSize(pendingAttachment.size)}
+                  </div>
+                </div>
                 <button
-                  onClick={() => void sendMessageToAssistant()}
-                  disabled={sending || !newMessage.trim()}
-                  className="rounded-full bg-black px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  type="button"
+                  onClick={clearPendingAttachment}
+                  className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-100"
                 >
-                  {sending ? "Enviando..." : "Enviar"}
+                  Remover
                 </button>
               </div>
+            ) : null}
+
+            <div className="flex items-end gap-2">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
+                aria-label="Anexar arquivo"
+                title="Anexar imagem, vídeo, áudio, PDF ou documento"
+              >
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
+              </button>
+
+              <textarea
+                value={newMessage}
+                onChange={(event) => setNewMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void sendMessageToAssistant();
+                  }
+                }}
+                placeholder="Mensagem"
+                rows={1}
+                className="max-h-24 min-h-[40px] flex-1 resize-none rounded-3xl border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm leading-5 text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-300 focus:bg-white"
+              />
+
+              <button
+                type="button"
+                onClick={() => (recording ? stopAudioRecording() : void startAudioRecording())}
+                className={[
+                  "mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full ring-1 ring-black/10 hover:bg-gray-50",
+                  recording ? "bg-red-50 text-red-700" : "bg-white text-gray-700",
+                ].join(" ")}
+                aria-label={recording ? "Parar gravação" : "Gravar áudio"}
+                title={recording ? "Parar gravação" : "Gravar áudio"}
+              >
+                {recording ? (
+                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
+                    <rect x="7" y="7" width="10" height="10" rx="2" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
+                    <path d="M19 11a7 7 0 0 1-14 0" />
+                    <path d="M12 18v4" />
+                  </svg>
+                )}
+              </button>
+
+              <button
+                onClick={() => void sendMessageToAssistant()}
+                disabled={sending || (!newMessage.trim() && !pendingAttachment)}
+                className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-black text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Enviar mensagem"
+                title="Enviar"
+              >
+                {sending ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                ) : (
+                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="m22 2-7 20-4-9-9-4Z" />
+                    <path d="M22 2 11 13" />
+                  </svg>
+                )}
+              </button>
             </div>
           </div>
         </section>

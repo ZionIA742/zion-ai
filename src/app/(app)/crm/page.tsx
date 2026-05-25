@@ -670,7 +670,25 @@ export default function CrmPage() {
       <div className="flex h-full min-h-0 flex-col overflow-hidden">
         <div className="shrink-0 border-b border-black/5 bg-white">
           <div className="mx-auto flex max-w-[1320px] items-center justify-between gap-3 px-4 py-3">
-            <div className="text-xl font-semibold tracking-tight">CRM</div>
+            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl bg-gray-50 px-3 py-2 ring-1 ring-black/5">
+              <span className="shrink-0 text-sm text-gray-400">⌕</span>
+              <input
+                id="crm-search"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder="Buscar lead por nome ou telefone"
+                className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+              />
+              {searchText.trim() ? (
+                <button
+                  type="button"
+                  onClick={() => setSearchText("")}
+                  className="shrink-0 rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-gray-600 ring-1 ring-black/10 hover:bg-gray-50"
+                >
+                  Limpar
+                </button>
+              ) : null}
+            </div>
 
             <div className="flex shrink-0 items-center gap-2">
               <Link
@@ -690,38 +708,13 @@ export default function CrmPage() {
           </div>
         </div>
 
-        <div className="mx-auto flex min-h-0 w-full max-w-[1320px] flex-1 flex-col overflow-hidden px-4 py-2">
+        <div className="mx-auto flex min-h-0 w-full max-w-[1320px] flex-1 flex-col overflow-hidden px-4 py-3">
           {errorMsg ? (
             <div className="mb-3 shrink-0 rounded-xl bg-red-50 p-3 text-xs text-red-800 ring-1 ring-red-600/20">
               <div className="font-semibold">Erro</div>
               <div className="mt-1 break-words">{errorMsg}</div>
             </div>
           ) : null}
-
-          <div className="mb-2 shrink-0 rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
-            <label className="text-xs font-semibold text-gray-700" htmlFor="crm-search">
-              Buscar pessoa
-            </label>
-            <div className="mt-1.5 flex items-center gap-2 rounded-xl bg-gray-50 px-3 py-1.5 ring-1 ring-black/5">
-              <span className="text-sm text-gray-400">⌕</span>
-              <input
-                id="crm-search"
-                value={searchText}
-                onChange={(event) => setSearchText(event.target.value)}
-                placeholder="Procure por nome ou telefone"
-                className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
-              />
-              {searchText.trim() ? (
-                <button
-                  type="button"
-                  onClick={() => setSearchText("")}
-                  className="rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-gray-600 ring-1 ring-black/10 hover:bg-gray-50"
-                >
-                  Limpar
-                </button>
-              ) : null}
-            </div>
-          </div>
 
           {loading ? (
             <div className="rounded-2xl bg-white p-5 text-sm shadow-sm ring-1 ring-black/5">
@@ -768,7 +761,7 @@ export default function CrmPage() {
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-hidden p-2">
+                <div className="min-h-0 flex-1 overflow-hidden p-3">
                   <div className="grid min-h-0 gap-1">
                     {columns.map((col) => {
                       const items = cardsByColumn.get(col.id) || [];
@@ -779,7 +772,7 @@ export default function CrmPage() {
                           key={col.id}
                           type="button"
                           onClick={() => setSelectedColumnId(col.id)}
-                          className="group flex h-5 min-h-0 items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-0 text-left ring-1 ring-black/5 transition hover:bg-white hover:shadow-sm"
+                          className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-2 text-left ring-1 ring-black/5 transition hover:bg-white hover:shadow-sm"
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <span className={cx("h-2.5 w-2.5 shrink-0 rounded-full", ui.dot)} />

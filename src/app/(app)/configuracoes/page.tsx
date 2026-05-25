@@ -1283,6 +1283,8 @@ export default function ConfiguracoesPage() {
   const [poolImportFiles, setPoolImportFiles] = useState<StoreImportFileRow[]>([]);
   const [catalogImportFiles, setCatalogImportFiles] = useState<StoreImportFileRow[]>([]);
   const [downloadingImportFileId, setDownloadingImportFileId] = useState<string | null>(null);
+  const [deletingImportFileId, setDeletingImportFileId] = useState<string | null>(null);
+  const [rawImportFilesModalTab, setRawImportFilesModalTab] = useState<"pools" | "catalog" | null>(null);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -3396,6 +3398,68 @@ export default function ConfiguracoesPage() {
     []
   );
 
+  const handleDeleteImportFile = useCallback(
+    async (file: StoreImportFileRow) => {
+      if (!organizationId || !activeStoreId) {
+        setErrorText("Nenhuma loja ativa foi encontrada para excluir o arquivo bruto.");
+        setSuccessText(null);
+        return;
+      }
+
+      if (deletingImportFileId) return;
+
+      const fileName = cleanText(file.original_file_name) || "arquivo bruto";
+      const confirmed = window.confirm(
+        `Excluir o arquivo bruto "${fileName}"?\n\nIsso remove apenas o arquivo original importado e o vínculo dele com a importação. Nenhum item do catálogo será excluído.`
+      );
+
+      if (!confirmed) return;
+
+      const bucket = cleanText(file.storage_bucket);
+      const path = cleanText(file.storage_path);
+
+      setDeletingImportFileId(file.id);
+      setErrorText(null);
+      setSuccessText(null);
+
+      try {
+        const { error: deleteLinksError } = await supabase
+          .from("store_import_file_items")
+          .delete()
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .eq("import_file_id", file.id);
+
+        if (deleteLinksError) throw deleteLinksError;
+
+        const { error: deleteFileRowError } = await supabase
+          .from("store_import_files")
+          .delete()
+          .eq("id", file.id)
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId);
+
+        if (deleteFileRowError) throw deleteFileRowError;
+
+        if (bucket && path) {
+          const { error: storageError } = await supabase.storage.from(bucket).remove([path]);
+          if (storageError) throw storageError;
+        }
+
+        setPoolImportFiles((prev) => prev.filter((item) => item.id !== file.id));
+        setCatalogImportFiles((prev) => prev.filter((item) => item.id !== file.id));
+        setSuccessText("Arquivo bruto excluído com sucesso. Os itens do catálogo foram preservados.");
+        await fetchPageData();
+      } catch (error: any) {
+        setErrorText(error?.message ?? "Erro ao excluir o arquivo bruto.");
+        setSuccessText(null);
+      } finally {
+        setDeletingImportFileId(null);
+      }
+    },
+    [organizationId, activeStoreId, deletingImportFileId, fetchPageData]
+  );
+
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setErrorText("Nenhuma loja ativa foi encontrada para apagar o catálogo.");
@@ -3502,6 +3566,16 @@ export default function ConfiguracoesPage() {
       setDeletingCatalog(false);
     }
   }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchPageData]);
+
+  const rawImportFilesModalFiles = rawImportFilesModalTab === "pools" ? poolImportFiles : catalogImportFiles;
+  const rawImportFilesModalTitle =
+    rawImportFilesModalTab === "pools"
+      ? "Arquivos brutos de piscinas"
+      : "Arquivos brutos de produtos e acessórios";
+  const rawImportFilesModalEmptyText =
+    rawImportFilesModalTab === "pools"
+      ? "Nenhum arquivo bruto importado foi encontrado para piscinas ainda."
+      : "Nenhum arquivo bruto importado foi encontrado para produtos e acessórios ainda.";
 
   return (
     <div className="space-y-4 overflow-x-hidden">
@@ -4426,60 +4500,15 @@ export default function ConfiguracoesPage() {
             </div>
           </SectionBlock>
 
-          <SectionBlock
-            title="Arquivos brutos importados"
-            description="Esses são os arquivos originais usados no upload inteligente que geraram piscinas no sistema. Este bloco deve ficar sempre no final da aba."
-          >
-            {poolImportFiles.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
-                Nenhum arquivo bruto importado foi encontrado para piscinas ainda.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {poolImportFiles.map((file) => (
-                  <div
-                    key={file.id}
-                    className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                  >
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div className="min-w-0">
-                        <div className="break-words text-sm font-semibold text-gray-900">
-                          {cleanText(file.original_file_name) || "Arquivo sem nome"}
-                        </div>
-                        <div className="mt-1 text-xs text-gray-500">
-                          Importado em {formatImportDate(file.created_at)}
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleDownloadImportFile(file)}
-                        disabled={downloadingImportFileId === file.id}
-                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {downloadingImportFileId === file.id ? "Gerando link..." : "Baixar arquivo bruto"}
-                      </button>
-                    </div>
-
-                    <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                        Tipo: {cleanText(file.extension)?.toUpperCase() || cleanText(file.mime_type) || "Não definido"}
-                      </div>
-                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                        Tamanho: {formatFileSize(file.size_bytes)}
-                      </div>
-                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                        Status: {cleanText(file.status) || "Não definido"}
-                      </div>
-                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                        Resumo: {getImportSummaryText(file.import_summary || null)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </SectionBlock>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setRawImportFilesModalTab("pools")}
+              className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm transition hover:bg-gray-50"
+            >
+              Ver arquivos brutos importados ({poolImportFiles.length})
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -4777,60 +4806,15 @@ export default function ConfiguracoesPage() {
             </div>
           </SectionBlock>
 
-          <SectionBlock
-            title="Arquivos brutos importados"
-            description="Esses são os arquivos originais usados no upload inteligente que geraram produtos, químicos, acessórios ou outros itens no sistema. Este bloco deve ficar sempre no final da aba."
-          >
-            {catalogImportFiles.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
-                Nenhum arquivo bruto importado foi encontrado para produtos e acessórios ainda.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {catalogImportFiles.map((file) => (
-                  <div
-                    key={file.id}
-                    className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                  >
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div className="min-w-0">
-                        <div className="break-words text-sm font-semibold text-gray-900">
-                          {cleanText(file.original_file_name) || "Arquivo sem nome"}
-                        </div>
-                        <div className="mt-1 text-xs text-gray-500">
-                          Importado em {formatImportDate(file.created_at)}
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleDownloadImportFile(file)}
-                        disabled={downloadingImportFileId === file.id}
-                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {downloadingImportFileId === file.id ? "Gerando link..." : "Baixar arquivo bruto"}
-                      </button>
-                    </div>
-
-                    <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                        Tipo: {cleanText(file.extension)?.toUpperCase() || cleanText(file.mime_type) || "Não definido"}
-                      </div>
-                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                        Tamanho: {formatFileSize(file.size_bytes)}
-                      </div>
-                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                        Status: {cleanText(file.status) || "Não definido"}
-                      </div>
-                      <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-                        Resumo: {getImportSummaryText(file.import_summary || null)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </SectionBlock>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setRawImportFilesModalTab("catalog")}
+              className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm transition hover:bg-gray-50"
+            >
+              Ver arquivos brutos importados ({catalogImportFiles.length})
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -6308,6 +6292,103 @@ export default function ConfiguracoesPage() {
         >
           <SummaryList items={identityItems} />
         </SectionBlock>
+      ) : null}
+
+      {rawImportFilesModalTab ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6"
+          onClick={() => setRawImportFilesModalTab(null)}
+        >
+          <div
+            className="flex max-h-[82vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 bg-gray-950 px-5 py-4 text-white">
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-gray-400">
+                  Arquivos do upload inteligente
+                </div>
+                <h2 className="mt-1 text-lg font-bold">{rawImportFilesModalTitle}</h2>
+                <p className="mt-1 text-xs text-gray-300">
+                  Excluir aqui remove apenas o arquivo bruto e o vínculo de importação. Os itens já salvos no catálogo permanecem.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setRawImportFilesModalTab(null)}
+                className="rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {rawImportFilesModalFiles.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                  {rawImportFilesModalEmptyText}
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {rawImportFilesModalFiles.map((file) => (
+                    <div
+                      key={file.id}
+                      className="rounded-2xl border border-gray-200 bg-gray-50 p-3"
+                    >
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="break-words text-sm font-semibold text-gray-900">
+                            {cleanText(file.original_file_name) || "Arquivo sem nome"}
+                          </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            Importado em {formatImportDate(file.created_at)}
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-gray-600">
+                            <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
+                              Tipo: {cleanText(file.extension)?.toUpperCase() || cleanText(file.mime_type) || "Não definido"}
+                            </span>
+                            <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
+                              Tamanho: {formatFileSize(file.size_bytes)}
+                            </span>
+                            <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
+                              Status: {cleanText(file.status) || "Não definido"}
+                            </span>
+                            <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
+                              {getImportSummaryText(file.import_summary || null)}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleDownloadImportFile(file)}
+                            disabled={
+                              downloadingImportFileId === file.id ||
+                              deletingImportFileId === file.id
+                            }
+                            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {downloadingImportFileId === file.id ? "Gerando..." : "Baixar"}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteImportFile(file)}
+                            disabled={deletingImportFileId === file.id}
+                            className="rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {deletingImportFileId === file.id ? "Excluindo..." : "Excluir arquivo"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

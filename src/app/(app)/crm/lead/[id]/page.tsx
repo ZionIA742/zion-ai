@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { KeyboardEvent, useEffect, useState } from "react";
+import { KeyboardEvent, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseBrowser";
 
@@ -135,6 +135,18 @@ type SignedMediaUrlResponse = {
   message?: string;
 };
 
+type PendingCustomerAttachment = {
+  file: File;
+  kind: "document" | "media" | "audio";
+  purpose: string;
+  fileName: string;
+  size: number;
+  mimeType: string;
+  previewUrl?: string | null;
+};
+
+type DetailTab = "summary" | "appointments" | "context" | "tasks";
+
 function formatSender(message: MessageRow) {
   const sender = String(message.sender || "").toLowerCase();
   const direction = String(message.direction || "").toLowerCase();
@@ -169,20 +181,16 @@ function bubbleClass(message: MessageRow) {
   if (
     sender.includes("assistant") ||
     sender.includes("ai") ||
-    sender.includes("bot")
-  ) {
-    return "bg-black text-white ml-auto";
-  }
-
-  if (
+    sender.includes("bot") ||
     sender.includes("human") ||
     sender.includes("agent") ||
-    (sender.includes("user") && direction === "outgoing")
+    (sender.includes("user") && direction === "outgoing") ||
+    direction === "outgoing"
   ) {
-    return "bg-blue-50 text-gray-900 ml-auto ring-1 ring-blue-200";
+    return "ml-auto bg-black text-white";
   }
 
-  return "bg-white text-gray-900 ring-1 ring-black/10";
+  return "mr-auto bg-white text-gray-900 ring-1 ring-black/10";
 }
 
 function formatDateTime(value: string | null) {
@@ -190,6 +198,82 @@ function formatDateTime(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Data invalida";
   return date.toLocaleString("pt-BR");
+}
+
+function formatFileSize(sizeBytes: number) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+    return "0 KB";
+  }
+
+  if (sizeBytes >= 1024 * 1024) {
+    return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+}
+
+
+function PaperclipComposerIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.82l8.48-8.49" />
+    </svg>
+  );
+}
+
+function MicrophoneComposerIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <path d="M12 19v3" />
+      <path d="M8 22h8" />
+    </svg>
+  );
+}
+
+function SendComposerIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-5 w-5"
+      fill="currentColor"
+    >
+      <path d="M3.4 20.4 21 12 3.4 3.6l2.05 7.05L14 12l-8.55 1.35L3.4 20.4Z" />
+    </svg>
+  );
+}
+
+function StopRecordingComposerIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-4 w-4"
+      fill="currentColor"
+    >
+      <path d="M7 7h10v10H7z" />
+    </svg>
+  );
 }
 
 function isCustomerLocationPhotoMessage(message: MessageRow) {
@@ -208,6 +292,25 @@ function isCustomerLocationPhotoMessage(message: MessageRow) {
   return mediaPurpose === "customer_location_photo";
 }
 
+function isCatalogProductPhotoMessage(message: MessageRow) {
+  if (String(message.message_type || "").trim().toLowerCase() !== "image") {
+    return false;
+  }
+
+  const metadata =
+    message.metadata && typeof message.metadata === "object"
+      ? message.metadata
+      : null;
+  const mediaPurpose = String(metadata?.media_purpose || "")
+    .trim()
+    .toLowerCase();
+  const mediaUrl = String(message.media_url || "").trim();
+
+  return (
+    mediaPurpose === "catalog_product_photo" && /^https?:\/\//i.test(mediaUrl)
+  );
+}
+
 function getMessageDisplayContent(message: MessageRow) {
   if (isCustomerLocationPhotoMessage(message)) {
     return "Foto do local recebida";
@@ -218,10 +321,41 @@ function getMessageDisplayContent(message: MessageRow) {
 
 function getMessageSecondaryContent(message: MessageRow) {
   if (isCustomerLocationPhotoMessage(message)) {
-    return "A imagem foi salva com segurança para ajudar na recomendação. A visualização da foto será habilitada em uma próxima etapa.";
+    return "A imagem foi salva com seguranca para ajudar na recomendacao.";
   }
 
   return null;
+}
+
+function getMessageMetadata(message: MessageRow) {
+  return message.metadata && typeof message.metadata === "object"
+    ? message.metadata
+    : null;
+}
+
+function getAttachmentKind(message: MessageRow) {
+  const metadata = getMessageMetadata(message);
+  return String(metadata?.attachment_kind || "").trim().toLowerCase();
+}
+
+function getOriginalFileName(message: MessageRow) {
+  const metadata = getMessageMetadata(message);
+  return String(metadata?.original_file_name || "").trim();
+}
+
+function isStoredAttachmentMessage(message: MessageRow) {
+  return Boolean(getAttachmentKind(message));
+}
+
+function formatMessageTime(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return date.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatFriendlyLabel(value: string | null | undefined) {
@@ -390,6 +524,11 @@ function EmptyState({ text }: { text: string }) {
 export default function LeadPage() {
   const params = useParams();
   const leadId = params.id as string;
+  const documentInputRef = useRef<HTMLInputElement | null>(null);
+  const customerAttachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
 
   const [lead, setLead] = useState<Lead | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -402,6 +541,21 @@ export default function LeadPage() {
   const [working, setWorking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [simulatingCustomer, setSimulatingCustomer] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [uploadingCustomerAttachment, setUploadingCustomerAttachment] = useState(false);
+  const [uploadingManualAttachment, setUploadingManualAttachment] = useState(false);
+  const [recordingAudio, setRecordingAudio] = useState(false);
+  const [recordingAudioSeconds, setRecordingAudioSeconds] = useState(0);
+  const [customerAttachmentPurpose, setCustomerAttachmentPurpose] =
+    useState("customer_location_photo");
+  const [simulatedPendingAttachment, setSimulatedPendingAttachment] =
+    useState<PendingCustomerAttachment | null>(null);
+  const [manualPendingAttachment, setManualPendingAttachment] =
+    useState<PendingCustomerAttachment | null>(null);
+  const [activeDetailsTab, setActiveDetailsTab] = useState<DetailTab | null>(null);
+  const [imagePreviewErrors, setImagePreviewErrors] = useState<Record<string, boolean>>(
+    {}
+  );
   const [viewingPhotoMessageId, setViewingPhotoMessageId] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
@@ -417,13 +571,62 @@ export default function LeadPage() {
     hasConversation &&
     !working &&
     !simulatingCustomer &&
-    newMessage.trim().length > 0;
+    !uploadingManualAttachment &&
+    (newMessage.trim().length > 0 || manualPendingAttachment !== null);
 
   const canSimulateCustomerMessage =
     hasConversation &&
     !working &&
     !simulatingCustomer &&
-    simulatedCustomerMessage.trim().length > 0;
+    !uploadingCustomerAttachment &&
+    (
+      simulatedCustomerMessage.trim().length > 0 ||
+      simulatedPendingAttachment !== null
+    );
+
+  const canSimulateCustomerAttachment =
+    hasConversation &&
+    !working &&
+    !simulatingCustomer &&
+    !uploadingCustomerAttachment;
+
+  useEffect(() => {
+    return () => {
+      if (simulatedPendingAttachment?.previewUrl) {
+        URL.revokeObjectURL(simulatedPendingAttachment.previewUrl);
+      }
+    };
+  }, [simulatedPendingAttachment]);
+
+  useEffect(() => {
+    return () => {
+      if (manualPendingAttachment?.previewUrl) {
+        URL.revokeObjectURL(manualPendingAttachment.previewUrl);
+      }
+    };
+  }, [manualPendingAttachment]);
+
+  useEffect(() => {
+    if (!recordingAudio) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setRecordingAudioSeconds((current) => current + 1);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [recordingAudio]);
+
+  useEffect(() => {
+    return () => {
+      if (audioRecorderRef.current?.state === "recording") {
+        audioRecorderRef.current.stop();
+      }
+
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
   async function fetchLeadConversationAndMessages(options?: { silent?: boolean }) {
     const silent = options?.silent ?? false;
@@ -558,19 +761,57 @@ export default function LeadPage() {
     await fetchLeadConversationAndMessages({ silent: true });
   }
 
-  async function sendMessage() {
-    const text = newMessage.trim();
-
-    if (!text) return;
-
+  async function sendManualAttachment(file: File) {
     if (!lead || !conversation) {
-      setErrorText("Nao foi possivel enviar: conversa nao encontrada para este lead.");
-      return;
+      setErrorText("Nao foi possivel enviar o anexo: conversa nao encontrada para este lead.");
+      return false;
     }
 
-    setWorking(true);
-    setErrorText(null);
-    setStatusText(null);
+    setUploadingManualAttachment(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("organizationId", lead.organization_id);
+
+      if (lead.store_id) {
+        formData.append("storeId", lead.store_id);
+      }
+
+      formData.append("conversationId", conversation.id);
+      formData.append("file", file);
+
+      const response = await fetch("/api/crm/messages/send-manual-attachment", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+      } | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(
+          result?.message || result?.error || "Nao foi possivel enviar o anexo."
+        );
+      }
+
+      return true;
+    } catch (error: any) {
+      setErrorText(error?.message || "Nao foi possivel enviar o anexo.");
+      setStatusText(null);
+      return false;
+    } finally {
+      setUploadingManualAttachment(false);
+    }
+  }
+
+  async function sendTextMessage(text: string) {
+    if (!lead || !conversation) {
+      setErrorText("Nao foi possivel enviar: conversa nao encontrada para este lead.");
+      return false;
+    }
 
     const { error } = await supabase.rpc("panel_send_message_scoped", {
       p_organization_id: lead.organization_id,
@@ -588,29 +829,86 @@ export default function LeadPage() {
       });
 
       setErrorText((error as any)?.message ?? "Erro ao enviar mensagem.");
-      setWorking(false);
+      return false;
+    }
+
+    return true;
+  }
+
+  async function sendMessage() {
+    const text = newMessage.trim();
+    const pendingAttachment = manualPendingAttachment;
+
+    if (!text && !pendingAttachment) return;
+
+    if (!lead || !conversation) {
+      setErrorText("Nao foi possivel enviar: conversa nao encontrada para este lead.");
       return;
     }
 
-    setNewMessage("");
-    setStatusText("Mensagem enviada com sucesso.");
+    setWorking(true);
+    setErrorText(null);
+    setStatusText(null);
+
+    let textSent = false;
+    let attachmentSent = false;
+
+    if (text) {
+      textSent = await sendTextMessage(text);
+
+      if (!textSent) {
+        setWorking(false);
+        return;
+      }
+    }
+
+    if (pendingAttachment) {
+      attachmentSent = await sendManualAttachment(pendingAttachment.file);
+
+      if (!attachmentSent) {
+        if (textSent) {
+          setNewMessage("");
+          setStatusText("Texto enviado, mas o anexo falhou. Revise e tente novamente.");
+          await fetchLeadConversationAndMessages({ silent: true });
+        }
+
+        setWorking(false);
+        return;
+      }
+    }
+
+    if (textSent) {
+      setNewMessage("");
+    }
+
+    if (attachmentSent) {
+      cancelPendingManualAttachment();
+    }
+
+    if (textSent && attachmentSent) {
+      setStatusText("Mensagem e anexo enviados com sucesso.");
+    } else if (attachmentSent) {
+      setStatusText("Anexo enviado com sucesso.");
+    } else {
+      setStatusText("Mensagem enviada com sucesso.");
+    }
+
     setWorking(false);
     await fetchLeadConversationAndMessages({ silent: true });
   }
 
-  async function simulateCustomerMessage() {
+  async function simulateCustomerMessage(options?: { skipRefresh?: boolean }) {
     const text = simulatedCustomerMessage.trim();
+    const skipRefresh = options?.skipRefresh ?? false;
 
-    if (!text) return;
+    if (!text) return false;
 
     if (!lead || !conversation) {
       setErrorText("Nao foi possivel simular: conversa nao encontrada para este lead.");
-      return;
+      return false;
     }
 
     setSimulatingCustomer(true);
-    setErrorText(null);
-    setStatusText(null);
 
     try {
       const response = await fetch("/api/simulate-customer", {
@@ -641,10 +939,8 @@ export default function LeadPage() {
 
         setErrorText(String(errorMessage));
         setSimulatingCustomer(false);
-        return;
+        return false;
       }
-
-      setSimulatedCustomerMessage("");
 
       if (result.aiReplySaved) {
         setStatusText(
@@ -659,7 +955,10 @@ export default function LeadPage() {
       }
 
       setSimulatingCustomer(false);
-      await fetchLeadConversationAndMessages({ silent: true });
+      if (!skipRefresh) {
+        await fetchLeadConversationAndMessages({ silent: true });
+      }
+      return true;
     } catch (error: any) {
       console.error("[LeadPage] erro inesperado ao simular cliente:", error);
 
@@ -667,7 +966,366 @@ export default function LeadPage() {
         error?.message || "Erro inesperado ao simular mensagem do cliente."
       );
       setSimulatingCustomer(false);
+      return false;
     }
+  }
+
+  async function simulateCustomerAttachment(
+    file: File,
+    purpose: string,
+    options?: { skipRefresh?: boolean }
+  ) {
+    const skipRefresh = options?.skipRefresh ?? false;
+
+    if (!lead || !conversation) {
+      setErrorText("Nao foi possivel simular o anexo: conversa nao encontrada para este lead.");
+      return false;
+    }
+
+    setUploadingCustomerAttachment(true);
+    setAttachmentMenuOpen(false);
+
+    try {
+      const formData = new FormData();
+      formData.append("organizationId", lead.organization_id);
+
+      if (lead.store_id) {
+        formData.append("storeId", lead.store_id);
+      }
+
+      formData.append("conversationId", conversation.id);
+      formData.append("purpose", String(purpose || "unknown").trim() || "unknown");
+      formData.append("file", file);
+
+      const response = await fetch("/api/simulate-customer-media", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = (await response.json()) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+      };
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            "Nao foi possivel simular o anexo do cliente."
+        );
+      }
+
+      setStatusText("Anexo do cliente simulado com sucesso.");
+      if (!skipRefresh) {
+        await fetchLeadConversationAndMessages({ silent: true });
+      }
+      return true;
+    } catch (error: any) {
+      setErrorText(
+        error?.message || "Nao foi possivel simular o anexo do cliente."
+      );
+      setStatusText(null);
+      return false;
+    } finally {
+      setUploadingCustomerAttachment(false);
+    }
+  }
+
+  function cancelPendingCustomerAttachment() {
+    setSimulatedPendingAttachment((current) => {
+      if (current?.previewUrl) {
+        URL.revokeObjectURL(current.previewUrl);
+      }
+
+      return null;
+    });
+  }
+
+  function prepareCustomerAttachment(
+    file: File,
+    purpose: string,
+    kind: "document" | "media" | "audio"
+  ) {
+    const safePurpose = String(purpose || "unknown").trim() || "unknown";
+    const mimeType = String(file.type || "").trim();
+    const previewUrl =
+      kind === "media" && mimeType.startsWith("image/")
+        ? URL.createObjectURL(file)
+        : null;
+
+    setSimulatedPendingAttachment((current) => {
+      if (current?.previewUrl) {
+        URL.revokeObjectURL(current.previewUrl);
+      }
+
+      return {
+        file,
+        kind,
+        purpose: safePurpose,
+        fileName: file.name,
+        size: file.size,
+        mimeType,
+        previewUrl,
+      };
+    });
+
+    setAttachmentMenuOpen(false);
+    setErrorText(null);
+    setStatusText(null);
+  }
+
+  async function submitSimulatedCustomerComposer() {
+    const text = simulatedCustomerMessage.trim();
+    const pendingAttachment = simulatedPendingAttachment;
+
+    if (!text && !pendingAttachment) {
+      return;
+    }
+
+    if (!lead || !conversation) {
+      setErrorText("Nao foi possivel simular: conversa nao encontrada para este lead.");
+      setStatusText(null);
+      return;
+    }
+
+    setErrorText(null);
+    setStatusText(null);
+
+    let textSent = false;
+    let attachmentSent = false;
+
+    if (text) {
+      textSent = await simulateCustomerMessage({ skipRefresh: true });
+
+      if (!textSent) {
+        return;
+      }
+    }
+
+    if (pendingAttachment) {
+      attachmentSent = await simulateCustomerAttachment(
+        pendingAttachment.file,
+        pendingAttachment.purpose,
+        { skipRefresh: true }
+      );
+
+      if (!attachmentSent) {
+        if (textSent) {
+          setSimulatedCustomerMessage("");
+          setStatusText("Texto enviado, mas o anexo falhou. Revise e tente novamente.");
+          await fetchLeadConversationAndMessages({ silent: true });
+        }
+        return;
+      }
+    }
+
+    if (textSent) {
+      setSimulatedCustomerMessage("");
+    }
+
+    if (attachmentSent) {
+      cancelPendingCustomerAttachment();
+    }
+
+    if (textSent && attachmentSent) {
+      setStatusText("Mensagem do cliente e anexo simulados com sucesso.");
+    } else if (attachmentSent) {
+      setStatusText("Anexo do cliente simulado com sucesso.");
+    }
+
+    await fetchLeadConversationAndMessages({ silent: true });
+  }
+
+  function cancelPendingManualAttachment() {
+    setManualPendingAttachment((current) => {
+      if (current?.previewUrl) {
+        URL.revokeObjectURL(current.previewUrl);
+      }
+
+      return null;
+    });
+  }
+
+  function inferManualAttachmentKind(file: File): "document" | "media" | "audio" {
+    const mimeType = String(file.type || "").toLowerCase();
+
+    if (mimeType.startsWith("audio/")) return "audio";
+    if (mimeType.startsWith("image/") || mimeType.startsWith("video/")) return "media";
+
+    return "document";
+  }
+
+  function prepareManualAttachment(file: File, kind: "document" | "media" | "audio") {
+    const mimeType = String(file.type || "").trim();
+    const previewUrl =
+      kind === "media" && mimeType.startsWith("image/")
+        ? URL.createObjectURL(file)
+        : null;
+
+    setManualPendingAttachment((current) => {
+      if (current?.previewUrl) {
+        URL.revokeObjectURL(current.previewUrl);
+      }
+
+      return {
+        file,
+        kind,
+        purpose: "store_manual_attachment",
+        fileName: file.name,
+        size: file.size,
+        mimeType,
+        previewUrl,
+      };
+    });
+
+    setErrorText(null);
+    setStatusText(null);
+  }
+
+  async function startManualAudioRecording() {
+    if (!conversation) {
+      setErrorText("Nao foi possivel gravar: conversa nao encontrada para este lead.");
+      setStatusText(null);
+      return;
+    }
+
+    if (recordingAudio) {
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setErrorText("Este navegador nao permite gravar audio diretamente por aqui.");
+      setStatusText(null);
+      return;
+    }
+
+    try {
+      setErrorText(null);
+      setStatusText(null);
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const preferredMimeType =
+        typeof MediaRecorder !== "undefined" &&
+        MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm";
+
+      const recorder = new MediaRecorder(stream, { mimeType: preferredMimeType });
+      audioRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        setErrorText("Nao foi possivel concluir a gravacao do audio.");
+        setStatusText(null);
+        setRecordingAudio(false);
+        setRecordingAudioSeconds(0);
+        stream.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
+      };
+
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || preferredMimeType || "audio/webm";
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+
+        stream.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
+        audioRecorderRef.current = null;
+        audioChunksRef.current = [];
+        setRecordingAudio(false);
+        setRecordingAudioSeconds(0);
+
+        if (audioBlob.size <= 0) {
+          setErrorText("A gravacao ficou vazia. Tente gravar novamente.");
+          setStatusText(null);
+          return;
+        }
+
+        const extension = mimeType.includes("ogg") ? "ogg" : "webm";
+        const fileName = `audio-gravado-${new Date()
+          .toISOString()
+          .replace(/[:.]/g, "-")}.${extension}`;
+        const audioFile = new File([audioBlob], fileName, { type: mimeType });
+
+        prepareManualAttachment(audioFile, "audio");
+        setStatusText("Audio gravado. Aperte enviar para mandar ao cliente.");
+      };
+
+      recorder.start();
+      setRecordingAudio(true);
+      setRecordingAudioSeconds(0);
+    } catch (error: any) {
+      setErrorText(
+        error?.message ||
+          "Nao foi possivel acessar o microfone. Verifique a permissao do navegador."
+      );
+      setStatusText(null);
+      setRecordingAudio(false);
+      setRecordingAudioSeconds(0);
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+      audioStreamRef.current = null;
+    }
+  }
+
+  function stopManualAudioRecording() {
+    const recorder = audioRecorderRef.current;
+
+    if (!recorder || recorder.state !== "recording") {
+      setRecordingAudio(false);
+      setRecordingAudioSeconds(0);
+      return;
+    }
+
+    recorder.stop();
+  }
+
+  function formatRecordingDuration(seconds: number) {
+    const safeSeconds = Math.max(0, seconds);
+    const minutes = Math.floor(safeSeconds / 60);
+    const remainingSeconds = safeSeconds % 60;
+
+    return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+  }
+
+  function handleManualAttachmentInputChange(
+    event: ChangeEvent<HTMLInputElement>,
+    kind?: "document" | "media" | "audio"
+  ) {
+    const file = event.target.files?.[0] || null;
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    prepareManualAttachment(file, kind ?? inferManualAttachmentKind(file));
+  }
+
+  function inferCustomerAttachmentKind(file: File): "document" | "media" | "audio" {
+    return inferManualAttachmentKind(file);
+  }
+
+  function handleAttachmentInputChange(
+    event: ChangeEvent<HTMLInputElement>,
+    purpose: string,
+    kind: "document" | "media" | "audio"
+  ) {
+    const file = event.target.files?.[0] || null;
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    prepareCustomerAttachment(file, purpose, kind);
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -682,8 +1340,8 @@ export default function LeadPage() {
   function handleSimulatedCustomerKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      if (!simulatingCustomer) {
-        void simulateCustomerMessage();
+      if (!simulatingCustomer && !uploadingCustomerAttachment) {
+        void submitSimulatedCustomerComposer();
       }
     }
   }
@@ -731,6 +1389,37 @@ export default function LeadPage() {
     }
   }
 
+  function openCatalogProductPhoto(mediaUrl: string | null) {
+    const safeMediaUrl = String(mediaUrl || "").trim();
+
+    if (!/^https?:\/\//i.test(safeMediaUrl)) {
+      setErrorText("Nao foi possivel abrir a foto do catalogo.");
+      setStatusText(null);
+      return;
+    }
+
+    window.open(safeMediaUrl, "_blank", "noopener,noreferrer");
+  }
+
+  function handleCatalogPreviewError(messageId: string) {
+    const safeMessageId = String(messageId || "").trim();
+
+    if (!safeMessageId) {
+      return;
+    }
+
+    setImagePreviewErrors((current) => {
+      if (current[safeMessageId]) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [safeMessageId]: true,
+      };
+    });
+  }
+
   useEffect(() => {
     void fetchLeadConversationAndMessages();
   }, [leadId]);
@@ -752,482 +1441,729 @@ export default function LeadPage() {
     return <div className="p-6">Lead nao encontrado</div>;
   }
 
+  const detailTabs: Array<{
+    id: DetailTab;
+    label: string;
+    value: string;
+    help: string;
+  }> = [
+    {
+      id: "summary",
+      label: "Resumo rapido",
+      value: conversation?.last_message_preview ? "Atualizado" : "Sem resumo",
+      help: "Ultima mensagem e proximo passo",
+    },
+    {
+      id: "appointments",
+      label: "Agenda e compromissos",
+      value: `${appointments.length}`,
+      help: appointments.length === 1 ? "compromisso" : "compromissos",
+    },
+    {
+      id: "context",
+      label: "Interesses e contexto",
+      value:
+        latestCommercialTask?.task_payload?.recommended_model ||
+        latestCommercialTask?.task_payload?.ad_model_or_requested_model ||
+        "Sem modelo",
+      help: "Modelo, espaco e preferencias",
+    },
+    {
+      id: "tasks",
+      label: "Pendencias comerciais",
+      value: `${commercialTasks.length}`,
+      help: commercialTasks.length === 1 ? "pendencia" : "pendencias",
+    },
+  ];
+
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="mx-auto max-w-5xl px-6 py-6">
-        <div className="mb-5">
-          <Link
-            href="/crm"
-            className="inline-flex items-center rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
-          >
-            Voltar para o CRM
-          </Link>
-        </div>
+      <div className="mx-auto max-w-6xl px-4 py-4 lg:px-6">
+        {refreshing ? (
+          <div className="mb-4 flex justify-end">
+            <div className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 shadow-sm ring-1 ring-black/10">
+              Atualizando...
+            </div>
+          </div>
+        ) : null}
 
         {errorText ? (
-          <div className="mb-5 rounded-2xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
+          <div className="mb-4 rounded-2xl bg-red-50 p-4 text-sm text-red-800 ring-1 ring-red-600/20">
             <div className="font-semibold">Erro</div>
             <div className="mt-1 break-words">{errorText}</div>
           </div>
         ) : null}
 
         {statusText ? (
-          <div className="mb-5 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+          <div className="mb-4 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
             <div className="font-semibold">Sucesso</div>
             <div className="mt-1 break-words">{statusText}</div>
           </div>
         ) : null}
 
-        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <div className="flex items-start justify-between gap-4">
-            <h1 className="text-2xl font-bold text-gray-900">Ficha do cliente</h1>
+        <div className="rounded-3xl bg-white shadow-sm ring-1 ring-black/5">
+          <div className="border-b border-gray-100 px-4 py-4 lg:px-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Conversa com cliente
+                </div>
+                <h1 className="mt-1 break-words text-xl font-bold text-gray-900">
+                  {lead.name ?? "Lead sem nome"}
+                </h1>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                  <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
+                    {lead.phone ?? "Sem telefone"}
+                  </span>
+                  <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
+                    {formatLeadStage(lead.state)}
+                  </span>
+                  <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
+                    {conversation ? formatConversationStatus(conversation.status) : "Sem conversa"}
+                  </span>
+                  <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
+                    {isHumanActive ? "Humano no controle" : "IA ativa"}
+                  </span>
+                </div>
+              </div>
 
-            {refreshing ? (
-              <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600 ring-1 ring-black/10">
-                Atualizando...
+              <div className="flex flex-col items-end gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button
+                    onClick={() => void takeOverConversation()}
+                    disabled={!canTakeOver}
+                    className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isHumanActive ? "Conversa assumida" : "Assumir conversa"}
+                  </button>
+
+                  <button
+                    onClick={() => void releaseConversation()}
+                    disabled={!canReleaseToAI}
+                    className="rounded-xl bg-gray-100 px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isHumanActive ? "Liberar IA" : "IA liberada"}
+                  </button>
+
+                  <button
+                    onClick={() => void fetchLeadConversationAndMessages({ silent: true })}
+                    disabled={working || refreshing || simulatingCustomer}
+                    className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Recarregar
+                  </button>
+                </div>
+
+                <Link
+                  href="/crm"
+                  className="inline-flex items-center rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                >
+                  Voltar para o CRM
+                </Link>
+              </div>
+            </div>
+
+            {!conversation ? (
+              <div className="mt-4 rounded-2xl bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-600/20">
+                Este lead ainda nao possui conversa. Os controles ficam bloqueados ate existir uma conversa.
               </div>
             ) : null}
           </div>
 
-          <div className="mt-6 grid gap-4 md:grid-cols-5">
-            <InfoCard label="Nome" value={lead.name ?? "Sem nome"} />
-            <InfoCard label="Telefone" value={lead.phone ?? "Sem telefone"} />
-            <InfoCard label="Etapa atual" value={formatLeadStage(lead.state)} />
-            <InfoCard
-              label="Status da conversa"
-              value={conversation ? formatConversationStatus(conversation.status) : "Sem conversa"}
-              help={
-                conversation
-                  ? isHumanActive
-                    ? "Humano ativo"
-                    : "IA ativa"
-                  : "Nenhuma conversa disponivel"
-              }
-            />
-            <InfoCard
-              label="Ultima interacao"
-              value={formatDateTime(conversation?.last_message_at ?? conversation?.created_at ?? null)}
-            />
-          </div>
+          <div className="border-b border-gray-100 bg-gray-50/70 px-4 py-3 lg:px-5">
+            <div className="flex flex-wrap items-center gap-2">
+              {detailTabs.map((tab) => {
+                const isActive = activeDetailsTab === tab.id;
 
-          {!conversation ? (
-            <div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
-              Este lead ainda nao possui conversa. Os controles de assumir, liberar e responder ficam bloqueados ate existir uma conversa.
-            </div>
-          ) : null}
-
-          <div className="mt-5 flex flex-wrap gap-3">
-            <button
-              onClick={() => void takeOverConversation()}
-              disabled={!canTakeOver}
-              className="rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isHumanActive ? "Conversa ja assumida" : "Assumir conversa"}
-            </button>
-
-            <button
-              onClick={() => void releaseConversation()}
-              disabled={!canReleaseToAI}
-              className="rounded-xl bg-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isHumanActive ? "Liberar IA" : "IA ja esta liberada"}
-            </button>
-
-            <button
-              onClick={() => void fetchLeadConversationAndMessages({ silent: true })}
-              disabled={working || refreshing || simulatingCustomer}
-              className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Recarregar
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h2 className="text-xl font-semibold text-gray-900">Resumo rapido</h2>
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-              <div className="text-sm font-semibold text-gray-700">
-                Ultima mensagem da conversa
-              </div>
-              <div className="mt-2 text-sm leading-6 text-gray-700">
-                {conversation?.last_message_preview ||
-                  "Ainda sem mensagem resumida na conversa."}
-              </div>
-              {(conversation?.last_message_at ||
-                conversation?.last_message_direction ||
-                conversation?.last_message_sender) ? (
-                <div className="mt-3 text-xs text-gray-500">
-                  {conversation?.last_message_at
-                    ? formatDateTime(conversation.last_message_at)
-                    : "Sem horario"}
-                  {conversation?.last_message_direction
-                    ? ` - ${formatDirectionLabel(conversation.last_message_direction)}`
-                    : ""}
-                  {conversation?.last_message_sender
-                    ? ` - ${formatSender({
-                        id: "preview",
-                        sender: conversation.last_message_sender,
-                        content: null,
-                        direction: conversation.last_message_direction,
-                        message_type: null,
-                        media_url: null,
-                        metadata: null,
-                        created_at: conversation.last_message_at,
-                      })}`
-                    : ""}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="space-y-4">
-              <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                <div className="text-sm font-semibold text-gray-700">
-                  Resumo comercial
-                </div>
-                <div className="mt-2 text-sm leading-6 text-gray-700">
-                  {latestCommercialTask?.task_payload?.conversation_summary ||
-                    "Ainda sem resumo comercial registrado."}
-                </div>
-              </div>
-
-              <div className="rounded-2xl bg-gray-50 p-4 ring-1 ring-black/5">
-                <div className="text-sm font-semibold text-gray-700">
-                  Proximo passo
-                </div>
-                <div className="mt-2 text-sm leading-6 text-gray-700">
-                  {latestCommercialTask?.task_payload?.next_step ||
-                    "Ainda sem proximo passo registrado."}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h2 className="text-xl font-semibold text-gray-900">
-            Pendencias comerciais
-          </h2>
-
-          <div className="mt-4">
-            {commercialTasks.length === 0 ? (
-              <EmptyState text="Ainda nao existem pendencias comerciais registradas para este cliente." />
-            ) : (
-              <div className="space-y-4">
-                {commercialTasks.map((task) => (
-                  <div
-                    key={task.id}
-                    className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveDetailsTab(tab.id)}
+                    className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${
+                      isActive
+                        ? "bg-black text-white"
+                        : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                    }`}
                   >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
-                            {formatTaskTypeLabel(task.task_type)}
-                          </span>
-                          <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                            {formatTaskStatusLabel(task.status)}
-                          </span>
-                          <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                            Prioridade {formatPriorityLabel(task.priority)}
-                          </span>
-                        </div>
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-                        <div className="mt-3 text-base font-semibold text-gray-900">
-                          {task.title || formatTaskTypeLabel(task.task_type)}
-                        </div>
-
-                        <div className="mt-2 text-sm leading-6 text-gray-700">
-                          {task.description || "Sem descricao registrada."}
-                        </div>
-                      </div>
-
-                      <div className="shrink-0 text-xs text-gray-500">
-                        Atualizado em {formatDateTime(task.updated_at || task.created_at)}
-                      </div>
+          {activeDetailsTab ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6">
+              <div className="max-h-[82vh] w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
+                <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
+                      Detalhes do cliente
                     </div>
+                    <h2 className="mt-1 text-lg font-bold">
+                      {detailTabs.find((tab) => tab.id === activeDetailsTab)?.label}
+                    </h2>
+                    <div className="mt-1 text-xs text-white/60">
+                      {detailTabs.find((tab) => tab.id === activeDetailsTab)?.help}
+                    </div>
+                  </div>
 
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                      <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                          Ultima mensagem do cliente
+                  <button
+                    type="button"
+                    onClick={() => setActiveDetailsTab(null)}
+                    className="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/15 hover:bg-white/15"
+                  >
+                    Fechar
+                  </button>
+                </div>
+
+                <div className="max-h-[68vh] overflow-y-auto p-5">
+                  {activeDetailsTab === "summary" ? (
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">
+                          Ultima mensagem
                         </div>
                         <div className="mt-2 text-sm leading-6 text-gray-700">
-                          {task.task_payload?.last_customer_message ||
-                            "Sem mensagem registrada na task."}
+                          {conversation?.last_message_preview ||
+                            "Ainda sem mensagem resumida na conversa."}
+                        </div>
+                        <div className="mt-2 text-xs text-gray-500">
+                          {conversation?.last_message_at
+                            ? formatDateTime(conversation.last_message_at)
+                            : "Sem horario registrado"}
                         </div>
                       </div>
 
-                      <div className="rounded-xl bg-white p-3 ring-1 ring-black/5">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">
                           Proximo passo
                         </div>
                         <div className="mt-2 text-sm leading-6 text-gray-700">
-                          {task.task_payload?.next_step ||
-                            "Sem proximo passo registrado."}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 text-xs text-gray-500">
-                      Criado em {formatDateTime(task.created_at)}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h2 className="text-xl font-semibold text-gray-900">
-            Interesse e contexto do cliente
-          </h2>
-
-          <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            <InfoCard
-              label="Modelo recomendado"
-              value={
-                latestCommercialTask?.task_payload?.recommended_model ||
-                "Ainda sem informacao registrada"
-              }
-            />
-            <InfoCard
-              label="Modelo citado / anuncio"
-              value={
-                latestCommercialTask?.task_payload?.ad_model_or_requested_model ||
-                "Ainda sem informacao registrada"
-              }
-            />
-            <InfoCard
-              label="Espaco / medidas"
-              value={
-                latestCommercialTask?.task_payload?.space_text ||
-                "Ainda sem informacao registrada"
-              }
-            />
-            <InfoCard
-              label="Area solicitada"
-              value={
-                latestCommercialTask?.task_payload?.requested_area_m2 != null
-                  ? `${latestCommercialTask.task_payload.requested_area_m2} m2`
-                  : "Ainda sem informacao registrada"
-              }
-            />
-            <InfoCard
-              label="Localizacao"
-              value={
-                latestCommercialTask?.task_payload?.location_text ||
-                "Ainda sem informacao registrada"
-              }
-            />
-            <InfoCard
-              label="Periodo preferido"
-              value={
-                latestCommercialTask?.task_payload?.preferred_period_text ||
-                "Ainda sem informacao registrada"
-              }
-            />
-            <InfoCard
-              label="Preferencias do cliente"
-              value={
-                latestCommercialTask?.task_payload?.customer_preferences ||
-                "Ainda sem informacao registrada"
-              }
-            />
-            <InfoCard
-              label="Objecao relevante"
-              value={
-                latestCommercialTask?.task_payload?.relevant_objection ||
-                "Ainda sem informacao registrada"
-              }
-            />
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h2 className="text-xl font-semibold text-gray-900">
-            Agenda e compromissos
-          </h2>
-
-          <div className="mt-4">
-            {appointments.length === 0 ? (
-              <EmptyState text="Ainda nao existem compromissos registrados para este cliente." />
-            ) : (
-              <div className="space-y-4">
-                {appointments.map((appointment) => (
-                  <div
-                    key={appointment.id}
-                    className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <div className="text-base font-semibold text-gray-900">
-                          {formatAppointmentTypeLabel(appointment.appointment_type)}
-                        </div>
-                        <div className="mt-1 text-sm text-gray-600">
-                          {formatAppointmentStatusLabel(appointment.status)}
+                          {latestCommercialTask?.task_payload?.next_step ||
+                            "Ainda sem proximo passo registrado."}
                         </div>
                       </div>
 
-                      <div className="text-xs text-gray-500">
-                        Atualizado em {formatDateTime(appointment.updated_at || appointment.created_at)}
+                      <div className="lg:col-span-2">
+                        <div className="text-sm font-semibold text-gray-900">
+                          Resumo comercial
+                        </div>
+                        <div className="mt-2 text-sm leading-6 text-gray-700">
+                          {latestCommercialTask?.task_payload?.conversation_summary ||
+                            "Ainda sem resumo comercial registrado."}
+                        </div>
                       </div>
                     </div>
+                  ) : null}
 
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  {activeDetailsTab === "context" ? (
+                    <div className="grid gap-3 md:grid-cols-2">
                       <InfoCard
-                        label="Data e hora"
-                        value={formatDateTime(appointment.scheduled_start || appointment.scheduled_end)}
+                        label="Modelo citado"
+                        value={
+                          latestCommercialTask?.task_payload?.ad_model_or_requested_model ||
+                          "Ainda sem modelo registrado"
+                        }
                       />
                       <InfoCard
-                        label="Endereco"
-                        value={appointment.address_text || "Sem endereco registrado"}
+                        label="Modelo recomendado"
+                        value={
+                          latestCommercialTask?.task_payload?.recommended_model ||
+                          "Ainda sem recomendacao registrada"
+                        }
+                      />
+                      <InfoCard
+                        label="Espaco informado"
+                        value={
+                          latestCommercialTask?.task_payload?.space_text ||
+                          "Ainda sem informacao registrada"
+                        }
+                      />
+                      <InfoCard
+                        label="Localizacao"
+                        value={
+                          latestCommercialTask?.task_payload?.location_text ||
+                          "Ainda sem informacao registrada"
+                        }
+                      />
+                      <InfoCard
+                        label="Periodo preferido"
+                        value={
+                          latestCommercialTask?.task_payload?.preferred_period_text ||
+                          "Ainda sem informacao registrada"
+                        }
+                      />
+                      <InfoCard
+                        label="Preferencias do cliente"
+                        value={
+                          latestCommercialTask?.task_payload?.customer_preferences ||
+                          "Ainda sem informacao registrada"
+                        }
+                      />
+                      <InfoCard
+                        label="Objecao relevante"
+                        value={
+                          latestCommercialTask?.task_payload?.relevant_objection ||
+                          "Ainda sem informacao registrada"
+                        }
                       />
                     </div>
+                  ) : null}
 
-                    <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-black/5">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        Observacoes
-                      </div>
-                      <div className="mt-2 text-sm leading-6 text-gray-700">
-                        {appointment.notes || "Sem observacoes registradas."}
-                      </div>
-                    </div>
+                  {activeDetailsTab === "tasks" ? (
+                    <div>
+                      {commercialTasks.length === 0 ? (
+                        <EmptyState text="Ainda nao existem pendencias comerciais registradas para este cliente." />
+                      ) : (
+                        <div className="space-y-3">
+                          {commercialTasks.map((task) => (
+                            <div
+                              key={task.id}
+                              className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
+                                  {formatTaskTypeLabel(task.task_type)}
+                                </span>
+                                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                                  {formatTaskStatusLabel(task.status)}
+                                </span>
+                                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                                  Prioridade {formatPriorityLabel(task.priority)}
+                                </span>
+                              </div>
 
-                    <div className="mt-3 text-xs text-gray-500">
-                      Criado em {formatDateTime(appointment.created_at)}
+                              <div className="mt-3 text-sm font-semibold text-gray-900">
+                                {task.title || formatTaskTypeLabel(task.task_type)}
+                              </div>
+                              <div className="mt-2 text-sm leading-6 text-gray-700">
+                                {task.description || "Sem descricao registrada."}
+                              </div>
+
+                              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                <InfoCard
+                                  label="Ultima mensagem do cliente"
+                                  value={
+                                    task.task_payload?.last_customer_message ||
+                                    "Sem mensagem registrada"
+                                  }
+                                />
+                                <InfoCard
+                                  label="Proximo passo"
+                                  value={
+                                    task.task_payload?.next_step ||
+                                    "Sem proximo passo registrado"
+                                  }
+                                />
+                              </div>
+
+                              <div className="mt-3 text-xs text-gray-500">
+                                Atualizado em {formatDateTime(task.updated_at || task.created_at)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  ) : null}
+
+                  {activeDetailsTab === "appointments" ? (
+                    <div>
+                      {appointments.length === 0 ? (
+                        <EmptyState text="Ainda nao existem compromissos registrados para este cliente." />
+                      ) : (
+                        <div className="space-y-3">
+                          {appointments.map((appointment) => (
+                            <div
+                              key={appointment.id}
+                              className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-semibold text-gray-900">
+                                    {formatAppointmentTypeLabel(appointment.appointment_type)}
+                                  </div>
+                                  <div className="mt-1 text-xs text-gray-600">
+                                    {formatAppointmentStatusLabel(appointment.status)}
+                                  </div>
+                                </div>
+
+                                <div className="text-xs text-gray-500">
+                                  {formatDateTime(appointment.scheduled_start || appointment.scheduled_end)}
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                <InfoCard
+                                  label="Endereco"
+                                  value={appointment.address_text || "Sem endereco registrado"}
+                                />
+                                <InfoCard
+                                  label="Observacoes"
+                                  value={appointment.notes || "Sem observacoes registradas"}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-xl font-semibold text-gray-900">Mensagens</h2>
-            <div className="text-sm text-gray-500">{messages.length} mensagem(ns)</div>
-          </div>
-
-          {!conversation ? (
-            <div className="mt-6 rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
-              Este lead ainda nao possui conversa criada.
             </div>
-          ) : messages.length === 0 ? (
-            <div className="mt-6 rounded-2xl bg-gray-50 p-6 text-sm text-gray-600 ring-1 ring-black/5">
-              Nenhuma mensagem encontrada para esta conversa.
+          ) : null}
+
+          <div className="flex h-[620px] flex-col">
+            <div className="flex-1 overflow-y-auto bg-[#f2f0ea] px-4 py-4 lg:px-5">
+              {!conversation ? (
+                <div className="rounded-2xl bg-white p-4 text-sm text-gray-600 ring-1 ring-black/10">
+                  Este lead ainda nao possui conversa criada.
+                </div>
+              ) : messages.length === 0 ? (
+                <div className="rounded-2xl bg-white p-4 text-sm text-gray-600 ring-1 ring-black/10">
+                  Nenhuma mensagem encontrada para esta conversa.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {messages.map((message) => (
+                    <div key={message.id} className="flex w-full">
+                      <div
+                        className={`max-w-[82%] rounded-2xl px-3.5 py-2.5 text-sm shadow-sm ${bubbleClass(
+                          message
+                        )}`}
+                      >
+                        {(() => {
+                          const isCustomerLocationPhoto =
+                            isCustomerLocationPhotoMessage(message);
+                          const isCatalogProductPhoto =
+                            isCatalogProductPhotoMessage(message);
+                          const hasCatalogPreviewError =
+                            imagePreviewErrors[message.id] === true;
+                          const catalogMediaUrl = String(message.media_url || "").trim();
+                          const attachmentKind = getAttachmentKind(message);
+                          const originalFileName = getOriginalFileName(message);
+
+                          return (
+                            <>
+                              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide opacity-60">
+                                {formatSender(message)}
+                              </div>
+
+                              <div className="whitespace-pre-wrap break-words leading-5">
+                                {getMessageDisplayContent(message)}
+                              </div>
+
+                              {isStoredAttachmentMessage(message) && !isCatalogProductPhoto ? (
+                                <div className="mt-2 rounded-xl bg-white/70 p-3 text-xs text-gray-900 ring-1 ring-black/10">
+                                  <div className="font-semibold">
+                                    {attachmentKind === "file"
+                                      ? "Arquivo"
+                                      : attachmentKind === "audio"
+                                        ? "Audio"
+                                        : attachmentKind === "video"
+                                          ? "Video"
+                                          : "Anexo"}
+                                  </div>
+                                  <div className="mt-1 break-words text-gray-600">
+                                    {originalFileName || "Anexo salvo com seguranca"}
+                                  </div>
+                                  <div className="mt-2 text-[11px] text-gray-500">
+                                    Visualizacao segura sera ligada na proxima etapa do Pilar 10.
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {isCatalogProductPhoto ? (
+                                <div className="mt-3 max-w-full">
+                                  {!hasCatalogPreviewError ? (
+                                    <img
+                                      src={catalogMediaUrl}
+                                      alt={message.content || "Foto de catalogo"}
+                                      onError={() => handleCatalogPreviewError(message.id)}
+                                      className="block h-auto max-h-[220px] w-full max-w-[320px] rounded-xl object-cover ring-1 ring-black/10"
+                                    />
+                                  ) : (
+                                    <div className="rounded-xl bg-black/5 px-3 py-2 text-xs text-gray-700 ring-1 ring-black/10">
+                                      Nao foi possivel carregar a previa da foto.
+                                    </div>
+                                  )}
+                                </div>
+                              ) : null}
+
+                              {getMessageSecondaryContent(message) ? (
+                                <div className="mt-2 whitespace-pre-wrap break-words text-xs opacity-80">
+                                  {getMessageSecondaryContent(message)}
+                                </div>
+                              ) : null}
+
+                              {isCustomerLocationPhoto ? (
+                                <div className="mt-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => void openCustomerLocationPhoto(message.id)}
+                                    disabled={viewingPhotoMessageId === message.id}
+                                    className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {viewingPhotoMessageId === message.id ? "Abrindo..." : "Ver foto"}
+                                  </button>
+                                </div>
+                              ) : null}
+
+                              {isCatalogProductPhoto ? (
+                                <div className="mt-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => openCatalogProductPhoto(message.media_url)}
+                                    className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100"
+                                  >
+                                    Abrir foto
+                                  </button>
+                                </div>
+                              ) : null}
+
+                              <div className="mt-1.5 text-right text-[11px] opacity-60">
+                                {formatMessageTime(message.created_at)}
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="mt-6 space-y-4">
-              {messages.map((message) => (
-                <div key={message.id} className="flex w-full">
-                  <div
-                    className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm ${bubbleClass(
-                      message
-                    )}`}
-                  >
-                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide opacity-70">
-                      {formatSender(message)}
-                    </div>
 
-                    <div className="whitespace-pre-wrap break-words text-sm">
-                      {getMessageDisplayContent(message)}
-                    </div>
-
-                    {getMessageSecondaryContent(message) ? (
-                      <div className="mt-2 whitespace-pre-wrap break-words text-xs opacity-80">
-                        {getMessageSecondaryContent(message)}
+            <div className="border-t border-gray-100 bg-white px-4 py-3 lg:px-5">
+              <input
+                ref={documentInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/jpg,video/mp4,video/webm,video/quicktime,audio/mpeg,audio/mp4,audio/ogg,audio/webm,audio/wav,audio/x-wav,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                onChange={(event) => handleManualAttachmentInputChange(event)}
+                className="hidden"
+              />
+              {manualPendingAttachment ? (
+                <div className="mb-3 rounded-2xl bg-gray-50 p-3 ring-1 ring-black/5">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {manualPendingAttachment.previewUrl ? (
+                      <img
+                        src={manualPendingAttachment.previewUrl}
+                        alt={manualPendingAttachment.fileName}
+                        className="h-16 w-16 rounded-xl object-cover ring-1 ring-black/10"
+                      />
+                    ) : (
+                      <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-white text-xs font-bold text-gray-500 ring-1 ring-black/10">
+                        ANEXO
                       </div>
-                    ) : null}
+                    )}
 
-                    {isCustomerLocationPhotoMessage(message) ? (
-                      <div className="mt-3">
-                        <button
-                          type="button"
-                          onClick={() => void openCustomerLocationPhoto(message.id)}
-                          disabled={viewingPhotoMessageId === message.id}
-                          className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {viewingPhotoMessageId === message.id ? "Abrindo..." : "Ver foto"}
-                        </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="break-words text-sm font-semibold text-gray-900">
+                        {manualPendingAttachment.fileName}
                       </div>
-                    ) : null}
-
-                    <div className="mt-2 text-[11px] opacity-70">
-                      {formatDateTime(message.created_at)}
-                      {message.message_type ? ` - ${message.message_type}` : ""}
-                      {message.direction ? ` - ${message.direction}` : ""}
+                      <div className="mt-1 break-words text-xs text-gray-500">
+                        {formatFileSize(manualPendingAttachment.size)}
+                        {manualPendingAttachment.mimeType
+                          ? ` • ${manualPendingAttachment.mimeType}`
+                          : ""}
+                      </div>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={cancelPendingManualAttachment}
+                      disabled={working || uploadingManualAttachment}
+                      className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
                   </div>
                 </div>
-              ))}
+              ) : null}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => documentInputRef.current?.click()}
+                  disabled={!conversation || working || uploadingManualAttachment}
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="Anexar arquivo"
+                  title="Anexar arquivo"
+                >
+                  <PaperclipComposerIcon />
+                </button>
+
+                <input
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  onKeyDown={handleInputKeyDown}
+                  disabled={working || simulatingCustomer || uploadingManualAttachment || !conversation}
+                  className="h-11 flex-1 rounded-full border border-gray-200 bg-gray-50 px-4 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
+                  placeholder={
+                    conversation
+                      ? "Mensagem"
+                      : "Este lead ainda nao possui conversa disponivel."
+                  }
+                />
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    recordingAudio
+                      ? stopManualAudioRecording()
+                      : void startManualAudioRecording()
+                  }
+                  disabled={!conversation || working || uploadingManualAttachment}
+                  className={`flex h-11 shrink-0 items-center justify-center gap-2 rounded-full px-3 text-sm font-semibold ring-1 ring-black/10 transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                    recordingAudio
+                      ? "bg-red-600 text-white hover:bg-red-700"
+                      : "bg-white text-gray-900 hover:bg-gray-50"
+                  }`}
+                  aria-label={recordingAudio ? "Parar gravacao" : "Gravar audio"}
+                  title={recordingAudio ? "Parar gravacao" : "Gravar audio"}
+                >
+                  {recordingAudio ? (
+                    <>
+                      <StopRecordingComposerIcon />
+                      <span>{formatRecordingDuration(recordingAudioSeconds)}</span>
+                    </>
+                  ) : (
+                    <MicrophoneComposerIcon />
+                  )}
+                </button>
+
+                <button
+                  onClick={() => void sendMessage()}
+                  disabled={!canSendMessage}
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gray-700 text-white shadow-sm transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="Enviar mensagem"
+                  title="Enviar mensagem"
+                >
+                  {working || uploadingManualAttachment ? "..." : <SendComposerIcon />}
+                </button>
+              </div>
             </div>
-          )}
+          </div>
         </div>
+        <div className="mt-4 rounded-3xl bg-white p-4 shadow-sm ring-1 ring-black/5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Area de testes
+              </div>
+              <h2 className="mt-1 text-base font-bold text-gray-900">
+                Simular mensagem do cliente
+              </h2>
+              <p className="mt-1 text-xs text-gray-500">
+                Bloco temporario para testes do Pilar 10. No produto final, esta area deve sair da tela da loja.
+              </p>
+            </div>
+          </div>
 
-        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h2 className="text-xl font-semibold text-gray-900">Responder manualmente</h2>
-
-          <div className="mt-4 flex gap-3">
-            <input
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              onKeyDown={handleInputKeyDown}
-              disabled={working || simulatingCustomer || !conversation}
-              className="flex-1 rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
-              placeholder={
-                conversation
-                  ? "Digite sua mensagem e pressione Enter..."
-                  : "Este lead ainda nao possui conversa disponivel."
+          <input
+            ref={customerAttachmentInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/jpg,video/mp4,video/webm,video/quicktime,audio/mpeg,audio/mp4,audio/ogg,audio/webm,audio/wav,audio/x-wav,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            onChange={(event) => {
+              const file = event.target.files?.[0] || null;
+              if (!file) {
+                event.target.value = "";
+                return;
               }
-            />
 
-            <button
-              onClick={() => void sendMessage()}
-              disabled={!canSendMessage}
-              className="rounded-xl bg-black px-6 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {working ? "Enviando..." : "Enviar"}
-            </button>
-          </div>
+              handleAttachmentInputChange(
+                event,
+                customerAttachmentPurpose,
+                inferCustomerAttachmentKind(file)
+              );
+            }}
+            className="hidden"
+          />
 
-          <div className="mt-3 text-sm text-gray-500">
-            Pressione <span className="font-semibold">Enter</span> para enviar ou use o botao
-            <span className="font-semibold"> Enviar</span>.
-          </div>
-        </div>
-
-        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <h2 className="text-xl font-semibold text-gray-900">Simular mensagem do cliente</h2>
-
-          <div className="mt-4 flex gap-3">
+          <div className="mt-4 grid gap-3 md:grid-cols-[1fr_220px]">
             <input
               value={simulatedCustomerMessage}
-              onChange={(e) => setSimulatedCustomerMessage(e.target.value)}
+              onChange={(event) => setSimulatedCustomerMessage(event.target.value)}
               onKeyDown={handleSimulatedCustomerKeyDown}
-              disabled={working || simulatingCustomer || !conversation}
-              className="flex-1 rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
-              placeholder={
-                conversation
-                  ? "Digite a mensagem do cliente e pressione Enter..."
-                  : "Este lead ainda nao possui conversa disponivel."
-              }
+              disabled={!conversation || simulatingCustomer || uploadingCustomerAttachment}
+              className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-4 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
+              placeholder="Digite como se fosse o cliente"
             />
 
-            <button
-              onClick={() => void simulateCustomerMessage()}
-              disabled={!canSimulateCustomerMessage}
-              className="rounded-xl bg-black px-6 py-3 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            <select
+              value={customerAttachmentPurpose}
+              onChange={(event) => setCustomerAttachmentPurpose(event.target.value)}
+              disabled={!conversation || simulatingCustomer || uploadingCustomerAttachment}
+              className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-100"
             >
-              {simulatingCustomer ? "Simulando..." : "Simular cliente"}
-            </button>
+              <option value="customer_location_photo">Foto do local</option>
+              <option value="customer_product_or_pool_photo">Foto de produto/piscina</option>
+              <option value="payment_proof">Comprovante de pagamento</option>
+              <option value="conversation_or_document_screenshot">Print/documento</option>
+              <option value="unknown">Outro anexo</option>
+            </select>
           </div>
 
-          <div className="mt-3 text-sm text-gray-500">
-            Use este campo para simular um cliente enviando mensagem para a IA.
+          {simulatedPendingAttachment ? (
+            <div className="mt-3 rounded-2xl bg-gray-50 p-3 ring-1 ring-black/5">
+              <div className="flex flex-wrap items-center gap-3">
+                {simulatedPendingAttachment.previewUrl ? (
+                  <img
+                    src={simulatedPendingAttachment.previewUrl}
+                    alt={simulatedPendingAttachment.fileName}
+                    className="h-14 w-14 rounded-xl object-cover ring-1 ring-black/10"
+                  />
+                ) : (
+                  <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-white text-xs font-bold text-gray-500 ring-1 ring-black/10">
+                    ANEXO
+                  </div>
+                )}
+
+                <div className="min-w-0 flex-1">
+                  <div className="break-words text-sm font-semibold text-gray-900">
+                    {simulatedPendingAttachment.fileName}
+                  </div>
+                  <div className="mt-1 break-words text-xs text-gray-500">
+                    {formatFileSize(simulatedPendingAttachment.size)}
+                    {simulatedPendingAttachment.mimeType
+                      ? ` • ${simulatedPendingAttachment.mimeType}`
+                      : ""}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={cancelPendingCustomerAttachment}
+                  disabled={simulatingCustomer || uploadingCustomerAttachment}
+                  className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => customerAttachmentInputRef.current?.click()}
+              disabled={!canSimulateCustomerAttachment}
+              className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Anexar como cliente
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void submitSimulatedCustomerComposer()}
+              disabled={!canSimulateCustomerMessage}
+              className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {simulatingCustomer || uploadingCustomerAttachment ? "Enviando..." : "Simular cliente"}
+            </button>
           </div>
         </div>
       </div>

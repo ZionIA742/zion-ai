@@ -679,7 +679,8 @@ function GoalGauge({
     : percent;
 
   const arcPercent = Math.max(0, Math.min(displayPercent, 100));
-  const fillDegrees = (arcPercent / 100) * 180;
+  const arcLength = 251.2;
+  const filledLength = (arcPercent / 100) * arcLength;
 
   return (
     <DashboardPanel className="min-h-0">
@@ -688,27 +689,42 @@ function GoalGauge({
       </div>
 
       <div className="mt-3 flex flex-col items-center">
-        <div
-          className="relative h-[132px] w-[300px] max-w-full overflow-hidden"
-          style={{
-            background: `conic-gradient(from 270deg at 50% 100%, #16a34a 0deg ${fillDegrees}deg, #e4e4e7 ${fillDegrees}deg 180deg, transparent 180deg 360deg)`,
-            borderTopLeftRadius: "999px",
-            borderTopRightRadius: "999px",
-          }}
-        >
-          <div className="absolute bottom-0 left-[34px] right-[34px] h-[92px] rounded-t-full bg-white" />
+        <div className="relative h-[140px] w-[300px] max-w-full">
+          <svg
+            viewBox="0 0 300 150"
+            className="h-full w-full overflow-visible"
+            aria-label="Progresso da meta do mês"
+          >
+            <path
+              d="M 35 125 A 115 115 0 0 1 265 125"
+              fill="none"
+              stroke="#e4e4e7"
+              strokeWidth="22"
+              strokeLinecap="round"
+            />
+            {arcPercent > 0 ? (
+              <path
+                d="M 35 125 A 115 115 0 0 1 265 125"
+                fill="none"
+                stroke="#16a34a"
+                strokeWidth="22"
+                strokeLinecap="butt"
+                strokeDasharray={`${filledLength} ${arcLength}`}
+              />
+            ) : null}
+          </svg>
 
-          <div className="absolute inset-x-0 bottom-[26px] flex justify-center text-center">
-            <span className="block min-w-[34px] text-center text-base font-medium leading-none text-zinc-950">
+          <div className="absolute inset-x-0 top-[82px] flex justify-center text-center">
+            <span className="block min-w-[34px] text-center text-lg font-semibold leading-none text-zinc-950">
               {hasGoal ? formatPercent(displayPercent) : "0%"}
             </span>
           </div>
 
-          <div className="absolute inset-x-0 bottom-0 flex items-end justify-between px-0">
-            <span className="block min-w-[28px] text-left text-xs font-medium leading-none text-zinc-700">
+          <div className="absolute inset-x-[20px] bottom-[6px] flex items-center justify-between">
+            <span className="block text-xs font-medium leading-none text-zinc-700">
               0%
             </span>
-            <span className="block min-w-[36px] text-right text-xs font-medium leading-none text-zinc-700">
+            <span className="block text-xs font-medium leading-none text-zinc-700">
               100%
             </span>
           </div>
@@ -854,13 +870,13 @@ function PaymentDonut({
   const visibleSlices = total ? slices.filter((slice) => slice.percent > 0) : slices;
 
   return (
-    <div className="grid min-w-0 gap-3 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
+    <div className="grid min-w-0 gap-3 sm:grid-cols-[88px_minmax(0,1fr)] sm:items-center">
       <div className="flex justify-center">
         <div
-          className="relative h-24 w-24 rounded-full border border-zinc-200 shadow-sm"
+          className="relative h-20 w-20 rounded-full border border-zinc-200 shadow-sm"
           style={{ background: `conic-gradient(${gradient})` }}
         >
-          <div className="absolute inset-5 flex flex-col items-center justify-center rounded-full border border-zinc-200 bg-white text-center">
+          <div className="absolute inset-4 flex flex-col items-center justify-center rounded-full border border-zinc-200 bg-white text-center">
             <span className="text-xs font-semibold leading-tight text-zinc-950">
               {total ? `${formatNumber(total)}%` : "Sem dados"}
             </span>
@@ -903,11 +919,8 @@ function PaymentCirclePanel({
   emptyText: string;
 }) {
   return (
-    <DashboardPanel className="min-h-[260px]">
-      <PanelTitle
-        title="Formas de pagamento"
-        helper="Percentual calculado apenas com as formas usadas pela loja."
-      />
+    <DashboardPanel className="min-h-[190px]">
+      <PanelTitle title="Formas de pagamento" />
       <PaymentDonut slices={slices} emptyText={emptyText} />
     </DashboardPanel>
   );
@@ -1266,6 +1279,13 @@ export default function DashboardPage() {
   const [historicalDetailDrawer, setHistoricalDetailDrawer] = useState<
     null | "messages" | "leads" | "conversations" | "appointments" | "currentMonth"
   >(null);
+  const [generalDetailDrawer, setGeneralDetailDrawer] = useState<string | null>(null);
+  const [isRegionDrawerOpen, setIsRegionDrawerOpen] = useState(false);
+  const [selectedBestSellerCategory, setSelectedBestSellerCategory] = useState<string | null>(null);
+  const [aiDetailDrawer, setAiDetailDrawer] = useState<
+    null | "distribution" | "messages" | "conversations" | "pending" | "processes" | "actions"
+  >(null);
+  const [isNextAppointmentsDrawerOpen, setIsNextAppointmentsDrawerOpen] = useState(false);
   const [selectedGeneralItemId, setSelectedGeneralItemId] = useState('revenue_month');
   const [selectedPendingIssueId, setSelectedPendingIssueId] = useState('sales_source');
 
@@ -1316,7 +1336,7 @@ export default function DashboardPage() {
     const previousBodyOverflowY = document.body.style.overflowY;
     const previousHtmlOverflowY = document.documentElement.style.overflowY;
 
-    if (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
+    if (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
       window.scrollTo({ top: 0, behavior: "auto" });
       document.body.style.overflowY = "hidden";
       document.documentElement.style.overflowY = "hidden";
@@ -1334,7 +1354,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (typeof window === "undefined" || isLoading) return;
 
-    if (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
+    if (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
       window.requestAnimationFrame(() => {
         window.scrollTo({ top: 0, behavior: "auto" });
       });
@@ -1358,7 +1378,7 @@ export default function DashboardPage() {
     let animationFrameId = 0;
 
     const saveScrollPosition = () => {
-      if (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
+      if (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
         window.localStorage.setItem(DASHBOARD_SCROLL_STORAGE_KEY, "0");
         return;
       }
@@ -1797,17 +1817,14 @@ export default function DashboardPage() {
   return (
     <main
       className={`overflow-x-hidden bg-zinc-50 text-zinc-950 ${
-        (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") ? "h-auto min-h-0" : "min-h-screen"
+        (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") ? "h-auto min-h-0" : "min-h-screen"
       }`}
     >
       <div className="border-b border-zinc-200 bg-white">
         <div className="px-4 py-4 md:px-6">
           <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div className="min-w-0">
-              <p className="break-words text-xs font-medium uppercase tracking-[0.22em] text-zinc-500">
-                Dashboard da loja
-              </p>
-              <h1 className="mt-1 break-words text-2xl font-semibold tracking-tight">
+              <h1 className="break-words text-2xl font-semibold tracking-tight">
                 {dashboardTitle}
               </h1>
 
@@ -1848,198 +1865,566 @@ export default function DashboardPage() {
 
       <div
         className={`min-w-0 ${
-          (activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") ? "space-y-3 p-4 pb-0 md:p-6 md:pb-0" : "space-y-5 p-4 md:p-6"
+          (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") ? "space-y-3 p-4 pb-0 md:p-6 md:pb-0" : "space-y-5 p-4 md:p-6"
         }`}
       >
         {activeTab === "geral" ? (
-          <div className="space-y-4">
-            <div className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.35fr]">
-              <div className="grid min-w-0 gap-4">
-                <GoalGauge
-                  percent={0}
-                  label="% da meta"
-                  helper="Só aparece com meta mensal configurada e vendas reais registradas."
-                />
-
-                <PaymentCirclePanel
-                  slices={paymentSlices}
-                  emptyText="Ainda não há vendas com forma de pagamento registrada."
-                />
-
-                <SmallDonutPlaceholder
-                  title="De onde os leads vêm"
-                  helper="Origem dos leads por canal."
-                  emptyText="Ainda não há campo confiável de origem do lead conectado ao dashboard."
-                />
-              </div>
-
-              <div className="grid min-w-0 gap-4">
-                <div className="grid min-w-0 gap-3 md:grid-cols-3">
-                  <ExecutiveNumberCard
-                    title="Faturamento do mês"
-                    value="Sem dados"
-                    helper="Mês atual"
-                  />
-                  <ExecutiveNumberCard
-                    title="Vendas hoje"
-                    value="Sem dados"
-                    helper="Dia atual"
-                  />
-                  <ExecutiveNumberCard
-                    title="Vendas semana"
-                    value="Sem dados"
-                    helper="Semana atual"
-                  />
-                </div>
-
-                <div className="grid min-w-0 gap-3 md:grid-cols-3">
-                  <ExecutiveNumberCard
-                    title="% venda por lead"
-                    value="Sem dados"
-                    helper="Conversão"
-                  />
-                  <ExecutiveNumberCard
-                    title="Leads do mês"
-                    value={formatNumber(summary.leads.month)}
-                    helper={`${formatNumber(summary.leads.today)} hoje`}
-                  />
-                  <ExecutiveNumberCard
-                    title="Pendências"
-                    value={formatNumber(
-                      summary.followups.pending +
-                        summary.ai.pendingQueueActions +
-                        summary.catalog.zeroStockItems +
-                        summary.catalog.lowStockItems +
-                        (summary.sales.available ? 0 : 5)
-                    )}
-                    helper="Itens a revisar"
-                  />
-                </div>
-
-                <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                  <ExecutiveNumberCard
-                    title="Mensagens hoje"
-                    value={formatNumber(summary.messages.today)}
-                    helper={`${formatNumber(summary.messages.last7Days)} em 7 dias`}
-                  />
-                  <ExecutiveNumberCard
-                    title="Compromissos hoje"
-                    value={formatNumber(summary.appointments.today)}
-                    helper={`${formatNumber(summary.appointments.future)} futuro(s)`}
-                  />
-                </div>
-
-                <div className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-                  <WeeklySalesChart
-                    title="Vendas por semana"
-                    emptyText="Ainda não há vendas registradas por semana."
+          <>
+            <div className="space-y-4">
+              <div className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.35fr]">
+                <div className="grid min-w-0 gap-4">
+                  <GoalGauge
+                    percent={0}
+                    label="% da meta"
+                    helper="Só aparece com meta mensal configurada e vendas reais registradas."
                   />
 
-                  <CompactRanking
-                    title="Região que mais vende"
-                    columns={["Região", "Vendas", "Ticket", "%"]}
-                    emptyText="Ainda não há região de venda conectada aos pedidos."
-                    rows={[]}
+                  <PaymentCirclePanel
+                    slices={paymentSlices}
+                    emptyText="Ainda não há vendas com forma de pagamento registrada."
+                  />
+
+                  <SmallDonutPlaceholder
+                    title="De onde os leads vêm"
+                    helper="Origem dos leads por canal."
+                    emptyText="Ainda não há campo confiável de origem do lead conectado ao dashboard."
                   />
                 </div>
 
                 <div className="grid min-w-0 gap-4">
-                  <CompactRanking
-                    title="Mais vendidos"
-                    columns={["Categoria", "Item líder", "Qtd", "Faturamento"]}
-                    emptyText="Ainda não há histórico real de itens vendidos por categoria."
-                    rows={[
-                      ["Piscina", "Sem dados", "-", "-"],
-                      ["Químico", "Sem dados", "-", "-"],
-                      ["Acessório", "Sem dados", "-", "-"],
-                      ["Outro", "Sem dados", "-", "-"],
-                    ]}
-                  />
+                  <div className="grid min-w-0 gap-3 md:grid-cols-3">
+                    {[
+                      ["revenue_month", "Faturamento do mês", "Sem dados"],
+                      ["sales_today", "Vendas hoje", "Sem dados"],
+                      ["sales_week", "Vendas semana", "Sem dados"],
+                    ].map(([id, title, value]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setGeneralDetailDrawer(id)}
+                        className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                      >
+                        <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                          {title}
+                        </p>
+                        <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                          {value}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
 
+                  <div className="grid min-w-0 gap-3 md:grid-cols-3">
+                    <ExecutiveNumberCard
+                      title="% venda por lead"
+                      value="Sem dados"
+                      helper="Conversão"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setGeneralDetailDrawer("leads_month")}
+                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                    >
+                      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                        Leads do mês
+                      </p>
+                      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                        {formatNumber(summary.leads.month)}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGeneralDetailDrawer("pending")}
+                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                    >
+                      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                        Pendências
+                      </p>
+                      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                        {formatNumber(
+                          summary.followups.pending +
+                            summary.ai.pendingQueueActions +
+                            summary.catalog.zeroStockItems +
+                            summary.catalog.lowStockItems +
+                            (summary.sales.available ? 0 : 5)
+                        )}
+                      </p>
+                    </button>
+                  </div>
+
+                  <div className="grid min-w-0 gap-3 md:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => setGeneralDetailDrawer("messages_today")}
+                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                    >
+                      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                        Mensagens hoje
+                      </p>
+                      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                        {formatNumber(summary.messages.today)}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGeneralDetailDrawer("appointments_today")}
+                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                    >
+                      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+                        Compromissos hoje
+                      </p>
+                      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                        {formatNumber(summary.appointments.today)}
+                      </p>
+                    </button>
+                  </div>
+
+                  <div className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+                    <WeeklySalesChart
+                      title="Vendas por semana"
+                      emptyText="Ainda não há vendas registradas por semana."
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => setIsRegionDrawerOpen(true)}
+                      className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                    >
+                      <PanelTitle title="Região que mais vende" />
+                      <div className="rounded-[6px] border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm leading-relaxed text-zinc-500">
+                        Ainda não há região de venda conectada aos pedidos.
+                      </div>
+                    </button>
+                  </div>
+
+                  <DashboardPanel>
+                    <PanelTitle title="Mais vendidos" />
+                    <div className="space-y-2">
+                      {[
+                        ["Piscina", "Piscina"],
+                        ["Químico", "Químico"],
+                        ["Acessório", "Acessório"],
+                        ["Outro", "Outro"],
+                      ].map(([id, label]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setSelectedBestSellerCategory(id)}
+                          className="grid w-full min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-sm transition hover:border-zinc-950 hover:bg-white sm:grid-cols-[minmax(0,1fr)_auto]"
+                        >
+                          <span className="min-w-0 break-words font-medium text-zinc-950">
+                            {label}
+                          </span>
+                          <span className="shrink-0 text-zinc-500">Sem dados ›</span>
+                        </button>
+                      ))}
+                    </div>
+                  </DashboardPanel>
                 </div>
               </div>
+
+              <PendingDashboardPanel
+                items={pendingIssues}
+                selectedId={selectedPendingIssueId}
+                onSelect={setSelectedPendingIssueId}
+              />
             </div>
 
-            <PendingDashboardPanel
-              items={pendingIssues}
-              selectedId={selectedPendingIssueId}
-              onSelect={setSelectedPendingIssueId}
-            />
-          </div>
+            <DashboardDetailDrawer
+              title={
+                generalDetailItems.find((item) => item.id === generalDetailDrawer)?.detailTitle ||
+                "Detalhes"
+              }
+              description="Informações do bloco selecionado."
+              isOpen={generalDetailDrawer !== null}
+              onClose={() => setGeneralDetailDrawer(null)}
+            >
+              {(() => {
+                const selected = generalDetailItems.find((item) => item.id === generalDetailDrawer);
+
+                if (!selected) return null;
+
+                return (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
+                        Resumo
+                      </p>
+                      <div className="mt-3 flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h4 className="break-words text-xl font-semibold text-zinc-950">
+                            {selected.label}
+                          </h4>
+                          <p className="mt-2 break-words text-sm leading-relaxed text-zinc-700">
+                            {selected.detailText}
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
+                          {selected.value}
+                        </span>
+                      </div>
+                    </div>
+
+                    {generalDetailDrawer === "messages_today" ? (
+                      <DashboardPanel>
+                        <PanelTitle title="Mensagens recentes" />
+                        <InfoList
+                          emptyText="Nenhuma mensagem recente encontrada."
+                          items={lists.recentMessages.slice(0, 8).map((message) => ({
+                            id: message.id,
+                            title: message.isAi ? "IA" : message.isHumanOperator ? "Loja" : "Cliente",
+                            subtitle: compactText(message.content, 130),
+                            meta: <span>{formatLabel(message.direction)}</span>,
+                            right: <span className="text-xs text-zinc-500">{formatDateTime(message.createdAt)}</span>,
+                          }))}
+                        />
+                      </DashboardPanel>
+                    ) : null}
+
+                    {generalDetailDrawer === "leads_month" ? (
+                      <DashboardPanel>
+                        <PanelTitle title="Leads recentes" />
+                        <InfoList
+                          emptyText="Nenhum lead recente encontrado."
+                          items={lists.recentLeads.slice(0, 8).map((lead) => ({
+                            id: lead.id,
+                            title: lead.name || "Lead sem nome",
+                            subtitle: lead.phone || "Sem telefone",
+                            meta: (
+                              <>
+                                <StatusPill>{formatLabel(lead.state)}</StatusPill>
+                                <span>Criado em {formatDate(lead.createdAt)}</span>
+                              </>
+                            ),
+                          }))}
+                        />
+                      </DashboardPanel>
+                    ) : null}
+
+                    {generalDetailDrawer === "appointments_today" ? (
+                      <DashboardPanel>
+                        <PanelTitle title="Compromissos de hoje" />
+                        <InfoList
+                          emptyText="Nenhum compromisso encontrado para hoje."
+                          items={todayAppointments.map((appointment) => ({
+                            id: appointment.id,
+                            title: appointment.customerName || "Cliente sem nome",
+                            subtitle: appointment.title,
+                            meta: (
+                              <>
+                                <StatusPill>{formatLabel(appointment.status)}</StatusPill>
+                                <span>Tipo: {formatLabel(appointment.appointmentType)}</span>
+                                <span>Horário: {formatDateTime(appointment.scheduledStart)}</span>
+                                {appointment.customerPhone ? <span>Telefone: {appointment.customerPhone}</span> : null}
+                              </>
+                            ),
+                          }))}
+                        />
+                      </DashboardPanel>
+                    ) : null}
+
+                    {generalDetailDrawer === "pending" ? (
+                      <DashboardPanel>
+                        <PanelTitle title="Pendências encontradas" />
+                        <InfoList
+                          emptyText="Nenhuma pendência encontrada."
+                          items={pendingIssues.map((issue) => ({
+                            id: issue.id,
+                            title: issue.label,
+                            subtitle: issue.helper,
+                            right: <StatusPill>{issue.value}</StatusPill>,
+                          }))}
+                        />
+                      </DashboardPanel>
+                    ) : null}
+
+                    {selected.howToResolve ? (
+                      <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                        <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
+                          Como resolver
+                        </p>
+                        <p className="mt-3 break-words text-sm leading-relaxed text-zinc-700">
+                          {selected.howToResolve}
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
+            </DashboardDetailDrawer>
+
+            <DashboardDetailDrawer
+              title="Região que mais vende"
+              description="Regiões com maior número de vendas quando houver base comercial real."
+              isOpen={isRegionDrawerOpen}
+              onClose={() => setIsRegionDrawerOpen(false)}
+            >
+              <div className="space-y-4">
+                <EmptyState text="Ainda não há região de venda conectada aos pedidos." />
+                <DashboardPanel>
+                  <PanelTitle title="O que este bloco deve mostrar" />
+                  <p className="text-sm leading-relaxed text-zinc-700">
+                    Quando a base de vendas estiver conectada, esta tela deve listar as regiões com mais vendas e permitir entender onde a loja está vendendo melhor.
+                  </p>
+                </DashboardPanel>
+              </div>
+            </DashboardDetailDrawer>
+
+            <DashboardDetailDrawer
+              title={selectedBestSellerCategory ? `Mais vendidos: ${selectedBestSellerCategory}` : "Mais vendidos"}
+              description="Itens vendidos e clientes relacionados à categoria escolhida."
+              isOpen={selectedBestSellerCategory !== null}
+              onClose={() => setSelectedBestSellerCategory(null)}
+            >
+              <div className="space-y-4">
+                <EmptyState text="Ainda não há histórico real de itens vendidos para esta categoria." />
+                <DashboardPanel>
+                  <PanelTitle title="Como deve funcionar" />
+                  <p className="text-sm leading-relaxed text-zinc-700">
+                    Quando existir base real de pedidos ou vendas, esta tela deve mostrar quais itens foram vendidos, a quantidade de cada item e para quais clientes.
+                  </p>
+                </DashboardPanel>
+              </div>
+            </DashboardDetailDrawer>
+          </>
         ) : null}
 
         {activeTab === "ia" ? (
-          <div className="space-y-4">
-            <div className="grid min-w-0 gap-4 xl:grid-cols-[0.9fr_1.45fr]">
-              <div className="grid min-w-0 gap-4">
-                <DashboardPanel>
-                  <PanelTitle
-                    title="IA x loja x cliente"
-                    helper="Distribuição das mensagens do mês."
-                  />
-                  <SplitProgress
-                    ai={summary.messages.ai}
-                    human={summary.messages.humanOperator}
-                    customer={summary.messages.customer}
-                  />
-                </DashboardPanel>
+          <>
+            <div className="space-y-4">
+              <div className="grid min-w-0 gap-4 xl:grid-cols-[0.9fr_1.45fr]">
+                <div className="grid min-w-0 gap-3 content-start">
+                  <button
+                    type="button"
+                    onClick={() => setAiDetailDrawer("distribution")}
+                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                  >
+                    <PanelTitle
+                      title="IA x loja x cliente"
+                      helper="Distribuição das mensagens do mês."
+                    />
+                    <SplitProgress
+                      ai={summary.messages.ai}
+                      human={summary.messages.humanOperator}
+                      customer={summary.messages.customer}
+                    />
+                  </button>
 
-                <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-                  <ExecutiveNumberCard
-                    title="Mensagens da IA"
-                    value={formatNumber(summary.messages.ai)}
-                    helper="Enviadas no mês"
-                  />
-                  <ExecutiveNumberCard
-                    title="Conversas com IA"
-                    value={formatNumber(lists.conversationsWithAiPresence.length)}
-                    helper="IA participou"
-                  />
+                  <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => setAiDetailDrawer("messages")}
+                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
+                    >
+                      <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
+                        Mensagens da IA
+                      </p>
+                      <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
+                        {formatNumber(summary.messages.ai)}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAiDetailDrawer("conversations")}
+                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
+                    >
+                      <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
+                        Conversas com IA
+                      </p>
+                      <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
+                        {formatNumber(lists.conversationsWithAiPresence.length)}
+                      </p>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setAiDetailDrawer("pending")}
+                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                  >
+                    <PanelTitle title="Pendências da IA" />
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                      <div className="rounded-[6px] border border-zinc-200 bg-zinc-50 p-2 text-center">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
+                          Pendentes
+                        </p>
+                        <p className="mt-0.5 text-lg font-semibold text-zinc-950">
+                          {formatNumber(summary.ai.pendingQueueActions)}
+                        </p>
+                      </div>
+                      <div className="rounded-[6px] border border-zinc-200 bg-zinc-50 p-2 text-center">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
+                          Com erro
+                        </p>
+                        <p className="mt-0.5 text-lg font-semibold text-zinc-950">
+                          {formatNumber(summary.ai.failedQueueActions)}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
                 </div>
 
-                <DashboardPanel>
-                  <PanelTitle
-                    title="Pendências da IA"
-                    helper="Ações automáticas que ainda precisam terminar ou exigem atenção."
-                  />
-                  <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-                    <ExecutiveNumberCard
-                      title="Pendentes"
-                      value={formatNumber(summary.ai.pendingQueueActions)}
-                      helper="Não processadas"
-                    />
-                    <ExecutiveNumberCard
-                      title="Com erro"
-                      value={formatNumber(summary.ai.failedQueueActions)}
-                      helper="Precisam de atenção"
-                    />
-                  </div>
-                </DashboardPanel>
-              </div>
+                <div className="grid min-w-0 gap-4">
+                  <button
+                    type="button"
+                    onClick={() => setAiDetailDrawer("processes")}
+                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                  >
+                    <PanelTitle title="Processos com maior presença da IA" />
+                    {lists.conversationsWithAiPresence.length ? (
+                      <div className="space-y-2">
+                        {lists.conversationsWithAiPresence.slice(0, 3).map((item) => (
+                          <div
+                            key={item.conversationId}
+                            className="grid gap-2 border-b border-zinc-100 px-3 py-2 text-sm last:border-b-0 sm:grid-cols-[minmax(0,1fr)_auto]"
+                          >
+                            <span className="min-w-0 break-words font-medium text-zinc-950">
+                              {item.customerName}
+                            </span>
+                            <span className="shrink-0 text-zinc-700">
+                              {formatPercent(item.aiParticipationPercent)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <EmptyState text="Ainda não há conversas com dados suficientes." />
+                    )}
+                  </button>
 
-              <div className="grid min-w-0 gap-4">
-                <CompactRanking
-                  title="Processos com maior presença da IA"
-                  columns={["Cliente", "IA", "Mensagens", "Última mensagem"]}
-                  emptyText="Ainda não há conversas com dados suficientes."
-                  rows={lists.conversationsWithAiPresence.slice(0, 3).map((item) => [
-                    item.customerName,
-                    formatPercent(item.aiParticipationPercent),
-                    `${formatNumber(item.aiMessages)} IA / ${formatNumber(item.totalMessages)} total`,
-                    compactText(item.lastMessagePreview, 70),
-                  ])}
-                />
-
-                <DashboardPanel>
-                  <PanelTitle
-                    title="O que a IA está fazendo"
-                    helper="Ações registradas pela IA neste mês."
-                  />
-                  <HorizontalBars items={summary.ai.decisionsByAction} />
-                </DashboardPanel>
+                  <button
+                    type="button"
+                    onClick={() => setAiDetailDrawer("actions")}
+                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                  >
+                    <PanelTitle
+                      title="O que a IA está fazendo"
+                      helper="Ações registradas pela IA neste mês."
+                    />
+                    <HorizontalBars items={summary.ai.decisionsByAction} />
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+
+            <DashboardDetailDrawer
+              title={
+                aiDetailDrawer === "distribution"
+                  ? "IA x loja x cliente"
+                  : aiDetailDrawer === "messages"
+                    ? "Mensagens da IA"
+                    : aiDetailDrawer === "conversations"
+                      ? "Conversas com IA"
+                      : aiDetailDrawer === "pending"
+                        ? "Pendências da IA"
+                        : aiDetailDrawer === "processes"
+                          ? "Processos com maior presença da IA"
+                          : "O que a IA está fazendo"
+              }
+              description="Detalhes do bloco selecionado na aba IA."
+              isOpen={aiDetailDrawer !== null}
+              onClose={() => setAiDetailDrawer(null)}
+            >
+              {aiDetailDrawer === "distribution" ? (
+                <div className="space-y-4">
+                  <DashboardPanel>
+                    <PanelTitle title="Distribuição das mensagens" />
+                    <SplitProgress
+                      ai={summary.messages.ai}
+                      human={summary.messages.humanOperator}
+                      customer={summary.messages.customer}
+                    />
+                  </DashboardPanel>
+                  <p className="text-sm leading-relaxed text-zinc-700">
+                    Esse bloco mostra quem mais participou das conversas registradas no período: IA, loja ou clientes.
+                  </p>
+                </div>
+              ) : null}
+
+              {aiDetailDrawer === "messages" ? (
+                <div className="space-y-4">
+                  <ExecutiveNumberCard title="Mensagens da IA no mês" value={formatNumber(summary.messages.ai)} />
+                  <DashboardPanel>
+                    <PanelTitle title="Mensagens recentes da IA" />
+                    <InfoList
+                      emptyText="Nenhuma mensagem recente da IA encontrada."
+                      items={lists.recentMessages
+                        .filter((message) => message.isAi)
+                        .slice(0, 8)
+                        .map((message) => ({
+                          id: message.id,
+                          title: "IA",
+                          subtitle: compactText(message.content, 130),
+                          meta: <span>{formatLabel(message.direction)}</span>,
+                          right: <span className="text-xs text-zinc-500">{formatDateTime(message.createdAt)}</span>,
+                        }))}
+                    />
+                  </DashboardPanel>
+                </div>
+              ) : null}
+
+              {aiDetailDrawer === "conversations" ? (
+                <div className="space-y-4">
+                  <ExecutiveNumberCard title="Conversas com IA" value={formatNumber(lists.conversationsWithAiPresence.length)} />
+                  <InfoList
+                    emptyText="Nenhuma conversa com presença da IA encontrada."
+                    items={lists.conversationsWithAiPresence.slice(0, 10).map((item) => ({
+                      id: item.conversationId,
+                      title: item.customerName,
+                      subtitle: compactText(item.lastMessagePreview, 130),
+                      meta: (
+                        <>
+                          <span>{formatNumber(item.aiMessages)} mensagem(ns) da IA</span>
+                          <span>{formatPercent(item.aiParticipationPercent)} de presença</span>
+                        </>
+                      ),
+                    }))}
+                  />
+                </div>
+              ) : null}
+
+              {aiDetailDrawer === "pending" ? (
+                <div className="space-y-4">
+                  <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                    <ExecutiveNumberCard title="Pendentes" value={formatNumber(summary.ai.pendingQueueActions)} />
+                    <ExecutiveNumberCard title="Com erro" value={formatNumber(summary.ai.failedQueueActions)} />
+                  </div>
+                  <p className="text-sm leading-relaxed text-zinc-700">
+                    Esse bloco mostra ações automáticas que ainda precisam ser processadas ou que tiveram erro e exigem atenção.
+                  </p>
+                </div>
+              ) : null}
+
+              {aiDetailDrawer === "processes" ? (
+                <InfoList
+                  emptyText="Ainda não há conversas com dados suficientes."
+                  items={lists.conversationsWithAiPresence.slice(0, 10).map((item) => ({
+                    id: item.conversationId,
+                    title: item.customerName,
+                    subtitle: compactText(item.lastMessagePreview, 130),
+                    meta: (
+                      <>
+                        <span>{formatPercent(item.aiParticipationPercent)} IA</span>
+                        <span>{formatNumber(item.aiMessages)} IA / {formatNumber(item.totalMessages)} total</span>
+                      </>
+                    ),
+                  }))}
+                />
+              ) : null}
+
+              {aiDetailDrawer === "actions" ? (
+                <div className="space-y-4">
+                  <DashboardPanel>
+                    <PanelTitle title="Ações registradas" />
+                    <HorizontalBars items={summary.ai.decisionsByAction} />
+                  </DashboardPanel>
+                  <p className="text-sm leading-relaxed text-zinc-700">
+                    Esse bloco mostra quais tipos de ações a IA registrou no sistema durante o mês.
+                  </p>
+                </div>
+              ) : null}
+            </DashboardDetailDrawer>
+          </>
         ) : null}
 
         {activeTab === "agenda" ? (
@@ -2114,23 +2499,24 @@ export default function DashboardPage() {
               <div className="grid min-w-0 gap-3 xl:grid-cols-[0.85fr_1.35fr]">
                 <div className="grid min-w-0 gap-3">
                   <DashboardPanel>
-                    <PanelTitle
-                      title="Processos"
-                      helper="Todos os processos da agenda e quantos existem em cada um."
-                    />
-                    <div className="max-h-[185px] overflow-y-auto pr-1">
+                    <PanelTitle title="Processos" />
+                    <div className="max-h-[145px] overflow-y-auto pr-1">
                       <HorizontalBars items={summary.appointments.byType} />
                     </div>
                   </DashboardPanel>
                 </div>
 
                 <div className="grid min-w-0 gap-3 content-start">
-                  <DashboardPanel>
+                  <button
+                    type="button"
+                    onClick={() => setIsNextAppointmentsDrawerOpen(true)}
+                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                  >
                     <PanelTitle title="Próximos compromissos" />
                     {lists.nextAppointments.length ? (
-                      <div className="max-h-[185px] overflow-y-auto pr-1">
+                      <div className="max-h-[145px] overflow-hidden pr-1">
                         <div className="space-y-2">
-                          {lists.nextAppointments.map((appointment) => (
+                          {lists.nextAppointments.slice(0, 3).map((appointment) => (
                             <div
                               key={appointment.id}
                               className="grid min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(95px,0.65fr)_minmax(82px,0.5fr)_minmax(92px,0.6fr)]"
@@ -2154,7 +2540,7 @@ export default function DashboardPage() {
                     ) : (
                       <EmptyState text="Nenhum compromisso futuro encontrado." />
                     )}
-                  </DashboardPanel>
+                  </button>
                 </div>
               </div>
             </div>
@@ -2164,6 +2550,71 @@ export default function DashboardPage() {
               isOpen={isTodayAppointmentsDrawerOpen}
               onClose={() => setIsTodayAppointmentsDrawerOpen(false)}
             />
+
+            <DashboardDetailDrawer
+              title="Próximos compromissos"
+              description="Lista dos próximos compromissos com detalhes e resumo do caso."
+              isOpen={isNextAppointmentsDrawerOpen}
+              onClose={() => setIsNextAppointmentsDrawerOpen(false)}
+            >
+              {lists.nextAppointments.length ? (
+                <div className="space-y-3">
+                  {lists.nextAppointments.map((appointment) => (
+                    <div
+                      key={appointment.id}
+                      className="rounded-2xl border border-zinc-200 bg-white p-4"
+                    >
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h4 className="break-words text-base font-semibold text-zinc-950">
+                            {appointment.customerName || "Cliente sem nome"}
+                          </h4>
+                          <p className="mt-1 break-words text-sm text-zinc-600">
+                            {appointment.title}
+                          </p>
+                        </div>
+
+                        <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
+                          {formatLabel(appointment.status)}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 grid gap-2 text-sm text-zinc-600 sm:grid-cols-2">
+                        <div>
+                          <span className="font-medium text-zinc-950">Tipo: </span>
+                          {formatLabel(appointment.appointmentType)}
+                        </div>
+                        <div>
+                          <span className="font-medium text-zinc-950">Horário: </span>
+                          {formatDateTime(appointment.scheduledStart)}
+                        </div>
+                        {appointment.customerPhone ? (
+                          <div>
+                            <span className="font-medium text-zinc-950">Telefone: </span>
+                            {appointment.customerPhone}
+                          </div>
+                        ) : null}
+                        <div>
+                          <span className="font-medium text-zinc-950">Origem: </span>
+                          {formatLabel(appointment.source)}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                        <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
+                          Relatório do caso
+                        </p>
+                        <p className="mt-2 text-sm leading-relaxed text-zinc-700">
+                          Compromisso agendado para {appointment.customerName || "cliente sem nome"} em {formatDateTime(appointment.scheduledStart)}. Tipo: {formatLabel(appointment.appointmentType)}. Status atual: {formatLabel(appointment.status)}.
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState text="Nenhum compromisso futuro encontrado." />
+              )}
+            </DashboardDetailDrawer>
 
             <DashboardDetailDrawer
               title="Estados urgentes"
