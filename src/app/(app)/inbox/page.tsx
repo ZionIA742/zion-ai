@@ -41,11 +41,13 @@ type CommercialHandoffTaskRow = {
   related_conversation_id: string | null;
   task_type: string | null;
   status: string | null;
+  task_payload: Record<string, unknown> | null;
 };
 
 type CommercialHandoffIndicator = {
   hasVisitRequest: boolean;
   hasQuoteRequest: boolean;
+  routeAddressText: string | null;
 };
 
 const INBOX_OPEN_SECTION_KEY = "zion:inbox:open-section";
@@ -70,6 +72,54 @@ function getCommercialHandoffBadgeLabel(indicator: CommercialHandoffIndicator | 
     return "Orçamento pendente";
   }
   return null;
+}
+
+function getTextFromPayload(payload: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!payload) return null;
+
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value !== "string") continue;
+
+    const safeValue = value.trim();
+    if (safeValue) return safeValue;
+  }
+
+  return null;
+}
+
+function getRouteAddressFromCommercialPayload(payload: Record<string, unknown> | null | undefined) {
+  return getTextFromPayload(payload, [
+    "address_text",
+    "addressText",
+    "address",
+    "location_text",
+    "locationText",
+    "customer_address",
+    "customerAddress",
+  ]);
+}
+
+function buildGoogleMapsRouteUrl(addressText: string | null | undefined) {
+  const safeAddress = String(addressText || "").trim();
+
+  if (!safeAddress) {
+    return null;
+  }
+
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+    safeAddress
+  )}`;
+}
+
+function openGoogleMapsRoute(addressText: string | null | undefined) {
+  const routeUrl = buildGoogleMapsRouteUrl(addressText);
+
+  if (!routeUrl) {
+    return;
+  }
+
+  window.open(routeUrl, "_blank", "noopener,noreferrer");
 }
 
 function formatCommercialPendingCounter(count: number) {
@@ -272,7 +322,7 @@ export default function InboxPage() {
 
       let query = supabase
         .from("store_assistant_operational_tasks")
-        .select("related_conversation_id, task_type, status")
+        .select("related_conversation_id, task_type, status, task_payload")
         .eq("organization_id", organizationId)
         .in("related_conversation_id", conversationIds)
         .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
@@ -305,11 +355,17 @@ export default function InboxPage() {
           nextMap[conversationId] = {
             hasVisitRequest: false,
             hasQuoteRequest: false,
+            routeAddressText: null,
           };
         }
 
         if (task.task_type === "commercial_visit_request") {
           nextMap[conversationId].hasVisitRequest = true;
+
+          const routeAddressText = getRouteAddressFromCommercialPayload(task.task_payload);
+          if (routeAddressText && !nextMap[conversationId].routeAddressText) {
+            nextMap[conversationId].routeAddressText = routeAddressText;
+          }
         }
 
         if (task.task_type === "commercial_quote_request") {
@@ -654,9 +710,9 @@ export default function InboxPage() {
                 ) : (
                   rows.map((row) => {
                     const pending = isPendingReply(row);
-                    const handoffLabel = getCommercialHandoffBadgeLabel(
-                      commercialHandoffByConversation[row.conversation_id]
-                    );
+                    const handoffIndicator = commercialHandoffByConversation[row.conversation_id];
+                    const handoffLabel = getCommercialHandoffBadgeLabel(handoffIndicator);
+                    const routeUrl = buildGoogleMapsRouteUrl(handoffIndicator?.routeAddressText);
 
                     return (
                       <div
@@ -710,6 +766,22 @@ export default function InboxPage() {
                           </div>
 
                           <div className="flex shrink-0 items-center gap-2">
+                            {handoffIndicator?.hasVisitRequest ? (
+                              <button
+                                type="button"
+                                onClick={() => openGoogleMapsRoute(handoffIndicator.routeAddressText)}
+                                disabled={!routeUrl}
+                                title={
+                                  routeUrl
+                                    ? "Abrir rota no Google Maps"
+                                    : "Falta endereço para abrir a rota"
+                                }
+                                className="rounded-xl bg-white px-3 py-1.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
+                              >
+                                Rota
+                              </button>
+                            ) : null}
+
                             <Link
                               href={`/crm/lead/${row.lead_id}`}
                               className="rounded-xl bg-black px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"

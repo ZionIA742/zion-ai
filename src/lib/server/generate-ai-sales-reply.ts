@@ -187,6 +187,13 @@ export type CommercialHandoffContext = {
   nextStep: string;
 };
 
+type VisualPoolRankingSignal = {
+  spaceSizeSignal: "small" | "medium" | "large" | "uncertain" | null;
+  safeCommercialHints: string[];
+  needsMeasurementsConfirmation: boolean;
+  confidence: "low" | "medium" | "high" | null;
+};
+
 type ConversationFactState = {
   budgetKnown: boolean;
   authorityKnown: boolean;
@@ -3163,13 +3170,32 @@ function buildProductPhotoRequestContextBlock(
   ].join("\n");
 }
 
-function scorePool(pool: PoolRow, text: string): number {
+function scorePool(
+  pool: PoolRow,
+  text: string,
+  visualSignal?: VisualPoolRankingSignal | null
+): number {
   const haystack = normalizeText(
     [pool.name, pool.material, pool.shape, pool.description].filter(Boolean).join(" | ")
   );
   const normalized = normalizeText(text);
   const requestedAreaM2 = extractRequestedAreaM2(text);
   const poolAreaM2 = pool.width_m != null && pool.length_m != null ? pool.width_m * pool.length_m : null;
+  const compactHintDetected =
+    Boolean(
+      visualSignal?.safeCommercialHints.some((hint) => {
+        const normalizedHint = normalizeText(hint);
+        return (
+          normalizedHint.includes("compact") ||
+          normalizedHint.includes("menor") ||
+          normalizedHint.includes("pequen")
+        );
+      })
+    );
+  const isCompactPoolByArea =
+    poolAreaM2 != null ? poolAreaM2 <= 18 : false;
+  const isLargePoolByArea =
+    poolAreaM2 != null ? poolAreaM2 >= 28 : false;
   let score = 0;
 
   for (const token of normalized.split(/\s+/)) {
@@ -3207,6 +3233,33 @@ function scorePool(pool: PoolRow, text: string): number {
     else if (poolAreaM2 <= requestedAreaM2 * 1.2) score += 5;
     else if (poolAreaM2 <= requestedAreaM2 * 1.5) score += 2;
     else score -= 4;
+  } else if (visualSignal && visualSignal.spaceSizeSignal !== "uncertain") {
+    const confidenceWeight =
+      visualSignal.confidence === "high"
+        ? 1
+        : visualSignal.confidence === "medium"
+          ? 0.75
+          : 0.5;
+
+    if (visualSignal.spaceSizeSignal === "small") {
+      if (isCompactPoolByArea) score += 4 * confidenceWeight;
+      else if (isLargePoolByArea) score -= 3 * confidenceWeight;
+      else if (poolAreaM2 != null) score += 1 * confidenceWeight;
+    } else if (visualSignal.spaceSizeSignal === "medium") {
+      if (poolAreaM2 != null && poolAreaM2 >= 12 && poolAreaM2 <= 28) {
+        score += 2 * confidenceWeight;
+      } else if (isLargePoolByArea) {
+        score -= 1 * confidenceWeight;
+      }
+    } else if (visualSignal.spaceSizeSignal === "large") {
+      if (isLargePoolByArea) score += 2 * confidenceWeight;
+      else if (isCompactPoolByArea) score += 0.5 * confidenceWeight;
+    }
+
+    if (compactHintDetected) {
+      if (isCompactPoolByArea) score += 2 * confidenceWeight;
+      else if (isLargePoolByArea) score -= 1.5 * confidenceWeight;
+    }
   }
 
   if (pool.is_active === true) score += 1;
@@ -4575,6 +4628,60 @@ function getLocationPhotoAnalysisText(message: MessageRow): string {
   return parts.join(" ");
 }
 
+function getLatestLocationPhotoAnalysis(
+  messages: MessageRow[]
+): VisualPoolRankingSignal | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+
+    if (!isCustomerLocationPhotoMessage(message)) {
+      continue;
+    }
+
+    const metadata =
+      message.metadata && typeof message.metadata === "object" ? message.metadata : null;
+    const analysis =
+      metadata?.location_photo_analysis &&
+      typeof metadata.location_photo_analysis === "object"
+        ? (metadata.location_photo_analysis as Record<string, unknown>)
+        : null;
+
+    if (!analysis || !String(analysis.summary || "").trim()) {
+      continue;
+    }
+
+    const safeCommercialHints = Array.isArray(analysis.safe_commercial_hints)
+      ? analysis.safe_commercial_hints
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .slice(0, 6)
+      : [];
+    const rawSpaceSizeSignal = normalizeText(asText(analysis.space_size_signal));
+    const rawConfidence = normalizeText(asText(analysis.confidence));
+
+    return {
+      spaceSizeSignal:
+        rawSpaceSizeSignal === "small" ||
+        rawSpaceSizeSignal === "medium" ||
+        rawSpaceSizeSignal === "large" ||
+        rawSpaceSizeSignal === "uncertain"
+          ? rawSpaceSizeSignal
+          : null,
+      safeCommercialHints,
+      needsMeasurementsConfirmation:
+        analysis.needs_measurements_confirmation !== false,
+      confidence:
+        rawConfidence === "low" ||
+        rawConfidence === "medium" ||
+        rawConfidence === "high"
+          ? rawConfidence
+          : null,
+    };
+  }
+
+  return null;
+}
+
 function getEffectiveMessageContent(message: MessageRow): string {
   const metadata =
     message.metadata && typeof message.metadata === "object" ? message.metadata : null;
@@ -5816,6 +5923,7 @@ export async function generateAiSalesReply(
     const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
     const requestedPoolReference = extractRequestedPoolReference(lastCustomerMessage);
     const customerConversationText = buildCustomerConversationText(orderedMessages, lastCustomerMessage);
+    const latestLocationPhotoAnalysis = getLatestLocationPhotoAnalysis(orderedMessages);
     const photoOrSimulationSubtype = looksLikePhotoOrSimulationRequest(lastCustomerMessage)
       ? detectPhotoOrSimulationSubtype({
           lastCustomerMessage,
@@ -5929,7 +6037,7 @@ export async function generateAiSalesReply(
         .map((pool) => ({
           pool,
           hasPhoto: (poolPhotoMap.get(pool.id) || 0) > 0 || !!pool.photo_url,
-          score: scorePool(pool, customerConversationText),
+          score: scorePool(pool, customerConversationText, latestLocationPhotoAnalysis),
         }))
         .filter((match) => shouldLoadPools || match.score > 0)
         .sort((a, b) => b.score - a.score);

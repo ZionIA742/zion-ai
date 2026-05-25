@@ -130,6 +130,123 @@ function formatAttachmentKind(file: File | null) {
   return "Documento";
 }
 
+function getSafeString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function findAddressTextInMetadata(value: unknown, depth = 0): string | null {
+  if (!value || depth > 4) return null;
+
+  if (typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const addressKeys = [
+    "addressText",
+    "address_text",
+    "address",
+    "endereco",
+    "endereço",
+    "locationText",
+    "location_text",
+    "location",
+    "appointmentAddress",
+    "appointment_address",
+    "customerAddress",
+    "customer_address",
+    "destination",
+    "destinationText",
+    "destination_text",
+  ];
+
+  for (const key of addressKeys) {
+    const candidate = getSafeString(record[key]);
+    if (candidate) return candidate;
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    if (!nestedValue || typeof nestedValue !== "object") continue;
+
+    if (Array.isArray(nestedValue)) {
+      for (const item of nestedValue) {
+        const found = findAddressTextInMetadata(item, depth + 1);
+        if (found) return found;
+      }
+      continue;
+    }
+
+    const found = findAddressTextInMetadata(nestedValue, depth + 1);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function cleanRouteAddressCandidate(value: string) {
+  return String(value || "")
+    .replace(/^[\s:：,.;-]+/, "")
+    .replace(/[\s.。]+$/, "")
+    .trim();
+}
+
+function looksLikeUsefulRouteAddress(value: string) {
+  const normalized = cleanRouteAddressCandidate(value);
+
+  if (normalized.length < 8) return false;
+
+  const hasAddressSignal =
+    /\b(rua|r\.|avenida|av\.|estrada|rodovia|travessa|alameda|praça|praca|bairro|cep|sp|são paulo|sao paulo)\b/i.test(
+      normalized
+    );
+  const hasNumberOrCep = /\d/.test(normalized) || /\b\d{5}-?\d{3}\b/.test(normalized);
+
+  return hasAddressSignal && hasNumberOrCep;
+}
+
+function extractRouteAddressFromMessageContent(content: string | null | undefined) {
+  const text = String(content || "").replace(/\s+/g, " ").trim();
+
+  if (!text) return null;
+
+  const patterns = [
+    /(?:no|na|com|o)?\s*endere[cç]o\s*:?[\s-]+(.+?)(?=\s+(?:O objetivo|Objetivo|Quer|Deseja|Não há|Nao ha|Não tem|Nao tem|$))/i,
+    /(?:rua|r\.|avenida|av\.|estrada|rodovia|travessa|alameda|praça|praca)\s+.+?(?=\s+(?:O objetivo|Objetivo|Quer|Deseja|Não há|Nao ha|Não tem|Nao tem|$))/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const candidate = cleanRouteAddressCandidate(match?.[1] || match?.[0] || "");
+
+    if (looksLikeUsefulRouteAddress(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function getAssistantMessageRouteAddress(message: AssistantMessage) {
+  return (
+    findAddressTextInMetadata(message.metadata) ||
+    extractRouteAddressFromMessageContent(message.content)
+  );
+}
+
+function shouldShowRouteButton(message: AssistantMessage) {
+  return Boolean(message.related_appointment_id || getAssistantMessageRouteAddress(message));
+}
+
+function buildGoogleMapsRouteUrl(addressText: string | null | undefined) {
+  const safeAddress = String(addressText || "").trim();
+
+  if (!safeAddress) return null;
+
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+    safeAddress
+  )}`;
+}
+
 function normalizeText(value: string | null | undefined): string {
   return String(value || "")
     .normalize("NFD")
@@ -652,6 +769,30 @@ export default function AssistantPage() {
                             <div className="whitespace-pre-wrap break-words text-[13px] leading-5 text-gray-900">
                               {message.content}
                             </div>
+
+                            {shouldShowRouteButton(message) ? (
+                              <div className="mt-2 flex flex-wrap justify-end gap-1.5">
+                                {buildGoogleMapsRouteUrl(getAssistantMessageRouteAddress(message)) ? (
+                                  <a
+                                    href={buildGoogleMapsRouteUrl(getAssistantMessageRouteAddress(message)) || "#"}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="rounded-full bg-black px-3 py-1 text-[11px] font-semibold text-white transition hover:opacity-90"
+                                  >
+                                    Rota
+                                  </a>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled
+                                    title="Falta endereço no compromisso para abrir a rota no Maps."
+                                    className="cursor-not-allowed rounded-full bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-400 ring-1 ring-black/5"
+                                  >
+                                    Rota
+                                  </button>
+                                )}
+                              </div>
+                            ) : null}
 
                             <div className="mt-1 text-right text-[10px] text-gray-400">
                               {formatTime(message.created_at)}
