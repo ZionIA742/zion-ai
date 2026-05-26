@@ -6,6 +6,8 @@ export async function middleware(req: NextRequest) {
 
   const isPublic =
     path === "/login" ||
+    path === "/auth/callback" ||
+    path === "/auth/reset-password" ||
     path === "/zion-admin/login" ||
     path.startsWith("/_next") ||
     path.startsWith("/favicon") ||

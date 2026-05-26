@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -30,7 +30,6 @@ function getFriendlyErrorMessage(message: string | null | undefined) {
 
 export default function ResetPasswordPage() {
   const router = useRouter();
-  const exchangeStartedRef = useRef(false);
 
   const [status, setStatus] = useState<RecoveryStatus>("checking");
   const [message, setMessage] = useState("Validando link de recuperação...");
@@ -40,45 +39,43 @@ export default function ResetPasswordPage() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function prepareRecoverySession() {
-      if (exchangeStartedRef.current) {
-        return;
-      }
-
-      exchangeStartedRef.current = true;
-
       try {
         const params = new URLSearchParams(window.location.search);
         const code = params.get("code");
+        const recoveryError = params.get("recoveryError");
 
         if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          const callbackUrl = new URL("/auth/callback", window.location.origin);
+          callbackUrl.searchParams.set("code", code);
+          callbackUrl.searchParams.set("next", "/auth/reset-password");
+          window.location.replace(callbackUrl.toString());
+          return;
+        }
 
-          if (error) {
-            setStatus("error");
-            setMessage(getFriendlyErrorMessage(error.message));
-            return;
-          }
-
-          window.history.replaceState(null, "", "/auth/reset-password");
-          setStatus("ready");
-          setMessage("Digite sua nova senha para concluir a recuperação.");
+        if (recoveryError) {
+          if (cancelled) return;
+          setStatus("error");
+          setMessage("Não foi possível validar o link de recuperação. Volte para o login e peça um novo link.");
           return;
         }
 
         const { data, error } = await supabase.auth.getSession();
 
+        if (cancelled) return;
+
         if (error || !data.session) {
           setStatus("error");
-          setMessage(
-            "Link de recuperação não encontrado. Volte para o login e peça um novo link."
-          );
+          setMessage("Link de recuperação não encontrado. Volte para o login e peça um novo link.");
           return;
         }
 
         setStatus("ready");
         setMessage("Digite sua nova senha para concluir a recuperação.");
       } catch (error: any) {
+        if (cancelled) return;
         setStatus("error");
         setMessage(
           getFriendlyErrorMessage(
@@ -89,6 +86,10 @@ export default function ResetPasswordPage() {
     }
 
     void prepareRecoverySession();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {

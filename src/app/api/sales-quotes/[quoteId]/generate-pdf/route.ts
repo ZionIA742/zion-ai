@@ -1,0 +1,206 @@
+import { NextResponse } from "next/server";
+import { buildQuotePdf } from "@/lib/server/sales-quotes/build-quote-pdf";
+import { insertQuoteConversationEvent } from "@/lib/server/sales-quotes/quote-events";
+import {
+  QuoteAccessError,
+  resolveAuthorizedExistingQuote,
+} from "@/lib/server/sales-quotes/quote-auth";
+import { loadStoreQuoteSettings } from "@/lib/server/sales-quotes/quote-settings";
+import { storeQuotePdfFile } from "@/lib/server/sales-quotes/quote-storage";
+import {
+  buildQuoteSnapshot,
+  createQuoteVersion,
+  getNextQuoteVersionNumber,
+  recordQuoteGenerationFailure,
+} from "@/lib/server/sales-quotes/quote-versioning";
+import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function buildErrorResponse(error: unknown) {
+  if (error instanceof QuoteAccessError) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: error.code,
+        message: error.message,
+      },
+      { status: error.status }
+    );
+  }
+
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "UNEXPECTED_ERROR",
+      message:
+        error instanceof Error ? error.message : "Erro inesperado ao gerar PDF do orcamento.",
+    },
+    { status: 500 }
+  );
+}
+
+export async function POST(
+  _request: Request,
+  context: { params: Promise<{ quoteId: string }> }
+) {
+  let generationContext:
+    | {
+        supabase: any;
+        quote: any;
+        versionNumber: number;
+        snapshot: any;
+      }
+    | null = null;
+  let versionCreated = false;
+
+  try {
+    const { quoteId: rawQuoteId } = await context.params;
+    const quoteId = String(rawQuoteId || "").trim();
+    const scope = await resolveAuthorizedExistingQuote(quoteId);
+    const { settings } = await loadStoreQuoteSettings({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+    });
+
+    const { data: itemsData, error: itemsError } = await scope.supabase
+      .from("sales_quote_items")
+      .select(
+        "id, quote_id, organization_id, store_id, name, description, quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, sort_order, sku, metadata, created_at, updated_at"
+      )
+      .eq("quote_id", scope.quote.id)
+      .order("sort_order", { ascending: true });
+
+    if (itemsError) {
+      throw new Error(itemsError.message);
+    }
+
+    const items = (itemsData || []) as SalesQuoteItemRow[];
+
+    if (items.length === 0) {
+      throw new QuoteAccessError(
+        400,
+        "QUOTE_WITHOUT_ITEMS",
+        "Nao e possivel gerar PDF para um orcamento sem itens."
+      );
+    }
+
+    const versionNumber = await getNextQuoteVersionNumber({
+      supabase: scope.supabase,
+      quoteId: scope.quote.id,
+    });
+
+    const snapshot = buildQuoteSnapshot({
+      quote: scope.quote,
+      items,
+      settings,
+      store: scope.store,
+      lead: scope.lead,
+    });
+
+    generationContext = {
+      supabase: scope.supabase,
+      quote: scope.quote,
+      versionNumber,
+      snapshot,
+    };
+
+    const quoteMetadata =
+      scope.quote.metadata && typeof scope.quote.metadata === "object"
+        ? scope.quote.metadata
+        : null;
+
+    const pdfBytes = await buildQuotePdf({
+      storeName: scope.store.name,
+      quoteNumber: String(scope.quote.quote_number || "").trim() || scope.quote.id,
+      title: scope.quote.title,
+      customerName: scope.lead?.name || null,
+      customerPhone: scope.lead?.phone || null,
+      createdAt: scope.quote.created_at,
+      validUntil: null,
+      items: items.map((item) => ({
+        name: item.name,
+        description: item.description,
+        quantity: item.quantity,
+        unitPriceCents: item.unit_price_cents,
+        discountCents: item.discount_cents,
+        totalCents: item.total_cents,
+      })),
+      subtotalCents: Number(scope.quote.subtotal_cents || 0),
+      discountCents: Number(scope.quote.discount_cents || 0),
+      totalCents: Number(scope.quote.total_cents || 0),
+      customerNotes: scope.quote.customer_notes,
+      paymentTerms: String(quoteMetadata?.payment_terms || "").trim() || null,
+      deliveryTerms: String(quoteMetadata?.delivery_terms || "").trim() || null,
+      warrantyTerms: String(quoteMetadata?.warranty_terms || "").trim() || null,
+      settings,
+    });
+
+    const storedFile = await storeQuotePdfFile({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      quoteId: scope.quote.id,
+      quoteNumber: String(scope.quote.quote_number || "").trim() || scope.quote.id,
+      versionNumber,
+      pdfBytes,
+    });
+
+    const versionRow = await createQuoteVersion({
+      supabase: scope.supabase,
+      quote: scope.quote,
+      versionNumber,
+      storeFileId: storedFile.storeFileId,
+      storageBucket: storedFile.storageBucket,
+      storagePath: storedFile.storagePath,
+      quoteSnapshot: snapshot,
+      nextQuoteStatus: "pending_review",
+    });
+    versionCreated = true;
+
+    await insertQuoteConversationEvent({
+      supabase: scope.supabase,
+      quote: scope.quote,
+      eventType: "orcamento_gerado",
+      payload: {
+        quote_id: scope.quote.id,
+        version_id: versionRow.id,
+        quote_number: scope.quote.quote_number,
+        total_cents: scope.quote.total_cents,
+        status: "pending_review",
+      },
+      createdBy: "system",
+    });
+
+    return NextResponse.json({
+      ok: true,
+      quoteId: scope.quote.id,
+      versionId: versionRow.id,
+      storeFileId: storedFile.storeFileId,
+      storagePath: storedFile.storagePath,
+      status: "pending_review",
+    });
+  } catch (error) {
+    if (generationContext && !versionCreated) {
+      try {
+        await recordQuoteGenerationFailure({
+          supabase: generationContext.supabase,
+          quote: generationContext.quote,
+          versionNumber: generationContext.versionNumber,
+          quoteSnapshot: {
+            ...generationContext.snapshot,
+            generationError:
+              error instanceof Error ? error.message : "Erro inesperado na geracao.",
+          },
+        });
+      } catch {
+        // best effort
+      }
+    }
+
+    return buildErrorResponse(error);
+  }
+}
+

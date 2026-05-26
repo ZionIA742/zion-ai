@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -8,6 +8,7 @@ type LoginMode = "password" | "code" | "verifyCode" | "forgot" | "signup";
 
 const PANEL_PATH = "/crm";
 const RESET_PASSWORD_PATH = "/auth/reset-password";
+const AUTH_CALLBACK_PATH = "/auth/callback";
 
 function getBaseUrl() {
   if (typeof window === "undefined") return "";
@@ -90,6 +91,20 @@ export default function LoginPage() {
     return "Entrar";
   }, [mode]);
 
+  useEffect(() => {
+    const authError = String(
+      new URLSearchParams(window.location.search).get("authError") || ""
+    ).trim();
+
+    if (!authError) {
+      return;
+    }
+
+    setError(friendlyAuthError(authError));
+    setMessage(null);
+    setMode("password");
+  }, []);
+
   function clearFeedback() {
     setMessage(null);
     setError(null);
@@ -154,13 +169,12 @@ export default function LoginPage() {
         email: safeEmail,
         options: {
           shouldCreateUser: false,
-          emailRedirectTo: `${getBaseUrl()}${PANEL_PATH}`,
         },
       });
 
       if (otpError) throw otpError;
 
-      setMessage("Código enviado para seu e-mail. Ele expira em 10 minutos.");
+      setMessage("Enviamos um código para seu e-mail. Digite o código abaixo para entrar.");
       setMode("verifyCode");
     } catch (authError: any) {
       setError(friendlyAuthError(authError?.message || "Não foi possível enviar o código."));
@@ -217,8 +231,12 @@ export default function LoginPage() {
     setBusy(true);
 
     try {
+      const recoveryRedirectUrl = `${getBaseUrl()}${AUTH_CALLBACK_PATH}?next=${encodeURIComponent(
+        RESET_PASSWORD_PATH,
+      )}`;
+
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(safeEmail, {
-        redirectTo: `${getBaseUrl()}${RESET_PASSWORD_PATH}`,
+        redirectTo: recoveryRedirectUrl,
       });
 
       if (resetError) throw resetError;
