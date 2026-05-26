@@ -36,6 +36,7 @@ const items = [
   { label: "Assistente", href: "/assistant" },
   { label: "Agenda", href: "/schedule" },
   { label: "Configurações", href: "/configuracoes" },
+  { label: "Ajuda", href: "/help" },
   { label: "Onboarding", href: "/onboarding" },
 ];
 

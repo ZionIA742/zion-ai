@@ -1239,7 +1239,7 @@ function ChoiceButtonGroup({
 
 
 export default function ConfiguracoesPage() {
-  const { organizationId, activeStoreId, activeStore } = useStoreContext();
+  const { organizationId, activeStoreId, activeStore, refreshStores } = useStoreContext();
 
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -1459,6 +1459,10 @@ export default function ConfiguracoesPage() {
       }
 
       try {
+        const nextStoreName =
+          typeof entries.store_display_name === "string"
+            ? entries.store_display_name.trim()
+            : "";
         for (const [questionKey, rawValue] of Object.entries(entries)) {
           const answerValue =
             typeof rawValue === "string" ? rawValue.trim() : rawValue ?? null;
@@ -1471,6 +1475,31 @@ export default function ConfiguracoesPage() {
           });
 
           if (error) throw error;
+        }
+
+        if (nextStoreName) {
+          const response = await fetch("/api/store/update-name", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              storeId: activeStoreId,
+              name: nextStoreName,
+            }),
+          });
+
+          const result = (await response.json().catch(() => null)) as
+            | { ok?: boolean; message?: string; error?: string }
+            | null;
+
+          if (!response.ok || !result?.ok) {
+            throw new Error(
+              result?.message || "Nao foi possivel atualizar o nome oficial da loja."
+            );
+          }
+
+          await refreshStores();
         }
 
         const currentStatus = cleanText(onboarding?.status).toLowerCase();

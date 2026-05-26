@@ -16,11 +16,6 @@ type OnboardingRow = {
 };
 
 const ALLOWED_PATH_PREFIXES_WHEN_INCOMPLETE = [
-  "/dashboard",
-  "/crm",
-  "/inbox",
-  "/schedule",
-  "/configuracoes",
   "/onboarding",
 ];
 

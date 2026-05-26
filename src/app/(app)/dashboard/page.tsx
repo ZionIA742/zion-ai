@@ -2,9 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-
-const ORGANIZATION_ID = "b02252ce-0e73-4371-9e23-f1009e7b1698";
-const STORE_ID = "6ac8f4b1-e50f-42c0-9cae-78951d6daf7b";
+import { useStoreContext } from "@/components/StoreProvider";
 
 type DashboardMetrics = {
   ok: boolean;
@@ -1321,6 +1319,7 @@ function DashboardDetailDrawer({
 }
 
 export default function DashboardPage() {
+  const { organizationId, activeStoreId } = useStoreContext();
   const [activeTab, setActiveTab] = useState<DashboardTab>(() => {
     if (typeof window === "undefined") return "geral";
 
@@ -1356,12 +1355,19 @@ export default function DashboardPage() {
   const [selectedPendingIssueId, setSelectedPendingIssueId] = useState('sales_source');
 
   async function loadDashboardMetrics() {
+    if (!organizationId || !activeStoreId) {
+      setMetrics(null);
+      setErrorMessage("Loja ativa não encontrada.");
+      setIsLoading(false);
+      return;
+    }
+
     try {
       setIsLoading(true);
       setErrorMessage(null);
 
       const response = await fetch(
-        `/api/dashboard/metrics?organizationId=${ORGANIZATION_ID}&storeId=${STORE_ID}`,
+        `/api/dashboard/metrics?organizationId=${organizationId}&storeId=${activeStoreId}`,
         {
           method: "GET",
           cache: "no-store",
@@ -1388,7 +1394,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadDashboardMetrics();
-  }, [activeTab]);
+  }, [activeTab, organizationId, activeStoreId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

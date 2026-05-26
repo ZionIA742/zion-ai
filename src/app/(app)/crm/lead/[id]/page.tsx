@@ -143,6 +143,7 @@ type SignedMediaState = {
   mimeType: string | null;
   attachmentKind: string | null;
   fileName: string | null;
+  expiresAt: number | null;
 };
 
 type PendingCustomerAttachment = {
@@ -368,6 +369,36 @@ function getMessageMetadata(message: MessageRow) {
 function getAttachmentKind(message: MessageRow) {
   const metadata = getMessageMetadata(message);
   return String(metadata?.attachment_kind || "").trim().toLowerCase();
+}
+
+function getNormalizedMessageType(message: MessageRow) {
+  return String(message.message_type || "").trim().toLowerCase();
+}
+
+function isInlinePrivateMediaKind(
+  value: string | null | undefined
+): value is "image" | "audio" | "video" {
+  return value === "image" || value === "audio" || value === "video";
+}
+
+function getInlinePrivateMediaKind(message: MessageRow) {
+  if (isCatalogProductPhotoMessage(message)) {
+    return null;
+  }
+
+  const attachmentKind = getAttachmentKind(message);
+  if (isInlinePrivateMediaKind(attachmentKind)) {
+    return attachmentKind;
+  }
+
+  const messageType = getNormalizedMessageType(message);
+  const hasMediaUrl = Boolean(String(message.media_url || "").trim());
+
+  if (hasMediaUrl && isInlinePrivateMediaKind(messageType)) {
+    return messageType;
+  }
+
+  return null;
 }
 
 function getOriginalFileName(message: MessageRow) {
@@ -615,7 +646,9 @@ export default function LeadPage() {
   const [signedMediaErrorByMessageId, setSignedMediaErrorByMessageId] = useState<
     Record<string, string>
   >({});
-  const [viewingPhotoMessageId, setViewingPhotoMessageId] = useState<string | null>(null);
+  const [loadingSignedMediaByMessageId, setLoadingSignedMediaByMessageId] = useState<
+    Record<string, boolean>
+  >({});
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
 
@@ -1538,7 +1571,10 @@ export default function LeadPage() {
     }
   }
 
-  async function loadSignedMediaUrl(message: MessageRow) {
+  async function loadSignedMediaUrl(
+    message: MessageRow,
+    options?: { forceRefresh?: boolean }
+  ) {
     const safeMessageId = String(message.id || "").trim();
 
     if (!safeMessageId) {
@@ -1546,11 +1582,19 @@ export default function LeadPage() {
     }
 
     const cached = signedMediaByMessageId[safeMessageId];
-    if (cached?.signedUrl) {
+    const now = Date.now();
+    const isCachedStillValid =
+      Boolean(cached?.signedUrl) &&
+      (!cached?.expiresAt || cached.expiresAt - now > 5_000);
+
+    if (!options?.forceRefresh && isCachedStillValid) {
       return cached;
     }
 
-    setViewingPhotoMessageId(safeMessageId);
+    setLoadingSignedMediaByMessageId((current) => ({
+      ...current,
+      [safeMessageId]: true,
+    }));
     setSignedMediaErrorByMessageId((current) => {
       if (!current[safeMessageId]) {
         return current;
@@ -1585,6 +1629,9 @@ export default function LeadPage() {
         mimeType: result.mimeType || null,
         attachmentKind: result.attachmentKind || null,
         fileName: result.fileName || null,
+        expiresAt: result.expiresInSeconds
+          ? Date.now() + result.expiresInSeconds * 1000
+          : null,
       };
 
       setSignedMediaByMessageId((current) => ({
@@ -1602,9 +1649,15 @@ export default function LeadPage() {
       }));
       throw error;
     } finally {
-      setViewingPhotoMessageId((current) =>
-        current === safeMessageId ? null : current
-      );
+      setLoadingSignedMediaByMessageId((current) => {
+        if (!current[safeMessageId]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[safeMessageId];
+        return next;
+      });
     }
   }
 
@@ -1664,6 +1717,39 @@ export default function LeadPage() {
       };
     });
   }
+
+  useEffect(() => {
+    const messagesToPreload = messages.filter((message) => {
+      const safeMessageId = String(message.id || "").trim();
+      const inlineKind = getInlinePrivateMediaKind(message);
+
+      if (!safeMessageId || !inlineKind) {
+        return false;
+      }
+
+      if (signedMediaByMessageId[safeMessageId]?.signedUrl) {
+        return false;
+      }
+
+      if (loadingSignedMediaByMessageId[safeMessageId]) {
+        return false;
+      }
+
+      if (signedMediaErrorByMessageId[safeMessageId]) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (messagesToPreload.length === 0) {
+      return;
+    }
+
+    messagesToPreload.forEach((message) => {
+      void loadSignedMediaUrl(message).catch(() => null);
+    });
+  }, [messages, loadingSignedMediaByMessageId, signedMediaByMessageId, signedMediaErrorByMessageId]);
 
   useEffect(() => {
     void fetchLeadConversationAndMessages();
@@ -2116,13 +2202,26 @@ export default function LeadPage() {
                             imagePreviewErrors[message.id] === true;
                           const catalogMediaUrl = String(message.media_url || "").trim();
                           const attachmentKind = getAttachmentKind(message);
+                          const inlinePrivateMediaKind = getInlinePrivateMediaKind(message);
                           const originalFileName = getOriginalFileName(message);
                           const mimeType = getMimeType(message);
                           const signedMedia = signedMediaByMessageId[message.id] || null;
                           const signedMediaError =
                             signedMediaErrorByMessageId[message.id] || null;
                           const isLoadingSignedMedia =
-                            viewingPhotoMessageId === message.id;
+                            loadingSignedMediaByMessageId[message.id] === true;
+                          const shouldRenderInlinePrivateImage =
+                            inlinePrivateMediaKind === "image" && !isCatalogProductPhoto;
+                          const shouldRenderInlinePrivateAudio =
+                            inlinePrivateMediaKind === "audio";
+                          const shouldRenderInlinePrivateVideo =
+                            inlinePrivateMediaKind === "video";
+                          const shouldRenderAttachmentCard =
+                            isStoredAttachmentMessage(message) &&
+                            !isCatalogProductPhoto &&
+                            !shouldRenderInlinePrivateImage &&
+                            !shouldRenderInlinePrivateAudio &&
+                            !shouldRenderInlinePrivateVideo;
 
                           return (
                             <>
@@ -2134,7 +2233,84 @@ export default function LeadPage() {
                                 {getMessageDisplayContent(message)}
                               </div>
 
-                              {isStoredAttachmentMessage(message) && !isCatalogProductPhoto ? (
+                              {shouldRenderInlinePrivateImage ? (
+                                <div className="mt-3 max-w-full">
+                                  {signedMedia?.signedUrl ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void openSignedAttachment(
+                                          message,
+                                          "Erro ao abrir a imagem com seguranca."
+                                        )
+                                      }
+                                      className="block max-w-full overflow-hidden rounded-xl"
+                                    >
+                                      <img
+                                        src={signedMedia.signedUrl}
+                                        alt={message.content || originalFileName || "Imagem"}
+                                        className="block h-auto max-h-[320px] w-full max-w-[320px] rounded-xl object-cover ring-1 ring-black/10"
+                                      />
+                                    </button>
+                                  ) : (
+                                    <div className="rounded-xl bg-white/70 px-3 py-2 text-xs text-gray-700 ring-1 ring-black/10">
+                                      {signedMediaError
+                                        ? "Nao foi possivel carregar a imagem."
+                                        : isLoadingSignedMedia
+                                          ? "Carregando imagem..."
+                                          : "Preparando imagem..."}
+                                    </div>
+                                  )}
+
+                                  {(originalFileName || mimeType) && !signedMediaError ? (
+                                    <div className="mt-2 space-y-1 text-[11px] opacity-70">
+                                      {originalFileName ? (
+                                        <div className="break-words">{originalFileName}</div>
+                                      ) : null}
+                                      {mimeType ? <div className="break-words">{mimeType}</div> : null}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void openSignedAttachment(
+                                          message,
+                                          "Erro ao abrir a imagem com seguranca."
+                                        )
+                                      }
+                                      disabled={isLoadingSignedMedia}
+                                      className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {isLoadingSignedMedia ? "Abrindo..." : "Abrir foto"}
+                                    </button>
+
+                                    {signedMediaError ? (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void loadSignedMediaUrl(message, { forceRefresh: true }).catch(
+                                            () => null
+                                          )
+                                        }
+                                        disabled={isLoadingSignedMedia}
+                                        className="rounded-lg border border-current/20 px-3 py-1.5 text-xs font-semibold opacity-90 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isLoadingSignedMedia ? "Carregando..." : "Tentar novamente"}
+                                      </button>
+                                    ) : null}
+                                  </div>
+
+                                  {signedMediaError ? (
+                                    <div className="mt-2 text-[11px] text-red-600">
+                                      {signedMediaError}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
+
+                              {shouldRenderAttachmentCard ? (
                                 <div className="mt-2 rounded-xl bg-white/70 p-3 text-xs text-gray-900 ring-1 ring-black/10">
                                   <div className="font-semibold">
                                     {getStoredAttachmentLabel(attachmentKind)}
@@ -2149,44 +2325,6 @@ export default function LeadPage() {
                                   ) : null}
 
                                   <div className="mt-2 flex flex-wrap gap-2">
-                                    {attachmentKind === "image" ? (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          void openSignedAttachment(
-                                            message,
-                                            "Erro ao abrir a imagem com seguranca."
-                                          )
-                                        }
-                                        disabled={isLoadingSignedMedia}
-                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                      >
-                                        {isLoadingSignedMedia ? "Abrindo..." : "Abrir imagem"}
-                                      </button>
-                                    ) : null}
-
-                                    {attachmentKind === "audio" ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => void loadSignedMediaUrl(message)}
-                                        disabled={isLoadingSignedMedia}
-                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                      >
-                                        {isLoadingSignedMedia ? "Carregando..." : "Ouvir audio"}
-                                      </button>
-                                    ) : null}
-
-                                    {attachmentKind === "video" ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => void loadSignedMediaUrl(message)}
-                                        disabled={isLoadingSignedMedia}
-                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                      >
-                                        {isLoadingSignedMedia ? "Carregando..." : "Assistir video"}
-                                      </button>
-                                    ) : null}
-
                                     {attachmentKind === "file" ? (
                                       <button
                                         type="button"
@@ -2204,27 +2342,145 @@ export default function LeadPage() {
                                     ) : null}
                                   </div>
 
-                                  {attachmentKind === "audio" && signedMedia?.signedUrl ? (
-                                    <div className="mt-3">
+                                  {signedMediaError ? (
+                                    <div className="mt-2 text-[11px] text-red-600">
+                                      {signedMediaError}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
+
+                              {shouldRenderInlinePrivateAudio ? (
+                                <div className="mt-3 rounded-xl bg-white/70 p-3 text-xs text-gray-900 ring-1 ring-black/10">
+                                  <div className="font-semibold">Audio</div>
+                                  <div className="mt-1 break-words text-gray-600">
+                                    {originalFileName || "Audio salvo com seguranca"}
+                                  </div>
+                                  {mimeType ? (
+                                    <div className="mt-1 break-words text-[11px] text-gray-500">
+                                      {mimeType}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="mt-3">
+                                    {signedMedia?.signedUrl ? (
                                       <audio
                                         controls
                                         preload="none"
                                         src={signedMedia.signedUrl}
                                         className="h-10 w-full max-w-[320px]"
                                       />
+                                    ) : (
+                                      <div className="rounded-xl bg-white px-3 py-2 text-[11px] text-gray-600 ring-1 ring-black/10">
+                                        {signedMediaError
+                                          ? "Nao foi possivel carregar o audio."
+                                          : isLoadingSignedMedia
+                                            ? "Carregando audio..."
+                                            : "Preparando audio..."}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void openSignedAttachment(
+                                          message,
+                                          "Erro ao abrir o audio com seguranca."
+                                        )
+                                      }
+                                      disabled={isLoadingSignedMedia}
+                                      className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {isLoadingSignedMedia ? "Abrindo..." : "Abrir audio"}
+                                    </button>
+
+                                    {signedMediaError ? (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void loadSignedMediaUrl(message, { forceRefresh: true }).catch(
+                                            () => null
+                                          )
+                                        }
+                                        disabled={isLoadingSignedMedia}
+                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isLoadingSignedMedia ? "Carregando..." : "Tentar novamente"}
+                                      </button>
+                                    ) : null}
+                                  </div>
+
+                                  {signedMediaError ? (
+                                    <div className="mt-2 text-[11px] text-red-600">
+                                      {signedMediaError}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
+
+                              {shouldRenderInlinePrivateVideo ? (
+                                <div className="mt-3 rounded-xl bg-white/70 p-3 text-xs text-gray-900 ring-1 ring-black/10">
+                                  <div className="font-semibold">Video</div>
+                                  <div className="mt-1 break-words text-gray-600">
+                                    {originalFileName || "Video salvo com seguranca"}
+                                  </div>
+                                  {mimeType ? (
+                                    <div className="mt-1 break-words text-[11px] text-gray-500">
+                                      {mimeType}
                                     </div>
                                   ) : null}
 
-                                  {attachmentKind === "video" && signedMedia?.signedUrl ? (
-                                    <div className="mt-3 max-w-full">
+                                  <div className="mt-3 max-w-full">
+                                    {signedMedia?.signedUrl ? (
                                       <video
                                         controls
                                         preload="metadata"
                                         src={signedMedia.signedUrl}
                                         className="block h-auto max-h-[240px] w-full max-w-[320px] rounded-xl ring-1 ring-black/10"
                                       />
-                                    </div>
-                                  ) : null}
+                                    ) : (
+                                      <div className="rounded-xl bg-white px-3 py-2 text-[11px] text-gray-600 ring-1 ring-black/10">
+                                        {signedMediaError
+                                          ? "Nao foi possivel carregar o video."
+                                          : isLoadingSignedMedia
+                                            ? "Carregando video..."
+                                            : "Preparando video..."}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void openSignedAttachment(
+                                          message,
+                                          "Erro ao abrir o video com seguranca."
+                                        )
+                                      }
+                                      disabled={isLoadingSignedMedia}
+                                      className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {isLoadingSignedMedia ? "Abrindo..." : "Abrir video"}
+                                    </button>
+
+                                    {signedMediaError ? (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void loadSignedMediaUrl(message, { forceRefresh: true }).catch(
+                                            () => null
+                                          )
+                                        }
+                                        disabled={isLoadingSignedMedia}
+                                        className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isLoadingSignedMedia ? "Carregando..." : "Tentar novamente"}
+                                      </button>
+                                    ) : null}
+                                  </div>
 
                                   {signedMediaError ? (
                                     <div className="mt-2 text-[11px] text-red-600">
@@ -2257,7 +2513,7 @@ export default function LeadPage() {
                                 </div>
                               ) : null}
 
-                              {isCustomerLocationPhoto ? (
+                              {isCustomerLocationPhoto && !shouldRenderInlinePrivateImage ? (
                                 <div className="mt-3">
                                   <button
                                     type="button"

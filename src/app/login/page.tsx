@@ -44,6 +44,30 @@ function friendlyAuthError(message: string) {
   return message || "Não foi possível concluir essa ação.";
 }
 
+async function ensureAccountSetup() {
+  const response = await fetch("/api/account/ensure-setup", {
+    method: "POST",
+  });
+
+  let payload: any = null;
+
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      payload?.error ||
+        payload?.details ||
+        "NÃ£o foi possÃ­vel preparar sua conta para entrar no painel.",
+    );
+  }
+
+  return payload;
+}
+
 export default function LoginPage() {
   const router = useRouter();
 
@@ -51,6 +75,8 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -98,6 +124,8 @@ export default function LoginPage() {
       });
 
       if (signInError) throw signInError;
+
+      await ensureAccountSetup();
 
       router.push(PANEL_PATH);
       router.refresh();
@@ -163,6 +191,8 @@ export default function LoginPage() {
       });
 
       if (verifyError) throw verifyError;
+
+      await ensureAccountSetup();
 
       router.push(PANEL_PATH);
       router.refresh();
@@ -249,38 +279,14 @@ export default function LoginPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-4 py-10 text-zinc-50">
       <section className="w-full max-w-md rounded-3xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl shadow-black/30">
-        <div className="mb-6 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-sm font-black tracking-tight text-black">
+        <div className="mb-6 flex items-center justify-center gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-sm font-black tracking-tight text-black">
             Z
           </div>
-          <h1 className="mt-4 text-2xl font-bold tracking-tight">ZION</h1>
-          <p className="mt-1 text-sm text-zinc-400">Acesse sua loja</p>
+          <h1 className="text-2xl font-bold tracking-tight">ZION</h1>
         </div>
 
-        <div className="mb-5 rounded-2xl border border-white/10 bg-black/20 p-1">
-          <div className="grid grid-cols-2 gap-1">
-            <button
-              type="button"
-              onClick={() => changeMode("password")}
-              className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
-                mode === "password" ? "bg-white text-black" : "text-zinc-300 hover:bg-white/10"
-              }`}
-            >
-              Senha
-            </button>
-            <button
-              type="button"
-              onClick={() => changeMode("code")}
-              className={`rounded-xl px-3 py-2 text-xs font-semibold transition ${
-                mode === "code" || mode === "verifyCode"
-                  ? "bg-white text-black"
-                  : "text-zinc-300 hover:bg-white/10"
-              }`}
-            >
-              Código
-            </button>
-          </div>
-        </div>
+
 
         <h2 className="mb-4 text-lg font-bold">{title}</h2>
 
@@ -312,23 +318,75 @@ export default function LoginPage() {
 
             <div>
               <label className="text-xs font-semibold text-zinc-300">Senha</label>
-              <input
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-sm outline-none transition focus:border-white/30"
-                placeholder="••••••••"
-                type="password"
-                autoComplete="current-password"
-              />
+              <div className="relative mt-1">
+                <input
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 pr-12 text-sm outline-none transition focus:border-white/30"
+                  placeholder="••••••••"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((current) => !current)}
+                  className="absolute inset-y-0 right-3 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white"
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  title={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                >
+                  {showPassword ? (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
+                      <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
+                      <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
+                      <path d="M1 1l22 22" />
+                    </svg>
+                  ) : (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {busy ? "Entrando..." : "Entrar"}
-            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="submit"
+                disabled={busy}
+                className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busy ? "Entrando..." : "Entrar"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => changeMode("code")}
+                disabled={busy}
+                className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-bold text-white transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Código
+              </button>
+            </div>
           </form>
         ) : null}
 
@@ -441,26 +499,108 @@ export default function LoginPage() {
 
             <div>
               <label className="text-xs font-semibold text-zinc-300">Senha</label>
-              <input
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-sm outline-none transition focus:border-white/30"
-                placeholder="••••••••"
-                type="password"
-                autoComplete="new-password"
-              />
+              <div className="relative mt-1">
+                <input
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 pr-12 text-sm outline-none transition focus:border-white/30"
+                  placeholder="••••••••"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((current) => !current)}
+                  className="absolute inset-y-0 right-3 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white"
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  title={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                >
+                  {showPassword ? (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
+                      <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
+                      <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
+                      <path d="M1 1l22 22" />
+                    </svg>
+                  ) : (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
 
             <div>
               <label className="text-xs font-semibold text-zinc-300">Confirmar senha</label>
-              <input
-                value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-sm outline-none transition focus:border-white/30"
-                placeholder="••••••••"
-                type="password"
-                autoComplete="new-password"
-              />
+              <div className="relative mt-1">
+                <input
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  className="w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 pr-12 text-sm outline-none transition focus:border-white/30"
+                  placeholder="••••••••"
+                  type={showConfirmPassword ? "text" : "password"}
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword((current) => !current)}
+                  className="absolute inset-y-0 right-3 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white"
+                  aria-label={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
+                  title={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
+                >
+                  {showConfirmPassword ? (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
+                      <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
+                      <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
+                      <path d="M1 1l22 22" />
+                    </svg>
+                  ) : (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
 
             <button

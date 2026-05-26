@@ -494,7 +494,7 @@ function SingleSelectorGrid({
 function OnboardingContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { activeStore, organizationId, loading: storeLoading } = useStoreContext();
+  const { activeStore, organizationId, loading: storeLoading, refreshStores } = useStoreContext();
   const [currentStep, setCurrentStep] = useState(1);
   const [saving, setSaving] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
@@ -892,6 +892,8 @@ function OnboardingContent() {
     setFormError(null);
     setSuccessMessage(null);
     try {
+      const nextStoreName = payloads.find(([questionKey]) => questionKey === "store_display_name");
+
       for (const [questionKey, answer] of payloads) {
         const { error: rpcError } = await supabase.rpc("onboarding_upsert_answer_scoped", {
           p_organization_id: organizationId,
@@ -901,6 +903,35 @@ function OnboardingContent() {
         });
         if (rpcError) throw new Error(`Falha ao salvar campo: ${questionKey}`);
       }
+
+      const resolvedStoreName =
+        typeof nextStoreName?.[1] === "string" ? nextStoreName[1].trim() : "";
+
+      if (resolvedStoreName) {
+        const response = await fetch("/api/store/update-name", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            storeId: activeStore.id,
+            name: resolvedStoreName,
+          }),
+        });
+
+        const result = (await response.json().catch(() => null)) as
+          | { ok?: boolean; message?: string; error?: string }
+          | null;
+
+        if (!response.ok || !result?.ok) {
+          throw new Error(
+            result?.message || "Falha ao atualizar o nome oficial da loja."
+          );
+        }
+
+        await refreshStores();
+      }
+
       const { error: statusError } = await supabase.rpc("onboarding_upsert_store_onboarding_scoped", {
         p_organization_id: organizationId,
         p_store_id: activeStore.id,

@@ -43,12 +43,16 @@ type AiSalesReplyUsage = {
 type CatalogPhotoAction = {
   shouldSend: true;
   reason: "explicit_strong_product_photo_request";
-  poolId: string;
-  poolName: string;
+  targetType: "pool" | "catalog_item";
+  poolId: string | null;
+  poolName: string | null;
+  catalogItemId: string | null;
+  catalogItemName: string | null;
+  catalogItemSku: string | null;
   organizationId: string;
   storeId: string;
-  source: "pool_photos" | "pool_photo_url";
-  bucket: "pool-photos" | null;
+  source: "pool_photos" | "pool_photo_url" | "store_catalog_item_photos";
+  bucket: "pool-photos" | "store-catalog-photos" | null;
   storagePath: string | null;
   publicUrl: string;
   caption: string;
@@ -142,8 +146,13 @@ function normalizeCatalogPhotoAction(action: unknown): CatalogPhotoAction | null
 
   const candidate = action as Record<string, unknown>;
   const shouldSend = candidate.shouldSend === true;
-  const poolId = String(candidate.poolId || "").trim();
-  const poolName = String(candidate.poolName || "").trim();
+  const targetType =
+    candidate.targetType === "catalog_item" ? "catalog_item" : candidate.targetType === "pool" ? "pool" : null;
+  const poolId = String(candidate.poolId || "").trim() || null;
+  const poolName = String(candidate.poolName || "").trim() || null;
+  const catalogItemId = String(candidate.catalogItemId || "").trim() || null;
+  const catalogItemName = String(candidate.catalogItemName || "").trim() || null;
+  const catalogItemSku = String(candidate.catalogItemSku || "").trim() || null;
   const organizationId = String(candidate.organizationId || "").trim();
   const storeId = String(candidate.storeId || "").trim();
   const publicUrl = String(candidate.publicUrl || "").trim();
@@ -152,8 +161,15 @@ function normalizeCatalogPhotoAction(action: unknown): CatalogPhotoAction | null
       ? "pool_photo_url"
       : candidate.source === "pool_photos"
         ? "pool_photos"
+        : candidate.source === "store_catalog_item_photos"
+          ? "store_catalog_item_photos"
         : null;
-  const bucket = candidate.bucket === "pool-photos" ? "pool-photos" : null;
+  const bucket =
+    candidate.bucket === "pool-photos"
+      ? "pool-photos"
+      : candidate.bucket === "store-catalog-photos"
+        ? "store-catalog-photos"
+        : null;
   const storagePath =
     typeof candidate.storagePath === "string" && candidate.storagePath.trim().length > 0
       ? candidate.storagePath.trim()
@@ -162,13 +178,14 @@ function normalizeCatalogPhotoAction(action: unknown): CatalogPhotoAction | null
 
   if (
     !shouldSend ||
-    !poolId ||
-    !poolName ||
+    !targetType ||
     !organizationId ||
     !storeId ||
     !source ||
     !caption ||
-    !/^https?:\/\//i.test(publicUrl)
+    !/^https?:\/\//i.test(publicUrl) ||
+    (targetType === "pool" && (!poolId || !poolName)) ||
+    (targetType === "catalog_item" && !catalogItemId)
   ) {
     return null;
   }
@@ -176,8 +193,12 @@ function normalizeCatalogPhotoAction(action: unknown): CatalogPhotoAction | null
   return {
     shouldSend: true,
     reason: "explicit_strong_product_photo_request",
+    targetType,
     poolId,
     poolName,
+    catalogItemId,
+    catalogItemName,
+    catalogItemSku,
     organizationId,
     storeId,
     source,
@@ -2217,9 +2238,13 @@ export async function generateAndSaveAiSalesReply(
         const imageMetadata: Record<string, unknown> = {
           media_purpose: "catalog_product_photo",
           catalog_photo_action: true,
+          target_type: catalogPhotoAction.targetType,
           source: catalogPhotoAction.source,
           pool_id: catalogPhotoAction.poolId,
           pool_name: catalogPhotoAction.poolName,
+          catalog_item_id: catalogPhotoAction.catalogItemId,
+          catalog_item_name: catalogPhotoAction.catalogItemName,
+          catalog_item_sku: catalogPhotoAction.catalogItemSku,
           storage_bucket: catalogPhotoAction.bucket,
           storage_path: catalogPhotoAction.storagePath,
           generated_by: "ai_sales",
@@ -2243,7 +2268,9 @@ export async function generateAndSaveAiSalesReply(
             organizationId,
             storeId,
             conversationId,
+            targetType: catalogPhotoAction.targetType,
             poolId: catalogPhotoAction.poolId,
+            catalogItemId: catalogPhotoAction.catalogItemId,
             error: imageInsertError.message,
           });
         }
@@ -2252,7 +2279,9 @@ export async function generateAndSaveAiSalesReply(
           organizationId,
           storeId,
           conversationId,
+          targetType: catalogPhotoAction.targetType,
           poolId: catalogPhotoAction.poolId,
+          catalogItemId: catalogPhotoAction.catalogItemId,
           error:
             catalogPhotoInsertError instanceof Error
               ? catalogPhotoInsertError.message

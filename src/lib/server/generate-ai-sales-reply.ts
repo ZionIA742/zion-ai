@@ -277,12 +277,16 @@ type ProductPhotoRequestContext =
 export type CatalogPhotoActionContext = {
   shouldSend: true;
   reason: "explicit_strong_product_photo_request";
-  poolId: string;
-  poolName: string;
+  targetType: "pool" | "catalog_item";
+  poolId: string | null;
+  poolName: string | null;
+  catalogItemId: string | null;
+  catalogItemName: string | null;
+  catalogItemSku: string | null;
   organizationId: string;
   storeId: string;
-  source: "pool_photos" | "pool_photo_url";
-  bucket: "pool-photos" | null;
+  source: "pool_photos" | "pool_photo_url" | "store_catalog_item_photos";
+  bucket: "pool-photos" | "store-catalog-photos" | null;
   storagePath: string | null;
   publicUrl: string;
   caption: string;
@@ -397,6 +401,7 @@ const OPENAI_MODEL_PRICING_USD_PER_1M: Record<string, OpenAiModelPricing> = {
 };
 
 const POOL_PHOTOS_PUBLIC_BUCKET = "pool-photos";
+const STORE_CATALOG_ITEM_PHOTOS_PUBLIC_BUCKET = "store-catalog-photos";
 
 function normalizeModelForPricing(model: string): string {
   const normalized = String(model || "").trim().toLowerCase();
@@ -2470,17 +2475,30 @@ function extractRequestedPoolReference(text: string): RequestedPoolReference | n
   const normalized = normalizeText(text);
   const patterns = [
     /\btem\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\btem\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\btem\s+imagem\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\btem\s+imagem\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bme\s+manda\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bme\s+manda\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bme\s+mande\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bme\s+mande\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bmanda\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmanda\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bmande\s+foto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmande\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bme\s+mostra\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bme\s+mostre\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmostra\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bmostre\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bquero\s+foto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bquero\s+ver\s+a\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bquero\s+ver\s+o\s+modelo\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bmostra\s+a\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bmostrar\s+a\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bfoto\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bfoto\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bimagem\s+da\s+(?:piscina\s+)?([a-z0-9][a-z0-9\s-]{1,40})/i,
+    /\bimagem\s+do\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bvi o anuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\bvi o anuncio da\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
     /\banuncio da piscina\s+([a-z0-9][a-z0-9\s-]{1,40})/i,
@@ -2716,41 +2734,32 @@ function findStrongCatalogPhotoMatch(
     );
 
     if (canonicalMatches.length > 0) {
-      return canonicalMatches
+      const selectedMatch = canonicalMatches
         .slice()
         .sort((a, b) => b.photos.length - a.photos.length || b.score - a.score)[0];
+
+      return selectedMatch;
     }
 
     return null;
   }
 
   if (requestedNormalized) {
-    const normalizedMatches = matches.filter((match) => {
-      const haystack = normalizeText(
-        [match.item.name, match.item.sku, match.item.description].filter(Boolean).join(" | ")
-      );
-      return haystack.includes(requestedNormalized);
+    const exactMatches = matches.filter((match) => {
+      const normalizedName = normalizeText(match.item.name || "");
+      const normalizedSku = normalizeText(match.item.sku || "");
+      return normalizedName === requestedNormalized || normalizedSku === requestedNormalized;
     });
 
-    if (normalizedMatches.length > 0) {
-      return normalizedMatches
+    if (exactMatches.length > 0) {
+      const selectedMatch = exactMatches
         .slice()
         .sort((a, b) => b.photos.length - a.photos.length || b.score - a.score)[0];
+
+      return selectedMatch;
     }
   }
-
-  const first = matches[0] || null;
-  const second = matches[1] || null;
-
-  if (!first) return null;
-
-  const identifier = normalizeText(first.item.name || first.item.sku || "");
-
-  if (!identifier) return null;
-  if (first.score < 8) return null;
-  if (second && first.score < second.score + 3) return null;
-
-  return first;
+  return null;
 }
 
 function buildCatalogPhotoEvidence(args: {
@@ -2759,6 +2768,7 @@ function buildCatalogPhotoEvidence(args: {
   bestNamedPoolMatch: MatchedPool | null;
   availablePools: MatchedPool[];
   matchedCatalogItems: MatchedCatalogItem[];
+  preferCatalogItemTarget?: boolean;
 }): {
   poolMatch: MatchedPool | null;
   catalogItemMatch: MatchedCatalogItem | null;
@@ -2785,13 +2795,15 @@ function buildCatalogPhotoEvidence(args: {
     args.matchedCatalogItems,
     args.requestedPoolReference
   );
+  const effectivePoolMatch =
+    args.preferCatalogItemTarget ? null : resolvedPoolMatch;
 
-  const poolHasPhoto = !!resolvedPoolMatch?.hasPhoto;
+  const poolHasPhoto = !!effectivePoolMatch?.hasPhoto;
   const catalogItemPhotosCount = resolvedCatalogItemMatch?.photos.length || 0;
   const catalogHasPhoto = catalogItemPhotosCount > 0;
   const hasPhoto = poolHasPhoto || catalogHasPhoto;
 
-  if (!resolvedPoolMatch && !resolvedCatalogItemMatch) {
+  if (!effectivePoolMatch && !resolvedCatalogItemMatch) {
     return {
       poolMatch: null,
       catalogItemMatch: null,
@@ -2802,11 +2814,11 @@ function buildCatalogPhotoEvidence(args: {
   }
 
   const preferredTargetType: "pool" | "catalog_item" =
-    resolvedPoolMatch ? "pool" : "catalog_item";
+    effectivePoolMatch ? "pool" : "catalog_item";
   const modelName =
     preferredTargetType === "pool"
       ? String(
-          resolvedPoolMatch?.pool.name ||
+          effectivePoolMatch?.pool.name ||
             resolvedCatalogItemMatch?.item.name ||
             resolvedCatalogItemMatch?.item.sku ||
             args.requestedPoolReference?.raw ||
@@ -2815,18 +2827,58 @@ function buildCatalogPhotoEvidence(args: {
       : String(
           resolvedCatalogItemMatch?.item.name ||
             resolvedCatalogItemMatch?.item.sku ||
-            resolvedPoolMatch?.pool.name ||
+            effectivePoolMatch?.pool.name ||
             args.requestedPoolReference?.raw ||
             "Produto"
         ).trim();
 
   return {
-    poolMatch: resolvedPoolMatch || null,
+    poolMatch: effectivePoolMatch || null,
     catalogItemMatch: resolvedCatalogItemMatch || null,
     hasPhoto,
     modelName,
     targetType: preferredTargetType,
   };
+}
+
+function looksLikeCatalogItemSkuIdentifier(value: string | null | undefined): boolean {
+  const normalized = normalizeText(value);
+
+  if (!normalized) return false;
+
+  return /^(?=.*[a-z])(?=.*\d)[a-z0-9]+(?:-[a-z0-9]+)+$/i.test(normalized);
+}
+
+function findExactCatalogItemInList(
+  items: CatalogItemRow[],
+  requestedNormalized: string | null | undefined
+): CatalogItemRow | null {
+  const normalizedTarget = normalizeText(requestedNormalized);
+
+  if (!normalizedTarget) return null;
+
+  return (
+    items.find((item) => {
+      const normalizedName = normalizeText(item.name || "");
+      const normalizedSku = normalizeText(item.sku || "");
+      return normalizedName === normalizedTarget || normalizedSku === normalizedTarget;
+    }) || null
+  );
+}
+
+function shouldPrioritizeCatalogItemPhotoTarget(args: {
+  catalogIntent: CatalogIntentAnalysis;
+  requestedPoolReference: RequestedPoolReference | null;
+}): boolean {
+  const requestedNormalized = args.requestedPoolReference?.normalized || "";
+
+  if (!requestedNormalized) return false;
+  if (args.requestedPoolReference?.canonicalModelKey) return false;
+
+  return Boolean(
+    args.catalogIntent.requestedProductTerm ||
+      looksLikeCatalogItemSkuIdentifier(requestedNormalized)
+  );
 }
 
 function selectPrimaryPoolPhoto(
@@ -2861,15 +2913,52 @@ function selectPrimaryPoolPhoto(
   );
 }
 
+function selectPrimaryCatalogItemPhoto(
+  catalogItemPhotos: CatalogItemPhotoRow[],
+  catalogItemId: string
+): CatalogItemPhotoRow | null {
+  return (
+    catalogItemPhotos
+      .filter(
+        (photo) =>
+          photo.catalog_item_id === catalogItemId &&
+          typeof photo.storage_path === "string" &&
+          photo.storage_path.trim().length > 0
+      )
+      .slice()
+      .sort((a, b) => {
+        const sortOrderA =
+          typeof a.sort_order === "number" ? a.sort_order : Number.MAX_SAFE_INTEGER;
+        const sortOrderB =
+          typeof b.sort_order === "number" ? b.sort_order : Number.MAX_SAFE_INTEGER;
+
+        if (sortOrderA !== sortOrderB) {
+          return sortOrderA - sortOrderB;
+        }
+
+        const createdAtA = String(a.created_at || "");
+        const createdAtB = String(b.created_at || "");
+
+        if (createdAtA !== createdAtB) {
+          return createdAtA.localeCompare(createdAtB);
+        }
+
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      })[0] || null
+  );
+}
+
 function buildCatalogPhotoAction(args: {
   productPhotoRequestContext: ProductPhotoRequestContext;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
   requestedPoolReference: RequestedPoolReference | null;
+  catalogIntent: CatalogIntentAnalysis;
   strongestPoolReferenceMatch: PoolReferenceMatchStrength;
   bestNamedPoolMatch: MatchedPool | null;
   availablePools: MatchedPool[];
   matchedCatalogItems: MatchedCatalogItem[];
   poolPhotosByPoolId: Map<string, PoolPhotoRow[]>;
+  catalogItemPhotosByItemId: Map<string, CatalogItemPhotoRow[]>;
   organizationId: string;
   storeId: string;
   supabase: any;
@@ -2888,72 +2977,154 @@ function buildCatalogPhotoAction(args: {
     bestNamedPoolMatch: args.bestNamedPoolMatch,
     availablePools: args.availablePools,
     matchedCatalogItems: args.matchedCatalogItems,
+    preferCatalogItemTarget: shouldPrioritizeCatalogItemPhotoTarget({
+      catalogIntent: args.catalogIntent,
+      requestedPoolReference: args.requestedPoolReference,
+    }),
   });
 
   const resolvedPool = explicitPhotoEvidence.poolMatch?.pool || null;
+  const resolvedCatalogItem = explicitPhotoEvidence.catalogItemMatch?.item || null;
 
-  if (!resolvedPool || !explicitPhotoEvidence.hasPhoto) {
+  if (!explicitPhotoEvidence.hasPhoto) {
+    return null;
+  }
+
+  if (explicitPhotoEvidence.targetType === "pool") {
+    if (!resolvedPool) {
+      return null;
+    }
+
+    const availability = isSellableInventoryState({
+      isActive: resolvedPool.is_active,
+      trackStock: resolvedPool.track_stock,
+      stockQuantity: resolvedPool.stock_quantity,
+    });
+
+    if (!availability.isSellable) {
+      return null;
+    }
+
+    const poolPhotos = args.poolPhotosByPoolId.get(resolvedPool.id) || [];
+    const primaryPoolPhoto = selectPrimaryPoolPhoto(
+      poolPhotos,
+      args.organizationId,
+      args.storeId,
+      resolvedPool.id
+    );
+
+    const storagePath = primaryPoolPhoto?.storage_path?.trim() || null;
+    const fallbackUrl = String(resolvedPool.photo_url || "").trim() || null;
+    let publicUrl = "";
+    let source: CatalogPhotoActionContext["source"] | null = null;
+    let bucket: CatalogPhotoActionContext["bucket"] = null;
+
+    if (storagePath) {
+      const { data } = args.supabase.storage
+        .from(POOL_PHOTOS_PUBLIC_BUCKET)
+        .getPublicUrl(storagePath);
+      publicUrl = String(data?.publicUrl || "").trim();
+      source = "pool_photos";
+      bucket = POOL_PHOTOS_PUBLIC_BUCKET;
+    } else if (fallbackUrl) {
+      publicUrl = fallbackUrl;
+      source = "pool_photo_url";
+    }
+
+    if (!source || !/^https?:\/\//i.test(publicUrl)) {
+      return null;
+    }
+
+    const poolName = String(
+      resolvedPool.name || args.productPhotoRequestContext.modelName || ""
+    ).trim();
+
+    if (!poolName) {
+      return null;
+    }
+
+    return {
+      shouldSend: true,
+      reason: "explicit_strong_product_photo_request",
+      targetType: "pool",
+      poolId: resolvedPool.id,
+      poolName,
+      catalogItemId: null,
+      catalogItemName: null,
+      catalogItemSku: null,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      source,
+      bucket,
+      storagePath,
+      publicUrl,
+      caption: `Foto da ${poolName}`,
+    };
+  }
+
+  if (explicitPhotoEvidence.targetType !== "catalog_item" || !resolvedCatalogItem) {
     return null;
   }
 
   const availability = isSellableInventoryState({
-    isActive: resolvedPool.is_active,
-    trackStock: resolvedPool.track_stock,
-    stockQuantity: resolvedPool.stock_quantity,
+    isActive: resolvedCatalogItem.is_active,
+    trackStock: resolvedCatalogItem.track_stock,
+    stockQuantity: resolvedCatalogItem.stock_quantity,
   });
 
   if (!availability.isSellable) {
     return null;
   }
 
-  const poolPhotos = args.poolPhotosByPoolId.get(resolvedPool.id) || [];
-  const primaryPoolPhoto = selectPrimaryPoolPhoto(
-    poolPhotos,
-    args.organizationId,
-    args.storeId,
-    resolvedPool.id
+  const catalogItemPhotos = args.catalogItemPhotosByItemId.get(resolvedCatalogItem.id) || [];
+  const primaryCatalogItemPhoto = selectPrimaryCatalogItemPhoto(
+    catalogItemPhotos,
+    resolvedCatalogItem.id
   );
+  const storagePath = primaryCatalogItemPhoto?.storage_path?.trim() || null;
 
-  const storagePath = primaryPoolPhoto?.storage_path?.trim() || null;
-  const fallbackUrl = String(resolvedPool.photo_url || "").trim() || null;
-  let publicUrl = "";
-  let source: CatalogPhotoActionContext["source"] | null = null;
-  let bucket: CatalogPhotoActionContext["bucket"] = null;
-
-  if (storagePath) {
-    const { data } = args.supabase.storage
-      .from(POOL_PHOTOS_PUBLIC_BUCKET)
-      .getPublicUrl(storagePath);
-    publicUrl = String(data?.publicUrl || "").trim();
-    source = "pool_photos";
-    bucket = POOL_PHOTOS_PUBLIC_BUCKET;
-  } else if (fallbackUrl) {
-    publicUrl = fallbackUrl;
-    source = "pool_photo_url";
-  }
-
-  if (!source || !/^https?:\/\//i.test(publicUrl)) {
+  if (!storagePath) {
     return null;
   }
 
-  const poolName = String(resolvedPool.name || args.productPhotoRequestContext.modelName || "").trim();
+  const { data } = args.supabase.storage
+    .from(STORE_CATALOG_ITEM_PHOTOS_PUBLIC_BUCKET)
+    .getPublicUrl(storagePath);
+  const publicUrl = String(data?.publicUrl || "").trim();
 
-  if (!poolName) {
+  if (!/^https?:\/\//i.test(publicUrl)) {
     return null;
   }
+
+  const catalogItemName = String(
+    resolvedCatalogItem.name ||
+      resolvedCatalogItem.sku ||
+      args.productPhotoRequestContext.modelName ||
+      ""
+  ).trim();
+
+  if (!catalogItemName) {
+    return null;
+  }
+
+  const catalogItemSku = String(resolvedCatalogItem.sku || "").trim() || null;
 
   return {
     shouldSend: true,
     reason: "explicit_strong_product_photo_request",
-    poolId: resolvedPool.id,
-    poolName,
+    targetType: "catalog_item",
+    poolId: null,
+    poolName: null,
+    catalogItemId: resolvedCatalogItem.id,
+    catalogItemName,
+    catalogItemSku,
     organizationId: args.organizationId,
     storeId: args.storeId,
-    source,
-    bucket,
+    source: "store_catalog_item_photos",
+    bucket: STORE_CATALOG_ITEM_PHOTOS_PUBLIC_BUCKET,
     storagePath,
     publicUrl,
-    caption: `Foto da ${poolName}`,
+    caption: `Foto do ${catalogItemName}`,
   };
 }
 
@@ -3048,6 +3219,10 @@ function buildProductPhotoRequestContext(args: {
   orderedMessages: MessageRow[];
 }): ProductPhotoRequestContext {
   const asksForPhoto = args.catalogIntent.asksForPhoto;
+  const preferCatalogItemTarget = shouldPrioritizeCatalogItemPhotoTarget({
+    catalogIntent: args.catalogIntent,
+    requestedPoolReference: args.requestedPoolReference,
+  });
 
   if (!asksForPhoto) {
     return { kind: "not_applicable" };
@@ -3066,6 +3241,7 @@ function buildProductPhotoRequestContext(args: {
     bestNamedPoolMatch: args.bestNamedPoolMatch,
     availablePools: args.photoCandidatePools,
     matchedCatalogItems: args.matchedCatalogItems,
+    preferCatalogItemTarget,
   });
 
   if (explicitPhotoEvidence.poolMatch || explicitPhotoEvidence.catalogItemMatch) {
@@ -5955,6 +6131,12 @@ export async function generateAiSalesReply(
           customerConversationText,
         })
       : null;
+    const shouldTryExactCatalogItemLookup =
+      catalogIntent.asksForPhoto &&
+      shouldPrioritizeCatalogItemPhotoTarget({
+        catalogIntent,
+        requestedPoolReference,
+      });
     const conversationFacts = collectConversationFacts(orderedMessages);
     const affirmativeContinuation = isAffirmativeReply(lastCustomerMessage);
     const customerAskedToRepeatPoolOptions =
@@ -5993,7 +6175,8 @@ export async function generateAiSalesReply(
       shouldLoadPoolsForLocalPhotoRecommendation ||
       shouldPresentPoolRecommendations ||
       (recentPoolContext && affirmativeContinuation) ||
-      photoOrSimulationSubtype === "product_photo_specific" ||
+      (photoOrSimulationSubtype === "product_photo_specific" &&
+        !shouldTryExactCatalogItemLookup) ||
       photoOrSimulationSubtype === "general_photo_request";
 
     let availablePoolsText = "Nenhuma opção de piscina carregada no contexto.";
@@ -6008,6 +6191,7 @@ export async function generateAiSalesReply(
     if (
       shouldLoadPools ||
       ((catalogIntent.asksForPhoto || catalogIntent.asksAboutPool) &&
+        !shouldTryExactCatalogItemLookup &&
         photoOrSimulationSubtype !== "product_photo_without_model" &&
         photoOrSimulationSubtype !== "local_photo_context" &&
         photoOrSimulationSubtype !== "simulation_visual_request") ||
@@ -6123,9 +6307,49 @@ export async function generateAiSalesReply(
       }
 
       catalogItems = (catalogItemsData || []) as CatalogItemRow[];
+
+      const requestedNormalizedCatalogItem = requestedPoolReference?.normalized || "";
+      const exactCatalogItemAlreadyLoaded = findExactCatalogItemInList(
+        catalogItems,
+        requestedNormalizedCatalogItem
+      );
+
+      if (shouldTryExactCatalogItemLookup && requestedNormalizedCatalogItem && !exactCatalogItemAlreadyLoaded) {
+        const searchTerm = String(
+          requestedPoolReference?.raw || requestedNormalizedCatalogItem
+        )
+          .trim()
+          .replace(/,/g, " ");
+
+        if (searchTerm) {
+          const { data: exactCatalogCandidates, error: exactCatalogLookupError } = await supabase
+            .from("store_catalog_items")
+            .select(
+              "id, organization_id, store_id, sku, name, description, price_cents, currency, is_active, metadata, created_at, updated_at, track_stock, stock_quantity"
+            )
+            .eq("organization_id", organizationId)
+            .eq("store_id", resolvedStoreId)
+            .eq("is_active", true)
+            .or(`name.ilike.%${searchTerm}%,sku.ilike.%${searchTerm}%`)
+            .limit(20);
+
+          if (!exactCatalogLookupError) {
+            const exactCatalogItem =
+              findExactCatalogItemInList(
+                (exactCatalogCandidates || []) as CatalogItemRow[],
+                requestedNormalizedCatalogItem
+              ) || null;
+
+            if (exactCatalogItem && !catalogItems.some((item) => item.id === exactCatalogItem.id)) {
+              catalogItems = [exactCatalogItem, ...catalogItems];
+            }
+          }
+        }
+      }
     }
 
     let catalogItemPhotos: CatalogItemPhotoRow[] = [];
+    let catalogItemPhotosByItemId = new Map<string, CatalogItemPhotoRow[]>();
     if (catalogItems.length > 0) {
       const catalogItemIds = catalogItems.map((item) => item.id);
 
@@ -6146,6 +6370,13 @@ export async function generateAiSalesReply(
       }
 
       catalogItemPhotos = (catalogPhotosData || []) as CatalogItemPhotoRow[];
+
+      for (const photo of catalogItemPhotos) {
+        const existing = catalogItemPhotosByItemId.get(photo.catalog_item_id) || [];
+        existing.push(photo);
+        catalogItemPhotosByItemId.set(photo.catalog_item_id, existing);
+      }
+
     }
 
     const photoMap = new Map<string, CatalogItemPhotoRow[]>();
@@ -6292,16 +6523,17 @@ export async function generateAiSalesReply(
       productPhotoRequestContext,
       photoOrSimulationSubtype,
       requestedPoolReference,
+      catalogIntent,
       strongestPoolReferenceMatch,
       bestNamedPoolMatch,
       availablePools: photoCandidatePools,
       matchedCatalogItems,
       poolPhotosByPoolId,
+      catalogItemPhotosByItemId,
       organizationId,
       storeId: resolvedStoreId,
       supabase,
     });
-
     const commercialObjective = buildCommercialObjective({
       facts: conversationFacts,
       orderedMessages,
@@ -6467,7 +6699,13 @@ export async function generateAiSalesReply(
         )
     );
     const finalAiText = catalogPhotoAction
-      ? `Sim, temos foto da ${catalogPhotoAction.poolName}.`
+      ? `Sim, temos foto d${catalogPhotoAction.targetType === "pool" ? "a" : "o"} ${
+          catalogPhotoAction.targetType === "pool"
+            ? catalogPhotoAction.poolName || "modelo"
+            : catalogPhotoAction.catalogItemName ||
+              catalogPhotoAction.catalogItemSku ||
+              "item"
+        }.`
       : shouldUseCommercialReplyOverride
         ? String(commercialHandoff?.replyOverride || "").trim()
         : aiText;

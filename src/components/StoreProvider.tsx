@@ -17,6 +17,11 @@ type StoreRow = {
   created_at: string;
 };
 
+type MembershipRow = {
+  organization_id: string;
+  created_at: string;
+};
+
 type StoreContextValue = {
   loading: boolean;
   error: string | null;
@@ -76,32 +81,58 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         .from("memberships")
         .select("organization_id, created_at")
         .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(1);
+        .order("created_at", { ascending: false });
 
       if (membershipErr) {
         console.error("[StoreProvider] memberships error:", membershipErr);
         throw new Error("Falha ao obter organização do usuário.");
       }
 
-      const orgId = memberships?.[0]?.organization_id ?? null;
+      const membershipRows = (memberships ?? []) as MembershipRow[];
+      const organizationIds = Array.from(
+        new Set(
+          membershipRows
+            .map((membership) => membership.organization_id)
+            .filter(Boolean)
+        )
+      );
+
+      let orgId = membershipRows[0]?.organization_id ?? null;
 
       if (!orgId) {
         throw new Error("Usuário sem organização vinculada.");
       }
 
-      const { data: storeRows, error: storesErr } = await supabase
-        .from("stores")
-        .select("id, organization_id, name, created_at")
-        .eq("organization_id", orgId)
-        .order("created_at", { ascending: true });
+      let normalizedStores: StoreRow[] = [];
 
-      if (storesErr) {
-        console.error("[StoreProvider] stores error:", storesErr);
-        throw new Error("Falha ao carregar lojas.");
+      if (organizationIds.length > 0) {
+        const { data: allStoreRows, error: storesErr } = await supabase
+          .from("stores")
+          .select("id, organization_id, name, created_at")
+          .in("organization_id", organizationIds)
+          .order("created_at", { ascending: true });
+
+        if (storesErr) {
+          console.error("[StoreProvider] stores error:", storesErr);
+          throw new Error("Falha ao carregar lojas.");
+        }
+
+        const storesByOrganization = new Map<string, StoreRow[]>();
+
+        for (const store of (allStoreRows ?? []) as StoreRow[]) {
+          const bucket = storesByOrganization.get(store.organization_id) ?? [];
+          bucket.push(store);
+          storesByOrganization.set(store.organization_id, bucket);
+        }
+
+        const preferredMembership =
+          membershipRows.find((membership) => {
+            return (storesByOrganization.get(membership.organization_id)?.length ?? 0) > 0;
+          }) ?? membershipRows[0];
+
+        orgId = preferredMembership?.organization_id ?? orgId;
+        normalizedStores = storesByOrganization.get(orgId) ?? [];
       }
-
-      const normalizedStores = (storeRows ?? []) as StoreRow[];
 
       if (!mountedRef.current) return;
 
