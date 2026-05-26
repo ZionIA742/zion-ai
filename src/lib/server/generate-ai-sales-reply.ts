@@ -3429,6 +3429,22 @@ function inferRecommendationPolicy(args: {
 
   if (args.pattern === "photo_or_simulation_request") {
     if (
+      args.photoOrSimulationSubtype === "local_photo_context" &&
+      (args.shouldPresentPoolRecommendations || args.explicitCatalogRequest)
+    ) {
+      return {
+        allowRecommendations: true,
+        poolOptionCount: explicitVarietyRequest ? 3 : 2,
+        catalogOptionCount: explicitVarietyRequest ? 3 : 2,
+        allowOnlySimilarLanguage: false,
+        requireExactOrStrongMatchForNamedPool: false,
+        reason: explicitVarietyRequest
+          ? "foto do local com pedido explicito de variedade: apresentar opcoes iniciais sem prometer encaixe"
+          : "foto do local com pedido claro de modelos: apresentar opcoes iniciais e confirmar medidas depois",
+      };
+    }
+
+    if (
       args.photoOrSimulationSubtype === "product_photo_without_model" ||
       args.photoOrSimulationSubtype === "local_photo_context" ||
       args.photoOrSimulationSubtype === "simulation_visual_request" ||
@@ -5005,6 +5021,15 @@ function buildResponsePriorityBlock(args: {
   }
 
   if (
+    args.photoOrSimulationSubtype === "local_photo_context" &&
+    args.recommendationPolicy.allowRecommendations
+  ) {
+    instructions.push(
+      "- Como existe foto do local neste contexto, trate os modelos citados apenas como opcoes iniciais para avaliar. Sempre diga que largura e comprimento aproximados ainda sao necessarios para confirmar encaixe e instalacao."
+    );
+  }
+
+  if (
     args.lastAiListedPools &&
     !args.explicitCatalogRequest &&
     !args.shouldPresentPoolRecommendations
@@ -5951,6 +5976,11 @@ export async function generateAiSalesReply(
           (recentPoolContext && affirmativeContinuation) ||
           (recentPoolContext &&
             looksLikePoolRecommendationRequest(lastCustomerMessage))));
+    const shouldLoadPoolsForLocalPhotoRecommendation =
+      photoOrSimulationSubtype === "local_photo_context" &&
+      (shouldPresentPoolRecommendations ||
+        explicitCatalogRequest ||
+        looksLikePoolRecommendationRequest(lastCustomerMessage));
 
     const shouldLoadPools =
       (explicitCatalogRequest && photoOrSimulationSubtype !== "product_photo_without_model") ||
@@ -5960,6 +5990,7 @@ export async function generateAiSalesReply(
         photoOrSimulationSubtype !== "product_photo_without_model" &&
         photoOrSimulationSubtype !== "local_photo_context" &&
         photoOrSimulationSubtype !== "simulation_visual_request") ||
+      shouldLoadPoolsForLocalPhotoRecommendation ||
       shouldPresentPoolRecommendations ||
       (recentPoolContext && affirmativeContinuation) ||
       photoOrSimulationSubtype === "product_photo_specific" ||
@@ -5980,6 +6011,7 @@ export async function generateAiSalesReply(
         photoOrSimulationSubtype !== "product_photo_without_model" &&
         photoOrSimulationSubtype !== "local_photo_context" &&
         photoOrSimulationSubtype !== "simulation_visual_request") ||
+      shouldLoadPoolsForLocalPhotoRecommendation ||
       shouldPresentPoolRecommendations
     ) {
       const { data: poolsData, error: poolsError } = await supabase
