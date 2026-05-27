@@ -70,43 +70,13 @@ export async function POST(
     const { quoteId: rawQuoteId } = await context.params;
     const quoteId = String(rawQuoteId || "").trim();
     const scope = await resolveAuthorizedExistingQuote(quoteId);
-    const { settings } = await loadStoreQuoteSettings({
-      supabase: scope.supabase,
-      organizationId: scope.organizationId,
-      storeId: scope.store.id,
-    });
 
-    if (!settings.quotePdfEnabled) {
+    if (String(scope.quote.status || "").trim().toLowerCase() === "sent") {
       return NextResponse.json(
         {
           ok: false,
-          error: "QUOTE_PDF_DISABLED",
-          message: "O envio de orcamento em PDF esta desabilitado para esta loja.",
-        },
-        { status: 403 }
-      );
-    }
-
-    if (!settings.aiCanSendQuoteToCustomer) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "QUOTE_SEND_DISABLED",
-          message: "Esta loja nao permite envio automatico de orcamento ao cliente.",
-        },
-        { status: 403 }
-      );
-    }
-
-    if (
-      settings.requiresHumanApprovalBeforeSend &&
-      String(scope.quote.status || "").trim().toLowerCase() !== "approved"
-    ) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "QUOTE_REQUIRES_APPROVAL",
-          message: "Este orcamento precisa ser aprovado antes de ser enviado ao cliente.",
+          error: "QUOTE_ALREADY_SENT",
+          message: "Este orcamento ja foi enviado ao cliente.",
         },
         { status: 409 }
       );
@@ -155,23 +125,54 @@ export async function POST(
 
     const version = versionData as SalesQuoteVersionRow;
 
-    if (String(scope.quote.status || "").trim().toLowerCase() === "sent") {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "QUOTE_ALREADY_SENT",
-          message: "Este orcamento ja foi enviado ao cliente.",
-        },
-        { status: 409 }
-      );
-    }
-
     if (String(version.status || "").trim().toLowerCase() === "sent") {
       return NextResponse.json(
         {
           ok: false,
           error: "QUOTE_VERSION_ALREADY_SENT",
           message: "A versao atual deste orcamento ja foi enviada ao cliente.",
+        },
+        { status: 409 }
+      );
+    }
+
+    const { settings } = await loadStoreQuoteSettings({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+    });
+
+    if (!settings.quotePdfEnabled) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "QUOTE_PDF_DISABLED",
+          message: "O envio de orcamento em PDF esta desabilitado para esta loja.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (!settings.aiCanSendQuoteToCustomer) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "QUOTE_SEND_DISABLED",
+          message: "Esta loja nao permite envio automatico de orcamento ao cliente.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (
+      settings.requiresHumanApprovalBeforeSend &&
+      String(scope.quote.status || "").trim().toLowerCase() !== "approved"
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "QUOTE_REQUIRES_APPROVAL",
+          message: "Este orcamento precisa ser aprovado antes de ser enviado ao cliente.",
         },
         { status: 409 }
       );

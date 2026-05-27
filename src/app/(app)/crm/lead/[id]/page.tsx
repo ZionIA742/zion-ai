@@ -156,6 +156,16 @@ type PendingCustomerAttachment = {
   previewUrl?: string | null;
 };
 
+type QuoteFormItem = {
+  id: string;
+  itemType: "custom" | "service";
+  name: string;
+  description: string;
+  quantity: string;
+  unitPriceReais: string;
+  discountReais: string;
+};
+
 type DetailTab = "summary" | "appointments" | "context" | "tasks";
 
 function formatSender(message: MessageRow) {
@@ -221,6 +231,51 @@ function formatFileSize(sizeBytes: number) {
   }
 
   return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+}
+
+function createQuoteFormItemId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function createEmptyQuoteFormItem(): QuoteFormItem {
+  return {
+    id: createQuoteFormItemId(),
+    itemType: "custom",
+    name: "",
+    description: "",
+    quantity: "1",
+    unitPriceReais: "",
+    discountReais: "",
+  };
+}
+
+function parseQuoteMoneyValue(value: string) {
+  const normalized = String(value || "").trim().replace(",", ".");
+  const parsed = Number(normalized);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+
+  return parsed;
+}
+
+function parseQuoteQuantityValue(value: string) {
+  const normalized = String(value || "").trim().replace(",", ".");
+  const parsed = Number(normalized);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+
+  return parsed;
+}
+
+function formatCurrencyBRL(value: number) {
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(value);
 }
 
 function buildGoogleMapsRouteUrl(addressText: string | null | undefined) {
@@ -409,6 +464,18 @@ function getOriginalFileName(message: MessageRow) {
 function getMimeType(message: MessageRow) {
   const metadata = getMessageMetadata(message);
   return String(metadata?.mime_type || "").trim();
+}
+
+function getFriendlyMimeTypeLabel(mimeType: string | null | undefined) {
+  const normalized = String(mimeType || "").trim().toLowerCase();
+
+  if (!normalized) return "Arquivo";
+  if (normalized === "application/pdf") return "Arquivo PDF";
+  if (normalized.startsWith("image/")) return "Imagem";
+  if (normalized.startsWith("video/")) return "Vídeo";
+  if (normalized.startsWith("audio/")) return "Áudio";
+
+  return "Arquivo";
 }
 
 function isStoredAttachmentMessage(message: MessageRow) {
@@ -637,6 +704,12 @@ export default function LeadPage() {
   const [manualPendingAttachment, setManualPendingAttachment] =
     useState<PendingCustomerAttachment | null>(null);
   const [activeDetailsTab, setActiveDetailsTab] = useState<DetailTab | null>(null);
+  const [isQuoteModalOpen, setIsQuoteModalOpen] = useState(false);
+  const [quoteTitle, setQuoteTitle] = useState("");
+  const [quoteCustomerNotes, setQuoteCustomerNotes] = useState("");
+  const [quoteWarrantyTerms, setQuoteWarrantyTerms] = useState("");
+  const [quoteValidityDays, setQuoteValidityDays] = useState("");
+  const [quoteItems, setQuoteItems] = useState<QuoteFormItem[]>([createEmptyQuoteFormItem()]);
   const [imagePreviewErrors, setImagePreviewErrors] = useState<Record<string, boolean>>(
     {}
   );
@@ -683,6 +756,20 @@ export default function LeadPage() {
     !simulatingCustomer &&
     !simulatedRecordingAudio &&
     !uploadingCustomerAttachment;
+
+  const quoteSubtotalReais = quoteItems.reduce((total, item) => {
+    const quantity = parseQuoteQuantityValue(item.quantity);
+    const unitPrice = parseQuoteMoneyValue(item.unitPriceReais);
+
+    return total + quantity * unitPrice;
+  }, 0);
+
+  const quoteDiscountTotalReais = quoteItems.reduce((total, item) => {
+    const discount = parseQuoteMoneyValue(item.discountReais);
+    return total + discount;
+  }, 0);
+
+  const quoteTotalReais = Math.max(quoteSubtotalReais - quoteDiscountTotalReais, 0);
 
   useEffect(() => {
     return () => {
@@ -755,6 +842,45 @@ export default function LeadPage() {
         behavior,
       });
     });
+  }
+
+  function resetQuoteForm() {
+    setQuoteTitle("");
+    setQuoteCustomerNotes("");
+    setQuoteWarrantyTerms("");
+    setQuoteValidityDays("");
+    setQuoteItems([createEmptyQuoteFormItem()]);
+  }
+
+  function addQuoteItem() {
+    setQuoteItems((current) => [...current, createEmptyQuoteFormItem()]);
+  }
+
+  function removeQuoteItem(itemId: string) {
+    setQuoteItems((current) => {
+      if (current.length <= 1) {
+        return [createEmptyQuoteFormItem()];
+      }
+
+      return current.filter((item) => item.id !== itemId);
+    });
+  }
+
+  function updateQuoteItem(
+    itemId: string,
+    field: keyof Omit<QuoteFormItem, "id">,
+    value: string
+  ) {
+    setQuoteItems((current) =>
+      current.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              [field]: value,
+            }
+          : item
+      )
+    );
   }
 
   async function fetchLeadConversationAndMessages(options?: { silent?: boolean }) {
@@ -1892,6 +2018,15 @@ export default function LeadPage() {
                   >
                     Recarregar
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsQuoteModalOpen(true)}
+                    disabled={working || refreshing || simulatingCustomer}
+                    className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Criar orçamento
+                  </button>
                 </div>
 
                 <Link
@@ -2171,6 +2306,315 @@ export default function LeadPage() {
             </div>
           ) : null}
 
+          {isQuoteModalOpen ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6">
+              <div className="max-h-[82vh] w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/10">
+                <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
+                      Orçamento manual
+                    </div>
+                    <h2 className="mt-1 text-lg font-bold">Novo orçamento</h2>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetQuoteForm();
+                      setIsQuoteModalOpen(false);
+                    }}
+                    className="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/15 hover:bg-white/15"
+                  >
+                    Fechar
+                  </button>
+                </div>
+
+                <div className="max-h-[68vh] overflow-y-auto p-5">
+                  <div className="grid gap-4">
+                    <div>
+                      <p className="text-sm leading-6 text-gray-700">
+                        Crie um orçamento para este cliente.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="md:col-span-2">
+                        <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Título do orçamento
+                        </label>
+                        <input
+                          value={quoteTitle}
+                          onChange={(event) => setQuoteTitle(event.target.value)}
+                          className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: Orçamento piscina premium"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Garantia
+                        </label>
+                        <input
+                          value={quoteWarrantyTerms}
+                          onChange={(event) => setQuoteWarrantyTerms(event.target.value)}
+                          className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: 12 meses"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Validade em dias
+                        </label>
+                        <input
+                          value={quoteValidityDays}
+                          onChange={(event) => setQuoteValidityDays(event.target.value)}
+                          className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: 7"
+                          inputMode="numeric"
+                        />
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                          Observações para o cliente
+                        </label>
+                        <textarea
+                          value={quoteCustomerNotes}
+                          onChange={(event) => setQuoteCustomerNotes(event.target.value)}
+                          className="mt-1 min-h-[96px] w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: Condições comerciais, escopo, observações gerais..."
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-gray-50 p-4 ring-1 ring-black/5">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-bold text-gray-900">Itens do orçamento</div>
+                          <div className="text-xs text-gray-500">
+                            Adicione produtos ou serviços manualmente.
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={addQuoteItem}
+                          className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                        >
+                          Adicionar item
+                        </button>
+                      </div>
+
+                      <div className="mt-4 space-y-4">
+                        {quoteItems.map((item, index) => {
+                          const quantity = parseQuoteQuantityValue(item.quantity);
+                          const unitPrice = parseQuoteMoneyValue(item.unitPriceReais);
+                          const discount = parseQuoteMoneyValue(item.discountReais);
+                          const itemSubtotal = quantity * unitPrice;
+                          const itemTotal = Math.max(itemSubtotal - discount, 0);
+
+                          return (
+                            <div
+                              key={item.id}
+                              className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/10"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div className="text-sm font-semibold text-gray-900">
+                                  Item {index + 1}
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => removeQuoteItem(item.id)}
+                                  className="rounded-xl bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-200"
+                                >
+                                  Remover
+                                </button>
+                              </div>
+
+                              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                                <div>
+                                  <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    Tipo do item
+                                  </label>
+                                  <select
+                                    value={item.itemType}
+                                    onChange={(event) =>
+                                      updateQuoteItem(item.id, "itemType", event.target.value)
+                                    }
+                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                  >
+                                    <option value="custom">custom</option>
+                                    <option value="service">service</option>
+                                  </select>
+                                </div>
+
+                                <div>
+                                  <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    Quantidade
+                                  </label>
+                                  <input
+                                    value={item.quantity}
+                                    onChange={(event) =>
+                                      updateQuoteItem(item.id, "quantity", event.target.value)
+                                    }
+                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    placeholder="1"
+                                    inputMode="decimal"
+                                  />
+                                </div>
+
+                                <div className="md:col-span-2">
+                                  <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    Nome
+                                  </label>
+                                  <input
+                                    value={item.name}
+                                    onChange={(event) =>
+                                      updateQuoteItem(item.id, "name", event.target.value)
+                                    }
+                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    placeholder="Ex.: Piscina Premium"
+                                  />
+                                </div>
+
+                                <div className="md:col-span-2">
+                                  <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    Descrição
+                                  </label>
+                                  <textarea
+                                    value={item.description}
+                                    onChange={(event) =>
+                                      updateQuoteItem(item.id, "description", event.target.value)
+                                    }
+                                    className="mt-1 min-h-[88px] w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    placeholder="Detalhes do item ou serviço"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    Preço unitário (R$)
+                                  </label>
+                                  <input
+                                    value={item.unitPriceReais}
+                                    onChange={(event) =>
+                                      updateQuoteItem(item.id, "unitPriceReais", event.target.value)
+                                    }
+                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    placeholder="0,00"
+                                    inputMode="decimal"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    Desconto (R$)
+                                  </label>
+                                  <input
+                                    value={item.discountReais}
+                                    onChange={(event) =>
+                                      updateQuoteItem(item.id, "discountReais", event.target.value)
+                                    }
+                                    className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    placeholder="0,00"
+                                    inputMode="decimal"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                                <div className="rounded-2xl bg-gray-50 px-4 py-3 ring-1 ring-black/5">
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                                    Subtotal
+                                  </div>
+                                  <div className="mt-1 text-sm font-bold text-gray-900">
+                                    {formatCurrencyBRL(itemSubtotal)}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-2xl bg-gray-50 px-4 py-3 ring-1 ring-black/5">
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                                    Desconto
+                                  </div>
+                                  <div className="mt-1 text-sm font-bold text-gray-900">
+                                    {formatCurrencyBRL(discount)}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-2xl bg-gray-950 px-4 py-3 text-white ring-1 ring-black/5">
+                                  <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
+                                    Total do item
+                                  </div>
+                                  <div className="mt-1 text-sm font-bold">
+                                    {formatCurrencyBRL(itemTotal)}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl bg-gray-950 p-4 text-white ring-1 ring-black/5">
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
+                            Subtotal
+                          </div>
+                          <div className="mt-1 text-lg font-bold">
+                            {formatCurrencyBRL(quoteSubtotalReais)}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
+                            Desconto total
+                          </div>
+                          <div className="mt-1 text-lg font-bold">
+                            {formatCurrencyBRL(quoteDiscountTotalReais)}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
+                            Total
+                          </div>
+                          <div className="mt-1 text-lg font-bold">
+                            {formatCurrencyBRL(quoteTotalReais)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resetQuoteForm();
+                            setIsQuoteModalOpen(false);
+                          }}
+                          className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/15 hover:bg-white/15"
+                        >
+                          Fechar
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled
+                          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-400 ring-1 ring-white/15 disabled:cursor-not-allowed"
+                        >
+                          Gerar PDF
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <div className="flex h-[620px] flex-col">
             <div
               ref={messagesContainerRef}
@@ -2320,7 +2764,7 @@ export default function LeadPage() {
                                   </div>
                                   {mimeType ? (
                                     <div className="mt-1 break-words text-[11px] text-gray-500">
-                                      {mimeType}
+                                      {getFriendlyMimeTypeLabel(mimeType)}
                                     </div>
                                   ) : null}
 
