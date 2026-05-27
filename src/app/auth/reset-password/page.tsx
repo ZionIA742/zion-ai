@@ -6,6 +6,17 @@ import { supabase } from "@/lib/supabaseClient";
 
 type RecoveryStatus = "checking" | "ready" | "saving" | "success" | "error";
 
+function validateStrongPassword(password: string) {
+  const value = String(password || "").trim();
+
+  return (
+    value.length >= 8 &&
+    /[A-Z]/.test(value) &&
+    /\d/.test(value) &&
+    /[@.!?$%#&*-]/.test(value)
+  );
+}
+
 function getFriendlyErrorMessage(message: string | null | undefined) {
   const normalized = String(message || "").toLowerCase();
 
@@ -115,9 +126,11 @@ export default function ResetPasswordPage() {
     const nextPassword = password.trim();
     const nextConfirmPassword = confirmPassword.trim();
 
-    if (nextPassword.length < 6) {
+    if (!validateStrongPassword(nextPassword)) {
       setStatus("error");
-      setMessage("A nova senha precisa ter pelo menos 6 caracteres.");
+      setMessage(
+        "A senha precisa ter pelo menos 8 caracteres, uma letra maiúscula, um número e um caractere especial."
+      );
       return;
     }
 

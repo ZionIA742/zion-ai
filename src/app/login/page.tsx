@@ -20,6 +20,17 @@ function normalizeEmail(value: string) {
   return String(value || "").trim().toLowerCase();
 }
 
+function validateStrongPassword(password: string) {
+  const value = String(password || "").trim();
+
+  return (
+    value.length >= 8 &&
+    /[A-Z]/.test(value) &&
+    /\d/.test(value) &&
+    /[@.!?$%#&*-]/.test(value)
+  );
+}
+
 function clearStoredStoreSelection() {
   if (typeof window === "undefined") {
     return;
@@ -299,8 +310,10 @@ export default function LoginPage() {
       return;
     }
 
-    if (password.length < 6) {
-      setError("Use uma senha com pelo menos 6 caracteres.");
+    if (!validateStrongPassword(password)) {
+      setError(
+        "A senha precisa ter pelo menos 8 caracteres, uma letra maiúscula, um número e um caractere especial."
+      );
       return;
     }
 
