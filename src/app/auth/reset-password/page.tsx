@@ -28,6 +28,19 @@ function getFriendlyErrorMessage(message: string | null | undefined) {
   return message || "Não foi possível continuar. Tente novamente.";
 }
 
+function getRecoveryLinkErrorMessage(params: URLSearchParams) {
+  const error = params.get("error");
+  const errorCode = params.get("error_code");
+  const errorDescription = params.get("error_description");
+  const recoveryError = params.get("recoveryError");
+
+  if (!error && !errorCode && !errorDescription && !recoveryError) {
+    return null;
+  }
+
+  return "Este link de recuperação expirou ou é inválido. Solicite uma nova recuperação de senha.";
+}
+
 export default function ResetPasswordPage() {
   const router = useRouter();
 
@@ -45,7 +58,7 @@ export default function ResetPasswordPage() {
       try {
         const params = new URLSearchParams(window.location.search);
         const code = params.get("code");
-        const recoveryError = params.get("recoveryError");
+        const recoveryLinkError = getRecoveryLinkErrorMessage(params);
 
         if (code) {
           const callbackUrl = new URL("/auth/callback", window.location.origin);
@@ -55,10 +68,10 @@ export default function ResetPasswordPage() {
           return;
         }
 
-        if (recoveryError) {
+        if (recoveryLinkError) {
           if (cancelled) return;
           setStatus("error");
-          setMessage("Não foi possível validar o link de recuperação. Volte para o login e peça um novo link.");
+          setMessage(recoveryLinkError);
           return;
         }
 
@@ -147,6 +160,7 @@ export default function ResetPasswordPage() {
   const isSaving = status === "saving";
   const canSubmit =
     status === "ready" && password.trim().length > 0 && confirmPassword.trim().length > 0;
+  const shouldShowForm = status !== "error";
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-black px-4 text-white">
@@ -169,138 +183,128 @@ export default function ResetPasswordPage() {
           {message}
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-5 space-y-3">
-          <div>
-            <label className="text-xs text-zinc-400">Nova senha</label>
-            <div className="relative mt-1">
-              <input
-                value={password}
-                onChange={(event) => {
-                  setPassword(event.target.value);
-                  if (status === "error") {
-                    setStatus("ready");
-                    setMessage("Digite sua nova senha para concluir a recuperação.");
-                  }
-                }}
-                type={showPassword ? "text" : "password"}
-                disabled={status === "checking" || status === "saving" || status === "success"}
-                className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
-                placeholder="Digite a nova senha"
-                autoComplete="new-password"
-              />
+        {shouldShowForm ? (
+          <form onSubmit={handleSubmit} className="mt-5 space-y-3">
+            <div>
+              <label className="text-xs text-zinc-400">Nova senha</label>
+              <div className="relative mt-1">
+                <input
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  type={showPassword ? "text" : "password"}
+                  disabled={status === "checking" || status === "saving" || status === "success"}
+                  className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="Digite a nova senha"
+                  autoComplete="new-password"
+                />
 
-              <button
-                type="button"
-                onClick={() => setShowPassword((current) => !current)}
-                disabled={status === "checking" || status === "saving" || status === "success"}
-                className="absolute inset-y-0 right-2 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                title={showPassword ? "Ocultar senha" : "Mostrar senha"}
-              >
-                {showPassword ? (
-                  <svg
-                    aria-hidden="true"
-                    viewBox="0 0 24 24"
-                    className="h-5 w-5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
-                    <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
-                    <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
-                    <path d="M1 1l22 22" />
-                  </svg>
-                ) : (
-                  <svg
-                    aria-hidden="true"
-                    viewBox="0 0 24 24"
-                    className="h-5 w-5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
-                    <circle cx="12" cy="12" r="3" />
-                  </svg>
-                )}
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((current) => !current)}
+                  disabled={status === "checking" || status === "saving" || status === "success"}
+                  className="absolute inset-y-0 right-2 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  title={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                >
+                  {showPassword ? (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
+                      <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
+                      <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
+                      <path d="M1 1l22 22" />
+                    </svg>
+                  ) : (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div>
-            <label className="text-xs text-zinc-400">Confirmar senha</label>
-            <div className="relative mt-1">
-              <input
-                value={confirmPassword}
-                onChange={(event) => {
-                  setConfirmPassword(event.target.value);
-                  if (status === "error") {
-                    setStatus("ready");
-                    setMessage("Digite sua nova senha para concluir a recuperação.");
-                  }
-                }}
-                type={showConfirmPassword ? "text" : "password"}
-                disabled={status === "checking" || status === "saving" || status === "success"}
-                className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
-                placeholder="Repita a nova senha"
-                autoComplete="new-password"
-              />
+            <div>
+              <label className="text-xs text-zinc-400">Confirmar senha</label>
+              <div className="relative mt-1">
+                <input
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  type={showConfirmPassword ? "text" : "password"}
+                  disabled={status === "checking" || status === "saving" || status === "success"}
+                  className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder="Repita a nova senha"
+                  autoComplete="new-password"
+                />
 
-              <button
-                type="button"
-                onClick={() => setShowConfirmPassword((current) => !current)}
-                disabled={status === "checking" || status === "saving" || status === "success"}
-                className="absolute inset-y-0 right-2 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                aria-label={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
-                title={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
-              >
-                {showConfirmPassword ? (
-                  <svg
-                    aria-hidden="true"
-                    viewBox="0 0 24 24"
-                    className="h-5 w-5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
-                    <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
-                    <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
-                    <path d="M1 1l22 22" />
-                  </svg>
-                ) : (
-                  <svg
-                    aria-hidden="true"
-                    viewBox="0 0 24 24"
-                    className="h-5 w-5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
-                    <circle cx="12" cy="12" r="3" />
-                  </svg>
-                )}
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword((current) => !current)}
+                  disabled={status === "checking" || status === "saving" || status === "success"}
+                  className="absolute inset-y-0 right-2 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
+                  title={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
+                >
+                  {showConfirmPassword ? (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
+                      <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
+                      <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
+                      <path d="M1 1l22 22" />
+                    </svg>
+                  ) : (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
-          </div>
 
-          <button
-            disabled={!canSubmit || isSaving}
-            className="w-full rounded-2xl bg-white px-3 py-2 text-sm font-semibold text-black hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isSaving ? "Salvando..." : "Salvar nova senha"}
-          </button>
-        </form>
+            <button
+              disabled={!canSubmit || isSaving}
+              className="w-full rounded-2xl bg-white px-3 py-2 text-sm font-semibold text-black hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSaving ? "Salvando..." : "Salvar nova senha"}
+            </button>
+          </form>
+        ) : null}
 
         <button
           type="button"

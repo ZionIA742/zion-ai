@@ -1,6 +1,7 @@
 export type QuoteStatus =
   | "draft"
   | "pending_review"
+  | "sent"
   | "approved"
   | "changes_requested"
   | "failed";
@@ -39,6 +40,8 @@ export type QuoteConversationRow = {
   id: string;
   organization_id: string;
   lead_id: string | null;
+  status: string | null;
+  is_human_active?: boolean | null;
 };
 
 export type QuoteLeadRow = {
@@ -58,12 +61,15 @@ export type SalesQuoteRow = {
   quote_number: string | null;
   title: string | null;
   status: string | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
   customer_notes: string | null;
   internal_notes: string | null;
   subtotal_cents: number | null;
   discount_cents: number | null;
   total_cents: number | null;
   current_version_id: string | null;
+  last_change_request_id?: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
   updated_at: string | null;
@@ -98,8 +104,12 @@ export type SalesQuoteVersionRow = {
   store_file_id: string | null;
   storage_bucket: string | null;
   storage_path: string | null;
+  original_filename?: string | null;
+  mime_type?: string | null;
+  size_bytes?: number | null;
   quote_snapshot: Record<string, unknown> | null;
   created_at: string | null;
+  sent_at?: string | null;
 };
 
 export type SalesQuoteChangeRequestRow = {
@@ -110,7 +120,10 @@ export type SalesQuoteChangeRequestRow = {
   status: string | null;
   requested_by: string | null;
   request_text: string | null;
+  applied_changes?: Record<string, unknown> | null;
   created_at: string | null;
+  applied_at?: string | null;
+  resolved_at?: string | null;
 };
 
 export type StoreFileRow = {
@@ -189,4 +202,3 @@ export type QuoteSnapshot = {
   generatedAt: string;
   generationError?: string | null;
 };
-

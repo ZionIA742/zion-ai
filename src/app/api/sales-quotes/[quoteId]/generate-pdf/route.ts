@@ -155,6 +155,8 @@ export async function POST(
       storeFileId: storedFile.storeFileId,
       storageBucket: storedFile.storageBucket,
       storagePath: storedFile.storagePath,
+      originalFilename: storedFile.originalFilename,
+      sizeBytes: storedFile.sizeBytes,
       quoteSnapshot: snapshot,
       nextQuoteStatus: "pending_review",
     });
@@ -203,4 +205,3 @@ export async function POST(
     return buildErrorResponse(error);
   }
 }
-

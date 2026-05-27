@@ -16,9 +16,25 @@ type CreateQuoteBody = {
   leadId?: string | null;
   title?: string | null;
   items?: QuoteItemInput[];
+  customerName?: string | null;
+  customer_name?: string | null;
+  customerPhone?: string | null;
+  customer_phone?: string | null;
   customer_notes?: string | null;
   internal_notes?: string | null;
   discount_cents?: number | null;
+};
+
+const ALLOWED_QUOTE_ITEM_TYPES = [
+  "pool",
+  "catalog_item",
+  "service",
+  "custom",
+] as const;
+
+type AllowedQuoteItemType = (typeof ALLOWED_QUOTE_ITEM_TYPES)[number];
+type NormalizedCreateQuoteItem = NormalizedQuoteItemInput & {
+  itemType: AllowedQuoteItemType;
 };
 
 function buildErrorResponse(error: unknown) {
@@ -50,7 +66,35 @@ function parseInteger(value: unknown, fallback = 0) {
   return Math.trunc(numericValue);
 }
 
-function normalizeQuoteItems(items: unknown): NormalizedQuoteItemInput[] {
+function normalizeOptionalText(value: unknown) {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function normalizeQuoteItemType(
+  record: Record<string, unknown> | null,
+  index: number
+): AllowedQuoteItemType {
+  const rawItemType = String(
+    record?.item_type ?? record?.itemType ?? record?.type ?? ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (
+    ALLOWED_QUOTE_ITEM_TYPES.includes(rawItemType as AllowedQuoteItemType)
+  ) {
+    return rawItemType as AllowedQuoteItemType;
+  }
+
+  throw new QuoteAccessError(
+    400,
+    "INVALID_ITEM_TYPE",
+    `Item ${index + 1} possui tipo invalido ou ausente.`
+  );
+}
+
+function normalizeQuoteItems(items: unknown): NormalizedCreateQuoteItem[] {
   if (!Array.isArray(items)) {
     throw new QuoteAccessError(400, "INVALID_ITEMS", "items deve ser um array.");
   }
@@ -68,6 +112,7 @@ function normalizeQuoteItems(items: unknown): NormalizedQuoteItemInput[] {
       );
     }
 
+    const itemType = normalizeQuoteItemType(record, index);
     const quantity = Math.max(1, parseInteger(record?.quantity, 1));
     const unitPriceCents = Math.max(0, parseInteger(record?.unit_price_cents, 0));
     const rawDiscountCents = Math.max(
@@ -79,6 +124,7 @@ function normalizeQuoteItems(items: unknown): NormalizedQuoteItemInput[] {
     const totalCents = Math.max(0, subtotalCents - discountCents);
 
     return {
+      itemType,
       name,
       description: String(record?.description || "").trim() || null,
       quantity,
@@ -103,8 +149,8 @@ export async function POST(request: Request) {
     const conversationId = String(body?.conversationId || "").trim() || null;
     const leadId = String(body?.leadId || "").trim() || null;
     const title = String(body?.title || "").trim() || null;
-    const customerNotes = String(body?.customer_notes || "").trim() || null;
-    const internalNotes = String(body?.internal_notes || "").trim() || null;
+    const customerNotes = normalizeOptionalText(body?.customer_notes);
+    const internalNotes = normalizeOptionalText(body?.internal_notes);
     const quoteDiscountCents = Math.max(0, parseInteger(body?.discount_cents, 0));
     const items = normalizeQuoteItems(body?.items || []);
 
@@ -133,6 +179,12 @@ export async function POST(request: Request) {
     const discountCents = itemsDiscountCents + quoteDiscountCents;
     const totalCents = Math.max(0, subtotalCents - discountCents);
     const quoteTitle = title || `Orcamento ${numberReservation.quoteNumber}`;
+    const customerName =
+      normalizeOptionalText(body?.customerName ?? body?.customer_name) ??
+      normalizeOptionalText(scope.lead?.name);
+    const customerPhone =
+      normalizeOptionalText(body?.customerPhone ?? body?.customer_phone) ??
+      normalizeOptionalText(scope.lead?.phone);
 
     const quoteMetadata = {
       quote_pdf_enabled_snapshot: numberReservation.settings.quotePdfEnabled,
@@ -159,6 +211,8 @@ export async function POST(request: Request) {
         quote_number: numberReservation.quoteNumber,
         title: quoteTitle,
         status: "draft",
+        customer_name: customerName,
+        customer_phone: customerPhone,
         customer_notes: customerNotes,
         internal_notes: internalNotes,
         subtotal_cents: subtotalCents,
@@ -181,6 +235,7 @@ export async function POST(request: Request) {
         quote_id: quoteRow.id,
         organization_id: scope.organizationId,
         store_id: scope.store.id,
+        item_type: item.itemType,
         name: item.name,
         description: item.description,
         quantity: item.quantity,
@@ -208,6 +263,8 @@ export async function POST(request: Request) {
       quoteId: quoteRow.id,
       quoteNumber: quoteRow.quote_number,
       status: quoteRow.status,
+      customerName,
+      customerPhone,
       itemCount: items.length,
       subtotalCents,
       discountCents,
@@ -217,4 +274,3 @@ export async function POST(request: Request) {
     return buildErrorResponse(error);
   }
 }
-

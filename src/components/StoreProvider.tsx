@@ -42,8 +42,35 @@ function isValidStoreId(storeId: string | null, stores: StoreRow[]) {
   return stores.some((store) => store.id === storeId);
 }
 
+function getStoreStorageKey(userId: string) {
+  return `${ACTIVE_STORE_STORAGE_KEY}:${userId}`;
+}
+
+function clearStoredStoreSelection(userId?: string | null) {
+  if (typeof window === "undefined") return;
+
+  const keysToRemove = new Set<string>([ACTIVE_STORE_STORAGE_KEY]);
+
+  if (userId) {
+    keysToRemove.add(getStoreStorageKey(userId));
+  }
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+
+    if (key && key.startsWith(`${ACTIVE_STORE_STORAGE_KEY}:`)) {
+      keysToRemove.add(key);
+    }
+  }
+
+  for (const key of keysToRemove) {
+    window.localStorage.removeItem(key);
+  }
+}
+
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const mountedRef = useRef(true);
+  const currentUserIdRef = useRef<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,14 +95,22 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       if (sessionErr) {
         console.error("[StoreProvider] auth.getSession error:", sessionErr);
-        throw new Error("Falha ao obter sessão.");
+        throw new Error("Falha ao obter sessao.");
       }
 
       const user = sessionRes.session?.user;
 
       if (!user) {
-        throw new Error("Usuário não autenticado.");
+        currentUserIdRef.current = null;
+        clearStoredStoreSelection();
+        throw new Error("Usuario nao autenticado.");
       }
+
+      if (currentUserIdRef.current && currentUserIdRef.current !== user.id) {
+        clearStoredStoreSelection(currentUserIdRef.current);
+      }
+
+      currentUserIdRef.current = user.id;
 
       const { data: memberships, error: membershipErr } = await supabase
         .from("memberships")
@@ -85,7 +120,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       if (membershipErr) {
         console.error("[StoreProvider] memberships error:", membershipErr);
-        throw new Error("Falha ao obter organização do usuário.");
+        throw new Error("Falha ao obter organizacao do usuario.");
       }
 
       const membershipRows = (memberships ?? []) as MembershipRow[];
@@ -100,7 +135,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       let orgId = membershipRows[0]?.organization_id ?? null;
 
       if (!orgId) {
-        throw new Error("Usuário sem organização vinculada.");
+        throw new Error("Usuario sem organizacao vinculada.");
       }
 
       let normalizedStores: StoreRow[] = [];
@@ -141,7 +176,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       const savedStoreId =
         typeof window !== "undefined"
-          ? window.localStorage.getItem(ACTIVE_STORE_STORAGE_KEY)
+          ? window.localStorage.getItem(getStoreStorageKey(user.id)) ||
+            window.localStorage.getItem(ACTIVE_STORE_STORAGE_KEY)
           : null;
 
       let nextActiveStoreId: string | null = null;
@@ -158,12 +194,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       if (typeof window !== "undefined") {
         if (nextActiveStoreId) {
-          window.localStorage.setItem(
-            ACTIVE_STORE_STORAGE_KEY,
-            nextActiveStoreId
-          );
-        } else {
+          window.localStorage.setItem(getStoreStorageKey(user.id), nextActiveStoreId);
           window.localStorage.removeItem(ACTIVE_STORE_STORAGE_KEY);
+        } else {
+          clearStoredStoreSelection(user.id);
         }
       }
     } catch (err: any) {
@@ -171,6 +205,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       console.error("[StoreProvider] unexpected error:", err);
       setError(err?.message ?? "Erro ao carregar lojas.");
+      currentUserIdRef.current = null;
       setOrganizationId(null);
       setStores([]);
       setActiveStoreIdState(null);
@@ -181,12 +216,44 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
-    load();
+    void load();
+  }, []);
+
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextUserId = session?.user?.id ?? null;
+
+      if (!nextUserId) {
+        currentUserIdRef.current = null;
+        clearStoredStoreSelection();
+
+        if (!mountedRef.current) return;
+
+        setOrganizationId(null);
+        setStores([]);
+        setActiveStoreIdState(null);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+
+      if (currentUserIdRef.current && currentUserIdRef.current !== nextUserId) {
+        clearStoredStoreSelection(currentUserIdRef.current);
+      }
+
+      void load();
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const setActiveStoreId = (storeId: string) => {
     if (!isValidStoreId(storeId, stores)) {
-      console.warn("[StoreProvider] tentativa de selecionar store inválida:", {
+      console.warn("[StoreProvider] tentativa de selecionar store invalida:", {
         storeId,
       });
       return;
@@ -195,7 +262,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setActiveStoreIdState(storeId);
 
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(ACTIVE_STORE_STORAGE_KEY, storeId);
+      const userId = currentUserIdRef.current;
+
+      if (userId) {
+        window.localStorage.setItem(getStoreStorageKey(userId), storeId);
+        window.localStorage.removeItem(ACTIVE_STORE_STORAGE_KEY);
+      }
     }
   };
 

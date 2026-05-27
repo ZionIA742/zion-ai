@@ -89,6 +89,8 @@ export async function createQuoteVersion(args: {
   storeFileId: string;
   storageBucket: string;
   storagePath: string;
+  originalFilename: string;
+  sizeBytes: number;
   quoteSnapshot: QuoteSnapshot;
   nextQuoteStatus: string;
 }) {
@@ -118,10 +120,13 @@ export async function createQuoteVersion(args: {
       store_file_id: args.storeFileId,
       storage_bucket: args.storageBucket,
       storage_path: args.storagePath,
+      original_filename: args.originalFilename,
+      mime_type: "application/pdf",
+      size_bytes: args.sizeBytes,
       quote_snapshot: args.quoteSnapshot,
     })
     .select(
-      "id, quote_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, quote_snapshot, created_at"
+      "id, quote_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, quote_snapshot, created_at"
     )
     .maybeSingle();
 

@@ -8,6 +8,8 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const CHANGE_REQUEST_EVENT_TYPE = "orcamento_alteracao_solicitada";
+
 function buildErrorResponse(error: unknown) {
   if (error instanceof QuoteAccessError) {
     return NextResponse.json(
@@ -79,6 +81,7 @@ export async function POST(
       .from("sales_quotes")
       .update({
         status: "changes_requested",
+        last_change_request_id: changeRequest.id,
       })
       .eq("id", scope.quote.id);
 
@@ -86,14 +89,17 @@ export async function POST(
       throw new Error(quoteUpdateError.message);
     }
 
-    await insertQuoteConversationEvent({
+    const conversationEvent = await insertQuoteConversationEvent({
       supabase: scope.supabase,
       quote: scope.quote,
-      eventType: "orcamento_alteracao_solicitada",
+      eventType: CHANGE_REQUEST_EVENT_TYPE,
       payload: {
         quote_id: scope.quote.id,
         change_request_id: changeRequest.id,
+        quote_number: scope.quote.quote_number,
         status: "changes_requested",
+        current_version_id: scope.quote.current_version_id,
+        request_text: requestText,
       },
       createdBy: "human",
     });
@@ -101,11 +107,12 @@ export async function POST(
     return NextResponse.json({
       ok: true,
       quoteId: scope.quote.id,
+      quoteNumber: scope.quote.quote_number,
       changeRequestId: changeRequest.id,
       status: "changes_requested",
+      conversationEvent,
     });
   } catch (error) {
     return buildErrorResponse(error);
   }
 }
-

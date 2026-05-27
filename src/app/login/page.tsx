@@ -9,6 +9,7 @@ type LoginMode = "password" | "code" | "verifyCode" | "forgot" | "signup";
 const PANEL_PATH = "/crm";
 const RESET_PASSWORD_PATH = "/auth/reset-password";
 const AUTH_CALLBACK_PATH = "/auth/callback";
+const ACTIVE_STORE_STORAGE_KEY = "zion_active_store_id";
 
 function getBaseUrl() {
   if (typeof window === "undefined") return "";
@@ -19,6 +20,36 @@ function normalizeEmail(value: string) {
   return String(value || "").trim().toLowerCase();
 }
 
+function clearStoredStoreSelection() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const keysToRemove: string[] = [];
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+
+    if (key && key.startsWith(ACTIVE_STORE_STORAGE_KEY)) {
+      keysToRemove.push(key);
+    }
+  }
+
+  for (const key of keysToRemove) {
+    window.localStorage.removeItem(key);
+  }
+}
+
+async function clearAuthStateForFreshLogin() {
+  clearStoredStoreSelection();
+
+  const { error } = await supabase.auth.signOut({ scope: "local" });
+
+  if (error && !String(error.message || "").toLowerCase().includes("session")) {
+    throw error;
+  }
+}
+
 function friendlyAuthError(message: string) {
   const normalized = String(message || "").toLowerCase();
 
@@ -27,6 +58,10 @@ function friendlyAuthError(message: string) {
   }
 
   if (normalized.includes("email not confirmed")) {
+    return "Confirme seu e-mail antes de entrar.";
+  }
+
+  if (normalized.includes("email_not_confirmed")) {
     return "Confirme seu e-mail antes de entrar.";
   }
 
@@ -140,6 +175,7 @@ export default function LoginPage() {
 
       if (signInError) throw signInError;
 
+      clearStoredStoreSelection();
       await ensureAccountSetup();
 
       router.push(PANEL_PATH);
@@ -165,6 +201,8 @@ export default function LoginPage() {
     setBusy(true);
 
     try {
+      await clearAuthStateForFreshLogin();
+
       const { error: otpError } = await supabase.auth.signInWithOtp({
         email: safeEmail,
         options: {
@@ -206,6 +244,7 @@ export default function LoginPage() {
 
       if (verifyError) throw verifyError;
 
+      clearStoredStoreSelection();
       await ensureAccountSetup();
 
       router.push(PANEL_PATH);
@@ -273,17 +312,24 @@ export default function LoginPage() {
     setBusy(true);
 
     try {
-      const { error: signUpError } = await supabase.auth.signUp({
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: safeEmail,
         password,
         options: {
-          emailRedirectTo: `${getBaseUrl()}${PANEL_PATH}`,
+          emailRedirectTo: `${getBaseUrl()}${AUTH_CALLBACK_PATH}?next=${encodeURIComponent(
+            PANEL_PATH,
+          )}`,
         },
       });
 
       if (signUpError) throw signUpError;
 
-      setMessage("Conta criada. Confira seu e-mail para confirmar o acesso.");
+      if (signUpData.session) {
+        const { error: signOutError } = await supabase.auth.signOut();
+        if (signOutError) throw signOutError;
+      }
+
+      setMessage("Conta criada. Confirme seu e-mail antes de entrar.");
       setMode("password");
       setPassword("");
       setConfirmPassword("");

@@ -10,7 +10,10 @@ export async function insertQuoteConversationEvent(args: {
   const conversationId = String(args.quote.conversation_id || "").trim();
 
   if (!conversationId) {
-    return { created: false };
+    return {
+      created: false,
+      skippedReason: "missing_conversation_id",
+    };
   }
 
   const { error } = await args.supabase.from("conversation_events").insert({
@@ -25,6 +28,8 @@ export async function insertQuoteConversationEvent(args: {
     throw new Error(`Falha ao registrar conversation_event: ${error.message}`);
   }
 
-  return { created: true };
+  return {
+    created: true,
+    skippedReason: null,
+  };
 }
-

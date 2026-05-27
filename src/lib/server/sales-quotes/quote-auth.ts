@@ -12,7 +12,7 @@ type MembershipRow = {
 };
 
 const SALES_QUOTES_SELECT =
-  "id, organization_id, store_id, conversation_id, lead_id, quote_number, title, status, customer_notes, internal_notes, subtotal_cents, discount_cents, total_cents, current_version_id, metadata, created_at, updated_at";
+  "id, organization_id, store_id, conversation_id, lead_id, quote_number, title, status, customer_name, customer_phone, customer_notes, internal_notes, subtotal_cents, discount_cents, total_cents, current_version_id, last_change_request_id, metadata, created_at, updated_at";
 
 function createServiceSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -147,7 +147,7 @@ async function loadAuthorizedConversation(args: {
 
   const { data: conversation, error: conversationError } = await args.supabase
     .from("conversations")
-    .select("id, organization_id, lead_id")
+    .select("id, organization_id, lead_id, status, is_human_active")
     .eq("id", conversationId)
     .eq("organization_id", args.organizationId)
     .maybeSingle();
