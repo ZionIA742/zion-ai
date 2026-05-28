@@ -138,6 +138,58 @@ type SignedMediaUrlResponse = {
   message?: string;
 };
 
+type CreateSalesQuoteResponse = {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  quoteId?: string;
+};
+
+type GenerateSalesQuotePdfResponse = {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  quoteId?: string;
+  versionId?: string;
+  status?: string;
+};
+
+type GeneratedQuoteSummary = {
+  id: string;
+  quote_number: string | null;
+  title: string | null;
+  status: string | null;
+  total_cents: number | null;
+  created_at: string | null;
+  current_version_id: string | null;
+  current_version: {
+    id: string;
+    status: string | null;
+    original_filename: string | null;
+    mime_type: string | null;
+    size_bytes: number | null;
+    storage_bucket: string | null;
+    storage_path: string | null;
+  } | null;
+};
+
+type SalesQuoteListResponse = {
+  ok: boolean;
+  quotes?: GeneratedQuoteSummary[];
+  error?: string;
+  message?: string;
+};
+
+type SignedQuotePdfUrlResponse = {
+  ok: boolean;
+  signedUrl?: string;
+  originalFilename?: string | null;
+  mimeType?: string | null;
+  expiresIn?: number;
+  error?: string;
+  message?: string;
+};
+
 type SignedMediaState = {
   signedUrl: string;
   mimeType: string | null;
@@ -158,7 +210,9 @@ type PendingCustomerAttachment = {
 
 type QuoteFormItem = {
   id: string;
-  itemType: "custom" | "service";
+  // TODO Bloco 3: mapear "pool_installation" para um tipo aceito pela API
+  // (provavelmente "custom") ou ampliar a API para aceitar esse novo valor.
+  itemType: "pool_installation" | "custom" | "service";
   name: string;
   description: string;
   quantity: string;
@@ -166,7 +220,16 @@ type QuoteFormItem = {
   discountReais: string;
 };
 
-type DetailTab = "summary" | "appointments" | "context" | "tasks";
+type QuoteDraftPayload = {
+  isQuoteModalOpen: boolean;
+  quoteTitle: string;
+  quoteCustomerNotes: string;
+  quoteWarrantyTerms: string;
+  quoteValidityDays: string;
+  quoteItems: QuoteFormItem[];
+};
+
+type DetailTab = "summary" | "appointments" | "context" | "tasks" | "pdfs";
 
 function formatSender(message: MessageRow) {
   const sender = String(message.sender || "").toLowerCase();
@@ -233,6 +296,27 @@ function formatFileSize(sizeBytes: number) {
   return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
 }
 
+function formatQuoteStatusLabel(value: string | null | undefined) {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  switch (normalized) {
+    case "pending_review":
+      return "Aguardando revisao";
+    case "approved":
+      return "Aprovado";
+    case "sent":
+      return "Enviado";
+    case "changes_requested":
+      return "Alteracoes solicitadas";
+    case "failed":
+      return "Falhou";
+    case "draft":
+      return "Rascunho";
+    default:
+      return "Sem status";
+  }
+}
+
 function createQuoteFormItemId() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -240,13 +324,25 @@ function createQuoteFormItemId() {
 function createEmptyQuoteFormItem(): QuoteFormItem {
   return {
     id: createQuoteFormItemId(),
-    itemType: "custom",
+    itemType: "pool_installation",
     name: "",
     description: "",
     quantity: "1",
     unitPriceReais: "",
     discountReais: "",
   };
+}
+
+function getQuoteItemTypeLabel(value: QuoteFormItem["itemType"]) {
+  if (value === "pool_installation") {
+    return "Piscina + instala\u00e7\u00e3o";
+  }
+
+  if (value === "service") {
+    return "Servi\u00e7o";
+  }
+
+  return "Produto / item personalizado";
 }
 
 function parseQuoteMoneyValue(value: string) {
@@ -258,6 +354,10 @@ function parseQuoteMoneyValue(value: string) {
   }
 
   return parsed;
+}
+
+function convertReaisToCents(value: string) {
+  return Math.round(parseQuoteMoneyValue(value) * 100);
 }
 
 function parseQuoteQuantityValue(value: string) {
@@ -672,6 +772,8 @@ export default function LeadPage() {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const hasScrolledMessagesInitiallyRef = useRef(false);
+  const hasRestoredQuoteDraftRef = useRef(false);
+  const latestQuoteDraftRef = useRef<QuoteDraftPayload | null>(null);
   const audioRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
@@ -710,6 +812,14 @@ export default function LeadPage() {
   const [quoteWarrantyTerms, setQuoteWarrantyTerms] = useState("");
   const [quoteValidityDays, setQuoteValidityDays] = useState("");
   const [quoteItems, setQuoteItems] = useState<QuoteFormItem[]>([createEmptyQuoteFormItem()]);
+  const [isGeneratingManualQuote, setIsGeneratingManualQuote] = useState(false);
+  const [quoteFormError, setQuoteFormError] = useState<string | null>(null);
+  const [quoteFormSuccess, setQuoteFormSuccess] = useState<string | null>(null);
+  const [generatedQuotes, setGeneratedQuotes] = useState<GeneratedQuoteSummary[]>([]);
+  const [generatedQuotesLoading, setGeneratedQuotesLoading] = useState(false);
+  const [generatedQuotesError, setGeneratedQuotesError] = useState<string | null>(null);
+  const [openingGeneratedQuoteId, setOpeningGeneratedQuoteId] = useState<string | null>(null);
+  const [hasLoadedGeneratedQuotes, setHasLoadedGeneratedQuotes] = useState(false);
   const [imagePreviewErrors, setImagePreviewErrors] = useState<Record<string, boolean>>(
     {}
   );
@@ -770,6 +880,36 @@ export default function LeadPage() {
   }, 0);
 
   const quoteTotalReais = Math.max(quoteSubtotalReais - quoteDiscountTotalReais, 0);
+  const quoteDraftPrimaryStorageKey = lead?.id
+    ? `zion:manual-quote-draft:${lead.id}`
+    : null;
+  const quoteDraftFallbackStorageKey = leadId
+    ? `zion:manual-quote-draft:${leadId}`
+    : null;
+  const quoteDraftStorageKey =
+    quoteDraftPrimaryStorageKey ?? quoteDraftFallbackStorageKey;
+  const quoteHasTitle = quoteTitle.trim().length > 0;
+  const quoteHasAtLeastOneItem = quoteItems.length > 0;
+  const quoteItemsAreValid = quoteItems.every((item) => {
+    const hasName = item.name.trim().length > 0;
+    const quantity = parseQuoteQuantityValue(item.quantity);
+    const unitPrice = parseQuoteMoneyValue(item.unitPriceReais);
+
+    return hasName && quantity > 0 && unitPrice > 0;
+  });
+  const canGenerateQuotePdf =
+    quoteHasTitle && quoteHasAtLeastOneItem && quoteItemsAreValid;
+  const quoteValidationMessage = canGenerateQuotePdf
+    ? null
+    : "Preencha o t\u00edtulo, o nome do item, a quantidade e o pre\u00e7o para gerar o PDF.";
+  const quoteDraftPayload: QuoteDraftPayload = {
+    isQuoteModalOpen,
+    quoteTitle,
+    quoteCustomerNotes,
+    quoteWarrantyTerms,
+    quoteValidityDays,
+    quoteItems,
+  };
 
   useEffect(() => {
     return () => {
@@ -850,6 +990,54 @@ export default function LeadPage() {
     setQuoteWarrantyTerms("");
     setQuoteValidityDays("");
     setQuoteItems([createEmptyQuoteFormItem()]);
+    setQuoteFormError(null);
+    setQuoteFormSuccess(null);
+  }
+
+  function clearQuoteDraft() {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (quoteDraftPrimaryStorageKey) {
+      window.localStorage.removeItem(quoteDraftPrimaryStorageKey);
+    }
+
+    if (
+      quoteDraftFallbackStorageKey &&
+      quoteDraftFallbackStorageKey !== quoteDraftPrimaryStorageKey
+    ) {
+      window.localStorage.removeItem(quoteDraftFallbackStorageKey);
+    }
+  }
+
+  function closeQuoteModalAndReset() {
+    clearQuoteDraft();
+    resetQuoteForm();
+    setIsQuoteModalOpen(false);
+  }
+
+  function persistQuoteDraftToStorage(payload: QuoteDraftPayload = quoteDraftPayload) {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (quoteDraftPrimaryStorageKey) {
+      window.localStorage.setItem(
+        quoteDraftPrimaryStorageKey,
+        JSON.stringify(payload)
+      );
+    }
+
+    if (
+      quoteDraftFallbackStorageKey &&
+      quoteDraftFallbackStorageKey !== quoteDraftPrimaryStorageKey
+    ) {
+      window.localStorage.setItem(
+        quoteDraftFallbackStorageKey,
+        JSON.stringify(payload)
+      );
+    }
   }
 
   function addQuoteItem() {
@@ -881,6 +1069,117 @@ export default function LeadPage() {
           : item
       )
     );
+  }
+
+  async function generateManualQuotePdf() {
+    if (isGeneratingManualQuote) {
+      return;
+    }
+
+    if (!lead?.organization_id || !lead?.store_id) {
+      setQuoteFormError("Nao foi possivel gerar o orcamento porque a loja do lead nao esta definida.");
+      setQuoteFormSuccess(null);
+      return;
+    }
+
+    if (!canGenerateQuotePdf) {
+      setQuoteFormError(
+        quoteValidationMessage ||
+          "Preencha o titulo, o nome do item, a quantidade e o preco para gerar o PDF."
+      );
+      setQuoteFormSuccess(null);
+      return;
+    }
+
+    const normalizedItems = quoteItems.map((item) => {
+      const normalizedItemType =
+        item.itemType === "service" ? "service" : "custom";
+
+      return {
+        item_type: normalizedItemType,
+        name: item.name.trim(),
+        description: item.description.trim() || null,
+        quantity: parseQuoteQuantityValue(item.quantity),
+        unit_price_cents: convertReaisToCents(item.unitPriceReais),
+        discount_cents: convertReaisToCents(item.discountReais),
+      };
+    });
+
+    const payload = {
+      organizationId: lead.organization_id,
+      storeId: lead.store_id,
+      conversationId: conversation?.id || null,
+      leadId: lead.id,
+      title: quoteTitle.trim(),
+      customer_name: lead.name || null,
+      customer_phone: lead.phone || null,
+      customer_notes: quoteCustomerNotes.trim() || null,
+      internal_notes: null,
+      warranty_terms: quoteWarrantyTerms.trim() || null,
+      validity_days: quoteValidityDays.trim() || null,
+      items: normalizedItems,
+    };
+
+    setIsGeneratingManualQuote(true);
+    setQuoteFormError(null);
+    setQuoteFormSuccess(null);
+
+    try {
+      const createResponse = await fetch("/api/sales-quotes/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const createResult =
+        (await createResponse.json().catch(() => null)) as CreateSalesQuoteResponse | null;
+
+      if (!createResponse.ok || !createResult?.ok || !createResult.quoteId) {
+        throw new Error(
+          createResult?.message ||
+            createResult?.error ||
+            "Nao foi possivel criar o orcamento."
+        );
+      }
+
+      const generatePdfResponse = await fetch(
+        `/api/sales-quotes/${encodeURIComponent(createResult.quoteId)}/generate-pdf`,
+        {
+          method: "POST",
+          cache: "no-store",
+        }
+      );
+
+      const generatePdfResult =
+        (await generatePdfResponse.json().catch(() => null)) as GenerateSalesQuotePdfResponse | null;
+
+      if (!generatePdfResponse.ok || !generatePdfResult?.ok) {
+        throw new Error(
+          generatePdfResult?.message ||
+            generatePdfResult?.error ||
+            "O orcamento foi criado, mas nao foi possivel gerar o PDF."
+        );
+      }
+
+      setQuoteFormSuccess("Orcamento gerado com sucesso.");
+      setQuoteFormError(null);
+      setStatusText("Orcamento gerado com sucesso.");
+      await fetchLeadConversationAndMessages({ silent: true });
+      if (hasLoadedGeneratedQuotes || activeDetailsTab === "pdfs") {
+        void fetchGeneratedQuotes({ silent: true });
+      }
+      closeQuoteModalAndReset();
+    } catch (error: any) {
+      setQuoteFormError(
+        error?.message || "Nao foi possivel gerar o orcamento agora."
+      );
+      setQuoteFormSuccess(null);
+      setStatusText(null);
+    } finally {
+      setIsGeneratingManualQuote(false);
+    }
   }
 
   async function fetchLeadConversationAndMessages(options?: { silent?: boolean }) {
@@ -941,6 +1240,78 @@ export default function LeadPage() {
       } else {
         setLoading(false);
       }
+    }
+  }
+
+  async function fetchGeneratedQuotes(options?: { silent?: boolean }) {
+    if (!leadId) {
+      return;
+    }
+
+    if (!options?.silent) {
+      setGeneratedQuotesLoading(true);
+    }
+
+    setGeneratedQuotesError(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-quotes?leadId=${encodeURIComponent(leadId)}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+      const result = (await response.json()) as SalesQuoteListResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel carregar os PDFs gerados.");
+      }
+
+      setGeneratedQuotes(Array.isArray(result.quotes) ? result.quotes : []);
+      setHasLoadedGeneratedQuotes(true);
+    } catch (error: any) {
+      setGeneratedQuotesError(
+        error?.message || "Nao foi possivel carregar os PDFs gerados."
+      );
+    } finally {
+      if (!options?.silent) {
+        setGeneratedQuotesLoading(false);
+      }
+    }
+  }
+
+  async function openGeneratedQuotePdf(quoteId: string) {
+    const safeQuoteId = String(quoteId || "").trim();
+
+    if (!safeQuoteId) {
+      return;
+    }
+
+    setOpeningGeneratedQuoteId(safeQuoteId);
+    setGeneratedQuotesError(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-quotes/${encodeURIComponent(safeQuoteId)}/signed-pdf-url`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+      const result = (await response.json()) as SignedQuotePdfUrlResponse;
+
+      if (!response.ok || !result?.ok || !result.signedUrl) {
+        throw new Error(result?.message || "Nao foi possivel abrir o PDF deste orcamento.");
+      }
+
+      window.open(result.signedUrl, "_blank", "noopener,noreferrer");
+    } catch (error: any) {
+      setGeneratedQuotesError(
+        error?.message || "Nao foi possivel abrir o PDF deste orcamento."
+      );
+    } finally {
+      setOpeningGeneratedQuoteId(null);
     }
   }
 
@@ -1882,6 +2253,22 @@ export default function LeadPage() {
   }, [leadId]);
 
   useEffect(() => {
+    setGeneratedQuotes([]);
+    setGeneratedQuotesError(null);
+    setGeneratedQuotesLoading(false);
+    setOpeningGeneratedQuoteId(null);
+    setHasLoadedGeneratedQuotes(false);
+  }, [leadId]);
+
+  useEffect(() => {
+    if (activeDetailsTab !== "pdfs") {
+      return;
+    }
+
+    void fetchGeneratedQuotes();
+  }, [activeDetailsTab, leadId]);
+
+  useEffect(() => {
     if (loading) return;
 
     scrollMessagesToBottom(
@@ -1889,6 +2276,134 @@ export default function LeadPage() {
     );
     hasScrolledMessagesInitiallyRef.current = true;
   }, [messages.length, loading]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (!quoteDraftStorageKey || hasRestoredQuoteDraftRef.current || !lead?.id) {
+      return;
+    }
+
+    const rawDraft =
+      (quoteDraftPrimaryStorageKey
+        ? window.localStorage.getItem(quoteDraftPrimaryStorageKey)
+        : null) ??
+      (quoteDraftFallbackStorageKey
+        ? window.localStorage.getItem(quoteDraftFallbackStorageKey)
+        : null);
+
+    hasRestoredQuoteDraftRef.current = true;
+
+    if (!rawDraft) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(rawDraft) as Partial<QuoteDraftPayload> | null;
+      const draftItems = Array.isArray(parsed?.quoteItems)
+        ? parsed.quoteItems
+            .map((item) => {
+              if (!item || typeof item !== "object") {
+                return null;
+              }
+
+              const safeItemType =
+                item.itemType === "pool_installation" ||
+                item.itemType === "service" ||
+                item.itemType === "custom"
+                  ? item.itemType
+                  : "custom";
+
+              return {
+                id:
+                  typeof item.id === "string" && item.id.trim().length > 0
+                    ? item.id
+                    : createQuoteFormItemId(),
+                itemType: safeItemType,
+                name: typeof item.name === "string" ? item.name : "",
+                description: typeof item.description === "string" ? item.description : "",
+                quantity: typeof item.quantity === "string" ? item.quantity : "1",
+                unitPriceReais:
+                  typeof item.unitPriceReais === "string" ? item.unitPriceReais : "",
+                discountReais:
+                  typeof item.discountReais === "string" ? item.discountReais : "",
+              } satisfies QuoteFormItem;
+            })
+            .filter((item): item is QuoteFormItem => item !== null)
+        : [];
+
+      setQuoteTitle(typeof parsed?.quoteTitle === "string" ? parsed.quoteTitle : "");
+      setQuoteCustomerNotes(
+        typeof parsed?.quoteCustomerNotes === "string" ? parsed.quoteCustomerNotes : ""
+      );
+      setQuoteWarrantyTerms(
+        typeof parsed?.quoteWarrantyTerms === "string" ? parsed.quoteWarrantyTerms : ""
+      );
+      setQuoteValidityDays(
+        typeof parsed?.quoteValidityDays === "string" ? parsed.quoteValidityDays : ""
+      );
+      setQuoteItems(draftItems.length > 0 ? draftItems : [createEmptyQuoteFormItem()]);
+      setIsQuoteModalOpen(parsed?.isQuoteModalOpen === true);
+    } catch {
+      clearQuoteDraft();
+    }
+  }, [
+    clearQuoteDraft,
+    lead?.id,
+    quoteDraftFallbackStorageKey,
+    quoteDraftPrimaryStorageKey,
+    quoteDraftStorageKey,
+  ]);
+
+  useEffect(() => {
+    latestQuoteDraftRef.current = quoteDraftPayload;
+  }, [quoteDraftPayload]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !quoteDraftStorageKey) {
+      return;
+    }
+
+    if (!hasRestoredQuoteDraftRef.current) {
+      return;
+    }
+
+    persistQuoteDraftToStorage();
+  }, [
+    quoteDraftStorageKey,
+    persistQuoteDraftToStorage,
+    quoteDraftPayload,
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !quoteDraftStorageKey) {
+      return;
+    }
+
+    const flushQuoteDraft = () => {
+      if (!hasRestoredQuoteDraftRef.current || !latestQuoteDraftRef.current) {
+        return;
+      }
+
+      persistQuoteDraftToStorage(latestQuoteDraftRef.current);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushQuoteDraft();
+      }
+    };
+
+    window.addEventListener("pagehide", flushQuoteDraft);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("pagehide", flushQuoteDraft);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [persistQuoteDraftToStorage, quoteDraftStorageKey]);
 
   if (loading) {
     return <div className="p-6">Carregando lead e mensagens...</div>;
@@ -1940,6 +2455,12 @@ export default function LeadPage() {
       value: `${commercialTasks.length}`,
       help: commercialTasks.length === 1 ? "pendencia" : "pendencias",
     },
+    {
+      id: "pdfs",
+      label: "PDFs gerados",
+      value: `${generatedQuotes.length}`,
+      help: generatedQuotes.length === 1 ? "arquivo listado" : "arquivos listados",
+    },
   ];
 
   return (
@@ -1979,15 +2500,6 @@ export default function LeadPage() {
                 </h1>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-600">
                   <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
-                    {lead.phone ?? "Sem telefone"}
-                  </span>
-                  <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
-                    {formatLeadStage(lead.state)}
-                  </span>
-                  <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
-                    {conversation ? formatConversationStatus(conversation.status) : "Sem conversa"}
-                  </span>
-                  <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-800">
                     {isHumanActive ? "Humano no controle" : "IA ativa"}
                   </span>
                 </div>
@@ -2021,7 +2533,11 @@ export default function LeadPage() {
 
                   <button
                     type="button"
-                    onClick={() => setIsQuoteModalOpen(true)}
+                    onClick={() => {
+                      setQuoteFormError(null);
+                      setQuoteFormSuccess(null);
+                      setIsQuoteModalOpen(true);
+                    }}
                     disabled={working || refreshing || simulatingCustomer}
                     className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -2096,6 +2612,23 @@ export default function LeadPage() {
                 <div className="max-h-[68vh] overflow-y-auto p-5">
                   {activeDetailsTab === "summary" ? (
                     <div className="grid gap-4 lg:grid-cols-2">
+                      <InfoCard
+                        label="Numero do cliente"
+                        value={lead.phone ?? "Sem telefone"}
+                      />
+                      <InfoCard
+                        label="Estagio do funil"
+                        value={formatLeadStage(lead.state)}
+                      />
+                      <InfoCard
+                        label="Status da conversa"
+                        value={
+                          conversation
+                            ? formatConversationStatus(conversation.status)
+                            : "Sem conversa"
+                        }
+                      />
+
                       <div>
                         <div className="text-sm font-semibold text-gray-900">
                           Ultima mensagem
@@ -2244,6 +2777,115 @@ export default function LeadPage() {
                     </div>
                   ) : null}
 
+                  {activeDetailsTab === "pdfs" ? (
+                    <div className="space-y-6">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">
+                          Orcamentos
+                        </div>
+                        <div className="mt-1 text-xs text-gray-500">
+                          PDFs de orcamento gerados para este lead.
+                        </div>
+
+                        {generatedQuotesError ? (
+                          <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+                            {generatedQuotesError}
+                          </div>
+                        ) : null}
+
+                        {generatedQuotesLoading ? (
+                          <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                            Carregando orcamentos gerados...
+                          </div>
+                        ) : null}
+
+                        {!generatedQuotesLoading && generatedQuotes.length === 0 ? (
+                          <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                            Nenhum orcamento gerado ainda.
+                          </div>
+                        ) : null}
+
+                        {!generatedQuotesLoading && generatedQuotes.length > 0 ? (
+                          <div className="mt-3 space-y-3">
+                            {generatedQuotes.map((quote) => {
+                              const hasPdf =
+                                Boolean(quote.current_version?.storage_bucket) &&
+                                Boolean(quote.current_version?.storage_path);
+                              const isOpening = openingGeneratedQuoteId === quote.id;
+
+                              return (
+                                <div
+                                  key={quote.id}
+                                  className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                                >
+                                  <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
+                                          {quote.quote_number || "Sem numero"}
+                                        </span>
+                                        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                                          {formatQuoteStatusLabel(quote.status)}
+                                        </span>
+                                      </div>
+
+                                      <div className="mt-3 text-sm font-semibold text-gray-900">
+                                        {quote.title || "Orcamento sem titulo"}
+                                      </div>
+                                      <div className="mt-2 grid gap-3 text-sm text-gray-700 md:grid-cols-2">
+                                        <InfoCard
+                                          label="Valor total"
+                                          value={formatCurrencyBRL((Number(quote.total_cents || 0) || 0) / 100)}
+                                        />
+                                        <InfoCard
+                                          label="Criado em"
+                                          value={formatDateTime(quote.created_at)}
+                                        />
+                                        <InfoCard
+                                          label="Arquivo PDF"
+                                          value={
+                                            quote.current_version?.original_filename ||
+                                            "PDF ainda nao disponivel"
+                                          }
+                                        />
+                                        <InfoCard
+                                          label="Tamanho"
+                                          value={
+                                            typeof quote.current_version?.size_bytes === "number"
+                                              ? formatFileSize(quote.current_version.size_bytes)
+                                              : "Sem tamanho registrado"
+                                          }
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => void openGeneratedQuotePdf(quote.id)}
+                                      disabled={!hasPdf || isOpening}
+                                      className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
+                                    >
+                                      {isOpening ? "Abrindo..." : "Abrir PDF"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">
+                          Contratos
+                        </div>
+                        <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                          Nenhum contrato gerado ainda.
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
                   {activeDetailsTab === "appointments" ? (
                     <div>
                       {appointments.length === 0 ? (
@@ -2319,10 +2961,8 @@ export default function LeadPage() {
 
                   <button
                     type="button"
-                    onClick={() => {
-                      resetQuoteForm();
-                      setIsQuoteModalOpen(false);
-                    }}
+                    onClick={closeQuoteModalAndReset}
+                    disabled={isGeneratingManualQuote}
                     className="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/15 hover:bg-white/15"
                   >
                     Fechar
@@ -2334,6 +2974,9 @@ export default function LeadPage() {
                     <div>
                       <p className="text-sm leading-6 text-gray-700">
                         Crie um orçamento para este cliente.
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Rascunho salvo temporariamente neste navegador.
                       </p>
                     </div>
 
@@ -2445,8 +3088,11 @@ export default function LeadPage() {
                                     }
                                     className="mt-1 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-black"
                                   >
-                                    <option value="custom">custom</option>
-                                    <option value="service">service</option>
+                                    <option value="pool_installation">
+                                      {getQuoteItemTypeLabel("pool_installation")}
+                                    </option>
+                                    <option value="custom">{getQuoteItemTypeLabel("custom")}</option>
+                                    <option value="service">{getQuoteItemTypeLabel("service")}</option>
                                   </select>
                                 </div>
 
@@ -2559,6 +3205,24 @@ export default function LeadPage() {
                     </div>
 
                     <div className="rounded-3xl bg-gray-950 p-4 text-white ring-1 ring-black/5">
+                      {quoteFormError ? (
+                        <div className="mb-4 rounded-2xl bg-red-500/15 px-4 py-3 text-sm text-red-100 ring-1 ring-red-300/20">
+                          {quoteFormError}
+                        </div>
+                      ) : null}
+
+                      {quoteFormSuccess ? (
+                        <div className="mb-4 rounded-2xl bg-emerald-500/15 px-4 py-3 text-sm text-emerald-100 ring-1 ring-emerald-300/20">
+                          {quoteFormSuccess}
+                        </div>
+                      ) : null}
+
+                      {quoteValidationMessage ? (
+                        <div className="mb-4 rounded-2xl bg-white/10 px-4 py-3 text-sm text-white/90 ring-1 ring-white/10">
+                          {quoteValidationMessage}
+                        </div>
+                      ) : null}
+
                       <div className="grid gap-3 sm:grid-cols-3">
                         <div>
                           <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
@@ -2591,10 +3255,8 @@ export default function LeadPage() {
                       <div className="mt-4 flex flex-wrap justify-end gap-2">
                         <button
                           type="button"
-                          onClick={() => {
-                            resetQuoteForm();
-                            setIsQuoteModalOpen(false);
-                          }}
+                          onClick={closeQuoteModalAndReset}
+                          disabled={isGeneratingManualQuote}
                           className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/15 hover:bg-white/15"
                         >
                           Fechar
@@ -2602,10 +3264,11 @@ export default function LeadPage() {
 
                         <button
                           type="button"
-                          disabled
-                          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-400 ring-1 ring-white/15 disabled:cursor-not-allowed"
+                          onClick={() => void generateManualQuotePdf()}
+                          disabled={!canGenerateQuotePdf || isGeneratingManualQuote}
+                          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-white/15 disabled:cursor-not-allowed disabled:text-gray-400"
                         >
-                          Gerar PDF
+                          {isGeneratingManualQuote ? "Gerando..." : "Gerar PDF"}
                         </button>
                       </div>
                     </div>

@@ -1,6 +1,8 @@
 
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import OpenAI from "openai";
+import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import type {
   AppointmentRow,
@@ -115,6 +117,136 @@ function normalizeText(value: string | null | undefined): string {
 function truncateForAiRunLog(value: unknown, maxLength = 1200): string | null {
   const text = asText(value);
   return !text ? null : text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
+}
+
+type AssistantRouteScopeValidationResult =
+  | {
+      ok: true;
+      organizationId: string;
+      storeId: string;
+      userId: string;
+    }
+  | {
+      ok: false;
+      status: number;
+      error: string;
+      message: string;
+    };
+
+async function createAuthenticatedRouteSupabaseClient() {
+  const cookieStore = await cookies();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options);
+            });
+          } catch {
+            // Route handlers can usually write cookies. If this ever runs in
+            // a read-only context, auth.getUser still works with getAll().
+          }
+        },
+      },
+    },
+  );
+}
+
+async function validateAssistantRouteScope(params: {
+  organizationId?: string;
+  storeId?: string;
+}): Promise<AssistantRouteScopeValidationResult> {
+  const organizationId = String(params.organizationId || "").trim();
+  const storeId = String(params.storeId || "").trim();
+
+  if (!organizationId || !storeId) {
+    return {
+      ok: false,
+      status: 400,
+      error: "MISSING_FIELDS",
+      message: "Envie organizationId e storeId.",
+    };
+  }
+
+  const supabase = await createAuthenticatedRouteSupabaseClient();
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user?.id) {
+    return {
+      ok: false,
+      status: 401,
+      error: "UNAUTHENTICATED",
+      message: "Faça login para usar a assistente.",
+    };
+  }
+
+  const { data: membership, error: membershipError } = await supabase
+    .from("memberships")
+    .select("organization_id, user_id, role")
+    .eq("organization_id", organizationId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (membershipError) {
+    return {
+      ok: false,
+      status: 500,
+      error: "MEMBERSHIP_CHECK_FAILED",
+      message: "Não foi possível validar o acesso do usuário à organização.",
+    };
+  }
+
+  if (!membership) {
+    return {
+      ok: false,
+      status: 403,
+      error: "ORGANIZATION_ACCESS_DENIED",
+      message: "Você não tem acesso a esta organização.",
+    };
+  }
+
+  const { data: store, error: storeError } = await supabase
+    .from("stores")
+    .select("id, organization_id")
+    .eq("id", storeId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (storeError) {
+    return {
+      ok: false,
+      status: 500,
+      error: "STORE_SCOPE_CHECK_FAILED",
+      message: "Não foi possível validar o acesso do usuário à loja.",
+    };
+  }
+
+  if (!store) {
+    return {
+      ok: false,
+      status: 403,
+      error: "STORE_ACCESS_DENIED",
+      message: "Você não tem acesso a esta loja.",
+    };
+  }
+
+  return {
+    ok: true,
+    organizationId,
+    storeId,
+    userId: user.id,
+  };
 }
 
 function aiRunNumber(value: unknown): number | null {
@@ -8628,9 +8760,25 @@ export async function POST(request: Request) {
       storeId?: string;
     };
 
+    const scope = await validateAssistantRouteScope({
+      organizationId: body.organizationId,
+      storeId: body.storeId,
+    });
+
+    if (!scope.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: scope.error,
+          message: scope.message,
+        },
+        { status: scope.status }
+      );
+    }
+
     const result = await generateAssistantReply({
-      organizationId: String(body.organizationId || ""),
-      storeId: String(body.storeId || ""),
+      organizationId: scope.organizationId,
+      storeId: scope.storeId,
     });
 
     if (!result.ok) {
