@@ -1,4 +1,11 @@
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import {
+  PDFDocument,
+  StandardFonts,
+  rgb,
+  type PDFFont,
+  type PDFImage,
+  type PDFPage,
+} from "pdf-lib";
 import type { QuoteSettings } from "./types";
 
 type QuotePdfItem = {
@@ -12,6 +19,10 @@ type QuotePdfItem = {
 
 export type BuildQuotePdfInput = {
   storeName: string | null;
+  storeLogo?: {
+    bytes: Uint8Array;
+    mimeType: string;
+  } | null;
   quoteNumber: string;
   title: string | null;
   customerName: string | null;
@@ -42,6 +53,14 @@ const ROW_HEIGHT = 18;
 const FONT_SIZE = 10;
 const SMALL_FONT_SIZE = 9;
 const SECTION_GAP = 18;
+const LOGO_MAX_WIDTH = 110;
+const LOGO_MAX_HEIGHT = 52;
+
+type StoreBrandingSettingsRow = {
+  logo_storage_bucket: string | null;
+  logo_storage_path: string | null;
+  logo_mime_type: string | null;
+};
 
 function formatCurrency(cents: number | null | undefined) {
   const safeValue = Number.isFinite(cents) ? Number(cents) / 100 : 0;
@@ -97,6 +116,86 @@ function addPage(pdfDoc: PDFDocument): Cursor {
   };
 }
 
+function scaleLogoDimensions(args: { width: number; height: number }) {
+  const safeWidth = Math.max(1, args.width);
+  const safeHeight = Math.max(1, args.height);
+  const widthRatio = LOGO_MAX_WIDTH / safeWidth;
+  const heightRatio = LOGO_MAX_HEIGHT / safeHeight;
+  const scale = Math.min(widthRatio, heightRatio, 1);
+
+  return {
+    width: safeWidth * scale,
+    height: safeHeight * scale,
+  };
+}
+
+async function embedStoreLogo(pdfDoc: PDFDocument, storeLogo: BuildQuotePdfInput["storeLogo"]) {
+  if (!storeLogo?.bytes?.length) {
+    return null;
+  }
+
+  const normalizedMimeType = String(storeLogo.mimeType || "").trim().toLowerCase();
+
+  if (normalizedMimeType === "image/png") {
+    return pdfDoc.embedPng(storeLogo.bytes);
+  }
+
+  if (normalizedMimeType === "image/jpeg" || normalizedMimeType === "image/jpg") {
+    return pdfDoc.embedJpg(storeLogo.bytes);
+  }
+
+  return null;
+}
+
+export async function loadStoreLogoForPdf(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+}) {
+  try {
+    const { data, error } = await args.supabase
+      .from("store_branding_settings")
+      .select("logo_storage_bucket, logo_storage_path, logo_mime_type")
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    const branding = (data ?? null) as StoreBrandingSettingsRow | null;
+    const bucket = String(branding?.logo_storage_bucket || "").trim();
+    const path = String(branding?.logo_storage_path || "").trim();
+    const mimeType = String(branding?.logo_mime_type || "").trim().toLowerCase();
+
+    if (!bucket || !path) {
+      return null;
+    }
+
+    if (mimeType !== "image/png" && mimeType !== "image/jpeg" && mimeType !== "image/jpg") {
+      return null;
+    }
+
+    const { data: fileData, error: downloadError } = await args.supabase.storage
+      .from(bucket)
+      .download(path);
+
+    if (downloadError) {
+      throw downloadError;
+    }
+
+    const arrayBuffer = await fileData.arrayBuffer();
+    return {
+      bytes: new Uint8Array(arrayBuffer),
+      mimeType,
+    };
+  } catch (error) {
+    console.error("[buildQuotePdf] logo fallback sem imagem:", error);
+    return null;
+  }
+}
+
 function drawTextBlock(args: {
   cursor: Cursor;
   title?: string | null;
@@ -147,17 +246,50 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const embeddedLogo = await embedStoreLogo(pdfDoc, input.storeLogo || null);
 
   let cursor = addPage(pdfDoc);
+  let headerBottomY = cursor.y;
 
-  cursor.page.drawText(input.storeName || "Loja", {
-    x: PAGE_MARGIN,
-    y: cursor.y,
-    size: 20,
-    font: boldFont,
-    color: rgb(0.07, 0.07, 0.07),
-  });
-  cursor.y -= 26;
+  if (embeddedLogo) {
+    const logoDimensions = scaleLogoDimensions({
+      width: embeddedLogo.width,
+      height: embeddedLogo.height,
+    });
+    const logoTopY = cursor.y;
+    const logoBottomY = logoTopY - logoDimensions.height;
+
+    cursor.page.drawImage(embeddedLogo, {
+      x: PAGE_MARGIN,
+      y: logoBottomY,
+      width: logoDimensions.width,
+      height: logoDimensions.height,
+    });
+
+    const storeNameX = PAGE_MARGIN + logoDimensions.width + 16;
+    const storeNameY = logoTopY - Math.min(logoDimensions.height / 2, 18);
+
+    cursor.page.drawText(input.storeName || "Loja", {
+      x: storeNameX,
+      y: storeNameY,
+      size: 20,
+      font: boldFont,
+      color: rgb(0.07, 0.07, 0.07),
+    });
+
+    headerBottomY = Math.min(logoBottomY, storeNameY - 8);
+  } else {
+    cursor.page.drawText(input.storeName || "Loja", {
+      x: PAGE_MARGIN,
+      y: cursor.y,
+      size: 20,
+      font: boldFont,
+      color: rgb(0.07, 0.07, 0.07),
+    });
+    headerBottomY = cursor.y - 26;
+  }
+
+  cursor.y = headerBottomY - 8;
 
   cursor.page.drawText(input.title || "Orcamento", {
     x: PAGE_MARGIN,
@@ -372,4 +504,3 @@ export async function buildQuotePdf(input: BuildQuotePdfInput) {
 
   return pdfDoc.save();
 }
-

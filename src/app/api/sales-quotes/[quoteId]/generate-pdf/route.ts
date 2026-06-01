@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
-import { buildQuotePdf } from "@/lib/server/sales-quotes/build-quote-pdf";
-import { insertQuoteConversationEvent } from "@/lib/server/sales-quotes/quote-events";
+import {
+  buildQuotePdf,
+  loadStoreLogoForPdf,
+} from "@/lib/server/sales-quotes/build-quote-pdf";
+import {
+  canInsertQuoteConversationEvent,
+  insertQuoteConversationEvent,
+} from "@/lib/server/sales-quotes/quote-events";
 import {
   QuoteAccessError,
   resolveAuthorizedExistingQuote,
@@ -59,6 +65,23 @@ export async function POST(
     const { quoteId: rawQuoteId } = await context.params;
     const quoteId = String(rawQuoteId || "").trim();
     const scope = await resolveAuthorizedExistingQuote(quoteId);
+    const eventGuard = await canInsertQuoteConversationEvent({
+      supabase: scope.supabase,
+      quote: scope.quote,
+      eventType: "orcamento_gerado",
+    });
+
+    if (!eventGuard.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "QUOTE_EVENT_NOT_ALLOWED",
+          message: "A geracao do orcamento nao esta permitida no estado atual da conversa.",
+        },
+        { status: 409 }
+      );
+    }
+
     const { settings } = await loadStoreQuoteSettings({
       supabase: scope.supabase,
       organizationId: scope.organizationId,
@@ -112,8 +135,15 @@ export async function POST(
         ? scope.quote.metadata
         : null;
 
+    const storeLogo = await loadStoreLogoForPdf({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+    });
+
     const pdfBytes = await buildQuotePdf({
       storeName: scope.store.name,
+      storeLogo,
       quoteNumber: String(scope.quote.quote_number || "").trim() || scope.quote.id,
       title: scope.quote.title,
       customerName: scope.lead?.name || null,

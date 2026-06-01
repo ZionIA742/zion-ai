@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
-import { buildQuotePdf } from "@/lib/server/sales-quotes/build-quote-pdf";
-import { insertQuoteConversationEvent } from "@/lib/server/sales-quotes/quote-events";
+import {
+  buildQuotePdf,
+  loadStoreLogoForPdf,
+} from "@/lib/server/sales-quotes/build-quote-pdf";
+import {
+  canInsertQuoteConversationEvent,
+  insertQuoteConversationEvent,
+} from "@/lib/server/sales-quotes/quote-events";
 import {
   QuoteAccessError,
   resolveAuthorizedExistingQuote,
@@ -316,6 +322,23 @@ export async function POST(
     const { quoteId: rawQuoteId } = await context.params;
     const quoteId = String(rawQuoteId || "").trim();
     const scope = await resolveAuthorizedExistingQuote(quoteId);
+    const eventGuard = await canInsertQuoteConversationEvent({
+      supabase: scope.supabase,
+      quote: scope.quote,
+      eventType: CHANGE_APPLIED_EVENT_TYPE,
+    });
+
+    if (!eventGuard.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "QUOTE_EVENT_NOT_ALLOWED",
+          message: "A alteracao do orcamento nao esta permitida no estado atual da conversa.",
+        },
+        { status: 409 }
+      );
+    }
+
     const items = await loadQuoteItems({
       supabase: scope.supabase,
       quoteId: scope.quote.id,
@@ -357,8 +380,15 @@ export async function POST(
     failureSnapshot = snapshot;
     failureVersionNumber = versionNumber;
 
+    const storeLogo = await loadStoreLogoForPdf({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+    });
+
     const pdfBytes = await buildQuotePdf({
       storeName: scope.store.name,
+      storeLogo,
       quoteNumber: String(updatedQuote.quote_number || "").trim() || updatedQuote.id,
       title: updatedQuote.title,
       customerName: updatedQuote.customer_name || scope.lead?.name || null,
