@@ -43,6 +43,29 @@ type StoreImportFileRow = {
   updated_at: string | null;
 };
 
+type StoreBrandingSettingsRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  logo_storage_bucket: string | null;
+  logo_storage_path: string | null;
+  logo_original_filename: string | null;
+  logo_mime_type: string | null;
+  logo_size_bytes: number | null;
+  logo_uploaded_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type StoreBrandingApiResponse = {
+  ok: boolean;
+  branding?: StoreBrandingSettingsRow | null;
+  signedUrl?: string | null;
+  warning?: string | null;
+  error?: string;
+  message?: string;
+};
+
 
 type OnboardingRow = {
   id?: string;
@@ -1285,9 +1308,15 @@ export default function ConfiguracoesPage() {
   const [downloadingImportFileId, setDownloadingImportFileId] = useState<string | null>(null);
   const [deletingImportFileId, setDeletingImportFileId] = useState<string | null>(null);
   const [rawImportFilesModalTab, setRawImportFilesModalTab] = useState<"pools" | "catalog" | null>(null);
+  const [storeBranding, setStoreBranding] = useState<StoreBrandingSettingsRow | null>(null);
+  const [storeLogoPreviewUrl, setStoreLogoPreviewUrl] = useState<string | null>(null);
+  const [selectedStoreLogoFile, setSelectedStoreLogoFile] = useState<File | null>(null);
+  const [savingStoreLogo, setSavingStoreLogo] = useState(false);
+  const [removingStoreLogo, setRemovingStoreLogo] = useState(false);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
+  const storeLogoInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStoreId) return null;
     return `zion_configuracoes_draft:${organizationId}:${activeStoreId}`;
@@ -1315,12 +1344,41 @@ export default function ConfiguracoesPage() {
     []
   );
 
+  async function fetchStoreBrandingFromApi(storeIdOverride?: string | null) {
+    const resolvedStoreId = cleanText(storeIdOverride) || cleanText(activeStoreId);
+
+    if (!resolvedStoreId) {
+      setStoreBranding(null);
+      setStoreLogoPreviewUrl(null);
+      return;
+    }
+
+    const response = await fetch(
+      `/api/store-branding/logo?storeId=${encodeURIComponent(resolvedStoreId)}`,
+      {
+        method: "GET",
+        cache: "no-store",
+      }
+    );
+    const result = (await response.json()) as StoreBrandingApiResponse;
+
+    if (!response.ok || !result?.ok) {
+      throw new Error(result?.message || "Nao foi possivel carregar a logo da loja.");
+    }
+
+    setStoreBranding((result.branding ?? null) as StoreBrandingSettingsRow | null);
+    setStoreLogoPreviewUrl(result.signedUrl || null);
+  }
+
   const fetchPageData = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setCounts({ pools: 0, quimicos: 0, acessorios: 0, outros: 0 });
       setOnboarding(null);
       setAnswers({});
       setScheduleSettings(null);
+      setStoreBranding(null);
+      setStoreLogoPreviewUrl(null);
+      setSelectedStoreLogoFile(null);
       setPoolImportFiles([]);
       setCatalogImportFiles([]);
       setLoading(false);
@@ -1331,7 +1389,13 @@ export default function ConfiguracoesPage() {
     setErrorText(null);
 
     try {
-      const [poolsResult, catalogResult, onboardingResult, answersResult, scheduleSettingsResult] = await Promise.all([
+      const [
+        poolsResult,
+        catalogResult,
+        onboardingResult,
+        answersResult,
+        scheduleSettingsResult,
+      ] = await Promise.all([
         supabase
           .from("pools")
           .select("id", { count: "exact", head: true })
@@ -1442,6 +1506,7 @@ export default function ConfiguracoesPage() {
       setScheduleSettings((scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null);
       setPoolImportFiles(nextPoolImportFiles);
       setCatalogImportFiles(nextCatalogImportFiles);
+      await fetchStoreBrandingFromApi(activeStoreId);
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao carregar a visão geral das configurações.");
     } finally {
@@ -1695,6 +1760,10 @@ export default function ConfiguracoesPage() {
   }, [answers, storeName]);
 
   useEffect(() => {
+    setSelectedStoreLogoFile(null);
+  }, [organizationId, activeStoreId]);
+
+  useEffect(() => {
     setStrategyDraft({
       city: cleanText(answers.city),
       state: cleanText(answers.state),
@@ -1734,6 +1803,17 @@ export default function ConfiguracoesPage() {
       strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
     });
   }, [answers]);
+
+  useEffect(() => {
+    if (selectedStoreLogoFile) {
+      const objectUrl = URL.createObjectURL(selectedStoreLogoFile);
+      setStoreLogoPreviewUrl(objectUrl);
+
+      return () => {
+        URL.revokeObjectURL(objectUrl);
+      };
+    }
+  }, [selectedStoreLogoFile]);
 
   const totalCatalogo = useMemo(
     () => counts.quimicos + counts.acessorios + counts.outros,
@@ -2409,16 +2489,28 @@ export default function ConfiguracoesPage() {
     ]);
   }, [answers]);
 
+  const hasStoredLogo = Boolean(
+    cleanText(storeBranding?.logo_storage_bucket) && cleanText(storeBranding?.logo_storage_path)
+  );
+  const displayedLogoFileName =
+    cleanText(selectedStoreLogoFile?.name) ||
+    cleanText(storeBranding?.logo_original_filename) ||
+    "Nenhum arquivo";
+  const displayedLogoSize = selectedStoreLogoFile?.size ?? storeBranding?.logo_size_bytes ?? null;
+
   const identityItems = useMemo(() => {
     return buildBulletRows([
       { label: "Nome da loja", value: cleanText(answers.store_display_name) || storeName },
-      { label: "Logo", value: "Ajustar quando houver logo cadastrada" },
+      {
+        label: "Logo",
+        value: hasStoredLogo ? "Logo cadastrada para os PDFs da loja" : "Nenhuma logo enviada ainda",
+      },
       { label: "Cores", value: "Ainda não configuradas nesta tela" },
       { label: "Nome que a IA usa", value: cleanText(answers.store_display_name) || storeName },
       { label: "Assinatura padrão da IA", value: cleanText(answers.store_description) },
       { label: "Dados usados em orçamento e contrato", value: cleanText(answers.store_display_name) || storeName },
     ]);
-  }, [answers, storeName]);
+  }, [answers, storeName, hasStoredLogo]);
 
   const overviewSummary = useMemo(() => {
     const responsible = cleanText(answers.responsible_name);
@@ -3488,6 +3580,144 @@ export default function ConfiguracoesPage() {
     },
     [organizationId, activeStoreId, deletingImportFileId, fetchPageData]
   );
+
+  const handleStoreLogoFileChange = useCallback((files: FileList | null) => {
+    const file = files?.[0] ?? null;
+
+    if (!file) {
+      return;
+    }
+
+    const allowedMimeTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+    if (!allowedMimeTypes.has(file.type)) {
+      setSelectedStoreLogoFile(null);
+      setErrorText("Envie uma imagem PNG, JPEG ou WEBP para a logo da loja.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      setSelectedStoreLogoFile(null);
+      setErrorText("A logo deve ter no mÃ¡ximo 2 MB.");
+      setSuccessText(null);
+      return;
+    }
+
+    setSelectedStoreLogoFile(file);
+    setErrorText(null);
+    setSuccessText(null);
+  }, []);
+
+  const handleSaveStoreLogo = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para enviar a logo.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (!selectedStoreLogoFile) {
+      setErrorText("Selecione uma imagem antes de enviar a logo.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (savingStoreLogo) {
+      return;
+    }
+
+    setSavingStoreLogo(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const formData = new FormData();
+      formData.set("storeId", activeStoreId);
+      formData.set("file", selectedStoreLogoFile);
+
+      const response = await fetch("/api/store-branding/logo", {
+        method: "POST",
+        body: formData,
+      });
+      const result = (await response.json()) as StoreBrandingApiResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel salvar a logo.");
+      }
+
+      setStoreBranding((result.branding ?? null) as StoreBrandingSettingsRow | null);
+      setStoreLogoPreviewUrl(result.signedUrl || null);
+      setSelectedStoreLogoFile(null);
+      setSuccessText(result.warning ? `Logo salva com sucesso. ${result.warning}` : "Logo salva com sucesso.");
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Nao foi possivel salvar a logo.");
+      setSuccessText(null);
+    } finally {
+      setSavingStoreLogo(false);
+    }
+  }, [
+    organizationId,
+    activeStoreId,
+    selectedStoreLogoFile,
+    savingStoreLogo,
+  ]);
+
+  const handleRemoveStoreLogo = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para remover a logo.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (removingStoreLogo) {
+      return;
+    }
+
+    if (!storeBranding?.id && !cleanText(storeBranding?.logo_storage_path)) {
+      setSuccessText("Nenhuma logo enviada ainda.");
+      setErrorText(null);
+      return;
+    }
+
+    const confirmed = window.confirm("Remover a logo atual da loja?");
+    if (!confirmed) return;
+
+    setRemovingStoreLogo(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const response = await fetch("/api/store-branding/logo", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          storeId: activeStoreId,
+        }),
+      });
+      const result = (await response.json()) as StoreBrandingApiResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel remover a logo.");
+      }
+
+      setStoreBranding((result.branding ?? null) as StoreBrandingSettingsRow | null);
+      setStoreLogoPreviewUrl(result.signedUrl || null);
+      setSelectedStoreLogoFile(null);
+      setSuccessText(result.warning ? `Logo removida. ${result.warning}` : "Logo removida.");
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Nao foi possivel remover a logo.");
+      setSuccessText(null);
+    } finally {
+      setRemovingStoreLogo(false);
+    }
+  }, [
+    organizationId,
+    activeStoreId,
+    removingStoreLogo,
+    storeBranding?.id,
+    storeBranding?.logo_storage_path,
+  ]);
 
   const handleDeleteAllCatalog = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
@@ -6319,7 +6549,112 @@ export default function ConfiguracoesPage() {
           title="10. Identidade da loja"
           description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
         >
-          <SummaryList items={identityItems} />
+          <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="text-sm font-semibold text-gray-900">Logo da loja</div>
+              <p className="mt-1 text-sm text-gray-600">
+                Essa logo sera usada nos orcamentos em PDF.
+              </p>
+
+              <div className="mt-4 flex min-h-[220px] items-center justify-center rounded-2xl border border-dashed border-gray-300 bg-white p-4">
+                {storeLogoPreviewUrl ? (
+                  <img
+                    src={storeLogoPreviewUrl}
+                    alt={`Logo da loja ${storeName}`}
+                    className="max-h-44 w-full object-contain"
+                  />
+                ) : (
+                  <div className="text-center text-sm text-gray-500">
+                    Nenhuma logo enviada ainda.
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 space-y-2 text-sm text-gray-700">
+                <div className="break-words">
+                  <span className="font-semibold text-gray-900">Arquivo:</span>{" "}
+                  {displayedLogoFileName}
+                </div>
+                <div>
+                  <span className="font-semibold text-gray-900">Tamanho:</span>{" "}
+                  {formatFileSize(displayedLogoSize)}
+                </div>
+                <div>
+                  <span className="font-semibold text-gray-900">Enviada em:</span>{" "}
+                  {storeBranding?.logo_uploaded_at
+                    ? formatImportDate(storeBranding.logo_uploaded_at)
+                    : "Ainda nao enviada"}
+                </div>
+                {selectedStoreLogoFile ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    Nova logo selecionada. Clique em salvar para atualizar a identidade da loja.
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                <input
+                  ref={storeLogoInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  onChange={(event) => {
+                    handleStoreLogoFileChange(event.target.files);
+                    event.currentTarget.value = "";
+                  }}
+                />
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => storeLogoInputRef.current?.click()}
+                    disabled={!hasValidStoreContext || savingStoreLogo || removingStoreLogo}
+                    className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {hasStoredLogo || selectedStoreLogoFile ? "Trocar logo" : "Enviar logo"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveStoreLogo()}
+                    disabled={
+                      !hasValidStoreContext ||
+                      !selectedStoreLogoFile ||
+                      savingStoreLogo ||
+                      removingStoreLogo
+                    }
+                    className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {savingStoreLogo ? "Salvando logo..." : "Salvar logo"}
+                  </button>
+
+                  {hasStoredLogo ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleRemoveStoreLogo()}
+                      disabled={!hasValidStoreContext || savingStoreLogo || removingStoreLogo}
+                      className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {removingStoreLogo ? "Removendo..." : "Remover logo"}
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="mt-3 text-xs text-gray-500">
+                  Formatos aceitos: PNG, JPEG e WEBP. Tamanho maximo sugerido: 2 MB.
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                <div className="mb-2 text-sm font-semibold text-gray-900">
+                  Resumo da identidade
+                </div>
+                <SummaryList items={identityItems} />
+              </div>
+            </div>
+          </div>
         </SectionBlock>
       ) : null}
 
