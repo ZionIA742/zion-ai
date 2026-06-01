@@ -31,15 +31,46 @@ export const dynamic = "force-dynamic";
 
 type ApplyChangeBody = {
   changeRequestId?: string | null;
+  title?: string | null;
   discount_cents?: number | null;
   customer_notes?: string | null;
   internal_notes?: string | null;
   payment_terms?: string | null;
   delivery_terms?: string | null;
   warranty_terms?: string | null;
+  validity_days?: string | null;
+  items?: Array<{
+    id?: string | null;
+    item_type?: string | null;
+    name?: string | null;
+    description?: string | null;
+    quantity?: number | string | null;
+    unit_price_cents?: number | string | null;
+    discount_cents?: number | string | null;
+  }> | null;
 };
 
 const CHANGE_APPLIED_EVENT_TYPE = "orcamento_alterado";
+const ALLOWED_APPLY_CHANGE_ITEM_TYPES = ["pool", "catalog_item", "service", "custom"] as const;
+
+type AllowedApplyChangeItemType = (typeof ALLOWED_APPLY_CHANGE_ITEM_TYPES)[number];
+type EditableSalesQuoteItemRow = SalesQuoteItemRow & {
+  item_type?: string | null;
+};
+type NormalizedApplyChangeItem = {
+  id: string | null;
+  itemType: AllowedApplyChangeItemType;
+  name: string;
+  description: string | null;
+  quantity: number;
+  unitPriceCents: number;
+  discountCents: number;
+  subtotalCents: number;
+  totalCents: number;
+  sortOrder: number;
+  sku: string | null;
+  metadata: Record<string, unknown>;
+};
 
 function buildErrorResponse(error: unknown) {
   if (error instanceof QuoteAccessError) {
@@ -89,15 +120,188 @@ function parseDiscountCents(value: unknown) {
   return Math.trunc(numericValue);
 }
 
+function parseIntegerField(value: unknown, errorCode: string, fieldName: string) {
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    throw new QuoteAccessError(
+      400,
+      errorCode,
+      `${fieldName} deve ser um numero valido.`
+    );
+  }
+
+  return Math.trunc(numericValue);
+}
+
+function normalizeApplyChangeItemType(value: unknown, index: number): AllowedApplyChangeItemType {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (normalized === "pool_installation") {
+    return "custom";
+  }
+
+  if (ALLOWED_APPLY_CHANGE_ITEM_TYPES.includes(normalized as AllowedApplyChangeItemType)) {
+    return normalized as AllowedApplyChangeItemType;
+  }
+
+  throw new QuoteAccessError(
+    400,
+    "INVALID_ITEM_TYPE",
+    `Item ${index + 1} possui tipo invalido ou ausente.`
+  );
+}
+
 function getQuoteMetadata(quote: SalesQuoteRow) {
   return quote.metadata && typeof quote.metadata === "object"
     ? { ...quote.metadata }
     : {};
 }
 
+function summarizeItemsForAudit(items: Array<{
+  item_type?: string | null;
+  name?: string | null;
+  quantity?: number | null;
+  unit_price_cents?: number | null;
+  discount_cents?: number | null;
+}>) {
+  return items.map((item) => ({
+    item_type: item.item_type || "custom",
+    name: item.name || null,
+    quantity: typeof item.quantity === "number" ? item.quantity : 0,
+    unit_price_cents:
+      typeof item.unit_price_cents === "number" ? item.unit_price_cents : 0,
+    discount_cents: typeof item.discount_cents === "number" ? item.discount_cents : 0,
+  }));
+}
+
+function normalizeApplyChangeItems(
+  items: ApplyChangeBody["items"],
+  currentItems: EditableSalesQuoteItemRow[]
+) {
+  if (!Array.isArray(items)) {
+    throw new QuoteAccessError(400, "INVALID_ITEMS", "items deve ser um array.");
+  }
+
+  if (items.length === 0) {
+    throw new QuoteAccessError(
+      400,
+      "INVALID_ITEMS",
+      "Informe pelo menos um item para gerar a nova versao."
+    );
+  }
+
+  const currentItemsById = new Map(
+    currentItems
+      .map((item) => [String(item.id || "").trim(), item] as const)
+      .filter(([itemId]) => itemId.length > 0)
+  );
+
+  return items.map((item, index) => {
+    const record =
+      item && typeof item === "object" ? (item as NonNullable<ApplyChangeBody["items"]>[number]) : null;
+    const name = String(record?.name || "").trim();
+
+    if (!name) {
+      throw new QuoteAccessError(
+        400,
+        "INVALID_ITEM_NAME",
+        `Item ${index + 1} sem nome.`
+      );
+    }
+
+    const itemType = normalizeApplyChangeItemType(record?.item_type, index);
+    const quantity = parseIntegerField(record?.quantity, "INVALID_ITEM_QUANTITY", "quantity");
+    const unitPriceCents = parseIntegerField(
+      record?.unit_price_cents,
+      "INVALID_ITEM_UNIT_PRICE",
+      "unit_price_cents"
+    );
+    const rawDiscountCents = parseIntegerField(
+      record?.discount_cents ?? 0,
+      "INVALID_ITEM_DISCOUNT",
+      "discount_cents"
+    );
+
+    if (quantity <= 0) {
+      throw new QuoteAccessError(
+        400,
+        "INVALID_ITEM_QUANTITY",
+        `Item ${index + 1} precisa ter quantidade maior que zero.`
+      );
+    }
+
+    if (unitPriceCents < 0) {
+      throw new QuoteAccessError(
+        400,
+        "INVALID_ITEM_UNIT_PRICE",
+        `Item ${index + 1} nao pode ter preco unitario negativo.`
+      );
+    }
+
+    const subtotalCents = quantity * unitPriceCents;
+
+    if (rawDiscountCents < 0 || rawDiscountCents > subtotalCents) {
+      throw new QuoteAccessError(
+        400,
+        "INVALID_ITEM_DISCOUNT",
+        `Item ${index + 1} possui desconto invalido.`
+      );
+    }
+
+    const inputItemId = String(record?.id || "").trim();
+    const previousItem = inputItemId ? currentItemsById.get(inputItemId) || null : null;
+    const previousMetadata =
+      previousItem?.metadata && typeof previousItem.metadata === "object"
+        ? { ...previousItem.metadata }
+        : { source: null, frozen_at: new Date().toISOString() };
+
+    return {
+      id: inputItemId || null,
+      itemType,
+      name,
+      description: normalizeOptionalText(record?.description),
+      quantity,
+      unitPriceCents,
+      discountCents: rawDiscountCents,
+      subtotalCents,
+      totalCents: Math.max(subtotalCents - rawDiscountCents, 0),
+      sortOrder: index + 1,
+      sku: previousItem?.sku || null,
+      metadata: previousMetadata,
+    } satisfies NormalizedApplyChangeItem;
+  });
+}
+
+function areApplyChangeItemsEqual(
+  currentItems: EditableSalesQuoteItemRow[],
+  nextItems: NormalizedApplyChangeItem[]
+) {
+  if (currentItems.length !== nextItems.length) {
+    return false;
+  }
+
+  return currentItems.every((item, index) => {
+    const nextItem = nextItems[index];
+    if (!nextItem) {
+      return false;
+    }
+
+    return (
+      String(item.item_type || "custom").trim().toLowerCase() === nextItem.itemType &&
+      String(item.name || "").trim() === nextItem.name &&
+      normalizeOptionalText(item.description) === nextItem.description &&
+      Number(item.quantity || 0) === nextItem.quantity &&
+      Number(item.unit_price_cents || 0) === nextItem.unitPriceCents &&
+      Number(item.discount_cents || 0) === nextItem.discountCents
+    );
+  });
+}
+
 function buildUpdatedQuote(args: {
   quote: SalesQuoteRow;
   body: ApplyChangeBody;
+  currentItems: EditableSalesQuoteItemRow[];
 }) {
   const subtotalCents = Number(args.quote.subtotal_cents || 0);
   const currentMetadata = getQuoteMetadata(args.quote);
@@ -105,9 +309,41 @@ function buildUpdatedQuote(args: {
   const appliedChanges: Record<string, { from: unknown; to: unknown }> = {};
   let metadataChanged = false;
 
+  let nextTitle = args.quote.title ?? null;
   let nextDiscountCents = Number(args.quote.discount_cents || 0);
+  let nextSubtotalCents = subtotalCents;
   let nextCustomerNotes = args.quote.customer_notes ?? null;
   let nextInternalNotes = args.quote.internal_notes ?? null;
+  let nextItems: NormalizedApplyChangeItem[] = args.currentItems.map((item, index) => ({
+    id: item.id,
+    itemType: normalizeApplyChangeItemType(item.item_type || "custom", index),
+    name: String(item.name || "").trim(),
+    description: normalizeOptionalText(item.description),
+    quantity: Number(item.quantity || 0),
+    unitPriceCents: Number(item.unit_price_cents || 0),
+    discountCents: Number(item.discount_cents || 0),
+    subtotalCents: Number(item.subtotal_cents || 0),
+    totalCents: Number(item.total_cents || 0),
+    sortOrder: Number(item.sort_order || index + 1),
+    sku: item.sku || null,
+    metadata:
+      item.metadata && typeof item.metadata === "object"
+        ? { ...item.metadata }
+        : { source: null, frozen_at: new Date().toISOString() },
+  }));
+  let itemsChanged = false;
+
+  if (hasOwn(args.body, "title")) {
+    const normalizedTitle = normalizeOptionalText(args.body.title);
+
+    if (normalizedTitle !== nextTitle) {
+      appliedChanges.title = {
+        from: nextTitle,
+        to: normalizedTitle,
+      };
+      nextTitle = normalizedTitle;
+    }
+  }
 
   if (hasOwn(args.body, "discount_cents")) {
     const parsedDiscountCents = parseDiscountCents(args.body.discount_cents);
@@ -135,6 +371,41 @@ function buildUpdatedQuote(args: {
       };
       nextDiscountCents = parsedDiscountCents;
     }
+  }
+
+  if (hasOwn(args.body, "items")) {
+    const normalizedItems = normalizeApplyChangeItems(args.body.items, args.currentItems);
+
+    if (!areApplyChangeItemsEqual(args.currentItems, normalizedItems)) {
+      appliedChanges.items = {
+        from: summarizeItemsForAudit(args.currentItems),
+        to: summarizeItemsForAudit(
+          normalizedItems.map((item) => ({
+            item_type: item.itemType,
+            name: item.name,
+            quantity: item.quantity,
+            unit_price_cents: item.unitPriceCents,
+            discount_cents: item.discountCents,
+          }))
+        ),
+      };
+      nextItems = normalizedItems;
+      itemsChanged = true;
+    }
+
+    const itemsSubtotalCents = normalizedItems.reduce((sum, item) => sum + item.subtotalCents, 0);
+    const itemsDiscountCents = normalizedItems.reduce((sum, item) => sum + item.discountCents, 0);
+
+    if (hasOwn(args.body, "discount_cents") && nextDiscountCents !== itemsDiscountCents) {
+      throw new QuoteAccessError(
+        400,
+        "INVALID_DISCOUNT_CENTS",
+        "Quando items sao enviados, discount_cents deve corresponder ao desconto total dos itens."
+      );
+    }
+
+    nextSubtotalCents = itemsSubtotalCents;
+    nextDiscountCents = itemsDiscountCents;
   }
 
   if (hasOwn(args.body, "customer_notes")) {
@@ -183,6 +454,23 @@ function buildUpdatedQuote(args: {
     }
   }
 
+  if (hasOwn(args.body, "validity_days")) {
+    const normalizedValidityDays = normalizeOptionalText(args.body.validity_days);
+    const currentValidityDays =
+      normalizeOptionalText(currentMetadata.validity_days) ||
+      normalizeOptionalText(currentMetadata.valid_until);
+
+    if (normalizedValidityDays !== currentValidityDays) {
+      appliedChanges.validity_days = {
+        from: currentValidityDays,
+        to: normalizedValidityDays,
+      };
+      nextMetadata.validity_days = normalizedValidityDays;
+      nextMetadata.valid_until = normalizedValidityDays;
+      metadataChanged = true;
+    }
+  }
+
   if (Object.keys(appliedChanges).length === 0) {
     throw new QuoteAccessError(
       400,
@@ -191,11 +479,13 @@ function buildUpdatedQuote(args: {
     );
   }
 
-  const nextTotalCents = Math.max(subtotalCents - nextDiscountCents, 0);
+  const nextTotalCents = Math.max(nextSubtotalCents - nextDiscountCents, 0);
 
   const updatedQuote: SalesQuoteRow = {
     ...args.quote,
+    title: nextTitle,
     status: "pending_review",
+    subtotal_cents: nextSubtotalCents,
     discount_cents: nextDiscountCents,
     total_cents: nextTotalCents,
     customer_notes: nextCustomerNotes,
@@ -204,13 +494,15 @@ function buildUpdatedQuote(args: {
   };
 
   return {
-    subtotalCents,
+    subtotalCents: nextSubtotalCents,
     updatedQuote,
     nextMetadata,
     metadataChanged,
     nextDiscountCents,
     nextTotalCents,
     appliedChanges,
+    nextItems,
+    itemsChanged,
   };
 }
 
@@ -218,7 +510,7 @@ async function loadQuoteItems(args: { supabase: any; quoteId: string }) {
   const { data, error } = await args.supabase
     .from("sales_quote_items")
     .select(
-      "id, quote_id, organization_id, store_id, name, description, quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, sort_order, sku, metadata, created_at, updated_at"
+      "id, quote_id, organization_id, store_id, item_type, name, description, quantity, unit_price_cents, discount_cents, subtotal_cents, total_cents, sort_order, sku, metadata, created_at, updated_at"
     )
     .eq("quote_id", args.quoteId)
     .order("sort_order", { ascending: true });
@@ -227,7 +519,7 @@ async function loadQuoteItems(args: { supabase: any; quoteId: string }) {
     throw new Error(`Falha ao carregar itens do orcamento: ${error.message}`);
   }
 
-  const items = (data || []) as SalesQuoteItemRow[];
+  const items = (data || []) as EditableSalesQuoteItemRow[];
 
   if (items.length === 0) {
     throw new QuoteAccessError(
@@ -238,6 +530,45 @@ async function loadQuoteItems(args: { supabase: any; quoteId: string }) {
   }
 
   return items;
+}
+
+async function replaceQuoteItems(args: {
+  supabase: any;
+  quote: SalesQuoteRow;
+  items: NormalizedApplyChangeItem[];
+}) {
+  const { error: deleteError } = await args.supabase
+    .from("sales_quote_items")
+    .delete()
+    .eq("quote_id", args.quote.id);
+
+  if (deleteError) {
+    throw new Error(`Falha ao remover itens antigos do orcamento: ${deleteError.message}`);
+  }
+
+  const rows = args.items.map((item) => ({
+    ...(item.id ? { id: item.id } : {}),
+    quote_id: args.quote.id,
+    organization_id: args.quote.organization_id,
+    store_id: args.quote.store_id,
+    item_type: item.itemType,
+    name: item.name,
+    description: item.description,
+    quantity: item.quantity,
+    unit_price_cents: item.unitPriceCents,
+    discount_cents: item.discountCents,
+    subtotal_cents: item.subtotalCents,
+    total_cents: item.totalCents,
+    sort_order: item.sortOrder,
+    sku: item.sku,
+    metadata: item.metadata,
+  }));
+
+  const { error: insertError } = await args.supabase.from("sales_quote_items").insert(rows);
+
+  if (insertError) {
+    throw new Error(`Falha ao salvar novos itens do orcamento: ${insertError.message}`);
+  }
 }
 
 async function loadOpenChangeRequest(args: {
@@ -306,10 +637,12 @@ export async function POST(
     | null = null;
   let quoteUpdated = false;
   let versionCreated = false;
+  let itemsReplaced = false;
   let revertContext:
     | {
         supabase: any;
         originalQuote: SalesQuoteRow;
+        originalItems: EditableSalesQuoteItemRow[];
       }
     | null = null;
   let failureSnapshot: QuoteSnapshot | null = null;
@@ -365,14 +698,35 @@ export async function POST(
       nextDiscountCents,
       nextTotalCents,
       appliedChanges,
+      nextItems,
+      itemsChanged,
     } = buildUpdatedQuote({
       quote: scope.quote,
       body: safeBody,
+      currentItems: items,
     });
 
     const snapshot = buildQuoteSnapshot({
       quote: updatedQuote,
-      items,
+      items: nextItems.map((item, index) => ({
+        id: item.id || `pending-item-${index + 1}`,
+        quote_id: scope.quote.id,
+        organization_id: scope.organizationId,
+        store_id: scope.store.id,
+        item_type: item.itemType,
+        name: item.name,
+        description: item.description,
+        quantity: item.quantity,
+        unit_price_cents: item.unitPriceCents,
+        discount_cents: item.discountCents,
+        subtotal_cents: item.subtotalCents,
+        total_cents: item.totalCents,
+        sort_order: item.sortOrder,
+        sku: item.sku,
+        metadata: item.metadata,
+        created_at: null,
+        updated_at: null,
+      })),
       settings,
       store: scope.store,
       lead: scope.lead,
@@ -394,14 +748,14 @@ export async function POST(
       customerName: updatedQuote.customer_name || scope.lead?.name || null,
       customerPhone: updatedQuote.customer_phone || scope.lead?.phone || null,
       createdAt: updatedQuote.created_at,
-      validUntil: null,
-      items: items.map((item) => ({
+      validUntil: normalizeOptionalText(nextMetadata.valid_until),
+      items: nextItems.map((item) => ({
         name: item.name,
         description: item.description,
         quantity: item.quantity,
-        unitPriceCents: item.unit_price_cents,
-        discountCents: item.discount_cents,
-        totalCents: item.total_cents,
+        unitPriceCents: item.unitPriceCents,
+        discountCents: item.discountCents,
+        totalCents: item.totalCents,
       })),
       subtotalCents: Number(updatedQuote.subtotal_cents || 0),
       discountCents: nextDiscountCents,
@@ -426,10 +780,13 @@ export async function POST(
     revertContext = {
       supabase: scope.supabase,
       originalQuote: scope.quote,
+      originalItems: items,
     };
 
     const quoteUpdatePayload: Record<string, unknown> = {
+      title: updatedQuote.title,
       status: "pending_review",
+      subtotal_cents: Number(updatedQuote.subtotal_cents || 0),
       discount_cents: nextDiscountCents,
       total_cents: nextTotalCents,
       customer_notes: updatedQuote.customer_notes,
@@ -449,6 +806,15 @@ export async function POST(
       throw new Error(`Falha ao atualizar sales_quotes: ${quoteUpdateError.message}`);
     }
     quoteUpdated = true;
+
+    if (itemsChanged) {
+      await replaceQuoteItems({
+        supabase: scope.supabase,
+        quote: scope.quote,
+        items: nextItems,
+      });
+      itemsReplaced = true;
+    }
 
     const versionRow = await createQuoteVersion({
       supabase: scope.supabase,
@@ -515,7 +881,9 @@ export async function POST(
         await revertContext.supabase
           .from("sales_quotes")
           .update({
+            title: revertContext.originalQuote.title,
             status: revertContext.originalQuote.status,
+            subtotal_cents: revertContext.originalQuote.subtotal_cents,
             discount_cents: revertContext.originalQuote.discount_cents,
             total_cents: revertContext.originalQuote.total_cents,
             customer_notes: revertContext.originalQuote.customer_notes,
@@ -523,6 +891,37 @@ export async function POST(
             metadata: revertContext.originalQuote.metadata,
           })
           .eq("id", revertContext.originalQuote.id);
+      } catch {
+        // best effort
+      }
+    }
+
+    if (revertContext && itemsReplaced && !versionCreated) {
+      try {
+        await revertContext.supabase
+          .from("sales_quote_items")
+          .delete()
+          .eq("quote_id", revertContext.originalQuote.id);
+
+        await revertContext.supabase.from("sales_quote_items").insert(
+          revertContext.originalItems.map((item) => ({
+            id: item.id,
+            quote_id: item.quote_id,
+            organization_id: item.organization_id,
+            store_id: item.store_id,
+            item_type: item.item_type || null,
+            name: item.name,
+            description: item.description,
+            quantity: item.quantity,
+            unit_price_cents: item.unit_price_cents,
+            discount_cents: item.discount_cents,
+            subtotal_cents: item.subtotal_cents,
+            total_cents: item.total_cents,
+            sort_order: item.sort_order,
+            sku: item.sku,
+            metadata: item.metadata,
+          }))
+        );
       } catch {
         // best effort
       }

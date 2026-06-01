@@ -80,6 +80,7 @@ export type SalesQuoteItemRow = {
   quote_id: string;
   organization_id: string;
   store_id: string;
+  item_type?: string | null;
   name: string | null;
   description: string | null;
   quantity: number | null;

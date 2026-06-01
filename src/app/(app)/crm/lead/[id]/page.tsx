@@ -249,6 +249,7 @@ type SalesQuoteActionResponse = {
   status?: string;
   versionId?: string;
   quoteNumber?: string | null;
+  changeRequestId?: string;
 };
 
 type SignedMediaState = {
@@ -916,6 +917,7 @@ export default function LeadPage() {
   const [quoteFormMode, setQuoteFormMode] = useState<"create" | "edit">("create");
   const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
   const [editingQuoteNumber, setEditingQuoteNumber] = useState<string | null>(null);
+  const [editingQuoteStatus, setEditingQuoteStatus] = useState<string | null>(null);
   const [loadingQuoteForEdit, setLoadingQuoteForEdit] = useState<string | null>(null);
   const [generatedQuotes, setGeneratedQuotes] = useState<GeneratedQuoteSummary[]>([]);
   const [generatedQuotesLoading, setGeneratedQuotesLoading] = useState(false);
@@ -1104,6 +1106,7 @@ export default function LeadPage() {
     setQuoteFormMode("create");
     setEditingQuoteId(null);
     setEditingQuoteNumber(null);
+    setEditingQuoteStatus(null);
     setLoadingQuoteForEdit(null);
   }
 
@@ -1314,6 +1317,126 @@ export default function LeadPage() {
     }
   }
 
+  async function generateEditedQuoteVersion() {
+    const safeQuoteId = String(editingQuoteId || "").trim();
+    const normalizedStatus = String(editingQuoteStatus || "").trim().toLowerCase();
+
+    if (isGeneratingManualQuote) {
+      return;
+    }
+
+    if (quoteFormMode !== "edit" || !safeQuoteId) {
+      setQuoteFormError("Nenhum orcamento em edicao foi encontrado.");
+      setQuoteFormSuccess(null);
+      return;
+    }
+
+    if (
+      normalizedStatus === "sent" ||
+      normalizedStatus === "cancelled" ||
+      normalizedStatus === "expired" ||
+      normalizedStatus === "failed"
+    ) {
+      setQuoteFormError("Este orcamento nao pode gerar nova versao.");
+      setQuoteFormSuccess(null);
+      return;
+    }
+
+    if (!canGenerateQuotePdf) {
+      setQuoteFormError(
+        quoteValidationMessage ||
+          "Preencha o titulo, o nome do item, a quantidade e o preco para gerar a nova versao."
+      );
+      setQuoteFormSuccess(null);
+      return;
+    }
+
+    const normalizedItems = quoteItems.map((item) => {
+      const normalizedItemType = item.itemType === "service" ? "service" : "custom";
+
+      return {
+        id: item.id,
+        item_type: normalizedItemType,
+        name: item.name.trim(),
+        description: item.description.trim() || null,
+        quantity: parseQuoteQuantityValue(item.quantity),
+        unit_price_cents: convertReaisToCents(item.unitPriceReais),
+        discount_cents: convertReaisToCents(item.discountReais),
+      };
+    });
+
+    setIsGeneratingManualQuote(true);
+    setQuoteFormError(null);
+    setQuoteFormSuccess(null);
+
+    try {
+      const requestChangeResponse = await fetch(
+        `/api/sales-quotes/${encodeURIComponent(safeQuoteId)}/request-change`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            request_text:
+              "Alteracao manual feita pelo responsavel pela tela de edicao do orcamento.",
+          }),
+        }
+      );
+      const requestChangeResult =
+        (await requestChangeResponse.json().catch(() => null)) as SalesQuoteActionResponse | null;
+
+      if (!requestChangeResponse.ok || !requestChangeResult?.ok || !requestChangeResult.changeRequestId) {
+        throw new Error(
+          requestChangeResult?.message ||
+            requestChangeResult?.error ||
+            "Nao foi possivel registrar a alteracao do orcamento."
+        );
+      }
+
+      const applyChangeResponse = await fetch(
+        `/api/sales-quotes/${encodeURIComponent(safeQuoteId)}/apply-change`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            changeRequestId: requestChangeResult.changeRequestId,
+            title: quoteTitle.trim() || null,
+            customer_notes: quoteCustomerNotes.trim() || null,
+            warranty_terms: quoteWarrantyTerms.trim() || null,
+            validity_days: quoteValidityDays.trim() || null,
+            items: normalizedItems,
+          }),
+        }
+      );
+      const applyChangeResult =
+        (await applyChangeResponse.json().catch(() => null)) as SalesQuoteActionResponse | null;
+
+      if (!applyChangeResponse.ok || !applyChangeResult?.ok) {
+        throw new Error(
+          applyChangeResult?.message ||
+            applyChangeResult?.error ||
+            "Nao foi possivel gerar a nova versao do orcamento."
+        );
+      }
+
+      await fetchGeneratedQuotes({ silent: true });
+      await fetchLeadConversationAndMessages({ silent: true });
+      setStatusText("Nova versao do orcamento gerada com sucesso.");
+      setQuoteFormSuccess("Nova versao do orcamento gerada com sucesso.");
+      closeQuoteModalAndReset();
+    } catch (error: any) {
+      setQuoteFormError(
+        error?.message || "Nao foi possivel gerar a nova versao do orcamento."
+      );
+      setQuoteFormSuccess(null);
+    } finally {
+      setIsGeneratingManualQuote(false);
+    }
+  }
+
   async function fetchLeadConversationAndMessages(options?: { silent?: boolean }) {
     const silent = options?.silent ?? false;
 
@@ -1513,6 +1636,7 @@ export default function LeadPage() {
       setQuoteFormMode("edit");
       setEditingQuoteId(result.quote.id);
       setEditingQuoteNumber(result.quote.quote_number || quoteNumber || null);
+      setEditingQuoteStatus(result.quote.status || currentStatus || null);
       setQuoteTitle(result.quote.title || "");
       setQuoteCustomerNotes(result.quote.customer_notes || "");
       setQuoteWarrantyTerms(result.quote.warranty_terms || "");
@@ -3678,14 +3802,21 @@ export default function LeadPage() {
 
                         <button
                           type="button"
-                          onClick={() => void generateManualQuotePdf()}
+                          onClick={() =>
+                            void (isEditingQuote
+                              ? generateEditedQuoteVersion()
+                              : generateManualQuotePdf())
+                          }
                           disabled={
-                            isEditingQuote || !canGenerateQuotePdf || isGeneratingManualQuote
+                            isGeneratingManualQuote ||
+                            (isEditingQuote ? !canGenerateQuotePdf : !canGenerateQuotePdf)
                           }
                           className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-white/15 disabled:cursor-not-allowed disabled:text-gray-400"
                         >
                           {isEditingQuote
-                            ? "Gerar nova versao em breve"
+                            ? isGeneratingManualQuote
+                              ? "Gerando nova versao..."
+                              : "Gerar nova versao"
                             : isGeneratingManualQuote
                               ? "Gerando..."
                               : "Gerar PDF"}
