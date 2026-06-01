@@ -1,6 +1,7 @@
 // src/app/api/crm/lead-details/[id]/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,15 @@ type LeadRow = {
   name: string | null;
   phone: string | null;
   state: string;
+};
+
+type MembershipRow = {
+  organization_id: string;
+};
+
+type StoreRow = {
+  id: string;
+  organization_id: string;
 };
 
 type ConversationRow = {
@@ -107,6 +117,125 @@ export async function GET(request: Request) {
         },
         { status: 400 }
       );
+    }
+
+    const sessionSupabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await sessionSupabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "UNAUTHENTICATED",
+          message: "Usuario nao autenticado.",
+        },
+        { status: 401 }
+      );
+    }
+
+    const { data: scopedLead, error: scopedLeadError } = await sessionSupabase
+      .from("leads")
+      .select("id, organization_id, store_id, name, phone, state")
+      .eq("id", leadId)
+      .maybeSingle<LeadRow>();
+
+    if (scopedLeadError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LOAD_LEAD_FAILED",
+          message: scopedLeadError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!scopedLead) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LEAD_NOT_FOUND",
+          message: "Lead nÃ£o encontrado.",
+        },
+        { status: 404 }
+      );
+    }
+
+    const leadOrganizationId = String(scopedLead.organization_id || "").trim();
+    const leadStoreId = String(scopedLead.store_id || "").trim();
+
+    if (!leadOrganizationId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "FORBIDDEN_LEAD_SCOPE",
+          message: "O lead informado nao possui escopo valido de organizacao.",
+        },
+        { status: 403 }
+      );
+    }
+
+    const { data: membership, error: membershipError } = await sessionSupabase
+      .from("memberships")
+      .select("organization_id")
+      .eq("user_id", user.id)
+      .eq("organization_id", leadOrganizationId)
+      .maybeSingle<MembershipRow>();
+
+    if (membershipError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LOAD_MEMBERSHIP_FAILED",
+          message: membershipError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!membership) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "FORBIDDEN_ORGANIZATION",
+          message: "Voce nao pode acessar leads desta organizacao.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (leadStoreId) {
+      const { data: store, error: storeError } = await sessionSupabase
+        .from("stores")
+        .select("id, organization_id")
+        .eq("id", leadStoreId)
+        .eq("organization_id", leadOrganizationId)
+        .maybeSingle<StoreRow>();
+
+      if (storeError) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "LOAD_STORE_FAILED",
+            message: storeError.message,
+          },
+          { status: 500 }
+        );
+      }
+
+      if (!store) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "FORBIDDEN_STORE",
+            message: "A loja vinculada ao lead nao pertence a esta organizacao.",
+          },
+          { status: 403 }
+        );
+      }
     }
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;

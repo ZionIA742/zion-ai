@@ -31,6 +31,15 @@ type LeadRow = {
   store_id: string | null;
 };
 
+type MembershipRow = {
+  organization_id: string;
+};
+
+type StoreRow = {
+  id: string;
+  organization_id: string;
+};
+
 type AttachmentKind = "image" | "audio" | "video" | "file";
 
 function createSupabaseAdminClient() {
@@ -322,6 +331,68 @@ export async function GET(
         },
         403
       );
+    }
+
+    const { data: membership, error: membershipError } = await sessionSupabase
+      .from("memberships")
+      .select("organization_id")
+      .eq("user_id", user.id)
+      .eq("organization_id", leadOrganizationId)
+      .maybeSingle<MembershipRow>();
+
+    if (membershipError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_MEMBERSHIP_FAILED",
+          message: membershipError.message,
+        },
+        500
+      );
+    }
+
+    if (!membership) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "FORBIDDEN_ORGANIZATION",
+          message: "Voce nao pode acessar anexos desta organizacao.",
+        },
+        403
+      );
+    }
+
+    const scopedStoreId = leadStoreId || messageStoreId;
+
+    if (scopedStoreId) {
+      const { data: store, error: storeError } = await sessionSupabase
+        .from("stores")
+        .select("id, organization_id")
+        .eq("id", scopedStoreId)
+        .eq("organization_id", leadOrganizationId)
+        .maybeSingle<StoreRow>();
+
+      if (storeError) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "LOAD_STORE_FAILED",
+            message: storeError.message,
+          },
+          500
+        );
+      }
+
+      if (!store) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "FORBIDDEN_STORE",
+            message: "A loja vinculada ao anexo nao pertence a esta organizacao.",
+          },
+          403
+        );
+      }
     }
 
     const { data: signedData, error: signedError } = await supabase.storage

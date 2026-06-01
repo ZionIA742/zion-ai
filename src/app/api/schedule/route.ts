@@ -1,6 +1,7 @@
 // src/app/api/schedule/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +26,15 @@ type ScheduleItemRow = {
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type MembershipRow = {
+  organization_id: string;
+};
+
+type StoreRow = {
+  id: string;
+  organization_id: string;
 };
 
 function buildJsonResponse(body: unknown, status = 200) {
@@ -129,6 +139,81 @@ export async function GET(request: Request) {
           message: "O parâmetro end deve ser maior que start.",
         },
         400
+      );
+    }
+
+    const sessionSupabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await sessionSupabase.auth.getUser();
+
+    if (authError || !user) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "UNAUTHENTICATED",
+          message: "Usuario nao autenticado.",
+        },
+        401
+      );
+    }
+
+    const { data: membership, error: membershipError } = await sessionSupabase
+      .from("memberships")
+      .select("organization_id")
+      .eq("user_id", user.id)
+      .eq("organization_id", organizationId)
+      .maybeSingle<MembershipRow>();
+
+    if (membershipError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_MEMBERSHIP_FAILED",
+          message: membershipError.message,
+        },
+        500
+      );
+    }
+
+    if (!membership) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "FORBIDDEN_ORGANIZATION",
+          message: "Voce nao pode acessar a agenda desta organizacao.",
+        },
+        403
+      );
+    }
+
+    const { data: store, error: storeError } = await sessionSupabase
+      .from("stores")
+      .select("id, organization_id")
+      .eq("id", storeId)
+      .eq("organization_id", organizationId)
+      .maybeSingle<StoreRow>();
+
+    if (storeError) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_STORE_FAILED",
+          message: storeError.message,
+        },
+        500
+      );
+    }
+
+    if (!store) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "FORBIDDEN_STORE",
+          message: "A loja informada nao pertence a esta organizacao.",
+        },
+        403
       );
     }
 
