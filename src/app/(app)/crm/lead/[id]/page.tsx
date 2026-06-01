@@ -190,6 +190,16 @@ type SignedQuotePdfUrlResponse = {
   message?: string;
 };
 
+type SalesQuoteActionResponse = {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  quoteId?: string;
+  status?: string;
+  versionId?: string;
+  quoteNumber?: string | null;
+};
+
 type SignedMediaState = {
   signedUrl: string;
   mimeType: string | null;
@@ -312,8 +322,26 @@ function formatQuoteStatusLabel(value: string | null | undefined) {
       return "Falhou";
     case "draft":
       return "Rascunho";
+    case "cancelled":
+      return "Cancelado";
+    case "expired":
+      return "Expirado";
     default:
       return "Sem status";
+  }
+}
+
+function getQuoteSendErrorMessage(errorCode: string | null | undefined, fallback?: string | null) {
+  switch (String(errorCode || "").trim().toUpperCase()) {
+    case "QUOTE_SEND_DISABLED":
+      return "O envio automatico de orcamento esta desativado nas configuracoes da loja.";
+    case "QUOTE_REQUIRES_APPROVAL":
+      return "Este orcamento precisa ser aprovado antes de ser enviado.";
+    case "QUOTE_ALREADY_SENT":
+    case "QUOTE_VERSION_ALREADY_SENT":
+      return "Este orcamento ja foi enviado ao cliente.";
+    default:
+      return fallback || "Nao foi possivel enviar o orcamento ao cliente.";
   }
 }
 
@@ -819,6 +847,12 @@ export default function LeadPage() {
   const [generatedQuotesLoading, setGeneratedQuotesLoading] = useState(false);
   const [generatedQuotesError, setGeneratedQuotesError] = useState<string | null>(null);
   const [openingGeneratedQuoteId, setOpeningGeneratedQuoteId] = useState<string | null>(null);
+  const [quoteActionLoadingId, setQuoteActionLoadingId] = useState<string | null>(null);
+  const [quoteActionLoadingType, setQuoteActionLoadingType] = useState<
+    "approve" | "send" | null
+  >(null);
+  const [quoteActionError, setQuoteActionError] = useState<string | null>(null);
+  const [quoteActionSuccess, setQuoteActionSuccess] = useState<string | null>(null);
   const [hasLoadedGeneratedQuotes, setHasLoadedGeneratedQuotes] = useState(false);
   const [imagePreviewErrors, setImagePreviewErrors] = useState<Record<string, boolean>>(
     {}
@@ -1312,6 +1346,101 @@ export default function LeadPage() {
       );
     } finally {
       setOpeningGeneratedQuoteId(null);
+    }
+  }
+
+  async function approveGeneratedQuote(quoteId: string, currentStatus: string | null | undefined) {
+    const safeQuoteId = String(quoteId || "").trim();
+    const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
+
+    if (!safeQuoteId) {
+      return;
+    }
+
+    if (normalizedStatus !== "pending_review") {
+      setQuoteActionError("Este orcamento precisa estar em revisao pendente para ser aprovado.");
+      setQuoteActionSuccess(null);
+      return;
+    }
+
+    setQuoteActionLoadingId(safeQuoteId);
+    setQuoteActionLoadingType("approve");
+    setQuoteActionError(null);
+    setQuoteActionSuccess(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-quotes/${encodeURIComponent(safeQuoteId)}/approve`,
+        {
+          method: "POST",
+          cache: "no-store",
+        }
+      );
+      const result = (await response.json()) as SalesQuoteActionResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel aprovar o orcamento.");
+      }
+
+      await fetchGeneratedQuotes({ silent: true });
+      setQuoteActionSuccess("Orcamento aprovado com sucesso.");
+    } catch (error: any) {
+      setQuoteActionError(error?.message || "Nao foi possivel aprovar o orcamento.");
+      setQuoteActionSuccess(null);
+    } finally {
+      setQuoteActionLoadingId(null);
+      setQuoteActionLoadingType(null);
+    }
+  }
+
+  async function sendGeneratedQuoteToCustomer(
+    quoteId: string,
+    currentStatus: string | null | undefined
+  ) {
+    const safeQuoteId = String(quoteId || "").trim();
+    const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
+
+    if (!safeQuoteId) {
+      return;
+    }
+
+    if (normalizedStatus !== "approved") {
+      setQuoteActionError("Este orcamento precisa ser aprovado antes de ser enviado.");
+      setQuoteActionSuccess(null);
+      return;
+    }
+
+    setQuoteActionLoadingId(safeQuoteId);
+    setQuoteActionLoadingType("send");
+    setQuoteActionError(null);
+    setQuoteActionSuccess(null);
+
+    try {
+      const response = await fetch(`/api/sales-quotes/${encodeURIComponent(safeQuoteId)}/send`, {
+        method: "POST",
+        cache: "no-store",
+      });
+      const result = (await response.json()) as SalesQuoteActionResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(getQuoteSendErrorMessage(result?.error, result?.message));
+      }
+
+      await fetchGeneratedQuotes({ silent: true });
+
+      if (leadId) {
+        await fetchLeadConversationAndMessages({ silent: true });
+      }
+
+      setQuoteActionSuccess("Orcamento enviado ao cliente com sucesso.");
+    } catch (error: any) {
+      setQuoteActionError(
+        error?.message || "Nao foi possivel enviar o orcamento ao cliente."
+      );
+      setQuoteActionSuccess(null);
+    } finally {
+      setQuoteActionLoadingId(null);
+      setQuoteActionLoadingType(null);
     }
   }
 
@@ -2257,6 +2386,10 @@ export default function LeadPage() {
     setGeneratedQuotesError(null);
     setGeneratedQuotesLoading(false);
     setOpeningGeneratedQuoteId(null);
+    setQuoteActionLoadingId(null);
+    setQuoteActionLoadingType(null);
+    setQuoteActionError(null);
+    setQuoteActionSuccess(null);
     setHasLoadedGeneratedQuotes(false);
   }, [leadId]);
 
@@ -2793,6 +2926,18 @@ export default function LeadPage() {
                           </div>
                         ) : null}
 
+                        {quoteActionError ? (
+                          <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+                            {quoteActionError}
+                          </div>
+                        ) : null}
+
+                        {quoteActionSuccess ? (
+                          <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+                            {quoteActionSuccess}
+                          </div>
+                        ) : null}
+
                         {generatedQuotesLoading ? (
                           <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
                             Carregando orcamentos gerados...
@@ -2808,10 +2953,17 @@ export default function LeadPage() {
                         {!generatedQuotesLoading && generatedQuotes.length > 0 ? (
                           <div className="mt-3 space-y-3">
                             {generatedQuotes.map((quote) => {
+                              const normalizedStatus = String(quote.status || "")
+                                .trim()
+                                .toLowerCase();
                               const hasPdf =
                                 Boolean(quote.current_version?.storage_bucket) &&
                                 Boolean(quote.current_version?.storage_path);
                               const isOpening = openingGeneratedQuoteId === quote.id;
+                              const isActionLoading = quoteActionLoadingId === quote.id;
+                              const canApprove = normalizedStatus === "pending_review";
+                              const canSend = normalizedStatus === "approved";
+                              const wasSent = normalizedStatus === "sent";
 
                               return (
                                 <div
@@ -2859,14 +3011,52 @@ export default function LeadPage() {
                                       </div>
                                     </div>
 
-                                    <button
-                                      type="button"
-                                      onClick={() => void openGeneratedQuotePdf(quote.id)}
-                                      disabled={!hasPdf || isOpening}
-                                      className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
-                                    >
-                                      {isOpening ? "Abrindo..." : "Abrir PDF"}
-                                    </button>
+                                    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                                      {canApprove ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void approveGeneratedQuote(quote.id, quote.status)
+                                          }
+                                          disabled={isActionLoading}
+                                          className="rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700"
+                                        >
+                                          {isActionLoading && quoteActionLoadingType === "approve"
+                                            ? "Aprovando..."
+                                            : "Aprovar"}
+                                        </button>
+                                      ) : null}
+
+                                      {canSend ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void sendGeneratedQuoteToCustomer(quote.id, quote.status)
+                                          }
+                                          disabled={isActionLoading}
+                                          className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
+                                        >
+                                          {isActionLoading && quoteActionLoadingType === "send"
+                                            ? "Enviando..."
+                                            : "Enviar ao cliente"}
+                                        </button>
+                                      ) : null}
+
+                                      {wasSent ? (
+                                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-600/20">
+                                          Enviado ao cliente
+                                        </span>
+                                      ) : null}
+
+                                      <button
+                                        type="button"
+                                        onClick={() => void openGeneratedQuotePdf(quote.id)}
+                                        disabled={!hasPdf || isOpening}
+                                        className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
+                                      >
+                                        {isOpening ? "Abrindo..." : "Abrir PDF"}
+                                      </button>
+                                    </div>
                                   </div>
                                 </div>
                               );

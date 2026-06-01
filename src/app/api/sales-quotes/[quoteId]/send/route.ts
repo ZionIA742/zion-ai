@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { insertQuoteConversationEvent } from "@/lib/server/sales-quotes/quote-events";
+import {
+  canInsertQuoteConversationEvent,
+  insertQuoteConversationEvent,
+} from "@/lib/server/sales-quotes/quote-events";
 import {
   QuoteAccessError,
   resolveAuthorizedExistingQuote,
@@ -173,6 +176,23 @@ export async function POST(
           ok: false,
           error: "QUOTE_REQUIRES_APPROVAL",
           message: "Este orcamento precisa ser aprovado antes de ser enviado ao cliente.",
+        },
+        { status: 409 }
+      );
+    }
+
+    const eventGuard = await canInsertQuoteConversationEvent({
+      supabase: scope.supabase,
+      quote: scope.quote,
+      eventType: SEND_EVENT_TYPE,
+    });
+
+    if (!eventGuard.allowed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "QUOTE_EVENT_NOT_ALLOWED",
+          message: "O envio do orcamento nao esta permitido no estado atual da conversa.",
         },
         { status: 409 }
       );
