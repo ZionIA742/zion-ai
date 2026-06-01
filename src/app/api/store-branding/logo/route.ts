@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import sharp from "sharp";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
 export const runtime = "nodejs";
@@ -85,6 +86,22 @@ function sanitizeFileName(fileName: string) {
   if (safeBaseName) return safeBaseName;
   if (safeExtension) return `logo.${safeExtension}`;
   return "logo";
+}
+
+function replaceFileExtension(fileName: string, extension: string) {
+  const normalizedExtension = String(extension || "")
+    .trim()
+    .replace(/^\.+/, "")
+    .toLowerCase();
+  const sanitizedFileName = sanitizeFileName(fileName);
+  const lastDotIndex = sanitizedFileName.lastIndexOf(".");
+  const baseName = lastDotIndex > 0 ? sanitizedFileName.slice(0, lastDotIndex) : sanitizedFileName;
+
+  if (!normalizedExtension) {
+    return baseName || "logo";
+  }
+
+  return `${baseName || "logo"}.${normalizedExtension}`;
 }
 
 function buildStoragePath(args: { organizationId: string; storeId: string; fileName: string }) {
@@ -341,7 +358,7 @@ export async function POST(request: Request) {
         {
           ok: false,
           error: "INVALID_FILE_TYPE",
-          message: "Envie uma imagem PNG, JPEG ou WEBP.",
+          message: "Envie uma imagem PNG, JPEG ou WebP.",
         },
         400
       );
@@ -354,17 +371,44 @@ export async function POST(request: Request) {
     );
     const oldBucket = String(existingBranding?.logo_storage_bucket || "").trim();
     const oldPath = String(existingBranding?.logo_storage_path || "").trim();
+    let uploadBody: File | Buffer = fileEntry;
+    let finalFileName = fileEntry.name;
+    let finalMimeType = mimeType;
+    let finalSizeBytes = fileEntry.size;
+
+    if (mimeType === "image/webp") {
+      try {
+        const inputBuffer = Buffer.from(await fileEntry.arrayBuffer());
+        const convertedBuffer = await sharp(inputBuffer).png().toBuffer();
+        uploadBody = convertedBuffer;
+        finalFileName = replaceFileExtension(fileEntry.name, "png");
+        finalMimeType = "image/png";
+        finalSizeBytes = convertedBuffer.byteLength;
+      } catch (conversionError) {
+        console.error("[api/store-branding/logo][POST] webp conversion error:", conversionError);
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "STORE_BRANDING_WEBP_CONVERSION_FAILED",
+            message: "Nao foi possivel converter essa logo. Tente enviar PNG ou JPEG.",
+          },
+          400
+        );
+      }
+    }
+
     const storagePath = buildStoragePath({
       organizationId: auth.store.organization_id,
       storeId: auth.store.id,
-      fileName: fileEntry.name,
+      fileName: finalFileName,
     });
 
     const { error: uploadError } = await auth.supabase.storage
       .from(STORAGE_BUCKET)
-      .upload(storagePath, fileEntry, {
+      .upload(storagePath, uploadBody, {
         cacheControl: "3600",
         upsert: false,
+        contentType: finalMimeType,
       });
 
     if (uploadError) {
@@ -376,9 +420,9 @@ export async function POST(request: Request) {
     const payload = {
       logo_storage_bucket: STORAGE_BUCKET,
       logo_storage_path: storagePath,
-      logo_original_filename: fileEntry.name,
-      logo_mime_type: mimeType,
-      logo_size_bytes: fileEntry.size,
+      logo_original_filename: finalFileName,
+      logo_mime_type: finalMimeType,
+      logo_size_bytes: finalSizeBytes,
       logo_uploaded_at: timestamp,
       updated_at: timestamp,
     };

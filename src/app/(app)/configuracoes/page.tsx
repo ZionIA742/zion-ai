@@ -3591,14 +3591,14 @@ export default function ConfiguracoesPage() {
     const allowedMimeTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
     if (!allowedMimeTypes.has(file.type)) {
       setSelectedStoreLogoFile(null);
-      setErrorText("Envie uma imagem PNG, JPEG ou WEBP para a logo da loja.");
+      setErrorText("Envie uma imagem PNG, JPEG ou WebP para a logo da loja.");
       setSuccessText(null);
       return;
     }
 
     if (file.size > 2 * 1024 * 1024) {
       setSelectedStoreLogoFile(null);
-      setErrorText("A logo deve ter no mÃ¡ximo 2 MB.");
+      setErrorText("A logo deve ter no maximo 2 MB.");
       setSuccessText(null);
       return;
     }
@@ -6643,7 +6643,7 @@ export default function ConfiguracoesPage() {
                 </div>
 
                 <div className="mt-3 text-xs text-gray-500">
-                  Formatos aceitos: PNG, JPEG e WEBP. Tamanho maximo sugerido: 2 MB.
+                  Formatos aceitos: PNG, JPEG e WebP. Tamanho maximo sugerido: 2 MB.
                 </div>
               </div>
 
