@@ -180,6 +180,57 @@ type SalesQuoteListResponse = {
   message?: string;
 };
 
+type SalesQuoteDetailResponse = {
+  ok: boolean;
+  quote?: {
+    id: string;
+    quote_number: string | null;
+    status: string | null;
+    title: string | null;
+    customer_name: string | null;
+    customer_phone: string | null;
+    customer_notes: string | null;
+    internal_notes: string | null;
+    payment_terms: string | null;
+    delivery_terms: string | null;
+    warranty_terms: string | null;
+    valid_until: string | null;
+    subtotal_cents: number | null;
+    discount_cents: number | null;
+    total_cents: number | null;
+    current_version_id: string | null;
+    lead_id: string | null;
+    conversation_id: string | null;
+    store_id: string;
+    organization_id: string;
+  };
+  items?: Array<{
+    id: string;
+    item_type: string | null;
+    name: string | null;
+    description: string | null;
+    quantity: number | null;
+    unit_price_cents: number | null;
+    discount_cents: number | null;
+    total_cents: number | null;
+    catalog_item_id: string | null;
+    pool_model_id: string | null;
+  }>;
+  current_version?: {
+    id: string;
+    version_number: number | null;
+    status: string | null;
+    original_filename: string | null;
+    mime_type: string | null;
+    size_bytes: number | null;
+    storage_bucket: string | null;
+    storage_path: string | null;
+    created_at: string | null;
+  } | null;
+  error?: string;
+  message?: string;
+};
+
 type SignedQuotePdfUrlResponse = {
   ok: boolean;
   signedUrl?: string;
@@ -404,6 +455,25 @@ function formatCurrencyBRL(value: number) {
     style: "currency",
     currency: "BRL",
   }).format(value);
+}
+
+function formatMoneyInputFromCents(cents: number | null | undefined) {
+  const safeValue = typeof cents === "number" && Number.isFinite(cents) ? cents / 100 : 0;
+  return safeValue.toFixed(2).replace(".", ",");
+}
+
+function convertQuoteValidUntilToDays(value: string | null | undefined) {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    return normalized;
+  }
+
+  return "";
 }
 
 function buildGoogleMapsRouteUrl(addressText: string | null | undefined) {
@@ -843,6 +913,10 @@ export default function LeadPage() {
   const [isGeneratingManualQuote, setIsGeneratingManualQuote] = useState(false);
   const [quoteFormError, setQuoteFormError] = useState<string | null>(null);
   const [quoteFormSuccess, setQuoteFormSuccess] = useState<string | null>(null);
+  const [quoteFormMode, setQuoteFormMode] = useState<"create" | "edit">("create");
+  const [editingQuoteId, setEditingQuoteId] = useState<string | null>(null);
+  const [editingQuoteNumber, setEditingQuoteNumber] = useState<string | null>(null);
+  const [loadingQuoteForEdit, setLoadingQuoteForEdit] = useState<string | null>(null);
   const [generatedQuotes, setGeneratedQuotes] = useState<GeneratedQuoteSummary[]>([]);
   const [generatedQuotesLoading, setGeneratedQuotesLoading] = useState(false);
   const [generatedQuotesError, setGeneratedQuotesError] = useState<string | null>(null);
@@ -933,6 +1007,7 @@ export default function LeadPage() {
   });
   const canGenerateQuotePdf =
     quoteHasTitle && quoteHasAtLeastOneItem && quoteItemsAreValid;
+  const isEditingQuote = quoteFormMode === "edit";
   const quoteValidationMessage = canGenerateQuotePdf
     ? null
     : "Preencha o t\u00edtulo, o nome do item, a quantidade e o pre\u00e7o para gerar o PDF.";
@@ -1026,6 +1101,10 @@ export default function LeadPage() {
     setQuoteItems([createEmptyQuoteFormItem()]);
     setQuoteFormError(null);
     setQuoteFormSuccess(null);
+    setQuoteFormMode("create");
+    setEditingQuoteId(null);
+    setEditingQuoteNumber(null);
+    setLoadingQuoteForEdit(null);
   }
 
   function clearQuoteDraft() {
@@ -1046,13 +1125,19 @@ export default function LeadPage() {
   }
 
   function closeQuoteModalAndReset() {
-    clearQuoteDraft();
+    if (quoteFormMode === "create") {
+      clearQuoteDraft();
+    }
     resetQuoteForm();
     setIsQuoteModalOpen(false);
   }
 
   function persistQuoteDraftToStorage(payload: QuoteDraftPayload = quoteDraftPayload) {
     if (typeof window === "undefined") {
+      return;
+    }
+
+    if (quoteFormMode === "edit") {
       return;
     }
 
@@ -1076,6 +1161,13 @@ export default function LeadPage() {
 
   function addQuoteItem() {
     setQuoteItems((current) => [...current, createEmptyQuoteFormItem()]);
+  }
+
+  function openCreateQuoteModal() {
+    resetQuoteForm();
+    setQuoteFormError(null);
+    setQuoteFormSuccess(null);
+    setIsQuoteModalOpen(true);
   }
 
   function removeQuoteItem(itemId: string) {
@@ -1107,6 +1199,12 @@ export default function LeadPage() {
 
   async function generateManualQuotePdf() {
     if (isGeneratingManualQuote) {
+      return;
+    }
+
+    if (quoteFormMode === "edit") {
+      setQuoteFormError("Gerar nova versao em breve.");
+      setQuoteFormSuccess(null);
       return;
     }
 
@@ -1346,6 +1444,89 @@ export default function LeadPage() {
       );
     } finally {
       setOpeningGeneratedQuoteId(null);
+    }
+  }
+
+  async function loadQuoteForEdit(
+    quoteId: string,
+    quoteNumber: string | null | undefined,
+    currentStatus: string | null | undefined
+  ) {
+    const safeQuoteId = String(quoteId || "").trim();
+    const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
+
+    if (!safeQuoteId) {
+      return;
+    }
+
+    if (
+      normalizedStatus === "sent" ||
+      normalizedStatus === "cancelled" ||
+      normalizedStatus === "expired" ||
+      normalizedStatus === "failed"
+    ) {
+      setGeneratedQuotesError("Este orcamento nao pode ser aberto para edicao.");
+      return;
+    }
+
+    setLoadingQuoteForEdit(safeQuoteId);
+    setGeneratedQuotesError(null);
+    setQuoteActionError(null);
+    setQuoteActionSuccess(null);
+
+    try {
+      const response = await fetch(`/api/sales-quotes/${encodeURIComponent(safeQuoteId)}`, {
+        method: "GET",
+        cache: "no-store",
+      });
+      const result = (await response.json().catch(() => null)) as SalesQuoteDetailResponse | null;
+
+      if (!response.ok || !result?.ok || !result.quote) {
+        throw new Error(result?.message || "Nao foi possivel carregar o orcamento para edicao.");
+      }
+
+      const formItems = Array.isArray(result.items)
+        ? result.items.map((item) => {
+            const normalizedItemType = String(item.item_type || "").trim().toLowerCase();
+            const safeItemType: QuoteFormItem["itemType"] =
+              normalizedItemType === "service"
+                ? "service"
+                : normalizedItemType === "custom"
+                  ? "custom"
+                  : "custom";
+
+            return {
+              id: item.id || createQuoteFormItemId(),
+              itemType: safeItemType,
+              name: item.name || "",
+              description: item.description || "",
+              quantity:
+                typeof item.quantity === "number" && Number.isFinite(item.quantity)
+                  ? String(item.quantity)
+                  : "1",
+              unitPriceReais: formatMoneyInputFromCents(item.unit_price_cents),
+              discountReais: formatMoneyInputFromCents(item.discount_cents),
+            } satisfies QuoteFormItem;
+          })
+        : [];
+
+      setQuoteFormMode("edit");
+      setEditingQuoteId(result.quote.id);
+      setEditingQuoteNumber(result.quote.quote_number || quoteNumber || null);
+      setQuoteTitle(result.quote.title || "");
+      setQuoteCustomerNotes(result.quote.customer_notes || "");
+      setQuoteWarrantyTerms(result.quote.warranty_terms || "");
+      setQuoteValidityDays(convertQuoteValidUntilToDays(result.quote.valid_until));
+      setQuoteItems(formItems.length > 0 ? formItems : [createEmptyQuoteFormItem()]);
+      setQuoteFormError(null);
+      setQuoteFormSuccess(null);
+      setIsQuoteModalOpen(true);
+    } catch (error: any) {
+      setGeneratedQuotesError(
+        error?.message || "Nao foi possivel carregar o orcamento para edicao."
+      );
+    } finally {
+      setLoadingQuoteForEdit(null);
     }
   }
 
@@ -2415,6 +2596,10 @@ export default function LeadPage() {
       return;
     }
 
+    if (quoteFormMode !== "create") {
+      return;
+    }
+
     if (!quoteDraftStorageKey || hasRestoredQuoteDraftRef.current || !lead?.id) {
       return;
     }
@@ -2487,6 +2672,7 @@ export default function LeadPage() {
     lead?.id,
     quoteDraftFallbackStorageKey,
     quoteDraftPrimaryStorageKey,
+    quoteFormMode,
     quoteDraftStorageKey,
   ]);
 
@@ -2499,6 +2685,10 @@ export default function LeadPage() {
       return;
     }
 
+    if (quoteFormMode !== "create") {
+      return;
+    }
+
     if (!hasRestoredQuoteDraftRef.current) {
       return;
     }
@@ -2506,12 +2696,17 @@ export default function LeadPage() {
     persistQuoteDraftToStorage();
   }, [
     quoteDraftStorageKey,
+    quoteFormMode,
     persistQuoteDraftToStorage,
     quoteDraftPayload,
   ]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !quoteDraftStorageKey) {
+      return;
+    }
+
+    if (quoteFormMode !== "create") {
       return;
     }
 
@@ -2536,7 +2731,7 @@ export default function LeadPage() {
       window.removeEventListener("pagehide", flushQuoteDraft);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [persistQuoteDraftToStorage, quoteDraftStorageKey]);
+  }, [persistQuoteDraftToStorage, quoteDraftStorageKey, quoteFormMode]);
 
   if (loading) {
     return <div className="p-6">Carregando lead e mensagens...</div>;
@@ -2666,11 +2861,7 @@ export default function LeadPage() {
 
                   <button
                     type="button"
-                    onClick={() => {
-                      setQuoteFormError(null);
-                      setQuoteFormSuccess(null);
-                      setIsQuoteModalOpen(true);
-                    }}
+                    onClick={openCreateQuoteModal}
                     disabled={working || refreshing || simulatingCustomer}
                     className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -2961,9 +3152,15 @@ export default function LeadPage() {
                                 Boolean(quote.current_version?.storage_path);
                               const isOpening = openingGeneratedQuoteId === quote.id;
                               const isActionLoading = quoteActionLoadingId === quote.id;
+                              const isLoadingForEdit = loadingQuoteForEdit === quote.id;
                               const canApprove = normalizedStatus === "pending_review";
                               const canSend = normalizedStatus === "approved";
                               const wasSent = normalizedStatus === "sent";
+                              const canEditQuote =
+                                normalizedStatus === "pending_review" ||
+                                normalizedStatus === "changes_requested" ||
+                                normalizedStatus === "draft" ||
+                                normalizedStatus === "approved";
 
                               return (
                                 <div
@@ -3012,6 +3209,25 @@ export default function LeadPage() {
                                     </div>
 
                                     <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                                      {canEditQuote ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void loadQuoteForEdit(
+                                              quote.id,
+                                              quote.quote_number,
+                                              quote.status
+                                            )
+                                          }
+                                          disabled={isLoadingForEdit || isActionLoading}
+                                          className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                                        >
+                                          {isLoadingForEdit
+                                            ? "Carregando..."
+                                            : "Editar orcamento"}
+                                        </button>
+                                      ) : null}
+
                                       {canApprove ? (
                                         <button
                                           type="button"
@@ -3144,9 +3360,11 @@ export default function LeadPage() {
                 <div className="flex items-start justify-between gap-4 border-b border-gray-100 bg-gray-950 px-5 py-4 text-white">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-white/50">
-                      Orçamento manual
+                      {isEditingQuote ? "Edicao de orcamento" : "Orçamento manual"}
                     </div>
-                    <h2 className="mt-1 text-lg font-bold">Novo orçamento</h2>
+                    <h2 className="mt-1 text-lg font-bold">
+                      {isEditingQuote ? "Editar orçamento" : "Novo orçamento"}
+                    </h2>
                   </div>
 
                   <button
@@ -3163,10 +3381,16 @@ export default function LeadPage() {
                   <div className="grid gap-4">
                     <div>
                       <p className="text-sm leading-6 text-gray-700">
-                        Crie um orçamento para este cliente.
+                        {isEditingQuote
+                          ? "Revise os dados atuais do orcamento antes de gerar uma nova versao."
+                          : "Crie um orçamento para este cliente."}
                       </p>
                       <p className="mt-1 text-xs text-gray-500">
-                        Rascunho salvo temporariamente neste navegador.
+                        {isEditingQuote
+                          ? editingQuoteNumber
+                            ? `Edicao carregada de ${editingQuoteNumber}.`
+                            : "Edicao carregada do orcamento atual."
+                          : "Rascunho salvo temporariamente neste navegador."}
                       </p>
                     </div>
 
@@ -3455,10 +3679,16 @@ export default function LeadPage() {
                         <button
                           type="button"
                           onClick={() => void generateManualQuotePdf()}
-                          disabled={!canGenerateQuotePdf || isGeneratingManualQuote}
+                          disabled={
+                            isEditingQuote || !canGenerateQuotePdf || isGeneratingManualQuote
+                          }
                           className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-white/15 disabled:cursor-not-allowed disabled:text-gray-400"
                         >
-                          {isGeneratingManualQuote ? "Gerando..." : "Gerar PDF"}
+                          {isEditingQuote
+                            ? "Gerar nova versao em breve"
+                            : isGeneratingManualQuote
+                              ? "Gerando..."
+                              : "Gerar PDF"}
                         </button>
                       </div>
                     </div>
