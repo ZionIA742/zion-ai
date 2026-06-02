@@ -252,6 +252,51 @@ type SalesQuoteActionResponse = {
   changeRequestId?: string;
 };
 
+type GeneratedContractSummary = {
+  id: string;
+  contract_number: string | null;
+  title: string | null;
+  status: string | null;
+  total_cents: number | null;
+  current_version_id: string | null;
+  quote_id: string | null;
+  quote_version_id: string | null;
+  sent_at: string | null;
+  customer_signed_at: string | null;
+  store_signed_at: string | null;
+  completed_at: string | null;
+  created_at: string | null;
+};
+
+type SalesContractListResponse = {
+  ok: boolean;
+  contracts?: GeneratedContractSummary[];
+  error?: string;
+  message?: string;
+};
+
+type SalesContractActionResponse = {
+  ok: boolean;
+  contract?: GeneratedContractSummary | Record<string, unknown>;
+  current_version?: {
+    id: string;
+    status: string | null;
+  } | null;
+  messageId?: string;
+  error?: string;
+  message?: string;
+};
+
+type SignedContractPdfUrlResponse = {
+  ok: boolean;
+  signedUrl?: string;
+  originalFilename?: string | null;
+  mimeType?: string | null;
+  expiresIn?: number;
+  error?: string;
+  message?: string;
+};
+
 type SignedMediaState = {
   signedUrl: string;
   mimeType: string | null;
@@ -378,6 +423,37 @@ function formatQuoteStatusLabel(value: string | null | undefined) {
       return "Cancelado";
     case "expired":
       return "Expirado";
+    default:
+      return "Sem status";
+  }
+}
+
+function formatContractStatusLabel(value: string | null | undefined) {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  switch (normalized) {
+    case "pending_review":
+      return "Aguardando revisao";
+    case "approved":
+      return "Aprovado";
+    case "sent_to_customer":
+      return "Enviado ao cliente";
+    case "customer_signed":
+      return "Aceito pelo cliente";
+    case "completed":
+      return "Concluido";
+    case "cancelled":
+      return "Cancelado";
+    case "expired":
+      return "Expirado";
+    case "failed":
+      return "Falhou";
+    case "draft":
+      return "Rascunho";
+    case "sent":
+      return "Enviado";
+    case "store_signed":
+      return "Confirmado pela loja";
     default:
       return "Sem status";
   }
@@ -930,6 +1006,17 @@ export default function LeadPage() {
   const [quoteActionError, setQuoteActionError] = useState<string | null>(null);
   const [quoteActionSuccess, setQuoteActionSuccess] = useState<string | null>(null);
   const [hasLoadedGeneratedQuotes, setHasLoadedGeneratedQuotes] = useState(false);
+  const [generatedContracts, setGeneratedContracts] = useState<GeneratedContractSummary[]>([]);
+  const [generatedContractsLoading, setGeneratedContractsLoading] = useState(false);
+  const [generatedContractsError, setGeneratedContractsError] = useState<string | null>(null);
+  const [openingGeneratedContractId, setOpeningGeneratedContractId] = useState<string | null>(null);
+  const [contractActionLoadingId, setContractActionLoadingId] = useState<string | null>(null);
+  const [contractActionLoadingType, setContractActionLoadingType] = useState<
+    "create" | "generate_pdf" | "approve" | "send" | "customer_sign" | "store_sign" | null
+  >(null);
+  const [contractActionError, setContractActionError] = useState<string | null>(null);
+  const [contractActionSuccess, setContractActionSuccess] = useState<string | null>(null);
+  const [hasLoadedGeneratedContracts, setHasLoadedGeneratedContracts] = useState(false);
   const [imagePreviewErrors, setImagePreviewErrors] = useState<Record<string, boolean>>(
     {}
   );
@@ -948,6 +1035,16 @@ export default function LeadPage() {
   const hasConversation = Boolean(conversation);
   const isHumanActive = conversation?.is_human_active === true;
   const latestCommercialTask = getLatestCommercialTask(commercialTasks);
+  const contractsByQuoteId = generatedContracts.reduce<Record<string, GeneratedContractSummary>>(
+    (acc, contract) => {
+      const quoteId = String(contract.quote_id || "").trim();
+      if (quoteId && !acc[quoteId]) {
+        acc[quoteId] = contract;
+      }
+      return acc;
+    },
+    {}
+  );
   const canTakeOver =
     hasConversation && !isHumanActive && !working && !simulatingCustomer;
   const canReleaseToAI =
@@ -1536,6 +1633,44 @@ export default function LeadPage() {
     }
   }
 
+  async function fetchGeneratedContracts(options?: { silent?: boolean }) {
+    if (!leadId) {
+      return;
+    }
+
+    if (!options?.silent) {
+      setGeneratedContractsLoading(true);
+    }
+
+    setGeneratedContractsError(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-contracts?leadId=${encodeURIComponent(leadId)}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+      const result = (await response.json()) as SalesContractListResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel carregar os contratos.");
+      }
+
+      setGeneratedContracts(Array.isArray(result.contracts) ? result.contracts : []);
+      setHasLoadedGeneratedContracts(true);
+    } catch (error: any) {
+      setGeneratedContractsError(
+        error?.message || "Nao foi possivel carregar os contratos."
+      );
+    } finally {
+      if (!options?.silent) {
+        setGeneratedContractsLoading(false);
+      }
+    }
+  }
+
   async function openGeneratedQuotePdf(quoteId: string) {
     const safeQuoteId = String(quoteId || "").trim();
 
@@ -1567,6 +1702,322 @@ export default function LeadPage() {
       );
     } finally {
       setOpeningGeneratedQuoteId(null);
+    }
+  }
+
+  async function createContractFromQuote(quoteId: string) {
+    const safeQuoteId = String(quoteId || "").trim();
+
+    if (!safeQuoteId || contractsByQuoteId[safeQuoteId]) {
+      return;
+    }
+
+    setContractActionLoadingId(safeQuoteId);
+    setContractActionLoadingType("create");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+
+    try {
+      const response = await fetch("/api/sales-contracts/create-from-quote", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          quoteId: safeQuoteId,
+        }),
+      });
+      const result =
+        (await response.json().catch(() => null)) as SalesContractActionResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel criar o contrato.");
+      }
+
+      await fetchGeneratedContracts({ silent: true });
+      setContractActionSuccess("Contrato criado com sucesso.");
+    } catch (error: any) {
+      setContractActionError(
+        error?.message || "Nao foi possivel criar o contrato."
+      );
+      setContractActionSuccess(null);
+    } finally {
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
+    }
+  }
+
+  async function generateContractPdf(contractId: string) {
+    const safeContractId = String(contractId || "").trim();
+
+    if (!safeContractId) {
+      return;
+    }
+
+    setContractActionLoadingId(safeContractId);
+    setContractActionLoadingType("generate_pdf");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/generate-pdf`,
+        {
+          method: "POST",
+          cache: "no-store",
+        }
+      );
+      const result =
+        (await response.json().catch(() => null)) as SalesContractActionResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel gerar o PDF do contrato.");
+      }
+
+      await fetchGeneratedContracts({ silent: true });
+      setContractActionSuccess("PDF do contrato gerado com sucesso.");
+    } catch (error: any) {
+      setContractActionError(
+        error?.message || "Nao foi possivel gerar o PDF do contrato."
+      );
+      setContractActionSuccess(null);
+    } finally {
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
+    }
+  }
+
+  async function openGeneratedContractPdf(contractId: string) {
+    const safeContractId = String(contractId || "").trim();
+
+    if (!safeContractId) {
+      return;
+    }
+
+    setOpeningGeneratedContractId(safeContractId);
+    setGeneratedContractsError(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/signed-pdf-url`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+      const result = (await response.json()) as SignedContractPdfUrlResponse;
+
+      if (!response.ok || !result?.ok || !result.signedUrl) {
+        throw new Error(result?.message || "Nao foi possivel abrir o PDF deste contrato.");
+      }
+
+      window.open(result.signedUrl, "_blank", "noopener,noreferrer");
+    } catch (error: any) {
+      setGeneratedContractsError(
+        error?.message || "Nao foi possivel abrir o PDF deste contrato."
+      );
+    } finally {
+      setOpeningGeneratedContractId(null);
+    }
+  }
+
+  async function approveGeneratedContract(
+    contractId: string,
+    currentStatus: string | null | undefined
+  ) {
+    const safeContractId = String(contractId || "").trim();
+    const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
+
+    if (!safeContractId) {
+      return;
+    }
+
+    if (normalizedStatus !== "pending_review" && normalizedStatus !== "draft") {
+      setContractActionError("Este contrato precisa estar em revisao para ser aprovado.");
+      setContractActionSuccess(null);
+      return;
+    }
+
+    setContractActionLoadingId(safeContractId);
+    setContractActionLoadingType("approve");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/approve`,
+        {
+          method: "POST",
+          cache: "no-store",
+        }
+      );
+      const result = (await response.json()) as SalesContractActionResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel aprovar o contrato.");
+      }
+
+      await fetchGeneratedContracts({ silent: true });
+      setContractActionSuccess("Contrato aprovado com sucesso.");
+    } catch (error: any) {
+      setContractActionError(error?.message || "Nao foi possivel aprovar o contrato.");
+      setContractActionSuccess(null);
+    } finally {
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
+    }
+  }
+
+  async function sendGeneratedContractToCustomer(
+    contractId: string,
+    currentStatus: string | null | undefined
+  ) {
+    const safeContractId = String(contractId || "").trim();
+    const normalizedStatus = String(currentStatus || "").trim().toLowerCase();
+
+    if (!safeContractId) {
+      return;
+    }
+
+    if (normalizedStatus !== "approved") {
+      setContractActionError("Este contrato precisa ser aprovado antes de ser enviado.");
+      setContractActionSuccess(null);
+      return;
+    }
+
+    setContractActionLoadingId(safeContractId);
+    setContractActionLoadingType("send");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/send`,
+        {
+          method: "POST",
+          cache: "no-store",
+        }
+      );
+      const result = (await response.json()) as SalesContractActionResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel enviar o contrato ao cliente.");
+      }
+
+      await fetchGeneratedContracts({ silent: true });
+
+      if (leadId) {
+        await fetchLeadConversationAndMessages({ silent: true });
+      }
+
+      setContractActionSuccess("Contrato enviado ao cliente com sucesso.");
+    } catch (error: any) {
+      setContractActionError(
+        error?.message || "Nao foi possivel enviar o contrato ao cliente."
+      );
+      setContractActionSuccess(null);
+    } finally {
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
+    }
+  }
+
+  async function registerCustomerContractAcceptance(contractId: string) {
+    const safeContractId = String(contractId || "").trim();
+
+    if (!safeContractId || !lead) {
+      return;
+    }
+
+    setContractActionLoadingId(safeContractId);
+    setContractActionLoadingType("customer_sign");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/customer-sign`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            signerName: lead.name || "Cliente",
+            signerPhone: lead.phone || null,
+            acceptanceText:
+              "Cliente declarou que leu e aceitou os termos deste contrato.",
+          }),
+        }
+      );
+      const result = (await response.json()) as SalesContractActionResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(
+          result?.message || "Nao foi possivel registrar o aceite do cliente."
+        );
+      }
+
+      await fetchGeneratedContracts({ silent: true });
+      setContractActionSuccess(
+        "Aceite rastreavel do cliente registrado com sucesso."
+      );
+    } catch (error: any) {
+      setContractActionError(
+        error?.message || "Nao foi possivel registrar o aceite do cliente."
+      );
+      setContractActionSuccess(null);
+    } finally {
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
+    }
+  }
+
+  async function confirmStoreContractSignature(contractId: string) {
+    const safeContractId = String(contractId || "").trim();
+
+    if (!safeContractId) {
+      return;
+    }
+
+    setContractActionLoadingId(safeContractId);
+    setContractActionLoadingType("store_sign");
+    setContractActionError(null);
+    setContractActionSuccess(null);
+
+    try {
+      const response = await fetch(
+        `/api/sales-contracts/${encodeURIComponent(safeContractId)}/store-sign`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            signerName: "Responsavel da loja",
+            acceptanceText:
+              "Confirmo a assinatura e validacao deste contrato pela loja.",
+          }),
+        }
+      );
+      const result = (await response.json()) as SalesContractActionResponse;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(
+          result?.message || "Nao foi possivel confirmar o contrato pela loja."
+        );
+      }
+
+      await fetchGeneratedContracts({ silent: true });
+      setContractActionSuccess("Contrato confirmado pela loja com sucesso.");
+    } catch (error: any) {
+      setContractActionError(
+        error?.message || "Nao foi possivel confirmar o contrato pela loja."
+      );
+      setContractActionSuccess(null);
+    } finally {
+      setContractActionLoadingId(null);
+      setContractActionLoadingType(null);
     }
   }
 
@@ -2696,6 +3147,15 @@ export default function LeadPage() {
     setQuoteActionError(null);
     setQuoteActionSuccess(null);
     setHasLoadedGeneratedQuotes(false);
+    setGeneratedContracts([]);
+    setGeneratedContractsError(null);
+    setGeneratedContractsLoading(false);
+    setOpeningGeneratedContractId(null);
+    setContractActionLoadingId(null);
+    setContractActionLoadingType(null);
+    setContractActionError(null);
+    setContractActionSuccess(null);
+    setHasLoadedGeneratedContracts(false);
   }, [leadId]);
 
   useEffect(() => {
@@ -2704,6 +3164,7 @@ export default function LeadPage() {
     }
 
     void fetchGeneratedQuotes();
+    void fetchGeneratedContracts();
   }, [activeDetailsTab, leadId]);
 
   useEffect(() => {
@@ -2910,8 +3371,11 @@ export default function LeadPage() {
     {
       id: "pdfs",
       label: "PDFs gerados",
-      value: `${generatedQuotes.length}`,
-      help: generatedQuotes.length === 1 ? "arquivo listado" : "arquivos listados",
+      value: `${generatedQuotes.length + generatedContracts.length}`,
+      help:
+        generatedQuotes.length + generatedContracts.length === 1
+          ? "arquivo listado"
+          : "arquivos listados",
     },
   ];
 
@@ -3271,15 +3735,21 @@ export default function LeadPage() {
                               const normalizedStatus = String(quote.status || "")
                                 .trim()
                                 .toLowerCase();
+                              const linkedContract = contractsByQuoteId[quote.id];
                               const hasPdf =
                                 Boolean(quote.current_version?.storage_bucket) &&
                                 Boolean(quote.current_version?.storage_path);
                               const isOpening = openingGeneratedQuoteId === quote.id;
                               const isActionLoading = quoteActionLoadingId === quote.id;
+                              const isContractActionLoading = contractActionLoadingId === quote.id;
                               const isLoadingForEdit = loadingQuoteForEdit === quote.id;
                               const canApprove = normalizedStatus === "pending_review";
                               const canSend = normalizedStatus === "approved";
                               const wasSent = normalizedStatus === "sent";
+                              const canCreateContract =
+                                hasLoadedGeneratedContracts &&
+                                (normalizedStatus === "approved" || normalizedStatus === "sent") &&
+                                !linkedContract;
                               const canEditQuote =
                                 normalizedStatus === "pending_review" ||
                                 normalizedStatus === "changes_requested" ||
@@ -3388,6 +3858,26 @@ export default function LeadPage() {
                                         </span>
                                       ) : null}
 
+                                      {linkedContract ? (
+                                        <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-800 ring-1 ring-sky-600/20">
+                                          Contrato vinculado
+                                        </span>
+                                      ) : null}
+
+                                      {canCreateContract ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => void createContractFromQuote(quote.id)}
+                                          disabled={isContractActionLoading}
+                                          className="rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-200 disabled:text-sky-700"
+                                        >
+                                          {isContractActionLoading &&
+                                          contractActionLoadingType === "create"
+                                            ? "Criando..."
+                                            : "Gerar contrato"}
+                                        </button>
+                                      ) : null}
+
                                       <button
                                         type="button"
                                         onClick={() => void openGeneratedQuotePdf(quote.id)}
@@ -3409,9 +3899,206 @@ export default function LeadPage() {
                         <div className="text-sm font-semibold text-gray-900">
                           Contratos
                         </div>
-                        <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                          Nenhum contrato gerado ainda.
+                        <div className="mt-1 text-xs text-gray-500">
+                          Contratos gerados para este lead e seus proximos passos operacionais.
                         </div>
+
+                        {generatedContractsError ? (
+                          <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+                            {generatedContractsError}
+                          </div>
+                        ) : null}
+
+                        {contractActionError ? (
+                          <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+                            {contractActionError}
+                          </div>
+                        ) : null}
+
+                        {contractActionSuccess ? (
+                          <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+                            {contractActionSuccess}
+                          </div>
+                        ) : null}
+
+                        <div className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-600/20">
+                          O aceite do cliente nesta tela e um registro rastreavel operacional, nao uma assinatura digital avancada.
+                        </div>
+
+                        {generatedContractsLoading ? (
+                          <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                            Carregando contratos...
+                          </div>
+                        ) : null}
+
+                        {!generatedContractsLoading && generatedContracts.length === 0 ? (
+                          <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                            Nenhum contrato gerado ainda.
+                          </div>
+                        ) : null}
+
+                        {!generatedContractsLoading && generatedContracts.length > 0 ? (
+                          <div className="mt-3 space-y-3">
+                            {generatedContracts.map((contract) => {
+                              const normalizedStatus = String(contract.status || "")
+                                .trim()
+                                .toLowerCase();
+                              const hasCurrentVersion = Boolean(contract.current_version_id);
+                              const isOpening = openingGeneratedContractId === contract.id;
+                              const isActionLoading = contractActionLoadingId === contract.id;
+                              const canGeneratePdf = !hasCurrentVersion;
+                              const canApprove =
+                                (normalizedStatus === "pending_review" ||
+                                  normalizedStatus === "draft") &&
+                                hasCurrentVersion;
+                              const canSend = normalizedStatus === "approved";
+                              const canRegisterCustomerAcceptance =
+                                normalizedStatus === "sent_to_customer";
+                              const canConfirmStore = normalizedStatus === "customer_signed";
+                              const isCompleted = normalizedStatus === "completed";
+
+                              return (
+                                <div
+                                  key={contract.id}
+                                  className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                                >
+                                  <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
+                                          {contract.contract_number || "Sem numero"}
+                                        </span>
+                                        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                                          {formatContractStatusLabel(contract.status)}
+                                        </span>
+                                      </div>
+
+                                      <div className="mt-3 text-sm font-semibold text-gray-900">
+                                        {contract.title || "Contrato sem titulo"}
+                                      </div>
+                                      <div className="mt-2 grid gap-3 text-sm text-gray-700 md:grid-cols-2">
+                                        <InfoCard
+                                          label="Valor total"
+                                          value={formatCurrencyBRL((Number(contract.total_cents || 0) || 0) / 100)}
+                                        />
+                                        <InfoCard
+                                          label="Criado em"
+                                          value={formatDateTime(contract.created_at)}
+                                        />
+                                        <InfoCard
+                                          label="Enviado em"
+                                          value={formatDateTime(contract.sent_at)}
+                                        />
+                                        <InfoCard
+                                          label="Aceite do cliente"
+                                          value={formatDateTime(contract.customer_signed_at)}
+                                        />
+                                        <InfoCard
+                                          label="Conclusao"
+                                          value={formatDateTime(contract.completed_at)}
+                                        />
+                                        <InfoCard
+                                          label="PDF atual"
+                                          value={hasCurrentVersion ? "Versao disponivel" : "PDF ainda nao gerado"}
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                                      {canGeneratePdf ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => void generateContractPdf(contract.id)}
+                                          disabled={isActionLoading}
+                                          className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                                        >
+                                          {isActionLoading &&
+                                          contractActionLoadingType === "generate_pdf"
+                                            ? "Gerando..."
+                                            : "Gerar PDF"}
+                                        </button>
+                                      ) : null}
+
+                                      {canApprove ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void approveGeneratedContract(contract.id, contract.status)
+                                          }
+                                          disabled={isActionLoading}
+                                          className="rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700"
+                                        >
+                                          {isActionLoading && contractActionLoadingType === "approve"
+                                            ? "Aprovando..."
+                                            : "Aprovar"}
+                                        </button>
+                                      ) : null}
+
+                                      {canSend ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void sendGeneratedContractToCustomer(contract.id, contract.status)
+                                          }
+                                          disabled={isActionLoading}
+                                          className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
+                                        >
+                                          {isActionLoading && contractActionLoadingType === "send"
+                                            ? "Enviando..."
+                                            : "Enviar ao cliente"}
+                                        </button>
+                                      ) : null}
+
+                                      {canRegisterCustomerAcceptance ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void registerCustomerContractAcceptance(contract.id)
+                                          }
+                                          disabled={isActionLoading}
+                                          className="rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-amber-200 disabled:text-amber-700"
+                                        >
+                                          {isActionLoading &&
+                                          contractActionLoadingType === "customer_sign"
+                                            ? "Registrando..."
+                                            : "Registrar aceite do cliente"}
+                                        </button>
+                                      ) : null}
+
+                                      {canConfirmStore ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => void confirmStoreContractSignature(contract.id)}
+                                          disabled={isActionLoading}
+                                          className="rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-200 disabled:text-sky-700"
+                                        >
+                                          {isActionLoading && contractActionLoadingType === "store_sign"
+                                            ? "Confirmando..."
+                                            : "Confirmar pela loja"}
+                                        </button>
+                                      ) : null}
+
+                                      {isCompleted ? (
+                                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-600/20">
+                                          Concluido
+                                        </span>
+                                      ) : null}
+
+                                      <button
+                                        type="button"
+                                        onClick={() => void openGeneratedContractPdf(contract.id)}
+                                        disabled={!hasCurrentVersion || isOpening}
+                                        className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
+                                      >
+                                        {isOpening ? "Abrindo..." : "Abrir PDF"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   ) : null}
