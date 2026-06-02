@@ -60,6 +60,14 @@ function readMetadataValue(metadata: QuoteMetadata, key: string) {
   return metadata && typeof metadata === "object" ? metadata[key] : null;
 }
 
+function readOfficialOrMetadataValue(
+  quote: Record<string, unknown>,
+  metadata: QuoteMetadata,
+  key: "payment_terms" | "delivery_terms" | "warranty_terms" | "valid_until"
+) {
+  return normalizeOptionalText(quote[key]) || normalizeOptionalText(readMetadataValue(metadata, key));
+}
+
 export async function GET(
   _request: Request,
   context: { params: Promise<{ quoteId: string }> }
@@ -139,10 +147,10 @@ export async function GET(
         customer_phone: scope.quote.customer_phone || null,
         customer_notes: scope.quote.customer_notes || null,
         internal_notes: scope.quote.internal_notes || null,
-        payment_terms: normalizeOptionalText(readMetadataValue(quoteMetadata, "payment_terms")),
-        delivery_terms: normalizeOptionalText(readMetadataValue(quoteMetadata, "delivery_terms")),
-        warranty_terms: normalizeOptionalText(readMetadataValue(quoteMetadata, "warranty_terms")),
-        valid_until: normalizeOptionalText(readMetadataValue(quoteMetadata, "valid_until")),
+        payment_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "payment_terms"),
+        delivery_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "delivery_terms"),
+        warranty_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "warranty_terms"),
+        valid_until: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "valid_until"),
         subtotal_cents:
           typeof scope.quote.subtotal_cents === "number" ? scope.quote.subtotal_cents : null,
         discount_cents:

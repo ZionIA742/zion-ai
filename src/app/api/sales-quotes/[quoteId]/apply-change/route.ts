@@ -158,6 +158,19 @@ function getQuoteMetadata(quote: SalesQuoteRow) {
     : {};
 }
 
+function readOfficialOrMetadataText(
+  quote: SalesQuoteRow,
+  metadata: Record<string, unknown>,
+  key: "payment_terms" | "delivery_terms" | "warranty_terms" | "valid_until"
+) {
+  const officialValue = normalizeOptionalText(quote[key]);
+  if (officialValue) {
+    return officialValue;
+  }
+
+  return normalizeOptionalText(metadata[key]);
+}
+
 function summarizeItemsForAudit(items: Array<{
   item_type?: string | null;
   name?: string | null;
@@ -314,6 +327,26 @@ function buildUpdatedQuote(args: {
   let nextSubtotalCents = subtotalCents;
   let nextCustomerNotes = args.quote.customer_notes ?? null;
   let nextInternalNotes = args.quote.internal_notes ?? null;
+  let nextPaymentTerms = readOfficialOrMetadataText(
+    args.quote,
+    currentMetadata,
+    "payment_terms"
+  );
+  let nextDeliveryTerms = readOfficialOrMetadataText(
+    args.quote,
+    currentMetadata,
+    "delivery_terms"
+  );
+  let nextWarrantyTerms = readOfficialOrMetadataText(
+    args.quote,
+    currentMetadata,
+    "warranty_terms"
+  );
+  let nextValidUntil = readOfficialOrMetadataText(
+    args.quote,
+    currentMetadata,
+    "valid_until"
+  );
   let nextItems: NormalizedApplyChangeItem[] = args.currentItems.map((item, index) => ({
     id: item.id,
     itemType: normalizeApplyChangeItemType(item.item_type || "custom", index),
@@ -442,7 +475,7 @@ function buildUpdatedQuote(args: {
     }
 
     const normalizedValue = normalizeOptionalText(args.body[key]);
-    const currentValue = normalizeOptionalText(currentMetadata[key]);
+    const currentValue = readOfficialOrMetadataText(args.quote, currentMetadata, key);
 
     if (normalizedValue !== currentValue) {
       appliedChanges[key] = {
@@ -451,14 +484,21 @@ function buildUpdatedQuote(args: {
       };
       nextMetadata[key] = normalizedValue;
       metadataChanged = true;
+
+      if (key === "payment_terms") {
+        nextPaymentTerms = normalizedValue;
+      } else if (key === "delivery_terms") {
+        nextDeliveryTerms = normalizedValue;
+      } else {
+        nextWarrantyTerms = normalizedValue;
+      }
     }
   }
 
   if (hasOwn(args.body, "validity_days")) {
     const normalizedValidityDays = normalizeOptionalText(args.body.validity_days);
     const currentValidityDays =
-      normalizeOptionalText(currentMetadata.validity_days) ||
-      normalizeOptionalText(currentMetadata.valid_until);
+      normalizeOptionalText(currentMetadata.validity_days) || nextValidUntil;
 
     if (normalizedValidityDays !== currentValidityDays) {
       appliedChanges.validity_days = {
@@ -468,6 +508,7 @@ function buildUpdatedQuote(args: {
       nextMetadata.validity_days = normalizedValidityDays;
       nextMetadata.valid_until = normalizedValidityDays;
       metadataChanged = true;
+      nextValidUntil = normalizedValidityDays;
     }
   }
 
@@ -490,6 +531,10 @@ function buildUpdatedQuote(args: {
     total_cents: nextTotalCents,
     customer_notes: nextCustomerNotes,
     internal_notes: nextInternalNotes,
+    payment_terms: nextPaymentTerms,
+    delivery_terms: nextDeliveryTerms,
+    warranty_terms: nextWarrantyTerms,
+    valid_until: nextValidUntil,
     metadata: metadataChanged ? nextMetadata : args.quote.metadata,
   };
 
@@ -791,6 +836,10 @@ export async function POST(
       total_cents: nextTotalCents,
       customer_notes: updatedQuote.customer_notes,
       internal_notes: updatedQuote.internal_notes,
+      payment_terms: updatedQuote.payment_terms ?? null,
+      delivery_terms: updatedQuote.delivery_terms ?? null,
+      warranty_terms: updatedQuote.warranty_terms ?? null,
+      valid_until: updatedQuote.valid_until ?? null,
     };
 
     if (metadataChanged) {
@@ -888,6 +937,10 @@ export async function POST(
             total_cents: revertContext.originalQuote.total_cents,
             customer_notes: revertContext.originalQuote.customer_notes,
             internal_notes: revertContext.originalQuote.internal_notes,
+            payment_terms: revertContext.originalQuote.payment_terms ?? null,
+            delivery_terms: revertContext.originalQuote.delivery_terms ?? null,
+            warranty_terms: revertContext.originalQuote.warranty_terms ?? null,
+            valid_until: revertContext.originalQuote.valid_until ?? null,
             metadata: revertContext.originalQuote.metadata,
           })
           .eq("id", revertContext.originalQuote.id);

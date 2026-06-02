@@ -65,6 +65,10 @@ export type SalesQuoteRow = {
   customer_phone?: string | null;
   customer_notes: string | null;
   internal_notes: string | null;
+  payment_terms?: string | null;
+  delivery_terms?: string | null;
+  warranty_terms?: string | null;
+  valid_until?: string | null;
   subtotal_cents: number | null;
   discount_cents: number | null;
   total_cents: number | null;

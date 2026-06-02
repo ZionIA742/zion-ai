@@ -25,6 +25,19 @@ import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function normalizeOptionalText(value: unknown) {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
+function readQuoteTextField(
+  quote: Record<string, unknown>,
+  metadata: Record<string, unknown> | null,
+  key: "payment_terms" | "delivery_terms" | "warranty_terms" | "valid_until"
+) {
+  return normalizeOptionalText(quote[key]) || normalizeOptionalText(metadata?.[key]);
+}
+
 function buildErrorResponse(error: unknown) {
   if (error instanceof QuoteAccessError) {
     return NextResponse.json(
@@ -150,7 +163,7 @@ export async function POST(
       customerName: scope.lead?.name || null,
       customerPhone: scope.lead?.phone || null,
       createdAt: scope.quote.created_at,
-      validUntil: null,
+      validUntil: readQuoteTextField(scope.quote as Record<string, unknown>, quoteMetadata, "valid_until"),
       items: items.map((item) => ({
         name: item.name,
         description: item.description,
@@ -163,9 +176,9 @@ export async function POST(
       discountCents: Number(scope.quote.discount_cents || 0),
       totalCents: Number(scope.quote.total_cents || 0),
       customerNotes: scope.quote.customer_notes,
-      paymentTerms: String(quoteMetadata?.payment_terms || "").trim() || null,
-      deliveryTerms: String(quoteMetadata?.delivery_terms || "").trim() || null,
-      warrantyTerms: String(quoteMetadata?.warranty_terms || "").trim() || null,
+      paymentTerms: readQuoteTextField(scope.quote as Record<string, unknown>, quoteMetadata, "payment_terms"),
+      deliveryTerms: readQuoteTextField(scope.quote as Record<string, unknown>, quoteMetadata, "delivery_terms"),
+      warrantyTerms: readQuoteTextField(scope.quote as Record<string, unknown>, quoteMetadata, "warranty_terms"),
       settings,
     });
 

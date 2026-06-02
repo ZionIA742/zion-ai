@@ -57,6 +57,7 @@ import {
   resolveCustomerRescheduleWorkflow,
   type CustomerRescheduleWorkflowDeps,
 } from "@/lib/server/assistant/customer-reschedule-workflow";
+import { handleAssistantDocumentEditRequest } from "@/lib/server/assistant/document-edit-intent";
 
 export const runtime = "nodejs";
 
@@ -7345,6 +7346,7 @@ function cleanupAiText(
 }
 
 async function generateAssistantReply(params: {
+  request: Request;
   organizationId: string;
   storeId: string;
 }): Promise<AssistantReplyResult> {
@@ -7467,6 +7469,56 @@ async function generateAssistantReply(params: {
     }
 
     const assistantContextState = assistantContextResult.contextState;
+    const documentEditResult = await handleAssistantDocumentEditRequest({
+      request: params.request,
+      supabase,
+      organizationId,
+      storeId,
+      threadId: assistantThreadId,
+      assistantContextState,
+      recentMessages: recentMessages as Array<AssistantMessageRow & { metadata?: Record<string, unknown> | null }>,
+      lastHumanMessage,
+    });
+
+    if (documentEditResult.handled) {
+      await resolveAssistantContextState({
+        supabase,
+        organizationId,
+        storeId,
+        threadId: assistantThreadId,
+        currentContextState: assistantContextState || null,
+        lastUserMessage: lastHumanMessage,
+        lastAssistantMessage: documentEditResult.reply,
+      });
+
+      const { error: saveDocumentEditReplyError } = await supabase.rpc("assistant_push_system_message", {
+        p_organization_id: organizationId,
+        p_store_id: storeId,
+        p_content: documentEditResult.reply,
+        p_message_type: "text",
+        p_related_lead_id: null,
+        p_related_conversation_id: null,
+        p_related_appointment_id: null,
+        p_metadata: {
+          source: "assistant.reply.route",
+          documentEditHandled: true,
+          ...documentEditResult.metadata,
+        },
+      });
+
+      if (saveDocumentEditReplyError) {
+        return {
+          ok: false,
+          error: "SAVE_ASSISTANT_MESSAGE_FAILED",
+          message: saveDocumentEditReplyError.message,
+        };
+      }
+
+      return {
+        ok: true,
+        aiText: documentEditResult.reply,
+      };
+    }
 
     const { data: scheduleSettingsData, error: scheduleSettingsError } = await supabase
       .from("store_schedule_settings")
@@ -8777,6 +8829,7 @@ export async function POST(request: Request) {
     }
 
     const result = await generateAssistantReply({
+      request,
       organizationId: scope.organizationId,
       storeId: scope.storeId,
     });

@@ -15,6 +15,7 @@ export type AssistantMessageRow = {
   direction: string | null;
   message_type: string | null;
   content: string | null;
+  metadata?: Record<string, unknown> | null;
   created_at: string | null;
 };
 
