@@ -238,6 +238,96 @@ function sentenceCase(value: string) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function buildNormalizedIndexMap(value: string) {
+  const normalizedChars: string[] = [];
+  const originalIndexes: number[] = [];
+
+  for (let index = 0; index < value.length; index += 1) {
+    const normalizedChar = value[index]
+      ?.normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+
+    for (const char of normalizedChar || "") {
+      normalizedChars.push(char);
+      originalIndexes.push(index);
+    }
+  }
+
+  return {
+    normalized: normalizedChars.join(""),
+    originalIndexes,
+  };
+}
+
+function extractOriginalSliceFromNormalizedMatch(args: {
+  messageText: string;
+  normalized: string;
+  originalIndexes: number[];
+  capturedValue: string;
+  matchIndex: number;
+}) {
+  const captureOffset = args.normalized
+    .slice(args.matchIndex)
+    .indexOf(args.capturedValue);
+
+  if (captureOffset < 0) {
+    return null;
+  }
+
+  const normalizedStart = args.matchIndex + captureOffset;
+  const normalizedEnd = normalizedStart + args.capturedValue.length;
+  const originalStart = args.originalIndexes[normalizedStart];
+  const originalEndIndex = args.originalIndexes[normalizedEnd - 1];
+
+  if (!Number.isInteger(originalStart) || !Number.isInteger(originalEndIndex)) {
+    return null;
+  }
+
+  return args.messageText.slice(originalStart, originalEndIndex + 1);
+}
+
+function extractDeliveryTermsValue(messageText: string) {
+  const { normalized, originalIndexes } = buildNormalizedIndexMap(messageText);
+  const patterns = [
+    /(?:coloque|colocar|altere|alterar|mude|mudar|troque|trocar|corrija|corrigir|atualize|atualizar)\s+(?:que\s+)?(?:a\s+)?((?:instalacao|entrega)\s+(?:sera|fica|ficara|combinad[ao])[\s\S]*?)(?:[.?!]|$)/,
+    /((?:instalacao|entrega)\s+(?:sera|fica|ficara|combinad[ao])[\s\S]*?)(?:[.?!]|$)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const capturedValue = cleanText(match?.[1]);
+
+    if (!capturedValue || typeof match?.index !== "number") {
+      continue;
+    }
+
+    const originalSlice = extractOriginalSliceFromNormalizedMatch({
+      messageText,
+      normalized,
+      originalIndexes,
+      capturedValue,
+      matchIndex: match.index,
+    });
+    const cleanedOriginalSlice = cleanText(originalSlice)?.replace(/[.?!]+$/, "").trim();
+    const cleanedNormalizedSlice = capturedValue.replace(/[.?!]+$/, "").trim();
+    const resolvedValue = cleanedOriginalSlice || cleanedNormalizedSlice;
+
+    if (!resolvedValue) {
+      continue;
+    }
+
+    const tokenCount = resolvedValue.split(/\s+/).filter(Boolean).length;
+    if (tokenCount < 3) {
+      continue;
+    }
+
+    return sentenceCase(resolvedValue);
+  }
+
+  return null;
+}
+
 function detectDocumentEditIntent(messageText: string): DocumentEditPatch | null {
   const normalized = normalizeText(messageText);
   if (!hasAnyTerm(normalized, EDIT_VERBS) || !hasAnyTerm(normalized, DOCUMENT_SIGNALS)) {
@@ -320,7 +410,9 @@ function detectDocumentEditIntent(messageText: string): DocumentEditPatch | null
     };
   }
 
+  const extractedDeliveryValue = extractDeliveryTermsValue(messageText);
   const deliveryValue =
+    extractedDeliveryValue ||
     extractFirstCapturedValue(messageText, [
       /instala(?:cao|ção)[\s\S]{0,80}?\bque\b\s+(.+?)(?:[.?!]|$)/i,
       /entrega[\s\S]{0,80}?\b(?:para|pra|que)\b\s+(.+?)(?:[.?!]|$)/i,
@@ -329,7 +421,7 @@ function detectDocumentEditIntent(messageText: string): DocumentEditPatch | null
       /instala(?:cao|ção)[\s\S]{0,80}?\b(?:sera|será|ficara|ficará|fica)\b\s+(.+?)(?:[.?!]|$)/i,
     ]);
   if (deliveryValue) {
-    const normalizedDeliveryValue = sentenceCase(deliveryValue);
+    const normalizedDeliveryValue = extractedDeliveryValue || sentenceCase(deliveryValue);
     return {
       mode: "structured",
       summary: `ajustar a instalacao/entrega para ${deliveryValue}`,
@@ -843,6 +935,35 @@ function appendContractChangeRequestMetadata(
   };
 }
 
+async function registerContractEditAuditEventSafely(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  actorUserId?: string | null;
+  leadId?: string | null;
+  conversationId?: string | null;
+  eventPayload: Record<string, unknown>;
+}) {
+  try {
+    await registerContractBusinessEvent({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      eventKey: "contrato_alteracao_solicitada_assistente",
+      actorType: "human",
+      actorUserId: args.actorUserId || null,
+      leadId: args.leadId || null,
+      conversationId: args.conversationId || null,
+      eventPayload: args.eventPayload,
+    });
+  } catch (error) {
+    console.warn(
+      "[assistant_document_edit_workflow] contract audit event skipped after failure:",
+      error
+    );
+  }
+}
+
 async function handleContractEdit(args: {
   request: Request;
   candidate: DocumentContextCandidate;
@@ -901,12 +1022,10 @@ async function handleContractEdit(args: {
       .eq("store_id", scope.store.id);
 
     if (!updateError) {
-      await registerContractBusinessEvent({
+      await registerContractEditAuditEventSafely({
         supabase: scope.supabase,
         organizationId: scope.organizationId,
         storeId: scope.store.id,
-        eventKey: "contrato_alteracao_solicitada_assistente",
-        actorType: "human",
         actorUserId: scope.userId,
         leadId: scope.lead?.id || scope.contract.lead_id || null,
         conversationId: scope.conversation?.id || scope.contract.conversation_id || null,
@@ -960,12 +1079,10 @@ async function handleContractEdit(args: {
     .eq("store_id", scope.store.id);
 
   if (!metadataUpdateError) {
-    await registerContractBusinessEvent({
+    await registerContractEditAuditEventSafely({
       supabase: scope.supabase,
       organizationId: scope.organizationId,
       storeId: scope.store.id,
-      eventKey: "contrato_alteracao_solicitada_assistente",
-      actorType: "human",
       actorUserId: scope.userId,
       leadId: scope.lead?.id || scope.contract.lead_id || null,
       conversationId: scope.conversation?.id || scope.contract.conversation_id || null,
