@@ -3,6 +3,7 @@ import { buildContractPdf, loadStoreLogoForContractPdf } from "@/lib/server/sale
 import { resolveAuthorizedExistingContract, ContractAccessError } from "@/lib/server/sales-contracts/contract-auth";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
 import { storeContractPdfFile } from "@/lib/server/sales-contracts/contract-storage";
+import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import {
   buildContractSnapshot,
   createContractVersion,
@@ -209,7 +210,38 @@ export async function POST(
           version_number: version.version_number,
           stage: "first_pdf_generated",
         },
+        });
+    }
+
+    try {
+      await pushAssistantDocumentReviewMessage({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        documentType: "contract",
+        documentId: scope.contract.id,
+        documentVersionId: version.id,
+        documentNumber:
+          String(scope.contract.contract_number || "").trim() || scope.contract.id,
+        documentStatus: "pending_review",
+        relatedQuoteId: scope.contract.quote_id || null,
+        relatedContractId: scope.contract.id,
+        relatedLeadId: scope.lead?.id || scope.contract.lead_id || null,
+        relatedConversationId:
+          scope.conversation?.id || scope.contract.conversation_id || null,
+        customerName: scope.contract.customer_name || scope.lead?.name || null,
+        customerPhone: scope.contract.customer_phone || scope.lead?.phone || null,
+        originalFileName: storedFile.originalFilename,
+        fileKind: "sales_contract_pdf",
+        mimeType: "application/pdf",
+        storageBucket: storedFile.storageBucket,
+        storagePath: storedFile.storagePath,
       });
+    } catch (assistantMessageError) {
+      console.warn(
+        "[sales-contracts/generate-pdf] falha ao criar mensagem document_review da assistente:",
+        assistantMessageError
+      );
     }
 
     return NextResponse.json({

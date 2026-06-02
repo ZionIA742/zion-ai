@@ -13,6 +13,7 @@ import {
 } from "@/lib/server/sales-quotes/quote-auth";
 import { loadStoreQuoteSettings } from "@/lib/server/sales-quotes/quote-settings";
 import { storeQuotePdfFile } from "@/lib/server/sales-quotes/quote-storage";
+import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import {
   buildQuoteSnapshot,
   createQuoteVersion,
@@ -205,6 +206,36 @@ export async function POST(
       },
       createdBy: "system",
     });
+
+    try {
+      await pushAssistantDocumentReviewMessage({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        documentType: "quote",
+        documentId: scope.quote.id,
+        documentVersionId: versionRow.id,
+        documentNumber: String(scope.quote.quote_number || "").trim() || scope.quote.id,
+        documentStatus: "pending_review",
+        relatedQuoteId: scope.quote.id,
+        relatedContractId: null,
+        relatedLeadId: scope.lead?.id || scope.quote.lead_id || null,
+        relatedConversationId:
+          scope.conversation?.id || scope.quote.conversation_id || null,
+        customerName: scope.quote.customer_name || scope.lead?.name || null,
+        customerPhone: scope.quote.customer_phone || scope.lead?.phone || null,
+        originalFileName: storedFile.originalFilename,
+        fileKind: "sales_quote_pdf",
+        mimeType: "application/pdf",
+        storageBucket: storedFile.storageBucket,
+        storagePath: storedFile.storagePath,
+      });
+    } catch (assistantMessageError) {
+      console.warn(
+        "[sales-quotes/generate-pdf] falha ao criar mensagem document_review da assistente:",
+        assistantMessageError
+      );
+    }
 
     return NextResponse.json({
       ok: true,
