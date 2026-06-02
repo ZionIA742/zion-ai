@@ -1,6 +1,7 @@
 const DOCUMENT_REVIEW_SOURCE = "assistant_document_workflow_v1";
 const DOCUMENT_REVIEW_PROMPT =
   "Esse documento pode ser enviado ou precisa ser editado? Caso precise ser editado, me diga o que precisa que eu edito.";
+const DOCUMENT_REVIEW_NOTIFICATION_TYPE = "important_alert";
 
 type AssistantDocumentReviewAction =
   | {
@@ -57,7 +58,46 @@ function normalizeDocumentStatusLabel(value: string | null | undefined) {
   if (normalized === "pending_review") return "Aguardando revisao";
   if (normalized === "approved") return "Aprovado";
   if (normalized === "sent" || normalized === "sent_to_customer") return "Enviado";
+  if (normalized === "customer_signed") return "Aguardando confirmacao da loja";
+  if (normalized === "completed") return "Concluido";
+  if (normalized === "cancelled") return "Cancelado";
+  if (normalized === "expired") return "Expirado";
+  if (normalized === "failed") return "Falhou";
   return cleanText(value) || "Aguardando revisao";
+}
+
+function getDefaultAssistantPrompt(input: PushAssistantDocumentReviewMessageInput) {
+  const status = String(input.documentStatus || "").trim().toLowerCase();
+
+  if (status === "customer_signed") {
+    return "O cliente aceitou este contrato. Revise o documento se necessario e confirme pela loja para concluir o processo.";
+  }
+
+  if (status === "completed") {
+    return "Documento concluido. Voce ainda pode revisar o arquivo se precisar.";
+  }
+
+  if (status === "sent" || status === "sent_to_customer") {
+    return "Documento enviado ao cliente. Voce ainda pode revisar o arquivo se precisar.";
+  }
+
+  if (status === "failed") {
+    return "Houve uma falha neste documento. Revise o caso antes de seguir.";
+  }
+
+  if (status === "cancelled") {
+    return "Documento cancelado. Voce ainda pode revisar o arquivo se precisar.";
+  }
+
+  if (status === "expired") {
+    return "Documento expirado. Revise o caso antes de seguir.";
+  }
+
+  if (status === "approved") {
+    return "Documento aprovado. Revise o arquivo e siga com o envio quando estiver tudo certo.";
+  }
+
+  return DOCUMENT_REVIEW_PROMPT;
 }
 
 function buildDocumentReviewContent(input: PushAssistantDocumentReviewMessageInput) {
@@ -134,13 +174,60 @@ function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageIn
     mime_type: cleanText(input.mimeType) || "application/pdf",
     original_file_name: cleanText(input.originalFileName),
     assistant_prompt:
-      cleanText(input.assistantPromptOverride) || DOCUMENT_REVIEW_PROMPT,
+      cleanText(input.assistantPromptOverride) || getDefaultAssistantPrompt(input),
     available_actions:
       input.availableActionsOverride && input.availableActionsOverride.length > 0
         ? input.availableActionsOverride
         : buildDefaultAvailableActions(input),
     source,
   };
+}
+
+function getDocumentNotificationDescriptor(metadata: Record<string, unknown>) {
+  const status = String(metadata.document_status || "").trim().toLowerCase();
+  const documentType = String(metadata.document_type || "").trim().toLowerCase();
+  const availableActions = Array.isArray(metadata.available_actions)
+    ? metadata.available_actions
+    : [];
+  const documentLabel = documentType === "contract" ? "Contrato" : "Orcamento";
+  const documentNumber =
+    cleanText(metadata.document_number) || cleanText(metadata.document_id) || "sem numero";
+  const canApproveAndSend = availableActions.some((action) => {
+    if (!action || typeof action !== "object") return false;
+    const item = action as Record<string, unknown>;
+    const id = cleanText(item.id);
+    const kind = cleanText(item.kind);
+    return id === "approve_and_send" || kind === "approve_and_send";
+  });
+  const canConfirmStoreSignature = availableActions.some((action) => {
+    if (!action || typeof action !== "object") return false;
+    const item = action as Record<string, unknown>;
+    const id = cleanText(item.id);
+    const kind = cleanText(item.kind);
+    return id === "confirm_store_signature" || kind === "confirm_store_signature";
+  });
+
+  if (status === "pending_review" && canApproveAndSend) {
+    return {
+      title: `${documentLabel} ${documentNumber} aguardando revisao`,
+      body: `${documentLabel} pronto para revisao e envio ao cliente.`,
+      priority: "high" as const,
+      needsHumanAction: true,
+      reason: "pending_review",
+    };
+  }
+
+  if (status === "customer_signed" && canConfirmStoreSignature) {
+    return {
+      title: `${documentLabel} ${documentNumber} aguardando confirmacao da loja`,
+      body: "O cliente aceitou este contrato. Revise e confirme pela loja para concluir o processo.",
+      priority: "high" as const,
+      needsHumanAction: true,
+      reason: "customer_signed",
+    };
+  }
+
+  return null;
 }
 
 async function getOrCreateAssistantPrimaryThread(args: {
@@ -251,6 +338,135 @@ async function updateAssistantThreadPreview(args: {
   }
 }
 
+async function findExistingDocumentReviewNotification(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  notificationType: string;
+  relatedLeadId?: string | null;
+  relatedConversationId?: string | null;
+  eventKey: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_notification_queue")
+    .select("id, context")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("notification_type", args.notificationType)
+    .eq("related_lead_id", args.relatedLeadId || null)
+    .eq("related_conversation_id", args.relatedConversationId || null)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    throw new Error(
+      `Falha ao verificar duplicidade de notificacao document_review: ${error.message}`
+    );
+  }
+
+  return ((data || []) as Array<{ id?: string | null; context?: Record<string, unknown> | null }>).find(
+    (row) => cleanText(row.context?.event_key) === args.eventKey
+  );
+}
+
+async function enqueueDocumentReviewNotification(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  metadata: Record<string, unknown>;
+  relatedLeadId?: string | null;
+  relatedConversationId?: string | null;
+}) {
+  const descriptor = getDocumentNotificationDescriptor(args.metadata);
+  if (!descriptor?.needsHumanAction) {
+    return {
+      created: false,
+      reason: "no_pending_human_action",
+    };
+  }
+
+  const eventKey = [
+    "assistant_document_review",
+    cleanText(args.metadata.source) || DOCUMENT_REVIEW_SOURCE,
+    cleanText(args.metadata.document_type) || "unknown",
+    cleanText(args.metadata.document_id) || "unknown",
+    cleanText(args.metadata.document_version_id) || "unknown",
+    cleanText(args.metadata.document_status) || "unknown",
+  ].join(":");
+
+  try {
+    const existing = await findExistingDocumentReviewNotification({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      notificationType: DOCUMENT_REVIEW_NOTIFICATION_TYPE,
+      relatedLeadId: args.relatedLeadId,
+      relatedConversationId: args.relatedConversationId,
+      eventKey,
+    });
+
+    if (existing?.id) {
+      return {
+        created: false,
+        reason: "notification_already_exists",
+      };
+    }
+
+    const context = {
+      source: cleanText(args.metadata.source) || DOCUMENT_REVIEW_SOURCE,
+      reason: descriptor.reason,
+      event_key: eventKey,
+      needs_human_action: true,
+      document_type: cleanText(args.metadata.document_type),
+      document_id: cleanText(args.metadata.document_id),
+      document_version_id: cleanText(args.metadata.document_version_id),
+      document_number: cleanText(args.metadata.document_number),
+      document_status: cleanText(args.metadata.document_status),
+      related_quote_id: cleanText(args.metadata.related_quote_id),
+      related_contract_id: cleanText(args.metadata.related_contract_id),
+    };
+
+    const { error } = await args.supabase.rpc("assistant_enqueue_internal_notification", {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_notification_type: DOCUMENT_REVIEW_NOTIFICATION_TYPE,
+      p_title: descriptor.title,
+      p_body: descriptor.body,
+      p_priority: descriptor.priority,
+      p_context: context,
+      p_related_lead_id: args.relatedLeadId || null,
+      p_related_conversation_id: args.relatedConversationId || null,
+      p_related_appointment_id: null,
+      p_event_key: eventKey,
+    });
+
+    if (error) {
+      console.warn(
+        "[assistant_document_review] assistant_enqueue_internal_notification error:",
+        error
+      );
+      return {
+        created: false,
+        reason: "notification_rpc_failed",
+      };
+    }
+
+    return {
+      created: true,
+      reason: "notification_created",
+    };
+  } catch (error) {
+    console.warn(
+      "[assistant_document_review] assistant_enqueue_internal_notification exception:",
+      error
+    );
+    return {
+      created: false,
+      reason: "notification_exception",
+    };
+  }
+}
+
 export async function pushAssistantDocumentReviewMessage(
   input: PushAssistantDocumentReviewMessageInput
 ) {
@@ -303,6 +519,15 @@ export async function pushAssistantDocumentReviewMessage(
     supabase: input.supabase,
     threadId,
     previewText: content,
+  });
+
+  await enqueueDocumentReviewNotification({
+    supabase: input.supabase,
+    organizationId: input.organizationId,
+    storeId: input.storeId,
+    metadata,
+    relatedLeadId: cleanText(input.relatedLeadId),
+    relatedConversationId: cleanText(input.relatedConversationId),
   });
 
   return {

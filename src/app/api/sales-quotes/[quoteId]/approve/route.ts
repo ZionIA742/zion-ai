@@ -13,6 +13,30 @@ const APPROVE_EVENT_TYPE = "orcamento_aprovado";
 const ALLOWED_QUOTE_STATUS = "pending_review";
 const ALLOWED_VERSION_STATUSES = new Set(["generated", "pending_review"]);
 
+async function readQuoteApprovalAudit(args: {
+  supabase: any;
+  quoteId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("sales_quotes")
+    .select("id, status, approved_at, approved_by")
+    .eq("id", args.quoteId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao carregar auditoria de aprovacao do orcamento: ${error.message}`);
+  }
+
+  return data as
+    | {
+        id?: string | null;
+        status?: string | null;
+        approved_at?: string | null;
+        approved_by?: string | null;
+      }
+    | null;
+}
+
 function buildErrorResponse(error: unknown) {
   if (error instanceof QuoteAccessError) {
     return NextResponse.json(
@@ -46,8 +70,42 @@ export async function POST(
     const scope = await resolveAuthorizedExistingQuote(quoteId);
 
     const currentQuoteStatus = String(scope.quote.status || "").trim().toLowerCase();
+    const approvalTimestamp = new Date().toISOString();
 
     if (currentQuoteStatus === "approved") {
+      const audit = await readQuoteApprovalAudit({
+        supabase: scope.supabase,
+        quoteId: scope.quote.id,
+      });
+      const approvedAt = String(audit?.approved_at || "").trim();
+      const approvedBy = String(audit?.approved_by || "").trim();
+
+      if (!approvedAt || !approvedBy) {
+        const { error: approvalAuditError } = await scope.supabase
+          .from("sales_quotes")
+          .update({
+            approved_at: approvedAt || approvalTimestamp,
+            approved_by: approvedBy || scope.user.id,
+            updated_at: approvalTimestamp,
+          })
+          .eq("id", scope.quote.id);
+
+        if (approvalAuditError) {
+          throw new Error(
+            `Falha ao complementar auditoria de aprovacao do orcamento: ${approvalAuditError.message}`
+          );
+        }
+
+        return NextResponse.json({
+          ok: true,
+          quoteId: scope.quote.id,
+          quoteNumber: scope.quote.quote_number,
+          status: "approved",
+          alreadyApproved: true,
+          approvalAuditBackfilled: true,
+        });
+      }
+
       return NextResponse.json(
         {
           ok: false,
@@ -148,12 +206,12 @@ export async function POST(
       );
     }
 
-    const approvalTimestamp = new Date().toISOString();
-
     const { error: quoteUpdateError } = await scope.supabase
       .from("sales_quotes")
       .update({
         status: "approved",
+        approved_at: approvalTimestamp,
+        approved_by: scope.user.id,
         updated_at: approvalTimestamp,
       })
       .eq("id", scope.quote.id);

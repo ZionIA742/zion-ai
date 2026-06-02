@@ -303,10 +303,40 @@ function getValidatedDocumentActionPayload(
 }
 
 function getDocumentPromptText(metadata: AssistantDocumentReviewMetadata | null) {
-  return (
-    getSafeString(metadata?.assistant_prompt) ||
-    "Esse documento pode ser enviado ou precisa ser editado? Caso precise ser editado, me diga o que precisa que eu edito."
-  );
+  const customPrompt = getSafeString(metadata?.assistant_prompt);
+  if (customPrompt) return customPrompt;
+
+  const status = normalizeText(metadata?.document_status);
+
+  if (status === "customer_signed") {
+    return "O cliente aceitou este contrato. Revise o documento se necessario e confirme pela loja para concluir o processo.";
+  }
+
+  if (status === "completed") {
+    return "Documento concluido. Voce ainda pode revisar o arquivo se precisar.";
+  }
+
+  if (status === "sent" || status === "sent_to_customer") {
+    return "Documento enviado ao cliente. Voce ainda pode revisar o arquivo se precisar.";
+  }
+
+  if (status === "failed") {
+    return "Houve uma falha neste documento. Revise o caso antes de seguir.";
+  }
+
+  if (status === "cancelled") {
+    return "Documento cancelado. Voce ainda pode revisar o arquivo se precisar.";
+  }
+
+  if (status === "expired") {
+    return "Documento expirado. Revise o caso antes de seguir.";
+  }
+
+  if (status === "approved") {
+    return "Documento aprovado. Revise o arquivo e siga com o envio quando estiver tudo certo.";
+  }
+
+  return "Esse documento pode ser enviado ou precisa ser editado? Caso precise ser editado, me diga o que precisa que eu edito.";
 }
 
 function findAddressTextInMetadata(value: unknown, depth = 0): string | null {
