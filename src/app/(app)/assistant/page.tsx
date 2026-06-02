@@ -36,7 +36,10 @@ type AssistantReplyApiResponse = {
   aiText?: string;
 };
 
-type AssistantDocumentActionId = "review" | "approve_and_send";
+type AssistantDocumentActionId =
+  | "review"
+  | "approve_and_send"
+  | "confirm_store_signature";
 
 type AssistantDocumentActionApiResponse = {
   ok: boolean;
@@ -238,7 +241,13 @@ function getDocumentActionMetadata(
         return id === "review" || kind === "open_document";
       }
 
-      return id === "approve_and_send" || kind === "approve_and_send";
+      if (actionId === "approve_and_send") {
+        return id === "approve_and_send" || kind === "approve_and_send";
+      }
+
+      return (
+        id === "confirm_store_signature" || kind === "confirm_store_signature"
+      );
     }) || null
   );
 }
@@ -248,7 +257,12 @@ function getDocumentActionLabel(
   actionId: AssistantDocumentActionId
 ) {
   const action = getDocumentActionMetadata(metadata, actionId);
-  const fallback = actionId === "review" ? "Revisar" : "Aprovar e enviar";
+  const fallback =
+    actionId === "review"
+      ? "Revisar"
+      : actionId === "approve_and_send"
+        ? "Aprovar e enviar"
+        : "Confirmar pela loja";
   return getSafeString(action?.label) || fallback;
 }
 
@@ -483,6 +497,8 @@ export default function AssistantPage() {
   const [dismissedApproveActionsByMessage, setDismissedApproveActionsByMessage] = useState<
     Record<string, boolean>
   >({});
+  const [dismissedStoreSignatureActionsByMessage, setDismissedStoreSignatureActionsByMessage] =
+    useState<Record<string, boolean>>({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -882,9 +898,32 @@ export default function AssistantPage() {
       return;
     }
 
+    if (
+      actionId === "confirm_store_signature" &&
+      (payload.documentType !== "contract" ||
+        isTerminalDocumentStatus(metadata.document_status))
+    ) {
+      setDocumentActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text: "Este contrato nao pode ser confirmado pela loja no status atual.",
+        },
+      }));
+      return;
+    }
+
     if (actionId === "approve_and_send") {
       const confirmed = window.confirm(
         "Tem certeza que deseja aprovar e enviar este documento ao cliente?"
+      );
+
+      if (!confirmed) return;
+    }
+
+    if (actionId === "confirm_store_signature") {
+      const confirmed = window.confirm(
+        "Tem certeza que deseja confirmar este contrato pela loja?"
       );
 
       if (!confirmed) return;
@@ -949,12 +988,22 @@ export default function AssistantPage() {
             result.message ||
             (actionId === "review"
               ? "Documento aberto para revisao."
-              : "Documento aprovado e enviado com sucesso."),
+              : actionId === "approve_and_send"
+                ? "Documento aprovado e enviado com sucesso."
+                : "Contrato confirmado pela loja com sucesso."),
         },
       }));
 
       if (actionId === "approve_and_send") {
         setDismissedApproveActionsByMessage((current) => ({
+          ...current,
+          [message.id]: true,
+        }));
+        await loadAssistant({ silent: true });
+      }
+
+      if (actionId === "confirm_store_signature") {
+        setDismissedStoreSignatureActionsByMessage((current) => ({
           ...current,
           [message.id]: true,
         }));
@@ -1101,11 +1150,27 @@ export default function AssistantPage() {
                                   documentMetadata,
                                   "approve_and_send"
                                 );
+                              const confirmStoreSignatureEnabled =
+                                metadataComplete &&
+                                !terminalStatus &&
+                                payload.documentType === "contract" &&
+                                normalizeText(documentMetadata.document_status) ===
+                                  "customer_signed" &&
+                                dismissedStoreSignatureActionsByMessage[message.id] !==
+                                  true &&
+                                isDocumentActionEnabled(
+                                  documentMetadata,
+                                  "confirm_store_signature"
+                                );
                               const reviewLoading =
                                 documentActionLoadingKeys[`${message.id}:review`] === true;
                               const approveLoading =
                                 documentActionLoadingKeys[
                                   `${message.id}:approve_and_send`
+                                ] === true;
+                              const confirmStoreSignatureLoading =
+                                documentActionLoadingKeys[
+                                  `${message.id}:confirm_store_signature`
                                 ] === true;
 
                               return (
@@ -1147,7 +1212,9 @@ export default function AssistantPage() {
                                     </div>
                                   ) : null}
 
-                                  {reviewEnabled || approveEnabled ? (
+                                  {reviewEnabled ||
+                                  approveEnabled ||
+                                  confirmStoreSignatureEnabled ? (
                                     <div className="mt-3 flex flex-wrap gap-2">
                                       {reviewEnabled ? (
                                         <button
@@ -1158,7 +1225,8 @@ export default function AssistantPage() {
                                           disabled={
                                             !payload.isValid ||
                                             reviewLoading ||
-                                            approveLoading
+                                            approveLoading ||
+                                            confirmStoreSignatureLoading
                                           }
                                           className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
@@ -1182,7 +1250,8 @@ export default function AssistantPage() {
                                           disabled={
                                             !payload.isValid ||
                                             reviewLoading ||
-                                            approveLoading
+                                            approveLoading ||
+                                            confirmStoreSignatureLoading
                                           }
                                           className="rounded-full bg-black px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
@@ -1191,6 +1260,31 @@ export default function AssistantPage() {
                                             : getDocumentActionLabel(
                                                 documentMetadata,
                                                 "approve_and_send"
+                                              )}
+                                        </button>
+                                      ) : null}
+                                      {confirmStoreSignatureEnabled ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void handleDocumentAction(
+                                              message,
+                                              "confirm_store_signature"
+                                            )
+                                          }
+                                          disabled={
+                                            !payload.isValid ||
+                                            reviewLoading ||
+                                            approveLoading ||
+                                            confirmStoreSignatureLoading
+                                          }
+                                          className="rounded-full bg-black px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          {confirmStoreSignatureLoading
+                                            ? "Confirmando..."
+                                            : getDocumentActionLabel(
+                                                documentMetadata,
+                                                "confirm_store_signature"
                                               )}
                                         </button>
                                       ) : null}

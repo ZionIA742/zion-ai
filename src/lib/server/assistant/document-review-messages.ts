@@ -2,6 +2,25 @@ const DOCUMENT_REVIEW_SOURCE = "assistant_document_workflow_v1";
 const DOCUMENT_REVIEW_PROMPT =
   "Esse documento pode ser enviado ou precisa ser editado? Caso precise ser editado, me diga o que precisa que eu edito.";
 
+type AssistantDocumentReviewAction =
+  | {
+      id: "review";
+      label: string;
+      kind: "open_document";
+    }
+  | {
+      id: "approve_and_send";
+      label: string;
+      kind: "approve_and_send";
+      requires_confirmation: true;
+    }
+  | {
+      id: "confirm_store_signature";
+      label: string;
+      kind: "confirm_store_signature";
+      requires_confirmation: true;
+    };
+
 type PushAssistantDocumentReviewMessageInput = {
   supabase: any;
   organizationId: string;
@@ -22,6 +41,10 @@ type PushAssistantDocumentReviewMessageInput = {
   mimeType?: string | null;
   storageBucket?: string | null;
   storagePath?: string | null;
+  contentOverride?: string | null;
+  assistantPromptOverride?: string | null;
+  availableActionsOverride?: AssistantDocumentReviewAction[] | null;
+  sourceOverride?: string | null;
 };
 
 function cleanText(value: unknown) {
@@ -38,6 +61,10 @@ function normalizeDocumentStatusLabel(value: string | null | undefined) {
 }
 
 function buildDocumentReviewContent(input: PushAssistantDocumentReviewMessageInput) {
+  if (cleanText(input.contentOverride)) {
+    return String(input.contentOverride).trim();
+  }
+
   const documentLabel =
     input.documentType === "contract" ? "Contrato pronto para revisao." : "Orcamento pronto para revisao.";
   const customerLine = `Cliente: ${cleanText(input.customerName) || "Nao informado"}`;
@@ -51,7 +78,37 @@ function buildDocumentReviewContent(input: PushAssistantDocumentReviewMessageInp
   return [documentLabel, "", customerLine, documentLine, statusLine, "", closingLine].join("\n");
 }
 
+function buildDefaultAvailableActions(
+  input: PushAssistantDocumentReviewMessageInput
+): AssistantDocumentReviewAction[] {
+  return [
+    {
+      id: "review",
+      label: "Revisar",
+      kind: "open_document",
+    },
+    ...(input.documentType === "contract"
+      ? ([
+          {
+            id: "approve_and_send",
+            label: "Aprovar e enviar",
+            kind: "approve_and_send",
+            requires_confirmation: true,
+          },
+        ] satisfies AssistantDocumentReviewAction[])
+      : ([
+          {
+            id: "approve_and_send",
+            label: "Aprovar e enviar",
+            kind: "approve_and_send",
+            requires_confirmation: true,
+          },
+        ] satisfies AssistantDocumentReviewAction[])),
+  ];
+}
+
 function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageInput) {
+  const source = cleanText(input.sourceOverride) || DOCUMENT_REVIEW_SOURCE;
   return {
     kind: "document_review",
     document_type: input.documentType,
@@ -76,21 +133,13 @@ function buildDocumentReviewMetadata(input: PushAssistantDocumentReviewMessageIn
     file_kind: cleanText(input.fileKind),
     mime_type: cleanText(input.mimeType) || "application/pdf",
     original_file_name: cleanText(input.originalFileName),
-    assistant_prompt: DOCUMENT_REVIEW_PROMPT,
-    available_actions: [
-      {
-        id: "review",
-        label: "Revisar",
-        kind: "open_document",
-      },
-      {
-        id: "approve_and_send",
-        label: "Aprovar e enviar",
-        kind: "approve_and_send",
-        requires_confirmation: true,
-      },
-    ],
-    source: DOCUMENT_REVIEW_SOURCE,
+    assistant_prompt:
+      cleanText(input.assistantPromptOverride) || DOCUMENT_REVIEW_PROMPT,
+    available_actions:
+      input.availableActionsOverride && input.availableActionsOverride.length > 0
+        ? input.availableActionsOverride
+        : buildDefaultAvailableActions(input),
+    source,
   };
 }
 
@@ -146,6 +195,8 @@ async function findExistingDocumentReviewMessage(args: {
   documentType: "quote" | "contract";
   documentId: string;
   documentVersionId: string;
+  documentStatus?: string | null;
+  source?: string | null;
 }) {
   const { data, error } = await args.supabase
     .from("store_assistant_messages")
@@ -157,7 +208,10 @@ async function findExistingDocumentReviewMessage(args: {
       document_type: args.documentType,
       document_id: args.documentId,
       document_version_id: args.documentVersionId,
-      source: DOCUMENT_REVIEW_SOURCE,
+      ...(cleanText(args.documentStatus)
+        ? { document_status: cleanText(args.documentStatus) }
+        : {}),
+      source: cleanText(args.source) || DOCUMENT_REVIEW_SOURCE,
     })
     .order("created_at", { ascending: false })
     .limit(1)
@@ -200,6 +254,7 @@ async function updateAssistantThreadPreview(args: {
 export async function pushAssistantDocumentReviewMessage(
   input: PushAssistantDocumentReviewMessageInput
 ) {
+  const source = cleanText(input.sourceOverride) || DOCUMENT_REVIEW_SOURCE;
   const threadId = await getOrCreateAssistantPrimaryThread({
     supabase: input.supabase,
     organizationId: input.organizationId,
@@ -213,6 +268,8 @@ export async function pushAssistantDocumentReviewMessage(
     documentType: input.documentType,
     documentId: input.documentId,
     documentVersionId: input.documentVersionId,
+    documentStatus: input.documentStatus,
+    source,
   });
 
   if (existingMessageId) {

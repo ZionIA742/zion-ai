@@ -15,7 +15,11 @@ type DocumentActionRequestBody = {
 };
 
 function isValidAction(value: string): value is AssistantDocumentAction {
-  return value === "review" || value === "approve_and_send";
+  return (
+    value === "review" ||
+    value === "approve_and_send" ||
+    value === "confirm_store_signature"
+  );
 }
 
 function isValidDocumentType(value: string): value is AssistantDocumentType {
@@ -40,7 +44,8 @@ export async function POST(request: Request) {
         {
           ok: false,
           error: "INVALID_ACTION",
-          message: "A action precisa ser review ou approve_and_send.",
+          message:
+            "A action precisa ser review, approve_and_send ou confirm_store_signature.",
         },
         { status: 400 }
       );

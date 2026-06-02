@@ -8,6 +8,7 @@ import {
   extractClientIp,
   loadExistingContractSignature,
 } from "@/lib/server/sales-contracts/contract-signatures";
+import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import type {
   SalesContractSignature,
   SalesContractVersion,
@@ -199,6 +200,64 @@ export async function POST(
         status: updatedContract.status,
       },
     });
+
+    try {
+      await pushAssistantDocumentReviewMessage({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        documentType: "contract",
+        documentId: updatedContract.id,
+        documentVersionId: scope.currentVersion.id,
+        documentNumber:
+          String(updatedContract.contract_number || "").trim() || updatedContract.id,
+        documentStatus: "customer_signed",
+        relatedQuoteId: updatedContract.quote_id || null,
+        relatedContractId: updatedContract.id,
+        relatedLeadId: scope.lead?.id || updatedContract.lead_id || null,
+        relatedConversationId:
+          scope.conversation?.id || updatedContract.conversation_id || null,
+        customerName:
+          updatedContract.customer_name || scope.lead?.name || signerName || null,
+        customerPhone:
+          updatedContract.customer_phone || scope.lead?.phone || signerPhone || null,
+        originalFileName: scope.currentVersion.original_filename || null,
+        fileKind: "sales_contract_pdf",
+        mimeType: scope.currentVersion.mime_type || "application/pdf",
+        storageBucket: scope.currentVersion.storage_bucket || null,
+        storagePath: scope.currentVersion.storage_path || null,
+        contentOverride: [
+          "Contrato aceito pelo cliente.",
+          "",
+          `Cliente: ${signerName || updatedContract.customer_name || "Nao informado"}`,
+          `Documento: ${String(updatedContract.contract_number || "").trim() || updatedContract.id}`,
+          "Status atual: Aceito pelo cliente",
+          "",
+          "O cliente aceitou este contrato. Falta a confirmacao/assinatura da loja para concluir o processo.",
+        ].join("\n"),
+        assistantPromptOverride:
+          "O cliente aceitou este contrato. Revise o documento se necessario e confirme pela loja para concluir o processo.",
+        availableActionsOverride: [
+          {
+            id: "review",
+            label: "Revisar",
+            kind: "open_document",
+          },
+          {
+            id: "confirm_store_signature",
+            label: "Confirmar pela loja",
+            kind: "confirm_store_signature",
+            requires_confirmation: true,
+          },
+        ],
+        sourceOverride: "assistant_contract_status_workflow_v1",
+      });
+    } catch (assistantMessageError) {
+      console.warn(
+        "[sales-contracts/customer-sign] falha ao criar mensagem de status da assistente:",
+        assistantMessageError
+      );
+    }
 
     return NextResponse.json({
       ok: true,

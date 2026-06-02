@@ -3,6 +3,7 @@ import {
   ContractAccessError,
   resolveAuthorizedExistingContract,
 } from "@/lib/server/sales-contracts/contract-auth";
+import { pushAssistantDocumentReviewMessage } from "@/lib/server/assistant/document-review-messages";
 import { registerContractBusinessEvent } from "@/lib/server/sales-contracts/contract-events";
 import { loadExistingContractSignature } from "@/lib/server/sales-contracts/contract-signatures";
 import type {
@@ -213,6 +214,56 @@ export async function POST(
         status: updatedContract.status,
       },
     });
+
+    try {
+      await pushAssistantDocumentReviewMessage({
+        supabase: scope.supabase,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        documentType: "contract",
+        documentId: updatedContract.id,
+        documentVersionId: updatedVersion.id,
+        documentNumber:
+          String(updatedContract.contract_number || "").trim() || updatedContract.id,
+        documentStatus: "completed",
+        relatedQuoteId: updatedContract.quote_id || null,
+        relatedContractId: updatedContract.id,
+        relatedLeadId: scope.lead?.id || updatedContract.lead_id || null,
+        relatedConversationId:
+          scope.conversation?.id || updatedContract.conversation_id || null,
+        customerName: updatedContract.customer_name || scope.lead?.name || null,
+        customerPhone: updatedContract.customer_phone || scope.lead?.phone || null,
+        originalFileName: updatedVersion.original_filename || null,
+        fileKind: "sales_contract_pdf",
+        mimeType: updatedVersion.mime_type || "application/pdf",
+        storageBucket: updatedVersion.storage_bucket || null,
+        storagePath: updatedVersion.storage_path || null,
+        contentOverride: [
+          "Contrato concluido.",
+          "",
+          `Cliente: ${updatedContract.customer_name || scope.lead?.name || "Nao informado"}`,
+          `Documento: ${String(updatedContract.contract_number || "").trim() || updatedContract.id}`,
+          "Status atual: Concluido",
+          "",
+          "A loja confirmou o contrato. O processo contratual foi concluido.",
+        ].join("\n"),
+        assistantPromptOverride:
+          "Contrato concluido. Voce ainda pode revisar o documento se precisar.",
+        availableActionsOverride: [
+          {
+            id: "review",
+            label: "Revisar",
+            kind: "open_document",
+          },
+        ],
+        sourceOverride: "assistant_contract_status_workflow_v1",
+      });
+    } catch (assistantMessageError) {
+      console.warn(
+        "[sales-contracts/store-sign] falha ao criar mensagem de status da assistente:",
+        assistantMessageError
+      );
+    }
 
     return NextResponse.json({
       ok: true,

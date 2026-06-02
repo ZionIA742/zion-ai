@@ -8,7 +8,10 @@ import {
   resolveAuthorizedExistingContract,
 } from "@/lib/server/sales-contracts/contract-auth";
 
-export type AssistantDocumentAction = "review" | "approve_and_send";
+export type AssistantDocumentAction =
+  | "review"
+  | "approve_and_send"
+  | "confirm_store_signature";
 export type AssistantDocumentType = "quote" | "contract";
 
 type InternalActionResult = {
@@ -455,6 +458,85 @@ async function approveAndSendContract(request: Request, contractId: string) {
   }
 }
 
+async function confirmStoreSignature(request: Request, contractId: string) {
+  try {
+    const scope = await resolveAuthorizedExistingContract(contractId);
+    const currentStatus = String(scope.contract.status || "").trim().toLowerCase();
+
+    if (isTerminalDocumentStatus(currentStatus)) {
+      return {
+        ok: false as const,
+        status: 409,
+        error: "CONTRACT_STATUS_NOT_SIGNABLE",
+        message: "Este contrato nao pode ser confirmado pela loja no status atual.",
+      };
+    }
+
+    if (currentStatus === "completed") {
+      return {
+        ok: true as const,
+        status: 200,
+        message: "Este contrato ja foi concluido pela loja.",
+      };
+    }
+
+    if (currentStatus !== "customer_signed") {
+      return {
+        ok: false as const,
+        status: 409,
+        error: "CONTRACT_CUSTOMER_SIGNATURE_REQUIRED",
+        message: "A loja so pode confirmar o contrato depois que o cliente aceitar.",
+      };
+    }
+
+    const signResult = await callInternalJson(
+      request,
+      `/api/sales-contracts/${encodeURIComponent(contractId)}/store-sign`,
+      { method: "POST" }
+    );
+
+    const signErrorCode = String(signResult.body?.error || "").trim();
+    if (
+      !signResult.ok &&
+      signErrorCode !== "STORE_SIGNATURE_ALREADY_EXISTS"
+    ) {
+      return {
+        ok: false as const,
+        status: signResult.status,
+        error: signErrorCode || "CONTRACT_STORE_SIGN_FAILED",
+        message:
+          signResult.body?.message ||
+          "Nao foi possivel confirmar este contrato pela loja.",
+      };
+    }
+
+    return {
+      ok: true as const,
+      status: 200,
+      message: "Contrato confirmado pela loja com sucesso.",
+    };
+  } catch (error) {
+    if (error instanceof ContractAccessError) {
+      return {
+        ok: false as const,
+        status: error.status,
+        error: error.code,
+        message: error.message,
+      };
+    }
+
+    return {
+      ok: false as const,
+      status: 500,
+      error: "CONTRACT_STORE_SIGN_FAILED",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Erro inesperado ao confirmar o contrato pela loja.",
+    };
+  }
+}
+
 export async function executeAssistantDocumentAction(
   args: ExecuteDocumentActionArgs
 ): Promise<ExecuteDocumentActionResult> {
@@ -485,6 +567,32 @@ export async function executeAssistantDocumentAction(
       action: args.action,
       message: result.message,
       signedUrl: result.ok ? result.signedUrl : undefined,
+      error: result.ok ? undefined : result.error,
+    };
+  }
+
+  if (args.action === "confirm_store_signature") {
+    if (args.documentType !== "contract") {
+      return {
+        ok: false,
+        status: 400,
+        documentType: args.documentType,
+        documentId: args.documentId,
+        action: args.action,
+        error: "INVALID_DOCUMENT_TYPE",
+        message: "A acao confirm_store_signature so pode ser usada em contratos.",
+      };
+    }
+
+    const result = await confirmStoreSignature(args.request, args.documentId);
+
+    return {
+      ok: result.ok,
+      status: result.status,
+      documentType: args.documentType,
+      documentId: args.documentId,
+      action: args.action,
+      message: result.message,
       error: result.ok ? undefined : result.error,
     };
   }
