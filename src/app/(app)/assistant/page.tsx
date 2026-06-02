@@ -36,6 +36,57 @@ type AssistantReplyApiResponse = {
   aiText?: string;
 };
 
+type AssistantDocumentActionId = "review" | "approve_and_send";
+
+type AssistantDocumentActionApiResponse = {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  signedUrl?: string;
+  action?: AssistantDocumentActionId;
+  documentType?: "quote" | "contract";
+  documentId?: string;
+};
+
+type AssistantDocumentActionMetadata = {
+  id?: string;
+  label?: string;
+  kind?: string;
+  requires_confirmation?: boolean;
+};
+
+type AssistantDocumentReviewMetadata = {
+  kind?: string;
+  document_type?: "quote" | "contract";
+  document_id?: string;
+  document_version_id?: string;
+  document_number?: string;
+  document_status?: string;
+  related_quote_id?: string | null;
+  related_contract_id?: string | null;
+  related_lead_id?: string | null;
+  related_conversation_id?: string | null;
+  customer_name?: string;
+  customer_phone?: string;
+  storage_bucket?: string;
+  storage_path?: string;
+  file_kind?: string;
+  mime_type?: string;
+  original_file_name?: string;
+  assistant_prompt?: string;
+  available_actions?: AssistantDocumentActionMetadata[];
+  source?: string;
+};
+
+type DocumentFeedbackTone = "success" | "error";
+
+const TERMINAL_DOCUMENT_STATUSES = new Set([
+  "completed",
+  "cancelled",
+  "expired",
+  "failed",
+]);
+
 function formatDateTime(value: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -132,6 +183,116 @@ function formatAttachmentKind(file: File | null) {
 
 function getSafeString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function isUuidLike(value: string | null | undefined) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || "").trim()
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function getAssistantDocumentReviewMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): AssistantDocumentReviewMetadata | null {
+  if (!isRecord(metadata)) return null;
+  if (getSafeString(metadata.kind) !== "document_review") return null;
+  return metadata as AssistantDocumentReviewMetadata;
+}
+
+function getDocumentTypeLabel(value: string | null | undefined) {
+  return normalizeText(value) === "contract" ? "Contrato" : "Orcamento";
+}
+
+function formatDocumentStatus(value: string | null | undefined) {
+  const normalized = normalizeText(value);
+  if (!normalized) return "Nao informado";
+  if (normalized === "pending_review") return "Pendente de revisao";
+  if (normalized === "approved") return "Aprovado";
+  if (normalized === "sent" || normalized === "sent_to_customer") return "Enviado";
+  if (normalized === "draft") return "Rascunho";
+  if (normalized === "completed") return "Concluido";
+  if (normalized === "cancelled") return "Cancelado";
+  if (normalized === "expired") return "Expirado";
+  if (normalized === "failed") return "Falhou";
+  return value ? String(value) : "Nao informado";
+}
+
+function getDocumentActionMetadata(
+  metadata: AssistantDocumentReviewMetadata,
+  actionId: AssistantDocumentActionId
+) {
+  const available = Array.isArray(metadata.available_actions)
+    ? metadata.available_actions
+    : [];
+
+  return (
+    available.find((item) => {
+      const id = getSafeString(item?.id);
+      const kind = getSafeString(item?.kind);
+
+      if (actionId === "review") {
+        return id === "review" || kind === "open_document";
+      }
+
+      return id === "approve_and_send" || kind === "approve_and_send";
+    }) || null
+  );
+}
+
+function getDocumentActionLabel(
+  metadata: AssistantDocumentReviewMetadata,
+  actionId: AssistantDocumentActionId
+) {
+  const action = getDocumentActionMetadata(metadata, actionId);
+  const fallback = actionId === "review" ? "Revisar" : "Aprovar e enviar";
+  return getSafeString(action?.label) || fallback;
+}
+
+function isDocumentActionEnabled(
+  metadata: AssistantDocumentReviewMetadata,
+  actionId: AssistantDocumentActionId
+) {
+  return Boolean(getDocumentActionMetadata(metadata, actionId));
+}
+
+function hasCompleteDocumentReviewMetadata(metadata: AssistantDocumentReviewMetadata | null) {
+  if (!metadata) return false;
+  const documentType = normalizeText(metadata.document_type);
+  const documentId = getSafeString(metadata.document_id);
+  return (
+    (documentType === "quote" || documentType === "contract") &&
+    isUuidLike(documentId)
+  );
+}
+
+function isTerminalDocumentStatus(value: string | null | undefined) {
+  return TERMINAL_DOCUMENT_STATUSES.has(normalizeText(value));
+}
+
+function getValidatedDocumentActionPayload(
+  metadata: AssistantDocumentReviewMetadata | null
+) {
+  const documentType = normalizeText(metadata?.document_type);
+  const documentId = getSafeString(metadata?.document_id);
+  const validType = documentType === "quote" || documentType === "contract";
+  const validDocumentId = isUuidLike(documentId);
+
+  return {
+    documentType: validType ? (documentType as "quote" | "contract") : null,
+    documentId: validDocumentId ? documentId : null,
+    isValid: validType && validDocumentId,
+  };
+}
+
+function getDocumentPromptText(metadata: AssistantDocumentReviewMetadata | null) {
+  return (
+    getSafeString(metadata?.assistant_prompt) ||
+    "Esse documento pode ser enviado ou precisa ser editado? Caso precise ser editado, me diga o que precisa que eu edito."
+  );
 }
 
 function findAddressTextInMetadata(value: unknown, depth = 0): string | null {
@@ -315,6 +476,13 @@ export default function AssistantPage() {
   const [recordingErrorText, setRecordingErrorText] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [documentActionLoadingKeys, setDocumentActionLoadingKeys] = useState<Record<string, boolean>>({});
+  const [documentActionFeedback, setDocumentActionFeedback] = useState<
+    Record<string, { tone: DocumentFeedbackTone; text: string }>
+  >({});
+  const [dismissedApproveActionsByMessage, setDismissedApproveActionsByMessage] = useState<
+    Record<string, boolean>
+  >({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -669,6 +837,143 @@ export default function AssistantPage() {
     });
   }, []);
 
+  const setDocumentActionLoading = useCallback((key: string, loading: boolean) => {
+    setDocumentActionLoadingKeys((current) => {
+      if (loading) {
+        return { ...current, [key]: true };
+      }
+
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  async function handleDocumentAction(
+    message: AssistantMessage,
+    actionId: AssistantDocumentActionId
+  ) {
+    const metadata = getAssistantDocumentReviewMetadata(message.metadata);
+    const payload = getValidatedDocumentActionPayload(metadata);
+    const actionKey = `${message.id}:${actionId}`;
+
+    if (!metadata || !payload.isValid || !payload.documentType || !payload.documentId) {
+      setDocumentActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text: "Dados do documento incompletos ou invalidos.",
+        },
+      }));
+      return;
+    }
+
+    if (
+      actionId === "approve_and_send" &&
+      isTerminalDocumentStatus(metadata.document_status)
+    ) {
+      setDocumentActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text: "Este documento nao pode ser aprovado e enviado no status atual.",
+        },
+      }));
+      return;
+    }
+
+    if (actionId === "approve_and_send") {
+      const confirmed = window.confirm(
+        "Tem certeza que deseja aprovar e enviar este documento ao cliente?"
+      );
+
+      if (!confirmed) return;
+    }
+
+    setDocumentActionLoading(actionKey, true);
+    setDocumentActionFeedback((current) => {
+      const next = { ...current };
+      delete next[message.id];
+      return next;
+    });
+
+    try {
+      const response = await fetch("/api/assistant/actions/document", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: actionId,
+          documentType: payload.documentType,
+          documentId: payload.documentId,
+        }),
+      });
+
+      const result = (await response.json()) as AssistantDocumentActionApiResponse;
+
+      if (!response.ok || !result.ok) {
+        setDocumentActionFeedback((current) => ({
+          ...current,
+          [message.id]: {
+            tone: "error",
+            text:
+              result.message ||
+              result.error ||
+              "Nao foi possivel executar a acao deste documento.",
+          },
+        }));
+        return;
+      }
+
+      if (actionId === "review") {
+        if (!result.signedUrl) {
+          setDocumentActionFeedback((current) => ({
+            ...current,
+            [message.id]: {
+              tone: "error",
+              text: "Nao recebi um link valido para abrir o documento.",
+            },
+          }));
+          return;
+        }
+
+        window.open(result.signedUrl, "_blank", "noopener,noreferrer");
+      }
+
+      setDocumentActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "success",
+          text:
+            result.message ||
+            (actionId === "review"
+              ? "Documento aberto para revisao."
+              : "Documento aprovado e enviado com sucesso."),
+        },
+      }));
+
+      if (actionId === "approve_and_send") {
+        setDismissedApproveActionsByMessage((current) => ({
+          ...current,
+          [message.id]: true,
+        }));
+        await loadAssistant({ silent: true });
+      }
+    } catch (error: any) {
+      setDocumentActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text:
+            error?.message || "Erro inesperado ao executar a acao do documento.",
+        },
+      }));
+    } finally {
+      setDocumentActionLoading(actionKey, false);
+    }
+  }
+
   if (loading) {
     return <div className="p-4 text-sm text-gray-600">Carregando assistente...</div>;
   }
@@ -769,6 +1074,131 @@ export default function AssistantPage() {
                             <div className="whitespace-pre-wrap break-words text-[13px] leading-5 text-gray-900">
                               {message.content}
                             </div>
+
+                            {(() => {
+                              const documentMetadata = getAssistantDocumentReviewMetadata(
+                                message.metadata
+                              );
+
+                              if (!documentMetadata) return null;
+
+                              const payload =
+                                getValidatedDocumentActionPayload(documentMetadata);
+                              const metadataComplete =
+                                hasCompleteDocumentReviewMetadata(documentMetadata);
+                              const terminalStatus = isTerminalDocumentStatus(
+                                documentMetadata.document_status
+                              );
+                              const feedback = documentActionFeedback[message.id] || null;
+                              const reviewEnabled =
+                                metadataComplete &&
+                                isDocumentActionEnabled(documentMetadata, "review");
+                              const approveEnabled =
+                                metadataComplete &&
+                                !terminalStatus &&
+                                dismissedApproveActionsByMessage[message.id] !== true &&
+                                isDocumentActionEnabled(
+                                  documentMetadata,
+                                  "approve_and_send"
+                                );
+                              const reviewLoading =
+                                documentActionLoadingKeys[`${message.id}:review`] === true;
+                              const approveLoading =
+                                documentActionLoadingKeys[
+                                  `${message.id}:approve_and_send`
+                                ] === true;
+
+                              return (
+                                <div className="mt-3 rounded-2xl border border-black/10 bg-[#fafafa] p-3">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span className="rounded-full bg-black px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-white">
+                                      {getDocumentTypeLabel(documentMetadata.document_type)}
+                                    </span>
+                                    {getSafeString(documentMetadata.document_number) ? (
+                                      <span className="text-[12px] font-semibold text-gray-900">
+                                        {getSafeString(documentMetadata.document_number)}
+                                      </span>
+                                    ) : null}
+                                    <span className="text-[11px] font-medium text-gray-500">
+                                      PDF privado
+                                    </span>
+                                  </div>
+
+                                  <div className="mt-3 rounded-xl bg-white px-3 py-2 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5">
+                                    {getDocumentPromptText(documentMetadata)}
+                                  </div>
+
+                                  {!metadataComplete ? (
+                                    <div className="mt-2 text-[11px] font-medium text-amber-700">
+                                      Dados do documento incompletos ou invalidos.
+                                    </div>
+                                  ) : null}
+
+                                  {feedback ? (
+                                    <div
+                                      className={[
+                                        "mt-2 rounded-xl px-3 py-2 text-[11px] ring-1",
+                                        feedback.tone === "success"
+                                          ? "bg-green-50 text-green-800 ring-green-200"
+                                          : "bg-red-50 text-red-800 ring-red-200",
+                                      ].join(" ")}
+                                    >
+                                      {feedback.text}
+                                    </div>
+                                  ) : null}
+
+                                  {reviewEnabled || approveEnabled ? (
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                      {reviewEnabled ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void handleDocumentAction(message, "review")
+                                          }
+                                          disabled={
+                                            !payload.isValid ||
+                                            reviewLoading ||
+                                            approveLoading
+                                          }
+                                          className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          {reviewLoading
+                                            ? "Abrindo..."
+                                            : getDocumentActionLabel(
+                                                documentMetadata,
+                                                "review"
+                                              )}
+                                        </button>
+                                      ) : null}
+                                      {approveEnabled ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            void handleDocumentAction(
+                                              message,
+                                              "approve_and_send"
+                                            )
+                                          }
+                                          disabled={
+                                            !payload.isValid ||
+                                            reviewLoading ||
+                                            approveLoading
+                                          }
+                                          className="rounded-full bg-black px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          {approveLoading
+                                            ? "Enviando..."
+                                            : getDocumentActionLabel(
+                                                documentMetadata,
+                                                "approve_and_send"
+                                              )}
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              );
+                            })()}
 
                             {shouldShowRouteButton(message) ? (
                               <div className="mt-2 flex flex-wrap justify-end gap-1.5">
