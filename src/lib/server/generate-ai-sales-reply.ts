@@ -108,7 +108,7 @@ type DetectedIntent =
   | "pool_choice"
   | "comparison";
 
-type PaymentOrClosingSubtype =
+export type PaymentOrClosingSubtype =
   | "payment_info"
   | "pix_key_request"
   | "payment_submitted"
@@ -1823,7 +1823,7 @@ function isGenericPoolOpening(text: string): boolean {
   );
 }
 
-function detectPaymentOrClosingSubtype(text: string): PaymentOrClosingSubtype {
+export function detectPaymentOrClosingSubtype(text: string): PaymentOrClosingSubtype {
   const t = normalizeText(text);
 
   if (!t || isGenericPoolOpening(text) || looksLikeDiscountQuestionV2(text) || looksLikePriceQuestion(text)) {

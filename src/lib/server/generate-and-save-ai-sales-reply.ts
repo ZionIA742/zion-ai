@@ -1,9 +1,16 @@
 import { createClient } from "@supabase/supabase-js";
 import {
+  detectPaymentOrClosingSubtype,
   generateAiSalesReply,
   type CommercialHandoffContext,
   type OperationalFollowUpDecision,
+  type PaymentOrClosingSubtype,
 } from "./generate-ai-sales-reply";
+import {
+  evaluateContractWorkflowDecision,
+  type ContractWorkflowDecisionTrigger,
+} from "./sales-contracts/contract-workflow-decision";
+import { pushAssistantContractWorkflowDecisionMessage } from "./assistant/contract-workflow-messages";
 
 type GenerateAndSaveAiSalesReplyParams = {
   organizationId: string;
@@ -109,6 +116,37 @@ type CommercialHandoffCreationResult = {
   crmAutoProgressSkippedReason?: string | null;
   crmAutoProgressError?: string | null;
   crmAutoProgressResult?: CrmAutoProgressResult | null;
+};
+
+type ContractWorkflowQuoteCandidateRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  conversation_id: string | null;
+  lead_id: string | null;
+  quote_number: string | null;
+  status: string | null;
+  customer_name: string | null;
+  total_cents: number | null;
+  current_version_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type ExistingContractStateRow = {
+  id: string;
+  status: string | null;
+};
+
+type ContractWorkflowCardCreationResult = {
+  attempted: boolean;
+  created: boolean;
+  deduped?: boolean;
+  reason: string;
+  quoteId?: string | null;
+  quoteNumber?: string | null;
+  trigger?: ContractWorkflowDecisionTrigger | null;
+  error?: string | null;
 };
 
 const NO_RESUME_REASON = "none";
@@ -586,6 +624,76 @@ function normalizeText(value: string | null | undefined): string {
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase();
+}
+
+function cleanText(value: unknown): string | null {
+  const text = String(value || "").trim();
+  return text || null;
+}
+
+function hasAnyPhrase(text: string, phrases: string[]) {
+  return phrases.some((phrase) => text.includes(phrase));
+}
+
+function hasNegativeClosingOrContractSignal(text: string) {
+  return hasAnyPhrase(text, [
+    "nao fechado",
+    "nao esta fechado",
+    "nao está fechado",
+    "nao quero fechar",
+    "nao vou fechar",
+    "nao aceito",
+    "nao aprovado",
+    "nao manda contrato",
+    "nao quero contrato",
+    "nao precisa de contrato",
+    "sem contrato",
+  ]);
+}
+
+function inferPreContractCustomerSignalTrigger(
+  lastCustomerMessage: string | null | undefined
+): ContractWorkflowDecisionTrigger | null {
+  const text = normalizeText(lastCustomerMessage);
+  if (!text) return null;
+  if (hasNegativeClosingOrContractSignal(text)) return null;
+
+  const subtype = detectPaymentOrClosingSubtype(text);
+
+  if (subtype === "contract_request") {
+    const strongContractRequest = hasAnyPhrase(text, [
+      "manda o contrato",
+      "pode mandar o contrato",
+      "me manda o contrato",
+      "pode enviar o contrato",
+      "envia o contrato",
+      "quero o contrato",
+      "emitir o contrato",
+      "emite o contrato",
+    ]);
+
+    return strongContractRequest ? "customer_requested_contract" : null;
+  }
+
+  if (subtype === "closing_or_buying") {
+    return "customer_accepted_quote";
+  }
+
+  const explicitAcceptanceSignal = hasAnyPhrase(text, [
+    "aceito o orcamento",
+    "aceito o orçamento",
+    "orcamento aprovado",
+    "orçamento aprovado",
+    "esta aprovado",
+    "está aprovado",
+    "fechado",
+    "vamos fechar",
+    "quero fechar",
+    "pode seguir",
+    "vamos fazer",
+  ]);
+
+  return explicitAcceptanceSignal ? "customer_accepted_quote" : null;
 }
 
 function hasClearCommercialQualificationSignal(message: string | null | undefined): boolean {
@@ -1988,6 +2096,249 @@ async function createCommercialAssistantHandoff(args: {
   };
 }
 
+async function loadEligibleQuotesByConversationOrLead(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId?: string | null;
+  leadId?: string | null;
+}) {
+  const select =
+    "id, organization_id, store_id, conversation_id, lead_id, quote_number, status, customer_name, total_cents, current_version_id, created_at, updated_at";
+
+  const loadByConversation = async () => {
+    const conversationId = cleanText(args.conversationId);
+    if (!conversationId) return [] as ContractWorkflowQuoteCandidateRow[];
+
+    const { data, error } = await args.supabase
+      .from("sales_quotes")
+      .select(select)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("conversation_id", conversationId)
+      .in("status", ["approved", "sent"])
+      .not("current_version_id", "is", null)
+      .order("updated_at", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    if (error) {
+      throw new Error(
+        `Falha ao carregar orcamentos elegiveis por conversa: ${error.message}`
+      );
+    }
+
+    return (data || []) as ContractWorkflowQuoteCandidateRow[];
+  };
+
+  const loadByLead = async () => {
+    const leadId = cleanText(args.leadId);
+    if (!leadId) return [] as ContractWorkflowQuoteCandidateRow[];
+
+    const { data, error } = await args.supabase
+      .from("sales_quotes")
+      .select(select)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("lead_id", leadId)
+      .in("status", ["approved", "sent"])
+      .not("current_version_id", "is", null)
+      .order("updated_at", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    if (error) {
+      throw new Error(
+        `Falha ao carregar orcamentos elegiveis por lead: ${error.message}`
+      );
+    }
+
+    return (data || []) as ContractWorkflowQuoteCandidateRow[];
+  };
+
+  return {
+    byConversation: await loadByConversation(),
+    byLead: await loadByLead(),
+  };
+}
+
+function pickInequivocalQuoteCandidate(args: {
+  byConversation: ContractWorkflowQuoteCandidateRow[];
+  byLead: ContractWorkflowQuoteCandidateRow[];
+}) {
+  if (args.byConversation.length === 1) {
+    return {
+      candidate: args.byConversation[0],
+      source: "conversation_id" as const,
+    };
+  }
+
+  if (args.byConversation.length > 1) {
+    return {
+      candidate: null,
+      source: "conversation_id" as const,
+      ambiguous: true,
+    };
+  }
+
+  if (args.byLead.length === 1) {
+    return {
+      candidate: args.byLead[0],
+      source: "lead_id" as const,
+    };
+  }
+
+  if (args.byLead.length > 1) {
+    return {
+      candidate: null,
+      source: "lead_id" as const,
+      ambiguous: true,
+    };
+  }
+
+  return {
+    candidate: null,
+    source: "none" as const,
+    ambiguous: false,
+  };
+}
+
+async function loadExistingContractsForQuote(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("sales_contracts")
+    .select("id, status")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("quote_id", args.quoteId);
+
+  if (error) {
+    throw new Error(`Falha ao carregar contratos do orcamento: ${error.message}`);
+  }
+
+  return (data || []) as ExistingContractStateRow[];
+}
+
+async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  customerName: string | null;
+  lastCustomerMessage: string | null | undefined;
+}) : Promise<ContractWorkflowCardCreationResult> {
+  const trigger = inferPreContractCustomerSignalTrigger(args.lastCustomerMessage);
+  if (!trigger) {
+    return {
+      attempted: false,
+      created: false,
+      reason: "no_clear_pre_contract_signal",
+    };
+  }
+
+  const quoteCandidates = await loadEligibleQuotesByConversationOrLead({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    leadId: args.leadId,
+  });
+
+  const selectedQuote = pickInequivocalQuoteCandidate(quoteCandidates);
+  if (!selectedQuote.candidate) {
+    return {
+      attempted: true,
+      created: false,
+      reason: selectedQuote.ambiguous ? "quote_ambiguous" : "quote_not_found",
+      trigger,
+    };
+  }
+
+  const existingContracts = await loadExistingContractsForQuote({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    quoteId: selectedQuote.candidate.id,
+  });
+
+  const decision = evaluateContractWorkflowDecision({
+    quote: {
+      id: selectedQuote.candidate.id,
+      status: selectedQuote.candidate.status,
+      lead_id: selectedQuote.candidate.lead_id,
+      conversation_id: selectedQuote.candidate.conversation_id,
+      store_id: selectedQuote.candidate.store_id,
+      organization_id: selectedQuote.candidate.organization_id,
+      total_cents: selectedQuote.candidate.total_cents,
+      current_version_id: selectedQuote.candidate.current_version_id,
+    },
+    trigger,
+    hasHumanConfirmation: false,
+    existingContracts,
+  });
+
+  if (!decision.needsHumanConfirmation || decision.allowed) {
+    return {
+      attempted: true,
+      created: false,
+      reason: "decision_did_not_require_human_card",
+      quoteId: selectedQuote.candidate.id,
+      quoteNumber: cleanText(selectedQuote.candidate.quote_number),
+      trigger,
+    };
+  }
+
+  if (
+    decision.reasonCode !== "CUSTOMER_SIGNAL_REQUIRES_HUMAN_CONFIRMATION" &&
+    decision.reasonCode !== "TECHNICAL_VISIT_REQUIRED_BEFORE_CONTRACT"
+  ) {
+    return {
+      attempted: true,
+      created: false,
+      reason: decision.reasonCode,
+      quoteId: selectedQuote.candidate.id,
+      quoteNumber: cleanText(selectedQuote.candidate.quote_number),
+      trigger,
+    };
+  }
+
+  const summary =
+    trigger === "customer_requested_contract"
+      ? "O cliente pediu contrato na conversa comercial."
+      : "O cliente deu sinal de aceite/fechamento na conversa comercial.";
+
+  const pushResult = await pushAssistantContractWorkflowDecisionMessage({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    leadId: selectedQuote.candidate.lead_id || args.leadId,
+    conversationId: selectedQuote.candidate.conversation_id || args.conversationId,
+    quoteId: selectedQuote.candidate.id,
+    quoteNumber: cleanText(selectedQuote.candidate.quote_number),
+    customerName:
+      cleanText(selectedQuote.candidate.customer_name) || cleanText(args.customerName),
+    trigger,
+    decision,
+    summary,
+    sourceOverride: "sales_ai_customer_signal_v1",
+  });
+
+  return {
+    attempted: true,
+    created: pushResult.created === true,
+    deduped: pushResult.deduped === true,
+    reason: pushResult.deduped ? "assistant_card_deduped" : "assistant_card_created",
+    quoteId: selectedQuote.candidate.id,
+    quoteNumber: cleanText(selectedQuote.candidate.quote_number),
+    trigger,
+  };
+}
+
 
 export async function generateAndSaveAiSalesReply(
   params: GenerateAndSaveAiSalesReplyParams
@@ -2333,6 +2684,39 @@ export async function generateAndSaveAiSalesReply(
       });
     }
 
+    let preContractCardResult: ContractWorkflowCardCreationResult | null = null;
+
+    try {
+      preContractCardResult = await maybeCreateAssistantPreContractCardFromCustomerSignal({
+        supabase,
+        organizationId,
+        storeId,
+        conversationId,
+        leadId: normalizedConversation.lead_id || null,
+        customerName: generationResult.context?.leadName || null,
+        lastCustomerMessage:
+          generationResult.context?.lastCustomerMessage ||
+          generationResult.context?.commercialHandoff?.lastCustomerMessage ||
+          null,
+      });
+    } catch (preContractCardError: any) {
+      preContractCardResult = {
+        attempted: true,
+        created: false,
+        reason: "pre_contract_card_creation_failed",
+        error: preContractCardError?.message || String(preContractCardError || ""),
+      };
+      console.warn(
+        "[zion-ai-sales-pre-contract] Falha ao criar card pre-contrato da assistente",
+        {
+          organizationId,
+          storeId,
+          conversationId,
+          error: preContractCardError?.message || preContractCardError,
+        }
+      );
+    }
+
     const shouldSkipQualificationBecauseBudgetProgressed =
       requestedCommercialHandoff?.shouldCreateTask === true &&
       requestedCommercialHandoff?.taskType === "commercial_quote_request" &&
@@ -2395,6 +2779,7 @@ export async function generateAndSaveAiSalesReply(
         ...generationResult.context,
         qualificationAutoProgressResult,
         commercialHandoffResult,
+        preContractCardResult,
       },
       usage: generationResult.usage,
       persisted: true,
