@@ -98,3 +98,26 @@ alter table public.store_contract_templates
   foreign key (active_version_id)
   references public.store_contract_template_versions(id)
   on delete set null;
+
+alter table public.store_files
+  drop constraint if exists store_files_file_kind_check;
+
+alter table public.store_files
+  add constraint store_files_file_kind_check
+  check (
+    file_kind = any (
+      array[
+        'onboarding'::text,
+        'contract'::text,
+        'catalog_import'::text,
+        'catalog_document'::text,
+        'catalog_photo'::text,
+        'sales_quote_pdf'::text,
+        'sales_contract_pdf'::text,
+        'manual_attachment'::text,
+        'customer_media'::text,
+        'store_logo'::text,
+        'store_contract_template_source'::text
+      ]
+    )
+  );
