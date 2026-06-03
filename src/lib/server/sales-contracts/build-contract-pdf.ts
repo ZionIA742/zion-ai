@@ -62,14 +62,14 @@ function formatCurrency(cents: number | null | undefined) {
 
 function formatDate(value: string | null | undefined) {
   const safeValue = String(value || "").trim();
-  if (!safeValue) return "Nao informado";
+  if (!safeValue) return "Não informado";
 
   const date = new Date(safeValue);
   if (Number.isNaN(date.getTime())) return safeValue;
   return date.toLocaleDateString("pt-BR");
 }
 
-function toDisplayText(value: string | null | undefined, fallback = "Nao informado") {
+function toDisplayText(value: string | null | undefined, fallback = "Não informado") {
   const safeValue = String(value || "").trim();
   return safeValue || fallback;
 }
@@ -323,14 +323,14 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
 
   let cursor = addPage(pdfDoc);
   const storeName = toDisplayText(input.storeName, "Loja");
-  const contractNumber = toDisplayText(input.contractNumber, "Nao informado");
-  const quoteNumber = toDisplayText(input.quoteNumber, "Nao informado");
+  const contractNumber = toDisplayText(input.contractNumber, "Não informado");
+  const quoteNumber = toDisplayText(input.quoteNumber, "Não informado");
   const customerName = toDisplayText(input.customerName);
   const customerPhone = toDisplayText(input.customerPhone);
   const title =
     toDisplayText(
       input.title,
-      "CONTRATO DE COMPRA E VENDA / PRESTACAO DE SERVICO"
+      "CONTRATO DE COMPRA E VENDA / PRESTAÇÃO DE SERVIÇO"
     );
 
   cursor.page.drawRectangle({
@@ -364,7 +364,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
       color: COLOR_TEXT,
     });
 
-    cursor.page.drawText("Documento contratual gerado pela loja", {
+    cursor.page.drawText("Documento contratual da loja", {
       x: PAGE_MARGIN + size.width + 14,
       y: cursor.y - 20,
       size: 9,
@@ -382,7 +382,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
       color: COLOR_TEXT,
     });
 
-    cursor.page.drawText("Documento contratual gerado pela loja", {
+    cursor.page.drawText("Documento contratual da loja", {
       x: PAGE_MARGIN,
       y: cursor.y - 16,
       size: 9,
@@ -425,7 +425,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
 
   drawKeyValue({
     page: cursor.page,
-    label: "Orcamento de referencia",
+    label: "Orçamento de referência",
     value: quoteNumber,
     x: PAGE_MARGIN + 180,
     y: cursor.y - 14,
@@ -471,7 +471,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   const itemLines =
     input.items.length > 0
       ? input.items.flatMap((item, index) => {
-          const name = toDisplayText(item.name, "Item nao informado");
+          const name = toDisplayText(item.name, "Item não informado");
           const description = toDisplayText(item.description, "A definir pela loja");
           return [
             `${index + 1}. ${name}`,
@@ -483,7 +483,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
             description,
           ];
         })
-      : ["Itens principais nao informados. A definir pela loja."];
+      : ["Itens principais não informados. A definir pela loja."];
 
   cursor = drawSectionBox({
     cursor,
@@ -510,7 +510,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   cursor = drawParagraph({
     cursor,
     pdfDoc,
-    title: "CONDICOES DE PAGAMENTO",
+    title: "CONDIÇÕES DE PAGAMENTO",
     text: toDisplayText(input.paymentTerms, "A definir pela loja"),
     font,
     boldFont,
@@ -519,7 +519,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   cursor = drawParagraph({
     cursor,
     pdfDoc,
-    title: "ENTREGA / INSTALACAO",
+    title: "ENTREGA / INSTALAÇÃO",
     text: toDisplayText(input.deliveryTerms, "A definir pela loja"),
     font,
     boldFont,
@@ -537,10 +537,10 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   cursor = drawParagraph({
     cursor,
     pdfDoc,
-    title: "CLAUSULAS E TERMOS",
+    title: "CLÁUSULAS E TERMOS",
     text: toDisplayText(
       input.contractTerms,
-      "Contrato gerado em versao inicial. Validacao final e uso conforme regras da loja."
+      "Contrato sujeito à validação final e uso conforme regras da loja."
     ),
     font,
     boldFont,
@@ -551,8 +551,8 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     pdfDoc,
     title: "VALIDADE",
     text: input.validUntil
-      ? `Este contrato permanece em analise ate ${formatDate(input.validUntil)}.`
-      : "Prazo de validade nao informado.",
+      ? `Este contrato permanece em análise até ${formatDate(input.validUntil)}.`
+      : "Prazo de validade não informado.",
     font,
     boldFont,
   });
@@ -575,7 +575,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     color: COLOR_ACCENT,
   });
   cursor.page.drawText(
-    "Espaco reservado para aceite rastreavel do cliente. A IA nao assina este contrato.",
+    "Espaço reservado para aceite rastreável do cliente.",
     {
       x: PAGE_MARGIN + 12,
       y: cursor.y - 32,
@@ -596,7 +596,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     borderColor: COLOR_BORDER,
     borderWidth: 0.7,
   });
-  cursor.page.drawText("ASSINATURA / CONFIRMACAO DA LOJA", {
+  cursor.page.drawText("ASSINATURA / CONFIRMAÇÃO DA LOJA", {
     x: PAGE_MARGIN + 12,
     y: cursor.y - 16,
     size: 9,
@@ -604,7 +604,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     color: COLOR_ACCENT,
   });
   cursor.page.drawText(
-    "Espaco reservado para assinatura ou confirmacao humana da loja apos o aceite do cliente.",
+    "Espaço reservado para assinatura ou confirmação da loja após o aceite do cliente.",
     {
       x: PAGE_MARGIN + 12,
       y: cursor.y - 32,
@@ -616,7 +616,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   cursor.y -= 68;
 
   const footerLines = wrapText(
-    "Documento gerado pelo ZION para apoio operacional da loja. O uso final deste contrato depende da validacao e das regras comerciais, juridicas e operacionais aplicaveis.",
+    "Documento contratual da loja. O uso final deste contrato depende da validação das regras comerciais, jurídicas e operacionais aplicáveis.",
     95
   );
   cursor = ensureSpace(cursor, pdfDoc, 60);
