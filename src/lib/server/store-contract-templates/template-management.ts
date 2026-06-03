@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
+import { extractContractTextFromStoredFile } from "./contract-text-analysis";
 
 const STORAGE_BUCKET = "zion-store-files";
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
@@ -9,6 +10,13 @@ const ALLOWED_STATUS_TRANSITIONS_FOR_APPROVAL = new Set([
   "awaiting_review",
   "approved",
   "active",
+]);
+const ALLOWED_STATUS_TRANSITIONS_FOR_ANALYSIS = new Set([
+  "uploaded",
+  "analyzing",
+  "analyzed",
+  "awaiting_review",
+  "approved",
 ]);
 const TERMINAL_VERSION_STATUSES = new Set(["archived", "failed"]);
 const ALLOWED_TEMPLATE_MIME_TYPES = new Set([
@@ -440,6 +448,52 @@ async function loadTemplateVersionById(args: {
   return (data ?? null) as StoreContractTemplateVersionRow | null;
 }
 
+async function updateTemplateVersionStatus(args: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  versionId: string;
+  organizationId: string;
+  storeId: string;
+  status: string;
+  rawExtractedText?: string | null;
+  analysisSummary?: string | null;
+  metadata?: Record<string, unknown> | null;
+}) {
+  const now = new Date().toISOString();
+  const payload: Record<string, unknown> = {
+    status: args.status,
+    updated_at: now,
+  };
+
+  if (args.rawExtractedText !== undefined) {
+    payload.raw_extracted_text = args.rawExtractedText;
+  }
+
+  if (args.analysisSummary !== undefined) {
+    payload.analysis_summary = args.analysisSummary;
+  }
+
+  if (args.metadata !== undefined) {
+    payload.metadata = args.metadata;
+  }
+
+  const { data, error } = await args.supabase
+    .from("store_contract_template_versions")
+    .update(payload)
+    .eq("id", args.versionId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .select(
+      "id, template_id, organization_id, store_id, version_number, status, store_file_id, storage_bucket, storage_path, original_filename, mime_type, size_bytes, raw_extracted_text, analysis_summary, approved_at, approved_by, rejected_at, rejected_by, rejection_reason, metadata, created_at, updated_at"
+    )
+    .maybeSingle();
+
+  if (error || !data?.id) {
+    throw new Error(error?.message || "Falha ao atualizar a versao do contrato base.");
+  }
+
+  return data as StoreContractTemplateVersionRow;
+}
+
 function buildTemplateSummary(template: StoreContractTemplateRow | null, versions: StoreContractTemplateVersionRow[]) {
   if (!template) {
     return {
@@ -866,5 +920,187 @@ export async function rejectStoreContractTemplateVersion(args: {
     organizationId: scope.organizationId,
     ...buildTemplateSummary(template, versions),
     rejectedVersion: updatedVersion as StoreContractTemplateVersionRow,
+  };
+}
+
+export async function analyzeStoreContractTemplateVersion(args: {
+  versionId: string;
+  storeId: string;
+  organizationId?: string | null;
+}) {
+  const scope = await resolveAuthorizedStoreTemplateScope(args);
+  const versionId = String(args.versionId || "").trim();
+
+  if (!versionId) {
+    throw new StoreContractTemplateAccessError(
+      400,
+      "INVALID_TEMPLATE_VERSION_ID",
+      "Version ID nao informado."
+    );
+  }
+
+  const version = await loadTemplateVersionById({
+    supabase: scope.supabase,
+    versionId,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  if (!version?.id) {
+    throw new StoreContractTemplateAccessError(
+      404,
+      "TEMPLATE_VERSION_NOT_FOUND",
+      "Versao do contrato base nao encontrada nessa loja."
+    );
+  }
+
+  const template = await loadStoreContractTemplate({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  if (!template?.id || template.id !== version.template_id) {
+    throw new StoreContractTemplateAccessError(
+      404,
+      "TEMPLATE_NOT_FOUND",
+      "Template do contrato base nao encontrado nessa loja."
+    );
+  }
+
+  const normalizedStatus = String(version.status || "").trim().toLowerCase();
+  const hasExtractedText = Boolean(cleanText(version.raw_extracted_text));
+  const isActiveWithoutExtractedText = normalizedStatus === "active" && !hasExtractedText;
+
+  if (normalizedStatus === "active" && !isActiveWithoutExtractedText) {
+    throw new StoreContractTemplateAccessError(
+      409,
+      "ACTIVE_TEMPLATE_VERSION_CANNOT_BE_ANALYZED",
+      "A versao ativa nao pode ser reanalisada por esta tela."
+    );
+  }
+
+  if (normalizedStatus === "rejected" || normalizedStatus === "archived") {
+    throw new StoreContractTemplateAccessError(
+      409,
+      "TEMPLATE_VERSION_NOT_ANALYZABLE",
+      "Essa versao nao pode ser analisada no status atual."
+    );
+  }
+
+  if (
+    !ALLOWED_STATUS_TRANSITIONS_FOR_ANALYSIS.has(normalizedStatus) &&
+    !isActiveWithoutExtractedText
+  ) {
+    throw new StoreContractTemplateAccessError(
+      409,
+      "TEMPLATE_VERSION_NOT_ANALYZABLE",
+      "Essa versao nao pode ser analisada no status atual."
+    );
+  }
+
+  const analyzingVersion = isActiveWithoutExtractedText
+    ? (version as StoreContractTemplateVersionRow)
+    : await updateTemplateVersionStatus({
+        supabase: scope.supabase,
+        versionId: version.id,
+        organizationId: scope.organizationId,
+        storeId: scope.store.id,
+        status: "analyzing",
+        metadata: {
+          ...(version.metadata || {}),
+          analysis_started_at: new Date().toISOString(),
+          analysis_started_by_user_id: scope.userId,
+        },
+      });
+
+  try {
+    const fileName =
+      cleanText(analyzingVersion.original_filename) ||
+      `contrato-base-v${String(analyzingVersion.version_number || 0).padStart(4, "0")}.pdf`;
+    const mimeType = cleanText(analyzingVersion.mime_type) || "application/octet-stream";
+    const bucket = cleanText(analyzingVersion.storage_bucket);
+    const storagePath = cleanText(analyzingVersion.storage_path);
+
+    if (!bucket || !storagePath) {
+      throw new Error("O arquivo privado dessa versao nao esta disponivel para leitura.");
+    }
+
+    const { data: fileData, error: downloadError } = await scope.supabase.storage
+      .from(bucket)
+      .download(storagePath);
+
+    if (downloadError || !fileData) {
+      throw new Error(
+        downloadError?.message || "Nao foi possivel baixar o arquivo privado do contrato base."
+      );
+    }
+
+    const fileBuffer = Buffer.from(await fileData.arrayBuffer());
+    const extracted = await extractContractTextFromStoredFile({
+      fileName,
+      mimeType,
+      buffer: fileBuffer,
+    });
+
+    if (!cleanText(extracted.text)) {
+      throw new Error(
+        "Nao foi possivel ler esse arquivo. Tente outro PDF ou DOCX com texto selecionavel."
+      );
+    }
+
+    await updateTemplateVersionStatus({
+      supabase: scope.supabase,
+      versionId: version.id,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      status: isActiveWithoutExtractedText ? "active" : "awaiting_review",
+      rawExtractedText: extracted.text,
+      analysisSummary: extracted.summary,
+      metadata: {
+        ...(analyzingVersion.metadata || {}),
+        analysis_completed_at: new Date().toISOString(),
+        analysis_completed_by_user_id: scope.userId,
+      },
+    });
+  } catch (error) {
+    await updateTemplateVersionStatus({
+      supabase: scope.supabase,
+      versionId: version.id,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      status: isActiveWithoutExtractedText ? "active" : "failed",
+      analysisSummary:
+        error instanceof Error
+          ? error.message
+          : "Nao foi possivel ler esse arquivo nesta etapa.",
+      metadata: {
+        ...(analyzingVersion.metadata || {}),
+        analysis_failed_at: new Date().toISOString(),
+        analysis_failed_by_user_id: scope.userId,
+      },
+    });
+
+    throw error;
+  }
+
+  const refreshedTemplate = await loadStoreContractTemplate({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+  const versions = await loadTemplateVersions({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    templateId: template.id,
+  });
+
+  return {
+    store: scope.store,
+    organizationId: scope.organizationId,
+    ...buildTemplateSummary(refreshedTemplate, versions),
+    analyzedVersion:
+      versions.find((item) => item.id === version.id) || null,
   };
 }

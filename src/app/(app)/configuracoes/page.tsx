@@ -1382,6 +1382,9 @@ export default function ConfiguracoesPage() {
   const [selectedContractBaseFile, setSelectedContractBaseFile] = useState<File | null>(null);
   const [uploadingContractBase, setUploadingContractBase] = useState(false);
   const [contractActionVersionId, setContractActionVersionId] = useState<string | null>(null);
+  const [contractActionType, setContractActionType] = useState<
+    "analyze" | "approve" | "reject" | null
+  >(null);
   const [contractRejectReasonDrafts, setContractRejectReasonDrafts] = useState<Record<string, string>>({});
   const [contractsErrorText, setContractsErrorText] = useState<string | null>(null);
   const [contractsSuccessText, setContractsSuccessText] = useState<string | null>(null);
@@ -1553,6 +1556,7 @@ export default function ConfiguracoesPage() {
     }
 
     setContractActionVersionId(versionId);
+    setContractActionType("approve");
     setContractsErrorText(null);
     setContractsSuccessText(null);
 
@@ -1580,6 +1584,7 @@ export default function ConfiguracoesPage() {
       setContractsErrorText(error?.message || "Erro ao aprovar essa versao.");
     } finally {
       setContractActionVersionId(null);
+      setContractActionType(null);
     }
   }
 
@@ -1591,6 +1596,7 @@ export default function ConfiguracoesPage() {
     }
 
     setContractActionVersionId(versionId);
+    setContractActionType("reject");
     setContractsErrorText(null);
     setContractsSuccessText(null);
 
@@ -1624,6 +1630,47 @@ export default function ConfiguracoesPage() {
       setContractsErrorText(error?.message || "Erro ao rejeitar essa versao.");
     } finally {
       setContractActionVersionId(null);
+      setContractActionType(null);
+    }
+  }
+
+  async function handleAnalyzeContractVersion(versionId: string) {
+    if (!activeStoreId) {
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para analisar essa versao.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    setContractActionVersionId(versionId);
+    setContractActionType("analyze");
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
+
+    try {
+      const response = await fetch(`/api/store-contract-templates/${versionId}/analyze`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          storeId: activeStoreId,
+        }),
+      });
+
+      const result = (await response.json().catch(() => null)) as StoreContractTemplateApiResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel ler esse arquivo.");
+      }
+
+      applyStoreContractTemplateResponse(result);
+      setContractsSuccessText("Contrato analisado com sucesso.");
+    } catch (error: any) {
+      setContractsErrorText(error?.message || "Nao foi possivel ler esse arquivo.");
+    } finally {
+      setContractActionVersionId(null);
+      setContractActionType(null);
     }
   }
 
@@ -2026,6 +2073,7 @@ export default function ConfiguracoesPage() {
 
   useEffect(() => {
     setSelectedContractBaseFile(null);
+    setContractActionType(null);
     setContractRejectReasonDrafts({});
     setContractsErrorText(null);
     setContractsSuccessText(null);
@@ -6928,7 +6976,17 @@ export default function ConfiguracoesPage() {
                           storeContractActiveVersion?.id === version.id ||
                           cleanText(version.status).toLowerCase() === "active";
                         const normalizedStatus = cleanText(version.status).toLowerCase();
+                        const hasExtractedText = Boolean(cleanText(version.raw_extracted_text));
                         const isVersionBusy = contractActionVersionId === version.id;
+                        const isAnalyzeBusy =
+                          isVersionBusy && contractActionType === "analyze";
+                        const isApproveBusy =
+                          isVersionBusy && contractActionType === "approve";
+                        const isRejectBusy =
+                          isVersionBusy && contractActionType === "reject";
+                        const canAnalyze =
+                          (isActiveVersion && !hasExtractedText) ||
+                          (!isActiveVersion && ["uploaded", "failed"].includes(normalizedStatus));
                         const canApprove =
                           !isActiveVersion &&
                           ["uploaded", "analyzed", "awaiting_review", "approved"].includes(
@@ -6985,10 +7043,29 @@ export default function ConfiguracoesPage() {
                                     Motivo da rejeicao: {cleanText(version.rejection_reason)}
                                   </div>
                                 ) : null}
+
+                                {cleanText(version.analysis_summary) ? (
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                                    {cleanText(version.analysis_summary)}
+                                  </div>
+                                ) : null}
                               </div>
 
                               <div className="w-full max-w-sm space-y-2">
                                 <div className="flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleAnalyzeContractVersion(version.id)}
+                                    disabled={
+                                      !canAnalyze ||
+                                      isVersionBusy ||
+                                      uploadingContractBase ||
+                                      contractsLoading
+                                    }
+                                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {isAnalyzeBusy ? "Lendo arquivo..." : "Analisar contrato"}
+                                  </button>
                                   <button
                                     type="button"
                                     onClick={() => void handleApproveContractVersion(version.id)}
@@ -7000,7 +7077,7 @@ export default function ConfiguracoesPage() {
                                     }
                                     className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                                   >
-                                    {isVersionBusy && canApprove ? "Aprovando..." : "Aprovar versao"}
+                                    {isApproveBusy ? "Aprovando..." : "Aprovar versao"}
                                   </button>
                                   <button
                                     type="button"
@@ -7013,9 +7090,21 @@ export default function ConfiguracoesPage() {
                                     }
                                     className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                                   >
-                                    {isVersionBusy && canReject ? "Rejeitando..." : "Rejeitar versao"}
+                                    {isRejectBusy ? "Rejeitando..." : "Rejeitar versao"}
                                   </button>
                                 </div>
+
+                                {cleanText(version.raw_extracted_text) ? (
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-700">
+                                    <div className="mb-1 font-semibold text-gray-900">
+                                      Previa do texto lido
+                                    </div>
+                                    <div className="whitespace-pre-wrap">
+                                      {cleanText(version.raw_extracted_text)?.slice(0, 800)}
+                                      {cleanText(version.raw_extracted_text)!.length > 800 ? "..." : ""}
+                                    </div>
+                                  </div>
+                                ) : null}
 
                                 {!isActiveVersion ? (
                                   <textarea
