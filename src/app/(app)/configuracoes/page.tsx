@@ -101,11 +101,30 @@ type StoreContractTemplateVersionRow = {
   updated_at: string | null;
 };
 
+type StoreContractTemplateExtractedRuleRow = {
+  id: string;
+  template_version_id: string;
+  organization_id: string;
+  store_id: string;
+  rule_key: string;
+  rule_group: string;
+  label: string;
+  value_text: string | null;
+  value_json: Record<string, unknown> | null;
+  source_excerpt: string | null;
+  confidence: number | null;
+  review_status: string | null;
+  sort_order: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 type StoreContractTemplateApiResponse = {
   ok: boolean;
   template?: StoreContractTemplateRow | null;
   activeVersion?: StoreContractTemplateVersionRow | null;
   versions?: StoreContractTemplateVersionRow[];
+  extractedRules?: StoreContractTemplateExtractedRuleRow[];
   error?: string;
   message?: string;
 };
@@ -564,6 +583,29 @@ function resolveContractVersionStatus(status: string | null | undefined) {
   if (normalized === "archived") return { label: "Arquivado", tone: "gray" as const };
   if (normalized === "failed") return { label: "Falhou", tone: "red" as const };
   return { label: "Nao definido", tone: "gray" as const };
+}
+
+function maskSensitiveContractPreview(value: string | null | undefined) {
+  const normalized = String(value || "");
+  if (!normalized.trim()) return "";
+
+  return normalized
+    .replace(/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g, "***.***.***-**")
+    .replace(/\b\d{11}\b/g, "***********")
+    .replace(/\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/g, "**.***.***/****-**")
+    .replace(/\b(?:RG|Rg|rg)\s*[:\-]?\s*\d[\d.\-]*\b/g, "RG oculto")
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, "[email oculto]")
+    .replace(/\b(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?(?:9?\d{4})-?\d{4}\b/g, "[telefone oculto]")
+    .replace(/\b\d{2}\/\d{2}\/\d{4}\b/g, "[data oculta]")
+    .replace(/\b(?:RUA|AVENIDA|AV\.|ALAMEDA|TRAVESSA|ESTRADA)\b[\s\S]{0,80}?\d{1,5}/gi, "[endereco oculto]");
+}
+
+function summarizeContractUiText(value: string | null | undefined, maxLength = 180) {
+  const masked = maskSensitiveContractPreview(value);
+  const normalized = cleanText(masked);
+  if (!normalized) return "Nenhum resumo disponivel.";
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength).trim()}...`;
 }
 
 function getImportSummaryText(summary: Record<string, unknown> | null | undefined) {
@@ -1378,16 +1420,26 @@ export default function ConfiguracoesPage() {
   const [storeContractTemplate, setStoreContractTemplate] = useState<StoreContractTemplateRow | null>(null);
   const [storeContractActiveVersion, setStoreContractActiveVersion] = useState<StoreContractTemplateVersionRow | null>(null);
   const [storeContractVersions, setStoreContractVersions] = useState<StoreContractTemplateVersionRow[]>([]);
+  const [storeContractExtractedRules, setStoreContractExtractedRules] = useState<
+    StoreContractTemplateExtractedRuleRow[]
+  >([]);
   const [contractsLoading, setContractsLoading] = useState(false);
   const [selectedContractBaseFile, setSelectedContractBaseFile] = useState<File | null>(null);
   const [uploadingContractBase, setUploadingContractBase] = useState(false);
   const [contractActionVersionId, setContractActionVersionId] = useState<string | null>(null);
   const [contractActionType, setContractActionType] = useState<
-    "analyze" | "approve" | "reject" | null
+    "analyze" | "approve" | "reject" | "extract-rules" | null
   >(null);
   const [contractRejectReasonDrafts, setContractRejectReasonDrafts] = useState<Record<string, string>>({});
   const [contractsErrorText, setContractsErrorText] = useState<string | null>(null);
   const [contractsSuccessText, setContractsSuccessText] = useState<string | null>(null);
+  const [contractContentModal, setContractContentModal] = useState<
+    | {
+        type: "text" | "rules";
+        versionId: string;
+      }
+    | null
+  >(null);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
@@ -1458,6 +1510,11 @@ export default function ConfiguracoesPage() {
           ? (result?.versions as StoreContractTemplateVersionRow[])
           : []
       );
+      setStoreContractExtractedRules(
+        Array.isArray(result?.extractedRules)
+          ? (result?.extractedRules as StoreContractTemplateExtractedRuleRow[])
+          : []
+      );
     },
     []
   );
@@ -1467,6 +1524,7 @@ export default function ConfiguracoesPage() {
       setStoreContractTemplate(null);
       setStoreContractActiveVersion(null);
       setStoreContractVersions([]);
+      setStoreContractExtractedRules([]);
       setSelectedContractBaseFile(null);
       setContractRejectReasonDrafts({});
       setContractsLoading(false);
@@ -1668,6 +1726,51 @@ export default function ConfiguracoesPage() {
       setContractsSuccessText("Contrato analisado com sucesso.");
     } catch (error: any) {
       setContractsErrorText(error?.message || "Nao foi possivel ler esse arquivo.");
+    } finally {
+      setContractActionVersionId(null);
+      setContractActionType(null);
+    }
+  }
+
+  async function handleExtractContractRules(versionId: string) {
+    if (!activeStoreId) {
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para buscar regras.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    setContractActionVersionId(versionId);
+    setContractActionType("extract-rules");
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
+
+    try {
+      const response = await fetch(
+        `/api/store-contract-templates/${versionId}/extract-rules`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+          body: JSON.stringify({
+            storeId: activeStoreId,
+          }),
+        }
+      );
+
+      const result = (await response.json().catch(() => null)) as StoreContractTemplateApiResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel encontrar regras nesse contrato.");
+      }
+
+      applyStoreContractTemplateResponse(result);
+      setContractsSuccessText("Regras encontradas com sucesso.");
+    } catch (error: any) {
+      setContractsErrorText(
+        error?.message || "Nao foi possivel encontrar regras nesse contrato."
+      );
     } finally {
       setContractActionVersionId(null);
       setContractActionType(null);
@@ -2074,6 +2177,7 @@ export default function ConfiguracoesPage() {
   useEffect(() => {
     setSelectedContractBaseFile(null);
     setContractActionType(null);
+    setContractContentModal(null);
     setContractRejectReasonDrafts({});
     setContractsErrorText(null);
     setContractsSuccessText(null);
@@ -6980,6 +7084,8 @@ export default function ConfiguracoesPage() {
                         const isVersionBusy = contractActionVersionId === version.id;
                         const isAnalyzeBusy =
                           isVersionBusy && contractActionType === "analyze";
+                        const isExtractRulesBusy =
+                          isVersionBusy && contractActionType === "extract-rules";
                         const isApproveBusy =
                           isVersionBusy && contractActionType === "approve";
                         const isRejectBusy =
@@ -6987,12 +7093,24 @@ export default function ConfiguracoesPage() {
                         const canAnalyze =
                           (isActiveVersion && !hasExtractedText) ||
                           (!isActiveVersion && ["uploaded", "failed"].includes(normalizedStatus));
+                        const canExtractRules = hasExtractedText;
                         const canApprove =
                           !isActiveVersion &&
                           ["uploaded", "analyzed", "awaiting_review", "approved"].includes(
                             normalizedStatus
                           );
                         const canReject = !isActiveVersion;
+                        const versionRules = storeContractExtractedRules.filter(
+                          (rule) => rule.template_version_id === version.id
+                        );
+                        const maskedTextPreview = summarizeContractUiText(
+                          version.raw_extracted_text,
+                          160
+                        );
+                        const maskedAnalysisSummary = summarizeContractUiText(
+                          version.analysis_summary,
+                          140
+                        );
 
                         return (
                           <div
@@ -7046,7 +7164,25 @@ export default function ConfiguracoesPage() {
 
                                 {cleanText(version.analysis_summary) ? (
                                   <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-                                    {cleanText(version.analysis_summary)}
+                                    {maskedAnalysisSummary}
+                                  </div>
+                                ) : null}
+
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                                    <span className="font-semibold text-gray-900">Texto lido:</span>{" "}
+                                    {hasExtractedText ? "Disponivel" : "Ainda nao lido"}
+                                  </div>
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                                    <span className="font-semibold text-gray-900">Regras encontradas:</span>{" "}
+                                    {versionRules.length}
+                                  </div>
+                                </div>
+
+                                {hasExtractedText ? (
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                                    <span className="font-semibold text-gray-900">Resumo curto:</span>{" "}
+                                    {maskedTextPreview}
                                   </div>
                                 ) : null}
                               </div>
@@ -7065,6 +7201,45 @@ export default function ConfiguracoesPage() {
                                     className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                                   >
                                     {isAnalyzeBusy ? "Lendo arquivo..." : "Analisar contrato"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setContractContentModal({
+                                        type: "text",
+                                        versionId: version.id,
+                                      })
+                                    }
+                                    disabled={!hasExtractedText}
+                                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Ver texto lido
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleExtractContractRules(version.id)}
+                                    disabled={
+                                      !canExtractRules ||
+                                      isVersionBusy ||
+                                      uploadingContractBase ||
+                                      contractsLoading
+                                    }
+                                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {isExtractRulesBusy ? "Buscando regras..." : "Encontrar regras do contrato"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setContractContentModal({
+                                        type: "rules",
+                                        versionId: version.id,
+                                      })
+                                    }
+                                    disabled={versionRules.length === 0}
+                                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Ver regras encontradas
                                   </button>
                                   <button
                                     type="button"
@@ -7093,18 +7268,6 @@ export default function ConfiguracoesPage() {
                                     {isRejectBusy ? "Rejeitando..." : "Rejeitar versao"}
                                   </button>
                                 </div>
-
-                                {cleanText(version.raw_extracted_text) ? (
-                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-700">
-                                    <div className="mb-1 font-semibold text-gray-900">
-                                      Previa do texto lido
-                                    </div>
-                                    <div className="whitespace-pre-wrap">
-                                      {cleanText(version.raw_extracted_text)?.slice(0, 800)}
-                                      {cleanText(version.raw_extracted_text)!.length > 800 ? "..." : ""}
-                                    </div>
-                                  </div>
-                                ) : null}
 
                                 {!isActiveVersion ? (
                                   <textarea
@@ -7305,6 +7468,109 @@ export default function ConfiguracoesPage() {
             </div>
           </div>
         </SectionBlock>
+      ) : null}
+
+      {contractContentModal ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6"
+          onClick={() => setContractContentModal(null)}
+        >
+          <div
+            className="flex max-h-[82vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {(() => {
+              const selectedVersion = storeContractVersions.find(
+                (item) => item.id === contractContentModal.versionId
+              );
+              const selectedRules = storeContractExtractedRules.filter(
+                (item) => item.template_version_id === contractContentModal.versionId
+              );
+              const isTextModal = contractContentModal.type === "text";
+              const title = isTextModal ? "Texto lido do contrato" : "Regras encontradas";
+
+              return (
+                <>
+                  <div className="flex items-start justify-between gap-3 bg-gray-950 px-5 py-4 text-white">
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-gray-400">
+                        Contratos
+                      </div>
+                      <h2 className="mt-1 text-lg font-bold">{title}</h2>
+                      <p className="mt-1 text-xs text-gray-300">
+                        {cleanText(selectedVersion?.original_filename) || "Arquivo sem nome"}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setContractContentModal(null)}
+                      className="rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+
+                  <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                    {isTextModal ? (
+                      <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                        <div className="mb-2 text-sm font-semibold text-gray-900">
+                          Texto mascarado para revisao
+                        </div>
+                        <div className="whitespace-pre-wrap">
+                          {maskSensitiveContractPreview(
+                            cleanText(selectedVersion?.raw_extracted_text) ||
+                              "Nenhum texto lido disponivel."
+                          )}
+                        </div>
+                      </div>
+                    ) : selectedRules.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                        Nenhuma regra encontrada ainda.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {selectedRules.map((rule) => (
+                          <div
+                            key={rule.id}
+                            className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-sm font-semibold text-gray-900">
+                                {cleanText(rule.label) || "Regra encontrada"}
+                              </div>
+                              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-900">
+                                Aguardando revisao
+                              </span>
+                            </div>
+                            <div className="mt-2 text-sm text-gray-700">
+                              {maskSensitiveContractPreview(
+                                cleanText(rule.value_text) || "Trecho nao disponivel"
+                              )}
+                            </div>
+                            {cleanText(rule.source_excerpt) ? (
+                              <div className="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-600">
+                                <div className="mb-1 font-semibold text-gray-900">
+                                  Trecho encontrado no contrato
+                                </div>
+                                <div className="whitespace-pre-wrap">
+                                  {maskSensitiveContractPreview(cleanText(rule.source_excerpt))}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        ))}
+                        <div className="text-xs text-gray-500">
+                          Revise essas informacoes antes de usar no contrato final.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
       ) : null}
 
       {rawImportFilesModalTab ? (

@@ -35,6 +35,7 @@ export async function POST(
         template: result.template,
         activeVersion: result.activeVersion,
         versions: result.versions,
+        extractedRules: result.extractedRules,
         rejectedVersion: result.rejectedVersion,
       },
       {

@@ -25,6 +25,7 @@ export async function GET(request: Request) {
         template: result.template,
         activeVersion: result.activeVersion,
         versions: result.versions,
+        extractedRules: result.extractedRules,
       },
       {
         headers: {

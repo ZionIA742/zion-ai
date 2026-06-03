@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import { extractContractTextFromStoredFile } from "./contract-text-analysis";
+import { extractSuggestedContractRules } from "./contract-rule-extraction";
 
 const STORAGE_BUCKET = "zion-store-files";
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
@@ -67,6 +68,24 @@ type StoreContractTemplateVersionRow = {
   rejected_by: string | null;
   rejection_reason: string | null;
   metadata: Record<string, unknown> | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type StoreContractTemplateExtractedRuleRow = {
+  id: string;
+  template_version_id: string;
+  organization_id: string;
+  store_id: string;
+  rule_key: string;
+  rule_group: string;
+  label: string;
+  value_text: string | null;
+  value_json: Record<string, unknown> | null;
+  source_excerpt: string | null;
+  confidence: number | null;
+  review_status: string | null;
+  sort_order: number | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -402,6 +421,34 @@ async function loadTemplateVersions(args: {
   return (data || []) as StoreContractTemplateVersionRow[];
 }
 
+async function loadTemplateExtractedRules(args: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  organizationId: string;
+  storeId: string;
+  templateVersionIds: string[];
+}) {
+  if (args.templateVersionIds.length === 0) {
+    return [] as StoreContractTemplateExtractedRuleRow[];
+  }
+
+  const { data, error } = await args.supabase
+    .from("store_contract_template_extracted_rules")
+    .select(
+      "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, sort_order, created_at, updated_at"
+    )
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .in("template_version_id", args.templateVersionIds)
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`Falha ao carregar regras extraidas do contrato base: ${error.message}`);
+  }
+
+  return (data || []) as StoreContractTemplateExtractedRuleRow[];
+}
+
 async function getNextTemplateVersionNumber(args: {
   supabase: ReturnType<typeof createServiceSupabaseClient>;
   templateId: string;
@@ -494,12 +541,17 @@ async function updateTemplateVersionStatus(args: {
   return data as StoreContractTemplateVersionRow;
 }
 
-function buildTemplateSummary(template: StoreContractTemplateRow | null, versions: StoreContractTemplateVersionRow[]) {
+function buildTemplateSummary(
+  template: StoreContractTemplateRow | null,
+  versions: StoreContractTemplateVersionRow[],
+  extractedRules: StoreContractTemplateExtractedRuleRow[]
+) {
   if (!template) {
     return {
       template: null,
       activeVersion: null,
       versions: [],
+      extractedRules: [],
     };
   }
 
@@ -510,6 +562,7 @@ function buildTemplateSummary(template: StoreContractTemplateRow | null, version
     template,
     activeVersion,
     versions,
+    extractedRules,
   };
 }
 
@@ -532,11 +585,20 @@ export async function listStoreContractTemplate(args: {
         templateId: template.id,
       })
     : [];
+  const extractedRules =
+    versions.length > 0
+      ? await loadTemplateExtractedRules({
+          supabase: scope.supabase,
+          organizationId: scope.organizationId,
+          storeId: scope.store.id,
+          templateVersionIds: versions.map((version) => version.id),
+        })
+      : [];
 
   return {
     store: scope.store,
     organizationId: scope.organizationId,
-    ...buildTemplateSummary(template, versions),
+    ...buildTemplateSummary(template, versions, extractedRules),
   };
 }
 
@@ -695,11 +757,17 @@ export async function uploadStoreContractTemplateVersion(args: {
       organizationId: scope.organizationId,
       storeId: scope.store.id,
     })) || template;
+  const extractedRules = await loadTemplateExtractedRules({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    templateVersionIds: versions.map((item) => item.id),
+  });
 
   return {
     store: scope.store,
     organizationId: scope.organizationId,
-    ...buildTemplateSummary(refreshedTemplate, versions),
+    ...buildTemplateSummary(refreshedTemplate, versions, extractedRules),
     uploadedVersion: version as StoreContractTemplateVersionRow,
   };
 }
@@ -830,11 +898,17 @@ export async function approveStoreContractTemplateVersion(args: {
     storeId: scope.store.id,
     templateId: template.id,
   });
+  const extractedRules = await loadTemplateExtractedRules({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    templateVersionIds: versions.map((item) => item.id),
+  });
 
   return {
     store: scope.store,
     organizationId: scope.organizationId,
-    ...buildTemplateSummary(refreshedTemplate, versions),
+    ...buildTemplateSummary(refreshedTemplate, versions, extractedRules),
     approvedVersion: updatedVersion as StoreContractTemplateVersionRow,
   };
 }
@@ -914,11 +988,20 @@ export async function rejectStoreContractTemplateVersion(args: {
         templateId: template.id,
       })
     : [];
+  const extractedRules =
+    versions.length > 0
+      ? await loadTemplateExtractedRules({
+          supabase: scope.supabase,
+          organizationId: scope.organizationId,
+          storeId: scope.store.id,
+          templateVersionIds: versions.map((item) => item.id),
+        })
+      : [];
 
   return {
     store: scope.store,
     organizationId: scope.organizationId,
-    ...buildTemplateSummary(template, versions),
+    ...buildTemplateSummary(template, versions, extractedRules),
     rejectedVersion: updatedVersion as StoreContractTemplateVersionRow,
   };
 }
@@ -1095,12 +1178,153 @@ export async function analyzeStoreContractTemplateVersion(args: {
     storeId: scope.store.id,
     templateId: template.id,
   });
+  const extractedRules = await loadTemplateExtractedRules({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    templateVersionIds: versions.map((item) => item.id),
+  });
 
   return {
     store: scope.store,
     organizationId: scope.organizationId,
-    ...buildTemplateSummary(refreshedTemplate, versions),
+    ...buildTemplateSummary(refreshedTemplate, versions, extractedRules),
     analyzedVersion:
       versions.find((item) => item.id === version.id) || null,
+  };
+}
+
+export async function extractStoreContractTemplateRules(args: {
+  versionId: string;
+  storeId: string;
+  organizationId?: string | null;
+}) {
+  const scope = await resolveAuthorizedStoreTemplateScope(args);
+  const versionId = String(args.versionId || "").trim();
+
+  if (!versionId) {
+    throw new StoreContractTemplateAccessError(
+      400,
+      "INVALID_TEMPLATE_VERSION_ID",
+      "Version ID nao informado."
+    );
+  }
+
+  const version = await loadTemplateVersionById({
+    supabase: scope.supabase,
+    versionId,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  if (!version?.id) {
+    throw new StoreContractTemplateAccessError(
+      404,
+      "TEMPLATE_VERSION_NOT_FOUND",
+      "Versao do contrato base nao encontrada nessa loja."
+    );
+  }
+
+  const template = await loadStoreContractTemplate({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  if (!template?.id || template.id !== version.template_id) {
+    throw new StoreContractTemplateAccessError(
+      404,
+      "TEMPLATE_NOT_FOUND",
+      "Template do contrato base nao encontrado nessa loja."
+    );
+  }
+
+  const rawText = cleanText(version.raw_extracted_text);
+  if (!rawText) {
+    throw new StoreContractTemplateAccessError(
+      409,
+      "TEMPLATE_TEXT_NOT_AVAILABLE",
+      "Leia o contrato antes de buscar regras."
+    );
+  }
+
+  const extractedRules = extractSuggestedContractRules(rawText);
+
+  await scope.supabase
+    .from("store_contract_template_extracted_rules")
+    .delete()
+    .eq("template_version_id", version.id)
+    .eq("organization_id", scope.organizationId)
+    .eq("store_id", scope.store.id);
+
+  if (extractedRules.length > 0) {
+    const now = new Date().toISOString();
+    const { error: insertError } = await scope.supabase
+      .from("store_contract_template_extracted_rules")
+      .insert(
+        extractedRules.map((rule) => ({
+          template_version_id: version.id,
+          organization_id: scope.organizationId,
+          store_id: scope.store.id,
+          rule_key: rule.ruleKey,
+          rule_group: rule.ruleGroup,
+          label: rule.label,
+          value_text: rule.valueText,
+          value_json: {},
+          source_excerpt: rule.sourceExcerpt,
+          confidence: rule.confidence,
+          review_status: "pending",
+          sort_order: rule.sortOrder,
+          created_at: now,
+          updated_at: now,
+        }))
+      );
+
+    if (insertError) {
+      throw new Error(insertError.message || "Falha ao salvar regras do contrato base.");
+    }
+  }
+
+  await updateTemplateVersionStatus({
+    supabase: scope.supabase,
+    versionId: version.id,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    status: String(version.status || "").trim().toLowerCase() === "active" ? "active" : String(version.status || "").trim().toLowerCase() || "awaiting_review",
+    analysisSummary:
+      extractedRules.length > 0
+        ? `${extractedRules.length} regra(s) sugerida(s) para revisao humana.`
+        : "Nenhuma regra confiavel foi encontrada no contrato.",
+    metadata: {
+      ...(version.metadata || {}),
+      rules_extracted_at: new Date().toISOString(),
+      rules_extracted_by_user_id: scope.userId,
+      rules_extracted_count: extractedRules.length,
+    },
+  });
+
+  const refreshedTemplate = await loadStoreContractTemplate({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+  const versions = await loadTemplateVersions({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    templateId: template.id,
+  });
+  const refreshedRules = await loadTemplateExtractedRules({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    templateVersionIds: versions.map((item) => item.id),
+  });
+
+  return {
+    store: scope.store,
+    organizationId: scope.organizationId,
+    ...buildTemplateSummary(refreshedTemplate, versions, refreshedRules),
+    extractedRuleCount: extractedRules.length,
   };
 }

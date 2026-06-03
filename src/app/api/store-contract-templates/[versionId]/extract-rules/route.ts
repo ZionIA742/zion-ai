@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import {
-  analyzeStoreContractTemplateVersion,
   buildStoreContractTemplateErrorResponse,
+  extractStoreContractTemplateRules,
 } from "@/lib/server/store-contract-templates/template-management";
 
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ export async function POST(
       | null;
     const { versionId: rawVersionId } = await context.params;
 
-    const result = await analyzeStoreContractTemplateVersion({
+    const result = await extractStoreContractTemplateRules({
       versionId: String(rawVersionId || "").trim(),
       storeId: String(body?.storeId || "").trim(),
       organizationId: String(body?.organizationId || "").trim() || null,
@@ -34,7 +34,7 @@ export async function POST(
         activeVersion: result.activeVersion,
         versions: result.versions,
         extractedRules: result.extractedRules,
-        analyzedVersion: result.analyzedVersion,
+        extractedRuleCount: result.extractedRuleCount,
       },
       {
         headers: {

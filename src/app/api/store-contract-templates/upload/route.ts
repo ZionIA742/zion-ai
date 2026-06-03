@@ -43,6 +43,7 @@ export async function POST(request: Request) {
         template: result.template,
         activeVersion: result.activeVersion,
         versions: result.versions,
+        extractedRules: result.extractedRules,
         uploadedVersion: result.uploadedVersion,
       },
       {
