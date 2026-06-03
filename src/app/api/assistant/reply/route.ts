@@ -58,6 +58,7 @@ import {
   type CustomerRescheduleWorkflowDeps,
 } from "@/lib/server/assistant/customer-reschedule-workflow";
 import { handleAssistantDocumentEditRequest } from "@/lib/server/assistant/document-edit-intent";
+import { handleAssistantContractGenerationRequest } from "@/lib/server/assistant/contract-generation-intent";
 
 export const runtime = "nodejs";
 
@@ -7469,6 +7470,55 @@ async function generateAssistantReply(params: {
     }
 
     const assistantContextState = assistantContextResult.contextState;
+    const contractGenerationResult = await handleAssistantContractGenerationRequest({
+      request: params.request,
+      supabase,
+      organizationId,
+      storeId,
+      recentMessages: recentMessages as Array<AssistantMessageRow & { metadata?: Record<string, unknown> | null }>,
+      lastHumanMessage,
+    });
+
+    if (contractGenerationResult.handled) {
+      await resolveAssistantContextState({
+        supabase,
+        organizationId,
+        storeId,
+        threadId: assistantThreadId,
+        currentContextState: assistantContextState || null,
+        lastUserMessage: lastHumanMessage,
+        lastAssistantMessage: contractGenerationResult.reply,
+      });
+
+      const { error: saveContractGenerationReplyError } = await supabase.rpc("assistant_push_system_message", {
+        p_organization_id: organizationId,
+        p_store_id: storeId,
+        p_content: contractGenerationResult.reply,
+        p_message_type: "text",
+        p_related_lead_id: null,
+        p_related_conversation_id: null,
+        p_related_appointment_id: null,
+        p_metadata: {
+          source: "assistant.reply.route",
+          contractGenerationHandled: true,
+          ...contractGenerationResult.metadata,
+        },
+      });
+
+      if (saveContractGenerationReplyError) {
+        return {
+          ok: false,
+          error: "SAVE_ASSISTANT_MESSAGE_FAILED",
+          message: saveContractGenerationReplyError.message,
+        };
+      }
+
+      return {
+        ok: true,
+        aiText: contractGenerationResult.reply,
+      };
+    }
+
     const documentEditResult = await handleAssistantDocumentEditRequest({
       request: params.request,
       supabase,
