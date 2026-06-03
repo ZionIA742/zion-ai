@@ -81,6 +81,39 @@ type AssistantDocumentReviewMetadata = {
   source?: string;
 };
 
+type AssistantContractWorkflowDecisionMetadata = {
+  kind?: string;
+  organization_id?: string;
+  store_id?: string;
+  lead_id?: string | null;
+  conversation_id?: string | null;
+  quote_id?: string;
+  quote_number?: string | null;
+  customer_name?: string | null;
+  trigger?: string;
+  source?: string;
+  decision?: {
+    allowed?: boolean;
+    needs_human_confirmation?: boolean;
+    reason_code?: string;
+    reason_message?: string;
+    missing_requirements?: string[];
+    warnings?: string[];
+    recommended_next_action?: string;
+  } | null;
+  available_actions?: Array<
+    | string
+    | {
+        id?: string;
+        action?: string;
+        type?: string;
+        label?: string;
+        kind?: string;
+        requires_confirmation?: boolean;
+      }
+  >;
+};
+
 type DocumentFeedbackTone = "success" | "error";
 
 const TERMINAL_DOCUMENT_STATUSES = new Set([
@@ -204,6 +237,14 @@ function getAssistantDocumentReviewMetadata(
   if (!isRecord(metadata)) return null;
   if (getSafeString(metadata.kind) !== "document_review") return null;
   return metadata as AssistantDocumentReviewMetadata;
+}
+
+function getAssistantContractWorkflowDecisionMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): AssistantContractWorkflowDecisionMetadata | null {
+  if (!isRecord(metadata)) return null;
+  if (getSafeString(metadata.kind) !== "contract_workflow_decision") return null;
+  return metadata as AssistantContractWorkflowDecisionMetadata;
 }
 
 function getDocumentTypeLabel(value: string | null | undefined) {
@@ -337,6 +378,77 @@ function getDocumentPromptText(metadata: AssistantDocumentReviewMetadata | null)
   }
 
   return "Esse documento pode ser enviado ou precisa ser editado? Caso precise ser editado, me diga o que precisa que eu edito.";
+}
+
+function getContractWorkflowTriggerLabel(value: string | null | undefined) {
+  const normalized = normalizeText(value);
+  if (normalized === "customer_requested_contract") return "Cliente pediu contrato";
+  if (normalized === "customer_accepted_quote") return "Cliente aceitou o orcamento";
+  if (normalized === "crm_closing_stage") return "Lead entrou em fechamento";
+  if (normalized === "post_visit_human_confirmed") {
+    return "Visita tecnica confirmou fechamento";
+  }
+  if (normalized === "system_suggestion") return "Sistema identificou possivel fechamento";
+  if (normalized === "human_explicit_request") return "Responsavel pediu geracao do contrato";
+  return "Possivel fechamento";
+}
+
+function getContractWorkflowDecisionStatusLabel(
+  metadata: AssistantContractWorkflowDecisionMetadata | null
+) {
+  const decision = metadata?.decision || null;
+  if (decision?.needs_human_confirmation === true) {
+    return "Precisa de confirmação humana";
+  }
+  if (decision?.allowed === true) {
+    return "Pode gerar contrato";
+  }
+  return "Ainda não pode gerar contrato";
+}
+
+function getContractWorkflowActionKey(
+  action:
+    | string
+    | {
+        id?: string;
+        action?: string;
+        type?: string;
+        label?: string;
+        kind?: string;
+      }
+    | null
+    | undefined
+) {
+  if (typeof action === "string") {
+    return normalizeText(action);
+  }
+
+  return normalizeText(action?.id || action?.action || action?.type || action?.kind);
+}
+
+function getContractWorkflowActionLabel(
+  action:
+    | string
+    | {
+        id?: string;
+        action?: string;
+        type?: string;
+        label?: string;
+        kind?: string;
+      }
+    | null
+    | undefined
+) {
+  const explicitLabel =
+    typeof action === "string" ? "" : getSafeString(action?.label);
+  if (explicitLabel) return explicitLabel;
+
+  const key = getContractWorkflowActionKey(action);
+  if (key === "generate_contract") return "Gerar contrato";
+  if (key === "not_closed_yet") return "Ainda não fechou";
+  if (key === "adjust_quote") return "Ajustar orçamento";
+  if (key === "remind_later") return "Me lembrar depois";
+  return "Ação";
 }
 
 function findAddressTextInMetadata(value: unknown, depth = 0): string | null {
@@ -1153,6 +1265,127 @@ export default function AssistantPage() {
                             <div className="whitespace-pre-wrap break-words text-[13px] leading-5 text-gray-900">
                               {message.content}
                             </div>
+
+                            {(() => {
+                              const contractWorkflowMetadata =
+                                getAssistantContractWorkflowDecisionMetadata(
+                                  message.metadata
+                                );
+
+                              if (!contractWorkflowMetadata) return null;
+
+                              const decision = contractWorkflowMetadata.decision || null;
+                              const missingRequirements = Array.isArray(
+                                decision?.missing_requirements
+                              )
+                                ? decision?.missing_requirements.filter((item) =>
+                                    Boolean(getSafeString(item))
+                                  )
+                                : [];
+                              const warnings = Array.isArray(decision?.warnings)
+                                ? decision?.warnings.filter((item) =>
+                                    Boolean(getSafeString(item))
+                                  )
+                                : [];
+                              const availableActions = Array.isArray(
+                                contractWorkflowMetadata.available_actions
+                              )
+                                ? contractWorkflowMetadata.available_actions
+                                : [];
+
+                              return (
+                                <div className="mt-3 rounded-2xl border border-black/10 bg-[#fafafa] p-3">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded-full bg-black px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-white">
+                                      PRÉ-CONTRATO
+                                    </span>
+                                    <span className="text-[12px] font-semibold text-gray-900">
+                                      Possível fechamento identificado
+                                    </span>
+                                  </div>
+
+                                  <div className="mt-3 grid gap-2 rounded-xl bg-white px-3 py-3 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5">
+                                    <div>
+                                      <span className="font-semibold text-gray-900">Cliente:</span>{" "}
+                                      {getSafeString(contractWorkflowMetadata.customer_name) ||
+                                        "Nao informado"}
+                                    </div>
+                                    <div>
+                                      <span className="font-semibold text-gray-900">Orçamento:</span>{" "}
+                                      {getSafeString(contractWorkflowMetadata.quote_number) ||
+                                        getSafeString(contractWorkflowMetadata.quote_id) ||
+                                        "Nao informado"}
+                                    </div>
+                                    <div>
+                                      <span className="font-semibold text-gray-900">
+                                        Origem do sinal:
+                                      </span>{" "}
+                                      {getContractWorkflowTriggerLabel(
+                                        contractWorkflowMetadata.trigger ||
+                                          contractWorkflowMetadata.source
+                                      )}
+                                    </div>
+                                    <div>
+                                      <span className="font-semibold text-gray-900">Status:</span>{" "}
+                                      {getContractWorkflowDecisionStatusLabel(
+                                        contractWorkflowMetadata
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-3 rounded-xl bg-white px-3 py-2 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5">
+                                    <div className="font-medium text-gray-900">
+                                      Esse cliente parece estar perto de fechar.
+                                    </div>
+                                    <div className="mt-1">
+                                      {getSafeString(decision?.reason_message) ||
+                                        "Antes de gerar contrato, confirme o que deseja fazer."}
+                                    </div>
+                                    <div className="mt-2 text-[11px] text-gray-500">
+                                      Antes de gerar contrato, confirme a próxima ação.
+                                    </div>
+                                  </div>
+
+                                  {missingRequirements.length > 0 ? (
+                                    <div className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[11px] text-amber-800 ring-1 ring-amber-200">
+                                      Pendencias: {missingRequirements.join(", ")}
+                                    </div>
+                                  ) : null}
+
+                                  {warnings.length > 0 ? (
+                                    <div className="mt-2 rounded-xl bg-white px-3 py-2 text-[11px] text-gray-600 ring-1 ring-black/5">
+                                      Avisos: {warnings.join(" ")}
+                                    </div>
+                                  ) : null}
+
+                                  {availableActions.length > 0 ? (
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                      {availableActions.map((action, index) => (
+                                        <button
+                                          key={`${message.id}:contract-workflow-action:${index}`}
+                                          type="button"
+                                          disabled
+                                          title="Esta ação será ativada no próximo bloco."
+                                          className={[
+                                            "rounded-full px-3 py-1.5 text-[11px] font-semibold ring-1 disabled:cursor-not-allowed disabled:opacity-70",
+                                            getContractWorkflowActionKey(action) ===
+                                              "generate_contract"
+                                              ? "bg-black text-white ring-black"
+                                              : "bg-white text-gray-900 ring-black/10",
+                                          ].join(" ")}
+                                        >
+                                          {getContractWorkflowActionLabel(action)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="mt-2 text-[11px] text-gray-500">
+                                    Essas ações ainda não executam nada neste bloco.
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             {(() => {
                               const documentMetadata = getAssistantDocumentReviewMetadata(
