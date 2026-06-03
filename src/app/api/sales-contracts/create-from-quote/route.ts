@@ -40,6 +40,85 @@ function readMetadataValue(metadata: QuoteMetadata, key: string) {
   return metadata && typeof metadata === "object" ? metadata[key] : null;
 }
 
+function isIsoDateOnly(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function normalizeDateOnly(value: Date) {
+  return value.toISOString().slice(0, 10);
+}
+
+function isNumericOnlyValue(value: string) {
+  return /^\d+$/.test(value);
+}
+
+function parseDateCandidate(value: unknown) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return null;
+
+  if (isNumericOnlyValue(normalized)) {
+    return null;
+  }
+
+  if (isIsoDateOnly(normalized)) {
+    return normalized;
+  }
+
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return normalizeDateOnly(parsed);
+}
+
+function parseValidityDays(value: unknown) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return null;
+  if (!/^\d+$/.test(normalized)) return null;
+
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+
+  return parsed;
+}
+
+function addDaysToDateString(baseDateValue: unknown, days: number) {
+  const baseDate = new Date(String(baseDateValue || "").trim() || Date.now());
+  if (Number.isNaN(baseDate.getTime())) {
+    return null;
+  }
+
+  baseDate.setUTCHours(0, 0, 0, 0);
+  baseDate.setUTCDate(baseDate.getUTCDate() + days);
+  return normalizeDateOnly(baseDate);
+}
+
+function resolveContractValidUntil(args: {
+  quote: {
+    valid_until?: string | null;
+    created_at?: string | null;
+  };
+  quoteMetadata: QuoteMetadata;
+}) {
+  const officialValidUntil = parseDateCandidate(args.quote.valid_until);
+  if (officialValidUntil) return officialValidUntil;
+
+  const metadataValidUntil = parseDateCandidate(readMetadataValue(args.quoteMetadata, "valid_until"));
+  if (metadataValidUntil) return metadataValidUntil;
+
+  const validityDays =
+    parseValidityDays(readMetadataValue(args.quoteMetadata, "validity_days")) ??
+    parseValidityDays(readMetadataValue(args.quoteMetadata, "valid_until")) ??
+    parseValidityDays(args.quote.valid_until);
+
+  if (validityDays == null) {
+    return null;
+  }
+
+  return addDaysToDateString(args.quote.created_at, validityDays);
+}
+
 function buildContractNumber() {
   const now = new Date();
   const dateKey = [
@@ -112,9 +191,10 @@ export async function POST(request: Request) {
       delivery_terms: normalizeOptionalText(readMetadataValue(quoteMetadata, "delivery_terms")),
       warranty_terms: normalizeOptionalText(readMetadataValue(quoteMetadata, "warranty_terms")),
       contract_terms: null,
-      valid_until:
-        normalizeOptionalText(readMetadataValue(quoteMetadata, "valid_until")) ||
-        normalizeOptionalText(readMetadataValue(quoteMetadata, "validity_days")),
+      valid_until: resolveContractValidUntil({
+        quote: scope.quote,
+        quoteMetadata,
+      }),
       metadata: {
         source: "quote",
         quote_number: scope.quote.quote_number,

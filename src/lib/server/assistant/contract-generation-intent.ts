@@ -26,6 +26,25 @@ type HandleAssistantContractGenerationResult =
       metadata?: Record<string, unknown>;
     };
 
+export type ExecuteAssistantContractGenerationArgs = {
+  request: Request;
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
+  quoteNumber?: string | null;
+  source?: string | null;
+};
+
+export type ExecuteAssistantContractGenerationResult = {
+  ok: boolean;
+  status: number;
+  reply: string;
+  metadata: Record<string, unknown>;
+  quoteId?: string | null;
+  contractId?: string | null;
+};
+
 function cleanText(value: unknown) {
   const text = String(value || "").trim();
   return text || null;
@@ -248,6 +267,209 @@ function buildDecisionReply(reasonCode: string) {
   return "Nao foi seguro iniciar o contrato agora. Revise o orcamento e tente novamente.";
 }
 
+export async function executeAssistantContractGeneration(
+  args: ExecuteAssistantContractGenerationArgs
+): Promise<ExecuteAssistantContractGenerationResult> {
+  const source =
+    cleanText(args.source) || "assistant_contract_generation_workflow_v1";
+
+  try {
+    const quoteScope = await resolveAuthorizedExistingQuote(args.quoteId);
+
+    if (
+      quoteScope.organizationId !== args.organizationId ||
+      quoteScope.store.id !== args.storeId
+    ) {
+      return {
+        ok: false,
+        status: 403,
+        reply: "Nao encontrei esse orcamento no escopo da loja atual.",
+        metadata: {
+          source,
+          contractGenerationHandled: true,
+          reasonCode: "QUOTE_SCOPE_MISMATCH",
+          quoteId: args.quoteId,
+          trigger: "human_explicit_request",
+        },
+        quoteId: args.quoteId,
+      };
+    }
+
+    const existingContracts = await loadExistingContractsForQuote({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      quoteId: quoteScope.quote.id,
+    });
+
+    const decision = evaluateContractWorkflowDecision({
+      quote: {
+        id: quoteScope.quote.id,
+        status: quoteScope.quote.status,
+        lead_id: quoteScope.quote.lead_id,
+        conversation_id: quoteScope.quote.conversation_id,
+        store_id: quoteScope.quote.store_id,
+        organization_id: quoteScope.quote.organization_id,
+        total_cents: quoteScope.quote.total_cents,
+        current_version_id: quoteScope.quote.current_version_id,
+      },
+      trigger: "human_explicit_request",
+      hasHumanConfirmation: true,
+      existingContracts,
+    });
+
+    if (!decision.allowed) {
+      return {
+        ok: false,
+        status:
+          decision.reasonCode === "QUOTE_NOT_FOUND"
+            ? 404
+            : decision.reasonCode === "QUOTE_SCOPE_MISMATCH"
+              ? 403
+              : 409,
+        reply: buildDecisionReply(decision.reasonCode),
+        metadata: {
+          source,
+          contractGenerationHandled: true,
+          quoteId: quoteScope.quote.id,
+          quoteNumber:
+            cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
+          reasonCode: decision.reasonCode,
+          missingRequirements: decision.missingRequirements,
+          warnings: decision.warnings,
+          recommendedNextAction: decision.recommendedNextAction,
+          trigger: "human_explicit_request",
+        },
+        quoteId: quoteScope.quote.id,
+      };
+    }
+
+    const createContractResult = await callInternalJson(
+      args.request,
+      "/api/sales-contracts/create-from-quote",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          quoteId: quoteScope.quote.id,
+        }),
+      }
+    );
+
+    if (!createContractResult.ok || !createContractResult.body?.contract?.id) {
+      return {
+        ok: false,
+        status: createContractResult.status || 500,
+        reply:
+          createContractResult.body?.message ||
+          "Nao consegui gerar o contrato agora. Tente novamente em instantes.",
+        metadata: {
+          source,
+          contractGenerationHandled: true,
+          quoteId: quoteScope.quote.id,
+          quoteNumber:
+            cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
+          reasonCode:
+            cleanText(createContractResult.body?.error) || "CONTRACT_CREATE_FAILED",
+          trigger: "human_explicit_request",
+        },
+        quoteId: quoteScope.quote.id,
+      };
+    }
+
+    const contractId = cleanText(createContractResult.body?.contract?.id);
+    if (!contractId) {
+      return {
+        ok: false,
+        status: 500,
+        reply: "Nao consegui gerar o contrato agora. Tente novamente em instantes.",
+        metadata: {
+          source,
+          contractGenerationHandled: true,
+          quoteId: quoteScope.quote.id,
+          quoteNumber:
+            cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
+          reasonCode: "CONTRACT_ID_MISSING_AFTER_CREATE",
+          trigger: "human_explicit_request",
+        },
+        quoteId: quoteScope.quote.id,
+      };
+    }
+
+    const generatePdfResult = await callInternalJson(
+      args.request,
+      `/api/sales-contracts/${encodeURIComponent(contractId)}/generate-pdf`,
+      {
+        method: "POST",
+      }
+    );
+
+    if (!generatePdfResult.ok) {
+      return {
+        ok: false,
+        status: generatePdfResult.status || 500,
+        reply: "Nao consegui gerar o contrato agora. Tente novamente em instantes.",
+        metadata: {
+          source,
+          contractGenerationHandled: true,
+          quoteId: quoteScope.quote.id,
+          contractId,
+          quoteNumber:
+            cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
+          reasonCode:
+            cleanText(generatePdfResult.body?.error) || "CONTRACT_PDF_GENERATION_FAILED",
+          trigger: "human_explicit_request",
+        },
+        quoteId: quoteScope.quote.id,
+        contractId,
+      };
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      reply:
+        "Contrato gerado para revisao. Confira o documento antes de aprovar ou enviar ao cliente.",
+      metadata: {
+        source,
+        contractGenerationHandled: true,
+        quoteId: quoteScope.quote.id,
+        contractId,
+        quoteNumber:
+          cleanText(quoteScope.quote.quote_number) || cleanText(args.quoteNumber),
+        reasonCode: "HUMAN_EXPLICIT_REQUEST_ALLOWED",
+        trigger: "human_explicit_request",
+        generatedPdf: true,
+      },
+      quoteId: quoteScope.quote.id,
+      contractId,
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Nao consegui gerar o contrato agora. Tente novamente em instantes.";
+
+    return {
+      ok: false,
+      status: 500,
+      reply:
+        message === "Orcamento nao encontrado."
+          ? "Nao encontrei esse orcamento. Confira o numero e tente novamente."
+          : message,
+      metadata: {
+        source,
+        contractGenerationHandled: true,
+        reasonCode: "ASSISTANT_CONTRACT_GENERATION_FAILED",
+        trigger: "human_explicit_request",
+      },
+      quoteId: cleanText(args.quoteId),
+    };
+  }
+}
+
 export async function handleAssistantContractGenerationRequest(
   args: HandleAssistantContractGenerationArgs
 ): Promise<HandleAssistantContractGenerationResult> {
@@ -305,158 +527,20 @@ export async function handleAssistantContractGenerationRequest(
       resolvedQuoteNumber = recentContext.candidate.quoteNumber;
     }
 
-    const quoteScope = await resolveAuthorizedExistingQuote(resolvedQuoteId);
-
-    if (
-      quoteScope.organizationId !== args.organizationId ||
-      quoteScope.store.id !== args.storeId
-    ) {
-      return {
-        handled: true,
-        reply: "Nao encontrei esse orcamento no escopo da loja atual.",
-        metadata: {
-          source: "assistant_contract_generation_workflow_v1",
-          contractGenerationHandled: true,
-          reasonCode: "QUOTE_SCOPE_MISMATCH",
-          quoteId: resolvedQuoteId,
-        },
-      };
-    }
-
-    const existingContracts = await loadExistingContractsForQuote({
+    const execution = await executeAssistantContractGeneration({
+      request: args.request,
       supabase: args.supabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
-      quoteId: quoteScope.quote.id,
+      quoteId: resolvedQuoteId,
+      quoteNumber: resolvedQuoteNumber,
+      source: "assistant_contract_generation_workflow_v1",
     });
-
-    const decision = evaluateContractWorkflowDecision({
-      quote: {
-        id: quoteScope.quote.id,
-        status: quoteScope.quote.status,
-        lead_id: quoteScope.quote.lead_id,
-        conversation_id: quoteScope.quote.conversation_id,
-        store_id: quoteScope.quote.store_id,
-        organization_id: quoteScope.quote.organization_id,
-        total_cents: quoteScope.quote.total_cents,
-        current_version_id: quoteScope.quote.current_version_id,
-      },
-      trigger: "human_explicit_request",
-      hasHumanConfirmation: true,
-      existingContracts,
-    });
-
-    if (!decision.allowed) {
-      return {
-        handled: true,
-        reply: buildDecisionReply(decision.reasonCode),
-        metadata: {
-          source: "assistant_contract_generation_workflow_v1",
-          contractGenerationHandled: true,
-          quoteId: quoteScope.quote.id,
-          quoteNumber:
-            cleanText(quoteScope.quote.quote_number) || resolvedQuoteNumber || null,
-          reasonCode: decision.reasonCode,
-          missingRequirements: decision.missingRequirements,
-          warnings: decision.warnings,
-          recommendedNextAction: decision.recommendedNextAction,
-          trigger: "human_explicit_request",
-        },
-      };
-    }
-
-    const createContractResult = await callInternalJson(
-      args.request,
-      "/api/sales-contracts/create-from-quote",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          quoteId: quoteScope.quote.id,
-        }),
-      }
-    );
-
-    if (!createContractResult.ok || !createContractResult.body?.contract?.id) {
-      return {
-        handled: true,
-        reply:
-          createContractResult.body?.message ||
-          "Nao consegui criar o contrato agora. Revise o orcamento e tente novamente.",
-        metadata: {
-          source: "assistant_contract_generation_workflow_v1",
-          contractGenerationHandled: true,
-          quoteId: quoteScope.quote.id,
-          quoteNumber:
-            cleanText(quoteScope.quote.quote_number) || resolvedQuoteNumber || null,
-          reasonCode: cleanText(createContractResult.body?.error) || "CONTRACT_CREATE_FAILED",
-          trigger: "human_explicit_request",
-        },
-      };
-    }
-
-    const contractId = cleanText(createContractResult.body?.contract?.id);
-    if (!contractId) {
-      return {
-        handled: true,
-        reply:
-          "O contrato foi iniciado, mas eu nao consegui confirmar o identificador final dele com seguranca.",
-        metadata: {
-          source: "assistant_contract_generation_workflow_v1",
-          contractGenerationHandled: true,
-          quoteId: quoteScope.quote.id,
-          quoteNumber:
-            cleanText(quoteScope.quote.quote_number) || resolvedQuoteNumber || null,
-          reasonCode: "CONTRACT_ID_MISSING_AFTER_CREATE",
-          trigger: "human_explicit_request",
-        },
-      };
-    }
-
-    const generatePdfResult = await callInternalJson(
-      args.request,
-      `/api/sales-contracts/${encodeURIComponent(contractId)}/generate-pdf`,
-      {
-        method: "POST",
-      }
-    );
-
-    if (!generatePdfResult.ok) {
-      return {
-        handled: true,
-        reply:
-          "Contrato criado em revisao, mas nao consegui preparar o PDF agora. Revise o contrato antes de aprovar ou enviar ao cliente.",
-        metadata: {
-          source: "assistant_contract_generation_workflow_v1",
-          contractGenerationHandled: true,
-          quoteId: quoteScope.quote.id,
-          contractId,
-          quoteNumber:
-            cleanText(quoteScope.quote.quote_number) || resolvedQuoteNumber || null,
-          reasonCode:
-            cleanText(generatePdfResult.body?.error) || "CONTRACT_PDF_GENERATION_FAILED",
-          trigger: "human_explicit_request",
-        },
-      };
-    }
 
     return {
       handled: true,
-      reply:
-        "Contrato gerado para revisao. Confira o documento antes de aprovar ou enviar ao cliente.",
-      metadata: {
-        source: "assistant_contract_generation_workflow_v1",
-        contractGenerationHandled: true,
-        quoteId: quoteScope.quote.id,
-        contractId,
-        quoteNumber:
-          cleanText(quoteScope.quote.quote_number) || resolvedQuoteNumber || null,
-        reasonCode: "HUMAN_EXPLICIT_REQUEST_ALLOWED",
-        trigger: "human_explicit_request",
-        generatedPdf: true,
-      },
+      reply: execution.reply,
+      metadata: execution.metadata,
     };
   } catch (error) {
     return {

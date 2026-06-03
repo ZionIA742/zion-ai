@@ -51,6 +51,16 @@ type AssistantDocumentActionApiResponse = {
   documentId?: string;
 };
 
+type AssistantContractWorkflowActionId = "generate_contract";
+
+type AssistantContractWorkflowActionApiResponse = {
+  ok: boolean;
+  error?: string;
+  message?: string;
+  action?: AssistantContractWorkflowActionId;
+  messageId?: string;
+};
+
 type AssistantDocumentActionMetadata = {
   id?: string;
   label?: string;
@@ -641,6 +651,12 @@ export default function AssistantPage() {
   >({});
   const [dismissedStoreSignatureActionsByMessage, setDismissedStoreSignatureActionsByMessage] =
     useState<Record<string, boolean>>({});
+  const [contractWorkflowActionLoadingKeys, setContractWorkflowActionLoadingKeys] = useState<
+    Record<string, boolean>
+  >({});
+  const [contractWorkflowActionFeedback, setContractWorkflowActionFeedback] = useState<
+    Record<string, { tone: DocumentFeedbackTone; text: string }>
+  >({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -1007,6 +1023,21 @@ export default function AssistantPage() {
     });
   }, []);
 
+  const setContractWorkflowActionLoading = useCallback(
+    (key: string, loading: boolean) => {
+      setContractWorkflowActionLoadingKeys((current) => {
+        if (loading) {
+          return { ...current, [key]: true };
+        }
+
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    },
+    []
+  );
+
   async function handleDocumentAction(
     message: AssistantMessage,
     actionId: AssistantDocumentActionId
@@ -1165,6 +1196,104 @@ export default function AssistantPage() {
     }
   }
 
+  async function handleContractWorkflowAction(
+    message: AssistantMessage,
+    actionId: AssistantContractWorkflowActionId
+  ) {
+    const metadata = getAssistantContractWorkflowDecisionMetadata(message.metadata);
+    const actionKey = `${message.id}:${actionId}`;
+
+    if (!metadata || !message.id) {
+      setContractWorkflowActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text: "Dados do card de pré-contrato incompletos ou inválidos.",
+        },
+      }));
+      return;
+    }
+
+    if (actionId !== "generate_contract") {
+      setContractWorkflowActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text: "Essa ação ainda não está disponível.",
+        },
+      }));
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Tem certeza que deseja gerar o contrato para revisão a partir deste card?"
+    );
+
+    if (!confirmed) return;
+
+    setContractWorkflowActionLoading(actionKey, true);
+    setContractWorkflowActionFeedback((current) => {
+      const next = { ...current };
+      delete next[message.id];
+      return next;
+    });
+
+    try {
+      const response = await fetch("/api/assistant/actions/contract-workflow", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: actionId,
+          messageId: message.id,
+        }),
+      });
+
+      const result =
+        (await response.json()) as AssistantContractWorkflowActionApiResponse;
+
+      if (!response.ok || !result.ok) {
+        setContractWorkflowActionFeedback((current) => ({
+          ...current,
+          [message.id]: {
+            tone: "error",
+            text:
+              result.message ||
+              result.error ||
+              "Não consegui gerar o contrato agora. Tente novamente em instantes.",
+          },
+        }));
+        await loadAssistant({ silent: true });
+        return;
+      }
+
+      setContractWorkflowActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "success",
+          text:
+            result.message ||
+            "Contrato gerado para revisão. Confira o documento antes de aprovar ou enviar ao cliente.",
+        },
+      }));
+
+      await loadAssistant({ silent: true });
+    } catch (error: any) {
+      setContractWorkflowActionFeedback((current) => ({
+        ...current,
+        [message.id]: {
+          tone: "error",
+          text:
+            error?.message ||
+            "Não consegui gerar o contrato agora. Tente novamente em instantes.",
+        },
+      }));
+    } finally {
+      setContractWorkflowActionLoading(actionKey, false);
+    }
+  }
+
   if (loading) {
     return <div className="p-4 text-sm text-gray-600">Carregando assistente...</div>;
   }
@@ -1292,6 +1421,12 @@ export default function AssistantPage() {
                               )
                                 ? contractWorkflowMetadata.available_actions
                                 : [];
+                              const workflowFeedback =
+                                contractWorkflowActionFeedback[message.id] || null;
+                              const generateContractLoading =
+                                contractWorkflowActionLoadingKeys[
+                                  `${message.id}:generate_contract`
+                                ] === true;
 
                               return (
                                 <div className="mt-3 rounded-2xl border border-black/10 bg-[#fafafa] p-3">
@@ -1358,14 +1493,47 @@ export default function AssistantPage() {
                                     </div>
                                   ) : null}
 
+                                  {workflowFeedback ? (
+                                    <div
+                                      className={[
+                                        "mt-2 rounded-xl px-3 py-2 text-[11px] ring-1",
+                                        workflowFeedback.tone === "success"
+                                          ? "bg-green-50 text-green-800 ring-green-200"
+                                          : "bg-red-50 text-red-800 ring-red-200",
+                                      ].join(" ")}
+                                    >
+                                      {workflowFeedback.text}
+                                    </div>
+                                  ) : null}
+
                                   {availableActions.length > 0 ? (
                                     <div className="mt-3 flex flex-wrap gap-2">
                                       {availableActions.map((action, index) => (
                                         <button
                                           key={`${message.id}:contract-workflow-action:${index}`}
                                           type="button"
-                                          disabled
-                                          title="Esta ação será ativada no próximo bloco."
+                                          onClick={() => {
+                                            if (
+                                              getContractWorkflowActionKey(action) ===
+                                              "generate_contract"
+                                            ) {
+                                              void handleContractWorkflowAction(
+                                                message,
+                                                "generate_contract"
+                                              );
+                                            }
+                                          }}
+                                          disabled={
+                                            getContractWorkflowActionKey(action) !==
+                                              "generate_contract" ||
+                                            generateContractLoading
+                                          }
+                                          title={
+                                            getContractWorkflowActionKey(action) ===
+                                            "generate_contract"
+                                              ? "Gera um contrato para revisão sem enviar ao cliente."
+                                              : "Esta ação será ativada no próximo bloco."
+                                          }
                                           className={[
                                             "rounded-full px-3 py-1.5 text-[11px] font-semibold ring-1 disabled:cursor-not-allowed disabled:opacity-70",
                                             getContractWorkflowActionKey(action) ===
@@ -1374,14 +1542,18 @@ export default function AssistantPage() {
                                               : "bg-white text-gray-900 ring-black/10",
                                           ].join(" ")}
                                         >
-                                          {getContractWorkflowActionLabel(action)}
+                                          {getContractWorkflowActionKey(action) ===
+                                            "generate_contract" &&
+                                          generateContractLoading
+                                            ? "Gerando..."
+                                            : getContractWorkflowActionLabel(action)}
                                         </button>
                                       ))}
                                     </div>
                                   ) : null}
 
                                   <div className="mt-2 text-[11px] text-gray-500">
-                                    Essas ações ainda não executam nada neste bloco.
+                                    Apenas "Gerar contrato" executa ação neste bloco.
                                   </div>
                                 </div>
                               );
