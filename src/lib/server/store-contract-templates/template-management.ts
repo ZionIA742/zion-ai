@@ -449,6 +449,29 @@ async function loadTemplateExtractedRules(args: {
   return (data || []) as StoreContractTemplateExtractedRuleRow[];
 }
 
+async function loadTemplateExtractedRuleById(args: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  ruleId: string;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_contract_template_extracted_rules")
+    .select(
+      "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, sort_order, created_at, updated_at"
+    )
+    .eq("id", args.ruleId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao carregar regra extraida do contrato base: ${error.message}`);
+  }
+
+  return (data ?? null) as StoreContractTemplateExtractedRuleRow | null;
+}
+
 async function getNextTemplateVersionNumber(args: {
   supabase: ReturnType<typeof createServiceSupabaseClient>;
   templateId: string;
@@ -1326,5 +1349,121 @@ export async function extractStoreContractTemplateRules(args: {
     organizationId: scope.organizationId,
     ...buildTemplateSummary(refreshedTemplate, versions, refreshedRules),
     extractedRuleCount: extractedRules.length,
+  };
+}
+
+export async function reviewStoreContractTemplateRule(args: {
+  ruleId: string;
+  storeId: string;
+  organizationId?: string | null;
+  reviewStatus: "approved" | "rejected" | "edited";
+  valueText?: string | null;
+  label?: string | null;
+}) {
+  const scope = await resolveAuthorizedStoreTemplateScope(args);
+  const ruleId = String(args.ruleId || "").trim();
+
+  if (!ruleId) {
+    throw new StoreContractTemplateAccessError(
+      400,
+      "INVALID_RULE_ID",
+      "Rule ID nao informado."
+    );
+  }
+
+  if (!["approved", "rejected", "edited"].includes(args.reviewStatus)) {
+    throw new StoreContractTemplateAccessError(
+      400,
+      "INVALID_RULE_REVIEW_STATUS",
+      "Status de revisao invalido."
+    );
+  }
+
+  const rule = await loadTemplateExtractedRuleById({
+    supabase: scope.supabase,
+    ruleId,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  if (!rule?.id) {
+    throw new StoreContractTemplateAccessError(
+      404,
+      "RULE_NOT_FOUND",
+      "Regra do contrato nao encontrada nessa loja."
+    );
+  }
+
+  const nextValueText = cleanText(args.valueText);
+  const nextLabel = cleanText(args.label);
+  const now = new Date().toISOString();
+
+  const { data: updatedRule, error: updateError } = await scope.supabase
+    .from("store_contract_template_extracted_rules")
+    .update({
+      review_status: args.reviewStatus,
+      value_text: nextValueText ?? rule.value_text,
+      label: nextLabel ?? rule.label,
+      updated_at: now,
+    })
+    .eq("id", rule.id)
+    .eq("organization_id", scope.organizationId)
+    .eq("store_id", scope.store.id)
+    .select(
+      "id, template_version_id, organization_id, store_id, rule_key, rule_group, label, value_text, value_json, source_excerpt, confidence, review_status, sort_order, created_at, updated_at"
+    )
+    .maybeSingle();
+
+  if (updateError || !updatedRule?.id) {
+    throw new Error(updateError?.message || "Falha ao atualizar revisao da regra.");
+  }
+
+  const version = await loadTemplateVersionById({
+    supabase: scope.supabase,
+    versionId: rule.template_version_id,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  if (!version?.id) {
+    throw new StoreContractTemplateAccessError(
+      404,
+      "TEMPLATE_VERSION_NOT_FOUND",
+      "Versao do contrato base nao encontrada nessa loja."
+    );
+  }
+
+  const template = await loadStoreContractTemplate({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+  });
+
+  if (!template?.id || template.id !== version.template_id) {
+    throw new StoreContractTemplateAccessError(
+      404,
+      "TEMPLATE_NOT_FOUND",
+      "Template do contrato base nao encontrado nessa loja."
+    );
+  }
+
+  const versions = await loadTemplateVersions({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    templateId: template.id,
+  });
+  const refreshedRules = await loadTemplateExtractedRules({
+    supabase: scope.supabase,
+    organizationId: scope.organizationId,
+    storeId: scope.store.id,
+    templateVersionIds: versions.map((item) => item.id),
+  });
+
+  return {
+    store: scope.store,
+    organizationId: scope.organizationId,
+    ...buildTemplateSummary(template, versions, refreshedRules),
+    reviewedRule: updatedRule as StoreContractTemplateExtractedRuleRow,
   };
 }

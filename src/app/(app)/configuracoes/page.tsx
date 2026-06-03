@@ -129,6 +129,8 @@ type StoreContractTemplateApiResponse = {
   message?: string;
 };
 
+type ContractRuleReviewStatus = "pending" | "approved" | "rejected" | "edited";
+
 
 type OnboardingRow = {
   id?: string;
@@ -606,6 +608,35 @@ function summarizeContractUiText(value: string | null | undefined, maxLength = 1
   if (!normalized) return "Nenhum resumo disponivel.";
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength).trim()}...`;
+}
+
+function resolveContractRuleStatus(status: string | null | undefined) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "approved") {
+    return { label: "Aprovada", tone: "green" as const };
+  }
+  if (normalized === "rejected") {
+    return { label: "Ignorada", tone: "red" as const };
+  }
+  if (normalized === "edited") {
+    return { label: "Ajustada", tone: "amber" as const };
+  }
+  return { label: "Aguardando revisao", tone: "amber" as const };
+}
+
+function resolveContractRuleGroupLabel(group: string | null | undefined) {
+  const normalized = String(group || "").trim().toLowerCase();
+  if (normalized === "partes") return "Partes";
+  if (normalized === "objeto") return "Objeto";
+  if (normalized === "pagamento") return "Pagamento";
+  if (normalized === "instalacao") return "Entrega e instalacao";
+  if (normalized === "obrigacoes_cliente") return "Obrigacoes do cliente";
+  if (normalized === "obrigacoes_loja") return "Obrigacoes da loja";
+  if (normalized === "garantia") return "Garantia";
+  if (normalized === "rescisao") return "Rescisao";
+  if (normalized === "foro") return "Foro";
+  if (normalized === "imagem") return "Uso de imagem";
+  return "Regra";
 }
 
 function getImportSummaryText(summary: Record<string, unknown> | null | undefined) {
@@ -1433,6 +1464,12 @@ export default function ConfiguracoesPage() {
   const [contractRejectReasonDrafts, setContractRejectReasonDrafts] = useState<Record<string, string>>({});
   const [contractsErrorText, setContractsErrorText] = useState<string | null>(null);
   const [contractsSuccessText, setContractsSuccessText] = useState<string | null>(null);
+  const [contractRuleActionRuleId, setContractRuleActionRuleId] = useState<string | null>(null);
+  const [contractRuleActionType, setContractRuleActionType] = useState<
+    "approve" | "reject" | "save-edit" | null
+  >(null);
+  const [contractRuleEditDrafts, setContractRuleEditDrafts] = useState<Record<string, string>>({});
+  const [contractRuleEditingIds, setContractRuleEditingIds] = useState<Record<string, boolean>>({});
   const [contractContentModal, setContractContentModal] = useState<
     | {
         type: "text" | "rules";
@@ -1515,6 +1552,15 @@ export default function ConfiguracoesPage() {
           ? (result?.extractedRules as StoreContractTemplateExtractedRuleRow[])
           : []
       );
+      setContractRuleEditDrafts((current) => {
+        const nextDrafts = { ...current };
+        for (const rule of Array.isArray(result?.extractedRules)
+          ? (result?.extractedRules as StoreContractTemplateExtractedRuleRow[])
+          : []) {
+          nextDrafts[rule.id] = cleanText(rule.value_text) || "";
+        }
+        return nextDrafts;
+      });
     },
     []
   );
@@ -1527,6 +1573,8 @@ export default function ConfiguracoesPage() {
       setStoreContractExtractedRules([]);
       setSelectedContractBaseFile(null);
       setContractRejectReasonDrafts({});
+      setContractRuleEditDrafts({});
+      setContractRuleEditingIds({});
       setContractsLoading(false);
       return;
     }
@@ -1774,6 +1822,66 @@ export default function ConfiguracoesPage() {
     } finally {
       setContractActionVersionId(null);
       setContractActionType(null);
+    }
+  }
+
+  async function handleReviewContractRule(args: {
+    ruleId: string;
+    reviewStatus: "approved" | "rejected" | "edited";
+  }) {
+    if (!activeStoreId) {
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para revisar essa regra.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    setContractRuleActionRuleId(args.ruleId);
+    setContractRuleActionType(
+      args.reviewStatus === "approved"
+        ? "approve"
+        : args.reviewStatus === "rejected"
+          ? "reject"
+          : "save-edit"
+    );
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
+
+    try {
+      const response = await fetch(
+        `/api/store-contract-templates/rules/${args.ruleId}/review`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+          body: JSON.stringify({
+            storeId: activeStoreId,
+            reviewStatus: args.reviewStatus,
+            valueText: contractRuleEditDrafts[args.ruleId] || undefined,
+          }),
+        }
+      );
+
+      const result = (await response.json().catch(() => null)) as StoreContractTemplateApiResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel revisar essa regra.");
+      }
+
+      applyStoreContractTemplateResponse(result);
+      if (args.reviewStatus === "edited") {
+        setContractRuleEditingIds((current) => ({
+          ...current,
+          [args.ruleId]: false,
+        }));
+      }
+      setContractsSuccessText("Regra atualizada com sucesso.");
+    } catch (error: any) {
+      setContractsErrorText(error?.message || "Nao foi possivel revisar essa regra.");
+    } finally {
+      setContractRuleActionRuleId(null);
+      setContractRuleActionType(null);
     }
   }
 
@@ -2177,6 +2285,10 @@ export default function ConfiguracoesPage() {
   useEffect(() => {
     setSelectedContractBaseFile(null);
     setContractActionType(null);
+    setContractRuleActionRuleId(null);
+    setContractRuleActionType(null);
+    setContractRuleEditDrafts({});
+    setContractRuleEditingIds({});
     setContractContentModal(null);
     setContractRejectReasonDrafts({});
     setContractsErrorText(null);
@@ -7103,6 +7215,22 @@ export default function ConfiguracoesPage() {
                         const versionRules = storeContractExtractedRules.filter(
                           (rule) => rule.template_version_id === version.id
                         );
+                        const pendingRulesCount = versionRules.filter(
+                          (rule) =>
+                            String(rule.review_status || "").trim().toLowerCase() === "pending"
+                        ).length;
+                        const approvedRulesCount = versionRules.filter(
+                          (rule) =>
+                            String(rule.review_status || "").trim().toLowerCase() === "approved"
+                        ).length;
+                        const rejectedRulesCount = versionRules.filter(
+                          (rule) =>
+                            String(rule.review_status || "").trim().toLowerCase() === "rejected"
+                        ).length;
+                        const editedRulesCount = versionRules.filter(
+                          (rule) =>
+                            String(rule.review_status || "").trim().toLowerCase() === "edited"
+                        ).length;
                         const maskedTextPreview = summarizeContractUiText(
                           version.raw_extracted_text,
                           160
@@ -7176,6 +7304,25 @@ export default function ConfiguracoesPage() {
                                   <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
                                     <span className="font-semibold text-gray-900">Regras encontradas:</span>{" "}
                                     {versionRules.length}
+                                  </div>
+                                </div>
+
+                                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                                    <span className="font-semibold text-gray-900">Aguardando revisao:</span>{" "}
+                                    {pendingRulesCount}
+                                  </div>
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                                    <span className="font-semibold text-gray-900">Aprovadas:</span>{" "}
+                                    {approvedRulesCount}
+                                  </div>
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                                    <span className="font-semibold text-gray-900">Ignoradas:</span>{" "}
+                                    {rejectedRulesCount}
+                                  </div>
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
+                                    <span className="font-semibold text-gray-900">Ajustadas:</span>{" "}
+                                    {editedRulesCount}
                                   </div>
                                 </div>
 
@@ -7531,34 +7678,157 @@ export default function ConfiguracoesPage() {
                     ) : (
                       <div className="space-y-3">
                         {selectedRules.map((rule) => (
-                          <div
-                            key={rule.id}
-                            className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                          >
-                            <div className="flex flex-wrap items-center gap-2">
-                              <div className="text-sm font-semibold text-gray-900">
-                                {cleanText(rule.label) || "Regra encontrada"}
-                              </div>
-                              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-900">
-                                Aguardando revisao
-                              </span>
-                            </div>
-                            <div className="mt-2 text-sm text-gray-700">
-                              {maskSensitiveContractPreview(
-                                cleanText(rule.value_text) || "Trecho nao disponivel"
-                              )}
-                            </div>
-                            {cleanText(rule.source_excerpt) ? (
-                              <div className="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-600">
-                                <div className="mb-1 font-semibold text-gray-900">
-                                  Trecho encontrado no contrato
+                          (() => {
+                            const ruleStatus = resolveContractRuleStatus(rule.review_status);
+                            const isEditing = contractRuleEditingIds[rule.id] === true;
+                            const isRuleBusy = contractRuleActionRuleId === rule.id;
+                            const ruleDraft =
+                              contractRuleEditDrafts[rule.id] ?? cleanText(rule.value_text) ?? "";
+
+                            return (
+                              <div
+                                key={rule.id}
+                                className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                              >
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-sm font-semibold text-gray-900">
+                                    {cleanText(rule.label) || "Regra encontrada"}
+                                  </div>
+                                  <span
+                                    className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${statusToneClass(
+                                      ruleStatus.tone
+                                    )}`}
+                                  >
+                                    {ruleStatus.label}
+                                  </span>
+                                  <span className="rounded-full border border-gray-200 bg-white px-2 py-1 text-[11px] font-semibold text-gray-600">
+                                    {resolveContractRuleGroupLabel(rule.rule_group)}
+                                  </span>
                                 </div>
-                                <div className="whitespace-pre-wrap">
-                                  {maskSensitiveContractPreview(cleanText(rule.source_excerpt))}
+
+                                {!isEditing ? (
+                                  <div className="mt-2 text-sm text-gray-700">
+                                    {maskSensitiveContractPreview(
+                                      cleanText(rule.value_text) || "Trecho nao disponivel"
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="mt-3 space-y-2">
+                                    <div className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                                      Editar texto
+                                    </div>
+                                    <textarea
+                                      value={ruleDraft}
+                                      onChange={(event) =>
+                                        setContractRuleEditDrafts((current) => ({
+                                          ...current,
+                                          [rule.id]: event.target.value,
+                                        }))
+                                      }
+                                      rows={5}
+                                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                                    />
+                                  </div>
+                                )}
+
+                                {cleanText(rule.source_excerpt) ? (
+                                  <div className="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-600">
+                                    <div className="mb-1 font-semibold text-gray-900">
+                                      Trecho encontrado no contrato
+                                    </div>
+                                    <div className="whitespace-pre-wrap">
+                                      {maskSensitiveContractPreview(cleanText(rule.source_excerpt))}
+                                    </div>
+                                  </div>
+                                ) : null}
+
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {isEditing ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void handleReviewContractRule({
+                                            ruleId: rule.id,
+                                            reviewStatus: "edited",
+                                          })
+                                        }
+                                        disabled={isRuleBusy}
+                                        className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {isRuleBusy && contractRuleActionType === "save-edit"
+                                          ? "Salvando..."
+                                          : "Salvar ajuste"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setContractRuleEditingIds((current) => ({
+                                            ...current,
+                                            [rule.id]: false,
+                                          }));
+                                          setContractRuleEditDrafts((current) => ({
+                                            ...current,
+                                            [rule.id]: cleanText(rule.value_text) || "",
+                                          }));
+                                        }}
+                                        disabled={isRuleBusy}
+                                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        Cancelar
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setContractRuleEditingIds((current) => ({
+                                            ...current,
+                                            [rule.id]: true,
+                                          }))
+                                        }
+                                        disabled={isRuleBusy}
+                                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        Editar texto
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void handleReviewContractRule({
+                                            ruleId: rule.id,
+                                            reviewStatus: "approved",
+                                          })
+                                        }
+                                        disabled={isRuleBusy}
+                                        className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {isRuleBusy && contractRuleActionType === "approve"
+                                          ? "Aprovando..."
+                                          : "Aprovar"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void handleReviewContractRule({
+                                            ruleId: rule.id,
+                                            reviewStatus: "rejected",
+                                          })
+                                        }
+                                        disabled={isRuleBusy}
+                                        className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                      >
+                                        {isRuleBusy && contractRuleActionType === "reject"
+                                          ? "Ignorando..."
+                                          : "Ignorar"}
+                                      </button>
+                                    </>
+                                  )}
                                 </div>
                               </div>
-                            ) : null}
-                          </div>
+                            );
+                          })()
                         ))}
                         <div className="text-xs text-gray-500">
                           Revise essas informacoes antes de usar no contrato final.
