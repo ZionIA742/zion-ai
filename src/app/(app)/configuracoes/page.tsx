@@ -66,6 +66,50 @@ type StoreBrandingApiResponse = {
   message?: string;
 };
 
+type StoreContractTemplateRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  status: string | null;
+  active_version_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type StoreContractTemplateVersionRow = {
+  id: string;
+  template_id: string;
+  organization_id: string;
+  store_id: string;
+  version_number: number | null;
+  status: string | null;
+  store_file_id: string | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  original_filename: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  raw_extracted_text: string | null;
+  analysis_summary: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  rejected_at: string | null;
+  rejected_by: string | null;
+  rejection_reason: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type StoreContractTemplateApiResponse = {
+  ok: boolean;
+  template?: StoreContractTemplateRow | null;
+  activeVersion?: StoreContractTemplateVersionRow | null;
+  versions?: StoreContractTemplateVersionRow[];
+  error?: string;
+  message?: string;
+};
+
 
 type OnboardingRow = {
   id?: string;
@@ -290,6 +334,7 @@ type SettingsTabId =
   | "responsavel-ativacao"
   | "descontos"
   | "canais-integracoes"
+  | "contratos"
   | "identidade";
 
 type Option = {
@@ -502,6 +547,23 @@ function formatImportDate(value: string | null | undefined) {
     dateStyle: "short",
     timeStyle: "short",
   }).format(parsed);
+}
+
+function resolveContractVersionStatus(status: string | null | undefined) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "draft") return { label: "Sem envio", tone: "gray" as const };
+  if (normalized === "uploaded") return { label: "Enviado", tone: "gray" as const };
+  if (normalized === "analyzing") return { label: "Analisando", tone: "amber" as const };
+  if (normalized === "analyzed") return { label: "Analisado", tone: "gray" as const };
+  if (normalized === "awaiting_review") {
+    return { label: "Aguardando revisao", tone: "amber" as const };
+  }
+  if (normalized === "approved") return { label: "Aprovado", tone: "green" as const };
+  if (normalized === "active") return { label: "Ativo", tone: "green" as const };
+  if (normalized === "rejected") return { label: "Rejeitado", tone: "red" as const };
+  if (normalized === "archived") return { label: "Arquivado", tone: "gray" as const };
+  if (normalized === "failed") return { label: "Falhou", tone: "red" as const };
+  return { label: "Nao definido", tone: "gray" as const };
 }
 
 function getImportSummaryText(summary: Record<string, unknown> | null | undefined) {
@@ -1313,10 +1375,21 @@ export default function ConfiguracoesPage() {
   const [selectedStoreLogoFile, setSelectedStoreLogoFile] = useState<File | null>(null);
   const [savingStoreLogo, setSavingStoreLogo] = useState(false);
   const [removingStoreLogo, setRemovingStoreLogo] = useState(false);
+  const [storeContractTemplate, setStoreContractTemplate] = useState<StoreContractTemplateRow | null>(null);
+  const [storeContractActiveVersion, setStoreContractActiveVersion] = useState<StoreContractTemplateVersionRow | null>(null);
+  const [storeContractVersions, setStoreContractVersions] = useState<StoreContractTemplateVersionRow[]>([]);
+  const [contractsLoading, setContractsLoading] = useState(false);
+  const [selectedContractBaseFile, setSelectedContractBaseFile] = useState<File | null>(null);
+  const [uploadingContractBase, setUploadingContractBase] = useState(false);
+  const [contractActionVersionId, setContractActionVersionId] = useState<string | null>(null);
+  const [contractRejectReasonDrafts, setContractRejectReasonDrafts] = useState<Record<string, string>>({});
+  const [contractsErrorText, setContractsErrorText] = useState<string | null>(null);
+  const [contractsSuccessText, setContractsSuccessText] = useState<string | null>(null);
 
   const hasValidStoreContext = Boolean(organizationId && activeStoreId);
   const storeName = useMemo(() => buildStoreName(activeStore), [activeStore]);
   const storeLogoInputRef = useRef<HTMLInputElement | null>(null);
+  const contractBaseInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftStorageKey = useMemo(() => {
     if (!organizationId || !activeStoreId) return null;
     return `zion_configuracoes_draft:${organizationId}:${activeStoreId}`;
@@ -1339,6 +1412,7 @@ export default function ConfiguracoesPage() {
       { id: "responsavel-ativacao" as const, label: "Responsável e ativação" },
       { id: "descontos" as const, label: "Descontos" },
       { id: "canais-integracoes" as const, label: "Canais e integrações" },
+      { id: "contratos" as const, label: "Contratos" },
       { id: "identidade" as const, label: "Identidade da loja" },
     ],
     []
@@ -1368,6 +1442,189 @@ export default function ConfiguracoesPage() {
 
     setStoreBranding((result.branding ?? null) as StoreBrandingSettingsRow | null);
     setStoreLogoPreviewUrl(result.signedUrl || null);
+  }
+
+  const applyStoreContractTemplateResponse = useCallback(
+    (result: StoreContractTemplateApiResponse | null | undefined) => {
+      setStoreContractTemplate((result?.template ?? null) as StoreContractTemplateRow | null);
+      setStoreContractActiveVersion(
+        (result?.activeVersion ?? null) as StoreContractTemplateVersionRow | null
+      );
+      setStoreContractVersions(
+        Array.isArray(result?.versions)
+          ? (result?.versions as StoreContractTemplateVersionRow[])
+          : []
+      );
+    },
+    []
+  );
+
+  const fetchStoreContractTemplates = useCallback(async () => {
+    if (!activeStoreId) {
+      setStoreContractTemplate(null);
+      setStoreContractActiveVersion(null);
+      setStoreContractVersions([]);
+      setSelectedContractBaseFile(null);
+      setContractRejectReasonDrafts({});
+      setContractsLoading(false);
+      return;
+    }
+
+    setContractsLoading(true);
+
+    try {
+      const response = await fetch(
+        `/api/store-contract-templates?storeId=${encodeURIComponent(activeStoreId)}`,
+        {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+        }
+      );
+
+      const result = (await response.json().catch(() => null)) as StoreContractTemplateApiResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(
+          result?.message || "Nao foi possivel carregar os contratos base da loja."
+        );
+      }
+
+      applyStoreContractTemplateResponse(result);
+      setContractsErrorText(null);
+    } catch (error: any) {
+      setContractsErrorText(
+        error?.message || "Erro ao carregar os contratos base da loja."
+      );
+    } finally {
+      setContractsLoading(false);
+    }
+  }, [activeStoreId, applyStoreContractTemplateResponse]);
+
+  async function handleUploadContractBase() {
+    if (!activeStoreId) {
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para enviar o contrato base.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    if (!selectedContractBaseFile) {
+      setContractsErrorText("Selecione um arquivo PDF, DOC ou DOCX para continuar.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    setUploadingContractBase(true);
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
+
+    try {
+      const formData = new FormData();
+      formData.set("storeId", activeStoreId);
+      formData.set("file", selectedContractBaseFile);
+
+      const response = await fetch("/api/store-contract-templates/upload", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+
+      const result = (await response.json().catch(() => null)) as StoreContractTemplateApiResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel enviar o contrato base.");
+      }
+
+      applyStoreContractTemplateResponse(result);
+      setContractsSuccessText("Contrato base enviado com sucesso.");
+      setSelectedContractBaseFile(null);
+    } catch (error: any) {
+      setContractsErrorText(error?.message || "Erro ao enviar o contrato base.");
+    } finally {
+      setUploadingContractBase(false);
+    }
+  }
+
+  async function handleApproveContractVersion(versionId: string) {
+    if (!activeStoreId) {
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para aprovar essa versao.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    setContractActionVersionId(versionId);
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
+
+    try {
+      const response = await fetch(`/api/store-contract-templates/${versionId}/approve`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          storeId: activeStoreId,
+        }),
+      });
+
+      const result = (await response.json().catch(() => null)) as StoreContractTemplateApiResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel aprovar essa versao.");
+      }
+
+      applyStoreContractTemplateResponse(result);
+      setContractsSuccessText("Contrato base aprovado com sucesso.");
+    } catch (error: any) {
+      setContractsErrorText(error?.message || "Erro ao aprovar essa versao.");
+    } finally {
+      setContractActionVersionId(null);
+    }
+  }
+
+  async function handleRejectContractVersion(versionId: string) {
+    if (!activeStoreId) {
+      setContractsErrorText("Nenhuma loja ativa foi encontrada para rejeitar essa versao.");
+      setContractsSuccessText(null);
+      return;
+    }
+
+    setContractActionVersionId(versionId);
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
+
+    try {
+      const rejectionReason = cleanText(contractRejectReasonDrafts[versionId]);
+      const response = await fetch(`/api/store-contract-templates/${versionId}/reject`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          storeId: activeStoreId,
+          rejectionReason: rejectionReason || undefined,
+        }),
+      });
+
+      const result = (await response.json().catch(() => null)) as StoreContractTemplateApiResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel rejeitar essa versao.");
+      }
+
+      applyStoreContractTemplateResponse(result);
+      setContractsSuccessText("Versao rejeitada com sucesso.");
+      setContractRejectReasonDrafts((current) => ({
+        ...current,
+        [versionId]: "",
+      }));
+    } catch (error: any) {
+      setContractsErrorText(error?.message || "Erro ao rejeitar essa versao.");
+    } finally {
+      setContractActionVersionId(null);
+    }
   }
 
   const fetchPageData = useCallback(async () => {
@@ -1603,6 +1860,10 @@ export default function ConfiguracoesPage() {
   }, [fetchPageData]);
 
   useEffect(() => {
+    void fetchStoreContractTemplates();
+  }, [fetchStoreContractTemplates]);
+
+  useEffect(() => {
     if (!configDraftStorageKey || typeof window === "undefined") return;
     if (hasRestoredLocalDraftRef.current) return;
     if (loading) return;
@@ -1761,6 +2022,13 @@ export default function ConfiguracoesPage() {
 
   useEffect(() => {
     setSelectedStoreLogoFile(null);
+  }, [organizationId, activeStoreId]);
+
+  useEffect(() => {
+    setSelectedContractBaseFile(null);
+    setContractRejectReasonDrafts({});
+    setContractsErrorText(null);
+    setContractsSuccessText(null);
   }, [organizationId, activeStoreId]);
 
   useEffect(() => {
@@ -6544,9 +6812,301 @@ export default function ConfiguracoesPage() {
         </SectionBlock>
       ) : null}
 
+      {activeTab === "contratos" ? (
+        <SectionBlock
+          title="10. Contratos"
+          description="Envie, acompanhe e aprove o contrato base oficial da loja."
+          actions={
+            contractsLoading ? (
+              <span className="text-xs text-gray-500">Carregando...</span>
+            ) : null
+          }
+        >
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+              <div className="space-y-2 text-sm text-gray-700">
+                <p>
+                  Envie aqui o contrato base oficial da sua loja. O ZION usara esse
+                  contrato como referencia para gerar contratos futuros e entender
+                  regras como pagamento, instalacao, garantia, obrigacoes da loja e
+                  obrigacoes do cliente.
+                </p>
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  O contrato base so sera usado depois de revisao e aprovacao do
+                  responsavel da loja.
+                </div>
+              </div>
+            </div>
+
+            {contractsErrorText ? (
+              <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {contractsErrorText}
+              </div>
+            ) : null}
+
+            {contractsSuccessText ? (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                {contractsSuccessText}
+              </div>
+            ) : null}
+
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                  <div className="text-sm font-semibold text-gray-900">Enviar contrato base</div>
+
+                  <input
+                    ref={contractBaseInputRef}
+                    type="file"
+                    accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    className="hidden"
+                    onChange={(event) => {
+                      const nextFile = event.target.files?.[0] ?? null;
+                      setSelectedContractBaseFile(nextFile);
+                      setContractsErrorText(null);
+                      setContractsSuccessText(null);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => contractBaseInputRef.current?.click()}
+                      disabled={!hasValidStoreContext || uploadingContractBase || contractsLoading}
+                      className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Escolher arquivo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleUploadContractBase()}
+                      disabled={
+                        !hasValidStoreContext ||
+                        !selectedContractBaseFile ||
+                        uploadingContractBase ||
+                        contractsLoading
+                      }
+                      className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {uploadingContractBase ? "Enviando contrato base..." : "Enviar contrato base"}
+                    </button>
+                  </div>
+
+                  <div className="mt-3 space-y-2 text-sm text-gray-700">
+                    <div>
+                      <span className="font-semibold text-gray-900">Arquivo selecionado:</span>{" "}
+                      {selectedContractBaseFile?.name || "Nenhum arquivo selecionado"}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      Formatos aceitos: PDF, DOC e DOCX. Tamanho maximo sugerido: 15 MB.
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                  <div className="mb-3 text-sm font-semibold text-gray-900">Versoes enviadas</div>
+
+                  {contractsLoading && storeContractVersions.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                      Carregando contratos base da loja...
+                    </div>
+                  ) : storeContractVersions.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-4 text-sm text-gray-600">
+                      <div className="font-semibold text-gray-900">
+                        Nenhum contrato base enviado ainda.
+                      </div>
+                      <div className="mt-1">
+                        Envie o contrato oficial usado pela sua loja para comecar.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {storeContractVersions.map((version) => {
+                        const status = resolveContractVersionStatus(version.status);
+                        const isActiveVersion =
+                          storeContractActiveVersion?.id === version.id ||
+                          cleanText(version.status).toLowerCase() === "active";
+                        const normalizedStatus = cleanText(version.status).toLowerCase();
+                        const isVersionBusy = contractActionVersionId === version.id;
+                        const canApprove =
+                          !isActiveVersion &&
+                          ["uploaded", "analyzed", "awaiting_review", "approved"].includes(
+                            normalizedStatus
+                          );
+                        const canReject = !isActiveVersion;
+
+                        return (
+                          <div
+                            key={version.id}
+                            className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                          >
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                              <div className="min-w-0 space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-sm font-semibold text-gray-900">
+                                    Versao {version.version_number ?? "-"}
+                                  </div>
+                                  <span
+                                    className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${statusToneClass(
+                                      status.tone
+                                    )}`}
+                                  >
+                                    {status.label}
+                                  </span>
+                                  {isActiveVersion ? (
+                                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                                      Ativo
+                                    </span>
+                                  ) : null}
+                                </div>
+
+                                <div className="break-words text-sm text-gray-700">
+                                  <span className="font-semibold text-gray-900">Arquivo:</span>{" "}
+                                  {cleanText(version.original_filename) || "Arquivo sem nome"}
+                                </div>
+
+                                <div className="flex flex-wrap gap-2 text-xs text-gray-600">
+                                  <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
+                                    Enviado em {formatImportDate(version.created_at)}
+                                  </span>
+                                  <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
+                                    Tamanho: {formatFileSize(version.size_bytes)}
+                                  </span>
+                                  {version.approved_at ? (
+                                    <span className="rounded-full bg-white px-2 py-1 ring-1 ring-gray-200">
+                                      Aprovado em {formatImportDate(version.approved_at)}
+                                    </span>
+                                  ) : null}
+                                </div>
+
+                                {cleanText(version.rejection_reason) ? (
+                                  <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                                    Motivo da rejeicao: {cleanText(version.rejection_reason)}
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              <div className="w-full max-w-sm space-y-2">
+                                <div className="flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleApproveContractVersion(version.id)}
+                                    disabled={
+                                      !canApprove ||
+                                      isVersionBusy ||
+                                      uploadingContractBase ||
+                                      contractsLoading
+                                    }
+                                    className="rounded-xl bg-black px-3 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {isVersionBusy && canApprove ? "Aprovando..." : "Aprovar versao"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRejectContractVersion(version.id)}
+                                    disabled={
+                                      !canReject ||
+                                      isVersionBusy ||
+                                      uploadingContractBase ||
+                                      contractsLoading
+                                    }
+                                    className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {isVersionBusy && canReject ? "Rejeitando..." : "Rejeitar versao"}
+                                  </button>
+                                </div>
+
+                                {!isActiveVersion ? (
+                                  <textarea
+                                    value={contractRejectReasonDrafts[version.id] || ""}
+                                    onChange={(event) =>
+                                      setContractRejectReasonDrafts((current) => ({
+                                        ...current,
+                                        [version.id]: event.target.value,
+                                      }))
+                                    }
+                                    rows={2}
+                                    placeholder="Motivo da rejeicao (opcional)"
+                                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                                  />
+                                ) : (
+                                  <div className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500">
+                                    A versao ativa nao pode ser rejeitada pela interface.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="text-sm font-semibold text-gray-900">Contrato base ativo</div>
+
+                  {storeContractActiveVersion ? (
+                    <div className="mt-3 space-y-2 text-sm text-gray-700">
+                      <div className="break-words">
+                        <span className="font-semibold text-gray-900">Arquivo:</span>{" "}
+                        {cleanText(storeContractActiveVersion.original_filename) || "Arquivo sem nome"}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-gray-900">Versao:</span>{" "}
+                        {storeContractActiveVersion.version_number ?? "-"}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-gray-900">Data de aprovacao:</span>{" "}
+                        {formatImportDate(storeContractActiveVersion.approved_at)}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-gray-900">Status:</span>{" "}
+                        Ativo
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-xl border border-dashed border-gray-300 bg-white px-4 py-4 text-sm text-gray-600">
+                      Nenhum contrato base ativo no momento.
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                  <div className="mb-3 text-sm font-semibold text-gray-900">
+                    Resumo rapido
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <CompactMetric
+                      label="Versoes enviadas"
+                      value={String(storeContractVersions.length)}
+                      tone={storeContractVersions.length > 0 ? "green" : "gray"}
+                    />
+                    <CompactMetric
+                      label="Status atual"
+                      value={
+                        storeContractActiveVersion
+                          ? "Ativo"
+                          : storeContractTemplate
+                            ? resolveContractVersionStatus(storeContractTemplate?.status).label
+                            : "Sem envio"
+                      }
+                      tone={storeContractActiveVersion ? "green" : "gray"}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </SectionBlock>
+      ) : null}
+
       {activeTab === "identidade" ? (
         <SectionBlock
-          title="10. Identidade da loja"
+          title="11. Identidade da loja"
           description="Nome, assinatura e dados institucionais usados pela IA e pelos documentos da loja."
         >
           <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
