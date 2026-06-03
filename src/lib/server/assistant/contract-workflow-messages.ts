@@ -1,4 +1,6 @@
 import type { ContractWorkflowDecisionResult, ContractWorkflowDecisionTrigger } from "@/lib/server/sales-contracts/contract-workflow-decision";
+import { buildCustomerContextSummary } from "@/lib/server/assistant/customer-context-summary";
+import { buildCustomerContextReportMetadata } from "@/lib/server/assistant/customer-context-report";
 
 const CONTRACT_WORKFLOW_SOURCE = "assistant_pre_contract_workflow_v1";
 const CONTRACT_WORKFLOW_NOTIFICATION_TYPE = "important_alert";
@@ -108,10 +110,33 @@ function buildContractWorkflowContent(
   return lines.join("\n");
 }
 
-function buildContractWorkflowMetadata(
+async function buildContractWorkflowMetadata(
   input: PushAssistantContractWorkflowDecisionMessageInput
 ) {
   const source = cleanText(input.sourceOverride) || CONTRACT_WORKFLOW_SOURCE;
+  let customerContextSummary: Awaited<
+    ReturnType<typeof buildCustomerContextSummary>
+  > | null = null;
+
+  try {
+    customerContextSummary = await buildCustomerContextSummary({
+      supabase: input.supabase,
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      leadId: input.leadId,
+      conversationId: input.conversationId,
+      quoteId: input.quoteId,
+      quoteNumber: input.quoteNumber,
+      customerName: input.customerName,
+      trigger: input.trigger,
+    });
+  } catch (error) {
+    console.warn(
+      "[assistant_contract_workflow] falha ao montar resumo interno do cliente:",
+      error
+    );
+  }
+
   return {
     kind: "contract_workflow_decision",
     organization_id: input.organizationId,
@@ -136,6 +161,7 @@ function buildContractWorkflowMetadata(
       input.availableActionsOverride && input.availableActionsOverride.length > 0
         ? input.availableActionsOverride
         : buildDefaultAvailableActions(),
+    customer_context_summary: customerContextSummary,
   };
 }
 
@@ -254,6 +280,121 @@ async function updateAssistantThreadPreview(args: {
   if (error) {
     throw new Error(`Falha ao atualizar resumo da thread da assistente: ${error.message}`);
   }
+}
+
+async function findExistingCustomerContextReportMessage(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  quoteId: string;
+  trigger: ContractWorkflowDecisionTrigger;
+  source?: string | null;
+}) {
+  const reportKey = [
+    "customer_context_report",
+    cleanText(args.quoteId) || "unknown",
+    cleanText(args.trigger) || "unknown",
+    cleanText(args.source) || CONTRACT_WORKFLOW_SOURCE,
+  ].join(":");
+
+  const { data, error } = await args.supabase
+    .from("store_assistant_messages")
+    .select("id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .contains("metadata", {
+      kind: "customer_context_report",
+      report_key: reportKey,
+    })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Falha ao verificar duplicidade de mensagem customer_context_report: ${error.message}`
+    );
+  }
+
+  return cleanText(data?.id);
+}
+
+async function pushCustomerContextReportMessage(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  leadId?: string | null;
+  conversationId?: string | null;
+  quoteId: string;
+  quoteNumber?: string | null;
+  customerName?: string | null;
+  trigger: ContractWorkflowDecisionTrigger;
+  source?: string | null;
+  threadId: string;
+  relatedMessageId?: string | null;
+}) {
+  const source = cleanText(args.source) || CONTRACT_WORKFLOW_SOURCE;
+  const existingMessageId = await findExistingCustomerContextReportMessage({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    quoteId: args.quoteId,
+    trigger: args.trigger,
+    source,
+  });
+
+  if (existingMessageId) {
+    return {
+      created: false,
+      deduped: true,
+      messageId: existingMessageId,
+    };
+  }
+
+  const metadata = await buildCustomerContextReportMetadata({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    leadId: args.leadId,
+    conversationId: args.conversationId,
+    quoteId: args.quoteId,
+    quoteNumber: args.quoteNumber,
+    customerName: args.customerName,
+    trigger: args.trigger,
+    source,
+    relatedMessageId: args.relatedMessageId,
+  });
+
+  const content = cleanText(metadata.narrative) || "Relatório do cliente disponível.";
+
+  const { error } = await args.supabase.rpc("assistant_push_system_message", {
+    p_organization_id: args.organizationId,
+    p_store_id: args.storeId,
+    p_content: content,
+    p_message_type: "text",
+    p_related_lead_id: cleanText(args.leadId),
+    p_related_conversation_id: cleanText(args.conversationId),
+    p_related_appointment_id: null,
+    p_metadata: metadata,
+  });
+
+  if (error) {
+    throw new Error(
+      `Falha ao criar mensagem customer_context_report da assistente: ${error.message}`
+    );
+  }
+
+  await updateAssistantThreadPreview({
+    supabase: args.supabase,
+    threadId: args.threadId,
+    previewText: content,
+  });
+
+  return {
+    created: true,
+    deduped: false,
+    messageId: null,
+  };
 }
 
 async function findExistingContractWorkflowNotification(args: {
@@ -393,6 +534,28 @@ export async function pushAssistantContractWorkflowDecisionMessage(
   });
 
   if (existingMessageId) {
+    try {
+      await pushCustomerContextReportMessage({
+        supabase: input.supabase,
+        organizationId: input.organizationId,
+        storeId: input.storeId,
+        leadId: input.leadId,
+        conversationId: input.conversationId,
+        quoteId: input.quoteId,
+        quoteNumber: input.quoteNumber,
+        customerName: input.customerName,
+        trigger: input.trigger,
+        source,
+        threadId,
+        relatedMessageId: existingMessageId,
+      });
+    } catch (error) {
+      console.warn(
+        "[assistant_contract_workflow] falha ao criar relatorio do cliente apos dedupe do card:",
+        error
+      );
+    }
+
     return {
       ok: true as const,
       deduped: true,
@@ -403,7 +566,7 @@ export async function pushAssistantContractWorkflowDecisionMessage(
   }
 
   const content = buildContractWorkflowContent(input);
-  const metadata = buildContractWorkflowMetadata(input);
+  const metadata = await buildContractWorkflowMetadata(input);
 
   const { error } = await input.supabase.rpc("assistant_push_system_message", {
     p_organization_id: input.organizationId,
@@ -436,6 +599,38 @@ export async function pushAssistantContractWorkflowDecisionMessage(
     relatedLeadId: cleanText(input.leadId),
     relatedConversationId: cleanText(input.conversationId),
   });
+
+  const createdMessageId =
+    (await findExistingContractWorkflowMessage({
+      supabase: input.supabase,
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      quoteId: input.quoteId,
+      trigger: input.trigger,
+      source,
+    })) || null;
+
+  try {
+    await pushCustomerContextReportMessage({
+      supabase: input.supabase,
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      leadId: input.leadId,
+      conversationId: input.conversationId,
+      quoteId: input.quoteId,
+      quoteNumber: input.quoteNumber,
+      customerName: input.customerName,
+      trigger: input.trigger,
+      source,
+      threadId,
+      relatedMessageId: createdMessageId,
+    });
+  } catch (error) {
+    console.warn(
+      "[assistant_contract_workflow] falha ao criar relatorio do cliente:",
+      error
+    );
+  }
 
   return {
     ok: true as const,

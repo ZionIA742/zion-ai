@@ -122,6 +122,46 @@ type AssistantContractWorkflowDecisionMetadata = {
         requires_confirmation?: boolean;
       }
   >;
+  customer_context_summary?: {
+    customerName?: string;
+    customerPhone?: string;
+    quoteNumber?: string;
+    quoteStatusLabel?: string;
+    quoteTotalLabel?: string;
+    quoteApprovedAt?: string;
+    quoteSentAt?: string;
+    contractNumber?: string;
+    contractStatusLabel?: string;
+    contractSentAt?: string;
+    contractCustomerSignedAt?: string;
+    contractCompletedAt?: string;
+    latestCustomerMessage?: string;
+    technicalVisitStatusLabel?: string;
+    technicalVisitDate?: string;
+    happened?: string[];
+    suggestedNextAction?: string;
+  } | null;
+};
+
+type AssistantCustomerContextReportMetadata = {
+  kind?: string;
+  title?: string;
+  subtitle?: string;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  source_label?: string | null;
+  main_interest?: string | null;
+  customer_goal?: string | null;
+  conversation_highlights?: string[] | null;
+  quote_number?: string | null;
+  quote_status_label?: string | null;
+  quote_total_label?: string | null;
+  contract_number?: string | null;
+  contract_status_label?: string | null;
+  technical_visit_label?: string | null;
+  current_status_label?: string | null;
+  suggested_next_action?: string | null;
+  narrative?: string | null;
 };
 
 type DocumentFeedbackTone = "success" | "error";
@@ -255,6 +295,14 @@ function getAssistantContractWorkflowDecisionMetadata(
   if (!isRecord(metadata)) return null;
   if (getSafeString(metadata.kind) !== "contract_workflow_decision") return null;
   return metadata as AssistantContractWorkflowDecisionMetadata;
+}
+
+function getAssistantCustomerContextReportMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): AssistantCustomerContextReportMetadata | null {
+  if (!isRecord(metadata)) return null;
+  if (getSafeString(metadata.kind) !== "customer_context_report") return null;
+  return metadata as AssistantCustomerContextReportMetadata;
 }
 
 function getDocumentTypeLabel(value: string | null | undefined) {
@@ -1555,6 +1603,225 @@ export default function AssistantPage() {
                                   <div className="mt-2 text-[11px] text-gray-500">
                                     Apenas "Gerar contrato" executa ação neste bloco.
                                   </div>
+                                </div>
+                              );
+                            })()}
+
+                            {(() => {
+                              const customerContextReportMetadata =
+                                getAssistantCustomerContextReportMetadata(
+                                  message.metadata
+                                );
+
+                              if (!customerContextReportMetadata) return null;
+
+                              const highlights = Array.isArray(
+                                customerContextReportMetadata.conversation_highlights
+                              )
+                                ? customerContextReportMetadata.conversation_highlights.filter(
+                                    (item) => Boolean(getSafeString(item))
+                                  )
+                                : [];
+
+                              return (
+                                <div className="mt-3 rounded-2xl border border-black/10 bg-[#fafafa] p-3">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded-full bg-black px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-white">
+                                      RELATÓRIO DO CLIENTE
+                                    </span>
+                                    <span className="text-[12px] font-semibold text-gray-900">
+                                      {getSafeString(customerContextReportMetadata.subtitle) ||
+                                        "Contexto para decisão do responsável"}
+                                    </span>
+                                  </div>
+
+                                  {getSafeString(customerContextReportMetadata.narrative) ||
+                                  getSafeString(message.content) ? (
+                                    <div className="mt-3 rounded-xl bg-white px-3 py-3 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5">
+                                      {getSafeString(
+                                        customerContextReportMetadata.narrative
+                                      ) || getSafeString(message.content)}
+                                    </div>
+                                  ) : null}
+
+                                  <div className="mt-3 grid gap-2 rounded-xl bg-white px-3 py-3 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5">
+                                    {getSafeString(
+                                      customerContextReportMetadata.customer_name
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          Cliente:
+                                        </span>{" "}
+                                        {getSafeString(
+                                          customerContextReportMetadata.customer_name
+                                        )}
+                                      </div>
+                                    ) : null}
+
+                                    {getSafeString(
+                                      customerContextReportMetadata.customer_phone
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          Contato:
+                                        </span>{" "}
+                                        {getSafeString(
+                                          customerContextReportMetadata.customer_phone
+                                        )}
+                                      </div>
+                                    ) : null}
+
+                                    {getSafeString(
+                                      customerContextReportMetadata.source_label
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          Origem:
+                                        </span>{" "}
+                                        {getSafeString(
+                                          customerContextReportMetadata.source_label
+                                        )}
+                                      </div>
+                                    ) : null}
+
+                                    {getSafeString(
+                                      customerContextReportMetadata.main_interest
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          Interesse principal:
+                                        </span>{" "}
+                                        {getSafeString(
+                                          customerContextReportMetadata.main_interest
+                                        )}
+                                      </div>
+                                    ) : null}
+
+                                    {getSafeString(
+                                      customerContextReportMetadata.customer_goal
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          O que o cliente quer:
+                                        </span>{" "}
+                                        {getSafeString(
+                                          customerContextReportMetadata.customer_goal
+                                        )}
+                                      </div>
+                                    ) : null}
+
+                                    {getSafeString(
+                                      customerContextReportMetadata.quote_number
+                                    ) ||
+                                    getSafeString(
+                                      customerContextReportMetadata.quote_status_label
+                                    ) ||
+                                    getSafeString(
+                                      customerContextReportMetadata.quote_total_label
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          Orçamento relacionado:
+                                        </span>{" "}
+                                        {[
+                                          getSafeString(
+                                            customerContextReportMetadata.quote_number
+                                          ),
+                                          getSafeString(
+                                            customerContextReportMetadata.quote_status_label
+                                          ),
+                                          getSafeString(
+                                            customerContextReportMetadata.quote_total_label
+                                          ),
+                                        ]
+                                          .filter(Boolean)
+                                          .join(" • ")}
+                                      </div>
+                                    ) : null}
+
+                                    {getSafeString(
+                                      customerContextReportMetadata.contract_number
+                                    ) ||
+                                    getSafeString(
+                                      customerContextReportMetadata.contract_status_label
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          Contrato relacionado:
+                                        </span>{" "}
+                                        {[
+                                          getSafeString(
+                                            customerContextReportMetadata.contract_number
+                                          ),
+                                          getSafeString(
+                                            customerContextReportMetadata.contract_status_label
+                                          ),
+                                        ]
+                                          .filter(Boolean)
+                                          .join(" • ")}
+                                      </div>
+                                    ) : null}
+
+                                    {getSafeString(
+                                      customerContextReportMetadata.technical_visit_label
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          Visita técnica:
+                                        </span>{" "}
+                                        {getSafeString(
+                                          customerContextReportMetadata.technical_visit_label
+                                        )}
+                                      </div>
+                                    ) : null}
+
+                                    {getSafeString(
+                                      customerContextReportMetadata.current_status_label
+                                    ) ? (
+                                      <div>
+                                        <span className="font-semibold text-gray-900">
+                                          Situação atual:
+                                        </span>{" "}
+                                        {getSafeString(
+                                          customerContextReportMetadata.current_status_label
+                                        )}
+                                      </div>
+                                    ) : null}
+                                  </div>
+
+                                  {highlights.length > 0 ? (
+                                    <div className="mt-3 rounded-xl bg-white px-3 py-3 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5">
+                                      <div className="font-semibold text-gray-900">
+                                        Informações importantes da conversa
+                                      </div>
+                                      <div className="mt-2 space-y-1">
+                                        {highlights.map((item, index) => (
+                                          <div
+                                            key={`${message.id}:customer-report-highlight:${index}`}
+                                            className="flex gap-2"
+                                          >
+                                            <span className="mt-[2px] text-gray-400">-</span>
+                                            <span>{item}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
+
+                                  {getSafeString(
+                                    customerContextReportMetadata.suggested_next_action
+                                  ) ? (
+                                    <div className="mt-3 rounded-xl bg-white px-3 py-3 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5">
+                                      <div className="font-semibold text-gray-900">
+                                        Próxima ação sugerida
+                                      </div>
+                                      <div className="mt-1">
+                                        {getSafeString(
+                                          customerContextReportMetadata.suggested_next_action
+                                        )}
+                                      </div>
+                                    </div>
+                                  ) : null}
                                 </div>
                               );
                             })()}
