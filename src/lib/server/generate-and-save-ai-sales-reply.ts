@@ -10,6 +10,12 @@ import {
   evaluateContractWorkflowDecision,
   type ContractWorkflowDecisionTrigger,
 } from "./sales-contracts/contract-workflow-decision";
+import {
+  buildCustomerContractAcceptanceConfirmationText,
+  detectStrongCustomerContractAcceptance,
+  findEligibleSentContractForCustomerAcceptance,
+  signSalesContractAsCustomer,
+} from "./sales-contracts/customer-contract-acceptance";
 import { pushAssistantContractWorkflowDecisionMessage } from "./assistant/contract-workflow-messages";
 
 type GenerateAndSaveAiSalesReplyParams = {
@@ -136,6 +142,14 @@ type ContractWorkflowQuoteCandidateRow = {
 type ExistingContractStateRow = {
   id: string;
   status: string | null;
+};
+
+type CustomerIncomingMessageRow = {
+  id: string;
+  sender: string | null;
+  direction: string | null;
+  content: string | null;
+  created_at: string | null;
 };
 
 type ContractWorkflowCardCreationResult = {
@@ -1411,6 +1425,49 @@ function hasAiReplyAfterLatestCustomerMessage(
   );
 }
 
+async function loadLatestIncomingCustomerMessage(args: {
+  supabase: any;
+  conversationId: string;
+}): Promise<CustomerIncomingMessageRow | null> {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .select("id, sender, direction, content, created_at")
+    .eq("conversation_id", args.conversationId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    throw new Error(
+      `Falha ao carregar a ultima mensagem do cliente: ${error.message}`
+    );
+  }
+
+  const rows = Array.isArray(data) ? (data as CustomerIncomingMessageRow[]) : [];
+  return rows.find(isCustomerIncomingMessage) || null;
+}
+
+async function sendAiPanelMessage(args: {
+  supabase: any;
+  conversationId: string;
+  aiText: string;
+}) {
+  const { data: messageId, error: sendError } = await args.supabase.rpc(
+    "panel_send_message",
+    {
+      p_conversation_id: args.conversationId,
+      p_text: args.aiText,
+      p_sender: "ai",
+      p_external_message_id: null,
+    }
+  );
+
+  if (sendError) {
+    throw new Error(sendError.message);
+  }
+
+  return messageId ?? null;
+}
+
 function isValidTimeZone(timeZone: string | null | undefined): boolean {
   try {
     new Intl.DateTimeFormat("en-US", {
@@ -2457,6 +2514,114 @@ export async function generateAndSaveAiSalesReply(
       queueCancelReason: "cancelled_by_new_customer_message",
     });
 
+    const lastIncomingCustomerMessage = await loadLatestIncomingCustomerMessage({
+      supabase,
+      conversationId,
+    });
+
+    const lastCustomerMessageText = cleanText(lastIncomingCustomerMessage?.content);
+
+    if (detectStrongCustomerContractAcceptance(lastCustomerMessageText)) {
+      const eligibleContract = await findEligibleSentContractForCustomerAcceptance({
+        supabase,
+        organizationId,
+        storeId,
+        conversationId,
+        leadId: normalizedConversation.lead_id || null,
+      });
+
+      if (eligibleContract.outcome === "single") {
+        await signSalesContractAsCustomer({
+          scope: eligibleContract.scope,
+          acceptanceText: lastCustomerMessageText,
+          metadataSource: "sales_ai_conversation_customer_acceptance_v1",
+          metadata: {
+            accepted_via: "conversation_text",
+            channel: "conversation",
+            conversation_id: conversationId,
+            lead_id: normalizedConversation.lead_id || null,
+            trigger_message_id: lastIncomingCustomerMessage?.id || null,
+            trigger_message_content: lastCustomerMessageText,
+            contract_number: eligibleContract.contractNumber,
+            matched_by: eligibleContract.matchedBy,
+          },
+        });
+
+        const aiText = buildCustomerContractAcceptanceConfirmationText();
+        let messageId: string | null = null;
+
+        try {
+          messageId = await sendAiPanelMessage({
+            supabase,
+            conversationId,
+            aiText,
+          });
+        } catch (sendAcceptanceReplyError: any) {
+          return {
+            ok: false,
+            error: "PANEL_SEND_MESSAGE_FAILED",
+            message:
+              sendAcceptanceReplyError?.message ||
+              "Falha ao enviar confirmacao de aceite do contrato.",
+            aiText,
+          };
+        }
+
+        return {
+          ok: true,
+          aiText,
+          context: {
+            flow: "customer_contract_text_acceptance",
+            contractId: eligibleContract.contractId,
+            contractNumber: eligibleContract.contractNumber,
+            matchedBy: eligibleContract.matchedBy,
+            triggerMessageId: lastIncomingCustomerMessage?.id || null,
+          },
+          usage: null,
+          persisted: true,
+          messageId,
+        };
+      }
+
+      if (eligibleContract.outcome === "multiple") {
+        const aiText =
+          "Recebi seu aceite. Como encontrei mais de um contrato enviado em aberto para voce, preciso que a loja confirme qual deles seguir antes de registrar formalmente.";
+        let messageId: string | null = null;
+
+        try {
+          messageId = await sendAiPanelMessage({
+            supabase,
+            conversationId,
+            aiText,
+          });
+        } catch (sendClarificationError: any) {
+          return {
+            ok: false,
+            error: "PANEL_SEND_MESSAGE_FAILED",
+            message:
+              sendClarificationError?.message ||
+              "Falha ao enviar resposta de esclarecimento sobre o aceite do contrato.",
+            aiText,
+          };
+        }
+
+        return {
+          ok: true,
+          aiText,
+          context: {
+            flow: "customer_contract_text_acceptance_ambiguous",
+            candidateCount: eligibleContract.candidateCount,
+            candidates: eligibleContract.candidates,
+            matchedBy: eligibleContract.matchedBy,
+            triggerMessageId: lastIncomingCustomerMessage?.id || null,
+          },
+          usage: null,
+          persisted: true,
+          messageId,
+        };
+      }
+    }
+
     const generationResult = await generateAiSalesReply({
       organizationId,
       storeId,
@@ -2557,21 +2722,19 @@ export async function generateAndSaveAiSalesReply(
       }
     }
 
-    const { data: messageId, error: sendError } = await supabase.rpc(
-      "panel_send_message",
-      {
-        p_conversation_id: conversationId,
-        p_text: aiText,
-        p_sender: "ai",
-        p_external_message_id: null,
-      }
-    );
+    let messageId: string | null = null;
 
-    if (sendError) {
+    try {
+      messageId = await sendAiPanelMessage({
+        supabase,
+        conversationId,
+        aiText,
+      });
+    } catch (sendError: any) {
       return {
         ok: false,
         error: "PANEL_SEND_MESSAGE_FAILED",
-        message: sendError.message,
+        message: sendError?.message || "Falha ao enviar resposta da IA.",
         aiText,
       };
     }
@@ -2783,7 +2946,7 @@ export async function generateAndSaveAiSalesReply(
       },
       usage: generationResult.usage,
       persisted: true,
-      messageId: messageId ?? null,
+      messageId,
     };
   } catch (error: any) {
     return {
