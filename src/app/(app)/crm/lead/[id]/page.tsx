@@ -337,6 +337,7 @@ type QuoteDraftPayload = {
 };
 
 type DetailTab = "summary" | "appointments" | "context" | "tasks" | "pdfs";
+const VALID_DETAIL_TABS: DetailTab[] = ["summary", "appointments", "context", "tasks", "pdfs"];
 
 function formatSender(message: MessageRow) {
   const sender = String(message.sender || "").toLowerCase();
@@ -1095,6 +1096,9 @@ export default function LeadPage() {
     : null;
   const quoteDraftStorageKey =
     quoteDraftPrimaryStorageKey ?? quoteDraftFallbackStorageKey;
+  const detailsTabStorageKey = leadId
+    ? `zion:crm-lead-details-tab:${leadId}`
+    : null;
   const quoteHasTitle = quoteTitle.trim().length > 0;
   const quoteHasAtLeastOneItem = quoteItems.length > 0;
   const quoteItemsAreValid = quoteItems.every((item) => {
@@ -3266,6 +3270,34 @@ export default function LeadPage() {
   }, [quoteDraftPayload]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !detailsTabStorageKey) {
+      return;
+    }
+
+    const savedTab = window.sessionStorage.getItem(detailsTabStorageKey);
+    if (!savedTab) {
+      return;
+    }
+
+    if (VALID_DETAIL_TABS.includes(savedTab as DetailTab)) {
+      setActiveDetailsTab(savedTab as DetailTab);
+    }
+  }, [detailsTabStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !detailsTabStorageKey) {
+      return;
+    }
+
+    if (activeDetailsTab && VALID_DETAIL_TABS.includes(activeDetailsTab)) {
+      window.sessionStorage.setItem(detailsTabStorageKey, activeDetailsTab);
+      return;
+    }
+
+    window.sessionStorage.removeItem(detailsTabStorageKey);
+  }, [activeDetailsTab, detailsTabStorageKey]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || !quoteDraftStorageKey) {
       return;
     }
@@ -4265,13 +4297,6 @@ export default function LeadPage() {
                           </div>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={addQuoteItem}
-                          className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
-                        >
-                          Adicionar item
-                        </button>
                       </div>
 
                       <div className="mt-4 space-y-4">
@@ -4426,6 +4451,16 @@ export default function LeadPage() {
                             </div>
                           );
                         })}
+
+                        <div className="flex justify-start">
+                          <button
+                            type="button"
+                            onClick={addQuoteItem}
+                            className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                          >
+                            Adicionar item
+                          </button>
+                        </div>
                       </div>
                     </div>
 
