@@ -337,6 +337,7 @@ type QuoteDraftPayload = {
 };
 
 type DetailTab = "summary" | "appointments" | "context" | "tasks" | "pdfs";
+type GeneratedPdfTab = "quotes" | "contracts";
 const VALID_DETAIL_TABS: DetailTab[] = ["summary", "appointments", "context", "tasks", "pdfs"];
 
 function formatSender(message: MessageRow) {
@@ -982,6 +983,8 @@ export default function LeadPage() {
   const [manualPendingAttachment, setManualPendingAttachment] =
     useState<PendingCustomerAttachment | null>(null);
   const [activeDetailsTab, setActiveDetailsTab] = useState<DetailTab | null>(null);
+  const [activeGeneratedPdfTab, setActiveGeneratedPdfTab] =
+    useState<GeneratedPdfTab>("quotes");
   const [isQuoteModalOpen, setIsQuoteModalOpen] = useState(false);
   const [quoteTitle, setQuoteTitle] = useState("");
   const [quoteCustomerNotes, setQuoteCustomerNotes] = useState("");
@@ -3722,416 +3725,446 @@ export default function LeadPage() {
                   ) : null}
 
                   {activeDetailsTab === "pdfs" ? (
-                    <div className="space-y-6">
-                      <div>
-                        <div className="text-sm font-semibold text-gray-900">
-                          Orcamentos
-                        </div>
-                        <div className="mt-1 text-xs text-gray-500">
-                          PDFs de orcamento gerados para este lead.
-                        </div>
+                    <div className="space-y-5">
+                      <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-gray-50 p-2 ring-1 ring-black/5">
+                        <button
+                          type="button"
+                          onClick={() => setActiveGeneratedPdfTab("quotes")}
+                          className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${
+                            activeGeneratedPdfTab === "quotes"
+                              ? "bg-black text-white"
+                              : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                          }`}
+                        >
+                          {`Orcamentos (${generatedQuotes.length})`}
+                        </button>
 
-                        {generatedQuotesError ? (
-                          <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
-                            {generatedQuotesError}
-                          </div>
-                        ) : null}
-
-                        {quoteActionError ? (
-                          <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
-                            {quoteActionError}
-                          </div>
-                        ) : null}
-
-                        {quoteActionSuccess ? (
-                          <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
-                            {quoteActionSuccess}
-                          </div>
-                        ) : null}
-
-                        {generatedQuotesLoading ? (
-                          <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                            Carregando orcamentos gerados...
-                          </div>
-                        ) : null}
-
-                        {!generatedQuotesLoading && generatedQuotes.length === 0 ? (
-                          <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                            Nenhum orcamento gerado ainda.
-                          </div>
-                        ) : null}
-
-                        {!generatedQuotesLoading && generatedQuotes.length > 0 ? (
-                          <div className="mt-3 space-y-3">
-                            {generatedQuotes.map((quote) => {
-                              const normalizedStatus = String(quote.status || "")
-                                .trim()
-                                .toLowerCase();
-                              const linkedContract = contractsByQuoteId[quote.id];
-                              const hasPdf =
-                                Boolean(quote.current_version?.storage_bucket) &&
-                                Boolean(quote.current_version?.storage_path);
-                              const isOpening = openingGeneratedQuoteId === quote.id;
-                              const isActionLoading = quoteActionLoadingId === quote.id;
-                              const isContractActionLoading = contractActionLoadingId === quote.id;
-                              const isLoadingForEdit = loadingQuoteForEdit === quote.id;
-                              const canApprove = normalizedStatus === "pending_review";
-                              const canSend = normalizedStatus === "approved";
-                              const wasSent = normalizedStatus === "sent";
-                              const canCreateContract =
-                                hasLoadedGeneratedContracts &&
-                                (normalizedStatus === "approved" || normalizedStatus === "sent") &&
-                                !linkedContract;
-                              const canEditQuote =
-                                normalizedStatus === "pending_review" ||
-                                normalizedStatus === "changes_requested" ||
-                                normalizedStatus === "draft" ||
-                                normalizedStatus === "approved";
-
-                              return (
-                                <div
-                                  key={quote.id}
-                                  className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                                >
-                                  <div className="flex flex-wrap items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
-                                          {quote.quote_number || "Sem numero"}
-                                        </span>
-                                        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                                          {formatQuoteStatusLabel(quote.status)}
-                                        </span>
-                                      </div>
-
-                                      <div className="mt-3 text-sm font-semibold text-gray-900">
-                                        {quote.title || "Orcamento sem titulo"}
-                                      </div>
-                                      <div className="mt-2 grid gap-3 text-sm text-gray-700 md:grid-cols-2">
-                                        <InfoCard
-                                          label="Valor total"
-                                          value={formatCurrencyBRL((Number(quote.total_cents || 0) || 0) / 100)}
-                                        />
-                                        <InfoCard
-                                          label="Criado em"
-                                          value={formatDateTime(quote.created_at)}
-                                        />
-                                        <InfoCard
-                                          label="Arquivo PDF"
-                                          value={
-                                            quote.current_version?.original_filename ||
-                                            "PDF ainda nao disponivel"
-                                          }
-                                        />
-                                        <InfoCard
-                                          label="Tamanho"
-                                          value={
-                                            typeof quote.current_version?.size_bytes === "number"
-                                              ? formatFileSize(quote.current_version.size_bytes)
-                                              : "Sem tamanho registrado"
-                                          }
-                                        />
-                                      </div>
-                                    </div>
-
-                                    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
-                                      {canEditQuote ? (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            void loadQuoteForEdit(
-                                              quote.id,
-                                              quote.quote_number,
-                                              quote.status
-                                            )
-                                          }
-                                          disabled={isLoadingForEdit || isActionLoading}
-                                          className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                                        >
-                                          {isLoadingForEdit
-                                            ? "Carregando..."
-                                            : "Editar orcamento"}
-                                        </button>
-                                      ) : null}
-
-                                      {canApprove ? (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            void approveGeneratedQuote(quote.id, quote.status)
-                                          }
-                                          disabled={isActionLoading}
-                                          className="rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700"
-                                        >
-                                          {isActionLoading && quoteActionLoadingType === "approve"
-                                            ? "Aprovando..."
-                                            : "Aprovar"}
-                                        </button>
-                                      ) : null}
-
-                                      {canSend ? (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            void sendGeneratedQuoteToCustomer(quote.id, quote.status)
-                                          }
-                                          disabled={isActionLoading}
-                                          className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
-                                        >
-                                          {isActionLoading && quoteActionLoadingType === "send"
-                                            ? "Enviando..."
-                                            : "Enviar ao cliente"}
-                                        </button>
-                                      ) : null}
-
-                                      {wasSent ? (
-                                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-600/20">
-                                          Enviado ao cliente
-                                        </span>
-                                      ) : null}
-
-                                      {linkedContract ? (
-                                        <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-800 ring-1 ring-sky-600/20">
-                                          Contrato vinculado
-                                        </span>
-                                      ) : null}
-
-                                      {canCreateContract ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => void createContractFromQuote(quote.id)}
-                                          disabled={isContractActionLoading}
-                                          className="rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-200 disabled:text-sky-700"
-                                        >
-                                          {isContractActionLoading &&
-                                          contractActionLoadingType === "create"
-                                            ? "Criando..."
-                                            : "Gerar contrato"}
-                                        </button>
-                                      ) : null}
-
-                                      <button
-                                        type="button"
-                                        onClick={() => void openGeneratedQuotePdf(quote.id)}
-                                        disabled={!hasPdf || isOpening}
-                                        className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
-                                      >
-                                        {isOpening ? "Abrindo..." : "Abrir PDF"}
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => setActiveGeneratedPdfTab("contracts")}
+                          className={`rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm transition ${
+                            activeGeneratedPdfTab === "contracts"
+                              ? "bg-black text-white"
+                              : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+                          }`}
+                        >
+                          {`Contratos (${generatedContracts.length})`}
+                        </button>
                       </div>
 
-                      <div>
-                        <div className="text-sm font-semibold text-gray-900">
-                          Contratos
-                        </div>
-                        <div className="mt-1 text-xs text-gray-500">
-                          Contratos gerados para este lead e seus proximos passos operacionais.
-                        </div>
-
-                        {generatedContractsError ? (
-                          <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
-                            {generatedContractsError}
+                      {activeGeneratedPdfTab === "quotes" ? (
+                        <div>
+                          <div className="text-sm font-semibold text-gray-900">
+                            Orcamentos
                           </div>
-                        ) : null}
-
-                        {contractActionError ? (
-                          <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
-                            {contractActionError}
+                          <div className="mt-1 text-xs text-gray-500">
+                            PDFs de orcamento gerados para este lead.
                           </div>
-                        ) : null}
 
-                        {contractActionSuccess ? (
-                          <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
-                            {contractActionSuccess}
-                          </div>
-                        ) : null}
+                          {generatedQuotesError ? (
+                            <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+                              {generatedQuotesError}
+                            </div>
+                          ) : null}
 
-                        <div className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-600/20">
-                          O aceite do cliente nesta tela e um registro rastreavel operacional, nao uma assinatura digital avancada.
-                        </div>
+                          {quoteActionError ? (
+                            <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+                              {quoteActionError}
+                            </div>
+                          ) : null}
 
-                        {generatedContractsLoading ? (
-                          <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                            Carregando contratos...
-                          </div>
-                        ) : null}
+                          {quoteActionSuccess ? (
+                            <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+                              {quoteActionSuccess}
+                            </div>
+                          ) : null}
 
-                        {!generatedContractsLoading && generatedContracts.length === 0 ? (
-                          <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                            Nenhum contrato gerado ainda.
-                          </div>
-                        ) : null}
+                          {generatedQuotesLoading ? (
+                            <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                              Carregando orcamentos gerados...
+                            </div>
+                          ) : null}
 
-                        {!generatedContractsLoading && generatedContracts.length > 0 ? (
-                          <div className="mt-3 space-y-3">
-                            {generatedContracts.map((contract) => {
-                              const normalizedStatus = String(contract.status || "")
-                                .trim()
-                                .toLowerCase();
-                              const hasCurrentVersion = Boolean(contract.current_version_id);
-                              const isOpening = openingGeneratedContractId === contract.id;
-                              const isActionLoading = contractActionLoadingId === contract.id;
-                              const canGeneratePdf = !hasCurrentVersion;
-                              const canApprove =
-                                (normalizedStatus === "pending_review" ||
-                                  normalizedStatus === "draft") &&
-                                hasCurrentVersion;
-                              const canSend = normalizedStatus === "approved";
-                              const canRegisterCustomerAcceptance =
-                                normalizedStatus === "sent_to_customer";
-                              const canConfirmStore = normalizedStatus === "customer_signed";
-                              const isCompleted = normalizedStatus === "completed";
+                          {!generatedQuotesLoading && generatedQuotes.length === 0 ? (
+                            <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                              Nenhum orcamento gerado ainda.
+                            </div>
+                          ) : null}
 
-                              return (
-                                <div
-                                  key={contract.id}
-                                  className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
-                                >
-                                  <div className="flex flex-wrap items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
-                                          {contract.contract_number || "Sem numero"}
-                                        </span>
-                                        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
-                                          {formatContractStatusLabel(contract.status)}
-                                        </span>
+                          {!generatedQuotesLoading && generatedQuotes.length > 0 ? (
+                            <div className="mt-3 space-y-3">
+                              {generatedQuotes.map((quote) => {
+                                const normalizedStatus = String(quote.status || "")
+                                  .trim()
+                                  .toLowerCase();
+                                const linkedContract = contractsByQuoteId[quote.id];
+                                const hasPdf =
+                                  Boolean(quote.current_version?.storage_bucket) &&
+                                  Boolean(quote.current_version?.storage_path);
+                                const isOpening = openingGeneratedQuoteId === quote.id;
+                                const isActionLoading = quoteActionLoadingId === quote.id;
+                                const isContractActionLoading = contractActionLoadingId === quote.id;
+                                const isLoadingForEdit = loadingQuoteForEdit === quote.id;
+                                const canApprove = normalizedStatus === "pending_review";
+                                const canSend = normalizedStatus === "approved";
+                                const wasSent = normalizedStatus === "sent";
+                                const canCreateContract =
+                                  hasLoadedGeneratedContracts &&
+                                  (normalizedStatus === "approved" || normalizedStatus === "sent") &&
+                                  !linkedContract;
+                                const canEditQuote =
+                                  normalizedStatus === "pending_review" ||
+                                  normalizedStatus === "changes_requested" ||
+                                  normalizedStatus === "draft" ||
+                                  normalizedStatus === "approved";
+
+                                return (
+                                  <div
+                                    key={quote.id}
+                                    className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                                  >
+                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
+                                            {quote.quote_number || "Sem numero"}
+                                          </span>
+                                          <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                                            {formatQuoteStatusLabel(quote.status)}
+                                          </span>
+                                        </div>
+
+                                        <div className="mt-3 text-sm font-semibold text-gray-900">
+                                          {quote.title || "Orcamento sem titulo"}
+                                        </div>
+                                        <div className="mt-2 grid gap-3 text-sm text-gray-700 md:grid-cols-2">
+                                          <InfoCard
+                                            label="Valor total"
+                                            value={formatCurrencyBRL((Number(quote.total_cents || 0) || 0) / 100)}
+                                          />
+                                          <InfoCard
+                                            label="Criado em"
+                                            value={formatDateTime(quote.created_at)}
+                                          />
+                                          <InfoCard
+                                            label="Arquivo PDF"
+                                            value={
+                                              quote.current_version?.original_filename ||
+                                              "PDF ainda nao disponivel"
+                                            }
+                                          />
+                                          <InfoCard
+                                            label="Tamanho"
+                                            value={
+                                              typeof quote.current_version?.size_bytes === "number"
+                                                ? formatFileSize(quote.current_version.size_bytes)
+                                                : "Sem tamanho registrado"
+                                            }
+                                          />
+                                        </div>
                                       </div>
 
-                                      <div className="mt-3 text-sm font-semibold text-gray-900">
-                                        {contract.title || "Contrato sem titulo"}
+                                      <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                                        {canEditQuote ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void loadQuoteForEdit(
+                                                quote.id,
+                                                quote.quote_number,
+                                                quote.status
+                                              )
+                                            }
+                                            disabled={isLoadingForEdit || isActionLoading}
+                                            className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                                          >
+                                            {isLoadingForEdit
+                                              ? "Carregando..."
+                                              : "Editar orcamento"}
+                                          </button>
+                                        ) : null}
+
+                                        {canApprove ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void approveGeneratedQuote(quote.id, quote.status)
+                                            }
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700"
+                                          >
+                                            {isActionLoading && quoteActionLoadingType === "approve"
+                                              ? "Aprovando..."
+                                              : "Aprovar"}
+                                          </button>
+                                        ) : null}
+
+                                        {canSend ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void sendGeneratedQuoteToCustomer(quote.id, quote.status)
+                                            }
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
+                                          >
+                                            {isActionLoading && quoteActionLoadingType === "send"
+                                              ? "Enviando..."
+                                              : "Enviar ao cliente"}
+                                          </button>
+                                        ) : null}
+
+                                        {wasSent ? (
+                                          <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-600/20">
+                                            Enviado ao cliente
+                                          </span>
+                                        ) : null}
+
+                                        {linkedContract ? (
+                                          <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-800 ring-1 ring-sky-600/20">
+                                            Contrato vinculado
+                                          </span>
+                                        ) : null}
+
+                                        {canCreateContract ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => void createContractFromQuote(quote.id)}
+                                            disabled={isContractActionLoading}
+                                            className="rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-200 disabled:text-sky-700"
+                                          >
+                                            {isContractActionLoading &&
+                                            contractActionLoadingType === "create"
+                                              ? "Criando..."
+                                              : "Gerar contrato"}
+                                          </button>
+                                        ) : null}
+
+                                        <button
+                                          type="button"
+                                          onClick={() => void openGeneratedQuotePdf(quote.id)}
+                                          disabled={!hasPdf || isOpening}
+                                          className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
+                                        >
+                                          {isOpening ? "Abrindo..." : "Abrir PDF"}
+                                        </button>
                                       </div>
-                                      <div className="mt-2 grid gap-3 text-sm text-gray-700 md:grid-cols-2">
-                                        <InfoCard
-                                          label="Valor total"
-                                          value={formatCurrencyBRL((Number(contract.total_cents || 0) || 0) / 100)}
-                                        />
-                                        <InfoCard
-                                          label="Criado em"
-                                          value={formatDateTime(contract.created_at)}
-                                        />
-                                        <InfoCard
-                                          label="Enviado em"
-                                          value={formatDateTime(contract.sent_at)}
-                                        />
-                                        <InfoCard
-                                          label="Aceite do cliente"
-                                          value={formatDateTime(contract.customer_signed_at)}
-                                        />
-                                        <InfoCard
-                                          label="Conclusao"
-                                          value={formatDateTime(contract.completed_at)}
-                                        />
-                                        <InfoCard
-                                          label="PDF atual"
-                                          value={hasCurrentVersion ? "Versao disponivel" : "PDF ainda nao gerado"}
-                                        />
-                                      </div>
-                                    </div>
-
-                                    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
-                                      {canGeneratePdf ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => void generateContractPdf(contract.id)}
-                                          disabled={isActionLoading}
-                                          className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                                        >
-                                          {isActionLoading &&
-                                          contractActionLoadingType === "generate_pdf"
-                                            ? "Gerando..."
-                                            : "Gerar PDF"}
-                                        </button>
-                                      ) : null}
-
-                                      {canApprove ? (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            void approveGeneratedContract(contract.id, contract.status)
-                                          }
-                                          disabled={isActionLoading}
-                                          className="rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700"
-                                        >
-                                          {isActionLoading && contractActionLoadingType === "approve"
-                                            ? "Aprovando..."
-                                            : "Aprovar"}
-                                        </button>
-                                      ) : null}
-
-                                      {canSend ? (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            void sendGeneratedContractToCustomer(contract.id, contract.status)
-                                          }
-                                          disabled={isActionLoading}
-                                          className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
-                                        >
-                                          {isActionLoading && contractActionLoadingType === "send"
-                                            ? "Enviando..."
-                                            : "Enviar ao cliente"}
-                                        </button>
-                                      ) : null}
-
-                                      {canRegisterCustomerAcceptance ? (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            void registerCustomerContractAcceptance(contract.id)
-                                          }
-                                          disabled={isActionLoading}
-                                          className="rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-amber-200 disabled:text-amber-700"
-                                        >
-                                          {isActionLoading &&
-                                          contractActionLoadingType === "customer_sign"
-                                            ? "Registrando..."
-                                            : "Registrar aceite do cliente"}
-                                        </button>
-                                      ) : null}
-
-                                      {canConfirmStore ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => void confirmStoreContractSignature(contract.id)}
-                                          disabled={isActionLoading}
-                                          className="rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-200 disabled:text-sky-700"
-                                        >
-                                          {isActionLoading && contractActionLoadingType === "store_sign"
-                                            ? "Confirmando..."
-                                            : "Confirmar pela loja"}
-                                        </button>
-                                      ) : null}
-
-                                      {isCompleted ? (
-                                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-600/20">
-                                          Concluido
-                                        </span>
-                                      ) : null}
-
-                                      <button
-                                        type="button"
-                                        onClick={() => void openGeneratedContractPdf(contract.id)}
-                                        disabled={!hasCurrentVersion || isOpening}
-                                        className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
-                                      >
-                                        {isOpening ? "Abrindo..." : "Abrir PDF"}
-                                      </button>
                                     </div>
                                   </div>
-                                </div>
-                              );
-                            })}
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {activeGeneratedPdfTab === "contracts" ? (
+                        <div>
+                          <div className="text-sm font-semibold text-gray-900">
+                            Contratos
                           </div>
-                        ) : null}
-                      </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            Contratos gerados para este lead e seus proximos passos operacionais.
+                          </div>
+
+                          {generatedContractsError ? (
+                            <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+                              {generatedContractsError}
+                            </div>
+                          ) : null}
+
+                          {contractActionError ? (
+                            <div className="mt-3 rounded-2xl bg-red-50 p-3 text-sm text-red-800 ring-1 ring-red-600/20">
+                              {contractActionError}
+                            </div>
+                          ) : null}
+
+                          {contractActionSuccess ? (
+                            <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800 ring-1 ring-emerald-600/20">
+                              {contractActionSuccess}
+                            </div>
+                          ) : null}
+
+                          <div className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs text-amber-900 ring-1 ring-amber-600/20">
+                            O aceite do cliente nesta tela e um registro rastreavel operacional, nao uma assinatura digital avancada.
+                          </div>
+
+                          {generatedContractsLoading ? (
+                            <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                              Carregando contratos...
+                            </div>
+                          ) : null}
+
+                          {!generatedContractsLoading && generatedContracts.length === 0 ? (
+                            <div className="mt-3 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
+                              Nenhum contrato gerado ainda.
+                            </div>
+                          ) : null}
+
+                          {!generatedContractsLoading && generatedContracts.length > 0 ? (
+                            <div className="mt-3 space-y-3">
+                              {generatedContracts.map((contract) => {
+                                const normalizedStatus = String(contract.status || "")
+                                  .trim()
+                                  .toLowerCase();
+                                const hasCurrentVersion = Boolean(contract.current_version_id);
+                                const isOpening = openingGeneratedContractId === contract.id;
+                                const isActionLoading = contractActionLoadingId === contract.id;
+                                const canGeneratePdf = !hasCurrentVersion;
+                                const canApprove =
+                                  (normalizedStatus === "pending_review" ||
+                                    normalizedStatus === "draft") &&
+                                  hasCurrentVersion;
+                                const canSend = normalizedStatus === "approved";
+                                const canRegisterCustomerAcceptance =
+                                  normalizedStatus === "sent_to_customer";
+                                const canConfirmStore = normalizedStatus === "customer_signed";
+                                const isCompleted = normalizedStatus === "completed";
+
+                                return (
+                                  <div
+                                    key={contract.id}
+                                    className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                                  >
+                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
+                                            {contract.contract_number || "Sem numero"}
+                                          </span>
+                                          <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/10">
+                                            {formatContractStatusLabel(contract.status)}
+                                          </span>
+                                        </div>
+
+                                        <div className="mt-3 text-sm font-semibold text-gray-900">
+                                          {contract.title || "Contrato sem titulo"}
+                                        </div>
+                                        <div className="mt-2 grid gap-3 text-sm text-gray-700 md:grid-cols-2">
+                                          <InfoCard
+                                            label="Valor total"
+                                            value={formatCurrencyBRL((Number(contract.total_cents || 0) || 0) / 100)}
+                                          />
+                                          <InfoCard
+                                            label="Criado em"
+                                            value={formatDateTime(contract.created_at)}
+                                          />
+                                          <InfoCard
+                                            label="Enviado em"
+                                            value={formatDateTime(contract.sent_at)}
+                                          />
+                                          <InfoCard
+                                            label="Aceite do cliente"
+                                            value={formatDateTime(contract.customer_signed_at)}
+                                          />
+                                          <InfoCard
+                                            label="Conclusao"
+                                            value={formatDateTime(contract.completed_at)}
+                                          />
+                                          <InfoCard
+                                            label="PDF atual"
+                                            value={hasCurrentVersion ? "Versao disponivel" : "PDF ainda nao gerado"}
+                                          />
+                                        </div>
+                                      </div>
+
+                                      <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                                        {canGeneratePdf ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => void generateContractPdf(contract.id)}
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                                          >
+                                            {isActionLoading &&
+                                            contractActionLoadingType === "generate_pdf"
+                                              ? "Gerando..."
+                                              : "Gerar PDF"}
+                                          </button>
+                                        ) : null}
+
+                                        {canApprove ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void approveGeneratedContract(contract.id, contract.status)
+                                            }
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700"
+                                          >
+                                            {isActionLoading && contractActionLoadingType === "approve"
+                                              ? "Aprovando..."
+                                              : "Aprovar"}
+                                          </button>
+                                        ) : null}
+
+                                        {canSend ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void sendGeneratedContractToCustomer(contract.id, contract.status)
+                                            }
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200 disabled:text-blue-700"
+                                          >
+                                            {isActionLoading && contractActionLoadingType === "send"
+                                              ? "Enviando..."
+                                              : "Enviar ao cliente"}
+                                          </button>
+                                        ) : null}
+
+                                        {canRegisterCustomerAcceptance ? (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              void registerCustomerContractAcceptance(contract.id)
+                                            }
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-amber-200 disabled:text-amber-700"
+                                          >
+                                            {isActionLoading &&
+                                            contractActionLoadingType === "customer_sign"
+                                              ? "Registrando..."
+                                              : "Registrar aceite do cliente"}
+                                          </button>
+                                        ) : null}
+
+                                        {canConfirmStore ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => void confirmStoreContractSignature(contract.id)}
+                                            disabled={isActionLoading}
+                                            className="rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-200 disabled:text-sky-700"
+                                          >
+                                            {isActionLoading && contractActionLoadingType === "store_sign"
+                                              ? "Confirmando..."
+                                              : "Confirmar pela loja"}
+                                          </button>
+                                        ) : null}
+
+                                        {isCompleted ? (
+                                          <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-600/20">
+                                            Concluido
+                                          </span>
+                                        ) : null}
+
+                                        <button
+                                          type="button"
+                                          onClick={() => void openGeneratedContractPdf(contract.id)}
+                                          disabled={!hasCurrentVersion || isOpening}
+                                          className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 disabled:opacity-100"
+                                        >
+                                          {isOpening ? "Abrindo..." : "Abrir PDF"}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 

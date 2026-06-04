@@ -20,6 +20,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const SEND_EVENT_TYPE = "orcamento_enviado";
+const OPEN_COMMERCIAL_QUOTE_TASK_STATUSES = [
+  "open",
+  "in_progress",
+  "ready_to_execute",
+  "waiting_user_choice",
+  "waiting_customer_response",
+] as const;
 const DEFAULT_MESSAGE_CONTENT = "Segue o orçamento em PDF para você conferir.";
 
 function buildErrorResponse(error: unknown) {
@@ -63,6 +70,126 @@ function extractInsertMessageId(data: unknown) {
   }
 
   return null;
+}
+
+async function loadCommercialQuoteTaskIdsByConversation(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}) {
+  const safeConversationId = String(args.conversationId || "").trim();
+  if (!safeConversationId) {
+    return [] as string[];
+  }
+
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("task_type", "commercial_quote_request")
+    .eq("related_conversation_id", safeConversationId)
+    .in("status", [...OPEN_COMMERCIAL_QUOTE_TASK_STATUSES]);
+
+  if (error) {
+    throw new Error(
+      `Falha ao carregar tarefas comerciais por conversa: ${error.message}`
+    );
+  }
+
+  return Array.isArray(data)
+    ? data
+        .map((row) => String((row as { id?: string | null }).id || "").trim())
+        .filter(Boolean)
+    : [];
+}
+
+async function loadCommercialQuoteTaskIdsByLead(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  leadId: string;
+}) {
+  const safeLeadId = String(args.leadId || "").trim();
+  if (!safeLeadId) {
+    return [] as string[];
+  }
+
+  const { data, error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("task_type", "commercial_quote_request")
+    .eq("related_lead_id", safeLeadId)
+    .in("status", [...OPEN_COMMERCIAL_QUOTE_TASK_STATUSES]);
+
+  if (error) {
+    throw new Error(`Falha ao carregar tarefas comerciais por lead: ${error.message}`);
+  }
+
+  return Array.isArray(data)
+    ? data
+        .map((row) => String((row as { id?: string | null }).id || "").trim())
+        .filter(Boolean)
+    : [];
+}
+
+async function resolveOpenCommercialQuoteTasks(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId?: string | null;
+  leadId?: string | null;
+  resolvedAt: string;
+}) {
+  const taskIds = new Set<string>();
+  const safeConversationId = String(args.conversationId || "").trim();
+  const safeLeadId = String(args.leadId || "").trim();
+
+  if (safeConversationId) {
+    const conversationTaskIds = await loadCommercialQuoteTaskIdsByConversation({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: safeConversationId,
+    });
+
+    conversationTaskIds.forEach((taskId) => taskIds.add(taskId));
+  }
+
+  if (safeLeadId) {
+    const leadTaskIds = await loadCommercialQuoteTaskIdsByLead({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      leadId: safeLeadId,
+    });
+
+    leadTaskIds.forEach((taskId) => taskIds.add(taskId));
+  }
+
+  if (taskIds.size === 0) {
+    return;
+  }
+
+  const { error } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .update({
+      status: "resolved",
+      resolved_at: args.resolvedAt,
+      updated_at: args.resolvedAt,
+    })
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("task_type", "commercial_quote_request")
+    .in("status", [...OPEN_COMMERCIAL_QUOTE_TASK_STATUSES])
+    .in("id", [...taskIds]);
+
+  if (error) {
+    throw new Error(`Falha ao resolver tarefas comerciais do orcamento: ${error.message}`);
+  }
 }
 
 export async function POST(
@@ -290,6 +417,7 @@ export async function POST(
     }
 
     const sentAt = new Date().toISOString();
+    const leadId = String(scope.quote.lead_id || "").trim();
 
     const { error: quoteUpdateError } = await scope.supabase
       .from("sales_quotes")
@@ -316,6 +444,15 @@ export async function POST(
         `Falha ao atualizar sales_quote_versions: ${versionUpdateError.message}`
       );
     }
+
+    await resolveOpenCommercialQuoteTasks({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+      conversationId,
+      leadId,
+      resolvedAt: sentAt,
+    });
 
     await insertQuoteConversationEvent({
       supabase: scope.supabase,
