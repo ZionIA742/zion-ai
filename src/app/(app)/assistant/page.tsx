@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
+import { countActiveAssistantPendingActions } from "@/lib/assistant/active-pending-actions";
 
 type AssistantThreadSummary = {
   thread_id: string;
@@ -1045,6 +1046,15 @@ export default function AssistantPage() {
     return groups;
   }, [messages, searchText]);
 
+  const activePendingActionsCount = useMemo(() => {
+    return countActiveAssistantPendingActions(messages);
+  }, [messages]);
+
+  const unreadNotificationsCount = useMemo(() => {
+    const count = Number(summary?.pending_notifications || 0);
+    return Number.isFinite(count) && count > 0 ? count : 0;
+  }, [summary?.pending_notifications]);
+
   const jumpToMessage = useCallback((messageId: string) => {
     setSearchOpen(false);
 
@@ -1372,7 +1382,15 @@ export default function AssistantPage() {
                 <div className="truncate text-[11px] text-gray-500">
                   {refreshing
                     ? "Atualizando..."
-                    : `${summary?.total_messages ?? messages.length} mensagens • ${summary?.pending_notifications ?? 0} pendências`}
+                    : `${summary?.total_messages ?? messages.length} mensagens • ${
+                        activePendingActionsCount > 0
+                          ? `${activePendingActionsCount} pendências`
+                          : "Nada pendente no momento"
+                      }${
+                        unreadNotificationsCount > 0
+                          ? ` • ${unreadNotificationsCount} novas`
+                          : ""
+                      }`}
                 </div>
               </div>
             </div>

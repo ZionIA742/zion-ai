@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
+import { countActiveAssistantPendingActions } from "@/lib/assistant/active-pending-actions";
 
 type InboxRow = {
   conversation_id: string;
@@ -25,8 +26,10 @@ type CommercialHandoffTaskRow = {
   status: string | null;
 };
 
-type AssistantThreadSummary = {
-  pending_notifications?: number | null;
+type AssistantCounterMessage = {
+  id: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
 };
 
 const items = [
@@ -131,20 +134,34 @@ export default function Sidebar() {
   const loadAssistantCounter = useCallback(async () => {
     if (!canLoadAssistantCounter || !organizationId || !activeStoreId) return;
 
-    const { data, error } = await supabase.rpc("assistant_get_thread_summary", {
-      p_organization_id: organizationId,
-      p_store_id: activeStoreId,
-    });
+    const [{ error: summaryError }, { data: messagesData, error: messagesError }] =
+      await Promise.all([
+        supabase.rpc("assistant_get_thread_summary", {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+        }),
+        supabase.rpc("assistant_list_messages", {
+          p_organization_id: organizationId,
+          p_store_id: activeStoreId,
+          p_limit: 200,
+        }),
+      ]);
 
-    if (error) {
-      console.warn("[Sidebar] assistant_get_thread_summary error:", error);
+    if (summaryError) {
+      console.warn("[Sidebar] assistant_get_thread_summary error:", summaryError);
       setAssistantPendingCount(0);
       return;
     }
 
-    const summary = (Array.isArray(data) ? data[0] : data) as AssistantThreadSummary | null;
-    const count = Number(summary?.pending_notifications || 0);
-    setAssistantPendingCount(Number.isFinite(count) && count > 0 ? count : 0);
+    if (messagesError) {
+      console.warn("[Sidebar] assistant_list_messages error:", messagesError);
+      setAssistantPendingCount(0);
+      return;
+    }
+
+    const messages = Array.isArray(messagesData) ? (messagesData as AssistantCounterMessage[]) : [];
+    const activePendingCount = countActiveAssistantPendingActions(messages);
+    setAssistantPendingCount(activePendingCount > 0 ? activePendingCount : 0);
   }, [canLoadAssistantCounter, organizationId, activeStoreId]);
 
   useEffect(() => {
