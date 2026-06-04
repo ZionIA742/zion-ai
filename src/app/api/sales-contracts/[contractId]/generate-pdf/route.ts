@@ -11,6 +11,7 @@ import {
   markContractVersionStatus,
   setContractCurrentVersion,
 } from "@/lib/server/sales-contracts/contract-versioning";
+import { resolveContractTemplateTerms } from "@/lib/server/sales-contracts/contract-template-terms";
 import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
 
 export const runtime = "nodejs";
@@ -102,11 +103,34 @@ export async function POST(
       contractId: scope.contract.id,
     });
 
+    const templateTerms = await resolveContractTemplateTerms({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      storeId: scope.store.id,
+    });
+
+    if (templateTerms.warning) {
+      console.warn(
+        "[sales-contracts/generate-pdf] usando fallback de termos do contrato:",
+        templateTerms.warning
+      );
+    }
+
+    const resolvedContractTerms =
+      normalizeOptionalText(templateTerms.generatedContractTerms) ||
+      normalizeOptionalText(scope.contract.contract_terms) ||
+      "A definir pela loja.";
+
     const snapshot = buildContractSnapshot({
       contract: scope.contract,
       store: scope.store,
       lead: scope.lead,
       items,
+      templateTerms: {
+        ...templateTerms,
+        generatedContractTerms:
+          normalizeOptionalText(templateTerms.generatedContractTerms) || null,
+      },
     });
 
     const storeLogo = await loadStoreLogoForContractPdf({
@@ -142,9 +166,7 @@ export async function POST(
       paymentTerms: scope.contract.payment_terms,
       deliveryTerms: scope.contract.delivery_terms,
       warrantyTerms: scope.contract.warranty_terms,
-      contractTerms:
-        normalizeOptionalText(scope.contract.contract_terms) ||
-        "A definir pela loja.",
+      contractTerms: resolvedContractTerms,
     });
 
     const storedFile = await storeContractPdfFile({

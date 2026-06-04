@@ -1,5 +1,6 @@
 import type { QuoteLeadRow, QuoteStoreRow, SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
 import type { ContractSnapshot, SalesContract, SalesContractVersion } from "./types";
+import type { ContractTemplateTermsResolution } from "./contract-template-terms";
 
 function toNumber(value: number | null | undefined) {
   return Number.isFinite(value) ? Number(value) : 0;
@@ -10,6 +11,7 @@ export function buildContractSnapshot(args: {
   store: QuoteStoreRow;
   lead: QuoteLeadRow | null;
   items: SalesQuoteItemRow[];
+  templateTerms?: ContractTemplateTermsResolution | null;
 }) {
   return {
     contract: {
@@ -57,6 +59,15 @@ export function buildContractSnapshot(args: {
       metadata: item.metadata,
     })),
     generatedAt: new Date().toISOString(),
+    contractTemplateUsed: args.templateTerms?.contractTemplateUsed ?? false,
+    templateId: args.templateTerms?.templateId ?? null,
+    templateVersionId: args.templateTerms?.templateVersionId ?? null,
+    templateVersionNumber: args.templateTerms?.templateVersionNumber ?? null,
+    generatedContractTerms: args.templateTerms?.generatedContractTerms ?? null,
+    rulesUsed: args.templateTerms?.rulesUsed ?? [],
+    snapshotGeneratedAt:
+      args.templateTerms?.snapshotGeneratedAt ?? new Date().toISOString(),
+    templateWarning: args.templateTerms?.warning ?? null,
   } satisfies ContractSnapshot;
 }
 

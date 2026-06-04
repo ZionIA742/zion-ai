@@ -172,6 +172,22 @@ export type ContractSnapshot = {
     metadata?: Record<string, unknown> | null;
   }>;
   generatedAt: string;
+  contractTemplateUsed?: boolean;
+  templateId?: string | null;
+  templateVersionId?: string | null;
+  templateVersionNumber?: number | null;
+  generatedContractTerms?: string | null;
+  rulesUsed?: Array<{
+    rule_id: string;
+    rule_key: string;
+    rule_group: string;
+    label: string;
+    value_text: string;
+    review_status: "approved" | "edited";
+    sort_order: number | null;
+  }>;
+  snapshotGeneratedAt?: string;
+  templateWarning?: string | null;
 };
 
 export type CreateContractFromQuoteInput = {

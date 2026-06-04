@@ -51,6 +51,13 @@ const COLOR_MUTED = rgb(0.39, 0.44, 0.5);
 const COLOR_BORDER = rgb(0.82, 0.86, 0.9);
 const COLOR_PANEL = rgb(0.97, 0.98, 0.99);
 const COLOR_ACCENT = rgb(0.07, 0.27, 0.48);
+const SECTION_SPACING_BEFORE = 12;
+const SECTION_TITLE_HEIGHT = 16;
+const PARAGRAPH_LINE_HEIGHT = 12;
+const PARAGRAPH_BREAK_HEIGHT = 8;
+const FOOTER_BOX_HEIGHT = 54;
+const FOOTER_BOX_TOTAL_HEIGHT = 66;
+const MIN_LINES_AFTER_SECTION_TITLE = 2;
 
 function formatCurrency(cents: number | null | undefined) {
   const safeValue = Number.isFinite(cents) ? Number(cents) / 100 : 0;
@@ -62,14 +69,14 @@ function formatCurrency(cents: number | null | undefined) {
 
 function formatDate(value: string | null | undefined) {
   const safeValue = String(value || "").trim();
-  if (!safeValue) return "Não informado";
+  if (!safeValue) return "Nao informado";
 
   const date = new Date(safeValue);
   if (Number.isNaN(date.getTime())) return safeValue;
   return date.toLocaleDateString("pt-BR");
 }
 
-function toDisplayText(value: string | null | undefined, fallback = "Não informado") {
+function toDisplayText(value: string | null | undefined, fallback = "Nao informado") {
   const safeValue = String(value || "").trim();
   return safeValue || fallback;
 }
@@ -107,6 +114,35 @@ function wrapText(text: string, maxCharsPerLine: number) {
   return lines;
 }
 
+function wrapTextPreservingLineBreaks(text: string, maxCharsPerLine: number) {
+  const normalized = String(text || "").replace(/\r\n?/g, "\n");
+  const rawLines = normalized.split("\n");
+  const lines: string[] = [];
+
+  for (const rawLine of rawLines) {
+    const collapsedLine = rawLine.replace(/[ \t]+/g, " ").trim();
+
+    if (!collapsedLine) {
+      if (lines[lines.length - 1] !== "") {
+        lines.push("");
+      }
+      continue;
+    }
+
+    lines.push(...wrapText(collapsedLine, maxCharsPerLine));
+  }
+
+  while (lines[0] === "") {
+    lines.shift();
+  }
+
+  while (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+
+  return lines.length > 0 ? lines : [""];
+}
+
 function addPage(pdfDoc: PDFDocument): Cursor {
   const page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   return {
@@ -123,6 +159,20 @@ function ensureSpace(cursor: Cursor, pdfDoc: PDFDocument, requiredHeight: number
   return addPage(pdfDoc);
 }
 
+function applySectionSpacing(cursor: Cursor, pdfDoc: PDFDocument, spacingBefore = 0) {
+  if (spacingBefore <= 0) {
+    return cursor;
+  }
+
+  let nextCursor = ensureSpace(
+    cursor,
+    pdfDoc,
+    spacingBefore + SECTION_TITLE_HEIGHT + PARAGRAPH_LINE_HEIGHT * MIN_LINES_AFTER_SECTION_TITLE
+  );
+  nextCursor.y -= spacingBefore;
+  return nextCursor;
+}
+
 function drawParagraph(args: {
   cursor: Cursor;
   pdfDoc: PDFDocument;
@@ -132,14 +182,26 @@ function drawParagraph(args: {
   color?: ReturnType<typeof rgb>;
   title?: string | null;
   boldFont?: PDFFont;
+  preserveLineBreaks?: boolean;
+  spacingBefore?: number;
 }) {
-  const lines = wrapText(args.text, 96);
+  const lines = args.preserveLineBreaks
+    ? wrapTextPreservingLineBreaks(args.text, 96)
+    : wrapText(args.text, 96);
   const title = String(args.title || "").trim();
   const size = args.size ?? 10;
-  const height = (title ? 20 : 0) + lines.length * 12 + 8;
-  let cursor = ensureSpace(args.cursor, args.pdfDoc, height);
+  let cursor = applySectionSpacing(
+    args.cursor,
+    args.pdfDoc,
+    title ? args.spacingBefore ?? SECTION_SPACING_BEFORE : 0
+  );
 
   if (title && args.boldFont) {
+    cursor = ensureSpace(
+      cursor,
+      args.pdfDoc,
+      SECTION_TITLE_HEIGHT + PARAGRAPH_LINE_HEIGHT * MIN_LINES_AFTER_SECTION_TITLE
+    );
     cursor.page.drawText(title, {
       x: PAGE_MARGIN,
       y: cursor.y,
@@ -147,10 +209,17 @@ function drawParagraph(args: {
       font: args.boldFont,
       color: COLOR_ACCENT,
     });
-    cursor.y -= 16;
+    cursor.y -= SECTION_TITLE_HEIGHT;
   }
 
   for (const line of lines) {
+    if (!line) {
+      cursor = ensureSpace(cursor, args.pdfDoc, PARAGRAPH_BREAK_HEIGHT + PARAGRAPH_LINE_HEIGHT);
+      cursor.y -= PARAGRAPH_BREAK_HEIGHT;
+      continue;
+    }
+
+    cursor = ensureSpace(cursor, args.pdfDoc, PARAGRAPH_LINE_HEIGHT);
     cursor.page.drawText(line, {
       x: PAGE_MARGIN,
       y: cursor.y,
@@ -158,7 +227,7 @@ function drawParagraph(args: {
       font: args.font,
       color: args.color ?? COLOR_TEXT,
     });
-    cursor.y -= 12;
+    cursor.y -= PARAGRAPH_LINE_HEIGHT;
   }
 
   cursor.y -= 8;
@@ -189,9 +258,15 @@ function drawSectionBox(args: {
   lines: string[];
   font: PDFFont;
   boldFont: PDFFont;
+  spacingBefore?: number;
 }) {
   const height = 28 + args.lines.length * 12;
-  let cursor = ensureSpace(args.cursor, args.pdfDoc, height + 8);
+  let cursor = applySectionSpacing(
+    args.cursor,
+    args.pdfDoc,
+    args.spacingBefore ?? SECTION_SPACING_BEFORE
+  );
+  cursor = ensureSpace(cursor, args.pdfDoc, height + 8);
 
   cursor.page.drawRectangle({
     x: PAGE_MARGIN,
@@ -224,6 +299,50 @@ function drawSectionBox(args: {
   }
 
   cursor.y -= height + 10;
+  return cursor;
+}
+
+function drawFooterBox(args: {
+  cursor: Cursor;
+  pdfDoc: PDFDocument;
+  title: string;
+  text: string;
+  font: PDFFont;
+  boldFont: PDFFont;
+  spacingBefore?: number;
+}) {
+  let cursor = applySectionSpacing(
+    args.cursor,
+    args.pdfDoc,
+    args.spacingBefore ?? SECTION_SPACING_BEFORE
+  );
+  cursor = ensureSpace(cursor, args.pdfDoc, FOOTER_BOX_TOTAL_HEIGHT);
+
+  cursor.page.drawRectangle({
+    x: PAGE_MARGIN,
+    y: cursor.y - FOOTER_BOX_HEIGHT,
+    width: CONTENT_WIDTH,
+    height: FOOTER_BOX_HEIGHT,
+    color: COLOR_PANEL,
+    borderColor: COLOR_BORDER,
+    borderWidth: 0.7,
+  });
+  cursor.page.drawText(args.title, {
+    x: PAGE_MARGIN + 12,
+    y: cursor.y - 16,
+    size: 9,
+    font: args.boldFont,
+    color: COLOR_ACCENT,
+  });
+  cursor.page.drawText(args.text, {
+    x: PAGE_MARGIN + 12,
+    y: cursor.y - 32,
+    size: 10,
+    font: args.font,
+    color: COLOR_TEXT,
+  });
+
+  cursor.y -= FOOTER_BOX_TOTAL_HEIGHT;
   return cursor;
 }
 
@@ -323,15 +442,14 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
 
   let cursor = addPage(pdfDoc);
   const storeName = toDisplayText(input.storeName, "Loja");
-  const contractNumber = toDisplayText(input.contractNumber, "Não informado");
-  const quoteNumber = toDisplayText(input.quoteNumber, "Não informado");
+  const contractNumber = toDisplayText(input.contractNumber, "Nao informado");
+  const quoteNumber = toDisplayText(input.quoteNumber, "Nao informado");
   const customerName = toDisplayText(input.customerName);
   const customerPhone = toDisplayText(input.customerPhone);
-  const title =
-    toDisplayText(
-      input.title,
-      "CONTRATO DE COMPRA E VENDA / PRESTAÇÃO DE SERVIÇO"
-    );
+  const title = toDisplayText(
+    input.title,
+    "CONTRATO DE COMPRA E VENDA / PRESTACAO DE SERVICO"
+  );
 
   cursor.page.drawRectangle({
     x: PAGE_MARGIN,
@@ -425,7 +543,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
 
   drawKeyValue({
     page: cursor.page,
-    label: "Orçamento de referência",
+    label: "Orcamento de referencia",
     value: quoteNumber,
     x: PAGE_MARGIN + 180,
     y: cursor.y - 14,
@@ -471,7 +589,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   const itemLines =
     input.items.length > 0
       ? input.items.flatMap((item, index) => {
-          const name = toDisplayText(item.name, "Item não informado");
+          const name = toDisplayText(item.name, "Item nao informado");
           const description = toDisplayText(item.description, "A definir pela loja");
           return [
             `${index + 1}. ${name}`,
@@ -483,7 +601,7 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
             description,
           ];
         })
-      : ["Itens principais não informados. A definir pela loja."];
+      : ["Itens principais nao informados. A definir pela loja."];
 
   cursor = drawSectionBox({
     cursor,
@@ -510,19 +628,21 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
   cursor = drawParagraph({
     cursor,
     pdfDoc,
-    title: "CONDIÇÕES DE PAGAMENTO",
+    title: "CONDICOES DE PAGAMENTO",
     text: toDisplayText(input.paymentTerms, "A definir pela loja"),
     font,
     boldFont,
+    spacingBefore: 14,
   });
 
   cursor = drawParagraph({
     cursor,
     pdfDoc,
-    title: "ENTREGA / INSTALAÇÃO",
+    title: "ENTREGA / INSTALACAO",
     text: toDisplayText(input.deliveryTerms, "A definir pela loja"),
     font,
     boldFont,
+    spacingBefore: 14,
   });
 
   cursor = drawParagraph({
@@ -532,18 +652,21 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     text: toDisplayText(input.warrantyTerms, "A definir pela loja"),
     font,
     boldFont,
+    spacingBefore: 14,
   });
 
   cursor = drawParagraph({
     cursor,
     pdfDoc,
-    title: "CLÁUSULAS E TERMOS",
+    title: "CLAUSULAS E TERMOS",
     text: toDisplayText(
       input.contractTerms,
-      "Contrato sujeito à validação final e uso conforme regras da loja."
+      "Contrato sujeito a validacao final e uso conforme regras da loja."
     ),
     font,
     boldFont,
+    preserveLineBreaks: true,
+    spacingBefore: 14,
   });
 
   cursor = drawParagraph({
@@ -551,72 +674,35 @@ export async function buildContractPdf(input: BuildContractPdfInput) {
     pdfDoc,
     title: "VALIDADE",
     text: input.validUntil
-      ? `Este contrato permanece em análise até ${formatDate(input.validUntil)}.`
-      : "Prazo de validade não informado.",
+      ? `Este contrato permanece em analise ate ${formatDate(input.validUntil)}.`
+      : "Prazo de validade nao informado.",
     font,
     boldFont,
+    spacingBefore: 16,
   });
 
-  cursor = ensureSpace(cursor, pdfDoc, 130);
-  cursor.page.drawRectangle({
-    x: PAGE_MARGIN,
-    y: cursor.y - 54,
-    width: CONTENT_WIDTH,
-    height: 54,
-    color: COLOR_PANEL,
-    borderColor: COLOR_BORDER,
-    borderWidth: 0.7,
+  cursor = drawFooterBox({
+    cursor,
+    pdfDoc,
+    title: "ACEITE DO CLIENTE",
+    text: "Espaco reservado para aceite rastreavel do cliente.",
+    font,
+    boldFont,
+    spacingBefore: 16,
   });
-  cursor.page.drawText("ACEITE DO CLIENTE", {
-    x: PAGE_MARGIN + 12,
-    y: cursor.y - 16,
-    size: 9,
-    font: boldFont,
-    color: COLOR_ACCENT,
-  });
-  cursor.page.drawText(
-    "Espaço reservado para aceite rastreável do cliente.",
-    {
-      x: PAGE_MARGIN + 12,
-      y: cursor.y - 32,
-      size: 10,
-      font,
-      color: COLOR_TEXT,
-    }
-  );
-  cursor.y -= 66;
 
-  cursor = ensureSpace(cursor, pdfDoc, 130);
-  cursor.page.drawRectangle({
-    x: PAGE_MARGIN,
-    y: cursor.y - 54,
-    width: CONTENT_WIDTH,
-    height: 54,
-    color: COLOR_PANEL,
-    borderColor: COLOR_BORDER,
-    borderWidth: 0.7,
+  cursor = drawFooterBox({
+    cursor,
+    pdfDoc,
+    title: "ASSINATURA / CONFIRMACAO DA LOJA",
+    text: "Espaco reservado para assinatura ou confirmacao da loja apos o aceite do cliente.",
+    font,
+    boldFont,
+    spacingBefore: 16,
   });
-  cursor.page.drawText("ASSINATURA / CONFIRMAÇÃO DA LOJA", {
-    x: PAGE_MARGIN + 12,
-    y: cursor.y - 16,
-    size: 9,
-    font: boldFont,
-    color: COLOR_ACCENT,
-  });
-  cursor.page.drawText(
-    "Espaço reservado para assinatura ou confirmação da loja após o aceite do cliente.",
-    {
-      x: PAGE_MARGIN + 12,
-      y: cursor.y - 32,
-      size: 10,
-      font,
-      color: COLOR_TEXT,
-    }
-  );
-  cursor.y -= 68;
 
   const footerLines = wrapText(
-    "Documento contratual da loja. O uso final deste contrato depende da validação das regras comerciais, jurídicas e operacionais aplicáveis.",
+    "Documento contratual da loja. O uso final deste contrato depende da validacao das regras comerciais, juridicas e operacionais aplicaveis.",
     95
   );
   cursor = ensureSpace(cursor, pdfDoc, 60);
