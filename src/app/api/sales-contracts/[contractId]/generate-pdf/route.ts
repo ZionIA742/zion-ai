@@ -17,6 +17,18 @@ import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const NON_EDITABLE_CONTRACT_STATUSES = new Set([
+  "sent_to_customer",
+  "customer_signed",
+  "store_signed",
+  "completed",
+  "cancelled",
+  "expired",
+  "failed",
+]);
+const PDF_REGENERATION_BLOCKED_MESSAGE =
+  "Este contrato ja foi enviado ou assinado e nao pode ter o PDF regenerado. Para alterar, crie um novo contrato ou cancele o contrato atual conforme o fluxo permitido.";
+
 function buildErrorResponse(error: unknown) {
   if (error instanceof ContractAccessError) {
     return NextResponse.json(
@@ -67,15 +79,22 @@ export async function POST(
     scope = await resolveAuthorizedExistingContract(contractId);
 
     const normalizedStatus = String(scope.contract.status || "").trim().toLowerCase();
+    const sentAt = normalizeOptionalText(scope.contract.sent_at);
+    const customerSignedAt = normalizeOptionalText(scope.contract.customer_signed_at);
+    const storeSignedAt = normalizeOptionalText(scope.contract.store_signed_at);
+    const completedAt = normalizeOptionalText(scope.contract.completed_at);
+
     if (
-      normalizedStatus === "completed" ||
-      normalizedStatus === "cancelled" ||
-      normalizedStatus === "expired"
+      NON_EDITABLE_CONTRACT_STATUSES.has(normalizedStatus) ||
+      sentAt ||
+      customerSignedAt ||
+      storeSignedAt ||
+      completedAt
     ) {
       throw new ContractAccessError(
         409,
         "CONTRACT_STATUS_NOT_GENERATABLE",
-        "Este contrato nao pode gerar nova versao de PDF no status atual."
+        PDF_REGENERATION_BLOCKED_MESSAGE
       );
     }
 
