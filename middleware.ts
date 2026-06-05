@@ -9,6 +9,7 @@ export async function middleware(req: NextRequest) {
     path === "/auth/callback" ||
     path === "/auth/reset-password" ||
     path === "/zion-admin/login" ||
+    path === "/api/webhooks/whatsapp" ||
     path.startsWith("/_next") ||
     path.startsWith("/favicon") ||
 
