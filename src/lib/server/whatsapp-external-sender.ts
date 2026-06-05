@@ -85,6 +85,7 @@ export type ProcessWhatsappPendingMessagesResult = {
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const META_WHATSAPP_ACCESS_TOKEN = process.env.META_WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_GRAPH_API_VERSION =
   process.env.WHATSAPP_GRAPH_API_VERSION || "v23.0";
 
@@ -159,6 +160,23 @@ function normalizeMetadata(
 ): Record<string, unknown> {
   if (isRecord(value)) return value;
   return {};
+}
+
+function resolveWhatsappAccessToken(
+  integration?: WhatsappIntegrationRow | null,
+): string {
+  const token =
+    integration?.access_token?.trim() ||
+    META_WHATSAPP_ACCESS_TOKEN?.trim() ||
+    "";
+
+  if (!token) {
+    throw new Error(
+      "Integracao WhatsApp sem token de acesso configurado no banco ou em META_WHATSAPP_ACCESS_TOKEN",
+    );
+  }
+
+  return token;
 }
 
 function extractMessageId(row: PendingExternalMessageRow): string | null {
@@ -256,7 +274,7 @@ async function getWhatsappIntegration(
   const row = Array.isArray(data) ? data[0] : data;
   const integration = row as WhatsappIntegrationRow | null | undefined;
 
-  const accessToken = integration?.access_token?.trim() || "";
+  const accessToken = resolveWhatsappAccessToken(integration);
   const phoneNumberId = integration?.phone_number_id?.trim() || "";
 
   if (!accessToken) {

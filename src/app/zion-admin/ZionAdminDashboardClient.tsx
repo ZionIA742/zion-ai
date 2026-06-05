@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabaseBrowser";
 
 type OverviewPanelKey =
   | "ia"
@@ -2600,6 +2602,7 @@ export default function ZionAdminDashboardClient({
   initialData,
   initialError,
 }: Props) {
+  const router = useRouter();
   const [selectedStore, setSelectedStore] = useState<ZionAdminStore | null>(
     null,
   );
@@ -2607,6 +2610,7 @@ export default function ZionAdminDashboardClient({
     useState<OverviewPanelKey | null>(null);
   const [activeSearch, setActiveSearch] = useState("");
   const [inactiveSearch, setInactiveSearch] = useState("");
+  const [isSigningOut, setIsSigningOut] = useState(false);
 
   const data = initialData;
   const stores = data?.stores ?? [];
@@ -2619,6 +2623,29 @@ export default function ZionAdminDashboardClient({
   const totalAiRuns = numberValue(data?.totals.aiRuns);
   const successfulAiRuns = numberValue(data?.totals.successfulAiRuns);
   const failedAiRuns = numberValue(data?.totals.failedAiRuns);
+
+  async function handleSignOut() {
+    if (isSigningOut) return;
+
+    setIsSigningOut(true);
+
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error("[ZionAdminDashboardClient] signOut error:", error);
+    } finally {
+      if (typeof window !== "undefined") {
+        const loginUrl = `${window.location.origin}/zion-admin/login`;
+        window.location.replace(loginUrl);
+        window.setTimeout(() => {
+          window.location.assign(loginUrl);
+        }, 50);
+      } else {
+        router.replace("/zion-admin/login");
+        router.refresh();
+      }
+    }
+  }
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-zinc-950 px-4 py-5 text-zinc-50 sm:px-6 lg:px-8">
@@ -2633,9 +2660,19 @@ export default function ZionAdminDashboardClient({
             </h1>
           </div>
 
-          <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300">
-            Acesso:{" "}
-            <span className="font-semibold text-zinc-50">{adminRole}</span>
+          <div className="flex items-center gap-2 self-start md:self-auto">
+            <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300">
+              Acesso:{" "}
+              <span className="font-semibold text-zinc-50">{adminRole}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleSignOut()}
+              disabled={isSigningOut}
+              className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSigningOut ? "Saindo..." : "Sair"}
+            </button>
           </div>
         </header>
 

@@ -167,6 +167,7 @@ type AssistantCustomerContextReportMetadata = {
 
 type DocumentFeedbackTone = "success" | "error";
 
+const ASSISTANT_PAGE_MESSAGE_LIMIT = 50;
 const TERMINAL_DOCUMENT_STATUSES = new Set([
   "completed",
   "cancelled",
@@ -186,6 +187,36 @@ function formatTime(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function compareAssistantMessages(left: AssistantMessage, right: AssistantMessage) {
+  const leftTime = Date.parse(left.created_at || "");
+  const rightTime = Date.parse(right.created_at || "");
+  const safeLeftTime = Number.isFinite(leftTime) ? leftTime : 0;
+  const safeRightTime = Number.isFinite(rightTime) ? rightTime : 0;
+
+  if (safeLeftTime !== safeRightTime) {
+    return safeLeftTime - safeRightTime;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function mergeAssistantMessages(
+  current: AssistantMessage[],
+  incoming: AssistantMessage[]
+) {
+  const byId = new Map<string, AssistantMessage>();
+
+  current.forEach((message) => {
+    byId.set(message.id, message);
+  });
+
+  incoming.forEach((message) => {
+    byId.set(message.id, message);
+  });
+
+  return [...byId.values()].sort(compareAssistantMessages);
 }
 
 function formatDayDivider(value: string | null) {
@@ -682,6 +713,7 @@ export default function AssistantPage() {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
@@ -717,11 +749,21 @@ export default function AssistantPage() {
   const forceScrollToBottomRef = useRef(false);
   const lastMessageCountRef = useRef(0);
   const markedNotificationsSeenKeyRef = useRef<string | null>(null);
+  const messagesRef = useRef<AssistantMessage[]>([]);
+  const initialMessagesLoadedRef = useRef(false);
+  const reachedConversationStartRef = useRef(false);
+  const prependScrollRestoreRef = useRef<{ previousScrollHeight: number; previousScrollTop: number } | null>(
+    null
+  );
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const canLoad = useMemo(() => {
     return !storeLoading && !!organizationId && !!activeStoreId;
   }, [storeLoading, organizationId, activeStoreId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     window.requestAnimationFrame(() => {
@@ -738,14 +780,21 @@ export default function AssistantPage() {
   }, []);
 
   const loadAssistant = useCallback(
-    async (options?: { silent?: boolean }) => {
+    async (options?: { silent?: boolean; reset?: boolean }) => {
       if (!canLoad || !organizationId || !activeStoreId) return;
 
       const silent = options?.silent ?? false;
+      const reset = options?.reset ?? false;
       if (silent) setRefreshing(true);
       else setLoading(true);
 
       setErrorText(null);
+
+      const currentMessages = messagesRef.current;
+      const lastLoadedMessage =
+        !reset && initialMessagesLoadedRef.current && currentMessages.length > 0
+          ? currentMessages[currentMessages.length - 1]
+          : null;
 
       const [{ data: summaryData, error: summaryError }, { data: messagesData, error: messagesError }] =
         await Promise.all([
@@ -753,11 +802,19 @@ export default function AssistantPage() {
             p_organization_id: organizationId,
             p_store_id: activeStoreId,
           }),
-          supabase.rpc("assistant_list_messages", {
-            p_organization_id: organizationId,
-            p_store_id: activeStoreId,
-            p_limit: 200,
-          }),
+          lastLoadedMessage
+            ? supabase.rpc("assistant_list_messages_paginated", {
+                p_organization_id: organizationId,
+                p_store_id: activeStoreId,
+                p_limit: ASSISTANT_PAGE_MESSAGE_LIMIT,
+                p_after_created_at: lastLoadedMessage.created_at,
+                p_after_id: lastLoadedMessage.id,
+              })
+            : supabase.rpc("assistant_list_messages_paginated", {
+                p_organization_id: organizationId,
+                p_store_id: activeStoreId,
+                p_limit: ASSISTANT_PAGE_MESSAGE_LIMIT,
+              }),
         ]);
 
       if (summaryError) {
@@ -777,9 +834,22 @@ export default function AssistantPage() {
       const summaryRow = Array.isArray(summaryData)
         ? ((summaryData[0] || null) as AssistantThreadSummary | null)
         : ((summaryData || null) as AssistantThreadSummary | null);
+      const nextMessages = Array.isArray(messagesData)
+        ? (messagesData as AssistantMessage[])
+        : [];
+      const totalMessages = Number(summaryRow?.total_messages || 0);
 
       setSummary(summaryRow);
-      setMessages((messagesData || []) as AssistantMessage[]);
+
+      if (lastLoadedMessage) {
+        if (nextMessages.length > 0) {
+          setMessages((current) => mergeAssistantMessages(current, nextMessages));
+        }
+      } else {
+        setMessages(mergeAssistantMessages([], nextMessages));
+        initialMessagesLoadedRef.current = true;
+        reachedConversationStartRef.current = totalMessages <= nextMessages.length;
+      }
 
       if (silent) setRefreshing(false);
       else setLoading(false);
@@ -809,7 +879,14 @@ export default function AssistantPage() {
 
   useEffect(() => {
     if (!canLoad) return;
-    void loadAssistant();
+    initialMessagesLoadedRef.current = false;
+    reachedConversationStartRef.current = false;
+    prependScrollRestoreRef.current = null;
+    firstLoadDoneRef.current = false;
+    lastMessageCountRef.current = 0;
+    shouldStickToBottomRef.current = true;
+    forceScrollToBottomRef.current = false;
+    void loadAssistant({ reset: true });
   }, [canLoad, loadAssistant]);
 
   useEffect(() => {
@@ -838,7 +915,29 @@ export default function AssistantPage() {
     if (loading || searchOpen) return;
 
     const hasNewMessages = messages.length > lastMessageCountRef.current;
-    const shouldAutoScroll = !firstLoadDoneRef.current || hasNewMessages || forceScrollToBottomRef.current;
+    const prependRestore = prependScrollRestoreRef.current;
+
+    if (prependRestore && chatScrollRef.current) {
+      window.requestAnimationFrame(() => {
+        const node = chatScrollRef.current;
+        if (!node) return;
+
+        const nextScrollTop =
+          prependRestore.previousScrollTop +
+          (node.scrollHeight - prependRestore.previousScrollHeight);
+
+        node.scrollTop = nextScrollTop;
+        prependScrollRestoreRef.current = null;
+        firstLoadDoneRef.current = true;
+        lastMessageCountRef.current = messages.length;
+      });
+      return;
+    }
+
+    const shouldAutoScroll =
+      !firstLoadDoneRef.current ||
+      forceScrollToBottomRef.current ||
+      (hasNewMessages && shouldStickToBottomRef.current);
 
     window.requestAnimationFrame(() => {
       if (!chatScrollRef.current || !shouldAutoScroll) {
@@ -1054,6 +1153,82 @@ export default function AssistantPage() {
     const count = Number(summary?.pending_notifications || 0);
     return Number.isFinite(count) && count > 0 ? count : 0;
   }, [summary?.pending_notifications]);
+
+  const hasOlderMessages =
+    !reachedConversationStartRef.current &&
+    Number(summary?.total_messages || 0) > messages.length;
+  const showingRecentMessagesOnly =
+    Number(summary?.total_messages || 0) > messages.length;
+
+  const loadOlderMessages = useCallback(async () => {
+    if (
+      !canLoad ||
+      !organizationId ||
+      !activeStoreId ||
+      loadingOlderMessages ||
+      messages.length === 0 ||
+      reachedConversationStartRef.current
+    ) {
+      return;
+    }
+
+    const firstMessage = messages[0];
+    const scrollNode = chatScrollRef.current;
+    if (scrollNode) {
+      prependScrollRestoreRef.current = {
+        previousScrollHeight: scrollNode.scrollHeight,
+        previousScrollTop: scrollNode.scrollTop,
+      };
+    }
+
+    setLoadingOlderMessages(true);
+    setErrorText(null);
+
+    const { data, error } = await supabase.rpc("assistant_list_messages_paginated", {
+      p_organization_id: organizationId,
+      p_store_id: activeStoreId,
+      p_limit: ASSISTANT_PAGE_MESSAGE_LIMIT,
+      p_before_created_at: firstMessage.created_at,
+      p_before_id: firstMessage.id,
+    });
+
+    if (error) {
+      prependScrollRestoreRef.current = null;
+      setErrorText(error.message || "Erro ao carregar mensagens anteriores.");
+      setLoadingOlderMessages(false);
+      return;
+    }
+
+    const olderMessages = Array.isArray(data) ? (data as AssistantMessage[]) : [];
+
+    if (olderMessages.length === 0) {
+      prependScrollRestoreRef.current = null;
+      reachedConversationStartRef.current = true;
+      setLoadingOlderMessages(false);
+      return;
+    }
+
+    setMessages((current) => {
+      const merged = mergeAssistantMessages(current, olderMessages);
+      const totalMessages = Number(summary?.total_messages || 0);
+      if (
+        olderMessages.length < ASSISTANT_PAGE_MESSAGE_LIMIT ||
+        (totalMessages > 0 && merged.length >= totalMessages)
+      ) {
+        reachedConversationStartRef.current = true;
+      }
+      return merged;
+    });
+
+    setLoadingOlderMessages(false);
+  }, [
+    canLoad,
+    organizationId,
+    activeStoreId,
+    loadingOlderMessages,
+    messages,
+    summary?.total_messages,
+  ]);
 
   const jumpToMessage = useCallback((messageId: string) => {
     setSearchOpen(false);
@@ -1428,6 +1603,35 @@ export default function AssistantPage() {
               className={`min-h-0 flex-1 overflow-y-auto px-2.5 py-3 md:px-4 ${searchOpen ? "md:pr-[380px]" : ""}`}
               style={{ background: "#f7f7f7" }}
             >
+              {groupedMessages.length > 0 ? (
+                <div className="mb-3 flex flex-col items-center gap-2">
+                  {hasOlderMessages ? (
+                    <button
+                      type="button"
+                      onClick={() => void loadOlderMessages()}
+                      disabled={loadingOlderMessages}
+                      className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {loadingOlderMessages
+                        ? "Carregando mensagens anteriores..."
+                        : "Carregar mensagens anteriores"}
+                    </button>
+                  ) : (
+                    <div className="rounded-full bg-white px-3 py-1.5 text-[11px] font-medium text-gray-500 shadow-sm ring-1 ring-black/10">
+                      Início da conversa carregado.
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {showingRecentMessagesOnly ? (
+                <div className="mb-3 flex justify-center">
+                  <div className="rounded-full bg-white px-3 py-1.5 text-[11px] font-medium text-gray-500 shadow-sm ring-1 ring-black/10">
+                    Mostrando mensagens recentes desta conversa.
+                  </div>
+                </div>
+              ) : null}
+
               {groupedMessages.length === 0 ? (
                 <div className="mx-auto mt-8 max-w-sm rounded-2xl bg-white px-4 py-5 text-center text-xs text-gray-500 ring-1 ring-black/10">
                   Nenhuma mensagem ainda. Envie a primeira mensagem para a assistente.
@@ -2082,7 +2286,7 @@ export default function AssistantPage() {
                       ref={searchInputRef}
                       value={searchText}
                       onChange={(event) => setSearchText(event.target.value)}
-                      placeholder="Digite para buscar nesta conversa"
+                      placeholder="Digite para buscar nas mensagens carregadas"
                       className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
                     />
                     {searchText.trim() ? (
@@ -2104,7 +2308,7 @@ export default function AssistantPage() {
                 <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
                   {!searchText.trim() ? (
                     <div className="rounded-2xl border border-dashed border-black/10 p-4 text-sm text-gray-500">
-                      Procure por nome do cliente, telefone, data, compromisso ou qualquer palavra da conversa.
+                      Procure por nome do cliente, telefone, data, compromisso ou qualquer palavra das mensagens carregadas.
                     </div>
                   ) : searchResults.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-black/10 p-4 text-sm text-gray-500">

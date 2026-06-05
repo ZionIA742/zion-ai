@@ -17,7 +17,7 @@ export default function ZionAdminLoginPage() {
     setBusy(true);
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
@@ -26,9 +26,17 @@ export default function ZionAdminLoginPage() {
         throw new Error("Email ou senha inválidos.");
       }
 
+      const authenticatedUser = data.user;
+
+      if (!authenticatedUser?.id) {
+        await supabase.auth.signOut();
+        throw new Error("NÃ£o foi possÃ­vel validar o usuÃ¡rio autenticado.");
+      }
+
       const { data: admin, error: adminError } = await supabase
         .from("zion_internal_admins")
         .select("id, role, is_active")
+        .eq("user_id", authenticatedUser.id)
         .eq("is_active", true)
         .maybeSingle();
 
