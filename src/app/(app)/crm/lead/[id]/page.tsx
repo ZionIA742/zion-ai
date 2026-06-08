@@ -2331,22 +2331,35 @@ export default function LeadPage() {
       return false;
     }
 
-    const { error } = await supabase.rpc("panel_send_message_scoped", {
-      p_organization_id: lead.organization_id,
-      p_conversation_id: conversation.id,
-      p_text: text,
+    const response = await fetch("/api/crm/messages/send-manual-text", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        organizationId: lead.organization_id,
+        storeId: lead.store_id,
+        conversationId: conversation.id,
+        text,
+      }),
     });
 
-    if (error) {
+    const result = (await response.json().catch(() => null)) as
+      | {
+          ok?: boolean;
+          error?: string;
+          message?: string;
+        }
+      | null;
+
+    if (!response.ok || !result?.ok) {
       console.error("[LeadPage] erro ao enviar mensagem:", {
-        message: (error as any)?.message ?? null,
-        details: (error as any)?.details ?? null,
-        hint: (error as any)?.hint ?? null,
-        code: (error as any)?.code ?? null,
-        full: error,
+        status: response.status,
+        error: result?.error ?? null,
+        message: result?.message ?? null,
       });
 
-      setErrorText((error as any)?.message ?? "Erro ao enviar mensagem.");
+      setErrorText(result?.message ?? result?.error ?? "Erro ao enviar mensagem.");
       return false;
     }
 
