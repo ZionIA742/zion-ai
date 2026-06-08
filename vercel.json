@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/assistant-operational-tasks",
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/whatsapp-process-all",
+      "schedule": "* * * * *"
     }
   ]
 }
