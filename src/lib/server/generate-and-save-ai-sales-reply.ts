@@ -152,6 +152,14 @@ type CustomerIncomingMessageRow = {
   created_at: string | null;
 };
 
+type ConversationChannelMessageRow = {
+  id: string;
+  sender: string | null;
+  direction: string | null;
+  created_at: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
 type ContractWorkflowCardCreationResult = {
   attempted: boolean;
   created: boolean;
@@ -1446,11 +1454,162 @@ async function loadLatestIncomingCustomerMessage(args: {
   return rows.find(isCustomerIncomingMessage) || null;
 }
 
-async function sendAiPanelMessage(args: {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRealWhatsappIncomingMessage(row: ConversationChannelMessageRow): boolean {
+  if (String(row.sender || "").trim() !== "user") {
+    return false;
+  }
+
+  if (String(row.direction || "").trim() !== "incoming") {
+    return false;
+  }
+
+  const metadata = isRecord(row.metadata) ? row.metadata : null;
+  if (!metadata) {
+    return false;
+  }
+
+  return (
+    String(metadata.source || "").trim() === "meta_whatsapp_webhook" &&
+    String(metadata.channel || "").trim() === "whatsapp" &&
+    String(metadata.external_channel || "").trim() === "whatsapp"
+  );
+}
+
+async function conversationHasRecentRealWhatsappIncomingMessage(args: {
+  supabase: any;
+  conversationId: string;
+}): Promise<boolean> {
+  const { data, error } = await args.supabase
+    .from("messages")
+    .select("id, sender, direction, created_at, metadata")
+    .eq("conversation_id", args.conversationId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    throw new Error(
+      `Falha ao verificar origem WhatsApp da conversa: ${error.message}`
+    );
+  }
+
+  const rows = Array.isArray(data) ? (data as ConversationChannelMessageRow[]) : [];
+  return rows.some(isRealWhatsappIncomingMessage);
+}
+
+async function hasActiveWhatsappIntegration(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+}): Promise<boolean> {
+  const { data, error } = await args.supabase
+    .from("external_integrations")
+    .select("id")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("provider", "whatsapp")
+    .eq("is_active", true)
+    .eq("status", "active")
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Falha ao verificar integracao WhatsApp ativa: ${error.message}`
+    );
+  }
+
+  return Boolean(data && typeof data === "object" && "id" in data && data.id);
+}
+
+async function isRealWhatsappConversation(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}): Promise<boolean> {
+  const [hasRecentIncomingWhatsappMessage, hasWhatsappIntegration] =
+    await Promise.all([
+      conversationHasRecentRealWhatsappIncomingMessage({
+        supabase: args.supabase,
+        conversationId: args.conversationId,
+      }),
+      hasActiveWhatsappIntegration({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+      }),
+    ]);
+
+  return hasRecentIncomingWhatsappMessage && hasWhatsappIntegration;
+}
+
+async function insertAiWhatsappMessage(args: {
   supabase: any;
   conversationId: string;
   aiText: string;
 }) {
+  const metadata = {
+    source: "ai_sales_reply",
+    channel: "whatsapp",
+    external_channel: "whatsapp",
+    send_external: true,
+    outbound_origin: "ai_sales_reply",
+    whatsapp_detected_from_conversation: true,
+  };
+
+  const { data, error } = await args.supabase.rpc("insert_message", {
+    p_conversation_id: args.conversationId,
+    p_sender: "ai",
+    p_direction: "outgoing",
+    p_message_type: "text",
+    p_content: args.aiText,
+    p_external_message_id: null,
+    p_media_url: null,
+    p_metadata: metadata,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  return row?.id || null;
+}
+
+async function sendAiPanelMessage(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  aiText: string;
+}) {
+  try {
+    const whatsappConversation = await isRealWhatsappConversation({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+    });
+
+    if (whatsappConversation) {
+      return await insertAiWhatsappMessage(args);
+    }
+  } catch (whatsappDetectionError: any) {
+    console.warn("[zion-ai-sales-reply] Falha ao detectar conversa WhatsApp real", {
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      error:
+        whatsappDetectionError instanceof Error
+          ? whatsappDetectionError.message
+          : String(whatsappDetectionError || ""),
+    });
+  }
+
   const { data: messageId, error: sendError } = await args.supabase.rpc(
     "panel_send_message",
     {
@@ -2553,6 +2712,8 @@ export async function generateAndSaveAiSalesReply(
         try {
           messageId = await sendAiPanelMessage({
             supabase,
+            organizationId,
+            storeId,
             conversationId,
             aiText,
           });
@@ -2591,6 +2752,8 @@ export async function generateAndSaveAiSalesReply(
         try {
           messageId = await sendAiPanelMessage({
             supabase,
+            organizationId,
+            storeId,
             conversationId,
             aiText,
           });
@@ -2727,6 +2890,8 @@ export async function generateAndSaveAiSalesReply(
     try {
       messageId = await sendAiPanelMessage({
         supabase,
+        organizationId,
+        storeId,
         conversationId,
         aiText,
       });
