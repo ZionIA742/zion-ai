@@ -16,6 +16,7 @@ export async function middleware(req: NextRequest) {
     // Rotas internas protegidas por segredo próprio.
     // Elas não podem depender de sessão/login, porque são chamadas por worker, cron ou integrações.
     path === "/api/internal/ai-sales-reply" ||
+    path === "/api/internal/whatsapp/process-inbox" ||
     path === "/api/internal/whatsapp/process-pending" ||
     path === "/api/internal/assistant-operational-tasks/process" ||
 
