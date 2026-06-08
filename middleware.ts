@@ -22,7 +22,8 @@ export async function middleware(req: NextRequest) {
 
     // Rotas de cron da Vercel.
     // A autenticação delas é feita dentro da própria rota via CRON_SECRET.
-    path === "/api/cron/assistant-operational-tasks";
+    path === "/api/cron/assistant-operational-tasks" ||
+    path === "/api/cron/whatsapp-process-all";
 
   if (isPublic) {
     return NextResponse.next();
