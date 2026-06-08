@@ -1,8 +1,8 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
 import {
-  downloadAndStoreWhatsappInboundImage,
-  removeWhatsappInboundStoredImage,
+  downloadAndStoreWhatsappInboundMedia,
+  removeWhatsappInboundStoredMedia,
 } from "@/lib/server/whatsapp-inbound-media";
 
 type Json =
@@ -69,12 +69,37 @@ type MetaImagePayload = {
   caption?: unknown;
 };
 
+type MetaAudioPayload = {
+  id?: unknown;
+  mime_type?: unknown;
+  sha256?: unknown;
+  voice?: unknown;
+};
+
+type MetaVideoPayload = {
+  id?: unknown;
+  mime_type?: unknown;
+  sha256?: unknown;
+  caption?: unknown;
+};
+
+type MetaDocumentPayload = {
+  id?: unknown;
+  mime_type?: unknown;
+  sha256?: unknown;
+  filename?: unknown;
+  caption?: unknown;
+};
+
 type MetaMessagePayload = {
   id?: unknown;
   from?: unknown;
   type?: unknown;
   text?: MetaTextPayload | null;
   image?: MetaImagePayload | null;
+  audio?: MetaAudioPayload | null;
+  video?: MetaVideoPayload | null;
+  document?: MetaDocumentPayload | null;
 };
 
 type StoredInboxPayload = {
@@ -173,6 +198,11 @@ function asTrimmedString(value: unknown): string | null {
   return trimmed || null;
 }
 
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
 function normalizePhone(value: string): string {
   return value.replace(/[^\d]/g, "");
 }
@@ -237,6 +267,9 @@ function extractIncomingMessage(payload: StoredInboxPayload) {
   const textNode = isRecord(message?.text) ? message?.text : null;
   const textBody = asTrimmedString(textNode?.body);
   const imageNode = isRecord(message?.image) ? message?.image : null;
+  const audioNode = isRecord(message?.audio) ? message?.audio : null;
+  const videoNode = isRecord(message?.video) ? message?.video : null;
+  const documentNode = isRecord(message?.document) ? message?.document : null;
   const phoneNumberId = asTrimmedString(payload.phone_number_id);
   const contactName = extractContactName(payload);
 
@@ -250,6 +283,19 @@ function extractIncomingMessage(payload: StoredInboxPayload) {
     imageMimeType: asTrimmedString(imageNode?.mime_type),
     imageSha256: asTrimmedString(imageNode?.sha256),
     imageCaption: asTrimmedString(imageNode?.caption),
+    audioMediaId: asTrimmedString(audioNode?.id),
+    audioMimeType: asTrimmedString(audioNode?.mime_type),
+    audioSha256: asTrimmedString(audioNode?.sha256),
+    audioVoice: asBoolean(audioNode?.voice),
+    videoMediaId: asTrimmedString(videoNode?.id),
+    videoMimeType: asTrimmedString(videoNode?.mime_type),
+    videoSha256: asTrimmedString(videoNode?.sha256),
+    videoCaption: asTrimmedString(videoNode?.caption),
+    documentMediaId: asTrimmedString(documentNode?.id),
+    documentMimeType: asTrimmedString(documentNode?.mime_type),
+    documentSha256: asTrimmedString(documentNode?.sha256),
+    documentFilename: asTrimmedString(documentNode?.filename),
+    documentCaption: asTrimmedString(documentNode?.caption),
     phoneNumberId,
     whatsappBusinessAccountId: asTrimmedString(payload.whatsapp_business_account_id),
     displayPhoneNumber: asTrimmedString(payload.display_phone_number),
@@ -501,7 +547,7 @@ async function insertIncomingMessage(args: {
   rawMessageType: string;
   whatsappBusinessAccountId: string | null;
   displayPhoneNumber: string | null;
-  messageType?: "text" | "image";
+  messageType?: "text" | "image" | "audio" | "video";
   content?: string;
   mediaUrl?: string | null;
   metadata?: Record<string, unknown>;
@@ -585,6 +631,166 @@ async function insertIncomingImageMessage(args: {
     metadata: {
       media_origin: "customer",
       attachment_kind: "image",
+      whatsapp_media_id: args.mediaId,
+      mime_type: args.mimeType,
+      sha256: args.sha256,
+      caption: args.caption,
+      storage_bucket: args.storageBucket,
+      storage_path: args.storagePath,
+      original_file_name: args.originalFileName,
+      size_bytes: args.sizeBytes,
+      downloaded_from_meta: true,
+    },
+  });
+}
+
+async function insertIncomingAudioMessage(args: {
+  supabase: SupabaseClient;
+  conversationId: string;
+  inbox: InboxRow;
+  messageId: string;
+  fromPhone: string;
+  phoneNumberId: string;
+  contactName: string | null;
+  whatsappBusinessAccountId: string | null;
+  displayPhoneNumber: string | null;
+  mediaId: string;
+  mimeType: string | null;
+  sha256: string | null;
+  isVoiceMessage: boolean | null;
+  storageBucket: string;
+  storagePath: string;
+  originalFileName: string;
+  sizeBytes: number;
+}) {
+  return insertIncomingMessage({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+    inbox: args.inbox,
+    messageId: args.messageId,
+    textBody: "Cliente enviou um audio.",
+    fromPhone: args.fromPhone,
+    phoneNumberId: args.phoneNumberId,
+    contactName: args.contactName,
+    rawMessageType: "audio",
+    whatsappBusinessAccountId: args.whatsappBusinessAccountId,
+    displayPhoneNumber: args.displayPhoneNumber,
+    messageType: "audio",
+    content: "Cliente enviou um audio.",
+    mediaUrl: args.storagePath,
+    metadata: {
+      media_origin: "customer",
+      attachment_kind: "audio",
+      whatsapp_media_id: args.mediaId,
+      mime_type: args.mimeType,
+      sha256: args.sha256,
+      storage_bucket: args.storageBucket,
+      storage_path: args.storagePath,
+      original_file_name: args.originalFileName,
+      size_bytes: args.sizeBytes,
+      downloaded_from_meta: true,
+      voice: args.isVoiceMessage,
+      is_voice_message: args.isVoiceMessage,
+    },
+  });
+}
+
+async function insertIncomingVideoMessage(args: {
+  supabase: SupabaseClient;
+  conversationId: string;
+  inbox: InboxRow;
+  messageId: string;
+  fromPhone: string;
+  phoneNumberId: string;
+  contactName: string | null;
+  whatsappBusinessAccountId: string | null;
+  displayPhoneNumber: string | null;
+  mediaId: string;
+  mimeType: string | null;
+  sha256: string | null;
+  caption: string | null;
+  storageBucket: string;
+  storagePath: string;
+  originalFileName: string;
+  sizeBytes: number;
+}) {
+  const content = args.caption || "Cliente enviou um video.";
+
+  return insertIncomingMessage({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+    inbox: args.inbox,
+    messageId: args.messageId,
+    textBody: content,
+    fromPhone: args.fromPhone,
+    phoneNumberId: args.phoneNumberId,
+    contactName: args.contactName,
+    rawMessageType: "video",
+    whatsappBusinessAccountId: args.whatsappBusinessAccountId,
+    displayPhoneNumber: args.displayPhoneNumber,
+    messageType: "video",
+    content,
+    mediaUrl: args.storagePath,
+    metadata: {
+      media_origin: "customer",
+      attachment_kind: "video",
+      whatsapp_media_id: args.mediaId,
+      mime_type: args.mimeType,
+      sha256: args.sha256,
+      caption: args.caption,
+      storage_bucket: args.storageBucket,
+      storage_path: args.storagePath,
+      original_file_name: args.originalFileName,
+      size_bytes: args.sizeBytes,
+      downloaded_from_meta: true,
+    },
+  });
+}
+
+async function insertIncomingDocumentMessage(args: {
+  supabase: SupabaseClient;
+  conversationId: string;
+  inbox: InboxRow;
+  messageId: string;
+  fromPhone: string;
+  phoneNumberId: string;
+  contactName: string | null;
+  whatsappBusinessAccountId: string | null;
+  displayPhoneNumber: string | null;
+  mediaId: string;
+  mimeType: string | null;
+  sha256: string | null;
+  caption: string | null;
+  fileName: string | null;
+  storageBucket: string;
+  storagePath: string;
+  originalFileName: string;
+  sizeBytes: number;
+}) {
+  const content =
+    args.caption ||
+    (args.fileName
+      ? `Cliente enviou o arquivo ${args.fileName}.`
+      : "Cliente enviou um arquivo.");
+
+  return insertIncomingMessage({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+    inbox: args.inbox,
+    messageId: args.messageId,
+    textBody: content,
+    fromPhone: args.fromPhone,
+    phoneNumberId: args.phoneNumberId,
+    contactName: args.contactName,
+    rawMessageType: "document",
+    whatsappBusinessAccountId: args.whatsappBusinessAccountId,
+    displayPhoneNumber: args.displayPhoneNumber,
+    messageType: "text",
+    content,
+    mediaUrl: null,
+    metadata: {
+      media_origin: "customer",
+      attachment_kind: "file",
       whatsapp_media_id: args.mediaId,
       mime_type: args.mimeType,
       sha256: args.sha256,
@@ -793,7 +999,13 @@ async function processSingleInboxRow(
     };
   }
 
-  if (extracted.rawMessageType !== "text" && extracted.rawMessageType !== "image") {
+  if (
+    extracted.rawMessageType !== "text" &&
+    extracted.rawMessageType !== "image" &&
+    extracted.rawMessageType !== "audio" &&
+    extracted.rawMessageType !== "video" &&
+    extracted.rawMessageType !== "document"
+  ) {
     const detail = `unsupported_message_type: ${extracted.rawMessageType}`;
     await markInboxError(supabase, inbox.id, detail);
     return {
@@ -864,7 +1076,7 @@ async function processSingleInboxRow(
     lead.id,
   );
 
-  let uploadedImageStoragePath: string | null = null;
+  let uploadedMediaStoragePath: string | null = null;
 
   try {
     let inserted: InsertMessageResult;
@@ -874,16 +1086,18 @@ async function processSingleInboxRow(
         throw new Error("missing_image_media_id");
       }
 
-      const storedImage = await downloadAndStoreWhatsappInboundImage({
+      const storedMedia = await downloadAndStoreWhatsappInboundMedia({
         supabase,
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
         conversationId: conversation.id,
         mediaId: extracted.imageMediaId,
+        mediaKind: "image",
         preferredMimeType: extracted.imageMimeType,
+        fallbackBaseName: "whatsapp-image",
       });
 
-      uploadedImageStoragePath = storedImage.storagePath;
+      uploadedMediaStoragePath = storedMedia.storagePath;
 
       inserted = await insertIncomingImageMessage({
         supabase,
@@ -896,13 +1110,126 @@ async function processSingleInboxRow(
         whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
         displayPhoneNumber: extracted.displayPhoneNumber,
         mediaId: extracted.imageMediaId,
-        mimeType: storedImage.mimeType || extracted.imageMimeType,
-        sha256: extracted.imageSha256 || storedImage.sha256,
+        mimeType: storedMedia.mimeType || extracted.imageMimeType,
+        sha256: extracted.imageSha256 || storedMedia.sha256,
         caption: extracted.imageCaption,
-        storageBucket: storedImage.storageBucket,
-        storagePath: storedImage.storagePath,
-        originalFileName: storedImage.originalFileName,
-        sizeBytes: storedImage.sizeBytes,
+        storageBucket: storedMedia.storageBucket,
+        storagePath: storedMedia.storagePath,
+        originalFileName: storedMedia.originalFileName,
+        sizeBytes: storedMedia.sizeBytes,
+      });
+    } else if (extracted.rawMessageType === "audio") {
+      if (!extracted.audioMediaId) {
+        throw new Error("missing_audio_media_id");
+      }
+
+      const storedMedia = await downloadAndStoreWhatsappInboundMedia({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        conversationId: conversation.id,
+        mediaId: extracted.audioMediaId,
+        mediaKind: "audio",
+        preferredMimeType: extracted.audioMimeType,
+        fallbackBaseName: "whatsapp-audio",
+      });
+
+      uploadedMediaStoragePath = storedMedia.storagePath;
+
+      inserted = await insertIncomingAudioMessage({
+        supabase,
+        conversationId: conversation.id,
+        inbox,
+        messageId: resolvedMessageId,
+        fromPhone: resolvedFromPhone,
+        phoneNumberId: resolvedPhoneNumberId,
+        contactName: extracted.contactName,
+        whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
+        displayPhoneNumber: extracted.displayPhoneNumber,
+        mediaId: extracted.audioMediaId,
+        mimeType: storedMedia.mimeType || extracted.audioMimeType,
+        sha256: extracted.audioSha256 || storedMedia.sha256,
+        isVoiceMessage: extracted.audioVoice,
+        storageBucket: storedMedia.storageBucket,
+        storagePath: storedMedia.storagePath,
+        originalFileName: storedMedia.originalFileName,
+        sizeBytes: storedMedia.sizeBytes,
+      });
+    } else if (extracted.rawMessageType === "video") {
+      if (!extracted.videoMediaId) {
+        throw new Error("missing_video_media_id");
+      }
+
+      const storedMedia = await downloadAndStoreWhatsappInboundMedia({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        conversationId: conversation.id,
+        mediaId: extracted.videoMediaId,
+        mediaKind: "video",
+        preferredMimeType: extracted.videoMimeType,
+        fallbackBaseName: "whatsapp-video",
+      });
+
+      uploadedMediaStoragePath = storedMedia.storagePath;
+
+      inserted = await insertIncomingVideoMessage({
+        supabase,
+        conversationId: conversation.id,
+        inbox,
+        messageId: resolvedMessageId,
+        fromPhone: resolvedFromPhone,
+        phoneNumberId: resolvedPhoneNumberId,
+        contactName: extracted.contactName,
+        whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
+        displayPhoneNumber: extracted.displayPhoneNumber,
+        mediaId: extracted.videoMediaId,
+        mimeType: storedMedia.mimeType || extracted.videoMimeType,
+        sha256: extracted.videoSha256 || storedMedia.sha256,
+        caption: extracted.videoCaption,
+        storageBucket: storedMedia.storageBucket,
+        storagePath: storedMedia.storagePath,
+        originalFileName: storedMedia.originalFileName,
+        sizeBytes: storedMedia.sizeBytes,
+      });
+    } else if (extracted.rawMessageType === "document") {
+      if (!extracted.documentMediaId) {
+        throw new Error("missing_document_media_id");
+      }
+
+      const storedMedia = await downloadAndStoreWhatsappInboundMedia({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        conversationId: conversation.id,
+        mediaId: extracted.documentMediaId,
+        mediaKind: "document",
+        preferredMimeType: extracted.documentMimeType,
+        preferredFileName: extracted.documentFilename,
+        fallbackBaseName: "whatsapp-document",
+      });
+
+      uploadedMediaStoragePath = storedMedia.storagePath;
+
+      inserted = await insertIncomingDocumentMessage({
+        supabase,
+        conversationId: conversation.id,
+        inbox,
+        messageId: resolvedMessageId,
+        fromPhone: resolvedFromPhone,
+        phoneNumberId: resolvedPhoneNumberId,
+        contactName: extracted.contactName,
+        whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
+        displayPhoneNumber: extracted.displayPhoneNumber,
+        mediaId: extracted.documentMediaId,
+        mimeType: storedMedia.mimeType || extracted.documentMimeType,
+        sha256: extracted.documentSha256 || storedMedia.sha256,
+        caption: extracted.documentCaption,
+        fileName: extracted.documentFilename || storedMedia.originalFileName,
+        storageBucket: storedMedia.storageBucket,
+        storagePath: storedMedia.storagePath,
+        originalFileName: storedMedia.originalFileName,
+        sizeBytes: storedMedia.sizeBytes,
       });
     } else {
       inserted = await insertIncomingMessage({
@@ -922,7 +1249,12 @@ async function processSingleInboxRow(
 
     await markInboxProcessed(supabase, inbox.id);
 
-    if (extracted.rawMessageType === "image") {
+    if (
+      extracted.rawMessageType === "image" ||
+      extracted.rawMessageType === "audio" ||
+      extracted.rawMessageType === "video" ||
+      extracted.rawMessageType === "document"
+    ) {
       return {
         inbox_id: inbox.id,
         external_event_id: inbox.external_event_id,
@@ -930,7 +1262,7 @@ async function processSingleInboxRow(
         message_id: inserted.id || null,
         lead_id: lead.id,
         conversation_id: conversation.id,
-        detail: "image_saved_in_crm",
+        detail: `${extracted.rawMessageType}_saved_in_crm`,
       };
     }
 
@@ -976,11 +1308,11 @@ async function processSingleInboxRow(
         resolvedMessageId,
       );
 
-      if (uploadedImageStoragePath) {
+      if (uploadedMediaStoragePath) {
         try {
-          await removeWhatsappInboundStoredImage({
+          await removeWhatsappInboundStoredMedia({
             supabase,
-            storagePath: uploadedImageStoragePath,
+            storagePath: uploadedMediaStoragePath,
           });
         } catch {
           // Mantemos o resultado principal e evitamos falhar o fluxo por cleanup.
@@ -1001,11 +1333,11 @@ async function processSingleInboxRow(
       };
     }
 
-    if (uploadedImageStoragePath) {
+    if (uploadedMediaStoragePath) {
       try {
-        await removeWhatsappInboundStoredImage({
+        await removeWhatsappInboundStoredMedia({
           supabase,
-          storagePath: uploadedImageStoragePath,
+          storagePath: uploadedMediaStoragePath,
         });
       } catch {
         // Mantemos o erro principal e evitamos mascarar o motivo da falha.

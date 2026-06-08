@@ -11,16 +11,25 @@ type MetaMediaMetadataResponse = {
   file_size?: number;
 };
 
-export type DownloadAndStoreWhatsappInboundImageInput = {
+export type WhatsappInboundMediaKind =
+  | "image"
+  | "audio"
+  | "video"
+  | "document";
+
+export type DownloadAndStoreWhatsappInboundMediaInput = {
   supabase: SupabaseClient;
   organizationId: string;
   storeId: string;
   conversationId: string;
   mediaId: string;
+  mediaKind: WhatsappInboundMediaKind;
   preferredMimeType?: string | null;
+  preferredFileName?: string | null;
+  fallbackBaseName?: string | null;
 };
 
-export type DownloadAndStoreWhatsappInboundImageResult = {
+export type DownloadAndStoreWhatsappInboundMediaResult = {
   storageBucket: string;
   storagePath: string;
   mimeType: string;
@@ -42,11 +51,43 @@ function normalizeMimeType(value: string | null | undefined) {
   return String(value || "").split(";")[0].trim().toLowerCase();
 }
 
-function getImageExtensionFromMimeType(value: string | null | undefined) {
+function getFileExtensionFromMimeType(value: string | null | undefined) {
   const mimeType = normalizeMimeType(value);
+
   if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "jpg";
   if (mimeType === "image/png") return "png";
   if (mimeType === "image/webp") return "webp";
+  if (mimeType === "audio/mpeg") return "mp3";
+  if (mimeType === "audio/mp4") return "m4a";
+  if (mimeType === "audio/ogg") return "ogg";
+  if (mimeType === "audio/webm") return "webm";
+  if (mimeType === "audio/wav" || mimeType === "audio/x-wav") return "wav";
+  if (mimeType === "video/mp4") return "mp4";
+  if (mimeType === "video/webm") return "webm";
+  if (mimeType === "video/quicktime") return "mov";
+  if (mimeType === "application/pdf") return "pdf";
+  if (mimeType === "application/msword") return "doc";
+  if (
+    mimeType ===
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ) {
+    return "docx";
+  }
+  if (mimeType === "application/vnd.ms-excel") return "xls";
+  if (
+    mimeType ===
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  ) {
+    return "xlsx";
+  }
+  if (mimeType === "application/vnd.ms-powerpoint") return "ppt";
+  if (
+    mimeType ===
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  ) {
+    return "pptx";
+  }
+
   return "bin";
 }
 
@@ -98,6 +139,31 @@ function buildStoragePath(args: {
   ].join("/");
 }
 
+function buildDefaultBaseName(kind: WhatsappInboundMediaKind) {
+  if (kind === "audio") return "whatsapp-audio";
+  if (kind === "video") return "whatsapp-video";
+  if (kind === "document") return "whatsapp-document";
+  return "whatsapp-image";
+}
+
+function buildOriginalFileName(args: {
+  mediaKind: WhatsappInboundMediaKind;
+  mimeType: string;
+  preferredFileName?: string | null;
+  fallbackBaseName?: string | null;
+}) {
+  const preferred = String(args.preferredFileName || "").trim();
+  if (preferred) {
+    return sanitizeFileName(preferred);
+  }
+
+  const extension = getFileExtensionFromMimeType(args.mimeType);
+  const baseName =
+    String(args.fallbackBaseName || "").trim() || buildDefaultBaseName(args.mediaKind);
+
+  return sanitizeFileName(`${baseName}.${extension}`);
+}
+
 async function fetchMetaMediaMetadata(args: {
   accessToken: string;
   mediaId: string;
@@ -139,7 +205,8 @@ async function fetchMetaMediaMetadata(args: {
         ? payloadRecord.url.trim()
         : undefined,
     mime_type:
-      typeof payloadRecord.mime_type === "string" && payloadRecord.mime_type.trim()
+      typeof payloadRecord.mime_type === "string" &&
+      payloadRecord.mime_type.trim()
         ? payloadRecord.mime_type.trim()
         : undefined,
     sha256:
@@ -147,7 +214,8 @@ async function fetchMetaMediaMetadata(args: {
         ? payloadRecord.sha256.trim()
         : undefined,
     file_size:
-      typeof payloadRecord.file_size === "number" && Number.isFinite(payloadRecord.file_size)
+      typeof payloadRecord.file_size === "number" &&
+      Number.isFinite(payloadRecord.file_size)
         ? payloadRecord.file_size
         : undefined,
   };
@@ -177,16 +245,16 @@ async function downloadMetaMediaBinary(args: {
   };
 }
 
-export async function removeWhatsappInboundStoredImage(args: {
+export async function removeWhatsappInboundStoredMedia(args: {
   supabase: SupabaseClient;
   storagePath: string;
 }) {
   await args.supabase.storage.from(STORAGE_BUCKET).remove([args.storagePath]);
 }
 
-export async function downloadAndStoreWhatsappInboundImage(
-  args: DownloadAndStoreWhatsappInboundImageInput
-): Promise<DownloadAndStoreWhatsappInboundImageResult> {
+export async function downloadAndStoreWhatsappInboundMedia(
+  args: DownloadAndStoreWhatsappInboundMediaInput
+): Promise<DownloadAndStoreWhatsappInboundMediaResult> {
   const accessToken = getMetaWhatsappAccessToken();
   const mediaMetadata = await fetchMetaMediaMetadata({
     accessToken,
@@ -195,7 +263,7 @@ export async function downloadAndStoreWhatsappInboundImage(
   const mediaUrl = String(mediaMetadata.url || "").trim();
 
   if (!mediaUrl) {
-    throw new Error("Meta nao retornou URL de download para a imagem.");
+    throw new Error("Meta nao retornou URL de download para a media.");
   }
 
   const downloaded = await downloadMetaMediaBinary({
@@ -207,10 +275,14 @@ export async function downloadAndStoreWhatsappInboundImage(
     normalizeMimeType(args.preferredMimeType) ||
     normalizeMimeType(mediaMetadata.mime_type) ||
     downloaded.contentType ||
-    "image/jpeg";
+    "application/octet-stream";
 
-  const extension = getImageExtensionFromMimeType(mimeType);
-  const originalFileName = `whatsapp-image.${extension}`;
+  const originalFileName = buildOriginalFileName({
+    mediaKind: args.mediaKind,
+    mimeType,
+    preferredFileName: args.preferredFileName,
+    fallbackBaseName: args.fallbackBaseName,
+  });
   const storagePath = buildStoragePath({
     organizationId: args.organizationId,
     storeId: args.storeId,
@@ -226,7 +298,7 @@ export async function downloadAndStoreWhatsappInboundImage(
     });
 
   if (error) {
-    throw new Error(`Falha ao salvar imagem recebida no Storage: ${error.message}`);
+    throw new Error(`Falha ao salvar media recebida no Storage: ${error.message}`);
   }
 
   return {
