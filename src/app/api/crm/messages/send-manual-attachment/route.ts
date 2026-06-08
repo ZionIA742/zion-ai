@@ -52,6 +52,10 @@ type LeadRow = {
   store_id: string | null;
 };
 
+type ExternalIntegrationRow = {
+  id: string;
+};
+
 function createSupabaseAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -180,6 +184,64 @@ function buildJsonResponse(body: unknown, status = 200) {
       "Cache-Control": "no-store",
     },
   });
+}
+
+async function isRealWhatsappConversation(args: {
+  supabase: ReturnType<typeof createSupabaseAdminClient>;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}) {
+  const whatsappMetadataFilter: Record<string, unknown> = {
+    source: "meta_whatsapp_webhook",
+    channel: "whatsapp",
+    external_channel: "whatsapp",
+  };
+
+  const [recentWhatsappIncoming, activeIntegration] = await Promise.all([
+    args.supabase
+      .from("messages")
+      .select("id")
+      .eq("conversation_id", args.conversationId)
+      .eq("sender", "user")
+      .eq("direction", "incoming")
+      .contains("metadata", whatsappMetadataFilter)
+      .limit(1),
+    args.supabase
+      .from("external_integrations")
+      .select("id")
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("provider", "whatsapp")
+      .eq("is_active", true)
+      .eq("status", "active")
+      .limit(1),
+  ]);
+
+  if (recentWhatsappIncoming.error) {
+    throw new Error(
+      `Falha ao verificar origem WhatsApp da conversa: ${recentWhatsappIncoming.error.message}`
+    );
+  }
+
+  if (activeIntegration.error) {
+    throw new Error(
+      `Falha ao verificar integracao WhatsApp ativa: ${activeIntegration.error.message}`
+    );
+  }
+
+  const hasRecentWhatsappIncoming = Boolean(
+    Array.isArray(recentWhatsappIncoming.data) &&
+      recentWhatsappIncoming.data[0] &&
+      recentWhatsappIncoming.data[0].id
+  );
+
+  const hasActiveIntegration = Boolean(
+    Array.isArray(activeIntegration.data) &&
+      (activeIntegration.data[0] as ExternalIntegrationRow | undefined)?.id
+  );
+
+  return hasRecentWhatsappIncoming && hasActiveIntegration;
 }
 
 export async function POST(request: Request) {
@@ -369,6 +431,16 @@ export async function POST(request: Request) {
       );
     }
 
+    const isWhatsappReal =
+      attachmentKind === "image"
+        ? await isRealWhatsappConversation({
+            supabase,
+            organizationId,
+            storeId: resolvedStoreId,
+            conversationId,
+          })
+        : false;
+
     const storagePath = buildStoragePath({
       organizationId,
       storeId: resolvedStoreId,
@@ -398,6 +470,15 @@ export async function POST(request: Request) {
     }
 
     const metadata = {
+      ...(isWhatsappReal
+        ? {
+            source: "panel",
+            channel: "whatsapp",
+            external_channel: "whatsapp",
+            outbound_origin: "crm_manual_image",
+            whatsapp_detected_from_conversation: true,
+          }
+        : {}),
       media_origin: "store_user",
       source_channel: "panel_manual",
       storage_bucket: STORAGE_BUCKET,
@@ -412,7 +493,7 @@ export async function POST(request: Request) {
       sent_by: "panel_user",
       sent_by_user_id: user.id,
       pillar: "pilar_10_multimodal",
-      send_external: false,
+      send_external: isWhatsappReal,
     };
 
     const { data: insertData, error: insertError } = await supabase.rpc(

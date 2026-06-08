@@ -38,7 +38,7 @@ as $function$
       m.sender = 'ai'
       or (
         m.sender = 'human'
-        and coalesce(m.metadata->>'outbound_origin', '') = 'crm_manual_text'
+        and coalesce(m.metadata->>'outbound_origin', '') in ('crm_manual_text', 'crm_manual_image')
       )
     )
     and m.direction = 'outgoing'

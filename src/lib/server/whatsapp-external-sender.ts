@@ -88,6 +88,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const META_WHATSAPP_ACCESS_TOKEN = process.env.META_WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_GRAPH_API_VERSION =
   process.env.WHATSAPP_GRAPH_API_VERSION || "v23.0";
+const OUTBOUND_IMAGE_SIGNED_URL_EXPIRATION_SECONDS = 300;
 
 function getSupabaseAdmin(): SupabaseClient {
   if (!SUPABASE_URL) {
@@ -160,6 +161,18 @@ function normalizeMetadata(
 ): Record<string, unknown> {
   if (isRecord(value)) return value;
   return {};
+}
+
+function isHttpUrl(value: string | null | undefined): boolean {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+function readMetadataText(
+  metadata: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function resolveWhatsappAccessToken(
@@ -453,16 +466,56 @@ async function sendWhatsappImageMessage(params: {
   return messageId;
 }
 
+async function resolveImageOutboundUrl(args: {
+  supabase: SupabaseClient;
+  message: PendingExternalMessage;
+}): Promise<string> {
+  if (isHttpUrl(args.message.mediaUrl)) {
+    return String(args.message.mediaUrl || "").trim();
+  }
+
+  const storageBucket = readMetadataText(args.message.metadata, "storage_bucket");
+  const storagePath =
+    readMetadataText(args.message.metadata, "storage_path") ||
+    (args.message.mediaUrl && !isHttpUrl(args.message.mediaUrl)
+      ? args.message.mediaUrl.trim()
+      : null);
+
+  if (!storageBucket || !storagePath) {
+    throw new Error(
+      `Mensagem ${args.message.id} sem storage_bucket/storage_path validos para gerar link temporario da imagem`
+    );
+  }
+
+  const { data, error } = await args.supabase.storage
+    .from(storageBucket)
+    .createSignedUrl(storagePath, OUTBOUND_IMAGE_SIGNED_URL_EXPIRATION_SECONDS);
+
+  if (error || !data?.signedUrl) {
+    throw new Error(
+      `Mensagem ${args.message.id} falhou ao gerar link temporario da imagem`
+    );
+  }
+
+  return data.signedUrl;
+}
+
 async function sendSinglePendingMessage(
+  supabase: SupabaseClient,
   integration: WhatsappIntegration,
   message: PendingExternalMessage,
 ): Promise<string> {
   if (message.messageType === "image") {
+    const imageUrl = await resolveImageOutboundUrl({
+      supabase,
+      message,
+    });
+
     return sendWhatsappImageMessage({
       accessToken: integration.accessToken,
       phoneNumberId: integration.phoneNumberId,
       to: message.phone,
-      imageUrl: message.mediaUrl || "",
+      imageUrl,
       caption: message.content,
     });
   }
@@ -513,6 +566,7 @@ export async function processWhatsappPendingMessages(
 
     try {
       const whatsappMessageId = await sendSinglePendingMessage(
+        supabase,
         integration,
         message,
       );
