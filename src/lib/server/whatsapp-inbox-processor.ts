@@ -58,6 +58,18 @@ type MessageRow = {
   external_message_id: string | null;
 };
 
+type StatusMessageRow = {
+  id: string;
+  organization_id: string;
+  conversation_id: string;
+  lead_id: string | null;
+  store_id: string | null;
+  external_message_id: string | null;
+  delivered_at: string | null;
+  read_at: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
 type MetaTextPayload = {
   body?: unknown;
 };
@@ -109,6 +121,8 @@ type StoredInboxPayload = {
   whatsapp_business_account_id?: unknown;
   display_phone_number?: unknown;
   message?: MetaMessagePayload | null;
+  status?: Record<string, unknown> | null;
+  change?: Record<string, unknown> | null;
   raw_payload?: {
     entry?: Array<{
       changes?: Array<{
@@ -309,27 +323,240 @@ async function listPendingInboxRows(
   storeId: string,
   limit: number,
 ) {
-  const { data, error } = await supabase
-    .from("channel_whatsapp_inbox")
-    .select(
-      "id, organization_id, store_id, provider, external_event_id, payload, received_at, processed_at, processing_error",
-    )
-    .eq("organization_id", organizationId)
-    .eq("store_id", storeId)
-    .is("processed_at", null)
-    .is("processing_error", null)
-    .contains("payload", {
-      source: "meta_whatsapp_webhook",
-      event_kind: "message",
-    })
-    .order("received_at", { ascending: true })
-    .limit(limit);
+  const buildBaseQuery = () =>
+    supabase
+      .from("channel_whatsapp_inbox")
+      .select(
+        "id, organization_id, store_id, provider, external_event_id, payload, received_at, processed_at, processing_error",
+      )
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .is("processed_at", null)
+      .is("processing_error", null)
+      .contains("payload", {
+        source: "meta_whatsapp_webhook",
+      })
+      .order("received_at", { ascending: true })
+      .limit(limit);
 
-  if (error) {
-    throw new Error(`Falha ao carregar inbox pendente: ${error.message}`);
+  const [{ data: messageRows, error: messageError }, { data: statusRows, error: statusError }] =
+    await Promise.all([
+      buildBaseQuery().contains("payload", {
+        source: "meta_whatsapp_webhook",
+        event_kind: "message",
+      }),
+      buildBaseQuery().contains("payload", {
+        source: "meta_whatsapp_webhook",
+        event_kind: "status",
+      }),
+    ]);
+
+  if (messageError) {
+    throw new Error(`Falha ao carregar inbox pendente de mensagens: ${messageError.message}`);
   }
 
-  return (data || []) as InboxRow[];
+  if (statusError) {
+    throw new Error(`Falha ao carregar inbox pendente de status: ${statusError.message}`);
+  }
+
+  const rows = [...((messageRows || []) as InboxRow[]), ...((statusRows || []) as InboxRow[])]
+    .sort((a, b) => {
+      const left = Date.parse(a.received_at || "") || 0;
+      const right = Date.parse(b.received_at || "") || 0;
+      return left - right;
+    })
+    .slice(0, limit);
+
+  return rows;
+}
+
+function getMessageMetadata(value: Record<string, unknown> | null | undefined) {
+  return value && isRecord(value) ? { ...value } : {};
+}
+
+function normalizeWhatsappStatus(value: unknown) {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (
+    normalized === "sent" ||
+    normalized === "delivered" ||
+    normalized === "read" ||
+    normalized === "failed"
+  ) {
+    return normalized as "sent" | "delivered" | "read" | "failed";
+  }
+
+  return null;
+}
+
+function getWhatsappStatusRank(value: string | null | undefined) {
+  if (value === "sent") return 1;
+  if (value === "delivered") return 2;
+  if (value === "read") return 3;
+  return 0;
+}
+
+function resolveWhatsappStatusTimestamp(value: unknown) {
+  const rawValue = String(value || "").trim();
+
+  if (/^\d+$/.test(rawValue)) {
+    const unixSeconds = Number(rawValue);
+    if (Number.isFinite(unixSeconds) && unixSeconds > 0) {
+      return new Date(unixSeconds * 1000).toISOString();
+    }
+  }
+
+  const parsed = Date.parse(rawValue);
+  if (Number.isFinite(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+
+  return new Date().toISOString();
+}
+
+function buildStatusProcessingError(statusValue: string) {
+  return `invalid_status_event: ${statusValue}`;
+}
+
+function extractIncomingStatus(payload: StoredInboxPayload) {
+  const statusNode = isRecord(payload.status) ? payload.status : null;
+  const statusId = asTrimmedString(statusNode?.id);
+  const statusValue = normalizeWhatsappStatus(statusNode?.status);
+  const rawStatusValue = asTrimmedString(statusNode?.status);
+
+  return {
+    statusId,
+    statusValue,
+    rawStatusValue,
+    statusTimestampIso: resolveWhatsappStatusTimestamp(statusNode?.timestamp),
+    recipientId: asTrimmedString(statusNode?.recipient_id),
+    conversation: isRecord(statusNode?.conversation) ? statusNode.conversation : null,
+    pricing: isRecord(statusNode?.pricing) ? statusNode.pricing : null,
+    errors: Array.isArray(statusNode?.errors)
+      ? statusNode.errors
+      : statusNode?.errors && isRecord(statusNode.errors)
+        ? [statusNode.errors]
+        : null,
+    rawStatusPayload: statusNode,
+  };
+}
+
+async function findMessageByExternalIdForStatus(
+  supabase: SupabaseClient,
+  organizationId: string,
+  externalMessageId: string,
+) {
+  const { data, error } = await supabase
+    .from("messages")
+    .select(
+      "id, organization_id, conversation_id, lead_id, store_id, external_message_id, delivered_at, read_at, metadata",
+    )
+    .eq("organization_id", organizationId)
+    .eq("external_message_id", externalMessageId)
+    .is("deleted_at", null)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Falha ao buscar message de status por external_message_id: ${error.message}`,
+    );
+  }
+
+  return (data as StatusMessageRow | null) ?? null;
+}
+
+async function updateMessageWhatsappStatus(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  message: StatusMessageRow;
+  statusValue: "sent" | "delivered" | "read" | "failed";
+  statusTimestampIso: string;
+  recipientId: string | null;
+  conversation: Record<string, unknown> | null;
+  pricing: Record<string, unknown> | null;
+  errors: unknown[] | null;
+  rawStatusPayload: Record<string, unknown> | null;
+}) {
+  const currentMetadata = getMessageMetadata(args.message.metadata);
+  const currentStatus = normalizeWhatsappStatus(currentMetadata.whatsapp_status);
+  const currentStatusRank = getWhatsappStatusRank(currentStatus);
+  const incomingStatusRank = getWhatsappStatusRank(args.statusValue);
+  const nextMetadata: Record<string, unknown> = {
+    ...currentMetadata,
+    whatsapp_last_status: args.statusValue,
+    whatsapp_last_status_at: args.statusTimestampIso,
+    whatsapp_last_status_payload: args.rawStatusPayload,
+  };
+  const updatePayload: Record<string, unknown> = {
+    metadata: nextMetadata,
+  };
+
+  if (args.recipientId) {
+    nextMetadata.whatsapp_recipient_id = args.recipientId;
+  }
+
+  if (args.conversation) {
+    nextMetadata.whatsapp_conversation = args.conversation;
+  }
+
+  if (args.pricing) {
+    nextMetadata.whatsapp_pricing = args.pricing;
+  }
+
+  if (args.statusValue === "sent") {
+    nextMetadata.whatsapp_sent_at = args.statusTimestampIso;
+    if (currentStatusRank < incomingStatusRank) {
+      nextMetadata.whatsapp_status = "sent";
+    }
+  }
+
+  if (args.statusValue === "delivered") {
+    nextMetadata.whatsapp_delivered_at = args.statusTimestampIso;
+    if (!args.message.delivered_at) {
+      updatePayload.delivered_at = args.statusTimestampIso;
+    }
+
+    if (currentStatus !== "read") {
+      nextMetadata.whatsapp_status = "delivered";
+    }
+  }
+
+  if (args.statusValue === "read") {
+    nextMetadata.whatsapp_read_at = args.statusTimestampIso;
+    nextMetadata.whatsapp_status = "read";
+
+    if (!args.message.delivered_at) {
+      updatePayload.delivered_at = args.statusTimestampIso;
+    }
+
+    if (!args.message.read_at) {
+      updatePayload.read_at = args.statusTimestampIso;
+    }
+  }
+
+  if (args.statusValue === "failed") {
+    nextMetadata.whatsapp_failed_at = args.statusTimestampIso;
+    if (args.errors) {
+      nextMetadata.whatsapp_status_errors = args.errors;
+      nextMetadata.whatsapp_error = args.errors;
+    }
+
+    if (currentStatus !== "delivered" && currentStatus !== "read") {
+      nextMetadata.whatsapp_status = "failed";
+    }
+  }
+
+  const { error } = await args.supabase
+    .from("messages")
+    .update(updatePayload)
+    .eq("id", args.message.id)
+    .eq("organization_id", args.organizationId)
+    .is("deleted_at", null);
+
+  if (error) {
+    throw new Error(`Falha ao atualizar status WhatsApp da message: ${error.message}`);
+  }
 }
 
 async function markInboxProcessed(
@@ -932,6 +1159,80 @@ async function dispatchAiSalesReplyForConversation(args: {
   };
 }
 
+async function processStatusInboxRow(
+  supabase: SupabaseClient,
+  inbox: InboxRow,
+  payload: StoredInboxPayload,
+): Promise<ProcessorResultItem> {
+  const extracted = extractIncomingStatus(payload);
+
+  if (!extracted.statusId) {
+    const detail = buildStatusProcessingError("missing_status_id");
+    await markInboxError(supabase, inbox.id, detail);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "skipped",
+      detail,
+    };
+  }
+
+  if (!extracted.statusValue) {
+    const detail = buildStatusProcessingError(
+      extracted.rawStatusValue || "missing_status_value",
+    );
+    await markInboxError(supabase, inbox.id, detail);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "skipped",
+      detail,
+    };
+  }
+
+  const message = await findMessageByExternalIdForStatus(
+    supabase,
+    inbox.organization_id,
+    extracted.statusId,
+  );
+
+  if (!message?.id) {
+    const detail = "status_message_not_found_by_external_message_id";
+    await markInboxError(supabase, inbox.id, detail);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "failed",
+      detail,
+    };
+  }
+
+  await updateMessageWhatsappStatus({
+    supabase,
+    organizationId: inbox.organization_id,
+    message,
+    statusValue: extracted.statusValue,
+    statusTimestampIso: extracted.statusTimestampIso,
+    recipientId: extracted.recipientId,
+    conversation: extracted.conversation,
+    pricing: extracted.pricing,
+    errors: extracted.errors,
+    rawStatusPayload: extracted.rawStatusPayload,
+  });
+
+  await markInboxProcessed(supabase, inbox.id);
+
+  return {
+    inbox_id: inbox.id,
+    external_event_id: inbox.external_event_id,
+    status: "succeeded",
+    message_id: message.id,
+    lead_id: message.lead_id,
+    conversation_id: message.conversation_id,
+    detail: `status_applied_${extracted.statusValue}`,
+  };
+}
+
 async function processSingleInboxRow(
   supabase: SupabaseClient,
   inbox: InboxRow,
@@ -953,7 +1254,22 @@ async function processSingleInboxRow(
 
   const source = asTrimmedString(payload.source);
   const eventKind = asTrimmedString(payload.event_kind);
-  if (source !== "meta_whatsapp_webhook" || eventKind !== "message") {
+  if (source !== "meta_whatsapp_webhook") {
+    const detail = "unsupported_inbox_payload";
+    await markInboxError(supabase, inbox.id, detail);
+    return {
+      inbox_id: inbox.id,
+      external_event_id: inbox.external_event_id,
+      status: "skipped",
+      detail,
+    };
+  }
+
+  if (eventKind === "status") {
+    return processStatusInboxRow(supabase, inbox, payload);
+  }
+
+  if (eventKind !== "message") {
     const detail = "unsupported_inbox_payload";
     await markInboxError(supabase, inbox.id, detail);
     return {
