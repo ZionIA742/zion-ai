@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
 
 type Json =
   | string
@@ -35,8 +36,14 @@ type ConversationRow = {
   organization_id: string;
   lead_id: string;
   status: string | null;
+  is_human_active?: boolean | null;
   last_message_at: string | null;
   created_at: string | null;
+};
+
+type ConversationAiWindowStateRow = {
+  conversation_id: string;
+  next_resume_at: string | null;
 };
 
 type MessageRow = {
@@ -94,6 +101,13 @@ export type ProcessWhatsappInboxInput = {
 };
 
 type ProcessorStatus = "succeeded" | "failed" | "skipped";
+type ProcessorAiStatus =
+  | "called"
+  | "skipped_human_active"
+  | "skipped_ai_paused"
+  | "skipped_not_text"
+  | "skipped_duplicate"
+  | "failed";
 
 type ProcessorResultItem = {
   inbox_id: string;
@@ -103,6 +117,9 @@ type ProcessorResultItem = {
   lead_id?: string | null;
   conversation_id?: string | null;
   detail?: string;
+  ai_status?: ProcessorAiStatus;
+  ai_message_id?: string | null;
+  ai_error?: string | null;
 };
 
 export type ProcessWhatsappInboxResult = {
@@ -162,11 +179,22 @@ function safeProcessingError(value: unknown): string {
   return truncateText(text.trim() || "processing_failed", 1000);
 }
 
+function safeAiError(value: unknown): string {
+  return truncateText(safeProcessingError(value), 300);
+}
+
 function isDuplicateError(error: { code?: string | null; message?: string | null }) {
   const code = String(error.code || "").trim();
   const message = String(error.message || "").toLowerCase();
 
   return code === "23505" || message.includes("duplicate key");
+}
+
+function isFutureIso(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return false;
+  return parsed > Date.now();
 }
 
 function extractContactName(payload: StoredInboxPayload): string | null {
@@ -368,7 +396,7 @@ async function findConversation(
 ) {
   let query = supabase
     .from("conversations")
-    .select("id, organization_id, lead_id, status, last_message_at, created_at")
+    .select("id, organization_id, lead_id, status, is_human_active, last_message_at, created_at")
     .eq("organization_id", organizationId)
     .eq("lead_id", leadId)
     .order("last_message_at", { ascending: false, nullsFirst: false })
@@ -400,7 +428,7 @@ async function createConversation(
       lead_id: leadId,
       status: "active",
     })
-    .select("id, organization_id, lead_id, status, last_message_at, created_at")
+    .select("id, organization_id, lead_id, status, is_human_active, last_message_at, created_at")
     .maybeSingle();
 
   if (error) {
@@ -495,6 +523,134 @@ async function insertIncomingMessage(args: {
   return row as InsertMessageResult;
 }
 
+async function loadConversationAutomationState(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  conversationId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("conversations")
+    .select("id, organization_id, lead_id, status, is_human_active, last_message_at, created_at")
+    .eq("id", args.conversationId)
+    .eq("organization_id", args.organizationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao consultar estado atual da conversa: ${error.message}`);
+  }
+
+  return (data as ConversationRow | null) ?? null;
+}
+
+async function loadConversationAiWindowState(args: {
+  supabase: SupabaseClient;
+  conversationId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("conversation_ai_window_state")
+    .select("conversation_id, next_resume_at")
+    .eq("conversation_id", args.conversationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao consultar janela da IA da conversa: ${error.message}`);
+  }
+
+  return (data as ConversationAiWindowStateRow | null) ?? null;
+}
+
+async function dispatchAiSalesReplyForConversation(args: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}) {
+  const conversationState = await loadConversationAutomationState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    conversationId: args.conversationId,
+  });
+
+  if (!conversationState?.id) {
+    return {
+      ai_status: "failed" as const,
+      ai_error: "conversation_not_found_after_insert",
+      ai_message_id: null,
+    };
+  }
+
+  if (String(conversationState.status || "").trim() !== "active") {
+    return {
+      ai_status: "failed" as const,
+      ai_error: "conversation_not_active",
+      ai_message_id: null,
+    };
+  }
+
+  if (conversationState.is_human_active === true) {
+    return {
+      ai_status: "skipped_human_active" as const,
+      ai_error: null,
+      ai_message_id: null,
+    };
+  }
+
+  const windowState = await loadConversationAiWindowState({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+  });
+
+  if (isFutureIso(windowState?.next_resume_at)) {
+    return {
+      ai_status: "skipped_ai_paused" as const,
+      ai_error: null,
+      ai_message_id: null,
+    };
+  }
+
+  const aiResult = await generateAndSaveAiSalesReply({
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+  });
+
+  if (aiResult.ok) {
+    return {
+      ai_status: "called" as const,
+      ai_error: null,
+      ai_message_id: aiResult.messageId ?? null,
+    };
+  }
+
+  if (
+    aiResult.error === "HUMAN_HANDOFF_ACTIVE" ||
+    aiResult.error === "HUMAN_ACTIVE"
+  ) {
+    return {
+      ai_status: "skipped_human_active" as const,
+      ai_error: null,
+      ai_message_id: null,
+    };
+  }
+
+  if (
+    aiResult.error === "AI_REPLY_ALREADY_EXISTS_FOR_LATEST_CUSTOMER_MESSAGE" ||
+    aiResult.error === "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE"
+  ) {
+    return {
+      ai_status: "skipped_duplicate" as const,
+      ai_error: null,
+      ai_message_id: null,
+    };
+  }
+
+  return {
+    ai_status: "failed" as const,
+    ai_error: safeAiError(aiResult.message || aiResult.error || "ai_reply_failed"),
+    ai_message_id: null,
+  };
+}
+
 async function processSingleInboxRow(
   supabase: SupabaseClient,
   inbox: InboxRow,
@@ -570,6 +726,7 @@ async function processSingleInboxRow(
       external_event_id: inbox.external_event_id,
       status: "skipped",
       detail,
+      ai_status: "skipped_not_text",
     };
   }
 
@@ -610,6 +767,7 @@ async function processSingleInboxRow(
       message_id: existingMessage.id,
       lead_id: existingMessage.lead_id,
       conversation_id: existingMessage.conversation_id,
+      ai_status: "skipped_duplicate",
     };
   }
 
@@ -644,6 +802,30 @@ async function processSingleInboxRow(
 
     await markInboxProcessed(supabase, inbox.id);
 
+    let aiDispatchResult: Pick<
+      ProcessorResultItem,
+      "ai_status" | "ai_message_id" | "ai_error"
+    > = {
+      ai_status: "failed",
+      ai_message_id: null,
+      ai_error: "ai_dispatch_not_attempted",
+    };
+
+    try {
+      aiDispatchResult = await dispatchAiSalesReplyForConversation({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        conversationId: conversation.id,
+      });
+    } catch (aiError) {
+      aiDispatchResult = {
+        ai_status: "failed",
+        ai_message_id: null,
+        ai_error: safeAiError(aiError),
+      };
+    }
+
     return {
       inbox_id: inbox.id,
       external_event_id: inbox.external_event_id,
@@ -651,6 +833,7 @@ async function processSingleInboxRow(
       message_id: inserted.id || null,
       lead_id: lead.id,
       conversation_id: conversation.id,
+      ...aiDispatchResult,
     };
   } catch (error) {
     if (
@@ -671,6 +854,7 @@ async function processSingleInboxRow(
         message_id: duplicate?.id || null,
         lead_id: duplicate?.lead_id || lead.id,
         conversation_id: duplicate?.conversation_id || conversation.id,
+        ai_status: "skipped_duplicate",
       };
     }
 
