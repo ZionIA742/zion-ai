@@ -1,5 +1,9 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
+import {
+  downloadAndStoreWhatsappInboundImage,
+  removeWhatsappInboundStoredImage,
+} from "@/lib/server/whatsapp-inbound-media";
 
 type Json =
   | string
@@ -58,11 +62,19 @@ type MetaTextPayload = {
   body?: unknown;
 };
 
+type MetaImagePayload = {
+  id?: unknown;
+  mime_type?: unknown;
+  sha256?: unknown;
+  caption?: unknown;
+};
+
 type MetaMessagePayload = {
   id?: unknown;
   from?: unknown;
   type?: unknown;
   text?: MetaTextPayload | null;
+  image?: MetaImagePayload | null;
 };
 
 type StoredInboxPayload = {
@@ -217,13 +229,14 @@ function extractContactName(payload: StoredInboxPayload): string | null {
   return null;
 }
 
-function extractMessageText(payload: StoredInboxPayload) {
+function extractIncomingMessage(payload: StoredInboxPayload) {
   const message = isRecord(payload.message) ? payload.message : null;
   const messageId = asTrimmedString(message?.id);
   const fromPhoneRaw = asTrimmedString(message?.from);
   const rawMessageType = asTrimmedString(message?.type);
   const textNode = isRecord(message?.text) ? message?.text : null;
   const textBody = asTrimmedString(textNode?.body);
+  const imageNode = isRecord(message?.image) ? message?.image : null;
   const phoneNumberId = asTrimmedString(payload.phone_number_id);
   const contactName = extractContactName(payload);
 
@@ -233,6 +246,10 @@ function extractMessageText(payload: StoredInboxPayload) {
     fromPhoneNormalized: fromPhoneRaw ? normalizePhone(fromPhoneRaw) : null,
     rawMessageType,
     textBody,
+    imageMediaId: asTrimmedString(imageNode?.id),
+    imageMimeType: asTrimmedString(imageNode?.mime_type),
+    imageSha256: asTrimmedString(imageNode?.sha256),
+    imageCaption: asTrimmedString(imageNode?.caption),
     phoneNumberId,
     whatsappBusinessAccountId: asTrimmedString(payload.whatsapp_business_account_id),
     displayPhoneNumber: asTrimmedString(payload.display_phone_number),
@@ -484,6 +501,10 @@ async function insertIncomingMessage(args: {
   rawMessageType: string;
   whatsappBusinessAccountId: string | null;
   displayPhoneNumber: string | null;
+  messageType?: "text" | "image";
+  content?: string;
+  mediaUrl?: string | null;
+  metadata?: Record<string, unknown>;
 }) {
   const metadata = {
     source: "meta_whatsapp_webhook",
@@ -498,16 +519,20 @@ async function insertIncomingMessage(args: {
     display_phone_number: args.displayPhoneNumber,
     contact_name: args.contactName,
     raw_message_type: args.rawMessageType,
+    ...(args.metadata || {}),
   };
+  const messageType = args.messageType || "text";
+  const content = args.content ?? args.textBody;
+  const mediaUrl = args.mediaUrl ?? null;
 
   const { data, error } = await args.supabase.rpc("insert_message", {
     p_conversation_id: args.conversationId,
     p_sender: "user",
     p_direction: "incoming",
-    p_message_type: "text",
-    p_content: args.textBody,
+    p_message_type: messageType,
+    p_content: content,
     p_external_message_id: args.messageId,
-    p_media_url: null,
+    p_media_url: mediaUrl,
     p_metadata: metadata,
   });
 
@@ -521,6 +546,56 @@ async function insertIncomingMessage(args: {
   }
 
   return row as InsertMessageResult;
+}
+
+async function insertIncomingImageMessage(args: {
+  supabase: SupabaseClient;
+  conversationId: string;
+  inbox: InboxRow;
+  messageId: string;
+  fromPhone: string;
+  phoneNumberId: string;
+  contactName: string | null;
+  whatsappBusinessAccountId: string | null;
+  displayPhoneNumber: string | null;
+  mediaId: string;
+  mimeType: string | null;
+  sha256: string | null;
+  caption: string | null;
+  storageBucket: string;
+  storagePath: string;
+  originalFileName: string;
+  sizeBytes: number;
+}) {
+  return insertIncomingMessage({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+    inbox: args.inbox,
+    messageId: args.messageId,
+    textBody: args.caption || "Cliente enviou uma imagem.",
+    fromPhone: args.fromPhone,
+    phoneNumberId: args.phoneNumberId,
+    contactName: args.contactName,
+    rawMessageType: "image",
+    whatsappBusinessAccountId: args.whatsappBusinessAccountId,
+    displayPhoneNumber: args.displayPhoneNumber,
+    messageType: "image",
+    content: args.caption || "Cliente enviou uma imagem.",
+    mediaUrl: args.storagePath,
+    metadata: {
+      media_origin: "customer",
+      attachment_kind: "image",
+      whatsapp_media_id: args.mediaId,
+      mime_type: args.mimeType,
+      sha256: args.sha256,
+      caption: args.caption,
+      storage_bucket: args.storageBucket,
+      storage_path: args.storagePath,
+      original_file_name: args.originalFileName,
+      size_bytes: args.sizeBytes,
+      downloaded_from_meta: true,
+    },
+  });
 }
 
 async function loadConversationAutomationState(args: {
@@ -683,7 +758,7 @@ async function processSingleInboxRow(
     };
   }
 
-  const extracted = extractMessageText(payload);
+  const extracted = extractIncomingMessage(payload);
 
   if (!extracted.messageId) {
     const detail = "missing_message_id";
@@ -718,7 +793,7 @@ async function processSingleInboxRow(
     };
   }
 
-  if (extracted.rawMessageType !== "text") {
+  if (extracted.rawMessageType !== "text" && extracted.rawMessageType !== "image") {
     const detail = `unsupported_message_type: ${extracted.rawMessageType}`;
     await markInboxError(supabase, inbox.id, detail);
     return {
@@ -730,7 +805,7 @@ async function processSingleInboxRow(
     };
   }
 
-  if (!extracted.textBody) {
+  if (extracted.rawMessageType === "text" && !extracted.textBody) {
     const detail = "missing_text_body";
     await markInboxError(supabase, inbox.id, detail);
     return {
@@ -752,9 +827,13 @@ async function processSingleInboxRow(
     };
   }
 
+  const resolvedMessageId = extracted.messageId;
+  const resolvedFromPhone = extracted.fromPhoneNormalized;
+  const resolvedPhoneNumberId = extracted.phoneNumberId;
+
   const existingMessage = await findExistingMessageByExternalId(
     supabase,
-    extracted.messageId,
+    resolvedMessageId,
   );
 
   if (existingMessage?.id) {
@@ -775,7 +854,7 @@ async function processSingleInboxRow(
     supabase,
     inbox.organization_id,
     inbox.store_id,
-    extracted.fromPhoneNormalized,
+    resolvedFromPhone,
     extracted.contactName,
   );
 
@@ -785,22 +864,75 @@ async function processSingleInboxRow(
     lead.id,
   );
 
+  let uploadedImageStoragePath: string | null = null;
+
   try {
-    const inserted = await insertIncomingMessage({
-      supabase,
-      conversationId: conversation.id,
-      inbox,
-      messageId: extracted.messageId,
-      textBody: extracted.textBody,
-      fromPhone: extracted.fromPhoneNormalized,
-      phoneNumberId: extracted.phoneNumberId,
-      contactName: extracted.contactName,
-      rawMessageType: extracted.rawMessageType,
-      whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
-      displayPhoneNumber: extracted.displayPhoneNumber,
-    });
+    let inserted: InsertMessageResult;
+
+    if (extracted.rawMessageType === "image") {
+      if (!extracted.imageMediaId) {
+        throw new Error("missing_image_media_id");
+      }
+
+      const storedImage = await downloadAndStoreWhatsappInboundImage({
+        supabase,
+        organizationId: inbox.organization_id,
+        storeId: inbox.store_id,
+        conversationId: conversation.id,
+        mediaId: extracted.imageMediaId,
+        preferredMimeType: extracted.imageMimeType,
+      });
+
+      uploadedImageStoragePath = storedImage.storagePath;
+
+      inserted = await insertIncomingImageMessage({
+        supabase,
+        conversationId: conversation.id,
+        inbox,
+        messageId: resolvedMessageId,
+        fromPhone: resolvedFromPhone,
+        phoneNumberId: resolvedPhoneNumberId,
+        contactName: extracted.contactName,
+        whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
+        displayPhoneNumber: extracted.displayPhoneNumber,
+        mediaId: extracted.imageMediaId,
+        mimeType: storedImage.mimeType || extracted.imageMimeType,
+        sha256: extracted.imageSha256 || storedImage.sha256,
+        caption: extracted.imageCaption,
+        storageBucket: storedImage.storageBucket,
+        storagePath: storedImage.storagePath,
+        originalFileName: storedImage.originalFileName,
+        sizeBytes: storedImage.sizeBytes,
+      });
+    } else {
+      inserted = await insertIncomingMessage({
+        supabase,
+        conversationId: conversation.id,
+        inbox,
+        messageId: resolvedMessageId,
+        textBody: extracted.textBody || "",
+        fromPhone: resolvedFromPhone,
+        phoneNumberId: resolvedPhoneNumberId,
+        contactName: extracted.contactName,
+        rawMessageType: extracted.rawMessageType,
+        whatsappBusinessAccountId: extracted.whatsappBusinessAccountId,
+        displayPhoneNumber: extracted.displayPhoneNumber,
+      });
+    }
 
     await markInboxProcessed(supabase, inbox.id);
+
+    if (extracted.rawMessageType === "image") {
+      return {
+        inbox_id: inbox.id,
+        external_event_id: inbox.external_event_id,
+        status: "succeeded",
+        message_id: inserted.id || null,
+        lead_id: lead.id,
+        conversation_id: conversation.id,
+        detail: "image_saved_in_crm",
+      };
+    }
 
     let aiDispatchResult: Pick<
       ProcessorResultItem,
@@ -841,8 +973,19 @@ async function processSingleInboxRow(
     ) {
       const duplicate = await findExistingMessageByExternalId(
         supabase,
-        extracted.messageId,
+        resolvedMessageId,
       );
+
+      if (uploadedImageStoragePath) {
+        try {
+          await removeWhatsappInboundStoredImage({
+            supabase,
+            storagePath: uploadedImageStoragePath,
+          });
+        } catch {
+          // Mantemos o resultado principal e evitamos falhar o fluxo por cleanup.
+        }
+      }
 
       await markInboxProcessed(supabase, inbox.id);
 
@@ -856,6 +999,17 @@ async function processSingleInboxRow(
         conversation_id: duplicate?.conversation_id || conversation.id,
         ai_status: "skipped_duplicate",
       };
+    }
+
+    if (uploadedImageStoragePath) {
+      try {
+        await removeWhatsappInboundStoredImage({
+          supabase,
+          storagePath: uploadedImageStoragePath,
+        });
+      } catch {
+        // Mantemos o erro principal e evitamos mascarar o motivo da falha.
+      }
     }
 
     throw error;
