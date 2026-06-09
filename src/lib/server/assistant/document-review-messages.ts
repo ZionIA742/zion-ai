@@ -1,7 +1,25 @@
+import { enqueueResponsibleExternalNotificationFromAssistantNotification } from "@/lib/server/assistant/responsible-external-notifications";
+
 const DOCUMENT_REVIEW_SOURCE = "assistant_document_workflow_v1";
 const DOCUMENT_REVIEW_PROMPT =
   "Esse documento pode ser enviado ou precisa ser editado? Caso precise ser editado, me diga o que precisa que eu edito.";
 const DOCUMENT_REVIEW_NOTIFICATION_TYPE = "important_alert";
+
+type InternalAssistantNotificationRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  notification_type: string | null;
+  priority: string | null;
+  status: string | null;
+  title: string | null;
+  body: string | null;
+  context: Record<string, unknown> | null;
+  related_lead_id: string | null;
+  related_conversation_id: string | null;
+  related_appointment_id: string | null;
+  created_at: string | null;
+};
 
 type AssistantDocumentReviewAction =
   | {
@@ -369,6 +387,35 @@ async function findExistingDocumentReviewNotification(args: {
   );
 }
 
+async function findCreatedDocumentReviewNotificationByEventKey(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  notificationType: string;
+  eventKey: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("store_assistant_notification_queue")
+    .select(
+      "id, organization_id, store_id, notification_type, priority, status, title, body, context, related_lead_id, related_conversation_id, related_appointment_id, created_at"
+    )
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("notification_type", args.notificationType)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    throw new Error(
+      `Falha ao carregar notificacao document_review criada para materializacao externa: ${error.message}`
+    );
+  }
+
+  return ((data || []) as InternalAssistantNotificationRow[]).find(
+    (row) => cleanText(row.context?.event_key) === args.eventKey
+  );
+}
+
 async function enqueueDocumentReviewNotification(args: {
   supabase: any;
   organizationId: string;
@@ -449,6 +496,42 @@ async function enqueueDocumentReviewNotification(args: {
         created: false,
         reason: "notification_rpc_failed",
       };
+    }
+
+    try {
+      const createdNotification = await findCreatedDocumentReviewNotificationByEventKey({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        notificationType: DOCUMENT_REVIEW_NOTIFICATION_TYPE,
+        eventKey,
+      });
+
+      if (createdNotification?.id) {
+        await enqueueResponsibleExternalNotificationFromAssistantNotification({
+          supabase: args.supabase,
+          internalNotification: createdNotification,
+        });
+      } else {
+        console.warn(
+          "[assistant_document_review] notificacao interna criada, mas nao encontrada para materializacao externa",
+          {
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            eventKey,
+          }
+        );
+      }
+    } catch (materializeError) {
+      console.warn(
+        "[assistant_document_review] falha ao materializar fila externa do responsavel:",
+        {
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          eventKey,
+          error: materializeError,
+        }
+      );
     }
 
     return {

@@ -25,6 +25,191 @@ import type { SalesQuoteItemRow } from "@/lib/server/sales-quotes/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const QUOTE_EVENT_ALLOWED_STATES = new Set(["orcamento"]);
+
+function normalizeState(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+async function loadCurrentQuoteConversationState(args: {
+  supabase: any;
+  organizationId: string;
+  conversationId: string | null;
+  leadId: string | null;
+}) {
+  const conversationId = String(args.conversationId || "").trim();
+  if (!conversationId) {
+    return null;
+  }
+
+  const { data, error } = await args.supabase
+    .from("conversation_states")
+    .select("conversation_id, organization_id, state")
+    .eq("conversation_id", conversationId)
+    .eq("organization_id", args.organizationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao carregar estado atual da conversation_states: ${error.message}`);
+  }
+
+  const rowLeadId = String(args.leadId || "").trim();
+  if (rowLeadId) {
+    const { data: conversationRow, error: conversationError } = await args.supabase
+      .from("conversations")
+      .select("id, lead_id, organization_id")
+      .eq("id", conversationId)
+      .eq("organization_id", args.organizationId)
+      .maybeSingle();
+
+    if (conversationError) {
+      throw new Error(`Falha ao validar conversa para transicao do orcamento: ${conversationError.message}`);
+    }
+
+    if (!conversationRow?.id) {
+      throw new QuoteAccessError(
+        404,
+        "QUOTE_CONVERSATION_NOT_FOUND",
+        "Conversa nao encontrada para preparar o orcamento."
+      );
+    }
+
+    if (String(conversationRow.lead_id || "").trim() !== rowLeadId) {
+      throw new QuoteAccessError(
+        409,
+        "QUOTE_CONVERSATION_LEAD_MISMATCH",
+        "A conversa vinculada ao orcamento nao corresponde ao lead esperado."
+      );
+    }
+  }
+
+  return normalizeState(data?.state) || null;
+}
+
+async function transitionQuoteConversationState(args: {
+  supabase: any;
+  organizationId: string;
+  conversationId: string;
+  toState: "qualificacao" | "orcamento";
+  reason: string;
+}) {
+  const { error } = await args.supabase.rpc("panel_transition_conversation_state_scoped", {
+    p_organization_id: args.organizationId,
+    p_conversation_id: args.conversationId,
+    p_to_state: args.toState,
+    p_reason: args.reason,
+  });
+
+  if (error) {
+    throw new QuoteAccessError(
+      409,
+      "QUOTE_CRM_TRANSITION_FAILED",
+      `Nao foi possivel preparar o funil comercial para gerar o orcamento: ${error.message}`
+    );
+  }
+}
+
+async function ensureQuoteConversationReadyForGeneration(args: {
+  supabase: any;
+  organizationId: string;
+  conversationId: string | null;
+  leadId: string | null;
+}) {
+  const conversationId = String(args.conversationId || "").trim();
+  if (!conversationId) {
+    return {
+      transitioned: false,
+      currentState: null,
+      skippedReason: "missing_conversation_id",
+    };
+  }
+
+  const initialState = await loadCurrentQuoteConversationState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    conversationId,
+    leadId: args.leadId,
+  });
+
+  if (!initialState) {
+    return {
+      transitioned: false,
+      currentState: null,
+      skippedReason: "missing_current_state",
+    };
+  }
+
+  if (QUOTE_EVENT_ALLOWED_STATES.has(initialState)) {
+    return {
+      transitioned: false,
+      currentState: initialState,
+      skippedReason: "already_allowed",
+    };
+  }
+
+  if (initialState === "novo_lead") {
+    await transitionQuoteConversationState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      conversationId,
+      toState: "qualificacao",
+      reason: "manual_quote_pdf_prepare_qualification",
+    });
+
+    const qualificationState = await loadCurrentQuoteConversationState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      conversationId,
+      leadId: args.leadId,
+    });
+
+    if (qualificationState !== "qualificacao") {
+      throw new QuoteAccessError(
+        409,
+        "QUOTE_EVENT_STATE_NOT_READY",
+        "A conversa nao entrou em qualificacao antes da etapa de orcamento."
+      );
+    }
+
+    await transitionQuoteConversationState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      conversationId,
+      toState: "orcamento",
+      reason: "manual_quote_pdf_prepare_budget",
+    });
+  } else if (initialState === "qualificacao") {
+    await transitionQuoteConversationState({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      conversationId,
+      toState: "orcamento",
+      reason: "manual_quote_pdf_prepare_budget",
+    });
+  }
+
+  const finalState = await loadCurrentQuoteConversationState({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    conversationId,
+    leadId: args.leadId,
+  });
+
+  if (!finalState || !QUOTE_EVENT_ALLOWED_STATES.has(finalState)) {
+    throw new QuoteAccessError(
+      409,
+      "QUOTE_EVENT_STATE_NOT_READY",
+      "A conversa ainda nao esta em um estado compativel para gerar o orcamento."
+    );
+  }
+
+  return {
+    transitioned: finalState !== initialState,
+    currentState: finalState,
+    skippedReason: finalState === initialState ? "already_allowed" : "transitioned",
+  };
+}
+
 function normalizeOptionalText(value: unknown) {
   const normalized = String(value ?? "").trim();
   return normalized || null;
@@ -79,6 +264,13 @@ export async function POST(
     const { quoteId: rawQuoteId } = await context.params;
     const quoteId = String(rawQuoteId || "").trim();
     const scope = await resolveAuthorizedExistingQuote(quoteId);
+    await ensureQuoteConversationReadyForGeneration({
+      supabase: scope.supabase,
+      organizationId: scope.organizationId,
+      conversationId: scope.conversation?.id || scope.quote.conversation_id || null,
+      leadId: scope.lead?.id || scope.quote.lead_id || null,
+    });
+
     const eventGuard = await canInsertQuoteConversationEvent({
       supabase: scope.supabase,
       quote: scope.quote,
@@ -86,13 +278,10 @@ export async function POST(
     });
 
     if (!eventGuard.allowed) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "QUOTE_EVENT_NOT_ALLOWED",
-          message: "A geracao do orcamento nao esta permitida no estado atual da conversa.",
-        },
-        { status: 409 }
+      throw new QuoteAccessError(
+        409,
+        "QUOTE_EVENT_NOT_ALLOWED",
+        "A geracao do orcamento nao esta permitida no estado atual da conversa."
       );
     }
 

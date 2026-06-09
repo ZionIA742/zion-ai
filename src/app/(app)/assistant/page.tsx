@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
+import ResponsibleExternalNotificationsPanel from "@/components/assistant/ResponsibleExternalNotificationsPanel";
 import { countActiveAssistantPendingActions } from "@/lib/assistant/active-pending-actions";
 
 type AssistantThreadSummary = {
@@ -1595,6 +1596,12 @@ export default function AssistantPage() {
               </button>
             </div>
           </div>
+
+          <ResponsibleExternalNotificationsPanel
+            organizationId={organizationId}
+            storeId={activeStoreId}
+            enabled={canLoad}
+          />
 
           <div className="relative flex min-h-0 flex-1 overflow-hidden">
             <div
