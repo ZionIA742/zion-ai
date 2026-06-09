@@ -3,27 +3,25 @@ import { createServerClient } from "@supabase/ssr";
 
 export async function middleware(req: NextRequest) {
   const path = req.nextUrl.pathname;
+  const normalizedPath = path.replace(/\/$/, "") || "/";
+  const publicPaths = new Set([
+    "/login",
+    "/auth/callback",
+    "/auth/reset-password",
+    "/zion-admin/login",
+    "/api/webhooks/whatsapp",
+    "/api/internal/ai-sales-reply",
+    "/api/internal/whatsapp/process-inbox",
+    "/api/internal/whatsapp/process-pending",
+    "/api/internal/assistant-operational-tasks/process",
+    "/api/cron/assistant-operational-tasks",
+    "/api/cron/whatsapp-process-all",
+  ]);
 
   const isPublic =
-    path === "/login" ||
-    path === "/auth/callback" ||
-    path === "/auth/reset-password" ||
-    path === "/zion-admin/login" ||
-    path === "/api/webhooks/whatsapp" ||
+    publicPaths.has(normalizedPath) ||
     path.startsWith("/_next") ||
-    path.startsWith("/favicon") ||
-
-    // Rotas internas protegidas por segredo próprio.
-    // Elas não podem depender de sessão/login, porque são chamadas por worker, cron ou integrações.
-    path === "/api/internal/ai-sales-reply" ||
-    path === "/api/internal/whatsapp/process-inbox" ||
-    path === "/api/internal/whatsapp/process-pending" ||
-    path === "/api/internal/assistant-operational-tasks/process" ||
-
-    // Rotas de cron da Vercel.
-    // A autenticação delas é feita dentro da própria rota via CRON_SECRET.
-    path === "/api/cron/assistant-operational-tasks" ||
-    path === "/api/cron/whatsapp-process-all";
+    path.startsWith("/favicon");
 
   if (isPublic) {
     return NextResponse.next();
