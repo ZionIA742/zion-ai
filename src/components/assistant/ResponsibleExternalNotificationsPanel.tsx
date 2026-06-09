@@ -17,6 +17,8 @@ type ResponsibleExternalNotificationItem = {
   failed_at: string | null;
   error_text: string | null;
   attempts: number;
+  locked_at: string | null;
+  processed_at: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -52,6 +54,20 @@ function formatDateTime(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleString("pt-BR");
+}
+
+function isOlderThanHours(value: string | null, hours: number) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  return Date.now() - date.getTime() > hours * 60 * 60 * 1000;
+}
+
+function isOlderThanMinutes(value: string | null, minutes: number) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  return Date.now() - date.getTime() > minutes * 60 * 1000;
 }
 
 function shortId(value: string | null | undefined) {
@@ -218,7 +234,7 @@ export default function ResponsibleExternalNotificationsPanel({
 
   async function runAction(
     notificationId: string,
-    action: "prepare" | "cancel" | "send",
+    action: "prepare" | "cancel" | "send" | "unlock-processing",
     item?: ResponsibleExternalNotificationItem
   ) {
     if (!canLoad || !organizationId || !storeId) return;
@@ -238,6 +254,16 @@ export default function ResponsibleExternalNotificationsPanel({
       }
     }
 
+    if (action === "unlock-processing") {
+      const confirmed = window.confirm(
+        "Este aviso parece preso em processamento. Deseja marcar como falhou para poder revisar e preparar novamente?"
+      );
+
+      if (!confirmed) {
+        return;
+      }
+    }
+
     const actionKey = `${notificationId}:${action}`;
     setActionLoading(actionKey, true);
     setErrorText(null);
@@ -247,6 +273,8 @@ export default function ResponsibleExternalNotificationsPanel({
       const response = await fetch(
         action === "send"
           ? "/api/assistant/responsible-external-notifications/send"
+          : action === "unlock-processing"
+            ? "/api/assistant/responsible-external-notifications/unlock-processing"
           : `/api/assistant/responsible-external-notifications/${action}`,
         {
           method: "POST",
@@ -273,6 +301,8 @@ export default function ResponsibleExternalNotificationsPanel({
           ? "Aviso preparado para envio manual."
           : action === "cancel"
             ? "Aviso cancelado com sucesso."
+            : action === "unlock-processing"
+              ? "Aviso marcado como falhou para nova revisao."
             : "Aviso enviado por WhatsApp ao responsavel."
       );
 
@@ -379,14 +409,24 @@ export default function ResponsibleExternalNotificationsPanel({
                     const canPrepare =
                       normalizedStatus === "materialized" || normalizedStatus === "failed";
                     const canSend = normalizedStatus === "ready_to_send";
+                    const canShowOldAlert =
+                      (normalizedStatus === "materialized" ||
+                        normalizedStatus === "ready_to_send" ||
+                        normalizedStatus === "failed") &&
+                      isOlderThanHours(item.created_at, 24);
                     const canCancel =
                       normalizedStatus === "materialized" ||
                       normalizedStatus === "ready_to_send" ||
                       normalizedStatus === "failed";
+                    const canUnlockProcessing =
+                      normalizedStatus === "processing" &&
+                      isOlderThanMinutes(item.locked_at, 10);
                     const prepareLoading =
                       actionLoadingKeys[`${item.id}:prepare`] === true;
                     const sendLoading =
                       actionLoadingKeys[`${item.id}:send`] === true;
+                    const unlockLoading =
+                      actionLoadingKeys[`${item.id}:unlock-processing`] === true;
                     const cancelLoading =
                       actionLoadingKeys[`${item.id}:cancel`] === true;
 
@@ -419,6 +459,12 @@ export default function ResponsibleExternalNotificationsPanel({
                           {item.rendered_message || "Mensagem nao informada."}
                         </div>
 
+                        {canShowOldAlert ? (
+                          <div className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[11px] text-amber-900 ring-1 ring-amber-200">
+                            Este aviso e antigo. Revise antes de enviar.
+                          </div>
+                        ) : null}
+
                         <div className="mt-2 grid gap-2 rounded-xl bg-white px-3 py-3 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5 md:grid-cols-2">
                           <div>
                             <span className="font-semibold text-gray-900">Documento:</span>{" "}
@@ -446,6 +492,10 @@ export default function ResponsibleExternalNotificationsPanel({
                             <span className="font-semibold text-gray-900">Atualizado em:</span>{" "}
                             {formatDateTime(item.updated_at)}
                           </div>
+                          <div>
+                            <span className="font-semibold text-gray-900">Processado em:</span>{" "}
+                            {formatDateTime(item.processed_at)}
+                          </div>
                         </div>
 
                         {item.external_message_id || item.sent_at ? (
@@ -457,23 +507,35 @@ export default function ResponsibleExternalNotificationsPanel({
 
                         {item.failed_at || item.error_text ? (
                           <div className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-[11px] text-red-800 ring-1 ring-red-200">
-                            {item.failed_at ? `Falhou em ${formatDateTime(item.failed_at)}.` : "Falhou."}
-                            {item.error_text ? ` ${item.error_text}` : ""}
+                            <div>Falha ao enviar. Voce pode revisar o aviso e preparar novamente.</div>
+                            {item.failed_at ? (
+                              <div className="mt-1">Falhou em {formatDateTime(item.failed_at)}.</div>
+                            ) : null}
+                            {item.error_text ? (
+                              <div className="mt-1 text-[10px] text-red-700">
+                                <span className="font-semibold">Detalhe tecnico:</span>{" "}
+                                {item.error_text}
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
 
-                        {canPrepare || canCancel || canSend ? (
+                        {canPrepare || canCancel || canSend || canUnlockProcessing ? (
                           <div className="mt-3 flex flex-wrap gap-2">
                             {canPrepare ? (
                               <button
                                 type="button"
                                 onClick={() => void runAction(item.id, "prepare")}
-                                disabled={prepareLoading || cancelLoading || sendLoading}
+                                disabled={
+                                  prepareLoading || cancelLoading || sendLoading || unlockLoading
+                                }
                                 className="rounded-full bg-black px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {prepareLoading
                                   ? "Preparando..."
-                                  : "Preparar para envio manual"}
+                                  : normalizedStatus === "failed"
+                                    ? "Preparar novamente"
+                                    : "Preparar para envio manual"}
                               </button>
                             ) : null}
 
@@ -481,7 +543,9 @@ export default function ResponsibleExternalNotificationsPanel({
                               <button
                                 type="button"
                                 onClick={() => void runAction(item.id, "cancel")}
-                                disabled={prepareLoading || cancelLoading || sendLoading}
+                                disabled={
+                                  prepareLoading || cancelLoading || sendLoading || unlockLoading
+                                }
                                 className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {cancelLoading ? "Cancelando..." : "Cancelar aviso"}
@@ -492,12 +556,27 @@ export default function ResponsibleExternalNotificationsPanel({
                               <button
                                 type="button"
                                 onClick={() => void runAction(item.id, "send", item)}
-                                disabled={prepareLoading || cancelLoading || sendLoading}
+                                disabled={
+                                  prepareLoading || cancelLoading || sendLoading || unlockLoading
+                                }
                                 className="rounded-full bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {sendLoading
                                   ? "Enviando WhatsApp..."
                                   : "Enviar WhatsApp ao responsavel"}
+                              </button>
+                            ) : null}
+
+                            {canUnlockProcessing ? (
+                              <button
+                                type="button"
+                                onClick={() => void runAction(item.id, "unlock-processing", item)}
+                                disabled={
+                                  prepareLoading || cancelLoading || sendLoading || unlockLoading
+                                }
+                                className="rounded-full bg-red-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {unlockLoading ? "Marcando falha..." : "Marcar como falhou"}
                               </button>
                             ) : null}
                           </div>

@@ -81,7 +81,9 @@ type ResponsibleExternalNotificationRow = {
   failed_at: string | null;
   error_text: string | null;
   attempts: number | null;
+  locked_at: string | null;
   created_at: string | null;
+  processed_at: string | null;
   updated_at: string | null;
 };
 
@@ -100,6 +102,8 @@ export type ResponsibleExternalNotificationListItem = {
   failed_at: string | null;
   error_text: string | null;
   attempts: number;
+  locked_at: string | null;
+  processed_at: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -592,7 +596,7 @@ export async function listResponsibleExternalNotifications(args: {
   let query = supabase
     .from("store_responsible_external_notifications")
     .select(
-      "id, organization_id, store_id, channel, destination, status, title, rendered_message, related_document_type, related_document_number, related_document_status, external_message_id, sent_at, failed_at, error_text, attempts, created_at, updated_at"
+      "id, organization_id, store_id, channel, destination, status, title, rendered_message, related_document_type, related_document_number, related_document_status, external_message_id, sent_at, failed_at, error_text, attempts, locked_at, processed_at, created_at, updated_at"
     )
     .eq("organization_id", organizationId)
     .eq("store_id", storeId)
@@ -627,6 +631,8 @@ export async function listResponsibleExternalNotifications(args: {
       failed_at: row.failed_at || null,
       error_text: cleanText(row.error_text) || null,
       attempts: Math.max(0, Number(row.attempts || 0)),
+      locked_at: row.locked_at || null,
+      processed_at: row.processed_at || null,
       created_at: row.created_at || null,
       updated_at: row.updated_at || null,
     })
@@ -732,5 +738,56 @@ export async function cancelResponsibleExternalNotification(args: {
     updated: true as const,
     notificationId: cleanText(data.id),
     status: cleanText(data.status) || "cancelled",
+  };
+}
+
+export async function unlockStuckResponsibleExternalNotificationProcessing(args: {
+  supabase?: ReturnType<typeof getSupabaseAdmin>;
+  organizationId: string;
+  storeId: string;
+  notificationId: string;
+}) {
+  const supabase = args.supabase || getSupabaseAdmin();
+  const now = new Date();
+  const staleThreshold = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from("store_responsible_external_notifications")
+    .update({
+      status: "failed",
+      failed_at: now.toISOString(),
+      processed_at: now.toISOString(),
+      error_text: "Processamento destravado manualmente apos ficar preso.",
+      locked_at: null,
+      locked_by: null,
+      updated_at: now.toISOString(),
+    })
+    .eq("id", cleanText(args.notificationId))
+    .eq("organization_id", cleanText(args.organizationId))
+    .eq("store_id", cleanText(args.storeId))
+    .eq("status", "processing")
+    .lt("locked_at", staleThreshold)
+    .select("id, status")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Falha ao destravar processamento da notificacao externa do responsavel: ${error.message}`
+    );
+  }
+
+  if (!data?.id) {
+    return {
+      ok: false as const,
+      updated: false as const,
+      reason: "processing_not_stuck_or_not_found",
+    };
+  }
+
+  return {
+    ok: true as const,
+    updated: true as const,
+    notificationId: cleanText(data.id),
+    status: cleanText(data.status) || "failed",
   };
 }
