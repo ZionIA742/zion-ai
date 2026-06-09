@@ -66,6 +66,34 @@ type StoreBrandingApiResponse = {
   message?: string;
 };
 
+type StoreWhatsappStatusApiResponse = {
+  ok: boolean;
+  connected?: boolean;
+  provider?: string | null;
+  status?: string | null;
+  isActive?: boolean;
+  displayPhoneNumber?: string | null;
+  phoneNumberId?: string | null;
+  whatsappBusinessAccountId?: string | null;
+  lastInboundAt?: string | null;
+  lastOutboundAt?: string | null;
+  pendingInboxCount?: number;
+  pendingOutboundCount?: number;
+  lastSafeError?: string | null;
+  recentDeliveryStatus?: {
+    sentCount?: number;
+    deliveredCount?: number;
+    readCount?: number;
+  } | null;
+  automaticWorker?: {
+    routeReady?: boolean;
+    scheduledAutomatically?: boolean;
+    reason?: string | null;
+  } | null;
+  error?: string;
+  message?: string;
+};
+
 type StoreContractTemplateRow = {
   id: string;
   organization_id: string;
@@ -568,6 +596,20 @@ function formatImportDate(value: string | null | undefined) {
     dateStyle: "short",
     timeStyle: "short",
   }).format(parsed);
+}
+
+function resolveStoreWhatsappVisualStatus(status: StoreWhatsappStatusApiResponse | null) {
+  const normalizedStatus = cleanText(status?.status).toLowerCase();
+
+  if (status?.connected && status?.isActive && normalizedStatus === "active") {
+    return { label: "Conectado", tone: "green" as const };
+  }
+
+  if (!status?.connected || normalizedStatus === "error" || normalizedStatus === "failed") {
+    return { label: "Erro", tone: "red" as const };
+  }
+
+  return { label: "Desconectado", tone: "gray" as const };
 }
 
 function resolveContractVersionStatus(status: string | null | undefined) {
@@ -1445,6 +1487,9 @@ export default function ConfiguracoesPage() {
   const [rawImportFilesModalTab, setRawImportFilesModalTab] = useState<"pools" | "catalog" | null>(null);
   const [storeBranding, setStoreBranding] = useState<StoreBrandingSettingsRow | null>(null);
   const [storeLogoPreviewUrl, setStoreLogoPreviewUrl] = useState<string | null>(null);
+  const [storeWhatsappStatus, setStoreWhatsappStatus] = useState<StoreWhatsappStatusApiResponse | null>(null);
+  const [storeWhatsappStatusLoading, setStoreWhatsappStatusLoading] = useState(false);
+  const [storeWhatsappStatusErrorText, setStoreWhatsappStatusErrorText] = useState<string | null>(null);
   const [selectedStoreLogoFile, setSelectedStoreLogoFile] = useState<File | null>(null);
   const [savingStoreLogo, setSavingStoreLogo] = useState(false);
   const [removingStoreLogo, setRemovingStoreLogo] = useState(false);
@@ -1534,6 +1579,45 @@ export default function ConfiguracoesPage() {
 
     setStoreBranding((result.branding ?? null) as StoreBrandingSettingsRow | null);
     setStoreLogoPreviewUrl(result.signedUrl || null);
+  }
+
+  async function fetchStoreWhatsappStatusFromApi(storeIdOverride?: string | null) {
+    const resolvedStoreId = cleanText(storeIdOverride) || cleanText(activeStoreId);
+
+    if (!resolvedStoreId) {
+      setStoreWhatsappStatus(null);
+      setStoreWhatsappStatusErrorText(null);
+      setStoreWhatsappStatusLoading(false);
+      return;
+    }
+
+    setStoreWhatsappStatusLoading(true);
+
+    try {
+      const response = await fetch(
+        `/api/store/whatsapp/status?storeId=${encodeURIComponent(resolvedStoreId)}`,
+        {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+        }
+      );
+      const result = (await response.json().catch(() => null)) as StoreWhatsappStatusApiResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "Nao foi possivel carregar o status do WhatsApp da loja.");
+      }
+
+      setStoreWhatsappStatus(result);
+      setStoreWhatsappStatusErrorText(null);
+    } catch (error: any) {
+      setStoreWhatsappStatus(null);
+      setStoreWhatsappStatusErrorText(
+        error?.message || "Nao foi possivel carregar o status do WhatsApp da loja."
+      );
+    } finally {
+      setStoreWhatsappStatusLoading(false);
+    }
   }
 
   const applyStoreContractTemplateResponse = useCallback(
@@ -1893,6 +1977,9 @@ export default function ConfiguracoesPage() {
       setScheduleSettings(null);
       setStoreBranding(null);
       setStoreLogoPreviewUrl(null);
+      setStoreWhatsappStatus(null);
+      setStoreWhatsappStatusErrorText(null);
+      setStoreWhatsappStatusLoading(false);
       setSelectedStoreLogoFile(null);
       setPoolImportFiles([]);
       setCatalogImportFiles([]);
@@ -2022,6 +2109,7 @@ export default function ConfiguracoesPage() {
       setPoolImportFiles(nextPoolImportFiles);
       setCatalogImportFiles(nextCatalogImportFiles);
       await fetchStoreBrandingFromApi(activeStoreId);
+      await fetchStoreWhatsappStatusFromApi(activeStoreId);
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao carregar a visão geral das configurações.");
     } finally {
@@ -3572,6 +3660,60 @@ export default function ConfiguracoesPage() {
     setShowChannelsAdvanced(false);
     setIsChannelsEditing(false);
   }, [channelDraft, upsertConfigAnswers]);
+
+  const storeWhatsappVisualStatus = useMemo(
+    () => resolveStoreWhatsappVisualStatus(storeWhatsappStatus),
+    [storeWhatsappStatus]
+  );
+
+  const storeWhatsappStatusMetrics = useMemo(
+    () => [
+      {
+        label: "Status",
+        value: storeWhatsappVisualStatus.label,
+        tone: storeWhatsappVisualStatus.tone,
+        hint:
+          cleanText(storeWhatsappStatus?.status) ||
+          (storeWhatsappStatus?.connected ? "Integracao operacional ativa." : "Integracao ainda nao conectada."),
+      },
+      {
+        label: "Numero conectado",
+        value: cleanText(storeWhatsappStatus?.displayPhoneNumber) || "Nao informado",
+        tone: cleanText(storeWhatsappStatus?.displayPhoneNumber) ? "green" as const : "gray" as const,
+        hint:
+          cleanText(storeWhatsappStatus?.phoneNumberId)
+            ? `Phone Number ID: ${cleanText(storeWhatsappStatus?.phoneNumberId)}`
+            : "O numero tecnico ainda nao foi vinculado nesta loja.",
+      },
+      {
+        label: "Ultima mensagem recebida",
+        value: formatImportDate(storeWhatsappStatus?.lastInboundAt),
+        tone: cleanText(storeWhatsappStatus?.lastInboundAt) ? "green" as const : "gray" as const,
+        hint: "Ultimo evento recebido pela inbox do WhatsApp.",
+      },
+      {
+        label: "Ultima mensagem enviada",
+        value: formatImportDate(storeWhatsappStatus?.lastOutboundAt),
+        tone: cleanText(storeWhatsappStatus?.lastOutboundAt) ? "green" as const : "gray" as const,
+        hint: "Ultimo envio externo registrado para a loja.",
+      },
+      {
+        label: "Pendencias de entrada",
+        value: String(storeWhatsappStatus?.pendingInboxCount ?? 0),
+        tone:
+          Number(storeWhatsappStatus?.pendingInboxCount ?? 0) > 0 ? "amber" as const : "green" as const,
+        hint: "Eventos recebidos e ainda nao processados.",
+      },
+      {
+        label: "Pendencias de envio",
+        value: String(storeWhatsappStatus?.pendingOutboundCount ?? 0),
+        tone:
+          Number(storeWhatsappStatus?.pendingOutboundCount ?? 0) > 0 ? "amber" as const : "green" as const,
+        hint: "Mensagens prontas para sair no canal real.",
+      },
+    ],
+    [storeWhatsappStatus, storeWhatsappVisualStatus]
+  );
 
   const handlePrimaryResponsibleChange = useCallback(
     (key: keyof ResponsiblePersonDraft, value: string | boolean) => {
@@ -6441,6 +6583,93 @@ export default function ConfiguracoesPage() {
                 hint={item.hint}
               />
             ))}
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4 md:p-5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <div className="text-base font-semibold text-gray-900">WhatsApp da loja</div>
+                <p className="mt-1 max-w-3xl text-sm text-gray-600">
+                  Status real e seguro da integracao oficial da loja com o WhatsApp Cloud API da Meta.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${statusToneClass(
+                    storeWhatsappVisualStatus.tone
+                  )}`}
+                >
+                  {storeWhatsappVisualStatus.label}
+                </span>
+                <button
+                  type="button"
+                  disabled
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-500 opacity-80"
+                >
+                  Solicitar conexao do WhatsApp
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {storeWhatsappStatusMetrics.map((item) => (
+                <StatusCard
+                  key={item.label}
+                  label={item.label}
+                  value={item.value}
+                  tone={item.tone}
+                  hint={item.hint}
+                />
+              ))}
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+              <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                <div className="mb-2 text-sm font-semibold text-gray-900">Resumo seguro da integracao</div>
+                <SummaryList
+                  items={[
+                    "Canal: WhatsApp Cloud API / Meta",
+                    `Numero conectado: ${cleanText(storeWhatsappStatus?.displayPhoneNumber) || "Nao informado"}`,
+                    `WABA ID: ${cleanText(storeWhatsappStatus?.whatsappBusinessAccountId) || "Nao informado"}`,
+                    `Phone Number ID: ${cleanText(storeWhatsappStatus?.phoneNumberId) || "Nao informado"}`,
+                    `Status recente de entrega: ${Number(storeWhatsappStatus?.recentDeliveryStatus?.sentCount ?? 0)} envio(s), ${Number(storeWhatsappStatus?.recentDeliveryStatus?.deliveredCount ?? 0)} entregue(s), ${Number(storeWhatsappStatus?.recentDeliveryStatus?.readCount ?? 0)} lido(s)`,
+                  ]}
+                />
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                <div className="mb-2 text-sm font-semibold text-gray-900">Saude operacional</div>
+                <SummaryList
+                  items={[
+                    cleanText(storeWhatsappStatus?.lastSafeError)
+                      ? `${
+                          storeWhatsappStatus?.connected && storeWhatsappStatus?.isActive
+                            ? "Ultimo aviso registrado"
+                            : "Ultimo erro seguro"
+                        }: ${cleanText(storeWhatsappStatus?.lastSafeError)}`
+                      : `${
+                          storeWhatsappStatus?.connected && storeWhatsappStatus?.isActive
+                            ? "Nenhum aviso recente encontrado."
+                            : "Nenhum erro seguro recente encontrado."
+                        }`,
+                    "A conexao do WhatsApp e acompanhada pela equipe ZION. A loja nao precisa configurar tokens, Webhook, WABA ou Phone Number ID manualmente.",
+                    "Processamento automatico frequente ainda depende de infraestrutura adequada. No piloto, a rota de processamento esta pronta, mas o cron por minuto nao esta ativo no plano Hobby da Vercel.",
+                  ]}
+                />
+              </div>
+            </div>
+
+            {storeWhatsappStatusLoading ? (
+              <div className="mt-4 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
+                Carregando status real do WhatsApp da loja...
+              </div>
+            ) : null}
+
+            {storeWhatsappStatusErrorText ? (
+              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {storeWhatsappStatusErrorText}
+              </div>
+            ) : null}
           </div>
 
 
