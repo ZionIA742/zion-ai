@@ -444,6 +444,7 @@ function extractIncomingStatus(payload: StoredInboxPayload) {
 async function findMessageByExternalIdForStatus(
   supabase: SupabaseClient,
   organizationId: string,
+  storeId: string,
   externalMessageId: string,
 ) {
   const { data, error } = await supabase
@@ -452,6 +453,7 @@ async function findMessageByExternalIdForStatus(
       "id, organization_id, conversation_id, lead_id, store_id, external_message_id, delivered_at, read_at, metadata",
     )
     .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
     .eq("external_message_id", externalMessageId)
     .is("deleted_at", null)
     .limit(1)
@@ -469,6 +471,7 @@ async function findMessageByExternalIdForStatus(
 async function updateMessageWhatsappStatus(args: {
   supabase: SupabaseClient;
   organizationId: string;
+  storeId: string;
   message: StatusMessageRow;
   statusValue: "sent" | "delivered" | "read" | "failed";
   statusTimestampIso: string;
@@ -552,6 +555,7 @@ async function updateMessageWhatsappStatus(args: {
     .update(updatePayload)
     .eq("id", args.message.id)
     .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
     .is("deleted_at", null);
 
   if (error) {
@@ -1193,6 +1197,7 @@ async function processStatusInboxRow(
   const message = await findMessageByExternalIdForStatus(
     supabase,
     inbox.organization_id,
+    inbox.store_id,
     extracted.statusId,
   );
 
@@ -1210,6 +1215,7 @@ async function processStatusInboxRow(
   await updateMessageWhatsappStatus({
     supabase,
     organizationId: inbox.organization_id,
+    storeId: inbox.store_id,
     message,
     statusValue: extracted.statusValue,
     statusTimestampIso: extracted.statusTimestampIso,

@@ -3,6 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 const STORAGE_BUCKET = "zion-store-files";
 const WHATSAPP_GRAPH_API_VERSION =
   process.env.WHATSAPP_GRAPH_API_VERSION || "v23.0";
+const DEFAULT_WHATSAPP_INBOUND_MEDIA_MAX_BYTES = 16 * 1024 * 1024;
+const MIN_WHATSAPP_INBOUND_MEDIA_MAX_BYTES = 1 * 1024 * 1024;
+const MAX_WHATSAPP_INBOUND_MEDIA_MAX_BYTES = 64 * 1024 * 1024;
 
 type MetaMediaMetadataResponse = {
   url?: string;
@@ -164,6 +167,25 @@ function buildOriginalFileName(args: {
   return sanitizeFileName(`${baseName}.${extension}`);
 }
 
+function getWhatsappInboundMediaMaxBytes() {
+  const rawValue = Number(process.env.WHATSAPP_INBOUND_MEDIA_MAX_BYTES);
+
+  if (!Number.isFinite(rawValue) || rawValue <= 0) {
+    return DEFAULT_WHATSAPP_INBOUND_MEDIA_MAX_BYTES;
+  }
+
+  return Math.min(
+    MAX_WHATSAPP_INBOUND_MEDIA_MAX_BYTES,
+    Math.max(MIN_WHATSAPP_INBOUND_MEDIA_MAX_BYTES, Math.floor(rawValue)),
+  );
+}
+
+function assertWhatsappInboundMediaSize(sizeBytes: number) {
+  if (sizeBytes > getWhatsappInboundMediaMaxBytes()) {
+    throw new Error("WHATSAPP_MEDIA_TOO_LARGE");
+  }
+}
+
 async function fetchMetaMediaMetadata(args: {
   accessToken: string;
   mediaId: string;
@@ -270,6 +292,7 @@ export async function downloadAndStoreWhatsappInboundMedia(
     accessToken,
     mediaUrl,
   });
+  assertWhatsappInboundMediaSize(downloaded.bytes.byteLength);
 
   const mimeType =
     normalizeMimeType(args.preferredMimeType) ||

@@ -79,13 +79,10 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Erro interno inesperado";
-
     return NextResponse.json(
       {
         ok: false,
-        error: message,
+        error: "WHATSAPP_PROCESS_PENDING_FAILED",
       },
       { status: 500 },
     );

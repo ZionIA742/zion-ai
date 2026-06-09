@@ -40,6 +40,7 @@ type PendingExternalMessage = {
   leadId: string | null;
   phone: string;
   content: string;
+  rawMessageType: string;
   messageType: "text" | "image";
   mediaUrl: string | null;
   metadata: Record<string, unknown>;
@@ -178,10 +179,14 @@ function readMetadataText(
 function resolveWhatsappAccessToken(
   integration?: WhatsappIntegrationRow | null,
 ): string {
-  const token =
-    integration?.access_token?.trim() ||
-    META_WHATSAPP_ACCESS_TOKEN?.trim() ||
-    "";
+  const integrationToken = integration?.access_token?.trim() || "";
+  if (integrationToken) {
+    return integrationToken;
+  }
+
+  // Pilot/legacy fallback: keep the global env token working for the current setup,
+  // but this should be retired before a real multi-store rollout.
+  const token = META_WHATSAPP_ACCESS_TOKEN?.trim() || "";
 
   if (!token) {
     throw new Error(
@@ -264,10 +269,36 @@ function normalizePendingMessage(
     leadId: row.lead_id ?? null,
     phone,
     content,
+    rawMessageType: rawType,
     messageType,
     mediaUrl,
     metadata,
   };
+}
+
+function getWhatsappEligibilityFailure(
+  message: PendingExternalMessage,
+): string | null {
+  const skipReason = shouldSkipExternalSend(message.metadata);
+  if (skipReason) {
+    return skipReason;
+  }
+
+  if (message.rawMessageType !== "text" && message.rawMessageType !== "image") {
+    return `Tipo de mensagem nao suportado pelo sender WhatsApp: ${message.rawMessageType}`;
+  }
+
+  const externalChannel = readMetadataText(message.metadata, "external_channel");
+  if (externalChannel?.toLowerCase() !== "whatsapp") {
+    return "Mensagem sem canal externo elegivel para WhatsApp.";
+  }
+
+  const sendExternal = coerceBoolean(message.metadata.send_external);
+  if (sendExternal !== true) {
+    return "Mensagem sem confirmacao explicita para envio externo.";
+  }
+
+  return null;
 }
 
 async function getWhatsappIntegration(
@@ -354,6 +385,31 @@ async function markMessageExternalSent(
       result.error || `Falha ao marcar message ${messageId} como enviada`,
     );
   }
+}
+
+async function getMessageExternalSendState(
+  supabase: SupabaseClient,
+  messageId: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("messages")
+    .select("external_message_id")
+    .eq("id", messageId)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Erro ao revalidar estado externo da mensagem ${messageId}: ${error.message}`,
+    );
+  }
+
+  const externalMessageId =
+    data && typeof data.external_message_id === "string"
+      ? data.external_message_id.trim()
+      : "";
+
+  return externalMessageId || null;
 }
 
 type WhatsAppSendResponse = {
@@ -553,18 +609,33 @@ export async function processWhatsappPendingMessages(
   let failed = 0;
 
   for (const message of selected) {
-    const skipReason = shouldSkipExternalSend(message.metadata);
+    const eligibilityFailure = getWhatsappEligibilityFailure(message);
 
-    if (skipReason) {
+    if (eligibilityFailure) {
       results.push({
         messageId: message.id,
         status: "skipped",
-        detail: skipReason,
+        detail: eligibilityFailure,
       });
       continue;
     }
 
     try {
+      const existingExternalMessageId = await getMessageExternalSendState(
+        supabase,
+        message.id,
+      );
+
+      if (existingExternalMessageId) {
+        results.push({
+          messageId: message.id,
+          status: "skipped",
+          detail: "Mensagem ja possui external_message_id e nao sera reenviada.",
+          whatsappMessageId: existingExternalMessageId,
+        });
+        continue;
+      }
+
       const whatsappMessageId = await sendSinglePendingMessage(
         supabase,
         integration,
