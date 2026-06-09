@@ -32,6 +32,9 @@ type ListResponse = {
 type ActionResponse = {
   ok: boolean;
   updated?: boolean;
+  sent?: boolean;
+  notificationId?: string;
+  externalMessageId?: string;
   reason?: string;
   message?: string;
 };
@@ -111,6 +114,14 @@ function getDocumentStatusLabel(value: string | null | undefined) {
 }
 
 function getActionErrorText(result: ActionResponse) {
+  if (
+    result.reason === "already_sent" ||
+    result.reason === "not_ready_to_send" ||
+    result.reason === "already_processing_or_not_ready"
+  ) {
+    return "Este aviso ja foi enviado ou nao esta pronto para envio.";
+  }
+
   if (result.reason === "invalid_status_for_prepare") {
     return "Esse aviso nao pode mais ser preparado no status atual.";
   }
@@ -207,9 +218,25 @@ export default function ResponsibleExternalNotificationsPanel({
 
   async function runAction(
     notificationId: string,
-    action: "prepare" | "cancel"
+    action: "prepare" | "cancel" | "send",
+    item?: ResponsibleExternalNotificationItem
   ) {
     if (!canLoad || !organizationId || !storeId) return;
+
+    if (action === "send") {
+      const confirmed = window.confirm(
+        [
+          "Enviar este aviso por WhatsApp para o responsavel?",
+          `Documento: ${item?.related_document_number || "Nao informado"}`,
+          `Destino: ${item?.destinationMasked || "Nao informado"}`,
+          "Esta acao enviara uma mensagem real e nao pode ser desfeita.",
+        ].join("\n")
+      );
+
+      if (!confirmed) {
+        return;
+      }
+    }
 
     const actionKey = `${notificationId}:${action}`;
     setActionLoading(actionKey, true);
@@ -218,7 +245,9 @@ export default function ResponsibleExternalNotificationsPanel({
 
     try {
       const response = await fetch(
-        `/api/assistant/responsible-external-notifications/${action}`,
+        action === "send"
+          ? "/api/assistant/responsible-external-notifications/send"
+          : `/api/assistant/responsible-external-notifications/${action}`,
         {
           method: "POST",
           headers: {
@@ -242,7 +271,9 @@ export default function ResponsibleExternalNotificationsPanel({
       setStatusText(
         action === "prepare"
           ? "Aviso preparado para envio manual."
-          : "Aviso cancelado com sucesso."
+          : action === "cancel"
+            ? "Aviso cancelado com sucesso."
+            : "Aviso enviado por WhatsApp ao responsavel."
       );
 
       await loadItems();
@@ -270,8 +301,9 @@ export default function ResponsibleExternalNotificationsPanel({
               Fila externa do responsavel
             </div>
             <div className="mt-1 max-w-3xl text-[12px] leading-5 text-gray-600">
-              Este painel nao envia WhatsApp. Ele apenas prepara ou cancela avisos
-              externos da Assistente.
+              Este painel permite preparar, cancelar e enviar avisos unitarios ao
+              responsavel. O envio real exige confirmacao. Nao existe envio automatico
+              nem em lote.
             </div>
           </div>
 
@@ -346,12 +378,15 @@ export default function ResponsibleExternalNotificationsPanel({
                     const normalizedStatus = normalizeText(item.status);
                     const canPrepare =
                       normalizedStatus === "materialized" || normalizedStatus === "failed";
+                    const canSend = normalizedStatus === "ready_to_send";
                     const canCancel =
                       normalizedStatus === "materialized" ||
                       normalizedStatus === "ready_to_send" ||
                       normalizedStatus === "failed";
                     const prepareLoading =
                       actionLoadingKeys[`${item.id}:prepare`] === true;
+                    const sendLoading =
+                      actionLoadingKeys[`${item.id}:send`] === true;
                     const cancelLoading =
                       actionLoadingKeys[`${item.id}:cancel`] === true;
 
@@ -427,13 +462,13 @@ export default function ResponsibleExternalNotificationsPanel({
                           </div>
                         ) : null}
 
-                        {canPrepare || canCancel ? (
+                        {canPrepare || canCancel || canSend ? (
                           <div className="mt-3 flex flex-wrap gap-2">
                             {canPrepare ? (
                               <button
                                 type="button"
                                 onClick={() => void runAction(item.id, "prepare")}
-                                disabled={prepareLoading || cancelLoading}
+                                disabled={prepareLoading || cancelLoading || sendLoading}
                                 className="rounded-full bg-black px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {prepareLoading
@@ -446,10 +481,23 @@ export default function ResponsibleExternalNotificationsPanel({
                               <button
                                 type="button"
                                 onClick={() => void runAction(item.id, "cancel")}
-                                disabled={prepareLoading || cancelLoading}
+                                disabled={prepareLoading || cancelLoading || sendLoading}
                                 className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {cancelLoading ? "Cancelando..." : "Cancelar aviso"}
+                              </button>
+                            ) : null}
+
+                            {canSend ? (
+                              <button
+                                type="button"
+                                onClick={() => void runAction(item.id, "send", item)}
+                                disabled={prepareLoading || cancelLoading || sendLoading}
+                                className="rounded-full bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {sendLoading
+                                  ? "Enviando WhatsApp..."
+                                  : "Enviar WhatsApp ao responsavel"}
                               </button>
                             ) : null}
                           </div>
