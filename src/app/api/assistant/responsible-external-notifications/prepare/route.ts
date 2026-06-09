@@ -20,6 +20,7 @@ type PrepareBody = {
   organizationId?: string;
   storeId?: string;
   notificationId?: string;
+  notificationIds?: unknown;
 };
 
 function buildJsonResponse(body: unknown, status = 200) {
@@ -181,6 +182,18 @@ export async function POST(request: Request) {
     const organizationId = String(body.organizationId || "").trim();
     const storeId = String(body.storeId || "").trim();
     const notificationId = String(body.notificationId || "").trim();
+
+    if (Array.isArray(body.notificationIds) || Array.isArray(body.notificationId)) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          updated: false,
+          reason: "batch_not_allowed",
+          message: "Envie apenas um notificationId por vez.",
+        },
+        400
+      );
+    }
 
     if (!organizationId || !storeId || !notificationId) {
       return buildJsonResponse(

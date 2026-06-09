@@ -114,19 +114,34 @@ function getStatusTone(status: string | null | undefined) {
 }
 
 function getDocumentTypeLabel(value: string | null | undefined) {
-  return normalizeText(value) === "contract" ? "Contrato" : "Orcamento";
+  return normalizeText(value) === "contract" ? "Contrato" : "Orçamento";
 }
 
 function getDocumentStatusLabel(value: string | null | undefined) {
   const normalized = normalizeText(value);
-  if (!normalized) return "Nao informado";
-  if (normalized === "pending_review") return "Pendente de revisao";
+  if (!normalized) return "Não informado";
+  if (normalized === "pending_review") return "Pendente de revisão";
   if (normalized === "customer_signed") return "Assinado pelo cliente";
   if (normalized === "approved") return "Aprovado";
   if (normalized === "sent") return "Enviado";
   if (normalized === "failed") return "Falhou";
   if (normalized === "cancelled") return "Cancelado";
-  return value || "Nao informado";
+  return value || "Não informado";
+}
+
+function getChannelLabel(value: string | null | undefined) {
+  return normalizeText(value) === "whatsapp_responsible"
+    ? "WhatsApp do responsável"
+    : value || "Não informado";
+}
+
+function looksLikeSuspiciousDestination(value: string | null | undefined) {
+  const text = String(value || "").trim();
+  if (!text || text === "Não informado" || text === "destino-mascarado") {
+    return true;
+  }
+
+  return /9999$/.test(text) || /9{3,}/.test(text);
 }
 
 function getActionErrorText(result: ActionResponse) {
@@ -328,11 +343,11 @@ export default function ResponsibleExternalNotificationsPanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-sm font-bold text-gray-900">
-              Fila externa do responsavel
+              Fila externa do responsável
             </div>
             <div className="mt-1 max-w-3xl text-[12px] leading-5 text-gray-600">
-              Este painel permite preparar, cancelar e enviar avisos unitarios ao
-              responsavel. O envio real exige confirmacao. Nao existe envio automatico
+              Este painel permite preparar, cancelar e enviar avisos unitários ao
+              responsável. O envio real exige confirmação. Não existe envio automático
               nem em lote.
             </div>
           </div>
@@ -414,6 +429,9 @@ export default function ResponsibleExternalNotificationsPanel({
                         normalizedStatus === "ready_to_send" ||
                         normalizedStatus === "failed") &&
                       isOlderThanHours(item.created_at, 24);
+                    const showSuspiciousDestinationAlert = looksLikeSuspiciousDestination(
+                      item.destinationMasked
+                    );
                     const canCancel =
                       normalizedStatus === "materialized" ||
                       normalizedStatus === "ready_to_send" ||
@@ -456,12 +474,18 @@ export default function ResponsibleExternalNotificationsPanel({
                         </div>
 
                         <div className="mt-2 whitespace-pre-wrap rounded-xl bg-white px-3 py-2 text-[12px] leading-5 text-gray-700 ring-1 ring-black/5">
-                          {item.rendered_message || "Mensagem nao informada."}
+                          {item.rendered_message || "Mensagem não informada."}
                         </div>
 
                         {canShowOldAlert ? (
                           <div className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[11px] text-amber-900 ring-1 ring-amber-200">
-                            Este aviso e antigo. Revise antes de enviar.
+                            Este aviso é antigo. Revise antes de enviar.
+                          </div>
+                        ) : null}
+
+                        {showSuspiciousDestinationAlert ? (
+                          <div className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-[11px] text-amber-900 ring-1 ring-amber-200">
+                            Confira o número do responsável antes de enviar este aviso.
                           </div>
                         ) : null}
 
@@ -470,11 +494,11 @@ export default function ResponsibleExternalNotificationsPanel({
                             <span className="font-semibold text-gray-900">Documento:</span>{" "}
                             {item.related_document_type
                               ? getDocumentTypeLabel(item.related_document_type)
-                              : "Nao informado"}
+                              : "Não informado"}
                           </div>
                           <div>
                             <span className="font-semibold text-gray-900">Numero:</span>{" "}
-                            {item.related_document_number || "Nao informado"}
+                            {item.related_document_number || "Não informado"}
                           </div>
                           <div>
                             <span className="font-semibold text-gray-900">Status do documento:</span>{" "}
@@ -482,7 +506,7 @@ export default function ResponsibleExternalNotificationsPanel({
                           </div>
                           <div>
                             <span className="font-semibold text-gray-900">Canal:</span>{" "}
-                            {item.channel || "Nao informado"}
+                            {getChannelLabel(item.channel)}
                           </div>
                           <div>
                             <span className="font-semibold text-gray-900">Criado em:</span>{" "}
@@ -507,13 +531,13 @@ export default function ResponsibleExternalNotificationsPanel({
 
                         {item.failed_at || item.error_text ? (
                           <div className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-[11px] text-red-800 ring-1 ring-red-200">
-                            <div>Falha ao enviar. Voce pode revisar o aviso e preparar novamente.</div>
+                            <div>Falha ao enviar. Você pode revisar o aviso e preparar novamente.</div>
                             {item.failed_at ? (
                               <div className="mt-1">Falhou em {formatDateTime(item.failed_at)}.</div>
                             ) : null}
                             {item.error_text ? (
                               <div className="mt-1 text-[10px] text-red-700">
-                                <span className="font-semibold">Detalhe tecnico:</span>{" "}
+                                <span className="font-semibold">Detalhe técnico:</span>{" "}
                                 {item.error_text}
                               </div>
                             ) : null}
@@ -563,7 +587,7 @@ export default function ResponsibleExternalNotificationsPanel({
                               >
                                 {sendLoading
                                   ? "Enviando WhatsApp..."
-                                  : "Enviar WhatsApp ao responsavel"}
+                                  : "Enviar WhatsApp ao responsável"}
                               </button>
                             ) : null}
 
