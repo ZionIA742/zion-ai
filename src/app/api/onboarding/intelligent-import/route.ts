@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { runOnboardingIntelligentImport } from "@/lib/server/onboarding-intelligent-import";
+import {
+  buildUnsupportedIntelligentImportFileMessage,
+  isSupportedIntelligentImportExtension,
+} from "@/lib/server/onboarding-file-extractors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +16,24 @@ export async function POST(request: Request) {
     const storeId = String(formData.get("storeId") || "").trim();
 
     const uploadedEntries = formData.getAll("files");
+    const invalidFileNames = uploadedEntries
+      .map((entry) => {
+        if (!(entry instanceof File)) return "";
+        const extension = entry.name.includes(".") ? entry.name.split(".").pop() || "" : "";
+        return isSupportedIntelligentImportExtension(extension) ? "" : entry.name;
+      })
+      .filter(Boolean);
+
+    if (invalidFileNames.length > 0) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "ONBOARDING_INTELLIGENT_IMPORT_UNSUPPORTED_FILE",
+          message: buildUnsupportedIntelligentImportFileMessage(invalidFileNames),
+        },
+        { status: 400 }
+      );
+    }
 
     const files = await Promise.all(
       uploadedEntries.map(async (entry) => {

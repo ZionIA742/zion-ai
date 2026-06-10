@@ -26,6 +26,12 @@ type CatalogPhotoRow = {
   storage_path: string | null;
 };
 
+type PoolPhotoRow = {
+  id: string;
+  pool_id: string;
+  storage_path: string | null;
+};
+
 type StoreImportFileRow = {
   id: string;
   organization_id: string;
@@ -4530,6 +4536,171 @@ export default function ConfiguracoesPage() {
       setDeletingCatalog(false);
     }
   }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchPageData]);
+  void handleDeleteAllCatalog;
+
+  const handleDeleteAllStoreCatalog = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nao foi possivel identificar a organizacao e a loja ativa com seguranca.");
+      setSuccessText(null);
+      return;
+    }
+
+    if (deletingCatalog) return;
+
+    if (totalCatalogo === 0) {
+      setSuccessText("O catalogo da loja ja esta vazio.");
+      setErrorText(null);
+      return;
+    }
+
+    const firstConfirm = window.confirm(
+      "Tem certeza que deseja apagar TODO o catalogo desta loja? Isso vai remover piscinas, quimicos, acessorios e outros itens cadastrados."
+    );
+    if (!firstConfirm) return;
+
+    const secondConfirm = window.confirm(
+      "Confirma mais uma vez: apagar todo o catalogo agora? Essa acao remove definitivamente piscinas e itens gerais da loja atual."
+    );
+    if (!secondConfirm) return;
+
+    setDeletingCatalog(true);
+    setErrorText(null);
+    setSuccessText(null);
+
+    try {
+      const { data: poolsData, error: poolsError } = await supabase
+        .from("pools")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (poolsError) throw poolsError;
+
+      const poolIds = ((poolsData || []) as Array<{ id: string }>).map((pool) => pool.id);
+      const poolPhotoRows: PoolPhotoRow[] = [];
+
+      for (const ids of chunkArray(poolIds, 200)) {
+        if (ids.length === 0) continue;
+
+        const { data: photoChunk, error: poolPhotosError } = await supabase
+          .from("pool_photos")
+          .select("id, pool_id, storage_path")
+          .in("pool_id", ids);
+
+        if (poolPhotosError) throw poolPhotosError;
+        poolPhotoRows.push(...((photoChunk || []) as PoolPhotoRow[]));
+      }
+
+      const poolStoragePaths = poolPhotoRows
+        .map((row) => String(row.storage_path || "").trim())
+        .filter(Boolean);
+
+      for (const paths of chunkArray(poolStoragePaths, 100)) {
+        if (paths.length === 0) continue;
+
+        const { error: storageRemoveError } = await supabase.storage
+          .from("pool-photos")
+          .remove(paths);
+
+        if (storageRemoveError) throw storageRemoveError;
+      }
+
+      for (const ids of chunkArray(poolPhotoRows.map((row) => row.id), 200)) {
+        if (ids.length === 0) continue;
+
+        const { error: deletePoolPhotosError } = await supabase
+          .from("pool_photos")
+          .delete()
+          .in("id", ids);
+
+        if (deletePoolPhotosError) throw deletePoolPhotosError;
+      }
+
+      for (const ids of chunkArray(poolIds, 200)) {
+        if (ids.length === 0) continue;
+
+        const { error: deletePoolsError } = await supabase
+          .from("pools")
+          .delete()
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .in("id", ids);
+
+        if (deletePoolsError) throw deletePoolsError;
+      }
+
+      const { data: catalogItems, error: catalogItemsError } = await supabase
+        .from("store_catalog_items")
+        .select("id")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (catalogItemsError) throw catalogItemsError;
+
+      const catalogItemIds = ((catalogItems || []) as Array<{ id: string }>).map(
+        (item) => item.id
+      );
+
+      const photoRows: CatalogPhotoRow[] = [];
+      for (const ids of chunkArray(catalogItemIds, 200)) {
+        if (ids.length === 0) continue;
+
+        const { data: photoChunk, error: photosError } = await supabase
+          .from("store_catalog_item_photos")
+          .select("id, catalog_item_id, storage_path")
+          .in("catalog_item_id", ids);
+
+        if (photosError) throw photosError;
+        photoRows.push(...((photoChunk || []) as CatalogPhotoRow[]));
+      }
+
+      const storagePaths = photoRows
+        .map((row) => String(row.storage_path || "").trim())
+        .filter(Boolean);
+
+      for (const paths of chunkArray(storagePaths, 100)) {
+        if (paths.length === 0) continue;
+
+        const { error: storageRemoveError } = await supabase.storage
+          .from("store-catalog-photos")
+          .remove(paths);
+
+        if (storageRemoveError) throw storageRemoveError;
+      }
+
+      for (const ids of chunkArray(photoRows.map((row) => row.id), 200)) {
+        if (ids.length === 0) continue;
+
+        const { error: deletePhotosError } = await supabase
+          .from("store_catalog_item_photos")
+          .delete()
+          .in("id", ids);
+
+        if (deletePhotosError) throw deletePhotosError;
+      }
+
+      for (const ids of chunkArray(catalogItemIds, 200)) {
+        if (ids.length === 0) continue;
+
+        const { error: deleteItemsError } = await supabase
+          .from("store_catalog_items")
+          .delete()
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .in("id", ids);
+
+        if (deleteItemsError) throw deleteItemsError;
+      }
+
+      setSuccessText("Todo o catalogo da loja foi apagado com sucesso, incluindo piscinas e itens gerais.");
+      await fetchPageData();
+    } catch (error: any) {
+      setErrorText(error?.message ?? "Erro ao apagar todo o catalogo da loja.");
+      setSuccessText(null);
+    } finally {
+      setDeletingCatalog(false);
+    }
+  }, [organizationId, activeStoreId, deletingCatalog, totalCatalogo, fetchPageData]);
 
   const rawImportFilesModalFiles = rawImportFilesModalTab === "pools" ? poolImportFiles : catalogImportFiles;
   const rawImportFilesModalTitle =
@@ -5186,7 +5357,7 @@ export default function ConfiguracoesPage() {
             <div className="flex items-start">
               <button
                 type="button"
-                onClick={() => void handleDeleteAllCatalog()}
+                onClick={() => void handleDeleteAllStoreCatalog()}
                 disabled={!hasValidStoreContext || deletingCatalog || totalCatalogo === 0}
                 className="rounded-xl border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
               >

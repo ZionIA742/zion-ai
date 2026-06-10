@@ -6,6 +6,22 @@ import { createRequire } from "node:module";
 const nodeRequire = createRequire(`${process.cwd()}/package.json`);
 const MAX_RENDERED_PDF_IMAGE_PAGES = 150;
 const PDF_RENDER_SCALE = 0.75;
+export const SUPPORTED_INTELLIGENT_IMPORT_EXTENSIONS = [
+  "pdf",
+  "docx",
+  "txt",
+  "xlsx",
+  "xlsm",
+  "xls",
+  "pptx",
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "bmp",
+  "svg",
+] as const;
 
 const DEBUG_INTELLIGENT_IMPORT =
   process.env.NODE_ENV !== "production" ||
@@ -74,6 +90,34 @@ export type ExtractedFileDiagnostics = {
 function getExtension(fileName: string) {
   const parts = fileName.toLowerCase().split(".");
   return parts.length > 1 ? parts[parts.length - 1] : "";
+}
+
+export function isSupportedIntelligentImportExtension(extension: string) {
+  return SUPPORTED_INTELLIGENT_IMPORT_EXTENSIONS.includes(
+    String(extension || "").trim().toLowerCase() as (typeof SUPPORTED_INTELLIGENT_IMPORT_EXTENSIONS)[number]
+  );
+}
+
+export function buildUnsupportedIntelligentImportFileMessage(fileNames: string[]) {
+  const cleanedNames = Array.from(
+    new Set(
+      fileNames
+        .map((fileName) => String(fileName || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const supportedFormatsLabel =
+    "PDF, DOCX, TXT, XLS/XLSX/XLSM, PPTX, PNG, JPG, JPEG, WEBP, GIF, BMP ou SVG";
+
+  if (cleanedNames.length === 0) {
+    return `Arquivo nao suportado. Use ${supportedFormatsLabel}.`;
+  }
+
+  if (cleanedNames.length === 1) {
+    return `Arquivo nao suportado: ${cleanedNames[0]}. Use ${supportedFormatsLabel}.`;
+  }
+
+  return `Arquivos nao suportados: ${cleanedNames.join(", ")}. Use ${supportedFormatsLabel}.`;
 }
 
 function getImageMimeTypeFromExtension(fileName: string) {
@@ -955,8 +999,7 @@ export async function extractTextFromFile(params: {
     text = await extractTextFromPptx(buffer);
     extractedImages = await extractImagesFromPptx(buffer);
   } else if (
-    ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"].includes(extension) ||
-    mimeType.startsWith("image/")
+    ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"].includes(extension)
   ) {
     text = await extractTextFromImage(buffer);
     extractedImages = await extractImageFile(buffer, fileName);

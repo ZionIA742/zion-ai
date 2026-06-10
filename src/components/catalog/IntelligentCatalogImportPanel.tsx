@@ -1012,6 +1012,28 @@ const VISUAL_ANALYSIS_PREVIEW_CACHE_MAX_CHARS = 4_000_000;
 const VISUAL_ANALYSIS_PREVIEW_CACHE_THUMBNAIL_WIDTH = 560;
 const VISUAL_ANALYSIS_PREVIEW_CACHE_THUMBNAIL_QUALITY = 0.72;
 const VISUAL_ANALYSIS_MAIN_FLOW_MAX_RECOMMENDED_PAGES = 20;
+const INTELLIGENT_IMPORT_SUPPORTED_EXTENSIONS = [
+  "pdf",
+  "docx",
+  "txt",
+  "xlsx",
+  "xlsm",
+  "xls",
+  "pptx",
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "bmp",
+  "svg",
+] as const;
+const INTELLIGENT_IMPORT_ACCEPT_ATTRIBUTE =
+  ".pdf,.docx,.txt,.xlsx,.xlsm,.xls,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg";
+const INTELLIGENT_IMPORT_SUPPORTED_FORMATS_LABEL =
+  "PDF, DOCX, TXT, XLS/XLSX/XLSM, PPTX, PNG, JPG, JPEG, WEBP, GIF, BMP e SVG.";
+const INTELLIGENT_IMPORT_SUPPORTED_FORMATS_ERROR_LABEL =
+  "PDF, DOCX, TXT, XLS/XLSX/XLSM, PPTX, PNG, JPG, JPEG, WEBP, GIF, BMP ou SVG";
 type IntelligentCatalogImportPanelProps = {
   organizationId: string | null | undefined;
   storeId: string | null | undefined;
@@ -1033,6 +1055,54 @@ function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+function getIntelligentImportFileExtension(fileName: string) {
+  const trimmed = String(fileName || "").trim().toLowerCase();
+  if (!trimmed.includes(".")) return "";
+  return trimmed.split(".").pop() || "";
+}
+function isSupportedIntelligentImportFile(file: File) {
+  const extension = getIntelligentImportFileExtension(file.name);
+  return INTELLIGENT_IMPORT_SUPPORTED_EXTENSIONS.includes(
+    extension as (typeof INTELLIGENT_IMPORT_SUPPORTED_EXTENSIONS)[number]
+  );
+}
+function formatUnsupportedIntelligentImportFiles(fileNames: string[]) {
+  const cleanedNames = Array.from(
+    new Set(
+      fileNames
+        .map((fileName) => String(fileName || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (cleanedNames.length === 0) {
+    return `Nenhum arquivo valido para importar. Use ${INTELLIGENT_IMPORT_SUPPORTED_FORMATS_ERROR_LABEL}.`;
+  }
+
+  return `Alguns arquivos foram ignorados por formato nao suportado: ${cleanedNames.join(", ")}.`;
+}
+function normalizeIntelligentImportErrorMessage(message: string | null | undefined) {
+  const cleanMessage = String(message || "").trim();
+  if (!cleanMessage) {
+    return `Arquivo nao suportado. Use ${INTELLIGENT_IMPORT_SUPPORTED_FORMATS_ERROR_LABEL}.`;
+  }
+
+  if (
+    cleanMessage.toLowerCase().includes("arquivo nao suportado") ||
+    cleanMessage.toLowerCase().includes("arquivos nao suportados")
+  ) {
+    return cleanMessage;
+  }
+
+  if (
+    cleanMessage.toLowerCase().includes("tipo de arquivo") &&
+    cleanMessage.toLowerCase().includes("suport")
+  ) {
+    return `Arquivo nao suportado. Use ${INTELLIGENT_IMPORT_SUPPORTED_FORMATS_ERROR_LABEL}.`;
+  }
+
+  return cleanMessage;
 }
 function isImageLikeFileType(fileType: string) {
   return fileType.startsWith("image/");
@@ -6181,6 +6251,12 @@ export default function IntelligentCatalogImportPanel({
     }
   }
   async function handleRunIntelligentImport() {
+    if (intelligentImportFiles.length === 0) {
+      setIntelligentImportError(
+        `Nenhum arquivo valido para importar. Use ${INTELLIGENT_IMPORT_SUPPORTED_FORMATS_ERROR_LABEL}.`
+      );
+      return;
+    }
     if (!organizationId || !storeId) {
       setIntelligentImportError("Não foi possível identificar a organização e a loja ativa.");
       return;
@@ -6227,6 +6303,10 @@ export default function IntelligentCatalogImportPanel({
         body: formData,
       });
       const result = (await response.json()) as IntelligentImportResponse;
+      const friendlyResultMessage = normalizeIntelligentImportErrorMessage(
+        result.message || "Falha ao processar a importaÃ§Ã£o inteligente."
+      );
+      void friendlyResultMessage;
       if (!response.ok || !result.ok) {
         setIntelligentImportError(result.message || "Falha ao processar a importação inteligente.");
         setIntelligentImportResult(result);
@@ -7902,11 +7982,17 @@ async function handleSaveImportedItemsToCatalog() {
                   <input
                     type="file"
                     multiple
-                    accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,image/*"
+                    accept={INTELLIGENT_IMPORT_ACCEPT_ATTRIBUTE}
                     onChange={async (e) => {
                       const input = e.currentTarget;
                       const selectedFiles = Array.from(input.files ?? []) as File[];
-                      const selectedVisualPdfFile = selectedFiles.find((file) =>
+                      const validFiles = selectedFiles.filter((file) =>
+                        isSupportedIntelligentImportFile(file)
+                      );
+                      const invalidFiles = selectedFiles.filter(
+                        (file) => !isSupportedIntelligentImportFile(file)
+                      );
+                      const selectedVisualPdfFile = validFiles.find((file) =>
                         String(file.name || "").toLowerCase().endsWith(".pdf")
                       );
                       const keepsCurrentVisualAnalysis =
@@ -7922,12 +8008,24 @@ async function handleSaveImportedItemsToCatalog() {
                       if (!keepsCurrentVisualAnalysis) {
                         visualEvidencePagesManuallyEditedRef.current = false;
                       }
-                      setIntelligentImportFiles(selectedFiles);
+                      setIntelligentImportFiles(validFiles);
                       setIntelligentImportSelectedFilesPreview(
-                        await buildSelectedFilePreviews(selectedFiles)
+                        await buildSelectedFilePreviews(validFiles)
                       );
                       setIntelligentImportRecovered(false);
-                      setIntelligentImportError(null);
+                      if (invalidFiles.length > 0 && validFiles.length > 0) {
+                        setIntelligentImportError(
+                          formatUnsupportedIntelligentImportFiles(
+                            invalidFiles.map((file) => file.name)
+                          )
+                        );
+                      } else if (invalidFiles.length > 0) {
+                        setIntelligentImportError(
+                          `Nenhum arquivo valido para importar. Use ${INTELLIGENT_IMPORT_SUPPORTED_FORMATS_ERROR_LABEL}.`
+                        );
+                      } else {
+                        setIntelligentImportError(null);
+                      }
                       if (!keepsCurrentVisualAnalysis) {
                         setIntelligentImportSuccess(null);
                         latestExtractedImagePreviewRef.current = [];
@@ -7939,6 +8037,9 @@ async function handleSaveImportedItemsToCatalog() {
                     }}
                     className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 outline-none file:mr-3 file:rounded-md file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white"
                   />
+                  <div className="text-xs text-gray-500">
+                    Formatos aceitos: {INTELLIGENT_IMPORT_SUPPORTED_FORMATS_LABEL}
+                  </div>
                   <div className="hidden">
                     Você pode enviar fotos do catálogo, imagens de produtos, tabelas simples em foto, PDF, Word, Excel e PowerPoint. As imagens selecionadas aparecem em pré-visualização logo abaixo para facilitar a conferência antes do teste.
                   </div>
