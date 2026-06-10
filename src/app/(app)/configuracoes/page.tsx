@@ -376,6 +376,7 @@ type StatusTone = "green" | "amber" | "red" | "gray";
 type SettingsTabId =
   | "visao-geral"
   | "estrategia"
+  | "catalogo"
   | "piscinas"
   | "produtos-acessorios"
   | "operacao"
@@ -385,6 +386,13 @@ type SettingsTabId =
   | "canais-integracoes"
   | "contratos"
   | "identidade";
+
+function normalizeSettingsTabId(tab: SettingsTabId | null | undefined): SettingsTabId {
+  if (tab === "piscinas" || tab === "produtos-acessorios") {
+    return "catalogo";
+  }
+  return tab ?? "visao-geral";
+}
 
 type Option = {
   value: string;
@@ -570,6 +578,22 @@ function buildStoreName(activeStore: unknown) {
 
 function cleanText(value: unknown) {
   return String(value ?? "").trim();
+}
+
+function buildImportFileKey(file: StoreImportFileRow, index: number) {
+  const key = [
+    file.id,
+    file.storage_path,
+    file.original_file_name,
+    file.created_at,
+    file.updated_at,
+    file.size_bytes,
+    index,
+  ]
+    .filter((value) => value !== null && value !== undefined && String(value).trim().length > 0)
+    .join("-");
+
+  return key || `catalog-imported-file-${index}`;
 }
 
 function summarizeMetricText(value: unknown, maxLength = 72) {
@@ -1542,8 +1566,7 @@ export default function ConfiguracoesPage() {
     () => [
       { id: "visao-geral" as const, label: "Visão Geral" },
       { id: "estrategia" as const, label: "Estratégia" },
-      { id: "piscinas" as const, label: "Piscinas" },
-      { id: "produtos-acessorios" as const, label: "Produtos/Acessórios" },
+      { id: "catalogo" as const, label: "Catálogo" },
       { id: "operacao" as const, label: "Operação" },
       { id: "comercial-ia" as const, label: "Comercial e IA" },
       { id: "responsavel-ativacao" as const, label: "Responsável e ativação" },
@@ -2225,7 +2248,7 @@ export default function ConfiguracoesPage() {
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedConfiguracoesState>;
 
-      if (parsed.activeTab) setActiveTab(parsed.activeTab);
+      if (parsed.activeTab) setActiveTab(normalizeSettingsTabId(parsed.activeTab));
       if (typeof parsed.isOverviewEditing === "boolean") setIsOverviewEditing(parsed.isOverviewEditing);
       if (typeof parsed.isStrategyEditing === "boolean") setIsStrategyEditing(parsed.isStrategyEditing);
       if (typeof parsed.isOperationEditing === "boolean") setIsOperationEditing(parsed.isOperationEditing);
@@ -3200,8 +3223,7 @@ export default function ConfiguracoesPage() {
 
   const shouldShowQuickAccess =
     activeTab === "visao-geral" ||
-    activeTab === "piscinas" ||
-    activeTab === "produtos-acessorios";
+    activeTab === "catalogo";
 
   const handleOverviewDraftChange = useCallback((key: string, value: string) => {
     setOverviewDraft((current) => ({
@@ -4509,6 +4531,13 @@ export default function ConfiguracoesPage() {
     rawImportFilesModalTab === "pools"
       ? "Nenhum arquivo bruto importado foi encontrado para piscinas ainda."
       : "Nenhum arquivo bruto importado foi encontrado para produtos e acessórios ainda.";
+  const catalogImportedFiles = useMemo(() => {
+    return [...poolImportFiles, ...catalogImportFiles].sort((left, right) => {
+      const leftTime = left.created_at ? new Date(left.created_at).getTime() : 0;
+      const rightTime = right.created_at ? new Date(right.created_at).getTime() : 0;
+      return rightTime - leftTime;
+    });
+  }, [poolImportFiles, catalogImportFiles]);
 
   return (
     <div className="space-y-4 overflow-x-hidden">
@@ -4565,6 +4594,119 @@ export default function ConfiguracoesPage() {
             <QuickCard href="/configuracoes/catalogo/outros" title="Outros" count={counts.outros} />
           </div>
         </SectionBlock>
+      ) : null}
+
+      {activeTab === "catalogo" ? (
+        <div className="space-y-4 overflow-x-hidden">
+          <SectionBlock
+            title="Upload inteligente"
+            description="Envie arquivos para importar catálogo, piscinas e materiais da loja usando o fluxo já existente."
+          >
+            <IntelligentCatalogImportPanel
+              organizationId={organizationId}
+              storeId={activeStoreId}
+              storageKey={intelligentImportStorageKey}
+              source="configuracoes_intelligent_import"
+              disabled={!hasValidStoreContext}
+              supabaseClient={supabase}
+              onError={(message) => {
+                setErrorText(message);
+                if (message) setSuccessText(null);
+              }}
+              onSuccess={(message) => {
+                setSuccessText(message);
+                if (message) setErrorText(null);
+              }}
+              onSaved={async () => {
+                await fetchPageData();
+              }}
+            />
+          </SectionBlock>
+
+          <SectionBlock
+            title="Arquivos importados"
+            description="Veja os arquivos enviados para importação do catálogo e remova arquivos individuais quando necessário."
+          >
+            <details className="group rounded-2xl border border-gray-200 bg-gray-50">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Arquivos importados</div>
+                  <div className="mt-1 text-xs text-gray-600">
+                    {catalogImportedFiles.length > 0
+                      ? `${catalogImportedFiles.length} arquivo(s) disponível(is) para consulta`
+                      : "Nenhum arquivo importado disponível no momento"}
+                  </div>
+                </div>
+                <span className="text-xs font-semibold text-gray-500 transition group-open:rotate-180">▼</span>
+              </summary>
+
+              <div className="border-t border-gray-200 px-4 py-4">
+                {catalogImportedFiles.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-300 bg-white px-4 py-4 text-sm text-gray-600">
+                    Nenhum arquivo importado foi encontrado para esta loja ainda.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {catalogImportedFiles.map((file, index) => (
+                      <div
+                        key={buildImportFileKey(file, index)}
+                        className="rounded-2xl border border-gray-200 bg-white p-3"
+                      >
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div className="min-w-0">
+                            <div className="break-words text-sm font-semibold text-gray-900">
+                              {cleanText(file.original_file_name) || "Arquivo sem nome"}
+                            </div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              Importado em {formatImportDate(file.created_at)}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-gray-600">
+                              <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-gray-200">
+                                Tipo: {cleanText(file.extension)?.toUpperCase() || cleanText(file.mime_type) || "Não definido"}
+                              </span>
+                              <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-gray-200">
+                                Tamanho: {formatFileSize(file.size_bytes)}
+                              </span>
+                              <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-gray-200">
+                                Status: {cleanText(file.status) || "Não definido"}
+                              </span>
+                              <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-gray-200">
+                                {getImportSummaryText(file.import_summary || null)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void handleDownloadImportFile(file)}
+                              disabled={
+                                downloadingImportFileId === file.id ||
+                                deletingImportFileId === file.id
+                              }
+                              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {downloadingImportFileId === file.id ? "Gerando..." : "Baixar"}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteImportFile(file)}
+                              disabled={deletingImportFileId === file.id}
+                              className="rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {deletingImportFileId === file.id ? "Excluindo..." : "Excluir"}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </details>
+          </SectionBlock>
+        </div>
       ) : null}
 
       {activeTab === "visao-geral" ? (
@@ -8108,9 +8250,9 @@ export default function ConfiguracoesPage() {
                 </div>
               ) : (
                 <div className="space-y-2.5">
-                  {rawImportFilesModalFiles.map((file) => (
+                  {rawImportFilesModalFiles.map((file, index) => (
                     <div
-                      key={file.id}
+                      key={buildImportFileKey(file, index)}
                       className="rounded-2xl border border-gray-200 bg-gray-50 p-3"
                     >
                       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
