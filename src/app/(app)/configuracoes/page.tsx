@@ -187,6 +187,8 @@ type PoolFormState = {
   description: string;
   included_items: string;
   installation_notes: string;
+  application: string;
+  technical_notes: string;
   is_active: boolean;
   track_stock: boolean;
 };
@@ -766,6 +768,8 @@ function createEmptyPoolForm(): PoolFormState {
     description: "",
     included_items: "",
     installation_notes: "",
+    application: "",
+    technical_notes: "",
     is_active: true,
     track_stock: true,
   };
@@ -1140,6 +1144,13 @@ function parseNumberInput(value: string) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function normalizeManualDuplicateText(value: string | null | undefined) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("pt-BR");
+}
+
 function formatFixedDecimalInput(value: string, decimalPlaces = 2) {
   const digits = String(value || "").replace(/\D/g, "");
   if (!digits) return "";
@@ -1162,11 +1173,6 @@ function formatManualPoolFieldValue(
   value: string | boolean
 ): string | boolean {
   if (typeof value !== "string") return value;
-
-  if (["width_m", "length_m", "depth_m", "price"].includes(key)) {
-    return formatFixedDecimalInput(value, 2);
-  }
-
   return value;
 }
 
@@ -1175,11 +1181,6 @@ function formatManualCatalogFieldValue(
   value: string | boolean
 ): string | boolean {
   if (typeof value !== "string") return value;
-
-  if (["width_cm", "height_cm", "length_cm", "weight_kg", "price"].includes(key)) {
-    return formatFixedDecimalInput(value, 2);
-  }
-
   return value;
 }
 
@@ -1196,6 +1197,8 @@ function buildPoolManualDescription(form: PoolFormState) {
     { label: "Profundidade (m)", value: cleanText(form.depth_m) },
     { label: "Itens inclusos", value: cleanText(form.included_items) },
     { label: "Observações de instalação", value: cleanText(form.installation_notes) },
+    { label: "Aplicação / uso recomendado", value: cleanText(form.application) },
+    { label: "Observações técnicas", value: cleanText(form.technical_notes) },
   ]);
 
   if (!baseDescription && detailLines.length === 0) return "";
@@ -1509,6 +1512,12 @@ export default function ConfiguracoesPage() {
   const [downloadingImportFileId, setDownloadingImportFileId] = useState<string | null>(null);
   const [deletingImportFileId, setDeletingImportFileId] = useState<string | null>(null);
   const [rawImportFilesModalTab, setRawImportFilesModalTab] = useState<"pools" | "catalog" | null>(null);
+  const [isManualCatalogItemModalOpen, setIsManualCatalogItemModalOpen] = useState(false);
+  const [manualCatalogItemCategory, setManualCatalogItemCategory] = useState<
+    "piscina" | "quimicos" | "acessorios" | "outros"
+  >("piscina");
+  const [manualCatalogItemModalError, setManualCatalogItemModalError] = useState<string | null>(null);
+  const [manualCatalogItemModalSuccess, setManualCatalogItemModalSuccess] = useState<string | null>(null);
   const [storeBranding, setStoreBranding] = useState<StoreBrandingSettingsRow | null>(null);
   const [storeLogoPreviewUrl, setStoreLogoPreviewUrl] = useState<string | null>(null);
   const [storeWhatsappStatus, setStoreWhatsappStatus] = useState<StoreWhatsappStatusApiResponse | null>(null);
@@ -4538,6 +4547,454 @@ export default function ConfiguracoesPage() {
       return rightTime - leftTime;
     });
   }, [poolImportFiles, catalogImportFiles]);
+  const resetManualCatalogItemModalForm = useCallback(() => {
+    setPoolForm(createEmptyPoolForm());
+    setPoolPhotos([]);
+    setCatalogForm(createEmptyCatalogForm());
+    setCatalogPhotos([]);
+    setManualCatalogItemModalError(null);
+    setManualCatalogItemModalSuccess(null);
+  }, []);
+  const closeManualCatalogItemModal = useCallback(() => {
+    resetManualCatalogItemModalForm();
+    setManualCatalogItemCategory("piscina");
+    setIsManualCatalogItemModalOpen(false);
+  }, [resetManualCatalogItemModalForm]);
+  const handleManualCatalogItemCategoryChange = useCallback(
+    (value: "piscina" | "quimicos" | "acessorios" | "outros") => {
+      setManualCatalogItemCategory(value);
+      setManualCatalogItemModalError(null);
+      setManualCatalogItemModalSuccess(null);
+
+      if (value !== "piscina") {
+        setCatalogForm((current) => ({
+          ...current,
+          category: value,
+        }));
+      }
+    },
+    []
+  );
+  const handleManualCatalogPoolPhotosChange = useCallback((fileList: FileList | null) => {
+    const selectedFiles = Array.from(fileList || []);
+    const validationError = validateSelectedPhotos(selectedFiles);
+    if (validationError) {
+      setManualCatalogItemModalError(validationError);
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    setPoolPhotos(selectedFiles);
+    setManualCatalogItemModalError(null);
+    setManualCatalogItemModalSuccess(null);
+  }, []);
+  const handleManualCatalogGeneralPhotosChange = useCallback((fileList: FileList | null) => {
+    const selectedFiles = Array.from(fileList || []);
+    const validationError = validateSelectedPhotos(selectedFiles);
+    if (validationError) {
+      setManualCatalogItemModalError(validationError);
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    setCatalogPhotos(selectedFiles);
+    setManualCatalogItemModalError(null);
+    setManualCatalogItemModalSuccess(null);
+  }, []);
+  const handleManualCatalogItemVisualSave = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setManualCatalogItemModalError("Nenhuma loja ativa foi encontrada para salvar este item.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    const parseIntegerField = (value: string) => {
+      const normalized = cleanText(value).replace(/\s+/g, "");
+      if (!normalized) return null;
+      if (!/^-?\d+$/.test(normalized)) return Number.NaN;
+      return Number(normalized);
+    };
+
+    if (manualCatalogItemCategory === "piscina") {
+      const poolName = cleanText(poolForm.name);
+      const widthInput = cleanText(poolForm.width_m);
+      const lengthInput = cleanText(poolForm.length_m);
+      const depthInput = cleanText(poolForm.depth_m);
+      const priceInput = cleanText(poolForm.price);
+      const widthM = parseNumberInput(poolForm.width_m);
+      const lengthM = parseNumberInput(poolForm.length_m);
+      const depthM = parseNumberInput(poolForm.depth_m);
+      const price = parseNumberInput(poolForm.price);
+      const stockValue = parseIntegerField(poolForm.stock_quantity);
+      const poolPhotosError = validateSelectedPhotos(poolPhotos);
+
+      if (!poolName) {
+        setManualCatalogItemModalError("Preencha o nome da piscina para continuar.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (widthInput && widthM === null) {
+        setManualCatalogItemModalError("Preencha uma largura válida em metros.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (lengthInput && lengthM === null) {
+        setManualCatalogItemModalError("Preencha um comprimento válido em metros.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (depthInput && depthM === null) {
+        setManualCatalogItemModalError("Preencha uma profundidade válida em metros.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (priceInput && price === null) {
+        setManualCatalogItemModalError("Preencha um preço numérico válido.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (Number.isNaN(stockValue)) {
+        setManualCatalogItemModalError("Preencha um estoque inteiro válido.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (poolPhotosError) {
+        setManualCatalogItemModalError(poolPhotosError);
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      setSavingPool(true);
+      setManualCatalogItemModalError(null);
+      setManualCatalogItemModalSuccess(null);
+
+      try {
+        const { data: existingPool, error: existingPoolError } = await supabase
+          .from("pools")
+          .select("id")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .eq("name", poolName)
+          .limit(1)
+          .maybeSingle();
+
+        if (existingPoolError) throw existingPoolError;
+
+        if (existingPool?.id) {
+          setManualCatalogItemModalError("Já existe uma piscina com esse nome nesta loja.");
+          setManualCatalogItemModalSuccess(null);
+          return;
+        }
+
+        const composedPoolDescription = buildPoolManualDescription(poolForm);
+        const maxCapacityL =
+          widthM !== null && lengthM !== null && depthM !== null
+            ? Math.max(1, Math.round(widthM * lengthM * depthM * 1000))
+            : null;
+        const stockQuantity = poolForm.track_stock ? stockValue ?? 0 : stockValue;
+
+        const { data: createdPool, error: insertError } = await supabase
+          .from("pools")
+          .insert({
+            organization_id: organizationId,
+            store_id: activeStoreId,
+            name: poolName,
+            width_m: widthM,
+            length_m: lengthM,
+            depth_m: depthM,
+            shape: cleanText(poolForm.shape) || null,
+            material: cleanText(poolForm.material) || null,
+            max_capacity_l: maxCapacityL,
+            weight_kg: null,
+            price,
+            description: composedPoolDescription || null,
+            stock_quantity: stockQuantity,
+            is_active: poolForm.is_active,
+            track_stock: poolForm.track_stock,
+          })
+          .select("id")
+          .single();
+
+        if (insertError) throw insertError;
+
+        const createdPoolId = cleanText(createdPool?.id);
+        if (!createdPoolId) {
+          throw new Error("Não foi possível obter o ID da piscina criada.");
+        }
+
+        let photoUploadFailed = false;
+
+        for (const [index, file] of poolPhotos.entries()) {
+          const safeFileName = `${Date.now()}-${index}-${file.name.replace(/\s+/g, "-")}`;
+          const storagePath = `${organizationId}/${activeStoreId}/${createdPoolId}/${safeFileName}`;
+
+          try {
+            const { error: uploadError } = await supabase.storage
+              .from("pool-photos")
+              .upload(storagePath, file, {
+                cacheControl: "3600",
+                upsert: false,
+              });
+
+            if (uploadError) throw uploadError;
+
+            const { error: metadataError } = await supabase.from("pool_photos").insert({
+              pool_id: createdPoolId,
+              organization_id: organizationId,
+              store_id: activeStoreId,
+              storage_path: storagePath,
+              file_name: file.name,
+              file_size_bytes: file.size,
+              sort_order: index,
+            });
+
+            if (metadataError) {
+              await supabase.storage.from("pool-photos").remove([storagePath]);
+              throw metadataError;
+            }
+          } catch {
+            photoUploadFailed = true;
+          }
+        }
+
+        setPoolForm(createEmptyPoolForm());
+        setPoolPhotos([]);
+        setManualCatalogItemModalError(null);
+        setManualCatalogItemModalSuccess(
+          photoUploadFailed
+            ? "Piscina salva, mas uma ou mais fotos não foram enviadas."
+            : "Piscina salva com sucesso."
+        );
+        await fetchPageData();
+        return;
+      } catch (error: any) {
+        setManualCatalogItemModalError(error?.message ?? "Erro ao salvar a piscina manualmente.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      } finally {
+        setSavingPool(false);
+      }
+    }
+
+    const itemName = cleanText(catalogForm.name);
+    const priceInput = cleanText(catalogForm.price);
+    const price = parseNumberInput(catalogForm.price);
+    const stockValue = parseIntegerField(catalogForm.stock_quantity);
+    const widthInput = cleanText(catalogForm.width_cm);
+    const heightInput = cleanText(catalogForm.height_cm);
+    const lengthInput = cleanText(catalogForm.length_cm);
+    const weightInput = cleanText(catalogForm.weight_kg);
+    const widthCm = parseNumberInput(catalogForm.width_cm);
+    const heightCm = parseNumberInput(catalogForm.height_cm);
+    const lengthCm = parseNumberInput(catalogForm.length_cm);
+    const weightKg = parseNumberInput(catalogForm.weight_kg);
+    const catalogPhotosError = validateSelectedPhotos(catalogPhotos);
+    const sku = cleanText(catalogForm.sku) || null;
+
+    if (!itemName) {
+      setManualCatalogItemModalError("Preencha o nome do item para continuar.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (priceInput && price === null) {
+      setManualCatalogItemModalError("Preencha um preço numérico válido.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (Number.isNaN(stockValue)) {
+      setManualCatalogItemModalError("Preencha um estoque inteiro válido.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (widthInput && widthCm === null) {
+      setManualCatalogItemModalError("Preencha uma largura válida em centímetros.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (heightInput && heightCm === null) {
+      setManualCatalogItemModalError("Preencha uma altura válida em centímetros.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (lengthInput && lengthCm === null) {
+      setManualCatalogItemModalError("Preencha um comprimento válido em centímetros.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (weightInput && weightKg === null) {
+      setManualCatalogItemModalError("Preencha um peso válido em quilos.");
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    if (catalogPhotosError) {
+      setManualCatalogItemModalError(catalogPhotosError);
+      setManualCatalogItemModalSuccess(null);
+      return;
+    }
+
+    setSavingCatalogItem(true);
+    setManualCatalogItemModalError(null);
+    setManualCatalogItemModalSuccess(null);
+
+    try {
+      const { data: existingItems, error: existingItemsError } = await supabase
+        .from("store_catalog_items")
+        .select("id, name, sku, metadata")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId);
+
+      if (existingItemsError) throw existingItemsError;
+
+      const normalizedItemName = normalizeManualDuplicateText(itemName);
+      const normalizedSku = normalizeManualDuplicateText(sku);
+      const existingItemsList = (existingItems || []) as Array<{
+        id: string;
+        name: string | null;
+        sku: string | null;
+        metadata?: Record<string, unknown> | null;
+      }>;
+
+      const hasDuplicateName = existingItemsList.some(
+        (existingItem) => normalizeManualDuplicateText(existingItem.name) === normalizedItemName
+      );
+
+      if (hasDuplicateName) {
+        setManualCatalogItemModalError("Já existe um item com esse nome nesta loja.");
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
+      if (normalizedSku) {
+        const hasDuplicateSku = existingItemsList.some(
+          (existingItem) => normalizeManualDuplicateText(existingItem.sku) === normalizedSku
+        );
+
+        if (hasDuplicateSku) {
+          setManualCatalogItemModalError("Já existe um item com esse SKU nesta loja.");
+          setManualCatalogItemModalSuccess(null);
+          return;
+        }
+      }
+
+      const stockQuantity = catalogForm.track_stock ? stockValue ?? 0 : stockValue;
+      const metadataPayload = {
+        categoria: manualCatalogItemCategory,
+        brand: cleanText(catalogForm.brand) || null,
+        line: cleanText(catalogForm.line) || null,
+        unit_label: cleanText(catalogForm.unit_label) || null,
+        size_details: cleanText(catalogForm.size_details) || null,
+        width_cm: widthCm,
+        height_cm: heightCm,
+        length_cm: lengthCm,
+        weight_kg: weightKg,
+        application: cleanText(catalogForm.application) || null,
+        technical_notes: cleanText(catalogForm.technical_notes) || null,
+        manual_created_in_configuracoes: true,
+        pending_photo_upload_count: 0,
+      };
+
+      const { data: createdItem, error: insertError } = await supabase
+        .from("store_catalog_items")
+        .insert({
+          organization_id: organizationId,
+          store_id: activeStoreId,
+          sku,
+          name: itemName,
+          description: cleanText(catalogForm.description) || null,
+          price_cents: price === null ? null : Math.round(price * 100),
+          currency: "BRL",
+          is_active: catalogForm.is_active,
+          track_stock: catalogForm.track_stock,
+          stock_quantity: stockQuantity,
+          metadata: metadataPayload,
+        })
+        .select("id")
+        .single();
+
+      if (insertError) throw insertError;
+
+      const createdCatalogItemId = cleanText(createdItem?.id);
+      if (!createdCatalogItemId) {
+        throw new Error("Não foi possível obter o ID do item criado.");
+      }
+
+      let photoUploadFailed = false;
+
+      for (const [index, file] of catalogPhotos.entries()) {
+        const extension = file.name.split(".").pop() || "jpg";
+        const safeFileName = `${Date.now()}-${index}-${crypto.randomUUID()}.${extension}`;
+        const storagePath = `${organizationId}/${activeStoreId}/${createdCatalogItemId}/${safeFileName}`;
+
+        try {
+          const { error: uploadError } = await supabase.storage
+            .from("store-catalog-photos")
+            .upload(storagePath, file, {
+              cacheControl: "3600",
+              upsert: false,
+            });
+
+          if (uploadError) throw uploadError;
+
+          const { error: metadataError } = await supabase
+            .from("store_catalog_item_photos")
+            .insert({
+              catalog_item_id: createdCatalogItemId,
+              storage_path: storagePath,
+              file_name: file.name,
+              file_size_bytes: file.size,
+              sort_order: index,
+            });
+
+          if (metadataError) {
+            await supabase.storage.from("store-catalog-photos").remove([storagePath]);
+            throw metadataError;
+          }
+        } catch {
+          photoUploadFailed = true;
+        }
+      }
+
+      setCatalogForm({
+        ...createEmptyCatalogForm(),
+        category: manualCatalogItemCategory,
+      });
+      setCatalogPhotos([]);
+      setManualCatalogItemModalError(null);
+      setManualCatalogItemModalSuccess(
+        photoUploadFailed
+          ? "Item salvo, mas uma ou mais fotos não foram enviadas."
+          : "Item salvo com sucesso."
+      );
+      await fetchPageData();
+    } catch (error: any) {
+      setManualCatalogItemModalError(error?.message ?? "Erro ao salvar o item manualmente.");
+      setManualCatalogItemModalSuccess(null);
+    } finally {
+      setSavingCatalogItem(false);
+    }
+  }, [
+    activeStoreId,
+    catalogForm,
+    catalogPhotos,
+    fetchPageData,
+    manualCatalogItemCategory,
+    organizationId,
+    poolForm,
+    poolPhotos,
+  ]);
 
   return (
     <div className="space-y-4 overflow-x-hidden">
@@ -4598,6 +5055,20 @@ export default function ConfiguracoesPage() {
 
       {activeTab === "catalogo" ? (
         <div className="space-y-4 overflow-x-hidden">
+          <div className="rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
+            <button
+              type="button"
+              onClick={() => {
+                setManualCatalogItemModalError(null);
+                setManualCatalogItemModalSuccess(null);
+                setIsManualCatalogItemModalOpen(true);
+              }}
+              className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+            >
+              Adicionar item manualmente
+            </button>
+          </div>
+
           <SectionBlock
             title="Upload inteligente"
             description="Envie arquivos para importar catálogo, piscinas e materiais da loja usando o fluxo já existente."
@@ -7986,6 +8457,493 @@ export default function ConfiguracoesPage() {
             </div>
           </div>
         </SectionBlock>
+      ) : null}
+
+      {isManualCatalogItemModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6"
+          onClick={closeManualCatalogItemModal}
+        >
+          <div
+            className="flex max-h-[82vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 bg-gray-950 px-5 py-4 text-white">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.16em] text-white/70">
+                  Cadastro visual
+                </div>
+                <h2 className="mt-1 text-lg font-bold">Adicionar item manualmente</h2>
+              </div>
+              <button
+                type="button"
+                onClick={closeManualCatalogItemModal}
+                className="rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-5 py-5">
+              <div className="space-y-4">
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Categoria</span>
+                  <select
+                    value={manualCatalogItemCategory}
+                    onChange={(event) =>
+                      handleManualCatalogItemCategoryChange(
+                        event.target.value as "piscina" | "quimicos" | "acessorios" | "outros"
+                      )
+                    }
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                  >
+                    <option value="piscina">Piscina</option>
+                    <option value="quimicos">Químico</option>
+                    <option value="acessorios">Acessório</option>
+                    <option value="outros">Outro</option>
+                  </select>
+                </label>
+
+                {manualCatalogItemModalError ? (
+                  <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {manualCatalogItemModalError}
+                  </div>
+                ) : null}
+
+                {manualCatalogItemModalSuccess ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                    {manualCatalogItemModalSuccess}
+                  </div>
+                ) : null}
+
+                {manualCatalogItemCategory === "piscina" ? (
+                  <>
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <label className="space-y-1 md:col-span-2 xl:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome da piscina</span>
+                        <input
+                          value={poolForm.name}
+                          onChange={(event) => handlePoolFormChange("name", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: Piscina Fibra Premium 7x3"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca</span>
+                        <input
+                          value={poolForm.brand}
+                          onChange={(event) => handlePoolFormChange("brand", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: iGUi"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Material</span>
+                        <input
+                          value={poolForm.material}
+                          onChange={(event) => handlePoolFormChange("material", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Fibra, vinil, alvenaria..."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Formato</span>
+                        <input
+                          value={poolForm.shape}
+                          onChange={(event) => handlePoolFormChange("shape", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Retangular, oval..."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Cor</span>
+                        <input
+                          value={poolForm.color}
+                          onChange={(event) => handlePoolFormChange("color", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Azul, branca, areia..."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Acabamento / linha</span>
+                        <input
+                          value={poolForm.finish}
+                          onChange={(event) => handlePoolFormChange("finish", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Premium, borda molhada, com hidro..."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Largura (m)</span>
+                        <input
+                          value={poolForm.width_m}
+                          onChange={(event) => handlePoolFormChange("width_m", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="3.00"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Comprimento (m)</span>
+                        <input
+                          value={poolForm.length_m}
+                          onChange={(event) => handlePoolFormChange("length_m", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="7.00"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Profundidade (m)</span>
+                        <input
+                          value={poolForm.depth_m}
+                          onChange={(event) => handlePoolFormChange("depth_m", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="1.40"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</span>
+                        <input
+                          value={poolForm.price}
+                          onChange={(event) => handlePoolFormChange("price", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="15990.00"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estoque</span>
+                        <input
+                          value={poolForm.stock_quantity}
+                          onChange={(event) => handlePoolFormChange("stock_quantity", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="0"
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição completa</span>
+                        <textarea
+                          value={poolForm.description}
+                          onChange={(event) => handlePoolFormChange("description", event.target.value)}
+                          rows={4}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Descreva acabamento, diferenciais, instalação, cor, acessórios inclusos e qualquer detalhe importante."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Itens inclusos</span>
+                        <textarea
+                          value={poolForm.included_items}
+                          onChange={(event) => handlePoolFormChange("included_items", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: dispositivo, casa de máquinas, hidro, iluminação..."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações de instalação</span>
+                        <textarea
+                          value={poolForm.installation_notes}
+                          onChange={(event) => handlePoolFormChange("installation_notes", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: precisa de visita técnica, prazo médio, condições do terreno..."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Aplicação / uso recomendado</span>
+                        <textarea
+                          value={poolForm.application}
+                          onChange={(event) => handlePoolFormChange("application", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: lazer familiar, uso residencial, instalação em áreas gourmet..."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações técnicas</span>
+                        <textarea
+                          value={poolForm.technical_notes}
+                          onChange={(event) => handlePoolFormChange("technical_notes", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: espessura, reforços estruturais, requisitos técnicos..."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fotos do item</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onChange={(event) => handleManualCatalogPoolPhotosChange(event.target.files)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                        />
+                        <div className="text-xs text-gray-500">Máximo de 10 fotos por item. Cada foto pode ter até 50 MB.</div>
+                        {poolPhotos.length > 0 ? (
+                          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            {poolPhotos.length} foto(s) selecionada(s): {poolPhotos.map((file) => file.name).join(", ")}
+                          </div>
+                        ) : null}
+                      </label>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={poolForm.is_active}
+                          onChange={(event) => handlePoolFormChange("is_active", event.target.checked)}
+                        />
+                        Item em estado vendível / ativo
+                      </label>
+
+                      <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={poolForm.track_stock}
+                          onChange={(event) => handlePoolFormChange("track_stock", event.target.checked)}
+                        />
+                        Controlar estoque deste item
+                      </label>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <label className="space-y-1 md:col-span-2 xl:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Nome do item</span>
+                        <input
+                          value={catalogForm.name}
+                          onChange={(event) => handleCatalogFormChange("name", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: Cloro granulado premium"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">SKU</span>
+                        <input
+                          value={catalogForm.sku}
+                          onChange={(event) => handleCatalogFormChange("sku", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Opcional"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Marca</span>
+                        <input
+                          value={catalogForm.brand}
+                          onChange={(event) => handleCatalogFormChange("brand", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Marca do item"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Linha / modelo</span>
+                        <input
+                          value={catalogForm.line}
+                          onChange={(event) => handleCatalogFormChange("line", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: Premium, Manutenção..."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Unidade</span>
+                        <input
+                          value={catalogForm.unit_label}
+                          onChange={(event) => handleCatalogFormChange("unit_label", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Un, kg, L, kit..."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tamanho / variação</span>
+                        <input
+                          value={catalogForm.size_details}
+                          onChange={(event) => handleCatalogFormChange("size_details", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: 10kg, 1L, 1,5 polegada..."
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Largura (cm)</span>
+                        <input
+                          value={catalogForm.width_cm}
+                          onChange={(event) => handleCatalogFormChange("width_cm", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Opcional"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Altura (cm)</span>
+                        <input
+                          value={catalogForm.height_cm}
+                          onChange={(event) => handleCatalogFormChange("height_cm", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Opcional"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Comprimento (cm)</span>
+                        <input
+                          value={catalogForm.length_cm}
+                          onChange={(event) => handleCatalogFormChange("length_cm", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Opcional"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Peso (kg)</span>
+                        <input
+                          value={catalogForm.weight_kg}
+                          onChange={(event) => handleCatalogFormChange("weight_kg", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Opcional"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Preço</span>
+                        <input
+                          value={catalogForm.price}
+                          onChange={(event) => handleCatalogFormChange("price", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="59.90"
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Estoque</span>
+                        <input
+                          value={catalogForm.stock_quantity}
+                          onChange={(event) => handleCatalogFormChange("stock_quantity", event.target.value)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="0"
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Descrição completa</span>
+                        <textarea
+                          value={catalogForm.description}
+                          onChange={(event) => handleCatalogFormChange("description", event.target.value)}
+                          rows={4}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Descreva composição, litragem, aplicação, medidas, uso recomendado e detalhes importantes."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Aplicação / uso recomendado</span>
+                        <textarea
+                          value={catalogForm.application}
+                          onChange={(event) => handleCatalogFormChange("application", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: tratamento semanal, aspiração, conexão hidráulica..."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observações técnicas</span>
+                        <textarea
+                          value={catalogForm.technical_notes}
+                          onChange={(event) => handleCatalogFormChange("technical_notes", event.target.value)}
+                          rows={3}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"
+                          placeholder="Ex.: compatibilidade, concentração, conexão, restrições..."
+                        />
+                      </label>
+
+                      <label className="space-y-1 md:col-span-2 xl:col-span-4">
+                        <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Fotos do item</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onChange={(event) => handleManualCatalogGeneralPhotosChange(event.target.files)}
+                          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 file:mr-3 file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+                        />
+                        <div className="text-xs text-gray-500">Máximo de 10 fotos por item. Cada foto pode ter até 50 MB.</div>
+                        {catalogPhotos.length > 0 ? (
+                          <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            {catalogPhotos.length} foto(s) selecionada(s): {catalogPhotos.map((file) => file.name).join(", ")}
+                          </div>
+                        ) : null}
+                      </label>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={catalogForm.is_active}
+                          onChange={(event) => handleCatalogFormChange("is_active", event.target.checked)}
+                        />
+                        Item em estado vendível / ativo
+                      </label>
+
+                      <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={catalogForm.track_stock}
+                          onChange={(event) => handleCatalogFormChange("track_stock", event.target.checked)}
+                        />
+                        Controlar estoque deste item
+                      </label>
+                    </div>
+                  </>
+                )}
+
+                <div className="mt-5 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleManualCatalogItemVisualSave}
+                    disabled={savingPool || savingCatalogItem || !hasValidStoreContext}
+                    className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {savingPool
+                      ? "Salvando piscina..."
+                      : savingCatalogItem
+                        ? "Salvando item..."
+                        : "Salvar item"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetManualCatalogItemModalForm}
+                    disabled={savingPool || savingCatalogItem}
+                    className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
+                  >
+                    Limpar formulário
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {contractContentModal ? (
