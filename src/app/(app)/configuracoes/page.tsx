@@ -2436,7 +2436,7 @@ export default function ConfiguracoesPage() {
   }, [selectedStoreLogoFile]);
 
   const totalCatalogo = useMemo(
-    () => counts.quimicos + counts.acessorios + counts.outros,
+    () => counts.pools + counts.quimicos + counts.acessorios + counts.outros,
     [counts]
   );
 
