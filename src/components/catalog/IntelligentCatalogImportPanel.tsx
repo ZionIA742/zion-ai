@@ -1000,6 +1000,14 @@ type ExistingCatalogItemRow = {
   description: string | null;
   metadata: Record<string, unknown> | null;
 };
+type StructuredReviewCategory = "pool" | "quimicos" | "acessorios" | "outros";
+type EditableStructuredImportCandidate = {
+  id: string;
+  sourceItem: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  selected: boolean;
+  finalCategory: StructuredReviewCategory;
+  initialCategory: StructuredReviewCategory;
+};
 
 const VISUAL_PDF_IMPORT_MESSAGE =
   "PDF visual detectado. O arquivo tem paginas renderizadas, mas nao possui texto extraivel suficiente para gerar itens automaticamente nesta etapa. Para importar esse catalogo, sera necessario OCR/vision por pagina.";
@@ -1384,6 +1392,84 @@ function resolveImportedExplicitDestination(
   }
 
   return null;
+}
+
+function getStructuredReviewCategoryLabel(category: StructuredReviewCategory) {
+  const labels: Record<StructuredReviewCategory, string> = {
+    pool: "Piscina",
+    quimicos: "Quimico",
+    acessorios: "Acessorio",
+    outros: "Outro",
+  };
+  return labels[category];
+}
+
+function formatStructuredReviewPriceLabel(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const priceCents = extractImportedCatalogPriceCents(item);
+  if (priceCents == null) return "";
+  return `R$ ${(priceCents / 100).toFixed(2).replace(".", ",")}`;
+}
+
+function buildStructuredReviewOriginLabel(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const parts = [
+    item.sourceFileName,
+    extractImportedSourceSheetName(item),
+    extractImportedSourceCategory(item),
+    extractImportedSourceSubcategory(item),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return parts.join(" • ");
+}
+
+function buildStructuredReviewDescriptionSnippet(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const description =
+    buildImportedCatalogDescription(item) || buildImportedPoolDescription(item) || item.rawText || "";
+  const normalized = String(description || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  return normalized.length > 180 ? `${normalized.slice(0, 180)}...` : normalized;
+}
+
+function buildStructuredReviewDisplayName(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  category: StructuredReviewCategory
+) {
+  if (category === "pool") {
+    return buildImportedPoolName(item);
+  }
+  return buildImportedCatalogName(item);
+}
+
+function buildEditableStructuredImportCandidates(
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
+) {
+  return items.map((item, index) => {
+    const finalCategory = resolveImportedDestination(item);
+    return {
+      id: `${buildImportedSaveKey(item)}::review::${index}`,
+      sourceItem: item,
+      selected: true,
+      finalCategory,
+      initialCategory: finalCategory,
+    } satisfies EditableStructuredImportCandidate;
+  });
+}
+
+function buildStructuredReviewedSourceItem(candidate: EditableStructuredImportCandidate) {
+  return {
+    ...candidate.sourceItem,
+    metadata: {
+      ...(candidate.sourceItem.metadata ?? {}),
+      __resolved_destination: candidate.finalCategory,
+    },
+  };
 }
 
 function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
@@ -5653,6 +5739,9 @@ export default function IntelligentCatalogImportPanel({
   const [intelligentImportRecovered, setIntelligentImportRecovered] = useState(false);
   const [intelligentImportResult, setIntelligentImportResult] =
     useState<IntelligentImportResponse | null>(null);
+  const [editableStructuredCandidates, setEditableStructuredCandidates] = useState<
+    EditableStructuredImportCandidate[]
+  >([]);
   const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
   const [visualCatalogLoading, setVisualCatalogLoading] = useState(false);
   const [visualCatalogResult, setVisualCatalogResult] =
@@ -5766,6 +5855,39 @@ export default function IntelligentCatalogImportPanel({
     () => Boolean(intelligentImportResult && isVisualPdfImportResult(intelligentImportResult)),
     [intelligentImportResult]
   );
+  const structuredSourceCandidates = useMemo(() => {
+    if (!intelligentImportResult?.ok || hasVisualPdfImportResult) return [];
+
+    const rawSourceItems =
+      safeDedupedPreview.length > 0
+        ? safeDedupedPreview.filter((item) => !item.isDuplicate)
+        : safeNormalizedPreview;
+    const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
+    return dedupeImportedItemsForSave(filteredSourceItems);
+  }, [intelligentImportResult, hasVisualPdfImportResult, safeDedupedPreview, safeNormalizedPreview]);
+  const structuredSourceCandidatesSignature = useMemo(
+    () =>
+      structuredSourceCandidates
+        .map(
+          (item, index) =>
+            `${buildImportedSaveKey(item)}::${item.sourceFileName}::${item.type}::${index}`
+        )
+        .join("||"),
+    [structuredSourceCandidates]
+  );
+  const structuredSelectedCandidates = useMemo(
+    () => editableStructuredCandidates.filter((candidate) => candidate.selected),
+    [editableStructuredCandidates]
+  );
+  const structuredIgnoredCandidatesCount = useMemo(
+    () => editableStructuredCandidates.filter((candidate) => !candidate.selected).length,
+    [editableStructuredCandidates]
+  );
+  useEffect(() => {
+    setEditableStructuredCandidates(
+      buildEditableStructuredImportCandidates(structuredSourceCandidates)
+    );
+  }, [structuredSourceCandidatesSignature]);
   const visualPdfTotalPages = useMemo(() => {
     const pageNumbers = safeExtractedImagePreview
       .filter((image) => String(image.source || "").toLowerCase() === "pdf")
@@ -6429,6 +6551,17 @@ export default function IntelligentCatalogImportPanel({
         item.id === itemId
           ? cleanupEditableVisualReviewMissingFields({ ...item, ...patch, dirty: true })
           : item
+      )
+    );
+  }
+
+  function updateStructuredReviewCandidate(
+    candidateId: string,
+    patch: Partial<EditableStructuredImportCandidate>
+  ) {
+    setEditableStructuredCandidates((current) =>
+      current.map((candidate) =>
+        candidate.id === candidateId ? { ...candidate, ...patch } : candidate
       )
     );
   }
@@ -7352,17 +7485,29 @@ async function handleSaveImportedItemsToCatalog() {
       return;
     }
 
+    const reviewedSourceItems =
+      editableStructuredCandidates.length > 0
+        ? editableStructuredCandidates
+            .filter((candidate) => candidate.selected)
+            .map((candidate) => buildStructuredReviewedSourceItem(candidate))
+        : [];
+
     const rawSourceItems =
-      intelligentImportResult.dedupedPreview.length > 0
-        ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
-        : intelligentImportResult.normalizedPreview;
+      reviewedSourceItems.length > 0
+        ? reviewedSourceItems
+        : intelligentImportResult.dedupedPreview.length > 0
+          ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
+          : intelligentImportResult.normalizedPreview;
 
     const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
-    const sourceItems = dedupeImportedItemsForSave(filteredSourceItems);
+    const sourceItems =
+      reviewedSourceItems.length > 0 ? filteredSourceItems : dedupeImportedItemsForSave(filteredSourceItems);
 
     if (sourceItems.length === 0) {
       setParentError(
-        isVisualPdfImportResult(intelligentImportResult)
+        editableStructuredCandidates.length > 0
+          ? "Nenhum item selecionado para salvar."
+          : isVisualPdfImportResult(intelligentImportResult)
           ? VISUAL_PDF_IMPORT_MESSAGE
           : "A análise não encontrou itens prontos para salvar. Tente um arquivo mais direto ou revise a importação."
       );
@@ -9930,25 +10075,164 @@ async function handleSaveImportedItemsToCatalog() {
                   ) : null}
                 </div>
               </div>
+              {intelligentImportResult?.ok &&
+              !hasVisualPdfImportResult &&
+              editableStructuredCandidates.length > 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <p className="text-base font-semibold text-slate-900">
+                        Revisar itens encontrados
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">
+                        Nada foi salvo ainda. Confira os itens detectados e escolha o que deve entrar no catalogo.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                        <p className="font-semibold text-slate-900">{editableStructuredCandidates.length}</p>
+                        <p className="mt-1 text-slate-600">Encontrados</p>
+                      </div>
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                        <p className="font-semibold text-emerald-900">{structuredSelectedCandidates.length}</p>
+                        <p className="mt-1 text-emerald-700">Selecionados</p>
+                      </div>
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+                        <p className="font-semibold text-amber-900">{structuredIgnoredCandidatesCount}</p>
+                        <p className="mt-1 text-amber-700">Ignorados</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
+                    {editableStructuredCandidates.map((candidate) => {
+                      const item = candidate.sourceItem;
+                      const displayName = buildStructuredReviewDisplayName(item, candidate.finalCategory);
+                      const sku = String(extractImportedCatalogSku(item) || "").trim();
+                      const priceLabel = formatStructuredReviewPriceLabel(item);
+                      const descriptionSnippet = buildStructuredReviewDescriptionSnippet(item);
+                      const originLabel = buildStructuredReviewOriginLabel(item);
+                      const categoryAdjusted = candidate.finalCategory !== candidate.initialCategory;
+
+                      return (
+                        <div
+                          key={candidate.id}
+                          className={cx(
+                            "rounded-2xl border p-4 transition",
+                            candidate.selected
+                              ? "border-slate-200 bg-slate-50"
+                              : "border-amber-200 bg-amber-50/60"
+                          )}
+                        >
+                          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span
+                                  className={cx(
+                                    "rounded-full px-2.5 py-1 text-[11px] font-medium ring-1",
+                                    candidate.selected
+                                      ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
+                                      : "bg-amber-100 text-amber-800 ring-amber-200"
+                                  )}
+                                >
+                                  {candidate.selected ? "Selecionado para salvar" : "Ignorado"}
+                                </span>
+                                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200">
+                                  Categoria: {getStructuredReviewCategoryLabel(candidate.finalCategory)}
+                                </span>
+                                {categoryAdjusted ? (
+                                  <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200">
+                                    Categoria ajustada
+                                  </span>
+                                ) : null}
+                              </div>
+                              <p className="mt-3 truncate text-sm font-semibold text-slate-900">
+                                {displayName || "Item detectado"}
+                              </p>
+                              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+                                {sku ? <span>SKU: {sku}</span> : null}
+                                {priceLabel ? <span>Preco: {priceLabel}</span> : null}
+                                {originLabel ? <span>Origem: {originLabel}</span> : null}
+                              </div>
+                              {descriptionSnippet ? (
+                                <p className="mt-2 text-sm leading-6 text-slate-600">
+                                  {descriptionSnippet}
+                                </p>
+                              ) : null}
+                            </div>
+
+                            <div className="flex w-full flex-col gap-2 lg:w-56">
+                              <label className="text-xs font-medium text-slate-700">Salvar como</label>
+                              <select
+                                value={candidate.finalCategory}
+                                onChange={(event) =>
+                                  updateStructuredReviewCandidate(candidate.id, {
+                                    finalCategory: event.target.value as StructuredReviewCategory,
+                                  })
+                                }
+                                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none"
+                              >
+                                <option value="pool">Piscina</option>
+                                <option value="quimicos">Quimico</option>
+                                <option value="acessorios">Acessorio</option>
+                                <option value="outros">Outro</option>
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateStructuredReviewCandidate(candidate.id, {
+                                    selected: !candidate.selected,
+                                  })
+                                }
+                                className={cx(
+                                  "rounded-xl border px-3 py-2 text-sm font-medium transition",
+                                  candidate.selected
+                                    ? "border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                                    : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                                )}
+                              >
+                                {candidate.selected ? "Ignorar item" : "Selecionar novamente"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
               {intelligentImportResult?.ok && !hasVisualPdfImportResult ? (
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
                       <p className="text-base font-semibold text-emerald-900">
-                        Salvar resultado no catálogo da loja
+                        Salvar itens aprovados no catálogo
                       </p>
                       <p className="mt-1 text-sm leading-6 text-emerald-900">
-                        Isso salva tudo no lugar certo: piscinas em Piscinas, produtos químicos em Químicos,
-                        acessórios em Acessórios e o restante em Outros.
+                        Só os itens selecionados na revisão acima serão salvos. Piscinas continuam indo para
+                        Piscinas, produtos químicos para Químicos, acessórios para Acessórios e o restante para
+                        Outros.
                       </p>
+                      {editableStructuredCandidates.length > 0 &&
+                      structuredSelectedCandidates.length === 0 ? (
+                        <p className="mt-2 text-sm font-medium text-amber-700">
+                          Nenhum item selecionado para salvar.
+                        </p>
+                      ) : null}
                     </div>
                     <button
                       type="button"
                       onClick={() => void handleSaveImportedItemsToCatalog()}
-                      disabled={disabled || savingImportedCatalog || intelligentImportLoading}
+                      disabled={
+                        disabled ||
+                        savingImportedCatalog ||
+                        intelligentImportLoading ||
+                        (editableStructuredCandidates.length > 0 &&
+                          structuredSelectedCandidates.length === 0)
+                      }
                       className="rounded-xl bg-black px-5 py-3 text-sm font-medium text-white disabled:opacity-60"
                     >
-                      {savingImportedCatalog ? "Salvando no sistema..." : "Salvar no catálogo"}
+                      {savingImportedCatalog ? "Salvando no sistema..." : "Salvar itens aprovados"}
                     </button>
                   </div>
                 </div>
