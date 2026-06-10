@@ -1512,12 +1512,177 @@ function buildEditableStructuredImportCandidates(
   });
 }
 
-function buildStructuredReviewedSourceItem(candidate: EditableStructuredImportCandidate) {
+function buildStructuredDraftPoolDescription(draft: StructuredCandidateDraft) {
+  const parts = [
+    String(draft.description || "").trim(),
+    draft.brand.trim() ? `Marca: ${draft.brand.trim()}` : "",
+    draft.color.trim() ? `Cor: ${draft.color.trim()}` : "",
+    draft.finishLine.trim() ? `Acabamento/Linha: ${draft.finishLine.trim()}` : "",
+    draft.includedItems.trim() ? `Itens inclusos: ${draft.includedItems.trim()}` : "",
+    draft.installationNotes.trim() ? `Observacoes de instalacao: ${draft.installationNotes.trim()}` : "",
+    draft.application.trim() ? `Aplicacao/Uso recomendado: ${draft.application.trim()}` : "",
+    draft.technicalNotes.trim() ? `Observacoes tecnicas: ${draft.technicalNotes.trim()}` : "",
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return parts.join("\n").trim();
+}
+
+function buildStructuredDraftRawText(
+  sourceItem: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  draft: StructuredCandidateDraft
+) {
+  const lines = [
+    draft.name.trim() || sourceItem.title || "",
+    draft.sku.trim() ? `SKU: ${draft.sku.trim()}` : "",
+    draft.price.trim() ? `Preco: ${draft.price.trim()}` : "",
+    draft.stock.trim() ? `Estoque: ${draft.stock.trim()}` : "",
+    draft.brand.trim() ? `Marca: ${draft.brand.trim()}` : "",
+    draft.modelLine.trim() ? `Linha: ${draft.modelLine.trim()}` : "",
+    draft.unit.trim() ? `Unidade: ${draft.unit.trim()}` : "",
+    draft.variantSize.trim() ? `Tamanho: ${draft.variantSize.trim()}` : "",
+    draft.material.trim() ? `Material: ${draft.material.trim()}` : "",
+    draft.shape.trim() ? `Formato: ${draft.shape.trim()}` : "",
+    draft.color.trim() ? `Cor: ${draft.color.trim()}` : "",
+    draft.width.trim() ? `Largura: ${draft.width.trim()}` : "",
+    draft.height.trim() ? `Altura: ${draft.height.trim()}` : "",
+    draft.length.trim() ? `Comprimento: ${draft.length.trim()}` : "",
+    draft.depth.trim() ? `Profundidade: ${draft.depth.trim()}` : "",
+    draft.weight.trim() ? `Peso: ${draft.weight.trim()}` : "",
+    draft.application.trim() ? `Aplicacao: ${draft.application.trim()}` : "",
+    draft.technicalNotes.trim() ? `Observacoes: ${draft.technicalNotes.trim()}` : "",
+    draft.description.trim(),
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return lines.join("\n").trim() || sourceItem.rawText || sourceItem.title;
+}
+
+function parseStructuredReviewedBoolean(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  keys: string[],
+  fallback: boolean
+) {
+  const rawValue = extractMetadataValue(item, keys);
+  const normalized = normalizeImportedLoose(rawValue);
+  if (!normalized) return fallback;
+  if (["true", "1", "sim", "yes", "ativo"].includes(normalized)) return true;
+  if (["false", "0", "nao", "não", "no", "inativo"].includes(normalized)) return false;
+  return fallback;
+}
+
+function buildStructuredReviewedSourceItem(
+  candidate: EditableStructuredImportCandidate,
+  draft?: StructuredCandidateDraft | null
+) {
+  if (!draft) {
+    return {
+      ...candidate.sourceItem,
+      metadata: {
+        ...(candidate.sourceItem.metadata ?? {}),
+        __resolved_destination: candidate.finalCategory,
+      },
+    };
+  }
+
+  const priceValue = parseImportedDecimal(draft.price);
+  const stockValue = parseImportedDecimal(draft.stock);
+  const widthValue = parseImportedDecimal(draft.width);
+  const heightValue = parseImportedDecimal(draft.height);
+  const lengthValue = parseImportedDecimal(draft.length);
+  const depthValue = parseImportedDecimal(draft.depth);
+  const weightValue = parseImportedDecimal(draft.weight);
+  const finalCategory = draft.finalCategory || candidate.finalCategory;
+  const poolDescription =
+    finalCategory === "pool" ? buildStructuredDraftPoolDescription(draft) : String(draft.description || "").trim();
+  const mergedMetadata = {
+    ...(candidate.sourceItem.metadata ?? {}),
+    __resolved_destination: finalCategory,
+    destination: finalCategory,
+    categoria: finalCategory,
+    category: finalCategory,
+    category_name: finalCategory,
+    title: draft.name.trim(),
+    nome: draft.name.trim(),
+    productName: draft.name.trim(),
+    sku: draft.sku.trim(),
+    codigo: draft.sku.trim(),
+    "código": draft.sku.trim(),
+    price: draft.price.trim(),
+    preco: draft.price.trim(),
+    "preço": draft.price.trim(),
+    price_cents: priceValue != null ? String(Math.round(priceValue * 100)) : "",
+    stock_quantity: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
+    stock: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
+    estoque: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
+    quantity: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
+    description: finalCategory === "pool" ? poolDescription : String(draft.description || "").trim(),
+    descricao: finalCategory === "pool" ? poolDescription : String(draft.description || "").trim(),
+    "descrição": finalCategory === "pool" ? poolDescription : String(draft.description || "").trim(),
+    clean_description: finalCategory === "pool" ? poolDescription : String(draft.description || "").trim(),
+    brand: draft.brand.trim(),
+    marca: draft.brand.trim(),
+    material: draft.material.trim(),
+    shape: draft.shape.trim(),
+    formato: draft.shape.trim(),
+    color: draft.color.trim(),
+    cor: draft.color.trim(),
+    line: draft.finishLine.trim() || draft.modelLine.trim(),
+    linha: draft.finishLine.trim() || draft.modelLine.trim(),
+    model: draft.modelLine.trim(),
+    modelo: draft.modelLine.trim(),
+    unit: draft.unit.trim(),
+    unidade: draft.unit.trim(),
+    size: draft.variantSize.trim(),
+    tamanho: draft.variantSize.trim(),
+    variation: draft.variantSize.trim(),
+    variacao: draft.variantSize.trim(),
+    "variação": draft.variantSize.trim(),
+    weight: draft.weight.trim(),
+    peso: draft.weight.trim(),
+    width: draft.width.trim(),
+    largura: draft.width.trim(),
+    height: draft.height.trim(),
+    altura: draft.height.trim(),
+    length: draft.length.trim(),
+    comprimento: draft.length.trim(),
+    depth: draft.depth.trim(),
+    profundidade: draft.depth.trim(),
+    dimensions:
+      widthValue != null || lengthValue != null
+        ? [draft.width.trim(), draft.length.trim(), draft.depth.trim()].filter(Boolean).join(" x ")
+        : "",
+    application: draft.application.trim(),
+    aplicacao: draft.application.trim(),
+    "aplicação": draft.application.trim(),
+    usage: draft.application.trim(),
+    uso: draft.application.trim(),
+    technical_notes: draft.technicalNotes.trim(),
+    notes: draft.technicalNotes.trim(),
+    observacoes: draft.technicalNotes.trim(),
+    "observações": draft.technicalNotes.trim(),
+    included_items: draft.includedItems.trim(),
+    itens_inclusos: draft.includedItems.trim(),
+    installation_notes: draft.installationNotes.trim(),
+    observacoes_instalacao: draft.installationNotes.trim(),
+    is_active: draft.isActive ? "true" : "false",
+    track_stock: draft.trackStock ? "true" : "false",
+    capacity: candidate.sourceItem.metadata?.capacity || "",
+    embalagem: candidate.sourceItem.metadata?.embalagem || "",
+    packaging: candidate.sourceItem.metadata?.packaging || "",
+    source_file_name: candidate.sourceItem.metadata?.source_file_name || candidate.sourceItem.sourceFileName || "",
+    source: candidate.sourceItem.metadata?.source || "",
+    origem: candidate.sourceItem.metadata?.origem || "",
+  } satisfies Record<string, string>;
+
   return {
     ...candidate.sourceItem,
+    title: draft.name.trim() || candidate.sourceItem.title,
+    rawText: buildStructuredDraftRawText(candidate.sourceItem, draft),
     metadata: {
-      ...(candidate.sourceItem.metadata ?? {}),
-      __resolved_destination: candidate.finalCategory,
+      ...mergedMetadata,
     },
   };
 }
@@ -6155,7 +6320,7 @@ export default function IntelligentCatalogImportPanel({
   );
   const structuredReviewValidation = useMemo(() => {
     const candidateItems = editableStructuredCandidates.map((candidate) =>
-      buildStructuredReviewedSourceItem(candidate)
+      buildStructuredReviewedSourceItem(candidate, structuredCandidateDrafts[candidate.id])
     );
     const validation = computeStructuredPreSaveValidation({
       items: candidateItems,
@@ -6178,7 +6343,7 @@ export default function IntelligentCatalogImportPanel({
       byCandidateId,
       duplicateCount: validation.blockedItems.length,
     };
-  }, [editableStructuredCandidates, structuredDuplicateReferences]);
+  }, [editableStructuredCandidates, structuredCandidateDrafts, structuredDuplicateReferences]);
   const structuredSelectedCandidates = useMemo(
     () =>
       editableStructuredCandidates.filter((candidate) => {
@@ -7902,7 +8067,9 @@ async function handleSaveImportedItemsToCatalog() {
       editableStructuredCandidates.length > 0
         ? editableStructuredCandidates
             .filter((candidate) => candidate.selected)
-            .map((candidate) => buildStructuredReviewedSourceItem(candidate))
+            .map((candidate) =>
+              buildStructuredReviewedSourceItem(candidate, structuredCandidateDrafts[candidate.id])
+            )
         : [];
 
     const rawSourceItems =
@@ -8097,6 +8264,16 @@ async function handleSaveImportedItemsToCatalog() {
             const poolStockQuantity = keepPowerPointPoolDestination
               ? extractPowerPointPoolStockQuantity(item)
               : extractImportedCatalogStockQuantity(item);
+            const poolIsActive = parseStructuredReviewedBoolean(
+              item,
+              ["is_active", "ativo", "vendivel", "vendível"],
+              true
+            );
+            const poolTrackStock = parseStructuredReviewedBoolean(
+              item,
+              ["track_stock", "controlar_estoque", "controlar estoque"],
+              true
+            );
 
             if (safeDepth == null) {
               safeDepth = 1.4;
@@ -8130,8 +8307,8 @@ async function handleSaveImportedItemsToCatalog() {
                   max_capacity_l: metrics.max_capacity_l ?? 0,
                   price: metrics.price,
                   description: poolDescription,
-                  is_active: true,
-                  track_stock: true,
+                  is_active: poolIsActive,
+                  track_stock: poolTrackStock,
                   stock_quantity: poolStockQuantity,
                 })
                 .eq("id", existingPool.id);
@@ -8153,8 +8330,8 @@ async function handleSaveImportedItemsToCatalog() {
                   weight_kg: null,
                   price: metrics.price,
                   description: poolDescription,
-                  is_active: true,
-                  track_stock: true,
+                  is_active: poolIsActive,
+                  track_stock: poolTrackStock,
                   stock_quantity: poolStockQuantity,
                 })
                 .select("id")
@@ -8294,6 +8471,16 @@ async function handleSaveImportedItemsToCatalog() {
             usePowerPointOtherCatalogRules
             ? extractPowerPointItemStockQuantity(item)
             : extractImportedCatalogStockQuantity(item);
+          const catalogIsActive = parseStructuredReviewedBoolean(
+            item,
+            ["is_active", "ativo", "vendivel", "vendível"],
+            true
+          );
+          const catalogTrackStock = parseStructuredReviewedBoolean(
+            item,
+            ["track_stock", "controlar_estoque", "controlar estoque"],
+            true
+          );
           const metadata = buildImportedCatalogMetadata(item, category, source);
           const description = buildImportedCatalogDescription(item);
 
@@ -8345,8 +8532,8 @@ async function handleSaveImportedItemsToCatalog() {
                 description: description ?? existingCatalogItem.description ?? null,
                 price_cents: safePriceCents,
                 currency: "BRL",
-                is_active: true,
-                track_stock: true,
+                is_active: catalogIsActive,
+                track_stock: catalogTrackStock,
                 stock_quantity: safeStockQuantity,
                 metadata: mergedMetadata,
               })
@@ -8364,8 +8551,8 @@ async function handleSaveImportedItemsToCatalog() {
                 description,
                 price_cents: safePriceCents,
                 currency: "BRL",
-                is_active: true,
-                track_stock: true,
+                is_active: catalogIsActive,
+                track_stock: catalogTrackStock,
                 stock_quantity: safeStockQuantity,
                 metadata,
               })
