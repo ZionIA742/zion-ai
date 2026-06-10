@@ -1008,6 +1008,56 @@ type EditableStructuredImportCandidate = {
   finalCategory: StructuredReviewCategory;
   initialCategory: StructuredReviewCategory;
 };
+type StructuredCandidateDraft = {
+  finalCategory: StructuredReviewCategory;
+  name: string;
+  sku: string;
+  price: string;
+  stock: string;
+  description: string;
+  isActive: boolean;
+  trackStock: boolean;
+  brand: string;
+  material: string;
+  shape: string;
+  color: string;
+  finishLine: string;
+  width: string;
+  height: string;
+  length: string;
+  depth: string;
+  unit: string;
+  variantSize: string;
+  weight: string;
+  modelLine: string;
+  includedItems: string;
+  installationNotes: string;
+  application: string;
+  technicalNotes: string;
+};
+type StructuredPreSaveValidationItem = {
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  destination: ImportedDestination;
+  normalizedName: string;
+  normalizedSku: string;
+  duplicateReason: string | null;
+};
+type StructuredPreSaveValidationResult = {
+  validItems: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
+  blockedItems: StructuredPreSaveValidationItem[];
+  evaluatedItems: StructuredPreSaveValidationItem[];
+};
+type StructuredDuplicateReferenceData = {
+  existingPoolNames: Set<string>;
+  existingCatalogNames: Set<string>;
+  existingCatalogSkus: Set<string>;
+};
+type StructuredReviewCandidateValidation = {
+  candidateId: string;
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  destination: ImportedDestination;
+  duplicateReason: string | null;
+};
 
 const VISUAL_PDF_IMPORT_MESSAGE =
   "PDF visual detectado. O arquivo tem paginas renderizadas, mas nao possui texto extraivel suficiente para gerar itens automaticamente nesta etapa. Para importar esse catalogo, sera necessario OCR/vision por pagina.";
@@ -1470,6 +1520,224 @@ function buildStructuredReviewedSourceItem(candidate: EditableStructuredImportCa
       __resolved_destination: candidate.finalCategory,
     },
   };
+}
+
+function formatStructuredDraftPriceValue(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const explicitPrice = String(
+    extractMetadataValue(item, ["price", "preco", "preço", "price_label"]) || ""
+  ).trim();
+  if (explicitPrice) return explicitPrice;
+
+  const priceCents = extractImportedCatalogPriceCents(item);
+  if (priceCents == null) return "";
+  return (priceCents / 100).toFixed(2);
+}
+
+function formatStructuredDraftPriceLabel(value: string) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  if (/^r\$/i.test(trimmed)) return trimmed;
+  return `R$ ${trimmed}`;
+}
+
+function buildStructuredDraftDescriptionSnippet(value: string) {
+  const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.length > 180 ? `${cleaned.slice(0, 177)}...` : cleaned;
+}
+
+function buildStructuredCandidateDraft(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  finalCategory: StructuredReviewCategory
+) {
+  const metrics = extractImportedPoolMetrics(item);
+  const name =
+    finalCategory === "pool" ? buildImportedPoolName(item) : buildImportedCatalogName(item);
+  const description =
+    finalCategory === "pool"
+      ? buildImportedPoolDescription(item)
+      : buildImportedCatalogDescription(item);
+  const stockQuantity = extractImportedCatalogStockQuantity(item);
+
+  return {
+    finalCategory,
+    name,
+    sku: String(extractImportedCatalogSku(item) || "").trim(),
+    price: formatStructuredDraftPriceValue(item),
+    stock: stockQuantity > 0 ? String(stockQuantity) : "",
+    description: description || "",
+    isActive: true,
+    trackStock: true,
+    brand: String(extractMetadataValue(item, ["brand", "marca"]) || "").trim(),
+    material: String(extractMetadataValue(item, ["material"]) || "").trim(),
+    shape: String(extractMetadataValue(item, ["shape", "formato"]) || "").trim(),
+    color: String(extractMetadataValue(item, ["color", "cor"]) || "").trim(),
+    finishLine: String(extractMetadataValue(item, ["line", "linha", "finish_line"]) || "").trim(),
+    width: metrics.width_m != null ? String(metrics.width_m) : "",
+    height: String(extractMetadataValue(item, ["height", "altura"]) || "").trim(),
+    length: metrics.length_m != null ? String(metrics.length_m) : "",
+    depth: metrics.depth_m != null ? String(metrics.depth_m) : "",
+    unit: String(extractMetadataValue(item, ["unit", "unidade"]) || "").trim(),
+    variantSize: String(extractMetadataValue(item, ["size", "tamanho", "variacao", "variação"]) || "").trim(),
+    weight: String(extractMetadataValue(item, ["weight", "peso", "peso_volume"]) || "").trim(),
+    modelLine: String(extractMetadataValue(item, ["model", "modelo", "line", "linha"]) || "").trim(),
+    includedItems: String(extractMetadataValue(item, ["included_items", "itens_inclusos"]) || "").trim(),
+    installationNotes: String(
+      extractMetadataValue(item, ["installation_notes", "observacoes_instalacao", "observações_instalação"]) || ""
+    ).trim(),
+    application: String(
+      extractMetadataValue(item, ["application", "aplicacao", "aplicação", "usage", "uso"]) || ""
+    ).trim(),
+    technicalNotes: String(
+      extractMetadataValue(item, ["technical_notes", "notes", "observacoes", "observações"]) || ""
+    ).trim(),
+  } satisfies StructuredCandidateDraft;
+}
+
+function createEmptyStructuredDuplicateReferenceData(): StructuredDuplicateReferenceData {
+  return {
+    existingPoolNames: new Set<string>(),
+    existingCatalogNames: new Set<string>(),
+    existingCatalogSkus: new Set<string>(),
+  };
+}
+
+function computeStructuredPreSaveValidation(args: {
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
+  existingReferences: StructuredDuplicateReferenceData;
+}) {
+  const seenPoolNames = new Set<string>();
+  const seenCatalogNames = new Set<string>();
+  const seenCatalogSkus = new Set<string>();
+  const validItems: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview> = [];
+  const blockedItems: StructuredPreSaveValidationItem[] = [];
+  const evaluatedItems: StructuredPreSaveValidationItem[] = [];
+
+  for (const item of args.items) {
+    const destination = resolveImportedDestination(item);
+    const normalizedName = normalizeImportedLoose(
+      destination === "pool" ? buildImportedPoolName(item) : buildImportedCatalogName(item)
+    );
+    const normalizedSku = normalizeImportedLoose(extractImportedCatalogSku(item));
+
+    let duplicateReason: string | null = null;
+
+    if (destination === "pool") {
+      if (normalizedName && seenPoolNames.has(normalizedName)) {
+        duplicateReason = "Duplicado neste arquivo.";
+      } else if (normalizedName && args.existingReferences.existingPoolNames.has(normalizedName)) {
+        duplicateReason = "Ja existe uma piscina com esse nome nesta loja.";
+      }
+
+      if (normalizedName) {
+        seenPoolNames.add(normalizedName);
+      }
+    } else {
+      if (normalizedSku && seenCatalogSkus.has(normalizedSku)) {
+        duplicateReason = "Duplicado neste arquivo.";
+      } else if (normalizedSku && args.existingReferences.existingCatalogSkus.has(normalizedSku)) {
+        duplicateReason = "Ja existe um item com esse SKU nesta loja.";
+      } else if (normalizedName && seenCatalogNames.has(normalizedName)) {
+        duplicateReason = "Duplicado neste arquivo.";
+      } else if (normalizedName && args.existingReferences.existingCatalogNames.has(normalizedName)) {
+        duplicateReason = "Ja existe um item com esse nome nesta loja.";
+      }
+
+      if (normalizedSku) {
+        seenCatalogSkus.add(normalizedSku);
+      }
+      if (normalizedName) {
+        seenCatalogNames.add(normalizedName);
+      }
+    }
+
+    const evaluatedItem = {
+      item,
+      destination,
+      normalizedName,
+      normalizedSku,
+      duplicateReason,
+    } satisfies StructuredPreSaveValidationItem;
+
+    evaluatedItems.push(evaluatedItem);
+
+    if (duplicateReason) {
+      blockedItems.push(evaluatedItem);
+      continue;
+    }
+
+    validItems.push(item);
+  }
+
+  return {
+    validItems,
+    blockedItems,
+    evaluatedItems,
+  } satisfies StructuredPreSaveValidationResult;
+}
+
+async function loadStructuredDuplicateReferenceData(args: {
+  supabase: typeof defaultSupabase;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data: existingPools, error: existingPoolsError } = await args.supabase
+    .from("pools")
+    .select("id, name")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId);
+
+  if (existingPoolsError) {
+    throw existingPoolsError;
+  }
+
+  const { data: existingCatalogItems, error: existingCatalogItemsError } = await args.supabase
+    .from("store_catalog_items")
+    .select("id, name, sku")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId);
+
+  if (existingCatalogItemsError) {
+    throw existingCatalogItemsError;
+  }
+
+  return {
+    existingPoolNames: new Set(
+      (existingPools ?? [])
+        .map((pool) => normalizeImportedLoose(pool.name))
+        .filter(Boolean)
+    ),
+    existingCatalogNames: new Set(
+      (existingCatalogItems ?? [])
+        .map((item) => normalizeImportedLoose(item.name))
+        .filter(Boolean)
+    ),
+    existingCatalogSkus: new Set(
+      (existingCatalogItems ?? [])
+        .map((item) => normalizeImportedLoose(item.sku))
+        .filter(Boolean)
+    ),
+  } satisfies StructuredDuplicateReferenceData;
+}
+
+async function validateStructuredItemsBeforeSave(args: {
+  supabase: typeof defaultSupabase;
+  organizationId: string;
+  storeId: string;
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
+}) {
+  const existingReferences = await loadStructuredDuplicateReferenceData({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+  });
+
+  return computeStructuredPreSaveValidation({
+    items: args.items,
+    existingReferences,
+  });
 }
 
 function normalizeImportedCatalogCategory(value: string): ImportedCatalogCategory {
@@ -5742,6 +6010,16 @@ export default function IntelligentCatalogImportPanel({
   const [editableStructuredCandidates, setEditableStructuredCandidates] = useState<
     EditableStructuredImportCandidate[]
   >([]);
+  const [structuredCandidateDrafts, setStructuredCandidateDrafts] = useState<
+    Record<string, StructuredCandidateDraft>
+  >({});
+  const [editingStructuredCandidateId, setEditingStructuredCandidateId] = useState<string | null>(null);
+  const [structuredCandidateEditorDraft, setStructuredCandidateEditorDraft] =
+    useState<StructuredCandidateDraft | null>(null);
+  const [structuredDuplicateReferences, setStructuredDuplicateReferences] =
+    useState<StructuredDuplicateReferenceData>(createEmptyStructuredDuplicateReferenceData);
+  const [structuredDuplicateReferencesLoading, setStructuredDuplicateReferencesLoading] =
+    useState(false);
   const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
   const [visualCatalogLoading, setVisualCatalogLoading] = useState(false);
   const [visualCatalogResult, setVisualCatalogResult] =
@@ -5875,19 +6153,98 @@ export default function IntelligentCatalogImportPanel({
         .join("||"),
     [structuredSourceCandidates]
   );
+  const structuredReviewValidation = useMemo(() => {
+    const candidateItems = editableStructuredCandidates.map((candidate) =>
+      buildStructuredReviewedSourceItem(candidate)
+    );
+    const validation = computeStructuredPreSaveValidation({
+      items: candidateItems,
+      existingReferences: structuredDuplicateReferences,
+    });
+
+    const byCandidateId = new Map<string, StructuredReviewCandidateValidation>();
+    editableStructuredCandidates.forEach((candidate, index) => {
+      const reviewedItem = candidateItems[index];
+      const evaluatedItem = validation.evaluatedItems[index];
+      byCandidateId.set(candidate.id, {
+        candidateId: candidate.id,
+        item: reviewedItem,
+        destination: evaluatedItem?.destination ?? resolveImportedDestination(reviewedItem),
+        duplicateReason: evaluatedItem?.duplicateReason ?? null,
+      });
+    });
+
+    return {
+      byCandidateId,
+      duplicateCount: validation.blockedItems.length,
+    };
+  }, [editableStructuredCandidates, structuredDuplicateReferences]);
   const structuredSelectedCandidates = useMemo(
-    () => editableStructuredCandidates.filter((candidate) => candidate.selected),
-    [editableStructuredCandidates]
+    () =>
+      editableStructuredCandidates.filter((candidate) => {
+        const candidateValidation = structuredReviewValidation.byCandidateId.get(candidate.id);
+        return candidate.selected && !candidateValidation?.duplicateReason;
+      }),
+    [editableStructuredCandidates, structuredReviewValidation]
   );
   const structuredIgnoredCandidatesCount = useMemo(
-    () => editableStructuredCandidates.filter((candidate) => !candidate.selected).length,
-    [editableStructuredCandidates]
+    () =>
+      editableStructuredCandidates.filter((candidate) => {
+        const candidateValidation = structuredReviewValidation.byCandidateId.get(candidate.id);
+        return !candidate.selected || Boolean(candidateValidation?.duplicateReason);
+      }).length,
+    [editableStructuredCandidates, structuredReviewValidation]
   );
   useEffect(() => {
     setEditableStructuredCandidates(
       buildEditableStructuredImportCandidates(structuredSourceCandidates)
     );
   }, [structuredSourceCandidatesSignature]);
+  useEffect(() => {
+    setStructuredCandidateDrafts({});
+    setEditingStructuredCandidateId(null);
+    setStructuredCandidateEditorDraft(null);
+  }, [structuredSourceCandidatesSignature]);
+  useEffect(() => {
+    if (!organizationId || !storeId || hasVisualPdfImportResult || editableStructuredCandidates.length === 0) {
+      setStructuredDuplicateReferences(createEmptyStructuredDuplicateReferenceData());
+      setStructuredDuplicateReferencesLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setStructuredDuplicateReferencesLoading(true);
+
+    void loadStructuredDuplicateReferenceData({
+      supabase,
+      organizationId,
+      storeId,
+    })
+      .then((references) => {
+        if (cancelled) return;
+        setStructuredDuplicateReferences(references);
+      })
+      .catch((error) => {
+        console.error("[OnboardingPage] loadStructuredDuplicateReferenceData error:", error);
+        if (cancelled) return;
+        setStructuredDuplicateReferences(createEmptyStructuredDuplicateReferenceData());
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setStructuredDuplicateReferencesLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [editableStructuredCandidates.length, hasVisualPdfImportResult, organizationId, storeId, supabase]);
+  const editingStructuredCandidate = useMemo(
+    () =>
+      editingStructuredCandidateId
+        ? editableStructuredCandidates.find((candidate) => candidate.id === editingStructuredCandidateId) ?? null
+        : null,
+    [editableStructuredCandidates, editingStructuredCandidateId]
+  );
   const visualPdfTotalPages = useMemo(() => {
     const pageNumbers = safeExtractedImagePreview
       .filter((image) => String(image.source || "").toLowerCase() === "pdf")
@@ -6564,6 +6921,62 @@ export default function IntelligentCatalogImportPanel({
         candidate.id === candidateId ? { ...candidate, ...patch } : candidate
       )
     );
+    if (typeof patch.finalCategory !== "undefined") {
+      const nextFinalCategory = patch.finalCategory;
+      setStructuredCandidateDrafts((current) => {
+        const existingDraft = current[candidateId];
+        if (!existingDraft) return current;
+        return {
+          ...current,
+          [candidateId]: {
+            ...existingDraft,
+            finalCategory: nextFinalCategory,
+          },
+        };
+      });
+      setStructuredCandidateEditorDraft((current) =>
+        editingStructuredCandidateId === candidateId && current
+          ? { ...current, finalCategory: nextFinalCategory }
+          : current
+      );
+    }
+  }
+
+  function openStructuredCandidateEditor(candidate: EditableStructuredImportCandidate) {
+    const existingDraft = structuredCandidateDrafts[candidate.id];
+    setEditingStructuredCandidateId(candidate.id);
+    setStructuredCandidateEditorDraft(
+      existingDraft
+        ? {
+            ...existingDraft,
+            finalCategory: candidate.finalCategory,
+          }
+        : buildStructuredCandidateDraft(candidate.sourceItem, candidate.finalCategory)
+    );
+  }
+
+  function closeStructuredCandidateEditor() {
+    setEditingStructuredCandidateId(null);
+    setStructuredCandidateEditorDraft(null);
+  }
+
+  function applyStructuredCandidateEditorChanges() {
+    if (!editingStructuredCandidateId || !structuredCandidateEditorDraft) return;
+
+    setStructuredCandidateDrafts((current) => ({
+      ...current,
+      [editingStructuredCandidateId]: structuredCandidateEditorDraft,
+    }));
+
+    setEditableStructuredCandidates((current) =>
+      current.map((candidate) =>
+        candidate.id === editingStructuredCandidateId
+          ? { ...candidate, finalCategory: structuredCandidateEditorDraft.finalCategory }
+          : candidate
+      )
+    );
+
+    closeStructuredCandidateEditor();
   }
 
   async function runVisualEvidenceScanBatch(params: {
@@ -7519,6 +7932,25 @@ async function handleSaveImportedItemsToCatalog() {
     setParentSuccess(null);
 
     try {
+      const preSaveValidation = await validateStructuredItemsBeforeSave({
+        supabase,
+        organizationId,
+        storeId,
+        items: sourceItems,
+      });
+      const duplicateCount = preSaveValidation.blockedItems.length;
+
+      if (preSaveValidation.validItems.length === 0) {
+        setParentError(
+          duplicateCount > 0
+            ? "Nenhum item foi salvo porque todos os candidatos selecionados ja existem ou estao duplicados."
+            : "A analise nao encontrou itens validos para salvar."
+        );
+        return;
+      }
+
+      const sourceItemsToSave = preSaveValidation.validItems;
+
       const selectedImageFiles = intelligentImportFiles.filter((file) =>
         String(file.type || "").startsWith("image/")
       );
@@ -7588,7 +8020,7 @@ async function handleSaveImportedItemsToCatalog() {
       }
 
       const extractedImageAssignments = buildDeterministicExtractedImageAssignments(
-        sourceItems,
+        sourceItemsToSave,
         extractedImageSequence
       );
 
@@ -7605,7 +8037,7 @@ async function handleSaveImportedItemsToCatalog() {
       const savedRuntimeIdentityKeys = new Set<string>();
       const savedPoolNames = new Set<string>();
 
-      for (const item of sourceItems) {
+      for (const item of sourceItemsToSave) {
         try {
           const initialDestination = resolveImportedDestination(item);
           const metrics = extractImportedPoolMetrics(item);
@@ -7764,7 +8196,7 @@ async function handleSaveImportedItemsToCatalog() {
                 extractedImageBucketCursors,
                 extractedImageSequence,
                 consumedExtractedImageIds,
-                sourceItems.length
+                sourceItemsToSave.length
               )
             ).slice(0, 1);
             if (poolImages.length > 0) {
@@ -7971,15 +8403,15 @@ async function handleSaveImportedItemsToCatalog() {
 
           const catalogImages = (
             extractedImageAssignments.get(buildImportedSaveKey(item)) ??
-            pickRelatedExtractedImages(
-              item,
-              extractedImageBuckets,
-              extractedImageBucketCursors,
-              extractedImageSequence,
-              consumedExtractedImageIds,
-              sourceItems.length
-            )
-          ).slice(0, 1);
+              pickRelatedExtractedImages(
+                item,
+                extractedImageBuckets,
+                extractedImageBucketCursors,
+                extractedImageSequence,
+                consumedExtractedImageIds,
+                sourceItemsToSave.length
+              )
+            ).slice(0, 1);
           if (catalogImages.length > 0) {
             try {
               await replaceCatalogItemPhotos(
@@ -8027,8 +8459,11 @@ async function handleSaveImportedItemsToCatalog() {
         return;
       }
 
+      const duplicateSummary =
+        duplicateCount > 0 ? ` ${duplicateCount} item(ns) ignorado(s) por duplicidade.` : "";
+
       setParentSuccess(
-        `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}. Os arquivos brutos desta importação também foram guardados no sistema.`
+        `Importação salva com sucesso. Piscinas: ${savedPools}. Químicos: ${savedQuimicos}. Acessórios: ${savedAcessorios}. Outros: ${savedOutros}.${duplicateSummary} Os arquivos brutos desta importação também foram guardados no sistema.`
       );
 
       clearIntelligentImportState();
@@ -10087,6 +10522,11 @@ async function handleSaveImportedItemsToCatalog() {
                       <p className="mt-1 text-sm leading-6 text-slate-600">
                         Nada foi salvo ainda. Confira os itens detectados e escolha o que deve entrar no catalogo.
                       </p>
+                      {structuredDuplicateReferencesLoading ? (
+                        <p className="mt-2 text-xs font-medium text-slate-500">
+                          Verificando duplicidades da loja...
+                        </p>
+                      ) : null}
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center text-xs">
                       <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
@@ -10107,20 +10547,39 @@ async function handleSaveImportedItemsToCatalog() {
                   <div className="mt-4 max-h-[30rem] space-y-3 overflow-y-auto pr-1">
                     {editableStructuredCandidates.map((candidate) => {
                       const item = candidate.sourceItem;
-                      const displayName = buildStructuredReviewDisplayName(item, candidate.finalCategory);
-                      const sku = String(extractImportedCatalogSku(item) || "").trim();
-                      const priceLabel = formatStructuredReviewPriceLabel(item);
-                      const descriptionSnippet = buildStructuredReviewDescriptionSnippet(item);
+                      const candidateDraft = structuredCandidateDrafts[candidate.id];
+                      const candidateValidation = structuredReviewValidation.byCandidateId.get(candidate.id);
+                      const isDuplicate = Boolean(candidateValidation?.duplicateReason);
+                      const displayName =
+                        String(candidateDraft?.name || "").trim() ||
+                        buildStructuredReviewDisplayName(item, candidate.finalCategory);
+                      const sku =
+                        String(candidateDraft?.sku || "").trim() ||
+                        String(extractImportedCatalogSku(item) || "").trim();
+                      const priceLabel =
+                        formatStructuredDraftPriceLabel(candidateDraft?.price || "") ||
+                        formatStructuredReviewPriceLabel(item);
+                      const descriptionSnippet = String(candidateDraft?.description || "").trim()
+                        ? buildStructuredDraftDescriptionSnippet(candidateDraft?.description || "")
+                        : buildStructuredReviewDescriptionSnippet(item);
                       const originLabel = buildStructuredReviewOriginLabel(item);
                       const categoryAdjusted = candidate.finalCategory !== candidate.initialCategory;
+                      const hasLocalEdits = Boolean(candidateDraft);
+                      const stateLabel = isDuplicate
+                        ? "Nao sera salvo"
+                        : candidate.selected
+                          ? "Selecionado para salvar"
+                          : "Ignorado";
 
                       return (
                         <div
                           key={candidate.id}
                           className={cx(
                             "rounded-2xl border p-4 transition",
-                            candidate.selected
-                              ? "border-slate-200 bg-slate-50"
+                            isDuplicate
+                              ? "border-rose-200 bg-rose-50/70"
+                              : candidate.selected
+                                ? "border-slate-200 bg-slate-50"
                               : "border-amber-200 bg-amber-50/60"
                           )}
                         >
@@ -10130,16 +10589,28 @@ async function handleSaveImportedItemsToCatalog() {
                                 <span
                                   className={cx(
                                     "rounded-full px-2.5 py-1 text-[11px] font-medium ring-1",
-                                    candidate.selected
-                                      ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
+                                    isDuplicate
+                                      ? "bg-rose-100 text-rose-800 ring-rose-200"
+                                      : candidate.selected
+                                        ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
                                       : "bg-amber-100 text-amber-800 ring-amber-200"
                                   )}
                                 >
-                                  {candidate.selected ? "Selecionado para salvar" : "Ignorado"}
+                                  {stateLabel}
                                 </span>
+                                {isDuplicate ? (
+                                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-rose-700 ring-1 ring-rose-200">
+                                    Duplicado
+                                  </span>
+                                ) : null}
                                 <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200">
                                   Categoria: {getStructuredReviewCategoryLabel(candidate.finalCategory)}
                                 </span>
+                                {hasLocalEdits ? (
+                                  <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-800 ring-1 ring-violet-200">
+                                    Editado
+                                  </span>
+                                ) : null}
                                 {categoryAdjusted ? (
                                   <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200">
                                     Categoria ajustada
@@ -10154,6 +10625,11 @@ async function handleSaveImportedItemsToCatalog() {
                                 {priceLabel ? <span>Preco: {priceLabel}</span> : null}
                                 {originLabel ? <span>Origem: {originLabel}</span> : null}
                               </div>
+                              {candidateValidation?.duplicateReason ? (
+                                <p className="mt-2 text-sm font-medium text-rose-700">
+                                  {candidateValidation.duplicateReason}
+                                </p>
+                              ) : null}
                               {descriptionSnippet ? (
                                 <p className="mt-2 text-sm leading-6 text-slate-600">
                                   {descriptionSnippet}
@@ -10177,6 +10653,13 @@ async function handleSaveImportedItemsToCatalog() {
                                 <option value="acessorios">Acessorio</option>
                                 <option value="outros">Outro</option>
                               </select>
+                              <button
+                                type="button"
+                                onClick={() => openStructuredCandidateEditor(candidate)}
+                                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-50"
+                              >
+                                Editar
+                              </button>
                               <button
                                 type="button"
                                 onClick={() =>
@@ -10216,7 +10699,12 @@ async function handleSaveImportedItemsToCatalog() {
                       {editableStructuredCandidates.length > 0 &&
                       structuredSelectedCandidates.length === 0 ? (
                         <p className="mt-2 text-sm font-medium text-amber-700">
-                          Nenhum item selecionado para salvar.
+                          Nenhum item valido selecionado para salvar.
+                        </p>
+                      ) : null}
+                      {structuredDuplicateReferencesLoading ? (
+                        <p className="mt-2 text-xs font-medium text-slate-600">
+                          Aguarde a validacao de duplicidades para liberar o salvamento.
                         </p>
                       ) : null}
                     </div>
@@ -10227,6 +10715,7 @@ async function handleSaveImportedItemsToCatalog() {
                         disabled ||
                         savingImportedCatalog ||
                         intelligentImportLoading ||
+                        structuredDuplicateReferencesLoading ||
                         (editableStructuredCandidates.length > 0 &&
                           structuredSelectedCandidates.length === 0)
                       }
@@ -10234,6 +10723,373 @@ async function handleSaveImportedItemsToCatalog() {
                     >
                       {savingImportedCatalog ? "Salvando no sistema..." : "Salvar itens aprovados"}
                     </button>
+                  </div>
+                </div>
+              ) : null}
+              {editingStructuredCandidate && structuredCandidateEditorDraft ? (
+                <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35">
+                  <div className="flex h-full w-full max-w-3xl flex-col bg-white shadow-2xl">
+                    <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
+                      <div>
+                        <p className="text-sm font-medium text-slate-500">Editar candidato</p>
+                        <h3 className="mt-1 text-lg font-semibold text-slate-900">
+                          {structuredCandidateEditorDraft.name || "Item em revisão"}
+                        </h3>
+                        <p className="mt-1 text-sm text-slate-600">
+                          Ajuste os dados localmente antes do salvamento final.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={closeStructuredCandidateEditor}
+                        className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Fechar
+                      </button>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto px-6 py-5">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Salvar como</span>
+                          <select
+                            value={structuredCandidateEditorDraft.finalCategory}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      finalCategory: event.target.value as StructuredReviewCategory,
+                                    }
+                                  : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
+                          >
+                            <option value="pool">Piscina</option>
+                            <option value="quimicos">Quimico</option>
+                            <option value="acessorios">Acessorio</option>
+                            <option value="outros">Outro</option>
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Nome</span>
+                          <input
+                            value={structuredCandidateEditorDraft.name}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, name: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">SKU</span>
+                          <input
+                            value={structuredCandidateEditorDraft.sku}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, sku: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Marca</span>
+                          <input
+                            value={structuredCandidateEditorDraft.brand}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, brand: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Preço</span>
+                          <input
+                            value={structuredCandidateEditorDraft.price}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, price: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Estoque</span>
+                          <input
+                            value={structuredCandidateEditorDraft.stock}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, stock: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Linha / Modelo</span>
+                          <input
+                            value={structuredCandidateEditorDraft.modelLine}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, modelLine: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Unidade</span>
+                          <input
+                            value={structuredCandidateEditorDraft.unit}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, unit: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Tamanho / Variação</span>
+                          <input
+                            value={structuredCandidateEditorDraft.variantSize}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, variantSize: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Material</span>
+                          <input
+                            value={structuredCandidateEditorDraft.material}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, material: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Formato</span>
+                          <input
+                            value={structuredCandidateEditorDraft.shape}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, shape: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Cor</span>
+                          <input
+                            value={structuredCandidateEditorDraft.color}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, color: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Acabamento / Linha</span>
+                          <input
+                            value={structuredCandidateEditorDraft.finishLine}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, finishLine: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Largura</span>
+                          <input
+                            value={structuredCandidateEditorDraft.width}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, width: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Altura</span>
+                          <input
+                            value={structuredCandidateEditorDraft.height}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, height: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Comprimento</span>
+                          <input
+                            value={structuredCandidateEditorDraft.length}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, length: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Profundidade</span>
+                          <input
+                            value={structuredCandidateEditorDraft.depth}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, depth: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Peso</span>
+                          <input
+                            value={structuredCandidateEditorDraft.weight}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, weight: event.target.value } : current
+                              )
+                            }
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="mt-4 grid gap-4">
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Descrição</span>
+                          <textarea
+                            value={structuredCandidateEditorDraft.description}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, description: event.target.value } : current
+                              )
+                            }
+                            rows={5}
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Aplicação / Uso recomendado</span>
+                          <textarea
+                            value={structuredCandidateEditorDraft.application}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, application: event.target.value } : current
+                              )
+                            }
+                            rows={3}
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Itens inclusos</span>
+                          <textarea
+                            value={structuredCandidateEditorDraft.includedItems}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, includedItems: event.target.value } : current
+                              )
+                            }
+                            rows={3}
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Observações de instalação</span>
+                          <textarea
+                            value={structuredCandidateEditorDraft.installationNotes}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, installationNotes: event.target.value } : current
+                              )
+                            }
+                            rows={3}
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-sm text-slate-700">
+                          <span className="font-medium">Observações técnicas</span>
+                          <textarea
+                            value={structuredCandidateEditorDraft.technicalNotes}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, technicalNotes: event.target.value } : current
+                              )
+                            }
+                            rows={3}
+                            className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <label className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={structuredCandidateEditorDraft.isActive}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, isActive: event.target.checked } : current
+                              )
+                            }
+                          />
+                          Ativo / vendível
+                        </label>
+                        <label className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={structuredCandidateEditorDraft.trackStock}
+                            onChange={(event) =>
+                              setStructuredCandidateEditorDraft((current) =>
+                                current ? { ...current, trackStock: event.target.checked } : current
+                              )
+                            }
+                          />
+                          Controlar estoque
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-3 border-t border-slate-200 px-6 py-4">
+                      <button
+                        type="button"
+                        onClick={closeStructuredCandidateEditor}
+                        className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={applyStructuredCandidateEditorChanges}
+                        className="rounded-xl bg-black px-4 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
+                      >
+                        Aplicar alterações
+                      </button>
+                    </div>
                   </div>
                 </div>
               ) : null}
