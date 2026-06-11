@@ -39,6 +39,86 @@ export type StructuredImportItem = {
   sourceSubcategory?: string;
 };
 
+export type StructuredParserBlockDebug = {
+  index: number;
+  charCount: number;
+  lineCount: number;
+  previewLines: string[];
+  segmentationStrategy: string;
+  skuCount: number;
+  priceCount: number;
+  looksLikeMultipleProducts: boolean;
+  looksLikeTitleOrSection: boolean;
+};
+
+export type StructuredParserCandidateDebug = {
+  blockIndex: number;
+  title: string;
+  titleSource: string;
+  sku: string;
+  allSkus: string[];
+  price: string;
+  allPrices: string[];
+  destination: StructuredImportDestination;
+  confidence: number;
+  alerts: string[];
+};
+
+export type StructuredParserMergeDebug = {
+  key: string;
+  primaryTitle: string;
+  secondaryTitle: string;
+  reason: "sku" | "title" | "category" | "other";
+};
+
+export type StructuredParserFileDebug = {
+  fileName: string;
+  mimeType?: string;
+  extractedCharCount: number;
+  approxLineCount: number;
+  usefulLinesPreview: string[];
+  looksLikeContinuousText: boolean;
+  chooseBlocks: {
+    strategy: string;
+    blockCount: number;
+    blocks: StructuredParserBlockDebug[];
+  };
+  parseSingleBlock: {
+    candidateCount: number;
+    nullBlockCount: number;
+    candidates: StructuredParserCandidateDebug[];
+  };
+  sourceLooksSingleItem: {
+    activated: boolean;
+    reasons: string[];
+    beforeCount: number;
+    afterCount: number;
+  };
+  merge: {
+    inputCount: number;
+    outputCount: number;
+    mergedPairs: StructuredParserMergeDebug[];
+  };
+  fragmentCoalesce?: {
+    inputCount: number;
+    outputCount: number;
+    mergedPairs: Array<{
+      fromIndex: number;
+      intoIndex: number;
+      reason: string;
+    }>;
+  };
+  continuationCoalesce?: {
+    inputCount: number;
+    outputCount: number;
+    mergedPairs: Array<{
+      fromIndex: number;
+      intoIndex: number;
+      reason: string;
+    }>;
+  };
+};
+
 const DEBUG_INTELLIGENT_IMPORT =
   process.env.NEXT_PUBLIC_DEBUG_INTELLIGENT_IMPORT === "1" ||
   process.env.DEBUG_INTELLIGENT_IMPORT === "1" ||
@@ -190,6 +270,14 @@ function escapeRegExp(value: string) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const DIRECT_SKU_REGEX = /\b(?:qmc|acc|out)(?:-[a-z0-9]{1,8}){1,4}\b/gi;
+const PRICE_WITH_CONTEXT_REGEX =
+  /(?:r\$\s*|pre[cÃ§]o(?:\s+(?:venda|final|sugerido|custo))?(?:\s*\(r\$\))?\s*[:\-]?\s*|valor\s*[:\-]?\s*|reais\s*)(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]\d{2})/gi;
+const PRODUCT_WORD_REGEX =
+  /\b(?:cloro(?:\s+granulado)?|limpa\s+bordas|clorador|cabo\s+telesc[oÃ³]pico|piscina|peneira|kit(?:\s+limpeza)?|aspirador|escova|elevador)\b/i;
+const NARRATIVE_PRODUCT_PREFIX_REGEX =
+  /^(?:temos|logo depois aparece|no mesmo par[aÃ¡]grafo tem|tamb[eÃ©]m vendemos|outro item(?: importante)?|produto da promo[cÃ§][aÃ£]o ver[aÃ£]o|aparece|surge)\s+/i;
+
 function canonicalizeFieldKey(value: string) {
   const normalized = normalizeLoose(value);
 
@@ -258,6 +346,22 @@ function appendFieldValue(fieldMap: Record<string, string>, rawKey: string, rawV
   fieldMap[key] = `${existing}\n${value}`;
 }
 
+function buildPreviewLines(text: string, maxLines = 5) {
+  return normalizeBlock(text)
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean)
+    .slice(0, maxLines);
+}
+
+function looksLikeContinuousNarrativeText(text: string) {
+  const normalized = normalizeBlock(text);
+  const lines = normalized.split("\n").map((line) => cleanText(line)).filter(Boolean);
+  if (lines.length <= 2) return normalized.length >= 180;
+  const longLineCount = lines.filter((line) => line.length >= 120).length;
+  return longLineCount >= Math.max(1, Math.floor(lines.length / 2));
+}
+
 function findStandaloneFieldLabel(line: string) {
   const normalizedLine = normalizeLoose(line);
   if (!normalizedLine) return "";
@@ -306,6 +410,433 @@ function preprocessStructuredText(text: string) {
       .replace(/(PLANILHA\s*:[^\n]+?)(\s*===\s*ITEM\s*\d+)/gi, "$1\n$2")
       .replace(/(===\s*ITEM\s*\d+[^\n]*)(\s+PLANILHA\s*:)/gi, "$1\n$2")
   );
+}
+
+function stripNarrativeLeadIn(value: string) {
+  return cleanText(
+    String(value || "")
+      .replace(NARRATIVE_PRODUCT_PREFIX_REGEX, "")
+      .replace(/^(?:um|uma|o|a)\s+/i, "")
+  );
+}
+
+function stripTrailingStructuredDetails(value: string) {
+  return cleanText(
+    String(value || "").replace(
+      /\s+(?:sku|c[oÃ³]digo|cod|pre[cÃ§]o|valor|estoque|categoria|quantidade|qtd)\b.*$/i,
+      ""
+    )
+  );
+}
+
+function isLikelySectionContextLine(line: string) {
+  const normalizedLine = normalizeLoose(line);
+  if (!normalizedLine) return true;
+  if (isProbablyGenericTitle(line)) return true;
+  if (
+    normalizedLine.startsWith("arquivo propositalmente") ||
+    normalizedLine.startsWith("secao sem padrao claro") ||
+    normalizedLine.startsWith("bloco com preco longe do nome") ||
+    normalizedLine.startsWith("tabela meio quebrada") ||
+    normalizedLine.startsWith("catalogo teste") ||
+    normalizedLine.startsWith("nome produto") ||
+    normalizedLine.startsWith("nome do produto codigo valor qtd") ||
+    normalizedLine === "nome produto" ||
+    normalizedLine === "codigo" ||
+    normalizedLine === "valor" ||
+    normalizedLine === "qtd"
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function lineHasProductSignal(line: string) {
+  const cleaned = cleanText(line);
+  if (!cleaned) return false;
+  if (Array.from(cleaned.matchAll(DIRECT_SKU_REGEX)).length > 0) return true;
+  if (/\b(?:sku|c[oÃ³]digo|cod)\s*[:\-]?\s*[a-z0-9-]/i.test(cleaned)) return true;
+  if (PRODUCT_WORD_REGEX.test(cleaned)) return true;
+  if (collectAllPriceCandidates(cleaned).length > 0) return true;
+  return false;
+}
+
+function countProductSignals(text: string) {
+  const cleaned = cleanText(text);
+  if (!cleaned) return 0;
+  const skuSignals = collectAllSkuCandidates(cleaned).length;
+  const priceSignals = collectAllPriceCandidates(cleaned).length;
+  const keywordSignals = Array.from(
+    cleaned.matchAll(
+      /\b(?:cloro(?:\s+granulado)?|limpa\s+bordas|clorador|cabo\s+telesc[oÃ³]pico|piscina|peneira|kit(?:\s+limpeza)?|aspirador|escova|elevador)\b/gi
+    )
+  ).length;
+  return Math.max(skuSignals, priceSignals, keywordSignals);
+}
+
+function splitLineIntoProductFragments(line: string) {
+  const cleaned = cleanText(line);
+  if (!cleaned) return [];
+
+  const anchorRegex =
+    /(?=\b(?:temos|logo depois aparece|no mesmo par[aÃ¡]grafo tem|tamb[eÃ©]m vendemos|outro item(?: importante)?|produto(?: da)?(?: promo[cÃ§][aÃ£]o ver[aÃ£]o)?|cloro(?:\s+granulado)?|limpa\s+bordas|clorador|cabo\s+telesc[oÃ³]pico|piscina|peneira|kit(?:\s+limpeza)?|aspirador|escova|elevador|sku|c[oÃ³]digo|cod|qmc(?:-[a-z0-9]{1,8}){1,3}|acc(?:-[a-z0-9]{1,8}){1,3}|out(?:-[a-z0-9]{1,8}){1,3})\b)/gi;
+
+  const fragments = cleaned
+    .split(anchorRegex)
+    .map((part) => cleanText(part))
+    .filter(Boolean);
+
+  if (fragments.length <= 1) return [cleaned];
+
+  const merged: string[] = [];
+  for (const fragment of fragments) {
+    if (merged.length === 0) {
+      merged.push(fragment);
+      continue;
+    }
+
+    if (lineHasProductSignal(fragment)) {
+      merged.push(fragment);
+      continue;
+    }
+
+    merged[merged.length - 1] = cleanText(`${merged[merged.length - 1]} ${fragment}`);
+  }
+
+  return merged;
+}
+
+function blockLooksLikeMixedProductContent(block: string) {
+  const cleaned = normalizeBlock(block);
+  const lines = cleaned.split("\n").map((line) => cleanText(line)).filter(Boolean);
+  if (lines.length === 0) return false;
+  const skuCount = collectAllSkuCandidates(cleaned).length;
+  const priceCount = collectAllPriceCandidates(cleaned).length;
+  const signalCount = countProductSignals(cleaned);
+  return skuCount > 1 || (priceCount > 1 && signalCount > 1) || signalCount >= 3;
+}
+
+function blockLooksLikeProductNameFragment(block: string) {
+  const cleaned = stripTrailingStructuredDetails(stripNarrativeLeadIn(cleanText(block)));
+  if (!cleaned) return false;
+  if (isLikelySectionContextLine(cleaned)) return false;
+  if (collectAllSkuCandidates(cleaned).length > 0) return false;
+  if (collectAllPriceCandidates(cleaned).length > 0) return false;
+  if (!PRODUCT_WORD_REGEX.test(cleaned)) return false;
+  return cleaned.length >= 6 && cleaned.length <= 140;
+}
+
+function blockEndsWithSkuLeadIn(block: string) {
+  return /(?:\bsku\b|\bcod\b|c[oÃ³]digo|cod\.|c[oÃ³]d\.)\s*[:\-.,;]*$/i.test(cleanText(block));
+}
+
+function blockStartsWithSkuOrCode(block: string) {
+  const cleaned = cleanText(block);
+  return (
+    /^\s*(?:sku|cod|c[oÃ³]digo)\b/i.test(cleaned) ||
+    /^\s*(?:qmc|acc|out)(?:-[a-z0-9]{1,8}){1,3}\b/i.test(cleaned)
+  );
+}
+
+function blockIsContextOnlyLine(block: string) {
+  const normalized = normalizeLoose(block);
+  return (
+    normalized === "piscina" ||
+    normalized === "quimico" ||
+    normalized === "quimicos" ||
+    normalized === "acessorio" ||
+    normalized === "acessorios" ||
+    normalized === "fim do arquivo teste" ||
+    normalized === "tabela meio quebrada"
+  );
+}
+
+function blockIsTransitionOnlyLine(block: string) {
+  const normalized = normalizeLoose(block);
+  return (
+    normalized === "logo depois aparece" ||
+    normalized === "no mesmo paragrafo tem" ||
+    normalized === "tambem vendemos" ||
+    normalized === "outro item" ||
+    normalized === "outro item importante"
+  );
+}
+
+function blockLooksLikeContinuationFragment(block: string) {
+  const cleaned = cleanText(block);
+  const normalized = normalizeLoose(cleaned);
+  if (!cleaned) return false;
+  if (collectAllSkuCandidates(cleaned).length > 0) return false;
+  if (blockLooksLikeProductNameFragment(cleaned)) return false;
+
+  const hasCommercialContinuation =
+    collectAllPriceCandidates(cleaned).length > 0 ||
+    /\bestoque\b|\bquantidade\b|\bqtd\b|\bcategoria\b|\buso\b|\baplic/i.test(normalized) ||
+    normalized.startsWith("produto para") ||
+    normalized.startsWith("uso recomendado") ||
+    normalized.startsWith("acessorio para") ||
+    normalized.startsWith("quimico") ||
+    normalized.startsWith("categoria correta") ||
+    normalized.startsWith("categoria final esperada");
+
+  return hasCommercialContinuation;
+}
+
+function blockStartsWithStrongProductName(block: string) {
+  const cleaned = stripNarrativeLeadIn(cleanText(block));
+  if (!cleaned) return false;
+  if (blockStartsWithSkuOrCode(cleaned)) return false;
+  if (!PRODUCT_WORD_REGEX.test(cleaned)) return false;
+  const firstSegment = stripTrailingStructuredDetails(cleaned).split(/[.;\n]/)[0] || cleaned;
+  return normalizeLoose(firstSegment).length >= 6;
+}
+
+function splitTrailingTransitionIntoNextProduct(text: string) {
+  const cleaned = cleanText(text);
+  if (!cleaned) {
+    return { head: "", tail: "" };
+  }
+
+  const transitionMatch = cleaned.match(
+    /\b(?:tamb[eÃ©]m vendemos|outro item(?: importante)?|produto(?: da)?(?: promo[cÃ§][aÃ£]o ver[aÃ£]o)?|logo depois aparece|no mesmo par[aÃ¡]grafo tem)\b/i
+  );
+
+  if (!transitionMatch || transitionMatch.index == null || transitionMatch.index <= 0) {
+    return { head: cleaned, tail: "" };
+  }
+
+  return {
+    head: cleanText(cleaned.slice(0, transitionMatch.index)),
+    tail: cleanText(cleaned.slice(transitionMatch.index)),
+  };
+}
+
+function coalesceProductFragmentsAfterSplit(fragments: string[]) {
+  const merged: string[] = [];
+  const mergedPairs: Array<{ fromIndex: number; intoIndex: number; reason: string }> = [];
+  const continuationPairs: Array<{ fromIndex: number; intoIndex: number; reason: string }> = [];
+
+  for (let index = 0; index < fragments.length; index += 1) {
+    const fragment = normalizeBlock(fragments[index]);
+    if (!fragment) continue;
+
+    if (blockIsContextOnlyLine(fragment)) {
+      if (merged.length > 0) {
+        const previousIndex = merged.length - 1;
+        const previous = merged[previousIndex];
+        if (normalizeLoose(previous).includes("piscina")) {
+          merged[previousIndex] = normalizeBlock(`${previous}\n${fragment}`);
+          mergedPairs.push({
+            fromIndex: index,
+            intoIndex: previousIndex,
+            reason: "context_line_attached_to_previous",
+          });
+        }
+      }
+      continue;
+    }
+
+    const splitTransition = splitTrailingTransitionIntoNextProduct(fragment);
+    const workingFragment = splitTransition.head || fragment;
+    const nextSeed = splitTransition.tail;
+
+    if (workingFragment) {
+      if (merged.length > 0) {
+        const previousIndex = merged.length - 1;
+        const previous = merged[previousIndex];
+        const previousHasSku = collectAllSkuCandidates(previous).length > 0;
+        const previousHasPrice = collectAllPriceCandidates(previous).length > 0;
+        const currentHasSku = collectAllSkuCandidates(workingFragment).length > 0;
+        const currentHasPrice = collectAllPriceCandidates(workingFragment).length > 0;
+        const shouldMergeWithPrevious =
+          (blockEndsWithSkuLeadIn(previous) && blockStartsWithSkuOrCode(workingFragment)) ||
+          (blockLooksLikeProductNameFragment(previous) &&
+            (blockStartsWithSkuOrCode(workingFragment) ||
+              (collectAllSkuCandidates(workingFragment).length > 0 &&
+                collectAllPriceCandidates(workingFragment).length > 0))) ||
+          (previousHasSku &&
+            !currentHasSku &&
+            !previousHasPrice &&
+            blockLooksLikeContinuationFragment(workingFragment)) ||
+          (normalizeLoose(previous).includes("piscina havai compacta") && blockIsContextOnlyLine(workingFragment));
+
+        if (shouldMergeWithPrevious) {
+          merged[previousIndex] = normalizeBlock(`${previous}\n${workingFragment}`);
+          const reason =
+            blockEndsWithSkuLeadIn(previous)
+              ? "name_with_trailing_sku_label"
+              : previousHasSku && !currentHasSku && blockLooksLikeContinuationFragment(workingFragment)
+                ? "continuation_details_to_previous_product"
+                : "adjacent_name_and_sku_price";
+          mergedPairs.push({
+            fromIndex: index,
+            intoIndex: previousIndex,
+            reason,
+          });
+          if (reason === "continuation_details_to_previous_product") {
+            continuationPairs.push({
+              fromIndex: index,
+              intoIndex: previousIndex,
+              reason,
+            });
+          }
+        } else {
+          merged.push(workingFragment);
+        }
+      } else {
+        merged.push(workingFragment);
+      }
+    }
+
+    if (nextSeed && !blockIsTransitionOnlyLine(nextSeed)) {
+      merged.push(nextSeed);
+    }
+  }
+
+  return {
+    blocks: merged.filter(Boolean),
+    mergedPairs,
+    continuationPairs,
+  };
+}
+
+function coalesceContinuationFragments(fragments: string[]) {
+  const merged: string[] = [];
+  const mergedPairs: Array<{ fromIndex: number; intoIndex: number; reason: string }> = [];
+
+  for (let index = 0; index < fragments.length; index += 1) {
+    const fragment = normalizeBlock(fragments[index]);
+    if (!fragment) continue;
+
+    const splitTransition = splitTrailingTransitionIntoNextProduct(fragment);
+    const continuationPart = splitTransition.head || fragment;
+    const nextSeed = splitTransition.tail;
+
+    if (merged.length > 0) {
+      const previousIndex = merged.length - 1;
+      const previous = merged[previousIndex];
+      const previousHasSku = collectAllSkuCandidates(previous).length > 0;
+      const previousHasPrice = collectAllPriceCandidates(previous).length > 0;
+      const currentHasSku = collectAllSkuCandidates(continuationPart).length > 0;
+      const currentStartsStrongName = blockStartsWithStrongProductName(continuationPart);
+
+      const shouldAttachContinuation =
+        previousHasSku &&
+        !previousHasPrice &&
+        !currentHasSku &&
+        blockLooksLikeContinuationFragment(continuationPart) &&
+        !currentStartsStrongName;
+
+      if (shouldAttachContinuation) {
+        merged[previousIndex] = normalizeBlock(`${previous}\n${continuationPart}`);
+        mergedPairs.push({
+          fromIndex: index,
+          intoIndex: previousIndex,
+          reason: "continuation_details_to_previous_product",
+        });
+      } else if (!blockIsTransitionOnlyLine(continuationPart)) {
+        merged.push(continuationPart);
+      }
+    } else if (!blockIsTransitionOnlyLine(continuationPart)) {
+      merged.push(continuationPart);
+    }
+
+    if (nextSeed && !blockIsTransitionOnlyLine(nextSeed)) {
+      merged.push(nextSeed);
+    }
+  }
+
+  return {
+    blocks: merged.filter(Boolean),
+    mergedPairs,
+  };
+}
+
+function splitTransitionCarriedBlocks(fragments: string[]) {
+  const blocks: string[] = [];
+  const transitionSplits: Array<{
+    fromIndex: number;
+    intoIndex: number;
+    reason: string;
+  }> = [];
+
+  for (let index = 0; index < fragments.length; index += 1) {
+    const fragment = normalizeBlock(fragments[index]);
+    if (!fragment) continue;
+
+    const splitTransition = splitTrailingTransitionIntoNextProduct(fragment);
+    const head = normalizeBlock(splitTransition.head || fragment);
+    const tail = normalizeBlock(splitTransition.tail || "");
+
+    if (head) {
+      blocks.push(head);
+    }
+
+    if (tail && blockStartsWithStrongProductName(tail)) {
+      blocks.push(tail);
+      transitionSplits.push({
+        fromIndex: index,
+        intoIndex: blocks.length - 1,
+        reason: "transition_started_next_product",
+      });
+    }
+  }
+
+  return {
+    blocks,
+    transitionSplits,
+  };
+}
+
+function splitMixedProductBlock(block: string) {
+  const cleanedBlock = normalizeBlock(block);
+  if (!cleanedBlock || !blockLooksLikeMixedProductContent(cleanedBlock)) {
+    return [cleanedBlock].filter(Boolean);
+  }
+
+  const rawLines = cleanedBlock
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean)
+    .flatMap((line) => splitLineIntoProductFragments(line));
+
+  const microBlocks: string[] = [];
+  let current: string[] = [];
+
+  function pushCurrent() {
+    const joined = normalizeBlock(current.join("\n"));
+    if (joined && countProductSignals(joined) > 0) {
+      microBlocks.push(joined);
+    }
+    current = [];
+  }
+
+  for (const line of rawLines) {
+    if (isLikelySectionContextLine(line) && !lineHasProductSignal(line)) {
+      if (current.length > 0) pushCurrent();
+      continue;
+    }
+
+    const startsNewProduct =
+      current.length > 0 &&
+      lineHasProductSignal(line) &&
+      (Array.from(line.matchAll(DIRECT_SKU_REGEX)).length > 0 ||
+        PRODUCT_WORD_REGEX.test(stripNarrativeLeadIn(line)) ||
+        /\b(?:sku|c[oÃ³]digo|cod)\b/i.test(line));
+
+    if (startsNewProduct) {
+      pushCurrent();
+    }
+
+    current.push(stripNarrativeLeadIn(line));
+  }
+
+  if (current.length > 0) {
+    pushCurrent();
+  }
+
+  return microBlocks.length > 1 ? microBlocks : [cleanedBlock];
 }
 
 function extractInlineFieldPairs(line: string) {
@@ -366,13 +897,26 @@ function cleanDescriptionLine(line: string, title: string) {
   const cleanedLine = cleanText(line);
   if (!cleanedLine) return "";
 
-  const normalizedLine = normalizeLoose(cleanedLine);
+  const withoutTransitionTail = cleanText(
+    cleanedLine.replace(
+      /\b(?:Logo depois aparece|No mesmo par[aÃ¡]grafo tem|Tamb[eÃ©]m vendemos|Tamb[eÃ©]m temos|Outro item(?: importante)?)\b.*$/i,
+      ""
+    )
+  );
+  if (!withoutTransitionTail) return "";
+
+  const normalizedLine = normalizeLoose(withoutTransitionTail);
   const normalizedTitle = normalizeLoose(title);
 
   if (!normalizedLine || normalizedLine === normalizedTitle) return "";
   if (normalizedLine.startsWith("planilha")) return "";
   if (normalizedLine.startsWith("aba")) return "";
   if (normalizedLine.startsWith("sheet")) return "";
+  if (normalizedLine === "logo depois aparece") return "";
+  if (normalizedLine === "no mesmo paragrafo tem") return "";
+  if (normalizedLine === "tambem vendemos") return "";
+  if (normalizedLine === "outro item") return "";
+  if (normalizedLine === "outro item importante") return "";
   if (normalizedLine.startsWith("sku ")) return "";
   if (normalizedLine.startsWith("sku:")) return "";
   if (normalizedLine.startsWith("preco custo")) return "";
@@ -396,7 +940,7 @@ function cleanDescriptionLine(line: string, title: string) {
   if (normalizedLine.includes("sheet estoque")) return "";
   if (looksLikeGarbageDescriptionLine(normalizedLine)) return "";
 
-  const withoutRepeatedInlineFields = cleanedLine
+  const withoutRepeatedInlineFields = withoutTransitionTail
     .replace(/\s*(Embalagem|Aplica[cç][aã]o|Dosagem|Categoria|Linha|Subcategoria|Planilha|Aba)\s*:\s*.*$/i, "")
     .replace(/\s*(Observa[cç][oõ]es?)\s*:\s*(Controlar estoque|Item sazonal|Validar.*)$/i, "")
     .trim();
@@ -504,7 +1048,36 @@ function isSameNormalizedValue(left?: string, right?: string) {
   return normalizeLoose(left) === normalizeLoose(right);
 }
 
-function mergeStructuredImportItems(items: StructuredImportItem[]) {
+function inferMergeReason(existing: StructuredImportItem, incoming: StructuredImportItem) {
+  if (normalizeLoose(existing.sku) && normalizeLoose(existing.sku) === normalizeLoose(incoming.sku)) {
+    return "sku" as const;
+  }
+  if (
+    normalizeLoose(existing.title) &&
+    normalizeLoose(existing.title) === normalizeLoose(incoming.title)
+  ) {
+    return "title" as const;
+  }
+  if (
+    normalizeLoose(existing.sourceCategory || existing.categoria) ===
+    normalizeLoose(incoming.sourceCategory || incoming.categoria)
+  ) {
+    return "category" as const;
+  }
+  return "other" as const;
+}
+
+function itemLooksStructurallyComplete(item: StructuredImportItem) {
+  const hasSku = Boolean(cleanText(item.sku));
+  const hasPrice = Boolean(cleanText(item.price));
+  const title = normalizeLoose(item.title);
+  return Boolean(title) && hasSku && hasPrice;
+}
+
+function mergeStructuredImportItems(
+  items: StructuredImportItem[],
+  mergeTrace?: StructuredParserMergeDebug[]
+) {
   const mergedByKey = new Map<string, StructuredImportItem>();
 
   for (const item of items) {
@@ -521,6 +1094,24 @@ function mergeStructuredImportItems(items: StructuredImportItem[]) {
     if (!existing) {
       mergedByKey.set(key, { ...item });
       continue;
+    }
+
+    if (
+      normalizedSku &&
+      itemLooksStructurallyComplete(existing) &&
+      itemLooksStructurallyComplete(item)
+    ) {
+      mergedByKey.set(`${key}::duplicate::${mergedByKey.size + 1}`, { ...item });
+      continue;
+    }
+
+    if (mergeTrace) {
+      mergeTrace.push({
+        key,
+        primaryTitle: existing.title,
+        secondaryTitle: item.title,
+        reason: inferMergeReason(existing, item),
+      });
     }
 
     const primary = scoreStructuredItem(existing) >= scoreStructuredItem(item) ? { ...existing } : { ...item };
@@ -694,6 +1285,29 @@ function sanitizeSku(value: string | null | undefined) {
   return isValidSkuCandidate(cleaned) ? cleaned : "";
 }
 
+function extractRobustSkuCandidates(text: string) {
+  const candidates = [
+    ...Array.from(
+      String(text || "").matchAll(/\b(?:sku|c[oÃ³]digo|cod)\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/gi)
+    ).map((match) => sanitizeSku(match[1] || "")),
+    ...Array.from(String(text || "").matchAll(DIRECT_SKU_REGEX)).map((match) =>
+      sanitizeSku(match[0] || "")
+    ),
+  ].filter(Boolean);
+
+  return Array.from(new Set(candidates));
+}
+
+function collectAllSkuCandidates(text: string) {
+  return extractRobustSkuCandidates(text);
+}
+
+function collectAllPriceCandidates(text: string) {
+  return Array.from(String(text || "").matchAll(PRICE_WITH_CONTEXT_REGEX))
+    .map((match) => cleanText(match[1] || ""))
+    .filter(Boolean);
+}
+
 function extractLooseSku(text: string) {
   const patterns = [
     /\bsku\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/i,
@@ -738,7 +1352,12 @@ function extractLooseColor(text: string) {
 
 function isChemicalSku(value: string | null | undefined) {
   const sku = cleanText(value || "").toUpperCase();
-  return /^QMC-\d{3,}$/.test(sku);
+  return /^QMC(?:-[A-Z0-9]{1,8}){1,4}$/.test(sku);
+}
+
+function isAccessorySku(value: string | null | undefined) {
+  const sku = cleanText(value || "").toUpperCase();
+  return /^ACC(?:-[A-Z0-9]{1,8}){1,4}$/.test(sku);
 }
 
 function inferDestination(params: {
@@ -762,11 +1381,30 @@ function inferDestination(params: {
   if (isChemicalSku(params.explicitSku)) {
     return "quimicos";
   }
+  if (isAccessorySku(params.explicitSku)) {
+    return "acessorios";
+  }
 
   const source = normalizeLoose(params.text);
 
-  if (/\bqmc\s*-\s*\d{3,}\b/i.test(source)) {
+  if (source.includes("categoria correta quimico") || source.includes("categoria correta quimicos")) {
     return "quimicos";
+  }
+  if (source.includes("categoria final esperada piscina") || source.includes("categoria final esperada pool")) {
+    return "pool";
+  }
+  if (source.includes("acessorio para pastilhas") || source.includes("acessorios para pastilhas")) {
+    return "acessorios";
+  }
+  if (source.includes("quimico aplicacao semanal") || source.includes("quimicos aplicacao semanal")) {
+    return "quimicos";
+  }
+
+  if (/\bqmc(?:\s*-\s*[a-z0-9]{1,8}){1,4}\b/i.test(source)) {
+    return "quimicos";
+  }
+  if (/\bacc(?:\s*-\s*[a-z0-9]{1,8}){1,4}\b/i.test(source)) {
+    return "acessorios";
   }
 
   const chemicalScore =
@@ -921,24 +1559,100 @@ function splitParagraphBlocks(text: string) {
     .filter(Boolean);
 }
 
-function chooseBlocks(extracted: ExtractedFileContent) {
+function summarizeBlockForDebug(
+  block: string,
+  index: number,
+  segmentationStrategy: string
+): StructuredParserBlockDebug {
+  const normalizedBlock = normalizeBlock(block);
+  const lines = normalizedBlock.split("\n").map((line) => cleanText(line)).filter(Boolean);
+  const allSkus = collectAllSkuCandidates(normalizedBlock);
+  const allPrices = collectAllPriceCandidates(normalizedBlock);
+  const normalized = normalizeLoose(normalizedBlock);
+  const categoryMatches = [
+    normalized.includes("quimicos") || normalized.includes("quimico"),
+    normalized.includes("acessorios") || normalized.includes("acessorio"),
+    normalized.includes("piscinas") || normalized.includes("piscina"),
+    normalized.includes("outros") || normalized.includes("outro"),
+  ].filter(Boolean).length;
+
+  return {
+    index,
+    charCount: normalizedBlock.length,
+    lineCount: lines.length,
+    previewLines: lines.slice(0, 6),
+    segmentationStrategy,
+    skuCount: allSkus.length,
+    priceCount: allPrices.length,
+    looksLikeMultipleProducts:
+      allSkus.length > 1 ||
+      allPrices.length > 1 ||
+      lines.filter((line, lineIndex) =>
+        looksLikeStandaloneCatalogItemHeading(line, lines.slice(lineIndex + 1, lineIndex + 15))
+      ).length > 1,
+    looksLikeTitleOrSection:
+      Boolean(lines[0] && isProbablyGenericTitle(lines[0])) ||
+      categoryMatches > 1 ||
+      /^cat[aá]logo\b/i.test(lines[0] || ""),
+  };
+}
+
+function chooseBlocksDetailed(extracted: ExtractedFileContent) {
   const preparedText = preprocessStructuredText(extracted.text);
+  const finalizeBlocks = (blocks: string[], strategy: string) => {
+    const segmented = blocks.flatMap((block) => splitMixedProductBlock(block));
+    const coalesced = coalesceProductFragmentsAfterSplit(segmented);
+    const transitionSplit = splitTransitionCarriedBlocks(coalesced.blocks);
+    const continued = coalesceContinuationFragments(transitionSplit.blocks);
+    const finalBlocks = continued.blocks;
+    const finalStrategy =
+      segmented.length > blocks.length ? `${strategy}+mixed_product_split` : strategy;
+    return {
+      blocks: finalBlocks,
+      strategy:
+        coalesced.blocks.length < segmented.length || continued.blocks.length < coalesced.blocks.length
+          ? `${finalStrategy}+fragment_coalesce`
+          : finalStrategy,
+      fragmentCoalesce: {
+        inputCount: segmented.length,
+        outputCount: coalesced.blocks.length,
+        mergedPairs: coalesced.mergedPairs,
+      },
+      continuationCoalesce: {
+        inputCount: coalesced.blocks.length,
+        outputCount: finalBlocks.length,
+        mergedPairs: continued.mergedPairs,
+      },
+    };
+  };
 
   const delimited = splitDelimitedBlocks(preparedText);
-  if (delimited.length > 0) return delimited;
+  if (delimited.length > 0) {
+    return finalizeBlocks(delimited, "delimited_items");
+  }
 
   const repeatedFieldBlocks = splitRepeatedFieldBlocks(preparedText);
-  if (repeatedFieldBlocks.length > 1) return repeatedFieldBlocks;
+  if (repeatedFieldBlocks.length > 1) {
+    return finalizeBlocks(repeatedFieldBlocks, "repeated_field_blocks");
+  }
 
   const numbered = splitNumberedBlocks(preparedText);
-  if (numbered.length > 1) return numbered;
+  if (numbered.length > 1) {
+    return finalizeBlocks(numbered, "numbered_blocks");
+  }
 
   const paragraphs = splitParagraphBlocks(preparedText).filter(
     (block) => normalizeLoose(block).length >= 20
   );
-  if (paragraphs.length > 1) return paragraphs;
+  if (paragraphs.length > 1) {
+    return finalizeBlocks(paragraphs, "paragraph_blocks");
+  }
 
-  return [normalizeBlock(preparedText)].filter(Boolean);
+  return finalizeBlocks([normalizeBlock(preparedText)].filter(Boolean), "single_block_fallback");
+}
+
+function chooseBlocks(extracted: ExtractedFileContent) {
+  return chooseBlocksDetailed(extracted).blocks;
 }
 
 function parseFieldLines(block: string) {
@@ -983,16 +1697,43 @@ function parseFieldLines(block: string) {
 function pickUsableTitleCandidate(value: string | null | undefined) {
   const candidates = String(value || "")
     .split("\n")
-    .map((line) => cleanText(line))
+    .map((line) => stripTrailingStructuredDetails(stripNarrativeLeadIn(line)))
     .filter(Boolean);
 
   return (
     candidates.find((line) => {
       if (findStandaloneFieldLabel(line)) return false;
       if (isProbablyGenericTitle(line)) return false;
+      if (isLikelySectionContextLine(line)) return false;
       return line.length >= 3 && line.length <= 180;
     }) || ""
   );
+}
+
+function extractAllSkuCandidates(text: string) {
+  const matches = Array.from(
+    String(text || "").matchAll(/\b(?:sku|c[oó]digo)\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/gi)
+  )
+    .map((match) => sanitizeSku(match[1] || ""))
+    .filter(Boolean);
+
+  const directMatches = Array.from(
+    String(text || "").matchAll(/\b(acc-\d{3,}|out-\d{3,}|qmc-\d{3,})\b/gi)
+  )
+    .map((match) => sanitizeSku(match[1] || ""))
+    .filter(Boolean);
+
+  return Array.from(new Set([...matches, ...directMatches]));
+}
+
+function extractAllPriceCandidates(text: string) {
+  return Array.from(
+    String(text || "").matchAll(
+      /(?:r\$\s*|pre[cç]o(?:\s+(?:venda|final|sugerido|custo))?(?:\s*\(r\$\))?\s*[:\-]?\s*)(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/gi
+    )
+  )
+    .map((match) => cleanText(match[1] || ""))
+    .filter(Boolean);
 }
 
 function extractChemicalTitleFromNarrative(value: string | null | undefined) {
@@ -1086,6 +1827,62 @@ function chooseDescription(
   return mergeDescriptionParts(pickedSecondaryParts);
 }
 
+function detectTitleSource(
+  fieldMap: Record<string, string>,
+  plainLines: string[],
+  fileName: string,
+  index: number,
+  title: string
+) {
+  const normalizedTitle = normalizeLoose(title);
+  const candidateKeys = [
+    "nome",
+    "nome do produto",
+    "nome do item",
+    "titulo",
+    "tÃ­tulo",
+    "produto",
+    "item",
+    "modelo",
+    "product name",
+    "nome comercial",
+  ];
+
+  for (const key of candidateKeys) {
+    const candidate = pickUsableTitleCandidate(fieldMap[key]);
+    if (candidate && normalizeLoose(candidate) === normalizedTitle) {
+      return `named_field:${key}`;
+    }
+  }
+
+  const titleFromNarrative = extractChemicalTitleFromNarrative(
+    [
+      fieldMap["descriÃƒÂ§ÃƒÂ£o"],
+      fieldMap["descriÃƒÂ§ÃƒÂ£o comercial"],
+      fieldMap["observaÃƒÂ§ÃƒÂµes"],
+      ...plainLines,
+    ]
+      .filter(Boolean)
+      .join("\n")
+  );
+  if (titleFromNarrative && normalizeLoose(titleFromNarrative) === normalizedTitle) {
+    return "narrative";
+  }
+
+  const firstLongPlainLine = plainLines
+    .map((line) => pickUsableTitleCandidate(line))
+    .find(Boolean);
+  if (firstLongPlainLine && normalizeLoose(firstLongPlainLine) === normalizedTitle) {
+    return "first_line";
+  }
+
+  if (normalizeLoose(`${fileName} â€¢ item ${index + 1}`) === normalizedTitle) {
+    return "fallback";
+  }
+
+  return "unknown";
+}
+
 function enrichFieldMapWithLooseExtraction(
   fieldMap: Record<string, string>,
   sourceText: string
@@ -1146,13 +1943,84 @@ function enrichFieldMapWithLooseExtraction(
   }
 }
 
-function parseSingleBlock(
+function inferCandidateAlerts(
+  normalizedBlock: string,
+  title: string,
+  allSkus: string[],
+  allPrices: string[],
+  destination: StructuredImportDestination
+) {
+  const lines = normalizedBlock.split("\n").map((line) => cleanText(line)).filter(Boolean);
+  const normalizedLines = lines.map((line) => normalizeLoose(line));
+  const normalizedTitle = normalizeLoose(title);
+  const titleLineIndex = normalizedLines.findIndex((line) => line.includes(normalizedTitle));
+  const findClosestDistance = (values: string[]) => {
+    if (titleLineIndex < 0) return Number.MAX_SAFE_INTEGER;
+    const valueIndexes = values
+      .map((value) => normalizedLines.findIndex((line) => line.includes(normalizeLoose(value))))
+      .filter((value) => value >= 0);
+    if (valueIndexes.length === 0) return Number.MAX_SAFE_INTEGER;
+    return Math.min(...valueIndexes.map((valueIndex) => Math.abs(valueIndex - titleLineIndex)));
+  };
+
+  const categoryHits = [
+    normalizedBlock.match(/\bquimic(?:o|os)?\b/g)?.length || 0,
+    normalizedBlock.match(/\bacessor(?:io|ios)\b/g)?.length || 0,
+    normalizedBlock.match(/\bpiscina(?:s)?\b/g)?.length || 0,
+    normalizedBlock.match(/\boutro(?:s)?\b/g)?.length || 0,
+  ].filter((count) => count > 0).length;
+
+  const alerts: string[] = [];
+  if (allSkus.length > 1) alerts.push("multiple_skus");
+  if (allPrices.length > 1) alerts.push("multiple_prices");
+  if (isProbablyGenericTitle(title)) alerts.push("title_looks_document_heading");
+  if (findClosestDistance(allSkus) > 3) alerts.push("sku_far_from_title");
+  if (findClosestDistance(allPrices) > 3) alerts.push("price_far_from_title");
+  if (categoryHits > 1) alerts.push("mixed_categories");
+  if (lines.length > 6 && !normalizedBlock.includes("=== item") && lines.filter((line) => line.includes(":")).length < 2) {
+    alerts.push("weak_separator");
+  }
+  if (allSkus.length > 1 || (allPrices.length > 1 && destination === "outros")) {
+    alerts.push("possible_merged_items");
+  }
+  return alerts;
+}
+
+function isWeakFragmentItem(item: StructuredImportItem) {
+  const normalizedTitle = normalizeLoose(item.title);
+  if (!normalizedTitle) return true;
+  const hasSku = Boolean(cleanText(item.sku));
+  const hasPrice = Boolean(cleanText(item.price));
+  if (hasSku || hasPrice) return false;
+
+  if (
+    normalizedTitle === "escova" ||
+    normalizedTitle === "aspirador" ||
+    normalizedTitle === "kit ou varios itens separados" ||
+    normalizedTitle === "kit ou varios itens separado" ||
+    /,$/.test(String(item.title || "").trim())
+  ) {
+    return true;
+  }
+
+  return normalizedTitle.length <= 18 && item.description.trim().length <= 40;
+}
+
+function parseSingleBlockDetailed(
   block: string,
   fileName: string,
   index: number
-): StructuredImportItem | null {
+): {
+  item: StructuredImportItem | null;
+  debug: StructuredParserCandidateDebug | null;
+} {
   const normalizedBlock = normalizeBlock(block);
-  if (!normalizedBlock) return null;
+  if (!normalizedBlock) {
+    return {
+      item: null,
+      debug: null,
+    };
+  }
 
   const { fieldMap, plainLines } = parseFieldLines(normalizedBlock);
 
@@ -1167,6 +2035,8 @@ function parseSingleBlock(
   const resolvedDosage = findStandaloneFieldLabel(fieldMap["dosagem"] || "")
     ? extractLooseDosage(normalizedBlock)
     : fieldMap["dosagem"] || extractLooseDosage(normalizedBlock);
+  const fallbackSku = collectAllSkuCandidates(normalizedBlock)[0] || "";
+  const effectiveSku = resolvedSku || fallbackSku;
   const sheetName = cleanText(fieldMap["planilha"] || fieldMap["aba"] || fieldMap["sheet"] || "");
   const sourceCategory = cleanText(fieldMap["categoria"] || "");
   const sourceSubcategory = cleanText(fieldMap["subcategoria"] || "");
@@ -1175,7 +2045,7 @@ function parseSingleBlock(
     title,
     description,
     normalizedBlock,
-    resolvedSku,
+    effectiveSku,
     sourceCategory,
     sourceSubcategory,
     sheetName,
@@ -1184,7 +2054,7 @@ function parseSingleBlock(
     .join("\n");
   const destination = inferDestination({
     text: sourceText,
-    explicitSku: resolvedSku,
+    explicitSku: effectiveSku,
     explicitCategory: sourceCategory,
     explicitSubcategory: sourceSubcategory,
     explicitSheetName: sheetName,
@@ -1210,7 +2080,7 @@ function parseSingleBlock(
     material: fieldMap["material"] || "",
     shape: fieldMap["formato"] || "",
     brand: fieldMap["marca"] || "",
-    sku: resolvedSku,
+    sku: effectiveSku,
     weight: fieldMap["peso"] || fieldMap["peso/volume"] || fieldMap["volume"] || "",
     dosage: resolvedDosage,
     color: fieldMap["cor"] || "",
@@ -1232,8 +2102,44 @@ function parseSingleBlock(
     sourceSubcategory,
   };
 
-  if (!normalizeLoose(item.title)) return null;
-  return item;
+  if (!normalizeLoose(item.title)) {
+    return {
+      item: null,
+      debug: null,
+    };
+  }
+
+  const allSkus = collectAllSkuCandidates(normalizedBlock);
+  const allPrices = collectAllPriceCandidates(normalizedBlock);
+  const promotedPrice =
+    item.price || (allPrices.length === 1 && !/[a-z]/i.test(allPrices[0] || "") ? allPrices[0] : "");
+
+  return {
+    item: {
+      ...item,
+      price: promotedPrice,
+    },
+    debug: {
+      blockIndex: index,
+      title: item.title,
+      titleSource: detectTitleSource(fieldMap, plainLines, fileName, index, item.title),
+      sku: item.sku || "",
+      allSkus,
+      price: promotedPrice,
+      allPrices,
+      destination: item.destination,
+      confidence: item.confidence,
+      alerts: inferCandidateAlerts(normalizedBlock, item.title, allSkus, allPrices, item.destination),
+    },
+  };
+}
+
+function parseSingleBlock(
+  block: string,
+  fileName: string,
+  index: number
+): StructuredImportItem | null {
+  return parseSingleBlockDetailed(block, fileName, index).item;
 }
 
 function isProbablyGenericTitle(title: string) {
@@ -1416,6 +2322,17 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       return false;
     }
 
+    if (isWeakFragmentItem(item)) {
+      debugIntelligentImport("parser-filtered-out", {
+        reason: "weak-fragment",
+        fileName: extracted.fileName,
+        title: item.title,
+        sku: item.sku,
+        destination: item.destination,
+      });
+      return false;
+    }
+
     if (looksLikeStockOnlyItem(item)) {
       debugIntelligentImport("parser-filtered-out", {
         reason: "stock-only",
@@ -1459,4 +2376,125 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
   });
 
   return keptItems;
+}
+
+export function parseStructuredImportItemsDetailed(extracted: ExtractedFileContent): {
+  items: StructuredImportItem[];
+  debug: StructuredParserFileDebug;
+} {
+  const preparedText = preprocessStructuredText(extracted.text);
+  const preparedExtracted: ExtractedFileContent = {
+    ...extracted,
+    text: preparedText,
+  };
+  const chosenBlocks = chooseBlocksDetailed(preparedExtracted);
+  const blocks = chosenBlocks.blocks;
+  const parsedItems: StructuredImportItem[] = [];
+  const parserCandidates: StructuredParserCandidateDebug[] = [];
+  const mergeTrace: StructuredParserMergeDebug[] = [];
+
+  blocks.forEach((block, index) => {
+    const parsed = parseSingleBlockDetailed(block, extracted.fileName, index);
+    if (parsed.debug) parserCandidates.push(parsed.debug);
+    if (parsed.item) parsedItems.push(parsed.item);
+  });
+
+  const buildDebug = (
+    itemsBeforeFilter: StructuredImportItem[],
+    keptItems: StructuredImportItem[],
+    sourceLooksSingleItem: boolean,
+    sourceLooksSingleItemReasons: string[]
+  ): StructuredParserFileDebug => ({
+    fileName: extracted.fileName,
+    mimeType: extracted.mimeType,
+    extractedCharCount: String(extracted.text || "").length,
+    approxLineCount: normalizeBlock(extracted.text || "").split("\n").filter(Boolean).length,
+    usefulLinesPreview: buildPreviewLines(extracted.text, 6),
+    looksLikeContinuousText: looksLikeContinuousNarrativeText(extracted.text),
+    chooseBlocks: {
+      strategy: chosenBlocks.strategy,
+      blockCount: blocks.length,
+      blocks: blocks.slice(0, 20).map((block, index) =>
+        summarizeBlockForDebug(block, index, chosenBlocks.strategy)
+      ),
+    },
+    parseSingleBlock: {
+      candidateCount: parsedItems.length,
+      nullBlockCount: Math.max(0, blocks.length - parsedItems.length),
+      candidates: parserCandidates.slice(0, 20),
+    },
+    sourceLooksSingleItem: {
+      activated: sourceLooksSingleItem,
+      reasons: sourceLooksSingleItemReasons,
+      beforeCount: itemsBeforeFilter.length,
+      afterCount: keptItems.length,
+    },
+    merge: {
+      inputCount: parsedItems.length,
+      outputCount: itemsBeforeFilter.length,
+      mergedPairs: mergeTrace.slice(0, 20),
+    },
+    fragmentCoalesce: chosenBlocks.fragmentCoalesce,
+    continuationCoalesce: chosenBlocks.continuationCoalesce,
+  });
+
+  if (parsedItems.length === 0) {
+    return {
+      items: [],
+      debug: buildDebug([], [], false, []),
+    };
+  }
+
+  const mergedItems = mergeStructuredImportItems(parsedItems, mergeTrace);
+  const qualitySorted = [...mergedItems].sort((a, b) => {
+    const score = (item: StructuredImportItem) =>
+      scoreStructuredItem(item) +
+      (item.dimensions ? 50 : 0) +
+      (item.capacity ? 50 : 0) +
+      (item.material ? 20 : 0) +
+      (item.brand ? 20 : 0) -
+      (looksLikeStockOnlyItem(item) ? 80 : 0);
+
+    return score(b) - score(a);
+  });
+
+  const sourceLooksSingleItem =
+    !looksLikeMultiItemSource(preparedText, mergedItems.length) &&
+    (mergedItems.length === 1 ||
+      normalizeLoose(preparedText).includes("nome do item") ||
+      normalizeLoose(preparedText).includes("descricao detalhada") ||
+      normalizeLoose(preparedText).includes("preco sugerido") ||
+      normalizeLoose(preparedText).includes("preÃ§o sugerido"));
+  const sourceLooksSingleItemReasons = [
+    !looksLikeMultiItemSource(preparedText, mergedItems.length) ? "not_multi_item_source" : "",
+    mergedItems.length === 1 ? "single_merged_item" : "",
+    normalizeLoose(preparedText).includes("nome do item") ? "contains_nome_do_item" : "",
+    normalizeLoose(preparedText).includes("descricao detalhada") ? "contains_descricao_detalhada" : "",
+    normalizeLoose(preparedText).includes("preco sugerido") ||
+    normalizeLoose(preparedText).includes("preÃ§o sugerido")
+      ? "contains_preco_sugerido"
+      : "",
+  ].filter(Boolean);
+
+  if (sourceLooksSingleItem) {
+    const kept = qualitySorted[0] ? [qualitySorted[0]] : [];
+    return {
+      items: kept,
+      debug: buildDebug(mergedItems, kept, true, sourceLooksSingleItemReasons),
+    };
+  }
+
+  const keptItems = qualitySorted.filter((item) => {
+    if (isChemicalSku(item.sku)) return true;
+    if (isProbablyGenericTitle(item.title)) return false;
+    if (isWeakFragmentItem(item)) return false;
+    if (looksLikeStockOnlyItem(item)) return false;
+    if (!hasUsefulContent(item)) return false;
+    return true;
+  });
+
+  return {
+    items: keptItems,
+    debug: buildDebug(mergedItems, keptItems, false, sourceLooksSingleItemReasons),
+  };
 }

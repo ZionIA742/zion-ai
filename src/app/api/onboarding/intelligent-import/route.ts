@@ -14,6 +14,9 @@ export async function POST(request: Request) {
 
     const organizationId = String(formData.get("organizationId") || "").trim();
     const storeId = String(formData.get("storeId") || "").trim();
+    const debugParserRaw = String(formData.get("debugParser") || "").trim().toLowerCase();
+    const debugParser =
+      debugParserRaw === "1" || debugParserRaw === "true" || debugParserRaw === "yes";
 
     const uploadedEntries = formData.getAll("files");
     const invalidFileNames = uploadedEntries
@@ -55,6 +58,7 @@ export async function POST(request: Request) {
       organizationId,
       storeId,
       files,
+      debugParser,
     });
 
     if (!result.ok) {
@@ -77,6 +81,7 @@ export async function POST(request: Request) {
       imageDiagnostics: result.imageDiagnostics,
       normalizedPreview: result.normalizedPreview,
       dedupedPreview: result.dedupedPreview,
+      parserDebug: result.parserDebug,
     });
   } catch (error: any) {
     return NextResponse.json(

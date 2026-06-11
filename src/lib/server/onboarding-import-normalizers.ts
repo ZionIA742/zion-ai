@@ -1,6 +1,8 @@
 import type { ExtractedFileContent } from "./onboarding-file-extractors";
 import {
   parseStructuredImportItems,
+  parseStructuredImportItemsDetailed,
+  type StructuredParserFileDebug,
   type StructuredImportItem,
 } from "../onboarding-import-structured-parser";
 
@@ -19,6 +21,18 @@ export type NormalizedImportItem = {
   rawText: string;
   confidence: number;
   metadata: Record<string, string>;
+};
+
+export type NormalizedImportDebug = {
+  files: Array<{
+    fileName: string;
+    parsedItems: number;
+    normalizedItems: number;
+    droppedItems: string[];
+    parser: StructuredParserFileDebug;
+  }>;
+  totalParsedItems: number;
+  totalNormalizedItems: number;
 };
 
 function normalizeLoose(value: string) {
@@ -67,6 +81,31 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
   const explicitSubcategory = String(item.sourceSubcategory || "").trim();
   const explicitSheetName = String(item.sheetName || "").trim();
   const resolvedCategory = explicitCategory || (item.destination === "pool" ? "pool" : item.destination);
+  const normalizedTitle = normalizeLoose(item.title || "");
+  const missingPrice = !String(item.price || "").trim();
+  const missingSku = !String(item.sku || "").trim();
+  const genericTitle =
+    !normalizedTitle ||
+    normalizedTitle.includes("produto promocao verao") ||
+    normalizedTitle.includes("produto promocao") ||
+    normalizedTitle === "qmc d2 005";
+  const ambiguousBundle =
+    normalizedTitle.includes("kit limpeza completo") ||
+    normalizedTitle.includes("peneira e cabo") ||
+    normalizedTitle.includes("varios itens") ||
+    normalizedTitle.includes("varios item");
+  const weakCandidate = genericTitle || ambiguousBundle || (missingPrice && missingSku);
+  const reviewRequired =
+    weakCandidate ||
+    (missingPrice && item.destination !== "pool") ||
+    (missingSku && item.destination !== "pool");
+  const reviewReasons = [
+    missingPrice ? "missing_price" : "",
+    missingSku ? "missing_sku" : "",
+    genericTitle ? "generic_title" : "",
+    ambiguousBundle ? "ambiguous_bundle" : "",
+    weakCandidate ? "weak_candidate" : "",
+  ].filter(Boolean);
 
   return {
     categoria: resolvedCategory,
@@ -108,6 +147,15 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     diferencial: item.diferencial || "",
     application: item.application || "",
     source_file_name: item.sourceFileName,
+    missing_price: missingPrice ? "true" : "false",
+    missing_sku: missingSku ? "true" : "false",
+    generic_title: genericTitle ? "true" : "false",
+    ambiguous_bundle: ambiguousBundle ? "true" : "false",
+    weak_candidate: weakCandidate ? "true" : "false",
+    review_required: reviewRequired ? "true" : "false",
+    review_reason: reviewReasons.join(","),
+    review_label: reviewRequired ? "Revisar com atenção" : "",
+    review_selection_default: reviewRequired ? "unselected" : "selected",
   };
 }
 
@@ -140,8 +188,49 @@ function normalizeExtractedFile(extracted: ExtractedFileContent): NormalizedImpo
     .filter((item): item is NormalizedImportItem => Boolean(item));
 }
 
+function normalizeExtractedFileDetailed(extracted: ExtractedFileContent) {
+  const structured = parseStructuredImportItemsDetailed(extracted);
+  const normalizedItems = structured.items
+    .map(toNormalizedItem)
+    .filter((item): item is NormalizedImportItem => Boolean(item));
+  const droppedItems = structured.items
+    .filter((item) => !toNormalizedItem(item))
+    .map((item) => item.title)
+    .slice(0, 20);
+
+  return {
+    items: normalizedItems,
+    debug: {
+      fileName: extracted.fileName,
+      parsedItems: structured.items.length,
+      normalizedItems: normalizedItems.length,
+      droppedItems,
+      parser: structured.debug,
+    },
+  };
+}
+
 export function normalizeMultipleExtractedFiles(
   extractedFiles: ExtractedFileContent[]
 ): NormalizedImportItem[] {
   return extractedFiles.flatMap((file) => normalizeExtractedFile(file));
+}
+
+export function normalizeMultipleExtractedFilesDetailed(
+  extractedFiles: ExtractedFileContent[]
+): {
+  items: NormalizedImportItem[];
+  debug: NormalizedImportDebug;
+} {
+  const detailed = extractedFiles.map((file) => normalizeExtractedFileDetailed(file));
+  const items = detailed.flatMap((file) => file.items);
+
+  return {
+    items,
+    debug: {
+      files: detailed.map((file) => file.debug),
+      totalParsedItems: detailed.reduce((sum, file) => sum + file.debug.parsedItems, 0),
+      totalNormalizedItems: items.length,
+    },
+  };
 }

@@ -33,6 +33,20 @@ type IntelligentImportDedupedPreview = IntelligentImportNormalizedPreview & {
   duplicateOf?: string;
   isDuplicate: boolean;
 };
+type IntelligentImportParserDebug = {
+  enabled: boolean;
+  extraction: Array<{
+    fileName: string;
+    mimeType?: string;
+    charCount: number;
+    approxLineCount: number;
+    usefulLinesPreview: string[];
+    looksLikeContinuousText: boolean;
+  }>;
+  normalization: unknown;
+  dedupe: unknown;
+  filter: unknown;
+};
 type IntelligentImportResponse =
   | {
       ok: true;
@@ -56,6 +70,7 @@ type IntelligentImportResponse =
       }>;
       normalizedPreview: IntelligentImportNormalizedPreview[];
       dedupedPreview: IntelligentImportDedupedPreview[];
+      parserDebug?: IntelligentImportParserDebug;
     }
   | {
       ok: false;
@@ -331,6 +346,13 @@ function getVisualLinkedEvidenceFieldPriority(field: string) {
   const canonicalField = field === "code" ? "sku" : field;
   const index = VISUAL_LINKED_EVIDENCE_FIELD_PRIORITY.indexOf(canonicalField);
   return index >= 0 ? index : VISUAL_LINKED_EVIDENCE_FIELD_PRIORITY.length;
+}
+
+function shouldEnableParserDebugFromLocation() {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  const value = String(params.get("debugParser") || "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
 }
 
 function buildVisualLinkedEvidenceSummary(analysis: VisualDocumentAnalysis) {
@@ -1375,17 +1397,24 @@ function normalizeIntelligentImportResultForFrontend(
 
   const rawSourceItems =
     result.dedupedPreview.length > 0
-      ? result.dedupedPreview.filter((item) => !item.isDuplicate)
+      ? result.dedupedPreview
       : result.normalizedPreview;
 
   const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
-  const saveReadyItems = dedupeImportedItemsForSave(filteredSourceItems);
+  const saveReadyItems =
+    result.dedupedPreview.length > 0
+      ? filteredSourceItems
+      : dedupeImportedItemsForSave(filteredSourceItems);
 
   if (saveReadyItems.length === 0) {
     return result;
   }
 
   const discardedItems = Math.max(0, rawSourceItems.length - saveReadyItems.length);
+  const dedupedPreviewForFrontend: IntelligentImportDedupedPreview[] =
+    result.dedupedPreview.length > 0
+      ? (saveReadyItems as IntelligentImportDedupedPreview[]).map((item) => ({ ...item }))
+      : buildFrontendDedupedPreviewFromItems(saveReadyItems);
 
   return {
     ...result,
@@ -1399,10 +1428,13 @@ function normalizeIntelligentImportResultForFrontend(
       ...result.summary,
       normalizedItems: saveReadyItems.length,
       dedupedItems: saveReadyItems.length,
-      duplicateItems: discardedItems,
+      duplicateItems:
+        result.dedupedPreview.length > 0
+          ? saveReadyItems.filter((item) => "isDuplicate" in item && item.isDuplicate).length
+          : discardedItems,
     },
     normalizedPreview: buildFrontendNormalizedPreviewFromItems(saveReadyItems),
-    dedupedPreview: buildFrontendDedupedPreviewFromItems(saveReadyItems),
+    dedupedPreview: dedupedPreviewForFrontend,
   };
 }
 
@@ -1498,6 +1530,20 @@ function buildStructuredReviewDisplayName(
   return buildImportedCatalogName(item);
 }
 
+function shouldStartStructuredImportCandidateSelected(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const reviewSelectionDefault = extractMetadataValue(item, ["review_selection_default"]);
+  if (normalizeImportedLoose(reviewSelectionDefault) === "unselected") {
+    return false;
+  }
+  const reviewRequired = extractMetadataValue(item, ["review_required", "weak_candidate"]);
+  if (["true", "1", "sim", "yes"].includes(normalizeImportedLoose(reviewRequired))) {
+    return false;
+  }
+  return true;
+}
+
 function buildEditableStructuredImportCandidates(
   items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
 ) {
@@ -1506,7 +1552,7 @@ function buildEditableStructuredImportCandidates(
     return {
       id: `${buildImportedSaveKey(item)}::review::${index}`,
       sourceItem: item,
-      selected: true,
+      selected: shouldStartStructuredImportCandidateSelected(item),
       finalCategory,
       initialCategory: finalCategory,
     } satisfies EditableStructuredImportCandidate;
@@ -4084,6 +4130,16 @@ function buildImportedCatalogName(
 ) {
   const pickName = (value: string | null | undefined) => {
     const cleaned = cleanupImportedDescriptionLine(String(value || ""));
+    const normalized = normalizeImportedLoose(cleaned);
+    if (
+      normalized === "quimico logo depois aparece" ||
+      normalized === "quimicos logo depois aparece" ||
+      normalized === "logo depois aparece" ||
+      normalized.startsWith("categoria correta quimico") ||
+      normalized.startsWith("categoria correta quimicos")
+    ) {
+      return "";
+    }
     return cleaned && !isGenericImportedName(cleaned) ? cleaned.slice(0, 160) : "";
   };
 
@@ -4346,6 +4402,11 @@ function sanitizeImportedDescriptionText(
     if (normalized === titleLoose) return false;
     if (/^\d+\s+of\s+\d+$/.test(normalized)) return false;
     if (/^(pagina|page|pag)\s+\d+$/.test(normalized)) return false;
+    if (normalized === "logo depois aparece") return false;
+    if (normalized === "no mesmo paragrafo tem") return false;
+    if (normalized === "tambem vendemos") return false;
+    if (normalized === "outro item") return false;
+    if (normalized === "outro item importante") return false;
 
     const blockedStarts = [
       "categoria ",
@@ -4653,6 +4714,12 @@ function extractImportedBestMoneyValue(value: string | null | undefined) {
   if (currencyMatch) {
     const parsedCurrency = parseImportedDecimal(currencyMatch[1]);
     if (parsedCurrency != null) return parsedCurrency;
+  }
+
+  const groupedMoneyMatch = source.match(/(\d{1,3}(?:\.\d{3})+,\d{2})/);
+  if (groupedMoneyMatch) {
+    const parsedGrouped = parseImportedDecimal(groupedMoneyMatch[1]);
+    if (parsedGrouped != null) return parsedGrouped;
   }
 
   const decimalMatch = source.match(/(\d+[.,]\d{2})/);
@@ -5868,6 +5935,14 @@ function looksLikeImportedDocumentIntroCatalogItem(args: {
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
+  const explicitSku = String(extractImportedCatalogSku(item) || "").trim().toUpperCase();
+  if (/^QMC(?:-[A-Z0-9]{1,8}){1,4}$/.test(explicitSku)) {
+    return "quimicos";
+  }
+  if (/^ACC(?:-[A-Z0-9]{1,8}){1,4}$/.test(explicitSku)) {
+    return "acessorios";
+  }
+
   if (shouldForcePdfOtherCategory(item)) {
     return "outros";
   }
@@ -6484,10 +6559,12 @@ export default function IntelligentCatalogImportPanel({
 
     const rawSourceItems =
       safeDedupedPreview.length > 0
-        ? safeDedupedPreview.filter((item) => !item.isDuplicate)
+        ? safeDedupedPreview
         : safeNormalizedPreview;
     const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
-    return dedupeImportedItemsForSave(filteredSourceItems);
+    return safeDedupedPreview.length > 0
+      ? filteredSourceItems
+      : dedupeImportedItemsForSave(filteredSourceItems);
   }, [intelligentImportResult, hasVisualPdfImportResult, safeDedupedPreview, safeNormalizedPreview]);
   const structuredSourceCandidatesSignature = useMemo(
     () =>
@@ -7120,6 +7197,9 @@ export default function IntelligentCatalogImportPanel({
       const formData = new FormData();
       formData.append("organizationId", organizationId);
       formData.append("storeId", storeId);
+      if (shouldEnableParserDebugFromLocation()) {
+        formData.append("debugParser", "true");
+      }
       for (const file of intelligentImportFiles) {
         formData.append("files", file);
       }
@@ -9181,6 +9261,19 @@ async function handleSaveImportedItemsToCatalog() {
                               </p>
                             ))}
                           </div>
+                        ) : null}
+                        {intelligentImportResult.ok && intelligentImportResult.parserDebug ? (
+                          <details className="mt-3 rounded-xl border border-sky-200 bg-white/80 p-3">
+                            <summary className="cursor-pointer text-sm font-semibold text-sky-950">
+                              Diagnostico tecnico do parser
+                            </summary>
+                            <p className="mt-2 text-xs leading-5 text-sky-900">
+                              Ativo via <code>debugParser=true</code> na URL. Copie o JSON abaixo para compartilhar o trace.
+                            </p>
+                            <pre className="mt-3 max-h-[520px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">
+                              {JSON.stringify(intelligentImportResult.parserDebug, null, 2)}
+                            </pre>
+                          </details>
                         ) : null}
                       </div>
                       {hasVisualPdfImportResult ? (

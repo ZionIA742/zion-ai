@@ -6,6 +6,8 @@ import {
 } from "./onboarding-file-extractors";
 import {
   normalizeMultipleExtractedFiles,
+  normalizeMultipleExtractedFilesDetailed,
+  type NormalizedImportDebug,
   type NormalizedImportItem,
 } from "./onboarding-import-normalizers";
 import {
@@ -23,6 +25,40 @@ export type IntelligentImportParams = {
   organizationId: string;
   storeId: string;
   files: ImportableFile[];
+  debugParser?: boolean;
+};
+
+export type IntelligentImportParserDebug = {
+  enabled: boolean;
+  extraction: Array<{
+    fileName: string;
+    mimeType?: string;
+    charCount: number;
+    approxLineCount: number;
+    usefulLinesPreview: string[];
+    looksLikeContinuousText: boolean;
+  }>;
+  normalization: NormalizedImportDebug;
+  dedupe: {
+    inputCount: number;
+    outputCount: number;
+    duplicateCount: number;
+    duplicates: Array<{
+      title: string;
+      dedupKey: string;
+      duplicateOf?: string;
+    }>;
+  };
+  filter: {
+    inputCount: number;
+    outputCount: number;
+    filteredOut: Array<{
+      title: string;
+      type: string;
+      confidence: number;
+      reason: string;
+    }>;
+  };
 };
 
 export type IntelligentImportImageDiagnostics = {
@@ -75,6 +111,7 @@ export type IntelligentImportResult =
       imageDiagnostics: IntelligentImportImageDiagnostics;
       normalizedPreview: NormalizedImportItem[];
       dedupedPreview: DedupedImportItem[];
+      parserDebug?: IntelligentImportParserDebug;
     }
   | {
       ok: false;
@@ -410,7 +447,7 @@ function buildImageDiagnostics(
 export async function runOnboardingIntelligentImport(
   params: IntelligentImportParams
 ): Promise<IntelligentImportResult> {
-  const { files } = params;
+  const { files, debugParser = false } = params;
 
   try {
     if (!files.length) {
@@ -451,7 +488,13 @@ export async function runOnboardingIntelligentImport(
       })),
     });
 
-    const normalizedItems = normalizeMultipleExtractedFiles(extractedFiles);
+    const normalizedResult = debugParser
+      ? normalizeMultipleExtractedFilesDetailed(extractedFiles)
+      : {
+          items: normalizeMultipleExtractedFiles(extractedFiles),
+          debug: null,
+        };
+    const normalizedItems = normalizedResult.items;
 
     debugIntelligentImport("after-normalize", {
       normalizedCount: normalizedItems.length,
@@ -551,6 +594,7 @@ export async function runOnboardingIntelligentImport(
 
     const dedupedItems = filterUsefulItems(dedupedBeforeFilter);
     const duplicateItems = dedupedItems.filter((item) => item.isDuplicate).length;
+    const filteredOutItems = dedupedBeforeFilter.filter((item) => !dedupedItems.includes(item));
 
     debugIntelligentImport("after-filter-final", {
       finalCount: dedupedItems.length,
@@ -592,6 +636,59 @@ export async function runOnboardingIntelligentImport(
       imageDiagnostics,
       normalizedPreview: aliased.normalizedPreview,
       dedupedPreview: dedupedItems,
+      parserDebug:
+        debugParser && normalizedResult.debug
+          ? {
+              enabled: true,
+              extraction: extractedFiles.map((file) => ({
+                fileName: file.fileName,
+                mimeType: file.mimeType,
+                charCount: String(file.text || "").length,
+                approxLineCount: String(file.text || "")
+                  .split(/\r?\n/)
+                  .map((line) => String(line || "").trim())
+                  .filter(Boolean).length,
+                usefulLinesPreview: String(file.text || "")
+                  .split(/\r?\n/)
+                  .map((line) => String(line || "").trim())
+                  .filter(Boolean)
+                  .slice(0, 6),
+                looksLikeContinuousText: normalizedResult.debug.files.some(
+                  (debugFile) =>
+                    debugFile.fileName === file.fileName && debugFile.parser.looksLikeContinuousText
+                ),
+              })),
+              normalization: normalizedResult.debug,
+              dedupe: {
+                inputCount: aliased.normalizedPreview.length,
+                outputCount: dedupedBeforeFilter.length,
+                duplicateCount: dedupedBeforeFilter.filter((item) => item.isDuplicate).length,
+                duplicates: dedupedBeforeFilter
+                  .filter((item) => item.isDuplicate)
+                  .slice(0, 50)
+                  .map((item) => ({
+                    title: item.title,
+                    dedupKey: item.dedupKey,
+                    duplicateOf: item.duplicateOf,
+                  })),
+              },
+              filter: {
+                inputCount: dedupedBeforeFilter.length,
+                outputCount: dedupedItems.length,
+                filteredOut: filteredOutItems.slice(0, 50).map((item) => ({
+                  title: item.title,
+                  type: item.type,
+                  confidence: item.confidence,
+                  reason:
+                    isGenericTitle(item.title)
+                      ? "generic_title"
+                      : item.type === "unknown" && item.confidence < 0.55
+                        ? "low_confidence_unknown"
+                        : "filtered_out",
+                })),
+              },
+            }
+          : undefined,
     };
   } catch (error: any) {
     debugIntelligentImport("error", {
