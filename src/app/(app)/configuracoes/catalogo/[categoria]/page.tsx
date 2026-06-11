@@ -71,6 +71,7 @@ type EditCatalogForm = {
   name: string;
   sku: string;
   description: string;
+  descriptionEdited: boolean;
   price: string;
   is_active: boolean;
   track_stock: boolean;
@@ -367,12 +368,84 @@ function buildComplementaryDescription(item: CatalogItemRow, characteristics: Ch
   return unique.join("\n").trim();
 }
 
+function buildCategoryDescriptionLabel(category: string) {
+  if (category === "acessorios") return "Acessorios";
+  if (category === "quimicos") return "Quimicos";
+  return "Outros";
+}
+
+function buildEditedCatalogItemDescription(form: EditCatalogForm, category: string) {
+  const dimensions = [
+    form.width_cm.trim() ? `Largura: ${form.width_cm.trim()} cm` : "",
+    form.height_cm.trim() ? `Altura: ${form.height_cm.trim()} cm` : "",
+    form.length_cm.trim() ? `Comprimento: ${form.length_cm.trim()} cm` : "",
+  ].filter(Boolean);
+
+  const lines = [
+    form.name.trim(),
+    form.sku.trim() ? `SKU: ${form.sku.trim()}` : "",
+    `Categoria: ${buildCategoryDescriptionLabel(category)}`,
+    form.price.trim() ? `Preco: ${form.price.trim()}` : "",
+    form.track_stock && form.stock_quantity.trim() ? `Estoque: ${form.stock_quantity.trim()}` : "",
+    form.brand.trim() ? `Marca: ${form.brand.trim()}` : "",
+    form.line.trim() ? `Linha/Modelo: ${form.line.trim()}` : "",
+    form.unit_label.trim() ? `Unidade: ${form.unit_label.trim()}` : "",
+    form.size_details.trim() ? `Tamanho/Variacao: ${form.size_details.trim()}` : "",
+    ...dimensions,
+    form.weight_kg.trim() ? `Peso: ${form.weight_kg.trim()} kg` : "",
+    form.application.trim() ? `Aplicacao/Uso recomendado: ${form.application.trim()}` : "",
+    form.technical_notes.trim() ? `Observacoes tecnicas: ${form.technical_notes.trim()}` : "",
+  ]
+    .map((value) => cleanLooseText(value))
+    .filter(Boolean);
+
+  return lines.join("\n").trim();
+}
+
+function buildFinalEditedCatalogItemDescription(args: {
+  currentItem: CatalogItemRow;
+  form: EditCatalogForm;
+  category: string;
+}) {
+  const baseline = buildEditForm(args.currentItem);
+  const descriptionEdited = Boolean(args.form.descriptionEdited);
+  const structuredFieldsChanged = [
+    args.form.name !== baseline.name,
+    args.form.sku !== baseline.sku,
+    args.form.price !== baseline.price,
+    args.form.stock_quantity !== baseline.stock_quantity,
+    args.form.is_active !== baseline.is_active,
+    args.form.track_stock !== baseline.track_stock,
+    args.form.brand !== baseline.brand,
+    args.form.line !== baseline.line,
+    args.form.unit_label !== baseline.unit_label,
+    args.form.size_details !== baseline.size_details,
+    args.form.width_cm !== baseline.width_cm,
+    args.form.height_cm !== baseline.height_cm,
+    args.form.length_cm !== baseline.length_cm,
+    args.form.weight_kg !== baseline.weight_kg,
+    args.form.application !== baseline.application,
+    args.form.technical_notes !== baseline.technical_notes,
+  ].some(Boolean);
+
+  if (descriptionEdited) {
+    return cleanLooseText(args.form.description);
+  }
+
+  if (structuredFieldsChanged) {
+    return buildEditedCatalogItemDescription(args.form, args.category);
+  }
+
+  return cleanLooseText(args.form.description);
+}
+
 function buildEditForm(item: CatalogItemRow): EditCatalogForm {
   const metadata = item.metadata || {};
   return {
     name: item.name || "",
     sku: item.sku || "",
     description: item.description || "",
+    descriptionEdited: false,
     price: toPriceInput(item.price_cents),
     is_active: item.is_active,
     track_stock: item.track_stock,
@@ -675,10 +748,19 @@ export default function CatalogCategoryPage() {
         throw new Error("A quantidade em estoque precisa ser um número válido.");
       }
 
+      const finalDescription = buildFinalEditedCatalogItemDescription({
+        currentItem,
+        form: editForm,
+        category,
+      });
+
       const nextMetadata = {
         ...(currentItem.metadata || {}),
         categoria: normalizeCategory(currentItem.metadata?.categoria || category),
         sku: editForm.sku.trim() || null,
+        clean_description: finalDescription || null,
+        description: finalDescription || null,
+        descricao: finalDescription || null,
         brand: editForm.brand.trim() || null,
         line: editForm.line.trim() || null,
         model: editForm.line.trim() || null,
@@ -700,7 +782,7 @@ export default function CatalogCategoryPage() {
       const payload = {
         name: editForm.name.trim(),
         sku: editForm.sku.trim() || null,
-        description: editForm.description.trim() || null,
+        description: finalDescription || null,
         price_cents: priceInputToCents(editForm.price),
         is_active: editForm.is_active,
         track_stock: editForm.track_stock,
@@ -1335,7 +1417,11 @@ async function handleDeleteItem(itemId: string) {
                             onChange={(event) =>
                               setEditForm((current) =>
                                 current
-                                  ? { ...current, description: event.target.value }
+                                  ? {
+                                      ...current,
+                                      description: event.target.value,
+                                      descriptionEdited: true,
+                                    }
                                   : current
                               )
                             }

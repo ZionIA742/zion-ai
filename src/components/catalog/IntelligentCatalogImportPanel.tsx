@@ -1015,6 +1015,7 @@ type StructuredCandidateDraft = {
   price: string;
   stock: string;
   description: string;
+  descriptionEdited: boolean;
   isActive: boolean;
   trackStock: boolean;
   brand: string;
@@ -1512,9 +1513,44 @@ function buildEditableStructuredImportCandidates(
   });
 }
 
-function buildStructuredDraftPoolDescription(draft: StructuredCandidateDraft) {
+function buildStructuredReviewedCatalogDescription(draft: StructuredCandidateDraft) {
   const parts = [
-    String(draft.description || "").trim(),
+    draft.name.trim(),
+    draft.sku.trim() ? `SKU: ${draft.sku.trim()}` : "",
+    draft.finalCategory ? `Categoria: ${getStructuredReviewCategoryLabel(draft.finalCategory)}` : "",
+    draft.price.trim() ? `Preco: ${draft.price.trim()}` : "",
+    draft.stock.trim() ? `Estoque: ${draft.stock.trim()}` : "",
+    draft.brand.trim() ? `Marca: ${draft.brand.trim()}` : "",
+    draft.modelLine.trim() ? `Linha/Modelo: ${draft.modelLine.trim()}` : "",
+    draft.unit.trim() ? `Unidade: ${draft.unit.trim()}` : "",
+    draft.variantSize.trim() ? `Tamanho/Variacao: ${draft.variantSize.trim()}` : "",
+    draft.material.trim() ? `Material: ${draft.material.trim()}` : "",
+    draft.shape.trim() ? `Formato: ${draft.shape.trim()}` : "",
+    draft.color.trim() ? `Cor: ${draft.color.trim()}` : "",
+    draft.width.trim() ? `Largura: ${draft.width.trim()}` : "",
+    draft.height.trim() ? `Altura: ${draft.height.trim()}` : "",
+    draft.length.trim() ? `Comprimento: ${draft.length.trim()}` : "",
+    draft.depth.trim() ? `Profundidade: ${draft.depth.trim()}` : "",
+    draft.weight.trim() ? `Peso: ${draft.weight.trim()}` : "",
+    draft.application.trim() ? `Aplicacao/Uso recomendado: ${draft.application.trim()}` : "",
+    draft.technicalNotes.trim() ? `Observacoes tecnicas: ${draft.technicalNotes.trim()}` : "",
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return parts.join("\n").trim();
+}
+
+function buildStructuredReviewedPoolDescription(draft: StructuredCandidateDraft) {
+  const parts = [
+    draft.name.trim(),
+    draft.material.trim() ? `Material: ${draft.material.trim()}` : "",
+    draft.shape.trim() ? `Formato: ${draft.shape.trim()}` : "",
+    draft.width.trim() ? `Largura: ${draft.width.trim()}` : "",
+    draft.length.trim() ? `Comprimento: ${draft.length.trim()}` : "",
+    draft.depth.trim() ? `Profundidade: ${draft.depth.trim()}` : "",
+    draft.price.trim() ? `Preco: ${draft.price.trim()}` : "",
+    draft.stock.trim() ? `Estoque: ${draft.stock.trim()}` : "",
     draft.brand.trim() ? `Marca: ${draft.brand.trim()}` : "",
     draft.color.trim() ? `Cor: ${draft.color.trim()}` : "",
     draft.finishLine.trim() ? `Acabamento/Linha: ${draft.finishLine.trim()}` : "",
@@ -1526,7 +1562,7 @@ function buildStructuredDraftPoolDescription(draft: StructuredCandidateDraft) {
     .map((value) => String(value || "").trim())
     .filter(Boolean);
 
-  return parts.join("\n").trim();
+  return dedupeDescriptionLines(parts).join("\n").trim();
 }
 
 function buildStructuredDraftRawText(
@@ -1558,6 +1594,87 @@ function buildStructuredDraftRawText(
     .filter(Boolean);
 
   return lines.join("\n").trim() || sourceItem.rawText || sourceItem.title;
+}
+
+function normalizeStructuredDraftComparableValue(value: string | boolean) {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function buildStructuredReviewedDescription(
+  candidate: EditableStructuredImportCandidate,
+  draft: StructuredCandidateDraft
+) {
+  const finalCategory = draft.finalCategory || candidate.finalCategory;
+  const baselineDraft = buildStructuredCandidateDraft(candidate.sourceItem, finalCategory);
+  const userEditedDescription = Boolean(draft.descriptionEdited);
+  const structuredFieldsChanged = [
+    draft.name !== baselineDraft.name,
+    draft.sku !== baselineDraft.sku,
+    draft.price !== baselineDraft.price,
+    draft.stock !== baselineDraft.stock,
+    draft.brand !== baselineDraft.brand,
+    draft.material !== baselineDraft.material,
+    draft.shape !== baselineDraft.shape,
+    draft.color !== baselineDraft.color,
+    draft.finishLine !== baselineDraft.finishLine,
+    draft.width !== baselineDraft.width,
+    draft.height !== baselineDraft.height,
+    draft.length !== baselineDraft.length,
+    draft.depth !== baselineDraft.depth,
+    draft.unit !== baselineDraft.unit,
+    draft.variantSize !== baselineDraft.variantSize,
+    draft.weight !== baselineDraft.weight,
+    draft.modelLine !== baselineDraft.modelLine,
+    draft.includedItems !== baselineDraft.includedItems,
+    draft.installationNotes !== baselineDraft.installationNotes,
+    draft.application !== baselineDraft.application,
+    draft.technicalNotes !== baselineDraft.technicalNotes,
+    draft.isActive !== baselineDraft.isActive,
+    draft.trackStock !== baselineDraft.trackStock,
+    finalCategory !== candidate.initialCategory,
+  ].some(Boolean);
+  const inheritedDescriptionUnchanged =
+    normalizeStructuredDraftComparableValue(draft.description) ===
+    normalizeStructuredDraftComparableValue(baselineDraft.description);
+
+  if (!userEditedDescription && !structuredFieldsChanged) {
+    return {
+      finalDescription: String(
+        finalCategory === "pool"
+          ? buildImportedPoolDescription(candidate.sourceItem)
+          : buildImportedCatalogDescription(candidate.sourceItem)
+      ).trim(),
+      userEditedDescription,
+      structuredFieldsChanged,
+    };
+  }
+
+  if (userEditedDescription) {
+    return {
+      finalDescription: String(draft.description || "").trim(),
+      userEditedDescription,
+      structuredFieldsChanged,
+    };
+  }
+
+  if (!inheritedDescriptionUnchanged && !structuredFieldsChanged) {
+    return {
+      finalDescription: String(draft.description || "").trim(),
+      userEditedDescription,
+      structuredFieldsChanged,
+    };
+  }
+
+  return {
+    finalDescription: String(
+      finalCategory === "pool"
+        ? buildStructuredReviewedPoolDescription(draft)
+        : buildStructuredReviewedCatalogDescription(draft)
+    ).trim(),
+    userEditedDescription,
+    structuredFieldsChanged,
+  };
 }
 
 function parseStructuredReviewedBoolean(
@@ -1595,8 +1712,13 @@ function buildStructuredReviewedSourceItem(
   const depthValue = parseImportedDecimal(draft.depth);
   const weightValue = parseImportedDecimal(draft.weight);
   const finalCategory = draft.finalCategory || candidate.finalCategory;
-  const poolDescription =
-    finalCategory === "pool" ? buildStructuredDraftPoolDescription(draft) : String(draft.description || "").trim();
+  const { finalDescription, userEditedDescription, structuredFieldsChanged } =
+    buildStructuredReviewedDescription(candidate, draft);
+  const originalSourceCategory = resolveImportedDestination(candidate.sourceItem);
+  const originalSourceDescription =
+    originalSourceCategory === "pool"
+      ? buildImportedPoolDescription(candidate.sourceItem)
+      : buildImportedCatalogDescription(candidate.sourceItem);
   const mergedMetadata = {
     ...(candidate.sourceItem.metadata ?? {}),
     __resolved_destination: finalCategory,
@@ -1618,10 +1740,31 @@ function buildStructuredReviewedSourceItem(
     stock: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
     estoque: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
     quantity: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
-    description: finalCategory === "pool" ? poolDescription : String(draft.description || "").trim(),
-    descricao: finalCategory === "pool" ? poolDescription : String(draft.description || "").trim(),
-    "descrição": finalCategory === "pool" ? poolDescription : String(draft.description || "").trim(),
-    clean_description: finalCategory === "pool" ? poolDescription : String(draft.description || "").trim(),
+    description: finalDescription,
+    descricao: finalDescription,
+    "descrição": finalDescription,
+    clean_description: finalDescription,
+    reviewed_description: finalDescription,
+    reviewed_name: draft.name.trim(),
+    reviewed_sku: draft.sku.trim(),
+    reviewed_price: draft.price.trim(),
+    reviewed_stock_quantity: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
+    reviewed_category: finalCategory,
+    reviewed_description_mode: userEditedDescription
+      ? "manual"
+      : structuredFieldsChanged
+        ? "regenerated"
+        : "preserved",
+    imported_title_original:
+      extractMetadataValue(candidate.sourceItem, ["imported_title_original", "imported_title"]) ||
+      buildImportedCatalogName(candidate.sourceItem),
+    imported_clean_description_original:
+      extractMetadataValue(candidate.sourceItem, [
+        "imported_clean_description_original",
+        "clean_description",
+        "description",
+        "descricao",
+      ]) || String(originalSourceDescription || "").trim(),
     brand: draft.brand.trim(),
     marca: draft.brand.trim(),
     material: draft.material.trim(),
@@ -1733,6 +1876,7 @@ function buildStructuredCandidateDraft(
     price: formatStructuredDraftPriceValue(item),
     stock: stockQuantity > 0 ? String(stockQuantity) : "",
     description: description || "",
+    descriptionEdited: false,
     isActive: true,
     trackStock: true,
     brand: String(extractMetadataValue(item, ["brand", "marca"]) || "").trim(),
@@ -4415,6 +4559,14 @@ function finalizeImportedDescriptionParts(parts: string[]) {
 function buildImportedCatalogDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const reviewedDescription = extractMetadataValue(item, [
+    "reviewed_description",
+    "final_reviewed_description",
+  ]);
+  if (reviewedDescription) {
+    return String(reviewedDescription || "").trim();
+  }
+
   const source = String(item.rawText || "");
   const baseDescription = buildImportedCleanDescription(item) || "";
   const shortDescription =
@@ -5760,6 +5912,14 @@ function buildImportedPoolName(
 function buildImportedPoolDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const reviewedDescription = extractMetadataValue(item, [
+    "reviewed_description",
+    "final_reviewed_description",
+  ]);
+  if (reviewedDescription) {
+    return String(reviewedDescription || "").trim();
+  }
+
   return buildImportedCleanDescription(item);
 }
 
@@ -5834,6 +5994,13 @@ function buildImportedCatalogMetadata(
   const cleanedPackaging = cleanImportedPackagingValue(packaging);
   const cleanedDosage = cleanImportedDosageValue(resolvedDosage);
   const cleanDescription = buildImportedCatalogDescription(item) || "";
+  const importedTitleOriginal =
+    extractMetadataValue(item, ["imported_title_original", "imported_title"]) ||
+    buildImportedCatalogName(item);
+  const importedDescriptionOriginal =
+    extractMetadataValue(item, ["imported_clean_description_original"]) ||
+    extractMetadataValue(item, ["clean_description", "description", "descricao", "descrição"]) ||
+    cleanDescription;
 
   return {
     categoria: category,
@@ -5846,7 +6013,8 @@ function buildImportedCatalogMetadata(
     source_sheet_name: extractImportedSourceSheetName(item) || null,
     source_category: extractImportedSourceCategory(item) || null,
     source_subcategory: extractImportedSourceSubcategory(item) || null,
-    imported_title: buildImportedCatalogName(item),
+    imported_title: importedTitleOriginal,
+    imported_title_original: importedTitleOriginal,
     imported_dimensions: extractMetadataValue(item, ["medidas", "dimensions"]),
     imported_depth: extractMetadataValue(item, ["profundidade", "depth"]),
     imported_capacity: extractMetadataValue(item, ["capacidade", "capacity"]),
@@ -5858,7 +6026,20 @@ function buildImportedCatalogMetadata(
       extractImportedWeightOrVolume(item),
     imported_dosage: cleanedDosage,
     imported_barcode: barcode,
+    imported_clean_description_original: importedDescriptionOriginal,
     clean_description: cleanDescription,
+    description: cleanDescription,
+    descricao: cleanDescription,
+    reviewed_description: extractMetadataValue(item, ["reviewed_description"]) || cleanDescription,
+    reviewed_name: extractMetadataValue(item, ["reviewed_name", "title", "nome", "productName"]) || "",
+    reviewed_sku: extractMetadataValue(item, ["reviewed_sku", "sku", "codigo", "código"]) || "",
+    reviewed_price:
+      extractMetadataValue(item, ["reviewed_price"]) ||
+      extractMetadataValue(item, ["price", "preco", "preço"]) ||
+      "",
+    reviewed_stock_quantity:
+      extractMetadataValue(item, ["reviewed_stock_quantity", "stock_quantity", "stock", "estoque"]) || "",
+    reviewed_category: extractMetadataValue(item, ["reviewed_category", "categoria", "category"]) || category,
     sku,
     line,
     application: cleanedApplication,
@@ -10746,9 +10927,11 @@ async function handleSaveImportedItemsToCatalog() {
                       const priceLabel =
                         formatStructuredDraftPriceLabel(candidateDraft?.price || "") ||
                         formatStructuredReviewPriceLabel(item);
-                      const descriptionSnippet = String(candidateDraft?.description || "").trim()
-                        ? buildStructuredDraftDescriptionSnippet(candidateDraft?.description || "")
-                        : buildStructuredReviewDescriptionSnippet(item);
+                      const descriptionSnippet = candidateValidation?.item
+                        ? buildStructuredReviewDescriptionSnippet(candidateValidation.item)
+                        : String(candidateDraft?.description || "").trim()
+                          ? buildStructuredDraftDescriptionSnippet(candidateDraft?.description || "")
+                          : buildStructuredReviewDescriptionSnippet(item);
                       const originLabel = buildStructuredReviewOriginLabel(item);
                       const categoryAdjusted = candidate.finalCategory !== candidate.initialCategory;
                       const hasLocalEdits = Boolean(candidateDraft);
@@ -11172,7 +11355,13 @@ async function handleSaveImportedItemsToCatalog() {
                             value={structuredCandidateEditorDraft.description}
                             onChange={(event) =>
                               setStructuredCandidateEditorDraft((current) =>
-                                current ? { ...current, description: event.target.value } : current
+                                current
+                                  ? {
+                                      ...current,
+                                      description: event.target.value,
+                                      descriptionEdited: true,
+                                    }
+                                  : current
                               )
                             }
                             rows={5}
