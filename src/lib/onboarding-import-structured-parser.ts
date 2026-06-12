@@ -71,6 +71,29 @@ export type StructuredParserMergeDebug = {
   reason: "sku" | "title" | "category" | "other";
 };
 
+export type StructuredParserFragmentMergeDebug = {
+  fromIndex: number;
+  intoIndex: number;
+  reason: string;
+  sourcePreview: string;
+  targetPreviewBefore?: string;
+  mergedPreview: string;
+};
+
+export type StructuredParserTransitionSplitDebug = {
+  fromIndex: number;
+  intoIndex: number;
+  reason: string;
+  originalBlock: string;
+  transitionText: string;
+  previousFragment: string;
+  nextProductSeed: string;
+  nextBlock?: string;
+  resultAfterCoalesce?: string;
+  appliedToOutput?: boolean;
+  consumedNextBlock?: boolean;
+};
+
 export type StructuredParserFileDebug = {
   fileName: string;
   mimeType?: string;
@@ -102,20 +125,13 @@ export type StructuredParserFileDebug = {
   fragmentCoalesce?: {
     inputCount: number;
     outputCount: number;
-    mergedPairs: Array<{
-      fromIndex: number;
-      intoIndex: number;
-      reason: string;
-    }>;
+    mergedPairs: StructuredParserFragmentMergeDebug[];
+    transitionSplits?: StructuredParserTransitionSplitDebug[];
   };
   continuationCoalesce?: {
     inputCount: number;
     outputCount: number;
-    mergedPairs: Array<{
-      fromIndex: number;
-      intoIndex: number;
-      reason: string;
-    }>;
+    mergedPairs: StructuredParserFragmentMergeDebug[];
   };
 };
 
@@ -278,6 +294,16 @@ const PRODUCT_WORD_REGEX =
 const NARRATIVE_PRODUCT_PREFIX_REGEX =
   /^(?:temos|logo depois aparece|no mesmo par[aÃ¡]grafo tem|tamb[eÃ©]m vendemos|outro item(?: importante)?|produto da promo[cÃ§][aÃ£]o ver[aÃ£]o|aparece|surge)\s+/i;
 
+const TRANSITION_TO_NEXT_PRODUCT_REGEX =
+  /\b(?:logo depois aparece|no mesmo par[aÃƒÂ¡]grafo tem|tamb[eÃƒÂ©]m vendemos|tamb[eÃƒÂ©]m temos|em seguida aparece|outro item(?: importante)?|produto(?: da)?(?: promo[cÃƒÂ§][aÃƒÂ£]o ver[aÃƒÂ£]o)?)\b/i;
+const TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX =
+  /^(?:temos|logo depois aparece|no mesmo par[aÃƒÂ¡]grafo tem|tamb[eÃƒÂ©]m vendemos|tamb[eÃƒÂ©]m temos|em seguida aparece|outro item(?: importante)?|produto(?: da)?(?: promo[cÃƒÂ§][aÃƒÂ£]o ver[aÃƒÂ£]o)?|aparece|surge)\b[\s:,-]*/i;
+
+const SAFE_TRANSITION_TO_NEXT_PRODUCT_REGEX =
+  /\b(?:logo depois aparece|no mesmo par[aá]grafo tem|tamb(?:e|é)m vendemos|tamb(?:e|é)m temos|em seguida aparece|outro item(?: importante)?|produto(?: da)?(?: promo[cç][aã]o ver[aã]o)?)\b/i;
+const SAFE_TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX =
+  /^(?:temos|logo depois aparece|no mesmo par[aá]grafo tem|tamb(?:e|é)m vendemos|tamb(?:e|é)m temos|em seguida aparece|outro item(?: importante)?|produto(?: da)?(?: promo[cç][aã]o ver[aã]o)?|aparece|surge)\b[\s:,-]*/i;
+
 function canonicalizeFieldKey(value: string) {
   const normalized = normalizeLoose(value);
 
@@ -415,9 +441,66 @@ function preprocessStructuredText(text: string) {
 function stripNarrativeLeadIn(value: string) {
   return cleanText(
     String(value || "")
+      .replace(SAFE_TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX, "")
+      .replace(TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX, "")
       .replace(NARRATIVE_PRODUCT_PREFIX_REGEX, "")
       .replace(/^(?:um|uma|o|a)\s+/i, "")
   );
+}
+
+function looksLikeTransitionCarriedProductName(value: string) {
+  const cleaned = stripTrailingStructuredDetails(stripNarrativeLeadIn(cleanText(value)));
+  if (!cleaned) return false;
+  if (isLikelySectionContextLine(cleaned)) return false;
+  if (findStandaloneFieldLabel(cleaned)) return false;
+  if (collectAllSkuCandidates(cleaned).length > 0) return false;
+  if (collectAllPriceCandidates(cleaned).length > 0) return false;
+
+  const normalized = normalizeLoose(cleaned);
+  return normalized.length >= 6 && normalized.split(" ").filter(Boolean).length >= 2;
+}
+
+function splitTransitionIntroducedNextProduct(text: string) {
+  const cleaned = cleanText(text);
+  if (!cleaned) {
+    return {
+      head: "",
+      nextProductSeed: "",
+      transitionText: "",
+    };
+  }
+
+  const transitionMatch =
+    cleaned.match(SAFE_TRANSITION_TO_NEXT_PRODUCT_REGEX) ||
+    cleaned.match(TRANSITION_TO_NEXT_PRODUCT_REGEX);
+  if (!transitionMatch || transitionMatch.index == null) {
+    return {
+      head: cleaned,
+      nextProductSeed: "",
+      transitionText: "",
+    };
+  }
+
+  const transitionIndex = transitionMatch.index;
+  const beforeTransition = cleanText(cleaned.slice(0, transitionIndex));
+  const transitionTail = cleanText(cleaned.slice(transitionIndex));
+  const seedCandidate = stripTrailingStructuredDetails(
+    stripNarrativeLeadIn(transitionTail).replace(/[-:;,.\s]+$/g, "")
+  );
+
+  if (!looksLikeTransitionCarriedProductName(seedCandidate)) {
+    return {
+      head: cleaned,
+      nextProductSeed: "",
+      transitionText: "",
+    };
+  }
+
+  return {
+    head: beforeTransition,
+    nextProductSeed: seedCandidate,
+    transitionText: cleanText(transitionMatch[0] || ""),
+  };
 }
 
 function stripTrailingStructuredDetails(value: string) {
@@ -558,6 +641,8 @@ function blockIsTransitionOnlyLine(block: string) {
     normalized === "logo depois aparece" ||
     normalized === "no mesmo paragrafo tem" ||
     normalized === "tambem vendemos" ||
+    normalized === "tambem temos" ||
+    normalized === "em seguida aparece" ||
     normalized === "outro item" ||
     normalized === "outro item importante"
   );
@@ -614,8 +699,9 @@ function splitTrailingTransitionIntoNextProduct(text: string) {
 
 function coalesceProductFragmentsAfterSplit(fragments: string[]) {
   const merged: string[] = [];
-  const mergedPairs: Array<{ fromIndex: number; intoIndex: number; reason: string }> = [];
-  const continuationPairs: Array<{ fromIndex: number; intoIndex: number; reason: string }> = [];
+  const mergedPairs: StructuredParserFragmentMergeDebug[] = [];
+  const continuationPairs: StructuredParserFragmentMergeDebug[] = [];
+  const transitionSplits: StructuredParserTransitionSplitDebug[] = [];
 
   for (let index = 0; index < fragments.length; index += 1) {
     const fragment = normalizeBlock(fragments[index]);
@@ -631,14 +717,26 @@ function coalesceProductFragmentsAfterSplit(fragments: string[]) {
             fromIndex: index,
             intoIndex: previousIndex,
             reason: "context_line_attached_to_previous",
+            sourcePreview: fragment,
+            targetPreviewBefore: previous,
+            mergedPreview: merged[previousIndex],
           });
         }
       }
       continue;
     }
 
-    const splitTransition = splitTrailingTransitionIntoNextProduct(fragment);
-    const workingFragment = splitTransition.head || fragment;
+    const transitionCarry = splitTransitionIntroducedNextProduct(fragment);
+    const splitTransition = transitionCarry.nextProductSeed
+      ? {
+          head: transitionCarry.head,
+          tail: transitionCarry.nextProductSeed,
+          transitionText: transitionCarry.transitionText,
+        }
+      : splitTrailingTransitionIntoNextProduct(fragment);
+    const workingFragment = transitionCarry.nextProductSeed
+      ? splitTransition.head || ""
+      : splitTransition.head || fragment;
     const nextSeed = splitTransition.tail;
 
     if (workingFragment) {
@@ -662,7 +760,8 @@ function coalesceProductFragmentsAfterSplit(fragments: string[]) {
           (normalizeLoose(previous).includes("piscina havai compacta") && blockIsContextOnlyLine(workingFragment));
 
         if (shouldMergeWithPrevious) {
-          merged[previousIndex] = normalizeBlock(`${previous}\n${workingFragment}`);
+          const mergedBlock = normalizeBlock(`${previous}\n${workingFragment}`);
+          merged[previousIndex] = mergedBlock;
           const reason =
             blockEndsWithSkuLeadIn(previous)
               ? "name_with_trailing_sku_label"
@@ -673,12 +772,18 @@ function coalesceProductFragmentsAfterSplit(fragments: string[]) {
             fromIndex: index,
             intoIndex: previousIndex,
             reason,
+            sourcePreview: workingFragment,
+            targetPreviewBefore: previous,
+            mergedPreview: mergedBlock,
           });
           if (reason === "continuation_details_to_previous_product") {
             continuationPairs.push({
               fromIndex: index,
               intoIndex: previousIndex,
               reason,
+              sourcePreview: workingFragment,
+              targetPreviewBefore: previous,
+              mergedPreview: mergedBlock,
             });
           }
         } else {
@@ -690,7 +795,45 @@ function coalesceProductFragmentsAfterSplit(fragments: string[]) {
     }
 
     if (nextSeed && !blockIsTransitionOnlyLine(nextSeed)) {
-      merged.push(nextSeed);
+      const nextFragment = normalizeBlock(fragments[index + 1] || "");
+      const nextFragmentHasSku = collectAllSkuCandidates(nextFragment).length > 0;
+      const nextFragmentHasPrice = collectAllPriceCandidates(nextFragment).length > 0;
+      const nextFragmentHasStock = /\bestoque\b|\bquantidade\b|\bqtd\b|\bunidades?\b/i.test(nextFragment);
+      const nextFragmentStartsStrongName = blockStartsWithStrongProductName(nextFragment);
+      const nextFragmentIsContext =
+        blockIsContextOnlyLine(nextFragment) ||
+        blockIsTransitionOnlyLine(nextFragment) ||
+        isLikelySectionContextLine(nextFragment);
+      const canCoalesceIntoNextBlock =
+        Boolean(nextFragment) &&
+        !nextFragmentIsContext &&
+        !nextFragmentStartsStrongName &&
+        (nextFragmentHasSku || nextFragmentHasPrice || nextFragmentHasStock);
+
+      const resultAfterCoalesce = canCoalesceIntoNextBlock
+        ? normalizeBlock(`${nextSeed}\n${nextFragment}`)
+        : nextSeed;
+
+      merged.push(resultAfterCoalesce);
+      transitionSplits.push({
+        fromIndex: index,
+        intoIndex: merged.length - 1,
+        reason: canCoalesceIntoNextBlock
+          ? "transition_started_next_product_and_consumed_following_fragment"
+          : "transition_started_next_product",
+        originalBlock: fragment,
+        transitionText: transitionCarry.transitionText || "",
+        previousFragment: transitionCarry.head,
+        nextProductSeed: nextSeed,
+        nextBlock: nextFragment,
+        resultAfterCoalesce,
+        appliedToOutput: true,
+        consumedNextBlock: canCoalesceIntoNextBlock,
+      });
+
+      if (canCoalesceIntoNextBlock) {
+        index += 1;
+      }
     }
   }
 
@@ -698,19 +841,28 @@ function coalesceProductFragmentsAfterSplit(fragments: string[]) {
     blocks: merged.filter(Boolean),
     mergedPairs,
     continuationPairs,
+    transitionSplits,
   };
 }
 
 function coalesceContinuationFragments(fragments: string[]) {
   const merged: string[] = [];
-  const mergedPairs: Array<{ fromIndex: number; intoIndex: number; reason: string }> = [];
+  const mergedPairs: StructuredParserFragmentMergeDebug[] = [];
 
   for (let index = 0; index < fragments.length; index += 1) {
     const fragment = normalizeBlock(fragments[index]);
     if (!fragment) continue;
 
-    const splitTransition = splitTrailingTransitionIntoNextProduct(fragment);
-    const continuationPart = splitTransition.head || fragment;
+    const transitionCarry = splitTransitionIntroducedNextProduct(fragment);
+    const splitTransition = transitionCarry.nextProductSeed
+      ? {
+          head: transitionCarry.head,
+          tail: transitionCarry.nextProductSeed,
+        }
+      : splitTrailingTransitionIntoNextProduct(fragment);
+    const continuationPart = transitionCarry.nextProductSeed
+      ? splitTransition.head || ""
+      : splitTransition.head || fragment;
     const nextSeed = splitTransition.tail;
 
     if (merged.length > 0) {
@@ -729,11 +881,15 @@ function coalesceContinuationFragments(fragments: string[]) {
         !currentStartsStrongName;
 
       if (shouldAttachContinuation) {
-        merged[previousIndex] = normalizeBlock(`${previous}\n${continuationPart}`);
+        const mergedBlock = normalizeBlock(`${previous}\n${continuationPart}`);
+        merged[previousIndex] = mergedBlock;
         mergedPairs.push({
           fromIndex: index,
           intoIndex: previousIndex,
           reason: "continuation_details_to_previous_product",
+          sourcePreview: continuationPart,
+          targetPreviewBefore: previous,
+          mergedPreview: mergedBlock,
         });
       } else if (!blockIsTransitionOnlyLine(continuationPart)) {
         merged.push(continuationPart);
@@ -755,30 +911,45 @@ function coalesceContinuationFragments(fragments: string[]) {
 
 function splitTransitionCarriedBlocks(fragments: string[]) {
   const blocks: string[] = [];
-  const transitionSplits: Array<{
-    fromIndex: number;
-    intoIndex: number;
-    reason: string;
-  }> = [];
+  const transitionSplits: StructuredParserTransitionSplitDebug[] = [];
 
   for (let index = 0; index < fragments.length; index += 1) {
     const fragment = normalizeBlock(fragments[index]);
     if (!fragment) continue;
 
-    const splitTransition = splitTrailingTransitionIntoNextProduct(fragment);
-    const head = normalizeBlock(splitTransition.head || fragment);
+    const transitionCarry = splitTransitionIntroducedNextProduct(fragment);
+    const splitTransition = transitionCarry.nextProductSeed
+      ? {
+          head: transitionCarry.head,
+          tail: transitionCarry.nextProductSeed,
+          transitionText: transitionCarry.transitionText,
+        }
+      : splitTrailingTransitionIntoNextProduct(fragment);
+    const head = normalizeBlock(
+      transitionCarry.nextProductSeed ? splitTransition.head || "" : splitTransition.head || fragment
+    );
     const tail = normalizeBlock(splitTransition.tail || "");
 
     if (head) {
       blocks.push(head);
     }
 
-    if (tail && blockStartsWithStrongProductName(tail)) {
+    if (tail && (transitionCarry.nextProductSeed || blockStartsWithStrongProductName(tail))) {
+      const nextFragment = normalizeBlock(fragments[index + 1] || "");
       blocks.push(tail);
       transitionSplits.push({
         fromIndex: index,
         intoIndex: blocks.length - 1,
         reason: "transition_started_next_product",
+        originalBlock: fragment,
+        transitionText: transitionCarry.transitionText || "",
+        previousFragment: head,
+        nextProductSeed: tail,
+        nextBlock: nextFragment,
+        resultAfterCoalesce:
+          nextFragment && blockStartsWithSkuOrCode(nextFragment)
+            ? normalizeBlock(`${tail}\n${nextFragment}`)
+            : tail,
       });
     }
   }
@@ -1617,6 +1788,10 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
         inputCount: segmented.length,
         outputCount: coalesced.blocks.length,
         mergedPairs: coalesced.mergedPairs,
+        transitionSplits: [
+          ...coalesced.transitionSplits,
+          ...transitionSplit.transitionSplits,
+        ],
       },
       continuationCoalesce: {
         inputCount: coalesced.blocks.length,
