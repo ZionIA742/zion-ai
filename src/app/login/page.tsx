@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -108,7 +109,7 @@ async function ensureAccountSetup() {
     throw new Error(
       payload?.error ||
         payload?.details ||
-        "NÃ£o foi possÃ­vel preparar sua conta para entrar no painel.",
+        "Não foi possível preparar sua conta para entrar no painel.",
     );
   }
 
@@ -354,16 +355,15 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-4 py-10 text-zinc-50">
-      <section className="w-full max-w-md rounded-3xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl shadow-black/30">
+    <main className="flex min-h-dvh flex-col bg-zinc-950 text-zinc-50">
+      <div className="flex flex-1 items-center justify-center px-4 py-10">
+        <section className="w-full max-w-md rounded-3xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl shadow-black/30">
         <div className="mb-6 flex items-center justify-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-sm font-black tracking-tight text-black">
             Z
           </div>
           <h1 className="text-2xl font-bold tracking-tight">ZION</h1>
         </div>
-
-
 
         <h2 className="mb-4 text-lg font-bold">{title}</h2>
 
@@ -721,7 +721,37 @@ export default function LoginPage() {
             </button>
           ) : null}
         </div>
-      </section>
+        </section>
+      </div>
+
+      <footer className="px-4 pb-8 pt-2">
+        <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center text-sm text-zinc-400">
+          <Link
+            href="/privacy-policy"
+            className="transition hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
+          >
+            Política de Privacidade
+          </Link>
+          <span className="text-zinc-600" aria-hidden="true">
+            |
+          </span>
+          <Link
+            href="/terms-of-service"
+            className="transition hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
+          >
+            Termos de Serviço
+          </Link>
+          <span className="text-zinc-600" aria-hidden="true">
+            |
+          </span>
+          <Link
+            href="/data-deletion"
+            className="transition hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
+          >
+            Exclusão de Dados
+          </Link>
+        </div>
+      </footer>
     </main>
   );
 }
