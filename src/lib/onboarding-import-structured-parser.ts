@@ -6,9 +6,14 @@ export type StructuredImportItem = {
   sourceFileName: string;
   destination: StructuredImportDestination;
   title: string;
+  originalTitle?: string;
   description: string;
   rawBlock: string;
   confidence: number;
+  titleCleanupReasons?: string[];
+  titleStatus?: "canonical" | "missing_name" | "ambiguous";
+  missingName?: boolean;
+  ambiguousTitle?: boolean;
   categoria?: string;
   price?: string;
   dimensions?: string;
@@ -53,8 +58,14 @@ export type StructuredParserBlockDebug = {
 
 export type StructuredParserCandidateDebug = {
   blockIndex: number;
+  originalTitle: string;
+  canonicalTitle: string;
   title: string;
   titleSource: string;
+  titleCleanupReasons: string[];
+  titleStatus: "canonical" | "missing_name" | "ambiguous";
+  missingName: boolean;
+  ambiguousTitle: boolean;
   sku: string;
   allSkus: string[];
   price: string;
@@ -1926,6 +1937,170 @@ function extractChemicalTitleFromNarrative(value: string | null | undefined) {
   return "";
 }
 
+function normalizeSkuForTitleComparison(value: string | null | undefined) {
+  return normalizeLoose(String(value || "").replace(/[-_.\/]+/g, " "));
+}
+
+function cleanupTitleResidualPunctuation(value: string) {
+  return cleanText(
+    String(value || "")
+      .replace(/\s*(?:[,:;\/|]+|[-–—])\s*$/u, "")
+      .replace(/\s*[,.]+$/u, "")
+  );
+}
+
+function removeTrailingTitleFieldLabels(value: string) {
+  let current = cleanText(value);
+  let changed = false;
+
+  for (;;) {
+    const next = cleanText(
+      current.replace(
+        /\s*(?:[-,:;\/|]+)?\s*(?:c[oó]d(?:igo)?|cod(?:igo)?|sku|ref|refer[eê]ncia|pre[cç]o|valor)\s*$/iu,
+        ""
+      )
+    );
+
+    if (!next || next === current) {
+      return { value: current, changed };
+    }
+
+    current = next;
+    changed = true;
+  }
+}
+
+function findSpecificationStartIndex(args: {
+  title: string;
+  destination: StructuredImportDestination;
+}) {
+  const title = cleanText(args.title);
+  if (!title) return -1;
+
+  const markerRegex =
+    /\b(?:material|fibra|formato|largura|altura|comprimento|profundidade|capacidade|volume|peso|cor|acabamento|estoque|pre[cç]o|categoria|aplica[cç][aã]o|uso|c[oó]digo|sku)\b/giu;
+  const matches = Array.from(title.matchAll(markerRegex));
+  if (matches.length === 0) return -1;
+
+  for (const match of matches) {
+    const index = match.index ?? -1;
+    if (index <= 0) continue;
+
+    const prefix = cleanText(title.slice(0, index));
+    const suffix = cleanText(title.slice(index));
+    const prefixWordCount = normalizeLoose(prefix).split(" ").filter(Boolean).length;
+    const suffixMarkerCount = Array.from(suffix.matchAll(markerRegex)).length;
+    const hasDimensionSignal =
+      /\b\d+(?:[.,]\d+)?\s*m\b/iu.test(suffix) ||
+      /\bretangular\b|\boval\b|\bredond[ao]\b/iu.test(suffix);
+
+    if (!prefix || prefixWordCount < 2) continue;
+
+    if (suffixMarkerCount >= 2) {
+      return index;
+    }
+
+    if (args.destination === "pool" && suffixMarkerCount >= 1 && hasDimensionSignal) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function looksLikeAmbiguousBundleTitle(value: string) {
+  const cleaned = cleanText(value);
+  const normalized = normalizeLoose(cleaned);
+  if (!normalized) return false;
+
+  if (normalized.includes("peneira e cabo")) return true;
+  if (normalized.includes("varios itens") || normalized.includes("varios item")) return true;
+  if (normalized.includes("kit ou varios itens")) return true;
+  if (/\b(e|ou)\b/.test(normalized) && /\b(sem|com|para|de|do|da|em)\s*$/i.test(normalized)) {
+    return true;
+  }
+  if (/\bsem\b/i.test(normalized) && normalized.split(" ").filter(Boolean).length <= 6) {
+    return true;
+  }
+
+  return false;
+}
+
+function canonicalizeImportedProductTitle(args: {
+  candidateTitle: string;
+  rawBlock: string;
+  destination: StructuredImportDestination;
+  sku: string;
+}) {
+  const originalTitle = cleanText(args.candidateTitle);
+  const rawBlockNormalized = normalizeLoose(args.rawBlock);
+  let title = originalTitle;
+  const titleCleanupReasons: string[] = [];
+
+  const cleanedLeadIn = stripNarrativeLeadIn(title);
+  if (cleanedLeadIn && cleanedLeadIn !== title) {
+    title = cleanedLeadIn;
+    titleCleanupReasons.push("removed_narrative_prefix");
+  }
+
+  const trailingFieldCleanup = removeTrailingTitleFieldLabels(title);
+  if (trailingFieldCleanup.changed) {
+    title = trailingFieldCleanup.value;
+    titleCleanupReasons.push("removed_trailing_field_label");
+  }
+
+  const specificationStartIndex = findSpecificationStartIndex({
+    title,
+    destination: args.destination,
+  });
+  const blockHasAttributeContext =
+    /\bfibra\b|\bformato\b|\blargura\b|\baltura\b|\bcomprimento\b|\bprofundidade\b|\bcapacidade\b|\bvolume\b|\bpeso\b|\bcor\b|\bmaterial\b/.test(
+      rawBlockNormalized
+    );
+  if (
+    specificationStartIndex > 0 &&
+    (args.destination === "pool" || blockHasAttributeContext)
+  ) {
+    title = cleanText(title.slice(0, specificationStartIndex));
+    titleCleanupReasons.push("trimmed_trailing_specifications");
+  }
+
+  const withoutResidualPunctuation = cleanupTitleResidualPunctuation(title);
+  if (withoutResidualPunctuation !== title) {
+    title = withoutResidualPunctuation;
+    titleCleanupReasons.push("removed_residual_punctuation");
+  }
+
+  title = cleanText(title);
+
+  const titleMatchesSku =
+    Boolean(title) &&
+    Boolean(args.sku) &&
+    normalizeSkuForTitleComparison(title) === normalizeSkuForTitleComparison(args.sku);
+  const ambiguousTitle = looksLikeAmbiguousBundleTitle(title);
+  const titleStatus = titleMatchesSku
+    ? ("missing_name" as const)
+    : ambiguousTitle
+      ? ("ambiguous" as const)
+      : ("canonical" as const);
+
+  if (titleMatchesSku) {
+    titleCleanupReasons.push("title_matches_sku");
+  }
+  if (ambiguousTitle) {
+    titleCleanupReasons.push("ambiguous_bundle_title");
+  }
+
+  return {
+    originalTitle,
+    canonicalTitle: title,
+    titleCleanupReasons,
+    titleStatus,
+    missingName: titleMatchesSku,
+    ambiguousTitle,
+  };
+}
+
 function chooseTitle(
   fieldMap: Record<string, string>,
   plainLines: string[],
@@ -2123,7 +2298,8 @@ function inferCandidateAlerts(
   title: string,
   allSkus: string[],
   allPrices: string[],
-  destination: StructuredImportDestination
+  destination: StructuredImportDestination,
+  titleStatus?: "canonical" | "missing_name" | "ambiguous"
 ) {
   const lines = normalizedBlock.split("\n").map((line) => cleanText(line)).filter(Boolean);
   const normalizedLines = lines.map((line) => normalizeLoose(line));
@@ -2158,6 +2334,8 @@ function inferCandidateAlerts(
   if (allSkus.length > 1 || (allPrices.length > 1 && destination === "outros")) {
     alerts.push("possible_merged_items");
   }
+  if (titleStatus === "missing_name") alerts.push("missing_name");
+  if (titleStatus === "ambiguous") alerts.push("ambiguous_title");
   return alerts;
 }
 
@@ -2202,7 +2380,6 @@ function parseSingleBlockDetailed(
   enrichFieldMapWithLooseExtraction(fieldMap, normalizedBlock);
 
   const title = chooseTitle(fieldMap, plainLines, fileName, index);
-  const description = chooseDescription(fieldMap, plainLines, title);
 
   const resolvedSku = sanitizeSku(
     fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || ""
@@ -2218,7 +2395,6 @@ function parseSingleBlockDetailed(
 
   const sourceText = [
     title,
-    description,
     normalizedBlock,
     effectiveSku,
     sourceCategory,
@@ -2234,15 +2410,27 @@ function parseSingleBlockDetailed(
     explicitSubcategory: sourceSubcategory,
     explicitSheetName: sheetName,
   });
+  const canonicalTitle = canonicalizeImportedProductTitle({
+    candidateTitle: title,
+    rawBlock: normalizedBlock,
+    destination,
+    sku: effectiveSku,
+  });
+  const description = chooseDescription(fieldMap, plainLines, canonicalTitle.canonicalTitle || title);
 
   const item: StructuredImportItem = {
     sourceFileName: fileName,
     destination,
     categoria: sourceCategory || (destination === "pool" ? "pool" : destination),
-    title,
+    title: canonicalTitle.canonicalTitle || title,
+    originalTitle: canonicalTitle.originalTitle || title,
     description,
     rawBlock: normalizedBlock,
     confidence: destination === "outros" ? 0.62 : 0.86,
+    titleCleanupReasons: canonicalTitle.titleCleanupReasons,
+    titleStatus: canonicalTitle.titleStatus,
+    missingName: canonicalTitle.missingName,
+    ambiguousTitle: canonicalTitle.ambiguousTitle,
     price: chooseBestPriceFromFieldMap(fieldMap),
     dimensions:
       fieldMap["medidas"] ||
@@ -2296,15 +2484,28 @@ function parseSingleBlockDetailed(
     },
     debug: {
       blockIndex: index,
+      originalTitle: canonicalTitle.originalTitle || title,
+      canonicalTitle: item.title,
       title: item.title,
       titleSource: detectTitleSource(fieldMap, plainLines, fileName, index, item.title),
+      titleCleanupReasons: canonicalTitle.titleCleanupReasons,
+      titleStatus: canonicalTitle.titleStatus,
+      missingName: canonicalTitle.missingName,
+      ambiguousTitle: canonicalTitle.ambiguousTitle,
       sku: item.sku || "",
       allSkus,
       price: promotedPrice,
       allPrices,
       destination: item.destination,
       confidence: item.confidence,
-      alerts: inferCandidateAlerts(normalizedBlock, item.title, allSkus, allPrices, item.destination),
+      alerts: inferCandidateAlerts(
+        normalizedBlock,
+        item.title,
+        allSkus,
+        allPrices,
+        item.destination,
+        canonicalTitle.titleStatus
+      ),
     },
   };
 }
