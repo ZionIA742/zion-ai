@@ -1,20 +1,14 @@
 import type { NormalizedImportItem } from "./onboarding-import-normalizers";
+import {
+  buildImportDedupIdentity,
+  normalizeImportDedupSku,
+} from "../onboarding-import-dedup-identity";
 
 export type DedupedImportItem = NormalizedImportItem & {
   dedupKey: string;
   duplicateOf?: string;
   isDuplicate: boolean;
 };
-
-function normalizeForKey(value: string) {
-  return String(value || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 function completenessScore(item: NormalizedImportItem) {
   const metadata = item.metadata || {};
@@ -30,29 +24,37 @@ function completenessScore(item: NormalizedImportItem) {
   ].filter(Boolean).length;
 }
 
+function extractNormalizedItemSku(item: NormalizedImportItem) {
+  return normalizeImportDedupSku(
+    item.metadata?.sku || item.metadata?.SKU || item.metadata?.codigo || item.metadata?.["cÃ³digo"] || ""
+  );
+}
+
 function buildDedupKey(item: NormalizedImportItem) {
-  const type = normalizeForKey(item.type);
-  const title = normalizeForKey(item.title);
-  const category = normalizeForKey(item.metadata?.categoria || item.metadata?.destination || "");
-  return `${type}::${category}::${title}`;
+  return buildImportDedupIdentity({
+    type: item.type,
+    category: item.metadata?.categoria || item.metadata?.destination || "",
+    title: item.title,
+    sku: extractNormalizedItemSku(item),
+  });
 }
 
 export function dedupNormalizedItems(items: NormalizedImportItem[]): DedupedImportItem[] {
-  const chosenByKey = new Map<string, { title: string; score: number }>();
+  const chosenByKey = new Map<string, { index: number; title: string; score: number }>();
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     const dedupKey = buildDedupKey(item);
     const score = completenessScore(item);
     const existing = chosenByKey.get(dedupKey);
     if (!existing || score > existing.score) {
-      chosenByKey.set(dedupKey, { title: item.title, score });
+      chosenByKey.set(dedupKey, { index, title: item.title, score });
     }
   }
 
-  return items.map((item) => {
+  return items.map((item, index) => {
     const dedupKey = buildDedupKey(item);
     const winner = chosenByKey.get(dedupKey);
-    const isWinner = winner?.title === item.title;
+    const isWinner = winner?.index === index;
     return {
       ...item,
       dedupKey,

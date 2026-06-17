@@ -3,6 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase as defaultSupabase } from "@/lib/supabaseBrowser";
 import {
+  buildImportDedupIdentity,
+  normalizeImportDedupSku,
+  normalizeImportDedupText,
+} from "@/lib/onboarding-import-dedup-identity";
+import {
   buildVisualDocumentAnalysis,
   type VisualDocumentAnalysis,
 } from "@/lib/visual-catalog-document-analysis";
@@ -2019,6 +2024,21 @@ function createEmptyStructuredDuplicateReferenceData(): StructuredDuplicateRefer
   };
 }
 
+function buildStructuredCandidateDuplicateIdentity(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  destination: ImportedDestination,
+  normalizedName?: string
+) {
+  return buildImportDedupIdentity({
+    type: destination === "pool" ? "pool" : item.type,
+    category: destination,
+    title:
+      normalizedName ??
+      (destination === "pool" ? buildImportedPoolName(item) : buildImportedCatalogName(item)),
+    sku: destination === "pool" ? "" : extractImportedCatalogSku(item),
+  });
+}
+
 function computeStructuredPreSaveValidation(args: {
   items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
   existingReferences: StructuredDuplicateReferenceData;
@@ -2026,21 +2046,23 @@ function computeStructuredPreSaveValidation(args: {
   const seenPoolNames = new Set<string>();
   const seenCatalogNames = new Set<string>();
   const seenCatalogSkus = new Set<string>();
+  const seenDuplicateIdentities = new Set<string>();
   const validItems: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview> = [];
   const blockedItems: StructuredPreSaveValidationItem[] = [];
   const evaluatedItems: StructuredPreSaveValidationItem[] = [];
 
   for (const item of args.items) {
     const destination = resolveImportedDestination(item);
-    const normalizedName = normalizeImportedLoose(
+    const normalizedName = normalizeImportDedupText(
       destination === "pool" ? buildImportedPoolName(item) : buildImportedCatalogName(item)
     );
-    const normalizedSku = normalizeImportedLoose(extractImportedCatalogSku(item));
+    const normalizedSku = normalizeImportDedupSku(extractImportedCatalogSku(item));
+    const duplicateIdentity = buildStructuredCandidateDuplicateIdentity(item, destination, normalizedName);
 
     let duplicateReason: string | null = null;
 
     if (destination === "pool") {
-      if (normalizedName && seenPoolNames.has(normalizedName)) {
+      if (duplicateIdentity && seenDuplicateIdentities.has(duplicateIdentity)) {
         duplicateReason = "Duplicado neste arquivo.";
       } else if (normalizedName && args.existingReferences.existingPoolNames.has(normalizedName)) {
         duplicateReason = "Ja existe uma piscina com esse nome nesta loja.";
@@ -2049,8 +2071,11 @@ function computeStructuredPreSaveValidation(args: {
       if (normalizedName) {
         seenPoolNames.add(normalizedName);
       }
+      if (duplicateIdentity) {
+        seenDuplicateIdentities.add(duplicateIdentity);
+      }
     } else {
-      if (normalizedSku && seenCatalogSkus.has(normalizedSku)) {
+      if (duplicateIdentity && seenDuplicateIdentities.has(duplicateIdentity)) {
         duplicateReason = "Duplicado neste arquivo.";
       } else if (normalizedSku && args.existingReferences.existingCatalogSkus.has(normalizedSku)) {
         duplicateReason = "Ja existe um item com esse SKU nesta loja.";
@@ -2065,6 +2090,9 @@ function computeStructuredPreSaveValidation(args: {
       }
       if (normalizedName) {
         seenCatalogNames.add(normalizedName);
+      }
+      if (duplicateIdentity) {
+        seenDuplicateIdentities.add(duplicateIdentity);
       }
     }
 
@@ -2121,17 +2149,17 @@ async function loadStructuredDuplicateReferenceData(args: {
   return {
     existingPoolNames: new Set(
       (existingPools ?? [])
-        .map((pool) => normalizeImportedLoose(pool.name))
+        .map((pool) => normalizeImportDedupText(pool.name))
         .filter(Boolean)
     ),
     existingCatalogNames: new Set(
       (existingCatalogItems ?? [])
-        .map((item) => normalizeImportedLoose(item.name))
+        .map((item) => normalizeImportDedupText(item.name))
         .filter(Boolean)
     ),
     existingCatalogSkus: new Set(
       (existingCatalogItems ?? [])
-        .map((item) => normalizeImportedLoose(item.sku))
+        .map((item) => normalizeImportDedupSku(item.sku))
         .filter(Boolean)
     ),
   } satisfies StructuredDuplicateReferenceData;
