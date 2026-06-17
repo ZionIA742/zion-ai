@@ -487,6 +487,14 @@ const SAFE_TRANSITION_TO_NEXT_PRODUCT_REGEX =
 const SAFE_TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX =
   /^(?:temos|logo depois aparece|no mesmo par[aá]grafo tem|tamb(?:e|é)m vendemos|tamb(?:e|é)m temos|em seguida aparece|outro item(?: importante)?|produto(?: da)?(?: promo[cç][aã]o ver[aã]o)?|aparece|surge)\b[\s:,-]*/i;
 
+const EXTRA_TRANSITION_TO_NEXT_PRODUCT_REGEX =
+  /\b(?:depois misturamos outro(?:\s+(?:produto|item))?)\b/i;
+const EXTRA_TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX =
+  /^(?:depois misturamos outro(?:\s+(?:produto|item))?)\b[\s:,-]*/i;
+const INSTRUCTIONAL_LEAD_IN_REGEX =
+  /^(?:agora\s+(?:um|o)\s+trecho(?:\s+[a-zà-ÿ]+){0,3})\s*[:;,.!\-]*\s*/iu;
+const CATEGORY_VALUE_SIGNAL_REGEX = /^(?:piscina(?:s)?|pool|quimic(?:o|os)|acessori(?:o|os)|outro(?:s)?)\b/i;
+
 function canonicalizeFieldKey(value: string) {
   const normalized = normalizeLoose(value);
 
@@ -621,13 +629,33 @@ function preprocessStructuredText(text: string) {
   );
 }
 
+function stripInstructionalLeadIn(value: string) {
+  const cleaned = cleanText(value);
+  if (!cleaned) return "";
+
+  const next = cleanText(cleaned.replace(INSTRUCTIONAL_LEAD_IN_REGEX, ""));
+  if (!next || next === cleaned) return cleaned;
+  if (
+    PRODUCT_WORD_REGEX.test(next) ||
+    CATEGORY_VALUE_SIGNAL_REGEX.test(next) ||
+    /\b(?:acessori(?:o|os)\s+para|produto\s+top|sku|c[oó]digo|pre[cç]o|valor)\b/i.test(next)
+  ) {
+    return next;
+  }
+
+  return cleaned;
+}
+
 function stripNarrativeLeadIn(value: string) {
   return cleanText(
-    String(value || "")
-      .replace(SAFE_TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX, "")
-      .replace(TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX, "")
-      .replace(NARRATIVE_PRODUCT_PREFIX_REGEX, "")
-      .replace(/^(?:um|uma|o|a)\s+/i, "")
+    stripInstructionalLeadIn(
+      String(value || "")
+        .replace(SAFE_TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX, "")
+        .replace(TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX, "")
+        .replace(EXTRA_TRANSITION_TO_NEXT_PRODUCT_PREFIX_REGEX, "")
+        .replace(NARRATIVE_PRODUCT_PREFIX_REGEX, "")
+        .replace(/^(?:um|uma|o|a)\s+/i, "")
+    )
   );
 }
 
@@ -655,7 +683,8 @@ function splitTransitionIntroducedNextProduct(text: string) {
 
   const transitionMatch =
     cleaned.match(SAFE_TRANSITION_TO_NEXT_PRODUCT_REGEX) ||
-    cleaned.match(TRANSITION_TO_NEXT_PRODUCT_REGEX);
+    cleaned.match(TRANSITION_TO_NEXT_PRODUCT_REGEX) ||
+    cleaned.match(EXTRA_TRANSITION_TO_NEXT_PRODUCT_REGEX);
   if (!transitionMatch || transitionMatch.index == null) {
     return {
       head: cleaned,
@@ -741,6 +770,54 @@ function countProductSignals(text: string) {
   return Math.max(skuSignals, priceSignals, keywordSignals);
 }
 
+function fragmentStartsWithCategoryValueSignal(fragment: string) {
+  return CATEGORY_VALUE_SIGNAL_REGEX.test(cleanText(fragment));
+}
+
+function fragmentHasIndependentStructuralField(fragment: string) {
+  return /^\s*(?:categoria|sku|c[oó]digo|cod|pre[cç]o|valor|nome|produto|item|modelo)\s*[:\-]/iu.test(
+    cleanText(fragment)
+  );
+}
+
+function fragmentEndsWithPendingCategoryField(fragment: string) {
+  return /\bcategoria(?:\s+(?:correta|final esperada))?\s*[:\-]?\s*$/iu.test(cleanText(fragment));
+}
+
+function fragmentEndsWithAmbiguousAlternative(fragment: string) {
+  return /\b(?:talvez|possivelmente|pode ser|ou)\s*$/iu.test(cleanText(fragment));
+}
+
+function fragmentCarriesReviewInstruction(fragment: string) {
+  const normalized = normalizeLoose(fragment);
+  return (
+    normalized.includes("deve aparecer como suspeito") ||
+    normalized.includes("deve vir desmarcado") ||
+    normalized.includes("deve ficar desmarcado") ||
+    normalized.includes("suspeito e desmarcado")
+  );
+}
+
+function shouldMergeSeparatedCategoryValue(previous: string, current: string) {
+  return fragmentEndsWithPendingCategoryField(previous) && fragmentStartsWithCategoryValueSignal(current);
+}
+
+function shouldMergeAmbiguousCategoryContinuation(previous: string, current: string) {
+  const cleanedCurrent = cleanText(current);
+  if (!fragmentStartsWithCategoryValueSignal(cleanedCurrent)) return false;
+  if (collectAllSkuCandidates(cleanedCurrent).length > 0) return false;
+  if (collectAllPriceCandidates(cleanedCurrent).length > 0) return false;
+  if (fragmentHasIndependentStructuralField(cleanedCurrent)) return false;
+  if (!fragmentEndsWithAmbiguousAlternative(previous)) return false;
+  if (
+    !fragmentCarriesReviewInstruction(cleanedCurrent) &&
+    !fragmentCarriesReviewInstruction(`${previous} ${cleanedCurrent}`)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function splitLineIntoProductFragments(line: string) {
   const cleaned = cleanText(line);
   if (!cleaned) return [];
@@ -759,6 +836,15 @@ function splitLineIntoProductFragments(line: string) {
   for (const fragment of fragments) {
     if (merged.length === 0) {
       merged.push(fragment);
+      continue;
+    }
+
+    const previous = merged[merged.length - 1];
+    if (
+      shouldMergeSeparatedCategoryValue(previous, fragment) ||
+      shouldMergeAmbiguousCategoryContinuation(previous, fragment)
+    ) {
+      merged[merged.length - 1] = cleanText(`${previous} ${fragment}`);
       continue;
     }
 
@@ -826,6 +912,8 @@ function blockIsTransitionOnlyLine(block: string) {
     normalized === "tambem vendemos" ||
     normalized === "tambem temos" ||
     normalized === "em seguida aparece" ||
+    normalized === "depois aparece" ||
+    normalized === "depois misturamos outro" ||
     normalized === "outro item" ||
     normalized === "outro item importante"
   );
@@ -837,6 +925,14 @@ function blockLooksLikeContinuationFragment(block: string) {
   if (!cleaned) return false;
   if (collectAllSkuCandidates(cleaned).length > 0) return false;
   if (blockLooksLikeProductNameFragment(cleaned)) return false;
+
+  if (
+    fragmentStartsWithCategoryValueSignal(cleaned) &&
+    fragmentCarriesReviewInstruction(cleaned) &&
+    !collectAllPriceCandidates(cleaned).length
+  ) {
+    return true;
+  }
 
   const hasCommercialContinuation =
     collectAllPriceCandidates(cleaned).length > 0 ||
@@ -855,6 +951,14 @@ function blockStartsWithStrongProductName(block: string) {
   const cleaned = stripNarrativeLeadIn(cleanText(block));
   if (!cleaned) return false;
   if (blockStartsWithSkuOrCode(cleaned)) return false;
+  if (
+    fragmentStartsWithCategoryValueSignal(cleaned) &&
+    fragmentCarriesReviewInstruction(cleaned) &&
+    !collectAllSkuCandidates(cleaned).length &&
+    !collectAllPriceCandidates(cleaned).length
+  ) {
+    return false;
+  }
   if (!PRODUCT_WORD_REGEX.test(cleaned)) return false;
   const firstSegment = stripTrailingStructuredDetails(cleaned).split(/[.;\n]/)[0] || cleaned;
   return normalizeLoose(firstSegment).length >= 6;
@@ -932,7 +1036,8 @@ function coalesceProductFragmentsAfterSplit(fragments: string[]) {
         const currentHasPrice = collectAllPriceCandidates(workingFragment).length > 0;
         const shouldMergeWithPrevious =
           (blockEndsWithSkuLeadIn(previous) && blockStartsWithSkuOrCode(workingFragment)) ||
-          (blockLooksLikeProductNameFragment(previous) &&
+          (!previousHasPrice &&
+            blockLooksLikeProductNameFragment(previous) &&
             (blockStartsWithSkuOrCode(workingFragment) ||
               (collectAllSkuCandidates(workingFragment).length > 0 &&
                 collectAllPriceCandidates(workingFragment).length > 0))) ||
@@ -1432,6 +1537,31 @@ function chooseBestPriceFromFieldMap(fieldMap: Record<string, string>) {
   );
 }
 
+function extractLooseInlineCategoryField(line: string) {
+  const source = cleanText(line);
+  if (!source) {
+    return {
+      value: "",
+      cleanedLine: "",
+    };
+  }
+
+  const match = source.match(
+    /\bcategoria(?:\s+(?:correta|final esperada))?\s*[:\-]?\s*(piscina(?:s)?|pool|quimic(?:o|os)|acessori(?:o|os)|outro(?:s)?)\b/iu
+  );
+  if (!match) {
+    return {
+      value: "",
+      cleanedLine: source,
+    };
+  }
+
+  return {
+    value: cleanText(match[1] || ""),
+    cleanedLine: cleanText(source.replace(match[0], " ")),
+  };
+}
+
 function looksLikeGarbageDescriptionLine(normalizedLine: string) {
   if (!normalizedLine) return true;
   if (/^[a-z0-9\s]+\s*=\s*[a-z0-9\s\/()-]+$/i.test(normalizedLine)) return true;
@@ -1450,13 +1580,16 @@ function cleanDescriptionLine(line: string, title: string) {
 
   const withoutTransitionTail = cleanText(
     cleanedLine.replace(
-      /\b(?:Logo depois aparece|No mesmo par[aÃ¡]grafo tem|Tamb[eÃ©]m vendemos|Tamb[eÃ©]m temos|Outro item(?: importante)?)\b.*$/i,
+      /\b(?:Logo depois aparece|No mesmo par[aÃ¡]grafo tem|Tamb[eÃ©]m vendemos|Tamb[eÃ©]m temos|Outro item(?: importante)?|Depois aparece|Depois misturamos outro(?:\s+(?:produto|item))?)\b.*$/i,
       ""
     )
   );
   if (!withoutTransitionTail) return "";
 
-  const normalizedLine = normalizeLoose(withoutTransitionTail);
+  const withoutNarrativeLeadIn = stripTransitionLeadInFromDescriptionPart(withoutTransitionTail);
+  if (!withoutNarrativeLeadIn) return "";
+
+  const normalizedLine = normalizeLoose(withoutNarrativeLeadIn);
   const normalizedTitle = normalizeLoose(title);
 
   if (!normalizedLine || normalizedLine === normalizedTitle) return "";
@@ -1491,7 +1624,7 @@ function cleanDescriptionLine(line: string, title: string) {
   if (normalizedLine.includes("sheet estoque")) return "";
   if (looksLikeGarbageDescriptionLine(normalizedLine)) return "";
 
-  const withoutRepeatedInlineFields = withoutTransitionTail
+  const withoutRepeatedInlineFields = withoutNarrativeLeadIn
     .replace(/\s*(Embalagem|Aplica[cç][aã]o|Dosagem|Categoria|Linha|Subcategoria|Planilha|Aba)\s*:\s*.*$/i, "")
     .replace(/\s*(Observa[cç][oõ]es?)\s*:\s*(Controlar estoque|Item sazonal|Validar.*)$/i, "")
     .trim();
@@ -1701,7 +1834,7 @@ function trimTrailingMechanicalDescriptionTail(value: string) {
     /\s*(?:[,:;|.\-]+\s*)?\b(?:pre[cÃ§]o(?:\s+(?:venda|final|sugerido|custo))?|valor)\b.*$/iu,
     /\s*(?:[,:;|.\-]+\s*)?\b(?:estoque|quantidade(?: atual)?|controlar estoque)\b.*$/iu,
     /\s*(?:[,:;|.\-]+\s*)?\b(?:categoria|planilha|aba|sheet)\b.*$/iu,
-    /\s*(?:[,:;|.\-]+\s*)?\b(?:logo depois aparece|no mesmo par[aÃ¡]grafo tem|tamb[eÃ©]m vendemos|tamb[eÃ©]m temos|em seguida aparece|depois aparece|outro produto|pr[oÃ³]ximo item)\b.*$/iu,
+    /\s*(?:[,:;|.\-]+\s*)?\b(?:logo depois aparece|no mesmo par[aÃ¡]grafo tem|tamb[eÃ©]m vendemos|tamb[eÃ©]m temos|em seguida aparece|depois aparece|depois misturamos outro(?:\s+(?:produto|item))?|outro produto|pr[oÃ³]ximo item)\b.*$/iu,
   ];
 
   for (;;) {
@@ -1737,7 +1870,7 @@ function partLooksLikeDocumentArtifact(normalized: string) {
 }
 
 function partLooksLikeTransitionArtifact(normalized: string) {
-  return /^(?:logo depois aparece|no mesmo paragrafo tem|tambem vendemos|tambem temos|em seguida aparece|depois aparece|outro produto|proximo item)\b/.test(
+  return /^(?:logo depois aparece|no mesmo paragrafo tem|tambem vendemos|tambem temos|em seguida aparece|depois aparece|depois misturamos outro(?:\s+(?:produto|item))?|outro produto|proximo item)\b/.test(
     normalized
   );
 }
@@ -1807,9 +1940,11 @@ function partLooksLikeCategoryAsAttributeArtifact(args: {
 
 function stripTransitionLeadInFromDescriptionPart(value: string) {
   return cleanText(
-    String(value || "").replace(
-      /^(?:logo depois aparece|no mesmo par[aá]grafo tem|tamb[eé]m vendemos|tamb[eé]m temos|em seguida aparece|depois aparece|outro produto|pr[oó]ximo item)\s*[:;,.!\-]*\s*/iu,
-      ""
+    stripInstructionalLeadIn(
+      String(value || "").replace(
+        /^(?:logo depois aparece|no mesmo par[aá]grafo tem|tamb[eé]m vendemos|tamb[eé]m temos|em seguida aparece|depois aparece|depois misturamos outro(?:\s+(?:produto|item))?|outro produto|pr[oó]ximo item)\s*[:;,.!\-]*\s*/iu,
+        ""
+      )
     )
   );
 }
@@ -2179,6 +2314,8 @@ function partLooksLikeImportInstruction(normalized: string) {
     "deveria interpretar",
     "interpretar o trecho",
     "duplicado proposital",
+    "deve aparecer como suspeito",
+    "suspeito e desmarcado",
   ];
 
   return instructionSignals.some((signal) => normalized.includes(signal));
@@ -3664,7 +3801,12 @@ function parseFieldLines(block: string) {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const explicitNameCandidates = extractInlineExplicitProductNameCandidates(line);
+    const looseCategoryField = extractLooseInlineCategoryField(line);
+    const effectiveLine = looseCategoryField.cleanedLine || line;
+    if (looseCategoryField.value) {
+      appendFieldValue(fieldMap, "categoria", looseCategoryField.value);
+    }
+    const explicitNameCandidates = extractInlineExplicitProductNameCandidates(effectiveLine);
     if (explicitNameCandidates.length > 0) {
       inlineProductNameCandidates.push(...explicitNameCandidates);
       for (const candidate of explicitNameCandidates) {
@@ -3673,7 +3815,7 @@ function parseFieldLines(block: string) {
       }
     }
 
-    const inlinePairs = extractInlineFieldPairs(line);
+    const inlinePairs = extractInlineFieldPairs(effectiveLine);
     if (inlinePairs.length > 0) {
       for (const [key, value] of inlinePairs) {
         appendFieldValue(fieldMap, key, value);
@@ -3681,13 +3823,13 @@ function parseFieldLines(block: string) {
       continue;
     }
 
-    const match = line.match(/^([^:]{2,120}):\s*(.+)$/);
+    const match = effectiveLine.match(/^([^:]{2,120}):\s*(.+)$/);
     if (match) {
       appendFieldValue(fieldMap, match[1], match[2]);
       continue;
     }
 
-    const standaloneLabel = findStandaloneFieldLabel(line);
+    const standaloneLabel = findStandaloneFieldLabel(effectiveLine);
     const nextLine = standaloneLabel ? cleanText(lines[index + 1] || "") : "";
     if (standaloneLabel && nextLine && !findStandaloneFieldLabel(nextLine)) {
       appendFieldValue(fieldMap, standaloneLabel, nextLine);
@@ -3695,7 +3837,10 @@ function parseFieldLines(block: string) {
       continue;
     }
 
-    plainLines.push(line.replace(/^\d+[\)\.\-]\s+/, "").trim());
+    const plainLine = effectiveLine.replace(/^\d+[\)\.\-]\s+/, "").trim();
+    if (plainLine) {
+      plainLines.push(plainLine);
+    }
   }
 
   return { fieldMap, plainLines, inlineProductNameCandidates };
@@ -3895,6 +4040,102 @@ function looksLikeAmbiguousBundleTitle(value: string) {
   return false;
 }
 
+function stripTrailingImportInstructionSentence(value: string) {
+  const cleaned = cleanText(value);
+  if (!cleaned) {
+    return {
+      value: "",
+      removed: false,
+    };
+  }
+
+  const sentenceParts = cleaned
+    .split(/(?<=[.!?])\s+/u)
+    .map((part) => cleanText(part))
+    .filter(Boolean);
+  if (sentenceParts.length < 2) {
+    return {
+      value: cleaned,
+      removed: false,
+    };
+  }
+
+  const trailingSentence = sentenceParts[sentenceParts.length - 1] || "";
+  if (!partLooksLikeImportInstruction(normalizeLoose(trailingSentence))) {
+    return {
+      value: cleaned,
+      removed: false,
+    };
+  }
+
+  const remaining = cleanText(sentenceParts.slice(0, -1).join(". ").replace(/[.!?\s]+$/u, ""));
+  if (!remaining) {
+    return {
+      value: cleaned,
+      removed: false,
+    };
+  }
+
+  return {
+    value: remaining,
+    removed: true,
+  };
+}
+
+function looksLikeAmbiguousReviewCandidateTitle(args: {
+  title: string;
+  destination: StructuredImportDestination;
+  hasSku: boolean;
+  hasPrice: boolean;
+}) {
+  const normalized = normalizeLoose(args.title);
+  if (!normalized) return false;
+
+  const hasCommercialAbsenceSignal =
+    normalized.includes("sem codigo") ||
+    normalized.includes("sem sku") ||
+    normalized.includes("sem preco");
+  const hasUncertaintySignal =
+    normalized.includes("talvez") ||
+    normalized.includes("possivelmente") ||
+    normalized.includes("pode ser") ||
+    normalized.includes("aparenta ser");
+  if (!hasCommercialAbsenceSignal || !hasUncertaintySignal) {
+    return false;
+  }
+
+  const categoryAliases = (
+    [
+      { destination: "pool" as const, aliases: buildDescriptionCategoryCandidates({ sourceCategory: "", destination: "pool" }) },
+      {
+        destination: "quimicos" as const,
+        aliases: buildDescriptionCategoryCandidates({ sourceCategory: "", destination: "quimicos" }),
+      },
+      {
+        destination: "acessorios" as const,
+        aliases: buildDescriptionCategoryCandidates({ sourceCategory: "", destination: "acessorios" }),
+      },
+      { destination: "outros" as const, aliases: buildDescriptionCategoryCandidates({ sourceCategory: "", destination: "outros" }) },
+    ] satisfies Array<{ destination: StructuredImportDestination; aliases: string[] }>
+  ).filter(({ destination }) => destination !== "outros");
+
+  const referencedDestinations = categoryAliases
+    .filter(({ aliases }) =>
+      aliases.some((alias) => {
+        const normalizedAlias = normalizeLoose(alias);
+        return normalizedAlias && normalized.includes(normalizedAlias);
+      })
+    )
+    .map(({ destination }) => destination);
+
+  const uniqueReferencedDestinations = Array.from(new Set(referencedDestinations));
+  if (uniqueReferencedDestinations.length < 2) {
+    return false;
+  }
+
+  return !args.hasSku && !args.hasPrice;
+}
+
 function canonicalizeImportedProductTitle(args: {
   candidateTitle: string;
   rawBlock: string;
@@ -3938,6 +4179,12 @@ function canonicalizeImportedProductTitle(args: {
   if (withoutResidualPunctuation !== title) {
     title = withoutResidualPunctuation;
     titleCleanupReasons.push("removed_residual_punctuation");
+  }
+
+  const withoutTrailingInstruction = stripTrailingImportInstructionSentence(title);
+  if (withoutTrailingInstruction.removed) {
+    title = withoutTrailingInstruction.value;
+    titleCleanupReasons.push("removed_trailing_import_instruction");
   }
 
   title = cleanText(title);
@@ -4316,6 +4563,20 @@ function parseSingleBlockDetailed(
     destination,
     sku: effectiveSku,
   });
+  const promotedPrice = chooseBestPriceFromFieldMap(fieldMap);
+  const titleIsStructurallyAmbiguous =
+    canonicalTitle.ambiguousTitle ||
+    looksLikeAmbiguousReviewCandidateTitle({
+      title: canonicalTitle.canonicalTitle || title,
+      destination,
+      hasSku: Boolean(cleanText(effectiveSku)),
+      hasPrice: Boolean(cleanText(promotedPrice)),
+    });
+  const resolvedTitleStatus = canonicalTitle.missingName
+    ? ("missing_name" as const)
+    : titleIsStructurallyAmbiguous
+      ? ("ambiguous" as const)
+      : ("canonical" as const);
   const titleForDescription = canonicalTitle.canonicalTitle || title;
   const descriptionCandidates = collectDescriptionCandidateParts(
     fieldMap,
@@ -4323,7 +4584,6 @@ function parseSingleBlockDetailed(
     titleForDescription
   );
   const initialDescription = chooseDescription(fieldMap, plainLines, titleForDescription);
-  const promotedPrice = chooseBestPriceFromFieldMap(fieldMap);
   const canonicalDescription = canonicalizeImportedProductDescription({
     rawBlock: normalizedBlock,
     fieldMap,
@@ -4358,11 +4618,16 @@ function parseSingleBlockDetailed(
     description: canonicalDescription.canonicalDescription,
     originalDescription: canonicalDescription.originalDescription,
     rawBlock: normalizedBlock,
-    confidence: destination === "outros" ? 0.62 : 0.86,
+    confidence:
+      titleIsStructurallyAmbiguous && !cleanText(effectiveSku) && !cleanText(promotedPrice)
+        ? 0.62
+        : destination === "outros"
+          ? 0.62
+          : 0.86,
     titleCleanupReasons: canonicalTitle.titleCleanupReasons,
-    titleStatus: canonicalTitle.titleStatus,
+    titleStatus: resolvedTitleStatus,
     missingName: canonicalTitle.missingName,
-    ambiguousTitle: canonicalTitle.ambiguousTitle,
+    ambiguousTitle: titleIsStructurallyAmbiguous,
     descriptionCleanupReasons: canonicalDescription.cleanupReasons,
     descriptionStatus: canonicalDescription.descriptionStatus,
     price: promotedPrice,
@@ -4435,9 +4700,9 @@ function parseSingleBlockDetailed(
       ],
       titleSource: detectTitleSource(fieldMap, plainLines, fileName, index, item.title),
       titleCleanupReasons: canonicalTitle.titleCleanupReasons,
-      titleStatus: canonicalTitle.titleStatus,
+      titleStatus: resolvedTitleStatus,
       missingName: canonicalTitle.missingName,
-      ambiguousTitle: canonicalTitle.ambiguousTitle,
+      ambiguousTitle: titleIsStructurallyAmbiguous,
       originalDescription: canonicalDescription.originalDescription,
       canonicalDescription: canonicalDescription.canonicalDescription,
       descriptionCleanupReasons: canonicalDescription.cleanupReasons,
@@ -4462,7 +4727,7 @@ function parseSingleBlockDetailed(
         allSkus,
         allPrices,
         item.destination,
-        canonicalTitle.titleStatus
+        resolvedTitleStatus
       ),
     },
   };
