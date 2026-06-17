@@ -1513,11 +1513,51 @@ function buildStructuredReviewOriginLabel(
 function buildStructuredReviewDescriptionSnippet(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const description =
-    buildImportedCatalogDescription(item) || buildImportedPoolDescription(item) || item.rawText || "";
+  const descriptionState = getImportedDescriptionCanonicalState(item);
+  const description = descriptionState.canonicalized
+    ? buildImportedCatalogDescription(item) || buildImportedPoolDescription(item) || ""
+    : buildImportedCatalogDescription(item) || buildImportedPoolDescription(item) || item.rawText || "";
   const normalized = String(description || "").replace(/\s+/g, " ").trim();
+  debugReviewDescriptionResolution(item, normalized);
   if (!normalized) return "";
   return normalized.length > 180 ? `${normalized.slice(0, 180)}...` : normalized;
+}
+
+function debugReviewDescriptionResolution(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  renderedSnippet: string
+) {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search || "");
+  if (params.get("debugParser") !== "true") return;
+
+  const descriptionState = getImportedDescriptionCanonicalState(item);
+  const cleanDescription = readImportedMetadataValue(item, ["clean_description", "cleanDescription"]) || "";
+  const sanitizedDescription = sanitizeImportedDescriptionText(String(cleanDescription || ""), item) || "";
+  const missingName = String(
+    readImportedMetadataValue(item, ["missing_name", "missingName"]) || ""
+  ).trim();
+  const selectedSource = descriptionState.canonicalized
+    ? "clean_description"
+    : cleanDescription
+      ? "clean_description_legacy"
+      : item.rawText
+        ? "rawText_legacy"
+        : "empty";
+
+  console.debug("[reviewDescriptionResolution]", {
+    title: item.title,
+    sku: extractImportedCatalogSku(item),
+    missingName,
+    canonicalized: descriptionState.canonicalized,
+    cleanDescriptionStatus: descriptionState.status,
+    cleanDescriptionPreview: String(cleanDescription || "").slice(0, 180),
+    importedDescriptionPreview: String(item.rawText || "").slice(0, 180),
+    sanitizedDescriptionPreview: String(sanitizedDescription || "").slice(0, 180),
+    selectedSource,
+    renderedSnippetPreview: String(renderedSnippet || "").slice(0, 180),
+    hiddenByCondition: !String(renderedSnippet || "").trim(),
+  });
 }
 
 function buildStructuredReviewDisplayName(
@@ -4368,6 +4408,16 @@ function stripImportedRepeatedDetailsFromText(
 function buildImportedCleanDescription(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const descriptionState = getImportedDescriptionCanonicalState(item);
+  if (descriptionState.canonicalized) {
+    const canonicalDescription = readImportedMetadataValue(item, [
+      "clean_description",
+      "cleanDescription",
+    ]);
+    const cleanedCanonical = sanitizeImportedDescriptionText(String(canonicalDescription || ""), item);
+    return cleanedCanonical || "";
+  }
+
   const metadataCandidates = [
     extractMetadataValue(item, ["clean_description", "cleanDescription"]),
     extractMetadataValue(item, ["descricao", "descrição", "description"]),
@@ -4381,13 +4431,16 @@ function buildImportedCleanDescription(
     if (cleaned) return cleaned;
   }
 
-  return sanitizeImportedDescriptionText(String(item.rawText || ""), item);
+  return descriptionState.rawFallbackAllowed
+    ? sanitizeImportedDescriptionText(String(item.rawText || ""), item)
+    : "";
 }
 
 function sanitizeImportedDescriptionText(
   source: string,
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const descriptionState = getImportedDescriptionCanonicalState(item);
   const title = buildImportedCatalogName(item);
   const titleLoose = normalizeImportedLoose(title);
   const rawLines = String(source || "")
@@ -4457,8 +4510,6 @@ function sanitizeImportedDescriptionText(
       "dosagem:",
       "cor ",
       "cor:",
-      "uso ",
-      "uso:",
       "quantidade atual ",
       "quantidade atual:",
       "estoque minimo ",
@@ -4497,7 +4548,14 @@ function sanitizeImportedDescriptionText(
       "arquivo:",
     ];
 
-    if (blockedStarts.some((value) => normalized.startsWith(value))) {
+    const isCanonicalApplicationNarrative =
+      descriptionState.canonicalized &&
+      (normalized.startsWith("aplicacao ") ||
+        normalized.startsWith("aplicacao:") ||
+        normalized.startsWith("aplicaÃ§Ã£o ") ||
+        normalized.startsWith("aplicaÃ§Ã£o:"));
+
+    if (!isCanonicalApplicationNarrative && blockedStarts.some((value) => normalized.startsWith(value))) {
       return false;
     }
 
@@ -4628,8 +4686,13 @@ function buildImportedCatalogDescription(
     return String(reviewedDescription || "").trim();
   }
 
+  const descriptionState = getImportedDescriptionCanonicalState(item);
   const source = String(item.rawText || "");
   const baseDescription = buildImportedCleanDescription(item) || "";
+  if (descriptionState.canonicalized) {
+    return baseDescription;
+  }
+
   const shortDescription =
     extractMetadataValue(item, ["descricao_curta", "descrição curta", "short_description"]) ||
     extractImportedLabeledValue(source, ["Descrição curta", "Descricao curta", "Descrição", "Descricao"]);
@@ -5405,6 +5468,53 @@ function extractMetadataValue(
     if (found) return found;
   }
   return "";
+}
+
+function readImportedMetadataValue(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  keys: string[]
+) {
+  const metadata = item.metadata ?? {};
+  for (const key of keys) {
+    if (typeof metadata[key] === "string") return metadata[key];
+  }
+
+  const lowerKeyMap = Object.entries(metadata).reduce<Record<string, string>>((acc, [key, value]) => {
+    if (typeof value === "string") {
+      acc[key.toLowerCase()] = value;
+    }
+    return acc;
+  }, {});
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(lowerKeyMap, key.toLowerCase())) {
+      return lowerKeyMap[key.toLowerCase()];
+    }
+  }
+
+  return undefined;
+}
+
+function getImportedDescriptionCanonicalState(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const canonicalizedFlag = String(
+    readImportedMetadataValue(item, ["description_canonicalized"]) || ""
+  )
+    .trim()
+    .toLowerCase();
+  const status = String(readImportedMetadataValue(item, ["clean_description_status"]) || "").trim();
+  const canonicalized =
+    canonicalizedFlag === "true" ||
+    status === "empty" ||
+    status === "cleaned" ||
+    status === "preserved";
+
+  return {
+    canonicalized,
+    status,
+    rawFallbackAllowed: !canonicalized,
+  };
 }
 function isGenericImportedTitle(title: string) {
   const normalized = normalizeImportedLoose(title);

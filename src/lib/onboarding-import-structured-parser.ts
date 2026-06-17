@@ -8,12 +8,15 @@ export type StructuredImportItem = {
   title: string;
   originalTitle?: string;
   description: string;
+  originalDescription?: string;
   rawBlock: string;
   confidence: number;
   titleCleanupReasons?: string[];
   titleStatus?: "canonical" | "missing_name" | "ambiguous";
   missingName?: boolean;
   ambiguousTitle?: boolean;
+  descriptionCleanupReasons?: string[];
+  descriptionStatus?: "preserved" | "cleaned" | "empty";
   categoria?: string;
   price?: string;
   dimensions?: string;
@@ -66,6 +69,24 @@ export type StructuredParserCandidateDebug = {
   titleStatus: "canonical" | "missing_name" | "ambiguous";
   missingName: boolean;
   ambiguousTitle: boolean;
+  originalDescription: string;
+  canonicalDescription: string;
+  descriptionCleanupReasons: string[];
+  descriptionStatus: "preserved" | "cleaned" | "empty";
+  descriptionCandidateSources: string[];
+  rawBlockSemanticRemainder: string;
+  descriptionClauses: Array<{
+    originalText: string;
+    removedStructuredSpans: string[];
+    semanticRemainder: string;
+    classification: string;
+    action: "preserved" | "removed";
+    reason: string;
+  }>;
+  preservedDescriptionParts: string[];
+  rejectedDescriptionParts: string[];
+  canonicalDescriptionApplied: boolean;
+  frontFallbackAllowed: boolean;
   sku: string;
   allSkus: string[];
   price: string;
@@ -127,6 +148,15 @@ export type StructuredParserFileDebug = {
     reasons: string[];
     beforeCount: number;
     afterCount: number;
+    candidateLifecycle?: Array<{
+      key: string;
+      title: string;
+      sku: string;
+      enteredStage: string;
+      leftStage: string;
+      retained: boolean;
+      dropReason: string;
+    }>;
   };
   merge: {
     inputCount: number;
@@ -1184,6 +1214,1269 @@ function mergeDescriptionParts(parts: string[]) {
   }
 
   return result.join("\n").trim();
+}
+
+function collectDescriptionCandidateParts(
+  fieldMap: Record<string, string>,
+  plainLines: string[],
+  title: string
+) {
+  const primaryDescriptionKeys = ["descriÃ§Ã£o", "descriÃ§Ã£o comercial"];
+  const secondaryDescriptionKeys = ["indicaÃ§Ã£o", "observaÃ§Ãµes"];
+
+  const pickedPrimaryParts = primaryDescriptionKeys
+    .map((key) => fieldMap[key])
+    .filter(Boolean)
+    .flatMap((value) => String(value || "").split("\n"))
+    .map((line) => cleanDescriptionLine(line, title))
+    .filter(Boolean);
+
+  const pickedSecondaryParts = secondaryDescriptionKeys
+    .map((key) => fieldMap[key])
+    .filter(Boolean)
+    .flatMap((value) => String(value || "").split("\n"))
+    .map((line) => cleanDescriptionLine(line, title))
+    .filter(Boolean);
+
+  const plainDescriptionLines = filterDescriptionPlainLines(plainLines, title, fieldMap);
+
+  return {
+    pickedPrimaryParts,
+    pickedSecondaryParts,
+    plainDescriptionLines,
+  };
+}
+
+function cleanupDescriptionResidualPunctuation(value: string) {
+  return cleanText(
+    String(value || "")
+      .replace(/\s*-\s*$/u, "")
+      .replace(/\s*[:;,\/|]+\s*$/u, "")
+      .replace(/\.\.+/g, ".")
+      .replace(/\s*,\s*\./g, ".")
+      .replace(/\s+\./g, ".")
+      .replace(/\s{2,}/g, " ")
+  );
+}
+
+function stripLeadingDescriptionFieldLabel(value: string) {
+  let current = cleanText(value);
+  let changed = false;
+  const supportedLabels = [
+    "nome do produto",
+    "nome comercial",
+    "nome",
+    "produto",
+    "item",
+    "descriÃ§Ã£o detalhada",
+    "descricao detalhada",
+    "descriÃ§Ã£o comercial",
+    "descricao comercial",
+    "descriÃ§Ã£o",
+    "descricao",
+    "observaÃ§Ãµes",
+    "observacoes",
+    "observaÃ§Ã£o",
+    "observacao",
+    "indicaÃ§Ã£o",
+    "indicacao",
+  ];
+  const labelPattern = supportedLabels.map((label) => escapeRegExp(label)).join("|");
+
+  for (;;) {
+    const next = cleanText(
+      current.replace(new RegExp(`^(?:${labelPattern})\\s*[:;|\\-]+\\s*`, "iu"), "")
+    );
+
+    if (!next || next === current) {
+      return {
+        value: current,
+        changed,
+      };
+    }
+
+    current = next;
+    changed = true;
+  }
+}
+
+function removeTrailingDescriptionOrphanLabel(value: string) {
+  let current = cleanText(value);
+  let changed = false;
+
+  for (;;) {
+    const next = cleanText(
+      current.replace(
+        /\s*(?:[-,:;\/|]+)?\s*(?:c[oó]d(?:igo)?|cod(?:igo)?|sku|ref|refer[eê]ncia|pre[cç]o|valor|categoria|estoque|quantidade)\s*[:.,-]*\s*$/iu,
+        ""
+      )
+    );
+
+    if (!next || next === current) {
+      return {
+        value: current,
+        changed,
+      };
+    }
+
+    current = next;
+    changed = true;
+  }
+}
+
+function stripLeadingTitleResidueFromDescriptionPart(part: string, titles: string[]) {
+  const cleanedPart = cleanText(part);
+  if (!cleanedPart) {
+    return {
+      value: "",
+      changed: false,
+    };
+  }
+
+  const orderedTitles = titles
+    .map((value) => cleanText(value))
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+
+  for (const title of orderedTitles) {
+    const pattern = new RegExp(`^${escapeRegExp(title)}(?:\\s*[-,:;./|]+\\s*)?`, "iu");
+    if (!pattern.test(cleanedPart)) continue;
+
+    return {
+      value: cleanText(cleanedPart.replace(pattern, "")),
+      changed: true,
+    };
+  }
+
+  return {
+    value: cleanedPart,
+    changed: false,
+  };
+}
+
+function trimTrailingMechanicalDescriptionTail(value: string) {
+  let current = cleanText(value);
+  let changed = false;
+
+  const trailingPatterns = [
+    /\s*(?:[,:;|.\-]+\s*)?\b(?:pre[cÃ§]o(?:\s+(?:venda|final|sugerido|custo))?|valor)\b.*$/iu,
+    /\s*(?:[,:;|.\-]+\s*)?\b(?:estoque|quantidade(?: atual)?|controlar estoque)\b.*$/iu,
+    /\s*(?:[,:;|.\-]+\s*)?\b(?:categoria|planilha|aba|sheet)\b.*$/iu,
+    /\s*(?:[,:;|.\-]+\s*)?\b(?:logo depois aparece|no mesmo par[aÃ¡]grafo tem|tamb[eÃ©]m vendemos|tamb[eÃ©]m temos|em seguida aparece|depois aparece|outro produto|pr[oÃ³]ximo item)\b.*$/iu,
+  ];
+
+  for (;;) {
+    let next = current;
+    for (const pattern of trailingPatterns) {
+      next = cleanText(next.replace(pattern, ""));
+    }
+
+    if (!next || next === current) {
+      return {
+        value: current,
+        changed,
+      };
+    }
+
+    current = next;
+    changed = true;
+  }
+}
+
+function partLooksLikeDocumentArtifact(normalized: string) {
+  if (!normalized) return true;
+  if (normalized.includes("fim do arquivo teste")) return true;
+  if (normalized.includes("tabela meio quebrada")) return true;
+  if (normalized.includes("arquivo de teste")) return true;
+  if (normalized.includes("validar leitura do upload inteligente")) return true;
+  if (normalized.includes("observacoes sobre o funcionamento")) return true;
+  if (normalized.includes("upload inteligente")) return true;
+  if (normalized.includes("guia leitura")) return true;
+  if (normalized.includes("guia de leitura")) return true;
+  if (normalized.includes("cabecalho solto")) return true;
+  return false;
+}
+
+function partLooksLikeTransitionArtifact(normalized: string) {
+  return /^(?:logo depois aparece|no mesmo paragrafo tem|tambem vendemos|tambem temos|em seguida aparece|depois aparece|outro produto|proximo item)\b/.test(
+    normalized
+  );
+}
+
+function partLooksLikeMechanicalOnlyContent(args: {
+  value: string;
+  sku: string;
+  title: string;
+  originalTitle: string;
+  price: string;
+  sourceCategory: string;
+  destination: StructuredImportDestination;
+}) {
+  let normalized = normalizeLoose(args.value);
+  if (!normalized) return true;
+
+  const removableValues = [
+    args.title,
+    args.originalTitle,
+    args.sku,
+    args.price,
+    args.sourceCategory,
+    args.destination,
+  ]
+    .map((value) => normalizeLoose(value))
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+
+  for (const removable of removableValues) {
+    normalized = cleanText(normalized.replace(new RegExp(`\\b${escapeRegExp(removable)}\\b`, "giu"), " "));
+  }
+
+  normalized = normalizeLoose(
+    normalized.replace(
+      /\b(?:c[oó]d(?:igo)?|cod(?:igo)?|sku|ref|refer[eê]ncia|pre[cç]o|valor|categoria|estoque|quantidade|unidades?)\b/giu,
+      " "
+    )
+  );
+
+  return !normalized;
+}
+
+function partLooksLikeCategoryAsAttributeArtifact(args: {
+  value: string;
+  sourceCategory: string;
+  destination: StructuredImportDestination;
+}) {
+  const normalized = normalizeLoose(args.value);
+  if (!normalized) return false;
+
+  const categoryValues = [
+    normalizeLoose(args.sourceCategory),
+    normalizeLoose(args.destination),
+    args.destination === "quimicos" ? "quimico" : "",
+    args.destination === "acessorios" ? "acessorio" : "",
+    args.destination === "outros" ? "outro" : "",
+  ].filter(Boolean);
+
+  return categoryValues.some(
+    (category) =>
+      new RegExp(
+        `^(?:acabamento|formato|material|linha|modelo|shape)\\s+[a-z0-9]+\\s*[:.-]\\s*${escapeRegExp(category)}$`,
+        "iu"
+      ).test(normalized)
+  );
+}
+
+function stripTransitionLeadInFromDescriptionPart(value: string) {
+  return cleanText(
+    String(value || "").replace(
+      /^(?:logo depois aparece|no mesmo par[aá]grafo tem|tamb[eé]m vendemos|tamb[eé]m temos|em seguida aparece|depois aparece|outro produto|pr[oó]ximo item)\s*[:;,.!\-]*\s*/iu,
+      ""
+    )
+  );
+}
+
+function splitDescriptionTextIntoCandidateParts(value: string) {
+  const rawLines = String(value || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+
+  return rawLines.flatMap((line) =>
+    line
+      .split(/(?<=[.!?])\s+/u)
+      .map((part) => cleanText(part))
+      .filter(Boolean)
+  );
+}
+
+function removeDescriptionKnownValue(
+  value: string,
+  knownValue: string,
+  options?: {
+    labeledPattern?: string;
+  }
+) {
+  const cleanedValue = cleanText(knownValue);
+  if (!cleanedValue) return value;
+
+  let next = value;
+  const escapedValue = escapeRegExp(cleanedValue);
+  if (options?.labeledPattern) {
+    next = next.replace(
+      new RegExp(`${options.labeledPattern}\\s*[:\\-]?\\s*${escapedValue}\\b`, "giu"),
+      " "
+    );
+  }
+
+  return next.replace(new RegExp(`\\b${escapedValue}\\b`, "giu"), " ");
+}
+
+function collectRawBlockSemanticDescriptionParts(args: {
+  rawBlock: string;
+  originalTitle: string;
+  canonicalTitle: string;
+  sku: string;
+  price: string;
+  sourceCategory: string;
+  destination: StructuredImportDestination;
+}) {
+  const titles = [args.originalTitle, args.canonicalTitle].filter(Boolean);
+  const parts: string[] = [];
+
+  for (const rawPart of splitDescriptionTextIntoCandidateParts(args.rawBlock)) {
+    let part = cleanText(rawPart);
+    if (!part) continue;
+
+    const normalizedOriginal = normalizeLoose(part);
+    if (!normalizedOriginal) continue;
+    if (partLooksLikeDocumentArtifact(normalizedOriginal)) continue;
+
+    const withoutTransitionLeadIn = stripTransitionLeadInFromDescriptionPart(part);
+    part = withoutTransitionLeadIn || part;
+
+    const withoutLeadingLabel = stripLeadingDescriptionFieldLabel(part);
+    part = withoutLeadingLabel.value;
+
+    const withoutLeadingTitle = stripLeadingTitleResidueFromDescriptionPart(part, titles);
+    part = withoutLeadingTitle.value;
+
+    for (const title of titles) {
+      const cleanedTitle = cleanText(title);
+      if (!cleanedTitle) continue;
+      part = part.replace(new RegExp(`\\b${escapeRegExp(cleanedTitle)}\\b`, "giu"), " ");
+    }
+
+    part = removeDescriptionKnownValue(part, args.sku, {
+      labeledPattern: "\\b(?:sku|c[oó]d(?:igo)?|cod(?:igo)?|ref|refer[eê]ncia)",
+    });
+    part = removeDescriptionKnownValue(part, args.price, {
+      labeledPattern:
+        "\\b(?:pre[cç]o(?:\\s+(?:venda|final|sugerido|custo))?|valor)(?:\\s*\\(r\\$\\))?",
+    });
+
+    part = cleanText(
+      part
+        .replace(
+          /\b(?:pre[cç]o(?:\s+(?:venda|final|sugerido|custo))?|valor)(?:\s*\(r\$\))?\s*[:\-]?\s*(?:r\$\s*)?\d{1,3}(?:\.\d{3})*(?:,\d{2})?\b/giu,
+          " "
+        )
+        .replace(
+          /\b(?:estoque|quantidade(?: atual)?|controlar estoque)\s*[:\-]?\s*\d+\s*(?:unidades?|unds?|un)?\b/giu,
+          " "
+        )
+        .replace(/\b(?:categoria|planilha|aba|sheet)\s*[:\-]?\s*[a-z0-9 _./-]+\b/giu, " ")
+    );
+
+    part = removeDescriptionKnownValue(part, args.sourceCategory, {
+      labeledPattern: "\\b(?:categoria|linha|destino)",
+    });
+    part = removeDescriptionKnownValue(part, args.destination, {
+      labeledPattern: "\\b(?:categoria|linha|destino)",
+    });
+
+    const withoutMechanicalTail = trimTrailingMechanicalDescriptionTail(part);
+    part = withoutMechanicalTail.value;
+
+    const withoutTrailingLabel = removeTrailingDescriptionOrphanLabel(part);
+    part = cleanupDescriptionResidualPunctuation(withoutTrailingLabel.value);
+
+    const normalizedPart = normalizeLoose(part);
+    if (!normalizedPart) continue;
+    if (partLooksLikeTransitionArtifact(normalizedPart)) continue;
+    if (partLooksLikeDocumentArtifact(normalizedPart)) continue;
+    if (looksLikeGarbageDescriptionLine(normalizedPart)) continue;
+    if (
+      normalizedPart.length <= 18 &&
+      normalizeLoose(args.canonicalTitle).includes(normalizedPart)
+    ) {
+      continue;
+    }
+
+    parts.push(part);
+  }
+
+  const dedupedParts: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const normalized = normalizeLoose(part);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    dedupedParts.push(part);
+  }
+
+  return {
+    parts: dedupedParts,
+    preview: mergeDescriptionParts(dedupedParts).slice(0, 240),
+  };
+}
+
+function canonicalizeImportedProductDescription(args: {
+  rawBlock: string;
+  fieldMap: Record<string, string>;
+  plainLines: string[];
+  originalTitle: string;
+  canonicalTitle: string;
+  sku: string;
+  destination: StructuredImportDestination;
+  sourceCategory: string;
+  initialDescription: string;
+  candidateParts: string[];
+  candidateSources?: string[];
+  price?: string;
+  missingName?: boolean;
+  ambiguousTitle?: boolean;
+}) {
+  const extracted = extractSemanticDescriptionClauses({
+    rawBlock: args.rawBlock,
+    fieldMap: args.fieldMap,
+    plainLines: args.plainLines,
+    originalTitle: args.originalTitle,
+    canonicalTitle: args.canonicalTitle,
+    sku: args.sku,
+    price: args.price || "",
+    sourceCategory: args.sourceCategory,
+    destination: args.destination,
+    candidateParts: args.candidateParts,
+    candidateSources: args.candidateSources || [],
+    missingName: args.missingName,
+    ambiguousTitle: args.ambiguousTitle,
+  });
+  const originalDescription = cleanText(args.initialDescription);
+  const canonicalDescription = mergeDescriptionParts(extracted.preservedParts);
+  const descriptionStatus = !canonicalDescription
+    ? ("empty" as const)
+    : canonicalDescription === originalDescription && extracted.cleanupReasons.length === 0
+      ? ("preserved" as const)
+      : ("cleaned" as const);
+
+  return {
+    originalDescription,
+    canonicalDescription,
+    cleanupReasons: extracted.cleanupReasons,
+    descriptionStatus,
+    candidateSources: extracted.candidateSources,
+    rawBlockSemanticRemainder: extracted.rawBlockSemanticRemainder,
+    descriptionClauses: extracted.descriptionClauses,
+    preservedParts: extracted.preservedParts.slice(0, 8),
+    rejectedParts: extracted.rejectedParts.slice(0, 8),
+  };
+}
+
+type DescriptionClauseClassification =
+  | "semantic_attribute"
+  | "semantic_narrative"
+  | "mechanical_field"
+  | "review_state"
+  | "weak_generic_clause"
+  | "title_residue"
+  | "transition"
+  | "document_artifact"
+  | "import_instruction"
+  | "empty_residue";
+
+type DescriptionClauseSource =
+  | "field_description"
+  | "secondary_fields"
+  | "plain_lines"
+  | "raw_block"
+  | "original_title_suffix";
+
+type DescriptionClauseDecision = {
+  text: string;
+  normalized: string;
+  classification: DescriptionClauseClassification;
+  action: "preserved" | "removed";
+  reason: string;
+  source: DescriptionClauseSource;
+  originalText?: string;
+  removedStructuredSpans?: string[];
+  semanticRemainder?: string;
+};
+
+function previewDescriptionClauseText(value: string) {
+  const cleaned = cleanupDescriptionResidualPunctuation(
+    String(value || "")
+      .replace(/^\s*[*•\-:;,.|/\\]+\s*/g, "")
+      .replace(/\s{2,}/g, " ")
+  );
+  return cleaned.length > 160 ? `${cleaned.slice(0, 160)}...` : cleaned;
+}
+
+function splitDescriptionIntoSemanticClauses(value: string) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .flatMap((line) =>
+      line
+        .split(/(?<=[.!?;])\s+|\s+-\s+|,(?!\d)\s*/u)
+        .map((part) => cleanText(part))
+        .filter(Boolean)
+    );
+}
+
+function extractOriginalTitleSemanticSuffix(originalTitle: string, canonicalTitle: string) {
+  const cleanedOriginalTitle = cleanText(originalTitle);
+  const cleanedCanonicalTitle = cleanText(canonicalTitle);
+  if (!cleanedOriginalTitle || !cleanedCanonicalTitle) return "";
+
+  const normalizedOriginalTitle = normalizeLoose(cleanedOriginalTitle);
+  const normalizedCanonicalTitle = normalizeLoose(cleanedCanonicalTitle);
+  if (!normalizedOriginalTitle.startsWith(normalizedCanonicalTitle)) return "";
+  if (normalizedOriginalTitle === normalizedCanonicalTitle) return "";
+
+  return cleanText(cleanedOriginalTitle.slice(cleanedCanonicalTitle.length).replace(/^[-,:;./|\s]+/, ""));
+}
+
+function buildDescriptionQuantityCandidates(fieldMap: Record<string, string>) {
+  return [
+    fieldMap["quantidade atual"] || "",
+    fieldMap["estoque"] || "",
+    fieldMap["estoque mÃ­nimo"] || "",
+    fieldMap["estoque mÃ¡ximo"] || "",
+  ]
+    .flatMap((value) => String(value || "").split("\n"))
+    .map((value) => cleanText(value))
+    .filter(Boolean);
+}
+
+function buildDescriptionCategoryCandidates(args: {
+  sourceCategory: string;
+  destination: StructuredImportDestination;
+}) {
+  const aliases = new Set<string>();
+  const pushAlias = (value: string) => {
+    const cleaned = cleanText(value);
+    const normalized = normalizeLoose(value);
+    if (cleaned) aliases.add(cleaned);
+    if (normalized) aliases.add(normalized);
+  };
+
+  pushAlias(args.sourceCategory);
+  pushAlias(args.destination);
+
+  if (args.destination === "quimicos") {
+    ["químico", "químicos", "quimico", "quimicos"].forEach(pushAlias);
+  }
+  if (args.destination === "acessorios") {
+    ["acessório", "acessórios", "acessorio", "acessorios"].forEach(pushAlias);
+  }
+  if (args.destination === "pool") {
+    ["pool", "piscina", "piscinas"].forEach(pushAlias);
+  }
+  if (args.destination === "outros") {
+    ["outro", "outros"].forEach(pushAlias);
+  }
+
+  return Array.from(aliases);
+}
+
+function partLooksLikeConnectorOnlyResidue(normalized: string) {
+  if (!normalized) return true;
+  return ["e", "ou", "com", "de", "para", "por", "em"].includes(normalized);
+}
+
+function partLooksLikeReviewState(normalized: string) {
+  if (!normalized) return true;
+
+  const reviewSignals = [
+    "sem preco",
+    "sem sku",
+    "sem codigo",
+    "preco aproximado",
+    "deve vir para revisao",
+    "deve vir desmarcado",
+    "deve ficar desmarcado",
+    "este trecho deve ser tratado",
+    "ambiguo",
+    "ambigua",
+  ];
+
+  return reviewSignals.some((signal) => normalized.includes(signal));
+}
+
+function shouldDiscardWholeClauseBeforeSpanExtraction(normalized: string) {
+  if (!normalized) return true;
+  if (partLooksLikeReviewState(normalized)) return true;
+  if (partLooksLikeImportInstruction(normalized)) return true;
+
+  const wholeClauseSignals = [
+    "sem sku unico",
+    "sem codigo definido",
+    "sem preco informado",
+    "preco aproximado",
+    "texto final ambiguo",
+    "generico proposital",
+    "este trecho deve ser tratado com cuidado",
+  ];
+
+  return wholeClauseSignals.some((signal) => normalized.includes(signal));
+}
+
+function partLooksLikeWeakGenericClause(normalized: string) {
+  if (!normalized) return true;
+  return ["oferta", "promocao", "produto", "item", "novidade", "piscina"].includes(normalized);
+}
+
+function partLooksLikeImportInstruction(normalized: string) {
+  if (!normalized) return true;
+
+  const instructionSignals = [
+    "para testar associacao",
+    "para testar",
+    "proposital",
+    "deve vir para revisao",
+    "deve vir desmarcado",
+    "deve ficar desmarcado",
+    "deve vir bloqueado",
+    "arquivo teste",
+    "fim do arquivo",
+    "texto final ambiguo",
+    "upload inteligente",
+    "validar leitura",
+    "validar upload",
+    "como o importador",
+    "importador deveria",
+    "deveria interpretar",
+    "interpretar o trecho",
+    "duplicado proposital",
+  ];
+
+  return instructionSignals.some((signal) => normalized.includes(signal));
+}
+
+function clauseLooksMechanicalOnly(args: {
+  text: string;
+  normalized: string;
+  sku: string;
+  price: string;
+  quantityCandidates: string[];
+  sourceCategory: string;
+  destination: StructuredImportDestination;
+}) {
+  const raw = cleanText(args.text);
+  const normalized = args.normalized;
+  if (!normalized) return true;
+
+  const normalizedSku = normalizeLoose(args.sku);
+  if (normalizedSku && normalized === normalizedSku) return true;
+
+  if (
+    /^\s*(?:sku|c[oó]d(?:igo)?|cod(?:igo)?|ref|refer[eê]ncia)\s*[:\-]?\s*[a-z0-9-]+\s*$/iu.test(raw)
+  ) {
+    return true;
+  }
+
+  if (
+    /^\s*(?:pre[cç]o(?:\s+(?:venda|final|sugerido|custo))?|valor)(?:\s*\(r\$\))?\s*[:\-]?\s*(?:r\$\s*)?\d[\d.,]*\s*$/iu.test(
+      raw
+    )
+  ) {
+    return true;
+  }
+
+  if (/^\s*(?:r\$\s*)?\d[\d.,]*\s*$/iu.test(raw)) return true;
+  if (/^\s*r\$\s*$/iu.test(raw)) return true;
+
+  if (
+    /^\s*(?:estoque|quantidade(?: atual)?|controlar estoque)\s*[:\-]?\s*\d+\s*(?:unidades?|unds?|un)?\s*$/iu.test(
+      raw
+    )
+  ) {
+    return true;
+  }
+
+  if (/^\s*\d+\s*(?:unidades?|unds?|un)\s*$/iu.test(raw)) return true;
+  if (/^\s*\d+\s*$/u.test(raw) && args.quantityCandidates.map((value) => normalizeLoose(value)).includes(normalized)) {
+    return true;
+  }
+
+  if (/^\s*(?:categoria|linha|destino)\s*[:\-]?\s*[a-zÀ-ÿ ]+\s*$/iu.test(raw)) return true;
+  if (buildDescriptionCategoryCandidates(args).includes(normalized)) return true;
+
+  const normalizedPrice = normalizeLoose(args.price);
+  if (normalizedPrice && normalized === normalizedPrice) return true;
+
+  return false;
+}
+
+function cleanupSemanticClauseText(value: string) {
+  return cleanupDescriptionResidualPunctuation(
+    String(value || "")
+      .replace(/^\s*(?:e|and)\s+/iu, "")
+      .replace(/\s+(?:e|and)\s*[.;,:-]*$/iu, "")
+      .replace(/^\s*(?:quimico|quimicos|acessorio|acessorios|piscina|outro|outros)\s*[-:|,]\s*/iu, "")
+      .replace(/^\s*(?:sem\s+(?:preco|preço|sku|c[oó]digo)|preco\s+aproximado)\s*[:\-]?\s*/iu, "")
+      .replace(/\s+r\$\s*$/iu, "")
+      .replace(/^\s*[;:,.|\-]+\s*/g, "")
+      .replace(/\s*[;:,.|\-]+\s*$/g, "")
+  );
+}
+
+function normalizeSemanticDescriptionRemainder(args: {
+  semanticRemainder: string;
+  destination: StructuredImportDestination;
+  sourceCategory: string;
+  canonicalTitle: string;
+  missingName?: boolean;
+  ambiguousTitle?: boolean;
+}) {
+  let current = cleanupSemanticClauseText(args.semanticRemainder);
+  const categoryCandidates = buildDescriptionCategoryCandidates({
+    sourceCategory: args.sourceCategory,
+    destination: args.destination,
+  });
+
+  const normalizedCurrent = normalizeLoose(current);
+  for (const categoryCandidate of categoryCandidates) {
+    const normalizedCandidate = normalizeLoose(categoryCandidate);
+    if (!normalizedCandidate) continue;
+
+    const separatorMatch = normalizedCurrent.match(/^([a-z0-9\s]+?)\s*[-:|/,]\s*(.+)$/u);
+    if (separatorMatch && normalizeLoose(separatorMatch[1]) === normalizedCandidate) {
+      const separatorIndex = current.search(/\s*[-:|/,]\s*/u);
+      if (separatorIndex >= 0) {
+        const separator = current.slice(separatorIndex).match(/^\s*[-:|/,]\s*/u);
+        const start = separatorIndex + (separator?.[0].length || 0);
+        current = cleanText(current.slice(start));
+        break;
+      }
+    }
+  }
+
+  const canonicalTitle = cleanText(args.canonicalTitle);
+  if (canonicalTitle) {
+    current = cleanText(
+      current.replace(new RegExp(`^${escapeRegExp(canonicalTitle)}(?:\\s*[-,:;./|]+\\s*)?`, "iu"), "")
+    );
+  }
+
+  if (args.ambiguousTitle || args.missingName) {
+    current = cleanText(
+      current.replace(/^\s*(?:unico|único|sem|definido|aproximado)\s*$/iu, "")
+    );
+  }
+
+  return cleanupSemanticClauseText(current);
+}
+
+function normalizeDescriptionJoinArtifacts(value: string) {
+  return cleanupDescriptionResidualPunctuation(
+    String(value || "")
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s*-\s*-\s*/g, " - ")
+      .replace(/\s*,\s*,+/g, ", ")
+      .replace(/\s*;\s*;+/g, "; ")
+  );
+}
+
+function removeStructuredSpan(
+  source: string,
+  pattern: RegExp,
+  removedStructuredSpans: string[]
+) {
+  let next = source;
+  next = next.replace(pattern, (match) => {
+    const cleaned = cleanText(match);
+    if (cleaned) removedStructuredSpans.push(cleaned);
+    return " ";
+  });
+  return normalizeDescriptionJoinArtifacts(next);
+}
+
+function extractStructuredSpansFromDescriptionClause(args: {
+  clause: string;
+  sku: string;
+  price: string;
+  quantityCandidates: string[];
+  sourceCategory: string;
+  destination: StructuredImportDestination;
+}) {
+  let working = cleanText(args.clause);
+  const removedStructuredSpans: string[] = [];
+  const normalizedSku = normalizeLoose(args.sku);
+  const normalizedPrice = normalizeLoose(args.price);
+  const categoryCandidates = buildDescriptionCategoryCandidates(args);
+  const quantityCandidates = args.quantityCandidates.map((value) => cleanText(value)).filter(Boolean);
+
+  if (args.sku) {
+    working = removeStructuredSpan(
+      working,
+      new RegExp(`\\b(?:sku|c[oó]d(?:igo)?|cod(?:igo)?|ref|refer[eê]ncia)\\s*[:\\-]?\\s*${escapeRegExp(args.sku)}\\b`, "giu"),
+      removedStructuredSpans
+    );
+    working = removeStructuredSpan(
+      working,
+      new RegExp(`\\b${escapeRegExp(args.sku)}\\b`, "giu"),
+      removedStructuredSpans
+    );
+  }
+
+  if (args.price) {
+    working = removeStructuredSpan(
+      working,
+      new RegExp(
+        `\\b(?:pre[cç]o(?:\\s+(?:venda|final|sugerido|custo))?|valor)(?:\\s*\\(r\\$\\))?\\s*[:\\-]?\\s*${escapeRegExp(
+          args.price
+        )}\\b`,
+        "giu"
+      ),
+      removedStructuredSpans
+    );
+  }
+
+  working = removeStructuredSpan(
+    working,
+    /\b(?:pre[cç]o(?:\s+(?:venda|final|sugerido|custo))?|valor)(?:\s*\(r\$\))?\s*[:\-]?\s*(?:r\$\s*)?\d{1,3}(?:\.\d{3})*(?:,\d{2})?\b/giu,
+    removedStructuredSpans
+  );
+  working = removeStructuredSpan(
+    working,
+    /\b(?:estoque|quantidade(?: atual)?)\s*[:\-]?\s*\d+\s*(?:unidades?|unds?|un)?\b/giu,
+    removedStructuredSpans
+  );
+  working = removeStructuredSpan(
+    working,
+    /\b(?:categoria|destino)\s*[:\-]?\s*[a-zÀ-ÿ ]+\b/giu,
+    removedStructuredSpans
+  );
+  working = removeStructuredSpan(
+    working,
+    /^\s*(?:sku|c[oó]d(?:igo)?|cod(?:igo)?|ref|refer[eê]ncia|pre[cç]o|valor|estoque|quantidade|categoria)\s*[:\-]?\s*$/giu,
+    removedStructuredSpans
+  );
+
+  for (const quantityCandidate of quantityCandidates) {
+    working = removeStructuredSpan(
+      working,
+      new RegExp(`\\b${escapeRegExp(quantityCandidate)}\\b`, "giu"),
+      removedStructuredSpans
+    );
+  }
+
+  if (normalizedPrice) {
+    working = removeStructuredSpan(
+      working,
+      new RegExp(`\\b${escapeRegExp(args.price)}\\b`, "giu"),
+      removedStructuredSpans
+    );
+  }
+
+  for (const categoryCandidate of categoryCandidates) {
+    if (!categoryCandidate) continue;
+    const escaped = escapeRegExp(categoryCandidate);
+    working = removeStructuredSpan(
+      working,
+      new RegExp(`^${escaped}\\s*[-:|,]\\s*`, "giu"),
+      removedStructuredSpans
+    );
+    working = removeStructuredSpan(
+      working,
+      new RegExp(`^(?:categoria|destino)\\s*[:\\-]?\\s*${escaped}\\b`, "giu"),
+      removedStructuredSpans
+    );
+  }
+
+  working = removeStructuredSpan(working, /^\s*r\$\s*$/giu, removedStructuredSpans);
+  working = removeStructuredSpan(working, /^\s*\d+\s*(?:unidades?|unds?|un)\s*$/giu, removedStructuredSpans);
+
+  const semanticRemainder = cleanupSemanticClauseText(working)
+    .replace(/^\s*(?:produto|item|oferta|promo[cç][aã]o)\s*$/iu, "")
+    .trim();
+
+  return {
+    originalClause: cleanText(args.clause),
+    removedSpans: removedStructuredSpans,
+    semanticRemainder,
+    normalizedSemanticRemainder: normalizeLoose(semanticRemainder),
+    removedOnlyMechanical:
+      Boolean(removedStructuredSpans.length) &&
+      !normalizeLoose(semanticRemainder),
+    matchedSku: Boolean(normalizedSku && removedStructuredSpans.some((span) => normalizeLoose(span).includes(normalizedSku))),
+  };
+}
+
+function classifySemanticDescriptionClause(args: {
+  text: string;
+  source: DescriptionClauseSource;
+  originalTitle: string;
+  canonicalTitle: string;
+  sku: string;
+  price: string;
+  quantityCandidates: string[];
+  sourceCategory: string;
+  destination: StructuredImportDestination;
+  missingName?: boolean;
+  ambiguousTitle?: boolean;
+}) {
+  const originalClauseText = cleanText(args.text);
+  let clause = originalClauseText;
+  if (!clause) {
+    return {
+      text: "",
+      normalized: "",
+      classification: "empty_residue" as const,
+      action: "removed" as const,
+      reason: "empty_input_clause",
+      source: args.source,
+      originalText: "",
+      removedStructuredSpans: [],
+      semanticRemainder: "",
+    };
+  }
+
+  clause = stripTransitionLeadInFromDescriptionPart(clause) || clause;
+  clause = stripLeadingDescriptionFieldLabel(clause).value;
+
+  const normalizedOriginalClause = normalizeLoose(clause);
+  if (shouldDiscardWholeClauseBeforeSpanExtraction(normalizedOriginalClause)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized: normalizedOriginalClause,
+      classification: partLooksLikeImportInstruction(normalizedOriginalClause)
+        ? ("import_instruction" as const)
+        : ("review_state" as const),
+      action: "removed" as const,
+      reason: "discard_whole_clause_before_span_extraction",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: [],
+      semanticRemainder: "",
+    };
+  }
+
+  if (args.source !== "original_title_suffix") {
+    const cleanedCanonicalTitle = cleanText(args.canonicalTitle);
+    if (cleanedCanonicalTitle) {
+      clause = cleanText(
+        clause.replace(
+          new RegExp(`^${escapeRegExp(cleanedCanonicalTitle)}(?:\\s*[-,:;./|]+\\s*)?`, "iu"),
+          ""
+        )
+      );
+    }
+  }
+
+  clause = cleanupSemanticClauseText(clause);
+  const structuredExtraction = extractStructuredSpansFromDescriptionClause({
+    clause,
+    sku: args.sku,
+    price: args.price,
+    quantityCandidates: args.quantityCandidates,
+    sourceCategory: args.sourceCategory,
+    destination: args.destination,
+  });
+  clause = normalizeSemanticDescriptionRemainder({
+    semanticRemainder: structuredExtraction.semanticRemainder || clause,
+    destination: args.destination,
+    sourceCategory: args.sourceCategory,
+    canonicalTitle: args.canonicalTitle,
+    missingName: args.missingName,
+    ambiguousTitle: args.ambiguousTitle,
+  });
+  const normalized = normalizeLoose(clause);
+  const titleCandidates = [args.originalTitle, args.canonicalTitle]
+    .map((value) => normalizeLoose(value))
+    .filter(Boolean);
+  const canonicalTitleWords = normalizeLoose(args.canonicalTitle)
+    .split(" ")
+    .filter(Boolean);
+
+  if (!normalized) {
+    return {
+      text: previewDescriptionClauseText(args.text),
+      normalized: "",
+      classification: "empty_residue" as const,
+      action: "removed" as const,
+      reason: "empty_after_clause_cleanup",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: "",
+    };
+  }
+
+  if (titleCandidates.includes(normalized)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "title_residue" as const,
+      action: "removed" as const,
+      reason: "matches_title_only",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: "",
+    };
+  }
+
+  if (
+    args.ambiguousTitle &&
+    (titleCandidates.some((candidate) => candidate && (candidate.includes(normalized) || normalized.includes(candidate))) ||
+      (canonicalTitleWords.length > 0 &&
+        canonicalTitleWords.filter((word) => normalized.split(" ").includes(word)).length >=
+          Math.max(1, Math.min(2, canonicalTitleWords.length))))
+  ) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "title_residue" as const,
+      action: "removed" as const,
+      reason: "ambiguous_title_residue",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
+    };
+  }
+
+  if (partLooksLikeTransitionArtifact(normalized)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "transition" as const,
+      action: "removed" as const,
+      reason: "transition_to_other_product",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
+    };
+  }
+
+  if (partLooksLikeConnectorOnlyResidue(normalized)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "empty_residue" as const,
+      action: "removed" as const,
+      reason: "connector_only_residue",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
+    };
+  }
+
+  if (partLooksLikeReviewState(normalized)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: args.ambiguousTitle ? ("review_state" as const) : ("review_state" as const),
+      action: "removed" as const,
+      reason: "review_state_clause",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
+    };
+  }
+
+  if (partLooksLikeWeakGenericClause(normalized)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "weak_generic_clause" as const,
+      action: "removed" as const,
+      reason: "weak_generic_clause",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
+    };
+  }
+
+  if (partLooksLikeDocumentArtifact(normalized) || looksLikeGarbageDescriptionLine(normalized)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "document_artifact" as const,
+      action: "removed" as const,
+      reason: "document_or_test_artifact",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
+    };
+  }
+
+  if (partLooksLikeImportInstruction(normalized)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "import_instruction" as const,
+      action: "removed" as const,
+      reason: "import_process_instruction",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
+    };
+  }
+
+  if (
+    structuredExtraction.removedOnlyMechanical ||
+    clauseLooksMechanicalOnly({
+      text: clause,
+      normalized,
+      sku: args.sku,
+      price: args.price,
+      quantityCandidates: args.quantityCandidates,
+      sourceCategory: args.sourceCategory,
+      destination: args.destination,
+    })
+  ) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "mechanical_field" as const,
+      action: "removed" as const,
+      reason: structuredExtraction.removedOnlyMechanical
+        ? "structured_spans_removed_clause_empty"
+        : "structured_field_clause",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
+    };
+  }
+
+  const semanticAttributeSignals = [
+    "fibra",
+    "material",
+    "cor",
+    "formato",
+    "largura",
+    "comprimento",
+    "profundidade",
+    "capacidade",
+    "peso",
+    "embalagem",
+    "compatibilidade",
+    "dosagem",
+  ];
+
+  const classification = semanticAttributeSignals.some((signal) => normalized.includes(signal))
+    ? ("semantic_attribute" as const)
+    : ("semantic_narrative" as const);
+
+  return {
+    text: previewDescriptionClauseText(clause),
+    normalized,
+    classification,
+    action: "preserved" as const,
+    reason:
+      args.source === "original_title_suffix"
+        ? "preserved_original_title_suffix_attributes"
+        : "preserved_semantic_clause",
+    source: args.source,
+    originalText: previewDescriptionClauseText(originalClauseText),
+    removedStructuredSpans: structuredExtraction.removedSpans,
+    semanticRemainder: previewDescriptionClauseText(clause),
+  };
+}
+
+function extractSemanticDescriptionClauses(args: {
+  rawBlock: string;
+  fieldMap: Record<string, string>;
+  plainLines: string[];
+  originalTitle: string;
+  canonicalTitle: string;
+  sku: string;
+  price: string;
+  sourceCategory: string;
+  destination: StructuredImportDestination;
+  candidateParts: string[];
+  candidateSources: string[];
+  missingName?: boolean;
+  ambiguousTitle?: boolean;
+}) {
+  const quantityCandidates = buildDescriptionQuantityCandidates(args.fieldMap);
+  const mappedCandidateParts = args.candidateParts.map((text, index) => ({
+    text,
+    source:
+      args.candidateSources[index] === "field_description"
+        ? ("field_description" as const)
+        : args.candidateSources[index] === "secondary_fields"
+          ? ("secondary_fields" as const)
+          : ("plain_lines" as const),
+  }));
+  const rawBlockParts = splitDescriptionIntoSemanticClauses(args.rawBlock).map((text) => ({
+    text,
+    source: "raw_block" as const,
+  }));
+  const originalTitleSuffix = extractOriginalTitleSemanticSuffix(args.originalTitle, args.canonicalTitle);
+  const titleSuffixParts = splitDescriptionIntoSemanticClauses(originalTitleSuffix).map((text) => ({
+    text,
+    source: "original_title_suffix" as const,
+  }));
+
+  const clauseDecisions = [...mappedCandidateParts, ...rawBlockParts, ...titleSuffixParts].map((clause) =>
+    classifySemanticDescriptionClause({
+      text: clause.text,
+      source: clause.source,
+      originalTitle: args.originalTitle,
+      canonicalTitle: args.canonicalTitle,
+      sku: args.sku,
+      price: args.price,
+      quantityCandidates,
+      sourceCategory: args.sourceCategory,
+      destination: args.destination,
+      missingName: args.missingName,
+      ambiguousTitle: args.ambiguousTitle,
+    })
+  );
+
+  const preservedParts: string[] = [];
+  const rejectedParts: string[] = [];
+  const cleanupReasons = new Set<string>();
+  const seen = new Set<string>();
+  const candidateSources = new Set<string>(args.candidateSources);
+
+  for (const clause of clauseDecisions) {
+    if (clause.action === "removed") {
+      if (clause.text) rejectedParts.push(clause.text);
+      cleanupReasons.add(clause.reason);
+      continue;
+    }
+
+    if (clause.source === "raw_block" || clause.source === "original_title_suffix") {
+      candidateSources.add("raw_block_semantic_remainder");
+    }
+
+    const candidateNormalized = normalizeLoose(cleanupSemanticClauseText(clause.text));
+    const isSemanticDuplicate = Array.from(seen).some((existing) => {
+      const existingNormalized = normalizeLoose(cleanupSemanticClauseText(existing));
+      return (
+        existingNormalized === candidateNormalized ||
+        existingNormalized.includes(candidateNormalized) ||
+        candidateNormalized.includes(existingNormalized)
+      );
+    });
+    if (isSemanticDuplicate) {
+      cleanupReasons.add("deduped_description_parts");
+      continue;
+    }
+
+    seen.add(clause.text);
+    preservedParts.push(clause.text);
+  }
+
+  return {
+    preservedParts,
+    rejectedParts,
+    cleanupReasons: Array.from(cleanupReasons),
+    candidateSources: Array.from(candidateSources),
+    rawBlockSemanticRemainder: mergeDescriptionParts(preservedParts).slice(0, 240),
+    descriptionClauses: clauseDecisions.slice(0, 24).map((clause) => ({
+      originalText: clause.originalText || clause.text,
+      removedStructuredSpans: clause.removedStructuredSpans || [],
+      semanticRemainder: clause.semanticRemainder || clause.text,
+      classification: clause.classification,
+      action: clause.action,
+      reason: clause.reason,
+    })),
+  };
 }
 
 function scoreStructuredItem(item: StructuredImportItem) {
@@ -2416,22 +3709,56 @@ function parseSingleBlockDetailed(
     destination,
     sku: effectiveSku,
   });
-  const description = chooseDescription(fieldMap, plainLines, canonicalTitle.canonicalTitle || title);
+  const titleForDescription = canonicalTitle.canonicalTitle || title;
+  const descriptionCandidates = collectDescriptionCandidateParts(
+    fieldMap,
+    plainLines,
+    titleForDescription
+  );
+  const initialDescription = chooseDescription(fieldMap, plainLines, titleForDescription);
+  const promotedPrice = chooseBestPriceFromFieldMap(fieldMap);
+  const canonicalDescription = canonicalizeImportedProductDescription({
+    rawBlock: normalizedBlock,
+    fieldMap,
+    plainLines,
+    originalTitle: canonicalTitle.originalTitle || title,
+    canonicalTitle: titleForDescription,
+    sku: effectiveSku,
+    destination,
+    sourceCategory,
+    initialDescription,
+    candidateParts: [
+      ...descriptionCandidates.pickedPrimaryParts,
+      ...descriptionCandidates.plainDescriptionLines,
+      ...descriptionCandidates.pickedSecondaryParts,
+    ],
+    candidateSources: [
+      ...(descriptionCandidates.pickedPrimaryParts.length > 0 ? ["field_description"] : []),
+      ...(descriptionCandidates.plainDescriptionLines.length > 0 ? ["plain_lines"] : []),
+      ...(descriptionCandidates.pickedSecondaryParts.length > 0 ? ["secondary_fields"] : []),
+    ],
+    price: promotedPrice,
+    missingName: canonicalTitle.missingName,
+    ambiguousTitle: canonicalTitle.ambiguousTitle,
+  });
 
   const item: StructuredImportItem = {
     sourceFileName: fileName,
     destination,
     categoria: sourceCategory || (destination === "pool" ? "pool" : destination),
-    title: canonicalTitle.canonicalTitle || title,
+    title: titleForDescription,
     originalTitle: canonicalTitle.originalTitle || title,
-    description,
+    description: canonicalDescription.canonicalDescription,
+    originalDescription: canonicalDescription.originalDescription,
     rawBlock: normalizedBlock,
     confidence: destination === "outros" ? 0.62 : 0.86,
     titleCleanupReasons: canonicalTitle.titleCleanupReasons,
     titleStatus: canonicalTitle.titleStatus,
     missingName: canonicalTitle.missingName,
     ambiguousTitle: canonicalTitle.ambiguousTitle,
-    price: chooseBestPriceFromFieldMap(fieldMap),
+    descriptionCleanupReasons: canonicalDescription.cleanupReasons,
+    descriptionStatus: canonicalDescription.descriptionStatus,
+    price: promotedPrice,
     dimensions:
       fieldMap["medidas"] ||
       fieldMap["dimensoes"] ||
@@ -2474,13 +3801,13 @@ function parseSingleBlockDetailed(
 
   const allSkus = collectAllSkuCandidates(normalizedBlock);
   const allPrices = collectAllPriceCandidates(normalizedBlock);
-  const promotedPrice =
+  const promotedPriceFinal =
     item.price || (allPrices.length === 1 && !/[a-z]/i.test(allPrices[0] || "") ? allPrices[0] : "");
 
   return {
     item: {
       ...item,
-      price: promotedPrice,
+      price: promotedPriceFinal,
     },
     debug: {
       blockIndex: index,
@@ -2492,9 +3819,20 @@ function parseSingleBlockDetailed(
       titleStatus: canonicalTitle.titleStatus,
       missingName: canonicalTitle.missingName,
       ambiguousTitle: canonicalTitle.ambiguousTitle,
+      originalDescription: canonicalDescription.originalDescription,
+      canonicalDescription: canonicalDescription.canonicalDescription,
+      descriptionCleanupReasons: canonicalDescription.cleanupReasons,
+      descriptionStatus: canonicalDescription.descriptionStatus,
+      descriptionCandidateSources: canonicalDescription.candidateSources,
+      rawBlockSemanticRemainder: canonicalDescription.rawBlockSemanticRemainder,
+      descriptionClauses: canonicalDescription.descriptionClauses,
+      preservedDescriptionParts: canonicalDescription.preservedParts,
+      rejectedDescriptionParts: canonicalDescription.rejectedParts,
+      canonicalDescriptionApplied: true,
+      frontFallbackAllowed: false,
       sku: item.sku || "",
       allSkus,
-      price: promotedPrice,
+      price: promotedPriceFinal,
       allPrices,
       destination: item.destination,
       confidence: item.confidence,
@@ -2578,6 +3916,7 @@ function looksLikeMultiItemSource(extractedText: string, blockCount: number) {
 function hasUsefulContent(item: StructuredImportItem) {
   return (
     item.description.length >= 10 ||
+    (Boolean(cleanText(item.title)) && Boolean(cleanText(item.sku))) ||
     Boolean(item.price) ||
     Boolean(item.dimensions) ||
     Boolean(item.capacity) ||
@@ -2586,6 +3925,12 @@ function hasUsefulContent(item: StructuredImportItem) {
     Boolean(item.application) ||
     Boolean(item.embalagem)
   );
+}
+
+function buildParserCandidateLifecycleKey(item: StructuredImportItem) {
+  const sku = normalizeLoose(item.sku);
+  const title = normalizeLoose(item.title);
+  return sku ? `sku::${sku}` : `title::${title}`;
 }
 
 export function parseStructuredImportItems(extracted: ExtractedFileContent): StructuredImportItem[] {
@@ -2780,39 +4125,74 @@ export function parseStructuredImportItemsDetailed(extracted: ExtractedFileConte
     keptItems: StructuredImportItem[],
     sourceLooksSingleItem: boolean,
     sourceLooksSingleItemReasons: string[]
-  ): StructuredParserFileDebug => ({
-    fileName: extracted.fileName,
-    mimeType: extracted.mimeType,
-    extractedCharCount: String(extracted.text || "").length,
-    approxLineCount: normalizeBlock(extracted.text || "").split("\n").filter(Boolean).length,
-    usefulLinesPreview: buildPreviewLines(extracted.text, 6),
-    looksLikeContinuousText: looksLikeContinuousNarrativeText(extracted.text),
-    chooseBlocks: {
-      strategy: chosenBlocks.strategy,
-      blockCount: blocks.length,
-      blocks: blocks.slice(0, 20).map((block, index) =>
-        summarizeBlockForDebug(block, index, chosenBlocks.strategy)
-      ),
-    },
-    parseSingleBlock: {
-      candidateCount: parsedItems.length,
-      nullBlockCount: Math.max(0, blocks.length - parsedItems.length),
-      candidates: parserCandidates.slice(0, 20),
-    },
-    sourceLooksSingleItem: {
-      activated: sourceLooksSingleItem,
-      reasons: sourceLooksSingleItemReasons,
-      beforeCount: itemsBeforeFilter.length,
-      afterCount: keptItems.length,
-    },
-    merge: {
-      inputCount: parsedItems.length,
-      outputCount: itemsBeforeFilter.length,
-      mergedPairs: mergeTrace.slice(0, 20),
-    },
-    fragmentCoalesce: chosenBlocks.fragmentCoalesce,
-    continuationCoalesce: chosenBlocks.continuationCoalesce,
-  });
+  ): StructuredParserFileDebug => {
+    const keptKeys = new Set(keptItems.map((item) => buildParserCandidateLifecycleKey(item)));
+    const lifecycle = itemsBeforeFilter.slice(0, 24).map((item) => {
+      const key = buildParserCandidateLifecycleKey(item);
+      const retained = keptKeys.has(key);
+      let dropReason = "";
+      if (!retained) {
+        if (sourceLooksSingleItem) {
+          dropReason = "source_looks_single_item_kept_higher_score";
+        } else if (isProbablyGenericTitle(item.title)) {
+          dropReason = "generic-title";
+        } else if (isWeakFragmentItem(item)) {
+          dropReason = "weak-fragment";
+        } else if (looksLikeStockOnlyItem(item)) {
+          dropReason = "stock-only";
+        } else if (!hasUsefulContent(item)) {
+          dropReason = "not-useful-enough";
+        } else {
+          dropReason = "dropped_after_filter";
+        }
+      }
+
+      return {
+        key,
+        title: item.title,
+        sku: item.sku || "",
+        enteredStage: "merge",
+        leftStage: retained ? "final" : sourceLooksSingleItem ? "sourceLooksSingleItem" : "filter",
+        retained,
+        dropReason,
+      };
+    });
+
+    return {
+      fileName: extracted.fileName,
+      mimeType: extracted.mimeType,
+      extractedCharCount: String(extracted.text || "").length,
+      approxLineCount: normalizeBlock(extracted.text || "").split("\n").filter(Boolean).length,
+      usefulLinesPreview: buildPreviewLines(extracted.text, 6),
+      looksLikeContinuousText: looksLikeContinuousNarrativeText(extracted.text),
+      chooseBlocks: {
+        strategy: chosenBlocks.strategy,
+        blockCount: blocks.length,
+        blocks: blocks.slice(0, 20).map((block, index) =>
+          summarizeBlockForDebug(block, index, chosenBlocks.strategy)
+        ),
+      },
+      parseSingleBlock: {
+        candidateCount: parsedItems.length,
+        nullBlockCount: Math.max(0, blocks.length - parsedItems.length),
+        candidates: parserCandidates.slice(0, 20),
+      },
+      sourceLooksSingleItem: {
+        activated: sourceLooksSingleItem,
+        reasons: sourceLooksSingleItemReasons,
+        beforeCount: itemsBeforeFilter.length,
+        afterCount: keptItems.length,
+        candidateLifecycle: lifecycle,
+      },
+      merge: {
+        inputCount: parsedItems.length,
+        outputCount: itemsBeforeFilter.length,
+        mergedPairs: mergeTrace.slice(0, 20),
+      },
+      fragmentCoalesce: chosenBlocks.fragmentCoalesce,
+      continuationCoalesce: chosenBlocks.continuationCoalesce,
+    };
+  };
 
   if (parsedItems.length === 0) {
     return {
