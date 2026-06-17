@@ -91,6 +91,15 @@ export type StructuredParserCandidateDebug = {
   allSkus: string[];
   price: string;
   allPrices: string[];
+  priceExtractionCandidates?: Array<{
+    rawMatch: string;
+    priceLabel: string;
+    numericToken: string;
+    normalizedValue: string;
+    source: string;
+    accepted: boolean;
+    rejectionReason: string;
+  }>;
   destination: StructuredImportDestination;
   confidence: number;
   alerts: string[];
@@ -155,6 +164,7 @@ export type StructuredParserFileDebug = {
       enteredStage: string;
       leftStage: string;
       retained: boolean;
+      retainedReason?: string;
       dropReason: string;
     }>;
   };
@@ -326,6 +336,105 @@ const BLOCKED_SKU_VALUES = new Set([
 function escapeRegExp(value: string) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+type PriceExtractionCandidate = {
+  rawMatch: string;
+  priceLabel: string;
+  numericToken: string;
+  normalizedValue: string;
+  source: string;
+  accepted: boolean;
+  rejectionReason: string;
+};
+
+const PRICE_TERMINAL_BOUNDARY_REGEX_FRAGMENT =
+  String.raw`(?=$|[\s\])}:;!?]|[.,](?:$|[\s\])}:;!?]))`;
+
+const PRICE_NUMERIC_TOKEN_REGEX_FRAGMENT =
+  String.raw`(?:\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d+(?:,\d{2})?)`;
+const COMMERCIAL_PRICE_LABEL_REGEX_FRAGMENT =
+  String.raw`(?:pre[cç]o(?:\s+(?:venda|final|sugerido|custo))?|valor|custa|custando)`;
+const COMMERCIAL_PRICE_CURRENCY_REGEX_FRAGMENT = String.raw`(?:por\s+r\$|r\$|reais)`;
+const PRICE_LABEL_WITH_OPTIONAL_CURRENCY_REGEX_FRAGMENT = String.raw`(?:${COMMERCIAL_PRICE_LABEL_REGEX_FRAGMENT})(?:\s*\(r\$\))?\s*[:=.\-]?\s*(?:r\$\s*)?`;
+const PRICE_CONTEXT_PREFIX_REGEX_FRAGMENT = String.raw`(?:${PRICE_LABEL_WITH_OPTIONAL_CURRENCY_REGEX_FRAGMENT}|${COMMERCIAL_PRICE_CURRENCY_REGEX_FRAGMENT}\s*[:=.\-]?\s*)`;
+
+const PRICE_EXTRACTION_PATTERNS: Array<{
+  source: string;
+  regex: RegExp;
+  rawMatchGroup?: number;
+  priceLabelGroup?: number;
+  numericTokenGroup: number;
+}> = [
+  {
+    source: "commercial_label",
+    regex: new RegExp(
+      String.raw`(${PRICE_LABEL_WITH_OPTIONAL_CURRENCY_REGEX_FRAGMENT})(${PRICE_NUMERIC_TOKEN_REGEX_FRAGMENT})${PRICE_TERMINAL_BOUNDARY_REGEX_FRAGMENT}`,
+      "giu"
+    ),
+    priceLabelGroup: 1,
+    numericTokenGroup: 2,
+  },
+  {
+    source: "monetary_symbol",
+    regex: new RegExp(
+      String.raw`(${COMMERCIAL_PRICE_CURRENCY_REGEX_FRAGMENT}\s*[:=.\-]?\s*)(${PRICE_NUMERIC_TOKEN_REGEX_FRAGMENT})${PRICE_TERMINAL_BOUNDARY_REGEX_FRAGMENT}`,
+      "giu"
+    ),
+    priceLabelGroup: 1,
+    numericTokenGroup: 2,
+  },
+];
+
+const NON_PRICE_NUMERIC_PROBE_PATTERNS: Array<{
+  source: string;
+  rejectionReason: string;
+  regex: RegExp;
+  rawMatchGroup?: number;
+  priceLabelGroup?: number;
+  numericTokenGroup: number;
+}> = [
+  {
+    source: "dimension_probe",
+    rejectionReason: "dimension_expression",
+    regex: /(\d+(?:[\.,]\d+)?)\s+por\s+\d+(?:[\.,]\d+)?/giu,
+    numericTokenGroup: 1,
+  },
+  {
+    source: "dimension_probe",
+    rejectionReason: "dimension_label",
+    regex: /(largura|comprimento|altura)\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)/giu,
+    priceLabelGroup: 1,
+    numericTokenGroup: 2,
+  },
+  {
+    source: "depth_probe",
+    rejectionReason: "depth_label",
+    regex: /(profundidade)\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)/giu,
+    priceLabelGroup: 1,
+    numericTokenGroup: 2,
+  },
+  {
+    source: "stock_probe",
+    rejectionReason: "stock_label",
+    regex: /(estoque|quantidade(?:\s+atual)?)\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)/giu,
+    priceLabelGroup: 1,
+    numericTokenGroup: 2,
+  },
+  {
+    source: "capacity_probe",
+    rejectionReason: "capacity_label",
+    regex: /(capacidade)\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:l|lt|lts|litros?))?/giu,
+    priceLabelGroup: 1,
+    numericTokenGroup: 2,
+  },
+  {
+    source: "weight_probe",
+    rejectionReason: "weight_label",
+    regex: /(peso)\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:kg|g))?/giu,
+    priceLabelGroup: 1,
+    numericTokenGroup: 2,
+  },
+];
 
 const DIRECT_SKU_REGEX = /\b(?:qmc|acc|out)(?:-[a-z0-9]{1,8}){1,4}\b/gi;
 const PRICE_WITH_CONTEXT_REGEX =
@@ -1998,6 +2107,16 @@ function extractStructuredSpansFromDescriptionClause(args: {
   const normalizedPrice = normalizeLoose(args.price);
   const categoryCandidates = buildDescriptionCategoryCandidates(args);
   const quantityCandidates = args.quantityCandidates.map((value) => cleanText(value)).filter(Boolean);
+  const generalizedPriceSpanPattern = new RegExp(
+    `${PRICE_CONTEXT_PREFIX_REGEX_FRAGMENT}${PRICE_NUMERIC_TOKEN_REGEX_FRAGMENT}${PRICE_TERMINAL_BOUNDARY_REGEX_FRAGMENT}`,
+    "giu"
+  );
+  const exactGeneralizedPricePattern = args.price
+    ? new RegExp(
+        `${PRICE_CONTEXT_PREFIX_REGEX_FRAGMENT}${escapeRegExp(args.price)}${PRICE_TERMINAL_BOUNDARY_REGEX_FRAGMENT}`,
+        "giu"
+      )
+    : null;
 
   if (args.sku) {
     working = removeStructuredSpan(
@@ -2011,6 +2130,12 @@ function extractStructuredSpansFromDescriptionClause(args: {
       removedStructuredSpans
     );
   }
+
+  if (exactGeneralizedPricePattern) {
+    working = removeStructuredSpan(working, exactGeneralizedPricePattern, removedStructuredSpans);
+  }
+
+  working = removeStructuredSpan(working, generalizedPriceSpanPattern, removedStructuredSpans);
 
   if (args.price) {
     working = removeStructuredSpan(
@@ -2668,6 +2793,8 @@ function looksLikeStockOnlyItem(item: StructuredImportItem) {
 }
 
 function extractLoosePrice(text: string) {
+  return collectAllPriceCandidates(text)[0] || "";
+
   const prioritizedPatterns = [
     /pre[cç]o\s+venda(?:\s*\(r\$\))?\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i,
     /valor\s+venda\s*[:\-]?\s*r?\$?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i,
@@ -2680,9 +2807,8 @@ function extractLoosePrice(text: string) {
 
   for (const pattern of prioritizedPatterns) {
     const match = text.match(pattern);
-    if (match?.[1]) {
-      return match[1];
-    }
+    const matchedValue = match?.[1] || "";
+    if (matchedValue) return matchedValue;
   }
 
   return "";
@@ -2777,10 +2903,73 @@ function collectAllSkuCandidates(text: string) {
   return extractRobustSkuCandidates(text);
 }
 
+function extractPriceCandidatesWithDiagnostics(text: string): PriceExtractionCandidate[] {
+  const sourceText = String(text || "");
+  const candidates: PriceExtractionCandidate[] = [];
+  const acceptedKeys = new Set<string>();
+
+  for (const pattern of PRICE_EXTRACTION_PATTERNS) {
+    for (const match of sourceText.matchAll(pattern.regex)) {
+      const rawMatch = cleanText(match[pattern.rawMatchGroup || 0] || match[0] || "");
+      const priceLabel = cleanText(match[pattern.priceLabelGroup || 0] || "");
+      const numericToken = cleanText(match[pattern.numericTokenGroup] || "");
+      const normalizedValue = cleanText(numericToken);
+      if (!rawMatch || !normalizedValue) continue;
+
+      const candidateKey = `${match.index ?? -1}:${rawMatch}:${normalizedValue}`;
+      if (acceptedKeys.has(candidateKey)) continue;
+      acceptedKeys.add(candidateKey);
+      candidates.push({
+        rawMatch,
+        priceLabel,
+        numericToken,
+        normalizedValue,
+        source: pattern.source,
+        accepted: true,
+        rejectionReason: "",
+      });
+    }
+  }
+
+  const diagnosticKeys = new Set(
+    candidates.map((candidate) => `${candidate.rawMatch}:${candidate.numericToken}:${candidate.source}`)
+  );
+
+  for (const probe of NON_PRICE_NUMERIC_PROBE_PATTERNS) {
+    for (const match of sourceText.matchAll(probe.regex)) {
+      const rawMatch = cleanText(match[probe.rawMatchGroup || 0] || match[0] || "");
+      const priceLabel = cleanText(match[probe.priceLabelGroup || 0] || "");
+      const numericToken = cleanText(match[probe.numericTokenGroup] || "");
+      const normalizedValue = cleanText(numericToken);
+      if (!rawMatch || !normalizedValue) continue;
+
+      const candidateKey = `${rawMatch}:${numericToken}:${probe.source}`;
+      if (diagnosticKeys.has(candidateKey)) continue;
+      diagnosticKeys.add(candidateKey);
+      candidates.push({
+        rawMatch,
+        priceLabel,
+        numericToken,
+        normalizedValue,
+        source: probe.source,
+        accepted: false,
+        rejectionReason: probe.rejectionReason,
+      });
+    }
+  }
+
+  return candidates;
+}
+
 function collectAllPriceCandidates(text: string) {
-  return Array.from(String(text || "").matchAll(PRICE_WITH_CONTEXT_REGEX))
-    .map((match) => cleanText(match[1] || ""))
-    .filter(Boolean);
+  return Array.from(
+    new Set(
+      extractPriceCandidatesWithDiagnostics(text)
+        .filter((candidate) => candidate.accepted)
+        .map((candidate) => candidate.normalizedValue)
+        .filter(Boolean)
+    )
+  );
 }
 
 function extractLooseSku(text: string) {
@@ -3042,7 +3231,15 @@ function summarizeBlockForDebug(
   const normalizedBlock = normalizeBlock(block);
   const lines = normalizedBlock.split("\n").map((line) => cleanText(line)).filter(Boolean);
   const allSkus = collectAllSkuCandidates(normalizedBlock);
-  const allPrices = collectAllPriceCandidates(normalizedBlock);
+  const priceExtractionCandidates = extractPriceCandidatesWithDiagnostics(normalizedBlock);
+  const allPrices = Array.from(
+    new Set(
+      priceExtractionCandidates
+        .filter((candidate) => candidate.accepted)
+        .map((candidate) => candidate.normalizedValue)
+        .filter(Boolean)
+    )
+  );
   const normalized = normalizeLoose(normalizedBlock);
   const categoryMatches = [
     normalized.includes("quimicos") || normalized.includes("quimico"),
@@ -3206,6 +3403,10 @@ function extractAllSkuCandidates(text: string) {
 }
 
 function extractAllPriceCandidates(text: string) {
+  return extractPriceCandidatesWithDiagnostics(text)
+    .filter((candidate) => candidate.accepted)
+    .map((candidate) => candidate.normalizedValue);
+
   return Array.from(
     String(text || "").matchAll(
       /(?:r\$\s*|pre[cç]o(?:\s+(?:venda|final|sugerido|custo))?(?:\s*\(r\$\))?\s*[:\-]?\s*)(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/gi
@@ -3652,6 +3853,58 @@ function isWeakFragmentItem(item: StructuredImportItem) {
   return normalizedTitle.length <= 18 && item.description.trim().length <= 40;
 }
 
+function shouldPreserveAmbiguousReviewCandidate(item: StructuredImportItem) {
+  const hasAmbiguitySignal = item.ambiguousTitle === true || item.titleStatus === "ambiguous";
+  if (!hasAmbiguitySignal) return false;
+
+  const normalizedTitle = normalizeLoose(item.title);
+  const normalizedRawBlock = normalizeLoose(item.rawBlock);
+  const normalizedDescription = normalizeLoose(item.description);
+  const combinedContext = [normalizedTitle, normalizedRawBlock, normalizedDescription]
+    .filter(Boolean)
+    .join(" ");
+
+  const explicitReviewEvidence = [
+    "sem sku",
+    "sem sku unico",
+    "preco aproximado",
+    "preco estimado",
+    "deve ser tratado com cuidado",
+    "este trecho deve ser tratado com cuidado",
+    "deve vir para revisao",
+    "revisao",
+    "revisar",
+    "suspeito",
+    "desmarcado",
+  ].some((signal) => combinedContext.includes(signal));
+
+  if (!explicitReviewEvidence) return false;
+
+  const plausibleCommercialCandidate =
+    PRODUCT_WORD_REGEX.test(cleanText(item.title)) ||
+    /\b(?:peneira|cabo|kit|itens?)\b/.test(combinedContext);
+
+  if (!plausibleCommercialCandidate) return false;
+
+  if (partLooksLikeDocumentArtifact(normalizedTitle) || partLooksLikeDocumentArtifact(normalizedRawBlock)) {
+    return false;
+  }
+
+  if (partLooksLikeTransitionArtifact(normalizedTitle) || partLooksLikeTransitionArtifact(normalizedRawBlock)) {
+    return false;
+  }
+
+  if (blockIsTransitionOnlyLine(item.title) || blockIsTransitionOnlyLine(item.rawBlock)) {
+    return false;
+  }
+
+  if (blockIsContextOnlyLine(item.title) || blockLooksLikeContinuationFragment(item.rawBlock)) {
+    return false;
+  }
+
+  return true;
+}
+
 function parseSingleBlockDetailed(
   block: string,
   fileName: string,
@@ -3800,7 +4053,15 @@ function parseSingleBlockDetailed(
   }
 
   const allSkus = collectAllSkuCandidates(normalizedBlock);
-  const allPrices = collectAllPriceCandidates(normalizedBlock);
+  const priceExtractionCandidates = extractPriceCandidatesWithDiagnostics(normalizedBlock);
+  const allPrices = Array.from(
+    new Set(
+      priceExtractionCandidates
+        .filter((candidate) => candidate.accepted)
+        .map((candidate) => candidate.normalizedValue)
+        .filter(Boolean)
+    )
+  );
   const promotedPriceFinal =
     item.price || (allPrices.length === 1 && !/[a-z]/i.test(allPrices[0] || "") ? allPrices[0] : "");
 
@@ -3834,6 +4095,7 @@ function parseSingleBlockDetailed(
       allSkus,
       price: promotedPriceFinal,
       allPrices,
+      priceExtractionCandidates,
       destination: item.destination,
       confidence: item.confidence,
       alerts: inferCandidateAlerts(
@@ -4043,6 +4305,10 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
       return false;
     }
 
+    if (shouldPreserveAmbiguousReviewCandidate(item)) {
+      return true;
+    }
+
     if (isWeakFragmentItem(item)) {
       debugIntelligentImport("parser-filtered-out", {
         reason: "weak-fragment",
@@ -4130,6 +4396,9 @@ export function parseStructuredImportItemsDetailed(extracted: ExtractedFileConte
     const lifecycle = itemsBeforeFilter.slice(0, 24).map((item) => {
       const key = buildParserCandidateLifecycleKey(item);
       const retained = keptKeys.has(key);
+      const retainedReason = retained && shouldPreserveAmbiguousReviewCandidate(item)
+        ? "ambiguous-review-candidate"
+        : "";
       let dropReason = "";
       if (!retained) {
         if (sourceLooksSingleItem) {
@@ -4152,8 +4421,9 @@ export function parseStructuredImportItemsDetailed(extracted: ExtractedFileConte
         title: item.title,
         sku: item.sku || "",
         enteredStage: "merge",
-        leftStage: retained ? "final" : sourceLooksSingleItem ? "sourceLooksSingleItem" : "filter",
+        leftStage: retained ? (retainedReason ? "retained" : "final") : sourceLooksSingleItem ? "sourceLooksSingleItem" : "filter",
         retained,
+        retainedReason: retainedReason || undefined,
         dropReason,
       };
     });
@@ -4243,6 +4513,7 @@ export function parseStructuredImportItemsDetailed(extracted: ExtractedFileConte
   const keptItems = qualitySorted.filter((item) => {
     if (isChemicalSku(item.sku)) return true;
     if (isProbablyGenericTitle(item.title)) return false;
+    if (shouldPreserveAmbiguousReviewCandidate(item)) return true;
     if (isWeakFragmentItem(item)) return false;
     if (looksLikeStockOnlyItem(item)) return false;
     if (!hasUsefulContent(item)) return false;

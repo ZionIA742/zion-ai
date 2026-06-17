@@ -1492,7 +1492,27 @@ function formatStructuredReviewPriceLabel(
 ) {
   const priceCents = extractImportedCatalogPriceCents(item);
   if (priceCents == null) return "";
-  return `R$ ${(priceCents / 100).toFixed(2).replace(".", ",")}`;
+  const renderedLabel = new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(priceCents / 100);
+  const explicitPrice = resolveExplicitImportedPriceReais(item);
+  if (typeof window !== "undefined") {
+    const params = new URLSearchParams(window.location.search || "");
+    if (params.get("debugParser") === "true") {
+      console.debug("[reviewPriceResolution]", {
+        title: item.title,
+        sku: extractImportedCatalogSku(item),
+        explicitPriceSource: explicitPrice?.source || "",
+        explicitPriceValue: explicitPrice?.value || "",
+        parsedReais: explicitPrice?.parsedReais ?? null,
+        resolvedPriceCents: priceCents,
+        fallbackHeuristicUsed: !explicitPrice,
+        renderedLabel,
+      });
+    }
+  }
+  return renderedLabel;
 }
 
 function buildStructuredReviewOriginLabel(
@@ -3927,8 +3947,8 @@ function extractImportedFirstCurrencyValue(value: string | null | undefined) {
   if (!source) return null;
 
   const match =
-    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/i) ||
-    source.match(/(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+[\.,]?\d*)/);
+    source.match(/r\$\s*(\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d+(?:,\d{2})?)(?![\d.,])/i) ||
+    source.match(/(\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d+(?:,\d{2})?)(?![\d.,])/);
 
   if (!match) return null;
   return parseImportedDecimal(match[1]);
@@ -4820,6 +4840,65 @@ function extractImportedBestMoneyValue(value: string | null | undefined) {
   return null;
 }
 
+function resolveExplicitImportedPriceReais(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const explicitCandidates = [
+    {
+      source: "reviewed_price",
+      value: extractMetadataValue(item, ["reviewed_price"]),
+    },
+    {
+      source: "metadata.price",
+      value: extractMetadataValue(item, ["price"]),
+    },
+    {
+      source: "metadata.preco",
+      value: extractMetadataValue(item, ["preco", "preÃ§o"]),
+    },
+    {
+      source: "metadata.sale_price",
+      value: extractMetadataValue(item, [
+        "preco_venda",
+        "preco_de_venda",
+        "preÃ§o_venda",
+        "preÃ§o_de_venda",
+        "preÃ§o venda",
+        "preÃ§o de venda",
+        "preco venda",
+        "preco de venda",
+        "preco_final",
+        "preÃ§o_final",
+        "preÃ§o final",
+        "preco final",
+        "preco_unitario",
+        "preÃ§o_unitÃ¡rio",
+        "preÃ§o unitÃ¡rio",
+        "preco unitario",
+        "valor_venda",
+        "valor venda",
+        "valor_unitario",
+        "valor unitario",
+      ]),
+    },
+  ];
+
+  for (const candidate of explicitCandidates) {
+    const rawValue = String(candidate.value || "").trim();
+    if (!rawValue) continue;
+    const parsedReais = parseImportedDecimal(rawValue);
+    if (parsedReais != null) {
+      return {
+        source: candidate.source,
+        value: rawValue,
+        parsedReais,
+      };
+    }
+  }
+
+  return null;
+}
+
 function normalizeImportedPoolMetricSource(value: string) {
   return String(value || "")
     .replace(/[×✕]/g, "x")
@@ -4956,6 +5035,11 @@ function extractImportedCatalogPriceCents(
         return Math.round(centsValue);
       }
     }
+  }
+
+  const explicitPrice = resolveExplicitImportedPriceReais(item);
+  if (explicitPrice) {
+    return Math.round(explicitPrice.parsedReais * 100);
   }
 
   const labeledPrice =
