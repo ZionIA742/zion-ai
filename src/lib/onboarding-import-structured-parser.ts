@@ -64,6 +64,19 @@ export type StructuredParserCandidateDebug = {
   originalTitle: string;
   canonicalTitle: string;
   title: string;
+  inlineProductNameCandidates?: Array<{
+    label: string;
+    rawValue: string;
+    cleanedValue: string;
+    accepted: boolean;
+    rejectionReason: string;
+    sourcePosition: number;
+    sourceStart?: number;
+    sourceEnd?: number;
+    associatedSku?: string;
+    associatedSkuPosition?: number;
+    sourceKind?: "inline_block" | "pre_segmentation";
+  }>;
   titleSource: string;
   titleCleanupReasons: string[];
   titleStatus: "canonical" | "missing_name" | "ambiguous";
@@ -142,6 +155,26 @@ export type StructuredParserFileDebug = {
   approxLineCount: number;
   usefulLinesPreview: string[];
   looksLikeContinuousText: boolean;
+  explicitNameCandidatesBeforeSegmentation?: Array<{
+    label: string;
+    rawValue: string;
+    cleanedValue: string;
+    sourceStart: number;
+    sourceEnd: number;
+    associatedSku?: string;
+    associatedSkuPosition?: number;
+    accepted: boolean;
+    rejectionReason: string;
+  }>;
+  explicitNameCandidateAssignments?: Array<{
+    cleanedValue: string;
+    associatedSku?: string;
+    assignedBlockIndex?: number;
+    blockSkuValues: string[];
+    assignmentReason: string;
+    assigned: boolean;
+    rejectionReason: string;
+  }>;
   chooseBlocks: {
     strategy: string;
     blockCount: number;
@@ -1189,6 +1222,203 @@ function extractInlineFieldPairs(line: string) {
       return [current.label, cleanedValue] as const;
     })
     .filter(([, value]) => Boolean(value));
+}
+
+type InlineProductNameCandidate = {
+  label: string;
+  rawValue: string;
+  cleanedValue: string;
+  accepted: boolean;
+  rejectionReason: string;
+  sourcePosition: number;
+  sourceStart?: number;
+  sourceEnd?: number;
+  associatedSku?: string;
+  associatedSkuPosition?: number;
+  sourceKind?: "inline_block" | "pre_segmentation";
+};
+
+type ExplicitProductNameBlockAssignment = {
+  cleanedValue: string;
+  associatedSku?: string;
+  assignedBlockIndex?: number;
+  blockSkuValues: string[];
+  assignmentReason: string;
+  assigned: boolean;
+  rejectionReason: string;
+};
+
+const INLINE_EXPLICIT_PRODUCT_NAME_LABELS = [
+  "Produto",
+  "Nome do produto",
+  "Nome",
+  "Item",
+  "Modelo",
+];
+
+const INLINE_EXPLICIT_PRODUCT_NAME_STOP_LABELS = [
+  "código",
+  "codigo",
+  "cod",
+  "sku",
+  "referência",
+  "referencia",
+  "ref",
+  "preço",
+  "preco",
+  "valor",
+  "custa",
+  "estoque",
+  "quantidade",
+  "categoria",
+  "marca",
+  "material",
+  "peso",
+  "capacidade",
+];
+
+function isPlausibleInlineExplicitProductName(value: string) {
+  const cleaned = cleanText(value);
+  const normalized = normalizeLoose(cleaned);
+  if (!cleaned || !normalized) return { accepted: false, rejectionReason: "empty_candidate" };
+  if (/^\d+$/.test(cleaned)) return { accepted: false, rejectionReason: "numeric_only" };
+  if (/^\s*(?:r\$\s*)?\d[\d.,]*\s*$/iu.test(cleaned)) {
+    return { accepted: false, rejectionReason: "price_only" };
+  }
+
+  const directSku = sanitizeSku(cleaned);
+  if (directSku && normalizeLoose(directSku) === normalized) {
+    return { accepted: false, rejectionReason: "sku_only" };
+  }
+
+  if (findStandaloneFieldLabel(cleaned)) {
+    return { accepted: false, rejectionReason: "field_label_only" };
+  }
+  if (isLikelySectionContextLine(cleaned)) {
+    return { accepted: false, rejectionReason: "section_context" };
+  }
+  if (isProbablyGenericTitle(cleaned)) {
+    return { accepted: false, rejectionReason: "generic_title" };
+  }
+  if (partLooksLikeImportInstruction(normalized)) {
+    return { accepted: false, rejectionReason: "import_instruction" };
+  }
+  if (partLooksLikeDocumentArtifact(normalized)) {
+    return { accepted: false, rejectionReason: "document_artifact" };
+  }
+  if (partLooksLikeTransitionArtifact(normalized)) {
+    return { accepted: false, rejectionReason: "transition_artifact" };
+  }
+  if (normalized.length < 3) {
+    return { accepted: false, rejectionReason: "too_short" };
+  }
+
+  return { accepted: true, rejectionReason: "" };
+}
+
+function buildInlineExplicitProductNamePattern() {
+  const labelPattern = INLINE_EXPLICIT_PRODUCT_NAME_LABELS.map((label) => escapeRegExp(label)).join("|");
+  const stopPattern = INLINE_EXPLICIT_PRODUCT_NAME_STOP_LABELS.map((label) => escapeRegExp(label)).join("|");
+  return new RegExp(
+    String.raw`(?:^|[\n|;]|[.!?]\s+)\s*(?<label>${labelPattern})\s*[:=-]\s*(?<value>.+?)(?=(?:\s+(?:${stopPattern})\b(?:\s*[:=-])?|\s*$))`,
+    "giu"
+  );
+}
+
+function extractInlineExplicitProductNameCandidates(line: string): InlineProductNameCandidate[] {
+  const source = String(line || "");
+  if (!source.trim()) return [];
+
+  const candidates: InlineProductNameCandidate[] = [];
+  for (const match of source.matchAll(buildInlineExplicitProductNamePattern())) {
+    const label = cleanText(match.groups?.label || "");
+    const rawValue = cleanText(match.groups?.value || "");
+    const cleanedValue = pickUsableTitleCandidate(rawValue);
+    const plausibility = isPlausibleInlineExplicitProductName(cleanedValue);
+    const fullMatch = String(match[0] || "");
+    const labelOffset = fullMatch.search(new RegExp(escapeRegExp(label), "i"));
+    const sourceStart = (match.index ?? 0) + Math.max(0, labelOffset);
+    const sourceEnd = sourceStart + cleanText(`${label}: ${rawValue}`).length;
+    candidates.push({
+      label,
+      rawValue,
+      cleanedValue,
+      accepted: plausibility.accepted,
+      rejectionReason: plausibility.rejectionReason,
+      sourcePosition: sourceStart,
+      sourceStart,
+      sourceEnd,
+      sourceKind: "inline_block",
+    });
+  }
+
+  return candidates;
+}
+
+function findAssociatedSkuAfterExplicitName(args: {
+  sourceText: string;
+  candidate: InlineProductNameCandidate;
+  nextCandidateStart: number;
+}) {
+  const sourceText = String(args.sourceText || "");
+  const start = Math.max(0, args.candidate.sourceEnd ?? args.candidate.sourcePosition ?? 0);
+  const end = Math.max(start, args.nextCandidateStart);
+  const segment = sourceText.slice(start, end);
+  const skuPatterns = [
+    /\b(?:sku|c[oó]digo|cod|ref|refer[eê]ncia)\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/giu,
+    DIRECT_SKU_REGEX,
+  ];
+
+  for (const pattern of skuPatterns) {
+    for (const match of segment.matchAll(pattern)) {
+      const capturedValue = cleanText(match[1] || match[0] || "");
+      const associatedSku = sanitizeSku(capturedValue);
+      if (!associatedSku) continue;
+      return {
+        associatedSku,
+        associatedSkuPosition: start + (match.index ?? 0),
+      };
+    }
+  }
+
+  return {
+    associatedSku: "",
+    associatedSkuPosition: -1,
+  };
+}
+
+function captureExplicitProductNameCandidatesBeforeSegmentation(text: string): InlineProductNameCandidate[] {
+  const sourceText = String(text || "");
+  const initialCandidates = extractInlineExplicitProductNameCandidates(sourceText).map((candidate) => ({
+    ...candidate,
+    sourceKind: "pre_segmentation" as const,
+  }));
+
+  return initialCandidates.map((candidate, index) => {
+    const nextCandidate = initialCandidates[index + 1];
+    const associatedSku = findAssociatedSkuAfterExplicitName({
+      sourceText,
+      candidate,
+      nextCandidateStart: nextCandidate?.sourceStart ?? sourceText.length,
+    });
+
+    if (candidate.accepted && !associatedSku.associatedSku) {
+      return {
+        ...candidate,
+        associatedSku: "",
+        associatedSkuPosition: -1,
+        accepted: false,
+        rejectionReason: "missing_associated_sku",
+      };
+    }
+
+    return {
+      ...candidate,
+      associatedSku: associatedSku.associatedSku || undefined,
+      associatedSkuPosition:
+        associatedSku.associatedSkuPosition >= 0 ? associatedSku.associatedSkuPosition : undefined,
+    };
+  });
 }
 
 function chooseBestPriceFromFieldMap(fieldMap: Record<string, string>) {
@@ -3216,6 +3446,88 @@ function splitRepeatedFieldBlocks(text: string) {
   return blocks.filter((block) => block.split("\n").length >= 2);
 }
 
+function assignExplicitProductNamesToBlocks(
+  blocks: string[],
+  explicitNameCandidates: InlineProductNameCandidate[]
+) {
+  const assignments: ExplicitProductNameBlockAssignment[] = [];
+  const assignedByBlockIndex = new Map<number, InlineProductNameCandidate[]>();
+  const normalizedBlockSkus = blocks.map((block) =>
+    collectAllSkuCandidates(block).map((sku) => normalizeSkuForTitleComparison(sku))
+  );
+  const rawBlockSkus = blocks.map((block) => collectAllSkuCandidates(block));
+
+  for (const candidate of explicitNameCandidates) {
+    if (!candidate.accepted) {
+      assignments.push({
+        cleanedValue: candidate.cleanedValue,
+        associatedSku: candidate.associatedSku,
+        blockSkuValues: [],
+        assignmentReason: "",
+        assigned: false,
+        rejectionReason: candidate.rejectionReason || "candidate_rejected_before_assignment",
+      });
+      continue;
+    }
+
+    const normalizedAssociatedSku = normalizeSkuForTitleComparison(candidate.associatedSku);
+    if (!normalizedAssociatedSku) {
+      assignments.push({
+        cleanedValue: candidate.cleanedValue,
+        associatedSku: candidate.associatedSku,
+        blockSkuValues: [],
+        assignmentReason: "",
+        assigned: false,
+        rejectionReason: "missing_associated_sku",
+      });
+      continue;
+    }
+
+    const matchingIndexes = normalizedBlockSkus
+      .map((blockSkus, blockIndex) =>
+        blockSkus.includes(normalizedAssociatedSku) ? blockIndex : -1
+      )
+      .filter((value) => value >= 0);
+
+    if (matchingIndexes.length !== 1) {
+      assignments.push({
+        cleanedValue: candidate.cleanedValue,
+        associatedSku: candidate.associatedSku,
+        blockSkuValues: matchingIndexes.flatMap((blockIndex) => rawBlockSkus[blockIndex] || []),
+        assignmentReason: "",
+        assigned: false,
+        rejectionReason:
+          matchingIndexes.length === 0 ? "no_block_with_matching_explicit_sku" : "ambiguous_matching_explicit_sku",
+      });
+      continue;
+    }
+
+    const assignedBlockIndex = matchingIndexes[0];
+    const assignedCandidate: InlineProductNameCandidate = {
+      ...candidate,
+      sourceKind: "pre_segmentation",
+    };
+    const existing = assignedByBlockIndex.get(assignedBlockIndex) || [];
+    existing.push(assignedCandidate);
+    assignedByBlockIndex.set(assignedBlockIndex, existing);
+
+    assignments.push({
+      cleanedValue: candidate.cleanedValue,
+      associatedSku: candidate.associatedSku,
+      assignedBlockIndex,
+      blockSkuValues: rawBlockSkus[assignedBlockIndex] || [],
+      assignmentReason: "matching_explicit_sku",
+      assigned: true,
+      rejectionReason: "",
+    });
+  }
+
+  return {
+    assignedByBlockIndex,
+    assignments,
+  };
+}
+
 function splitParagraphBlocks(text: string) {
   return normalizeBlock(text)
     .split(/\n\s*\n/)
@@ -3271,16 +3583,25 @@ function summarizeBlockForDebug(
 
 function chooseBlocksDetailed(extracted: ExtractedFileContent) {
   const preparedText = preprocessStructuredText(extracted.text);
+  const explicitNameCandidatesBeforeSegmentation =
+    captureExplicitProductNameCandidatesBeforeSegmentation(preparedText);
   const finalizeBlocks = (blocks: string[], strategy: string) => {
     const segmented = blocks.flatMap((block) => splitMixedProductBlock(block));
     const coalesced = coalesceProductFragmentsAfterSplit(segmented);
     const transitionSplit = splitTransitionCarriedBlocks(coalesced.blocks);
     const continued = coalesceContinuationFragments(transitionSplit.blocks);
     const finalBlocks = continued.blocks;
+    const explicitNameAssignments = assignExplicitProductNamesToBlocks(
+      finalBlocks,
+      explicitNameCandidatesBeforeSegmentation
+    );
     const finalStrategy =
       segmented.length > blocks.length ? `${strategy}+mixed_product_split` : strategy;
     return {
       blocks: finalBlocks,
+      explicitNameCandidatesBeforeSegmentation,
+      explicitNameAssignments: explicitNameAssignments.assignments,
+      explicitNamesByBlockIndex: explicitNameAssignments.assignedByBlockIndex,
       strategy:
         coalesced.blocks.length < segmented.length || continued.blocks.length < coalesced.blocks.length
           ? `${finalStrategy}+fragment_coalesce`
@@ -3339,9 +3660,19 @@ function parseFieldLines(block: string) {
 
   const fieldMap: Record<string, string> = {};
   const plainLines: string[] = [];
+  const inlineProductNameCandidates: InlineProductNameCandidate[] = [];
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
+    const explicitNameCandidates = extractInlineExplicitProductNameCandidates(line);
+    if (explicitNameCandidates.length > 0) {
+      inlineProductNameCandidates.push(...explicitNameCandidates);
+      for (const candidate of explicitNameCandidates) {
+        if (!candidate.accepted) continue;
+        appendFieldValue(fieldMap, candidate.label, candidate.cleanedValue);
+      }
+    }
+
     const inlinePairs = extractInlineFieldPairs(line);
     if (inlinePairs.length > 0) {
       for (const [key, value] of inlinePairs) {
@@ -3367,7 +3698,7 @@ function parseFieldLines(block: string) {
     plainLines.push(line.replace(/^\d+[\)\.\-]\s+/, "").trim());
   }
 
-  return { fieldMap, plainLines };
+  return { fieldMap, plainLines, inlineProductNameCandidates };
 }
 
 function pickUsableTitleCandidate(value: string | null | undefined) {
@@ -3384,6 +3715,50 @@ function pickUsableTitleCandidate(value: string | null | undefined) {
       return line.length >= 3 && line.length <= 180;
     }) || ""
   );
+}
+
+const TITLE_FIELD_CANDIDATE_KEYS = [
+  "nome",
+  "nome do produto",
+  "nome do item",
+  "titulo",
+  "título",
+  "produto",
+  "item",
+  "modelo",
+  "product name",
+  "nome comercial",
+];
+
+function findStructuredTitleCandidate(fieldMap: Record<string, string>) {
+  for (const key of TITLE_FIELD_CANDIDATE_KEYS) {
+    const candidate = pickUsableTitleCandidate(fieldMap[key]);
+    if (candidate) {
+      return {
+        key,
+        candidate,
+      };
+    }
+  }
+
+  return null;
+}
+
+function injectExplicitProductNameIntoFieldMap(
+  fieldMap: Record<string, string>,
+  candidates: InlineProductNameCandidate[]
+) {
+  if (findStructuredTitleCandidate(fieldMap)) {
+    return false;
+  }
+
+  const acceptedCandidate = candidates.find((candidate) => candidate.accepted && candidate.cleanedValue);
+  if (!acceptedCandidate) {
+    return false;
+  }
+
+  appendFieldValue(fieldMap, acceptedCandidate.label || "nome do produto", acceptedCandidate.cleanedValue);
+  return true;
 }
 
 function extractAllSkuCandidates(text: string) {
@@ -3601,22 +3976,9 @@ function chooseTitle(
   fileName: string,
   index: number
 ) {
-  const candidateKeys = [
-    "nome",
-    "nome do produto",
-    "nome do item",
-    "titulo",
-    "título",
-    "produto",
-    "item",
-    "modelo",
-    "product name",
-    "nome comercial",
-  ];
-
-  for (const key of candidateKeys) {
-    const candidate = pickUsableTitleCandidate(fieldMap[key]);
-    if (candidate) return candidate;
+  const structuredCandidate = findStructuredTitleCandidate(fieldMap);
+  if (structuredCandidate) {
+    return structuredCandidate.candidate;
   }
 
   const titleFromNarrative = extractChemicalTitleFromNarrative(
@@ -3679,24 +4041,9 @@ function detectTitleSource(
   title: string
 ) {
   const normalizedTitle = normalizeLoose(title);
-  const candidateKeys = [
-    "nome",
-    "nome do produto",
-    "nome do item",
-    "titulo",
-    "tÃ­tulo",
-    "produto",
-    "item",
-    "modelo",
-    "product name",
-    "nome comercial",
-  ];
-
-  for (const key of candidateKeys) {
-    const candidate = pickUsableTitleCandidate(fieldMap[key]);
-    if (candidate && normalizeLoose(candidate) === normalizedTitle) {
-      return `named_field:${key}`;
-    }
+  const structuredCandidate = findStructuredTitleCandidate(fieldMap);
+  if (structuredCandidate && normalizeLoose(structuredCandidate.candidate) === normalizedTitle) {
+    return `named_field:${structuredCandidate.key}`;
   }
 
   const titleFromNarrative = extractChemicalTitleFromNarrative(
@@ -3908,7 +4255,8 @@ function shouldPreserveAmbiguousReviewCandidate(item: StructuredImportItem) {
 function parseSingleBlockDetailed(
   block: string,
   fileName: string,
-  index: number
+  index: number,
+  preassignedExplicitNames: InlineProductNameCandidate[] = []
 ): {
   item: StructuredImportItem | null;
   debug: StructuredParserCandidateDebug | null;
@@ -3921,7 +4269,13 @@ function parseSingleBlockDetailed(
     };
   }
 
-  const { fieldMap, plainLines } = parseFieldLines(normalizedBlock);
+  const { fieldMap, plainLines, inlineProductNameCandidates } = parseFieldLines(normalizedBlock);
+  const transportedInlineProductNameCandidates = preassignedExplicitNames.map((candidate) => ({
+    ...candidate,
+    sourceKind: "pre_segmentation" as const,
+  }));
+
+  injectExplicitProductNameIntoFieldMap(fieldMap, transportedInlineProductNameCandidates);
 
   enrichFieldMapWithLooseExtraction(fieldMap, normalizedBlock);
 
@@ -4075,6 +4429,10 @@ function parseSingleBlockDetailed(
       originalTitle: canonicalTitle.originalTitle || title,
       canonicalTitle: item.title,
       title: item.title,
+      inlineProductNameCandidates: [
+        ...inlineProductNameCandidates,
+        ...transportedInlineProductNameCandidates,
+      ],
       titleSource: detectTitleSource(fieldMap, plainLines, fileName, index, item.title),
       titleCleanupReasons: canonicalTitle.titleCleanupReasons,
       titleStatus: canonicalTitle.titleStatus,
@@ -4113,9 +4471,10 @@ function parseSingleBlockDetailed(
 function parseSingleBlock(
   block: string,
   fileName: string,
-  index: number
+  index: number,
+  preassignedExplicitNames: InlineProductNameCandidate[] = []
 ): StructuredImportItem | null {
-  return parseSingleBlockDetailed(block, fileName, index).item;
+  return parseSingleBlockDetailed(block, fileName, index, preassignedExplicitNames).item;
 }
 
 function isProbablyGenericTitle(title: string) {
@@ -4202,7 +4561,8 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
     text: preparedText,
   };
 
-  const blocks = chooseBlocks(preparedExtracted);
+  const chosenBlocks = chooseBlocksDetailed(preparedExtracted);
+  const blocks = chosenBlocks.blocks;
   debugIntelligentImport("parser-blocks", {
     fileName: extracted.fileName,
     blockCount: blocks.length,
@@ -4215,7 +4575,12 @@ export function parseStructuredImportItems(extracted: ExtractedFileContent): Str
   const parsedItems: StructuredImportItem[] = [];
 
   blocks.forEach((block, index) => {
-    const parsed = parseSingleBlock(block, extracted.fileName, index);
+    const parsed = parseSingleBlock(
+      block,
+      extracted.fileName,
+      index,
+      chosenBlocks.explicitNamesByBlockIndex.get(index) || []
+    );
     if (parsed) {
       parsedItems.push(parsed);
     } else {
@@ -4381,7 +4746,12 @@ export function parseStructuredImportItemsDetailed(extracted: ExtractedFileConte
   const mergeTrace: StructuredParserMergeDebug[] = [];
 
   blocks.forEach((block, index) => {
-    const parsed = parseSingleBlockDetailed(block, extracted.fileName, index);
+    const parsed = parseSingleBlockDetailed(
+      block,
+      extracted.fileName,
+      index,
+      chosenBlocks.explicitNamesByBlockIndex.get(index) || []
+    );
     if (parsed.debug) parserCandidates.push(parsed.debug);
     if (parsed.item) parsedItems.push(parsed.item);
   });
@@ -4435,6 +4805,20 @@ export function parseStructuredImportItemsDetailed(extracted: ExtractedFileConte
       approxLineCount: normalizeBlock(extracted.text || "").split("\n").filter(Boolean).length,
       usefulLinesPreview: buildPreviewLines(extracted.text, 6),
       looksLikeContinuousText: looksLikeContinuousNarrativeText(extracted.text),
+      explicitNameCandidatesBeforeSegmentation: chosenBlocks.explicitNameCandidatesBeforeSegmentation?.map(
+        (candidate) => ({
+          label: candidate.label,
+          rawValue: candidate.rawValue,
+          cleanedValue: candidate.cleanedValue,
+          sourceStart: candidate.sourceStart ?? candidate.sourcePosition,
+          sourceEnd: candidate.sourceEnd ?? candidate.sourcePosition,
+          associatedSku: candidate.associatedSku,
+          associatedSkuPosition: candidate.associatedSkuPosition,
+          accepted: candidate.accepted,
+          rejectionReason: candidate.rejectionReason,
+        })
+      ),
+      explicitNameCandidateAssignments: chosenBlocks.explicitNameAssignments,
       chooseBlocks: {
         strategy: chosenBlocks.strategy,
         blockCount: blocks.length,
