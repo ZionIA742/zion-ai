@@ -115,6 +115,18 @@ export type StructuredParserCandidateDebug = {
   }>;
   destination: StructuredImportDestination;
   confidence: number;
+  spreadsheetIdentityResolution?: {
+    applied: boolean;
+    titleSource?: string;
+    skuSource?: string;
+    reconciled: boolean;
+    decisions: Array<{
+      field: string;
+      value: string;
+      accepted: boolean;
+      rejectionReason: string;
+    }>;
+  };
   alerts: string[];
 };
 
@@ -3959,6 +3971,187 @@ function pickUsableTitleCandidate(value: string | null | undefined) {
   );
 }
 
+type SpreadsheetRowIdentityDecision = {
+  field: string;
+  value: string;
+  accepted: boolean;
+  rejectionReason: string;
+};
+
+type SpreadsheetRowIdentityResolution = {
+  applied: boolean;
+  resolvedTitle?: string;
+  resolvedSku?: string;
+  titleSource?: string;
+  skuSource?: string;
+  reconciled: boolean;
+  decisions: SpreadsheetRowIdentityDecision[];
+};
+
+function evaluateSpreadsheetRowTitleCandidate(
+  rawValue: string | null | undefined,
+  field: string
+): SpreadsheetRowIdentityDecision & { candidate: string } {
+  const value = cleanText(rawValue || "");
+  const candidate =
+    field === "product_like"
+      ? cleanText(stripTrailingStructuredDetails(value))
+      : pickUsableTitleCandidate(value);
+  const normalizedCandidate = normalizeLoose(candidate);
+
+  if (!candidate) {
+    return { field, value, candidate: "", accepted: false, rejectionReason: "empty_candidate" };
+  }
+  if (sanitizeSku(candidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "sku_like_value" };
+  }
+  if (collectAllSkuCandidates(candidate).length > 0) {
+    return { field, value, candidate, accepted: false, rejectionReason: "embedded_sku_signal" };
+  }
+  if (/^\s*(?:r\$\s*)?\d[\d.,]*\s*$/iu.test(candidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "price_only" };
+  }
+  if (findStandaloneFieldLabel(candidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "field_label_only" };
+  }
+  if (isProbablyGenericTitle(candidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "generic_title" };
+  }
+  if (isLikelySectionContextLine(candidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "section_context" };
+  }
+  if (partLooksLikeImportInstruction(normalizedCandidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "import_instruction" };
+  }
+  if (partLooksLikeDocumentArtifact(normalizedCandidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "document_artifact" };
+  }
+  if (partLooksLikeTransitionArtifact(normalizedCandidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "transition_artifact" };
+  }
+  if (/^(?:linha quebrada|continua(?:cao|ção))\b/i.test(candidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "continuation_marker" };
+  }
+  if (/^objetivo\b/i.test(candidate)) {
+    return { field, value, candidate, accepted: false, rejectionReason: "instruction_heading" };
+  }
+
+  return { field, value, candidate, accepted: true, rejectionReason: "" };
+}
+
+function resolveSpreadsheetRowIdentity(args: {
+  fieldMap: Record<string, string>;
+  normalizedBlock: string;
+}): SpreadsheetRowIdentityResolution {
+  const provenance = extractSpreadsheetRowBlockProvenance(args.normalizedBlock);
+  if (!provenance.detected) {
+    return {
+      applied: false,
+      reconciled: false,
+      decisions: [],
+    };
+  }
+
+  const productLikeDecision = evaluateSpreadsheetRowTitleCandidate(
+    args.fieldMap["produto ou coisa"] || "",
+    "product_like"
+  );
+  const descriptionDecision = evaluateSpreadsheetRowTitleCandidate(
+    args.fieldMap["descrição"] || args.fieldMap["descriÃ§Ã£o"] || "",
+    "description"
+  );
+  const skuFieldDecision = evaluateSpreadsheetRowTitleCandidate(args.fieldMap["sku"] || "", "sku");
+
+  const strongSkuFromSkuField =
+    sanitizeSku(args.fieldMap["sku"] || "") || collectAllSkuCandidates(args.fieldMap["sku"] || "")[0] || "";
+  const strongSkuFromCodeField =
+    sanitizeSku(args.fieldMap["codigo"] || args.fieldMap["código"] || args.fieldMap["cÃ³digo"] || "") ||
+    collectAllSkuCandidates(
+      args.fieldMap["codigo"] || args.fieldMap["código"] || args.fieldMap["cÃ³digo"] || ""
+    )[0] ||
+    "";
+  const strongSkuFromDescriptionField =
+    sanitizeSku(args.fieldMap["descrição"] || args.fieldMap["descriÃ§Ã£o"] || "") ||
+    collectAllSkuCandidates(args.fieldMap["descrição"] || args.fieldMap["descriÃ§Ã£o"] || "")[0] ||
+    "";
+  const strongestSku =
+    strongSkuFromSkuField || strongSkuFromCodeField || strongSkuFromDescriptionField || "";
+  const decisions = [productLikeDecision, descriptionDecision, skuFieldDecision].map(
+    ({ field, value, accepted, rejectionReason }) => ({
+      field,
+      value,
+      accepted,
+      rejectionReason,
+    })
+  );
+
+  if (productLikeDecision.accepted) {
+    return {
+      applied: true,
+      resolvedTitle: productLikeDecision.candidate,
+      resolvedSku: strongestSku || undefined,
+      titleSource: "spreadsheet_alias:product_like",
+      skuSource: strongSkuFromSkuField
+        ? "sku"
+        : strongSkuFromCodeField
+          ? "codigo"
+          : strongSkuFromDescriptionField
+            ? "description"
+            : undefined,
+      reconciled: false,
+      decisions,
+    };
+  }
+
+  if (!strongSkuFromSkuField && skuFieldDecision.accepted && strongSkuFromDescriptionField) {
+    return {
+      applied: true,
+      resolvedTitle: skuFieldDecision.candidate,
+      resolvedSku: strongSkuFromDescriptionField,
+      titleSource: "spreadsheet_field:original_sku_field",
+      skuSource: "description",
+      reconciled: true,
+      decisions,
+    };
+  }
+
+  if (descriptionDecision.accepted && (strongSkuFromSkuField || strongSkuFromCodeField)) {
+    return {
+      applied: true,
+      resolvedTitle: descriptionDecision.candidate,
+      resolvedSku: strongSkuFromSkuField || strongSkuFromCodeField,
+      titleSource: "spreadsheet_field:description",
+      skuSource: strongSkuFromSkuField ? "sku" : "codigo",
+      reconciled: false,
+      decisions,
+    };
+  }
+
+  if (!strongestSku && skuFieldDecision.accepted) {
+    return {
+      applied: true,
+      resolvedTitle: skuFieldDecision.candidate,
+      titleSource: "spreadsheet_field:original_sku_field",
+      reconciled: true,
+      decisions,
+    };
+  }
+
+  return {
+    applied: true,
+    resolvedSku: strongestSku || undefined,
+    skuSource: strongSkuFromSkuField
+      ? "sku"
+      : strongSkuFromCodeField
+        ? "codigo"
+        : strongSkuFromDescriptionField
+          ? "description"
+          : undefined,
+    reconciled: false,
+    decisions,
+  };
+}
+
 const TITLE_FIELD_CANDIDATE_KEYS = [
   "nome",
   "nome do produto",
@@ -4623,7 +4816,12 @@ function parseSingleBlockDetailed(
 
   enrichFieldMapWithLooseExtraction(fieldMap, normalizedBlock);
 
-  const title = chooseTitle(fieldMap, plainLines, fileName, index);
+  const spreadsheetIdentityResolution = resolveSpreadsheetRowIdentity({
+    fieldMap,
+    normalizedBlock,
+  });
+  const title =
+    spreadsheetIdentityResolution.resolvedTitle || chooseTitle(fieldMap, plainLines, fileName, index);
 
   const resolvedSku = sanitizeSku(
     fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || ""
@@ -4632,7 +4830,7 @@ function parseSingleBlockDetailed(
     ? extractLooseDosage(normalizedBlock)
     : fieldMap["dosagem"] || extractLooseDosage(normalizedBlock);
   const fallbackSku = collectAllSkuCandidates(normalizedBlock)[0] || "";
-  const effectiveSku = resolvedSku || fallbackSku;
+  const effectiveSku = spreadsheetIdentityResolution.resolvedSku || resolvedSku || fallbackSku;
   const sheetName = cleanText(fieldMap["planilha"] || fieldMap["aba"] || fieldMap["sheet"] || "");
   const sourceCategory = cleanText(fieldMap["categoria"] || "");
   const sourceSubcategory = cleanText(fieldMap["subcategoria"] || "");
@@ -4674,7 +4872,10 @@ function parseSingleBlockDetailed(
     : titleIsStructurallyAmbiguous
       ? ("ambiguous" as const)
       : ("canonical" as const);
-  const titleForDescription = canonicalTitle.canonicalTitle || title;
+  const titleForDescription =
+    spreadsheetIdentityResolution.titleSource === "spreadsheet_alias:product_like"
+      ? cleanText(title)
+      : canonicalTitle.canonicalTitle || title;
   const descriptionCandidates = collectDescriptionCandidateParts(
     fieldMap,
     plainLines,
@@ -4795,7 +4996,9 @@ function parseSingleBlockDetailed(
         ...inlineProductNameCandidates,
         ...transportedInlineProductNameCandidates,
       ],
-      titleSource: detectTitleSource(fieldMap, plainLines, fileName, index, item.title),
+      titleSource:
+        spreadsheetIdentityResolution.titleSource ||
+        detectTitleSource(fieldMap, plainLines, fileName, index, item.title),
       titleCleanupReasons: canonicalTitle.titleCleanupReasons,
       titleStatus: resolvedTitleStatus,
       missingName: canonicalTitle.missingName,
@@ -4818,6 +5021,13 @@ function parseSingleBlockDetailed(
       priceExtractionCandidates,
       destination: item.destination,
       confidence: item.confidence,
+      spreadsheetIdentityResolution: {
+        applied: spreadsheetIdentityResolution.applied,
+        titleSource: spreadsheetIdentityResolution.titleSource,
+        skuSource: spreadsheetIdentityResolution.skuSource,
+        reconciled: spreadsheetIdentityResolution.reconciled,
+        decisions: spreadsheetIdentityResolution.decisions,
+      },
       alerts: inferCandidateAlerts(
         normalizedBlock,
         item.title,

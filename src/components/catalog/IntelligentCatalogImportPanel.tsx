@@ -1507,7 +1507,7 @@ function formatStructuredReviewPriceLabel(
     if (params.get("debugParser") === "true") {
       console.debug("[reviewPriceResolution]", {
         title: item.title,
-        sku: extractImportedCatalogSku(item),
+        sku: resolveImportedCatalogSku(item),
         explicitPriceSource: explicitPrice?.source || "",
         explicitPriceValue: explicitPrice?.value || "",
         parsedReais: explicitPrice?.parsedReais ?? null,
@@ -1572,7 +1572,7 @@ function debugReviewDescriptionResolution(
 
   console.debug("[reviewDescriptionResolution]", {
     title: item.title,
-    sku: extractImportedCatalogSku(item),
+    sku: resolveImportedCatalogSku(item),
     missingName,
     canonicalized: descriptionState.canonicalized,
     cleanDescriptionStatus: descriptionState.status,
@@ -1983,7 +1983,7 @@ function buildStructuredCandidateDraft(
   return {
     finalCategory,
     name,
-    sku: String(extractImportedCatalogSku(item) || "").trim(),
+    sku: String(resolveImportedCatalogSku(item) || "").trim(),
     price: formatStructuredDraftPriceValue(item),
     stock: stockQuantity > 0 ? String(stockQuantity) : "",
     description: description || "",
@@ -2035,7 +2035,7 @@ function buildStructuredCandidateDuplicateIdentity(
     title:
       normalizedName ??
       (destination === "pool" ? buildImportedPoolName(item) : buildImportedCatalogName(item)),
-    sku: destination === "pool" ? "" : extractImportedCatalogSku(item),
+    sku: destination === "pool" ? "" : resolveImportedCatalogSku(item),
   });
 }
 
@@ -2055,7 +2055,7 @@ function computeStructuredPreSaveValidation(args: {
     const normalizedName = normalizeImportDedupText(
       destination === "pool" ? buildImportedPoolName(item) : buildImportedCatalogName(item)
     );
-    const normalizedSku = normalizeImportDedupSku(extractImportedCatalogSku(item));
+    const normalizedSku = normalizeImportDedupSku(resolveImportedCatalogSku(item));
     const duplicateIdentity = buildStructuredCandidateDuplicateIdentity(item, destination, normalizedName);
 
     let duplicateReason: string | null = null;
@@ -3990,6 +3990,45 @@ function extractImportedExcelLikeName(
   return "";
 }
 
+function isStructuredSpreadsheetImportItem(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const metadata = item.metadata ?? {};
+  const source = String(item.rawText || "");
+
+  const explicitSheetScopedKey = String(
+    metadata.source_sheet_scoped_key ||
+      metadata.sheet_scoped_key ||
+      metadata["sheet scoped key"] ||
+      ""
+  ).trim();
+  const explicitSheetName = String(
+    metadata.source_sheet_name ||
+      metadata.sheet_name ||
+      metadata.planilha ||
+      metadata.aba ||
+      metadata.sheet ||
+      ""
+  ).trim();
+  const explicitWorksheetRowNumber = String(
+    metadata.worksheet_row_number ||
+      metadata.row_number ||
+      metadata.linha_planilha ||
+      metadata["linha da planilha"] ||
+      ""
+  ).trim();
+
+  if (explicitSheetScopedKey && explicitSheetName && explicitWorksheetRowNumber) {
+    return true;
+  }
+
+  return (
+    /(?:^|\n)\s*Planilha\s*:/iu.test(source) &&
+    /(?:^|\n)\s*Linha da planilha\s*:/iu.test(source) &&
+    /(?:^|\n)\s*Sheet scoped key\s*:/iu.test(source)
+  );
+}
+
 function extractImportedCatalogSku(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
@@ -3999,6 +4038,22 @@ function extractImportedCatalogSku(
     extractImportedLabeledValue(source, ["SKU", "Código", "Codigo"]) ||
     ""
   ).slice(0, 120);
+}
+
+function resolveImportedCatalogSku(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = String(item.rawText || "");
+  const canonicalSku = extractMetadataValue(item, ["sku", "codigo", "cÃ³digo"]);
+  if (canonicalSku) {
+    return canonicalSku.slice(0, 120);
+  }
+
+  if (isStructuredSpreadsheetImportItem(item)) {
+    return "";
+  }
+
+  return (extractImportedLabeledValue(source, ["SKU", "CÃ³digo", "Codigo"]) || "").slice(0, 120);
 }
 
 function extractImportedCatalogStockQuantity(
@@ -4076,7 +4131,7 @@ function buildImportedSaveKey(
     return `catalog::${destination}::${sourceLocationKey}`;
   }
 
-  const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
+  const sku = normalizeImportedLoose(resolveImportedCatalogSku(item));
   if (sku) {
     return `catalog::${destination}::sku::${sku}`;
   }
@@ -4102,7 +4157,7 @@ function buildImportedRuntimeIdentityKeys(
     return [`catalog::${destination}::${sourceLocationKey}`];
   }
 
-  const sku = normalizeImportedLoose(extractImportedCatalogSku(item));
+  const sku = normalizeImportedLoose(resolveImportedCatalogSku(item));
   if (sku) {
     return [`catalog::${destination}::sku::${sku}`];
   }
@@ -4114,7 +4169,7 @@ function scoreImportedItemForSave(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const description = buildImportedCatalogDescription(item) || buildImportedPoolDescription(item) || "";
-  const hasSku = Boolean(extractImportedCatalogSku(item));
+  const hasSku = Boolean(resolveImportedCatalogSku(item));
   const hasPrice = extractImportedCatalogPriceCents(item) != null;
   const stockQuantity = extractImportedCatalogStockQuantity(item);
   const nonEmptyMetadata = Object.values(item.metadata ?? {}).filter(
@@ -5677,7 +5732,7 @@ function isPdfAccessoryImportItem(
 function hasImportedAccessorySku(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  const sku = String(resolveImportedCatalogSku(item) || "").trim();
   if (/^ACC[-\s]?\d{1,4}$/i.test(sku)) return true;
 
   const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
@@ -5703,7 +5758,7 @@ function isPdfOtherImportItem(
 function hasImportedOtherSku(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  const sku = String(resolveImportedCatalogSku(item) || "").trim();
   if (/^(OUT|OTR)[-\s]?\d{1,4}$/i.test(sku)) return true;
 
   const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
@@ -5751,7 +5806,7 @@ function isPowerPointImportItem(
 function hasImportedPoolSku(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  const sku = String(resolveImportedCatalogSku(item) || "").trim();
   if (/^PSC[-\s]?\d{1,4}$/i.test(sku)) return true;
 
   const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
@@ -5767,7 +5822,7 @@ function shouldKeepPowerPointPoolDestination(
 function hasImportedChemicalSku(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  const sku = String(resolveImportedCatalogSku(item) || "").trim();
   if (/^QMC[-\s]?\d{1,4}$/i.test(sku)) return true;
 
   const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
@@ -5791,7 +5846,7 @@ function shouldUsePowerPointAccessoryCatalogRules(
 function hasImportedPowerPointOtherSku(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const sku = String(extractImportedCatalogSku(item) || "").trim();
+  const sku = String(resolveImportedCatalogSku(item) || "").trim();
   if (/^OUT[-\s]?\d{1,4}$/i.test(sku)) return true;
 
   const text = [item.title, item.rawText, ...Object.values(item.metadata ?? {})].join(" ");
@@ -6138,7 +6193,7 @@ function looksLikeImportedDocumentIntroCatalogItem(args: {
   }
 
   const hasRealProductSignal =
-    Boolean(extractImportedCatalogSku(args.item)) ||
+    Boolean(resolveImportedCatalogSku(args.item)) ||
     hasPrice ||
     Boolean(extractMetadataValue(args.item, ["embalagem", "package", "packaging", "marca", "brand"])) ||
     Boolean(extractImportedLabeledValue(rawText, ["Embalagem", "Marca", "SKU", "PreÃ§o", "Preco"])) ||
@@ -6151,7 +6206,7 @@ function looksLikeImportedDocumentIntroCatalogItem(args: {
 function resolveImportedDestination(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ): ImportedDestination {
-  const explicitSku = String(extractImportedCatalogSku(item) || "").trim().toUpperCase();
+  const explicitSku = String(resolveImportedCatalogSku(item) || "").trim().toUpperCase();
   if (/^QMC(?:-[A-Z0-9]{1,8}){1,4}$/.test(explicitSku)) {
     return "quimicos";
   }
@@ -6251,7 +6306,7 @@ function buildImportedCatalogMetadata(
 ) {
   const source = String(item.rawText || "");
   const sku =
-    extractImportedCatalogSku(item) ||
+    resolveImportedCatalogSku(item) ||
     extractMetadataValue(item, ["sku", "codigo", "código"]);
   const line =
     extractMetadataValue(item, ["linha", "line"]) ||
@@ -8732,7 +8787,7 @@ async function handleSaveImportedItemsToCatalog() {
               (metrics.width_m == null || metrics.length_m == null || metrics.depth_m == null)
             ) {
               throw new Error(
-                `Piscina PowerPoint ${extractImportedCatalogSku(item) || poolName} sem medidas obrigatorias para salvar.`
+                `Piscina PowerPoint ${resolveImportedCatalogSku(item) || poolName} sem medidas obrigatorias para salvar.`
               );
             }
 
@@ -8940,7 +8995,7 @@ async function handleSaveImportedItemsToCatalog() {
             continue;
           }
 
-          const sku = extractImportedCatalogSku(item) || null;
+          const sku = resolveImportedCatalogSku(item) || null;
           const priceCents = extractImportedCatalogPriceCents(item);
           const stockQuantity =
             usePowerPointChemicalCatalogRules ||
@@ -11232,7 +11287,7 @@ async function handleSaveImportedItemsToCatalog() {
                         buildStructuredReviewDisplayName(item, candidate.finalCategory);
                       const sku =
                         String(candidateDraft?.sku || "").trim() ||
-                        String(extractImportedCatalogSku(item) || "").trim();
+                        String(resolveImportedCatalogSku(item) || "").trim();
                       const priceLabel =
                         formatStructuredDraftPriceLabel(candidateDraft?.price || "") ||
                         formatStructuredReviewPriceLabel(item);
