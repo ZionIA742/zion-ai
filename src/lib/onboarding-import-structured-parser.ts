@@ -45,6 +45,13 @@ export type StructuredImportItem = {
   sheetName?: string;
   sourceCategory?: string;
   sourceSubcategory?: string;
+  stockQuantity?: string;
+  worksheetRowNumber?: number;
+  sheetScopedKey?: string;
+  sourceWorksheetRowNumbers?: number[];
+  sourceSheetScopedKeys?: string[];
+  mergedFromSpreadsheetRows?: boolean;
+  reviewSignals?: string[];
 };
 
 export type StructuredParserBlockDebug = {
@@ -229,6 +236,16 @@ export type StructuredParserFileDebug = {
     outputCount: number;
     mergedPairs: StructuredParserFragmentMergeDebug[];
   };
+  spreadsheetContinuationCoalesce?: {
+    inputCount: number;
+    outputCount: number;
+    mergedPairs: Array<{
+      sheetName?: string;
+      previousRow?: number;
+      currentRow?: number;
+      reason: string;
+    }>;
+  };
   spreadsheetAtomicRows?: {
     detected: boolean;
     count: number;
@@ -241,6 +258,54 @@ export type StructuredParserFileDebug = {
     }>;
   };
 };
+
+const STRUCTURED_FIELD_ALIASES: Record<string, string[]> = {
+  "nome do produto": ["nome do produto", "nome comercial"],
+  produto: ["produto", "nome", "item"],
+  modelo: ["modelo"],
+  "produto ou coisa": ["produto ou coisa"],
+  descrição: ["descricao", "descricao detalhada", "descricao comercial"],
+  sku: ["sku", "cod/ref", "referencia", "referência", "ref"],
+  código: ["codigo", "cod"],
+  "preço venda": [
+    "preco venda r",
+    "preco venda",
+    "valor venda",
+    "valor final",
+    "preco final r",
+    "preco final",
+    "preco de venda",
+    "preco de venda r",
+  ],
+  "preço sugerido": ["preco sugerido r", "preco sugerido"],
+  "preço custo": ["preco custo r", "preco custo", "custo"],
+  preço: ["preco", "valor"],
+  "quantidade atual": ["quantidade", "qtd", "qtd?", "unidades"],
+  estoque: ["estoque"],
+  categoria: ["categoria", "cat", "familia", "família", "familia talvez", "família talvez", "tipo"],
+  observações: ["observacao", "observacoes", "notas", "notes", "obs"],
+  indicação: ["indicacao"],
+  aplicação: ["aplicacao", "uso / observacao", "uso / observacao", "uso / observação"],
+  composição: ["composicao"],
+  função: ["funcao", "finalidade"],
+  "peso/volume": ["peso volume", "peso / volume"],
+  medidas: ["dimensoes", "medidas"],
+  título: ["titulo"],
+  "estoque mínimo": ["estoque minimo"],
+  "estoque máximo": ["estoque maximo"],
+  planilha: ["planilha", "aba", "sheet"],
+  "linha da planilha": ["linha da planilha", "worksheet row number"],
+  "sheet scoped key": ["sheet scoped key", "source scoped key"],
+};
+
+const CANONICAL_FIELD_KEY_BY_ALIAS = Object.entries(STRUCTURED_FIELD_ALIASES).reduce<
+  Record<string, string>
+>((acc, [canonicalKey, aliases]) => {
+  for (const alias of aliases) {
+    acc[normalizeLoose(alias)] = canonicalKey;
+  }
+  return acc;
+}, {});
 
 const DEBUG_INTELLIGENT_IMPORT =
   process.env.NEXT_PUBLIC_DEBUG_INTELLIGENT_IMPORT === "1" ||
@@ -520,6 +585,8 @@ const CATEGORY_VALUE_SIGNAL_REGEX = /^(?:piscina(?:s)?|pool|quimic(?:o|os)|acess
 
 function canonicalizeFieldKey(value: string) {
   const normalized = normalizeLoose(value);
+  const aliased = CANONICAL_FIELD_KEY_BY_ALIAS[normalized];
+  if (aliased) return aliased;
 
   if (
     normalized === "preco venda r" ||
@@ -1776,6 +1843,7 @@ function stripLeadingDescriptionFieldLabel(value: string) {
     "indicaÃ§Ã£o",
     "indicacao",
   ];
+  supportedLabels.push("uso / observacao", "uso/observacao", "uso recomendado", "obs");
   const labelPattern = supportedLabels.map((label) => escapeRegExp(label)).join("|");
 
   for (;;) {
@@ -2228,6 +2296,8 @@ function extractOriginalTitleSemanticSuffix(originalTitle: string, canonicalTitl
 function buildDescriptionQuantityCandidates(fieldMap: Record<string, string>) {
   return [
     fieldMap["quantidade atual"] || "",
+    fieldMap["quantidade"] || "",
+    fieldMap["qtd"] || "",
     fieldMap["estoque"] || "",
     fieldMap["estoque mÃ­nimo"] || "",
     fieldMap["estoque mÃ¡ximo"] || "",
@@ -2281,6 +2351,11 @@ function partLooksLikeReviewState(normalized: string) {
     "sem sku",
     "sem codigo",
     "preco aproximado",
+    "deve revisar",
+    "revisar",
+    "suspeito",
+    "nome muito generico",
+    "linha fraca",
     "deve vir para revisao",
     "deve vir desmarcado",
     "deve ficar desmarcado",
@@ -2344,6 +2419,36 @@ function partLooksLikeImportInstruction(normalized: string) {
   return instructionSignals.some((signal) => normalized.includes(signal));
 }
 
+function partLooksLikeStructuredOrphanLabel(normalized: string) {
+  if (!normalized) return true;
+
+  return [
+    "valor final",
+    "valor",
+    "preco",
+    "preco final",
+    "preco venda",
+    "preco sugerido",
+    "qtd",
+    "qtd?",
+    "estoque",
+    "quantidade",
+    "quantidade atual",
+    "cat",
+    "categoria",
+    "familia talvez",
+    "familia",
+    "planilha",
+    "linha da planilha",
+    "sheet scoped key",
+    "obs",
+    "observacao",
+    "observacoes",
+    "uso / observacao",
+    "uso/observacao",
+  ].includes(normalized);
+}
+
 function clauseLooksMechanicalOnly(args: {
   text: string;
   normalized: string;
@@ -2356,6 +2461,14 @@ function clauseLooksMechanicalOnly(args: {
   const raw = cleanText(args.text);
   const normalized = args.normalized;
   if (!normalized) return true;
+
+  if (
+    /^\s*(?:planilha|linha da planilha|sheet scoped key|produto(?: ou coisa)?|modelo|obs|cat|familia(?: talvez)?|fam[ií]lia(?: talvez)?|qtd\??|largura|comprimento|profundidade|formato|material|valor(?: final)?)\s*[:\-]/iu.test(
+      raw
+    )
+  ) {
+    return true;
+  }
 
   const normalizedSku = normalizeLoose(args.sku);
   if (normalizedSku && normalized === normalizedSku) return true;
@@ -2384,6 +2497,9 @@ function clauseLooksMechanicalOnly(args: {
   ) {
     return true;
   }
+  if (/^\s*(?:qtd\??|unidades?)\s*[:\-]?\s*\d+\s*(?:unidades?|unds?|un)?\s*$/iu.test(raw)) {
+    return true;
+  }
 
   if (/^\s*\d+\s*(?:unidades?|unds?|un)\s*$/iu.test(raw)) return true;
   if (/^\s*\d+\s*$/u.test(raw) && args.quantityCandidates.map((value) => normalizeLoose(value)).includes(normalized)) {
@@ -2406,9 +2522,15 @@ function cleanupSemanticClauseText(value: string) {
       .replace(/\s+(?:e|and)\s*[.;,:-]*$/iu, "")
       .replace(/^\s*(?:quimico|quimicos|acessorio|acessorios|piscina|outro|outros)\s*[-:|,]\s*/iu, "")
       .replace(/^\s*(?:sem\s+(?:preco|preço|sku|c[oó]digo)|preco\s+aproximado)\s*[:\-]?\s*/iu, "")
+      .replace(/^\s*uso\s*\/\s*observa(?:cao|ção)\s*[:\-]?\s*/iu, "")
+      .replace(/^\s*observa(?:cao|ção|coes|ções)\s*[:\-]?\s*/iu, "")
       .replace(/\s+r\$\s*$/iu, "")
       .replace(/^\s*[;:,.|\-]+\s*/g, "")
       .replace(/\s*[;:,.|\-]+\s*$/g, "")
+      .replace(
+        /^\s*(?:valor(?:\s+final)?|pre[cç]o(?:\s+(?:venda|final|sugerido|custo))?|estoque|quantidade(?:\s+atual)?|qtd\??|cat|categoria|familia(?:\s+talvez)?|fam[ií]lia(?:\s+talvez)?|planilha|linha da planilha|sheet scoped key)\s*$/iu,
+        ""
+      )
   );
 }
 
@@ -2496,7 +2618,6 @@ function extractStructuredSpansFromDescriptionClause(args: {
   const normalizedSku = normalizeLoose(args.sku);
   const normalizedPrice = normalizeLoose(args.price);
   const categoryCandidates = buildDescriptionCategoryCandidates(args);
-  const quantityCandidates = args.quantityCandidates.map((value) => cleanText(value)).filter(Boolean);
   const generalizedPriceSpanPattern = new RegExp(
     `${PRICE_CONTEXT_PREFIX_REGEX_FRAGMENT}${PRICE_NUMERIC_TOKEN_REGEX_FRAGMENT}${PRICE_TERMINAL_BOUNDARY_REGEX_FRAGMENT}`,
     "giu"
@@ -2560,14 +2681,6 @@ function extractStructuredSpansFromDescriptionClause(args: {
     /^\s*(?:sku|c[oó]d(?:igo)?|cod(?:igo)?|ref|refer[eê]ncia|pre[cç]o|valor|estoque|quantidade|categoria)\s*[:\-]?\s*$/giu,
     removedStructuredSpans
   );
-
-  for (const quantityCandidate of quantityCandidates) {
-    working = removeStructuredSpan(
-      working,
-      new RegExp(`\\b${escapeRegExp(quantityCandidate)}\\b`, "giu"),
-      removedStructuredSpans
-    );
-  }
 
   if (normalizedPrice) {
     working = removeStructuredSpan(
@@ -2643,6 +2756,40 @@ function classifySemanticDescriptionClause(args: {
   clause = stripTransitionLeadInFromDescriptionPart(clause) || clause;
   clause = stripLeadingDescriptionFieldLabel(clause).value;
 
+  const structuredTitleResidueMatch = clause.match(
+    /^\s*(?:sku|c[oó]d(?:igo)?|cod(?:igo)?|ref|refer[eê]ncia)\s*[:\-]?\s*(.+)\s*$/iu
+  );
+  if (structuredTitleResidueMatch) {
+    const labeledValue = cleanText(structuredTitleResidueMatch[1] || "");
+    const strippedLabeledValue = stripSpreadsheetContinuationLeadIn(labeledValue);
+    const normalizedLabeledValue = normalizeLoose(strippedLabeledValue || labeledValue);
+    const titleCandidates = [args.originalTitle, args.canonicalTitle]
+      .map((value) => normalizeLoose(value))
+      .filter(Boolean);
+    const matchesTitleResidue =
+      Boolean(normalizedLabeledValue) &&
+      titleCandidates.some(
+        (candidate) =>
+          candidate === normalizedLabeledValue ||
+          candidate.includes(normalizedLabeledValue) ||
+          normalizedLabeledValue.includes(candidate)
+      );
+
+    if (!normalizedLabeledValue || hasSpreadsheetContinuationMarker(labeledValue) || matchesTitleResidue) {
+      return {
+        text: previewDescriptionClauseText(clause),
+        normalized: normalizeLoose(clause),
+        classification: "mechanical_field" as const,
+        action: "removed" as const,
+        reason: "structured_title_source_residue",
+        source: args.source,
+        originalText: previewDescriptionClauseText(originalClauseText),
+        removedStructuredSpans: labeledValue ? [labeledValue] : [],
+        semanticRemainder: "",
+      };
+    }
+  }
+
   const normalizedOriginalClause = normalizeLoose(clause);
   if (shouldDiscardWholeClauseBeforeSpanExtraction(normalizedOriginalClause)) {
     return {
@@ -2704,6 +2851,20 @@ function classifySemanticDescriptionClause(args: {
       classification: "empty_residue" as const,
       action: "removed" as const,
       reason: "empty_after_clause_cleanup",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: "",
+    };
+  }
+
+  if (partLooksLikeStructuredOrphanLabel(normalized)) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "mechanical_field" as const,
+      action: "removed" as const,
+      reason: "structured_orphan_label",
       source: args.source,
       originalText: previewDescriptionClauseText(originalClauseText),
       removedStructuredSpans: structuredExtraction.removedSpans,
@@ -3038,6 +3199,20 @@ function isSameNormalizedValue(left?: string, right?: string) {
   return normalizeLoose(left) === normalizeLoose(right);
 }
 
+function mergeUniqueStringList(left?: string[], right?: string[]) {
+  const merged = Array.from(
+    new Set([...(left || []), ...(right || [])].map((value) => cleanText(value)).filter(Boolean))
+  );
+  return merged.length > 0 ? merged : undefined;
+}
+
+function mergeUniqueNumberList(left?: number[], right?: number[]) {
+  const merged = Array.from(
+    new Set([...(left || []), ...(right || [])].filter((value) => Number.isFinite(value)))
+  );
+  return merged.length > 0 ? merged : undefined;
+}
+
 function inferMergeReason(existing: StructuredImportItem, incoming: StructuredImportItem) {
   if (normalizeLoose(existing.sku) && normalizeLoose(existing.sku) === normalizeLoose(incoming.sku)) {
     return "sku" as const;
@@ -3146,6 +3321,23 @@ function mergeStructuredImportItems(
       sheetName: pickPreferredText(primary.sheetName, secondary.sheetName),
       sourceCategory: pickPreferredText(primary.sourceCategory, secondary.sourceCategory),
       sourceSubcategory: pickPreferredText(primary.sourceSubcategory, secondary.sourceSubcategory),
+      stockQuantity: pickPreferredText(primary.stockQuantity, secondary.stockQuantity),
+      worksheetRowNumber:
+        typeof primary.worksheetRowNumber === "number"
+          ? primary.worksheetRowNumber
+          : secondary.worksheetRowNumber,
+      sheetScopedKey: pickPreferredText(primary.sheetScopedKey, secondary.sheetScopedKey),
+      sourceWorksheetRowNumbers: mergeUniqueNumberList(
+        primary.sourceWorksheetRowNumbers,
+        secondary.sourceWorksheetRowNumbers
+      ),
+      sourceSheetScopedKeys: mergeUniqueStringList(
+        primary.sourceSheetScopedKeys,
+        secondary.sourceSheetScopedKeys
+      ),
+      mergedFromSpreadsheetRows:
+        Boolean(primary.mergedFromSpreadsheetRows) || Boolean(secondary.mergedFromSpreadsheetRows) || undefined,
+      reviewSignals: mergeUniqueStringList(primary.reviewSignals, secondary.reviewSignals),
     };
 
     if (
@@ -3767,6 +3959,26 @@ function extractSpreadsheetRowBlockProvenance(block: string) {
   };
 }
 
+function extractSpreadsheetRowBlockMergeProvenance(block: string) {
+  const normalizedBlock = normalizeBlock(block);
+  const rowNumbers = Array.from(
+    normalizedBlock.matchAll(/(?:^|\n)linha da planilha\s*:\s*(\d+)/giu)
+  )
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const sheetScopedKeys = Array.from(
+    normalizedBlock.matchAll(/(?:^|\n)sheet scoped key\s*:\s*([^\n]+)/giu)
+  )
+    .map((match) => cleanText(match[1] || ""))
+    .filter(Boolean);
+
+  return {
+    sourceWorksheetRowNumbers: rowNumbers.length > 0 ? Array.from(new Set(rowNumbers)) : undefined,
+    sourceSheetScopedKeys: sheetScopedKeys.length > 0 ? Array.from(new Set(sheetScopedKeys)) : undefined,
+    mergedFromSpreadsheetRows: rowNumbers.length > 1 || sheetScopedKeys.length > 1,
+  };
+}
+
 function summarizeSpreadsheetAtomicRows(blocks: string[]) {
   const rows = blocks
     .map((block, index) => ({
@@ -3788,6 +4000,107 @@ function summarizeSpreadsheetAtomicRows(blocks: string[]) {
   };
 }
 
+function coalesceSpreadsheetContinuationRows(blocks: string[]) {
+  const mergedBlocks: string[] = [];
+  const mergedPairs: Array<{
+    sheetName?: string;
+    previousRow?: number;
+    currentRow?: number;
+    reason: string;
+  }> = [];
+
+  for (let index = 0; index < blocks.length; index += 1) {
+    const currentBlock = normalizeBlock(blocks[index]);
+    if (!currentBlock) continue;
+
+    if (mergedBlocks.length === 0) {
+      mergedBlocks.push(currentBlock);
+      continue;
+    }
+
+    const previousBlock = mergedBlocks[mergedBlocks.length - 1];
+    const previousProvenance = extractSpreadsheetRowBlockProvenance(previousBlock);
+    const currentProvenance = extractSpreadsheetRowBlockProvenance(currentBlock);
+
+    const sameSheet =
+      previousProvenance.detected &&
+      currentProvenance.detected &&
+      normalizeLoose(previousProvenance.sheetName || "") === normalizeLoose(currentProvenance.sheetName || "");
+    const consecutiveRows =
+      sameSheet &&
+      typeof previousProvenance.worksheetRowNumber === "number" &&
+      typeof currentProvenance.worksheetRowNumber === "number" &&
+      currentProvenance.worksheetRowNumber === previousProvenance.worksheetRowNumber + 1;
+
+    if (!consecutiveRows) {
+      mergedBlocks.push(currentBlock);
+      continue;
+    }
+
+    const previousParsed = parseFieldLines(previousBlock);
+    const currentParsed = parseFieldLines(currentBlock);
+    const previousProductCandidate = evaluateSpreadsheetRowTitleCandidate(
+      previousParsed.fieldMap["produto ou coisa"] || previousParsed.fieldMap["sku"] || "",
+      previousParsed.fieldMap["produto ou coisa"] ? "product_like" : "sku"
+    );
+    const currentProductCandidate = evaluateSpreadsheetRowTitleCandidate(
+      currentParsed.fieldMap["produto ou coisa"] || currentParsed.fieldMap["descrição"] || currentParsed.fieldMap["sku"] || "",
+      currentParsed.fieldMap["produto ou coisa"]
+        ? "product_like"
+        : currentParsed.fieldMap["descrição"]
+          ? "description"
+          : "sku"
+    );
+    const previousSku = sanitizeSku(previousParsed.fieldMap["sku"] || previousParsed.fieldMap["código"] || "") ||
+      collectAllSkuCandidates(previousBlock)[0] ||
+      "";
+    const previousPrice = chooseBestPriceFromFieldMap(previousParsed.fieldMap);
+    const currentSku = sanitizeSku(currentParsed.fieldMap["sku"] || currentParsed.fieldMap["código"] || "") ||
+      collectAllSkuCandidates(currentBlock)[0] ||
+      "";
+    const currentPrice = chooseBestPriceFromFieldMap(currentParsed.fieldMap) || collectAllPriceCandidates(currentBlock)[0] || "";
+    const currentStock = extractStructuredStockQuantity(currentParsed.fieldMap);
+    const currentCarriesContinuation = hasSpreadsheetContinuationMarker(
+      [
+        currentParsed.fieldMap["sku"] || "",
+        currentParsed.fieldMap["descrição"] || "",
+        currentParsed.plainLines[0] || "",
+      ].join(" ")
+    );
+    const previousIncomplete = !previousSku && !previousPrice;
+    const currentHasStructuredComplements = Boolean(currentSku || currentPrice || currentStock);
+    const currentHasCompetingTitle = currentProductCandidate.accepted && !currentCarriesContinuation;
+
+    if (
+      previousIncomplete &&
+      previousProductCandidate.accepted &&
+      currentCarriesContinuation &&
+      currentHasStructuredComplements &&
+      !currentHasCompetingTitle
+    ) {
+      mergedBlocks[mergedBlocks.length - 1] = normalizeBlock(`${previousBlock}\n${currentBlock}`);
+      mergedPairs.push({
+        sheetName: currentProvenance.sheetName,
+        previousRow: previousProvenance.worksheetRowNumber,
+        currentRow: currentProvenance.worksheetRowNumber,
+        reason: "spreadsheet_row_continuation",
+      });
+      continue;
+    }
+
+    mergedBlocks.push(currentBlock);
+  }
+
+  return {
+    blocks: mergedBlocks,
+    trace: {
+      inputCount: blocks.length,
+      outputCount: mergedBlocks.length,
+      mergedPairs,
+    },
+  };
+}
+
 function chooseBlocksDetailed(extracted: ExtractedFileContent) {
   const preparedText = preprocessStructuredText(extracted.text);
   const explicitNameCandidatesBeforeSegmentation =
@@ -3796,27 +4109,29 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
     const normalizedBlocks = blocks.map((block) => normalizeBlock(block)).filter(Boolean);
     const spreadsheetAtomicRows = summarizeSpreadsheetAtomicRows(normalizedBlocks);
     if (strategy === "delimited_items" && spreadsheetAtomicRows.detected) {
+      const spreadsheetContinuation = coalesceSpreadsheetContinuationRows(normalizedBlocks);
       const explicitNameAssignments = assignExplicitProductNamesToBlocks(
-        normalizedBlocks,
+        spreadsheetContinuation.blocks,
         explicitNameCandidatesBeforeSegmentation
       );
       return {
-        blocks: normalizedBlocks,
+        blocks: spreadsheetContinuation.blocks,
         explicitNameCandidatesBeforeSegmentation,
         explicitNameAssignments: explicitNameAssignments.assignments,
         explicitNamesByBlockIndex: explicitNameAssignments.assignedByBlockIndex,
         strategy: `${strategy}+spreadsheet_atomic_rows`,
         fragmentCoalesce: {
-          inputCount: normalizedBlocks.length,
-          outputCount: normalizedBlocks.length,
+          inputCount: spreadsheetContinuation.blocks.length,
+          outputCount: spreadsheetContinuation.blocks.length,
           mergedPairs: [],
           transitionSplits: [],
         },
         continuationCoalesce: {
-          inputCount: normalizedBlocks.length,
-          outputCount: normalizedBlocks.length,
+          inputCount: spreadsheetContinuation.blocks.length,
+          outputCount: spreadsheetContinuation.blocks.length,
           mergedPairs: [],
         },
+        spreadsheetContinuationCoalesce: spreadsheetContinuation.trace,
         spreadsheetAtomicRows: {
           detected: true,
           count: spreadsheetAtomicRows.count,
@@ -3859,6 +4174,11 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
         inputCount: coalesced.blocks.length,
         outputCount: finalBlocks.length,
         mergedPairs: continued.mergedPairs,
+      },
+      spreadsheetContinuationCoalesce: {
+        inputCount: normalizedBlocks.length,
+        outputCount: normalizedBlocks.length,
+        mergedPairs: [],
       },
       spreadsheetAtomicRows: {
         detected: false,
@@ -3971,6 +4291,24 @@ function pickUsableTitleCandidate(value: string | null | undefined) {
   );
 }
 
+function stripSpreadsheetContinuationLeadIn(value: string | null | undefined) {
+  const cleaned = cleanText(value || "");
+  if (!cleaned) return "";
+
+  const stripped = cleanText(
+    cleaned.replace(
+      /^(?:linha\s+quebrada\s+parte\s*\d+\s*[:\-]?\s*|parte\s*\d+\s*[:\-]?\s*|continua(?:cao|ção)\s*[:\-]?\s*)/iu,
+      ""
+    )
+  );
+
+  return stripped || cleaned;
+}
+
+function hasSpreadsheetContinuationMarker(value: string | null | undefined) {
+  return /(?:linha\s+quebrada\s+parte\s*\d+|continua(?:cao|ção))/iu.test(String(value || ""));
+}
+
 type SpreadsheetRowIdentityDecision = {
   field: string;
   value: string;
@@ -3995,8 +4333,8 @@ function evaluateSpreadsheetRowTitleCandidate(
   const value = cleanText(rawValue || "");
   const candidate =
     field === "product_like"
-      ? cleanText(stripTrailingStructuredDetails(value))
-      : pickUsableTitleCandidate(value);
+      ? cleanText(stripTrailingStructuredDetails(stripSpreadsheetContinuationLeadIn(value)))
+      : pickUsableTitleCandidate(stripSpreadsheetContinuationLeadIn(value));
   const normalizedCandidate = normalizeLoose(candidate);
 
   if (!candidate) {
@@ -4132,6 +4470,18 @@ function resolveSpreadsheetRowIdentity(args: {
       applied: true,
       resolvedTitle: skuFieldDecision.candidate,
       titleSource: "spreadsheet_field:original_sku_field",
+      reconciled: true,
+      decisions,
+    };
+  }
+
+  if (skuFieldDecision.accepted && strongSkuFromSkuField) {
+    return {
+      applied: true,
+      resolvedTitle: skuFieldDecision.candidate,
+      resolvedSku: strongSkuFromSkuField,
+      titleSource: "spreadsheet_field:original_sku_field",
+      skuSource: "sku",
       reconciled: true,
       decisions,
     };
@@ -4671,6 +5021,54 @@ function enrichFieldMapWithLooseExtraction(
   }
 }
 
+function extractStructuredStockQuantity(fieldMap: Record<string, string>) {
+  return cleanText(fieldMap["estoque"] || fieldMap["quantidade atual"] || "");
+}
+
+function extractLooseStructuredStockQuantity(text: string) {
+  const match = String(text || "").match(
+    /\b(?:estoque|quantidade(?: atual)?|qtd\??|unidades?)\s*[:\-]?\s*(\d+)\b/iu
+  );
+  return cleanText(match?.[1] || "");
+}
+
+function collectSpreadsheetReviewSignals(args: {
+  provenanceDetected: boolean;
+  fieldMap: Record<string, string>;
+  title: string;
+  price: string;
+  sku: string;
+}) {
+  if (!args.provenanceDetected) return [];
+
+  const reviewSource = [
+    args.fieldMap["observações"] || "",
+    args.fieldMap["aplicação"] || "",
+    args.fieldMap["descrição"] || "",
+    args.fieldMap["produto ou coisa"] || "",
+    args.title,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const normalized = normalizeLoose(reviewSource);
+  const signals = new Set<string>();
+
+  if (normalized.includes("suspeito")) signals.add("suspect_source_marker");
+  if (normalized.includes("nome muito generico")) signals.add("generic_name_signal");
+  if (normalized.includes("linha fraca")) signals.add("weak_source_signal");
+  if (normalized.includes("deve revisar") || normalized.includes("revisar")) {
+    signals.add("manual_review_signal");
+  }
+  if (!cleanText(args.price) && normalized.includes("sem preco")) {
+    signals.add("missing_price_signal");
+  }
+  if (!cleanText(args.sku) && (normalized.includes("sem sku") || normalized.includes("sem codigo"))) {
+    signals.add("missing_sku_signal");
+  }
+
+  return Array.from(signals);
+}
+
 function inferCandidateAlerts(
   normalizedBlock: string,
   title: string,
@@ -4820,6 +5218,8 @@ function parseSingleBlockDetailed(
     fieldMap,
     normalizedBlock,
   });
+  const provenance = extractSpreadsheetRowBlockProvenance(normalizedBlock);
+  const mergeProvenance = extractSpreadsheetRowBlockMergeProvenance(normalizedBlock);
   const title =
     spreadsheetIdentityResolution.resolvedTitle || chooseTitle(fieldMap, plainLines, fileName, index);
 
@@ -4859,6 +5259,9 @@ function parseSingleBlockDetailed(
     sku: effectiveSku,
   });
   const promotedPrice = chooseBestPriceFromFieldMap(fieldMap);
+  const stockQuantity =
+    extractStructuredStockQuantity(fieldMap) ||
+    (provenance.detected ? extractLooseStructuredStockQuantity(normalizedBlock) : "");
   const titleIsStructurallyAmbiguous =
     canonicalTitle.ambiguousTitle ||
     looksLikeAmbiguousReviewCandidateTitle({
@@ -4905,6 +5308,13 @@ function parseSingleBlockDetailed(
     price: promotedPrice,
     missingName: canonicalTitle.missingName,
     ambiguousTitle: canonicalTitle.ambiguousTitle,
+  });
+  const reviewSignals = collectSpreadsheetReviewSignals({
+    provenanceDetected: provenance.detected,
+    fieldMap,
+    title: titleForDescription,
+    price: promotedPrice,
+    sku: effectiveSku,
   });
 
   const item: StructuredImportItem = {
@@ -4960,6 +5370,17 @@ function parseSingleBlockDetailed(
     sheetName,
     sourceCategory,
     sourceSubcategory,
+    stockQuantity,
+    worksheetRowNumber: provenance.worksheetRowNumber,
+    sheetScopedKey: provenance.sheetScopedKey,
+    sourceWorksheetRowNumbers:
+      mergeProvenance.sourceWorksheetRowNumbers ||
+      (provenance.worksheetRowNumber ? [provenance.worksheetRowNumber] : undefined),
+    sourceSheetScopedKeys:
+      mergeProvenance.sourceSheetScopedKeys ||
+      (provenance.sheetScopedKey ? [provenance.sheetScopedKey] : undefined),
+    mergedFromSpreadsheetRows: mergeProvenance.mergedFromSpreadsheetRows,
+    reviewSignals,
   };
 
   if (!normalizeLoose(item.title)) {
@@ -5110,6 +5531,7 @@ function hasUsefulContent(item: StructuredImportItem) {
   return (
     item.description.length >= 10 ||
     (Boolean(cleanText(item.title)) && Boolean(cleanText(item.sku))) ||
+    (Boolean(cleanText(item.title)) && Boolean(item.reviewSignals && item.reviewSignals.length > 0)) ||
     Boolean(item.price) ||
     Boolean(item.dimensions) ||
     Boolean(item.capacity) ||
@@ -5417,6 +5839,7 @@ export function parseStructuredImportItemsDetailed(extracted: ExtractedFileConte
       },
       fragmentCoalesce: chosenBlocks.fragmentCoalesce,
       continuationCoalesce: chosenBlocks.continuationCoalesce,
+      spreadsheetContinuationCoalesce: chosenBlocks.spreadsheetContinuationCoalesce,
       spreadsheetAtomicRows: chosenBlocks.spreadsheetAtomicRows,
     };
   };

@@ -1310,6 +1310,8 @@ function enrichImportedItemWithResolvedDestination<T extends IntelligentImportDe
       ...(item.metadata ?? {}),
       __resolved_destination: resolvedDestination,
       source_sheet_name: extractImportedSourceSheetName(item) || null,
+      source_worksheet_row_number: extractImportedWorksheetRowNumber(item) ?? null,
+      source_sheet_scoped_key: extractImportedSheetScopedKey(item) || null,
       source_category: extractImportedSourceCategory(item) || null,
       source_subcategory: extractImportedSourceSubcategory(item) || null,
     },
@@ -1523,6 +1525,12 @@ function formatStructuredReviewPriceLabel(
 function buildStructuredReviewOriginLabel(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const preferredSheetName = String(extractImportedSourceSheetName(item) || "").trim();
+  const preferredWorksheetRowNumber = extractImportedWorksheetRowNumber(item);
+  if (preferredSheetName && preferredWorksheetRowNumber != null) {
+    return `${preferredSheetName}, linha ${preferredWorksheetRowNumber}`;
+  }
+
   const parts = [
     item.sourceFileName,
     extractImportedSourceSheetName(item),
@@ -1533,6 +1541,61 @@ function buildStructuredReviewOriginLabel(
     .filter(Boolean);
 
   return parts.join(" • ");
+}
+
+function parseImportedCommaSeparatedMetadata(value: string | null | undefined) {
+  return String(value || "")
+    .split(",")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+}
+
+function buildStructuredReviewIgnoreReasons(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  duplicateReason?: string | null
+) {
+  if (duplicateReason) return [duplicateReason];
+
+  const reasons: string[] = [];
+  const reviewSignals = parseImportedCommaSeparatedMetadata(
+    extractMetadataValue(item, ["source_review_signals", "review_reasons", "review_reason"])
+  );
+  const missingPrice = extractMetadataValue(item, ["missing_price"]);
+  const missingSku = extractMetadataValue(item, ["missing_sku"]);
+  const genericTitle = extractMetadataValue(item, ["generic_title"]);
+  const weakCandidate = extractMetadataValue(item, ["weak_candidate"]);
+  const destination = resolveImportedExplicitDestination(item) || inferImportedDestination(item);
+  const hasStrongSuspicionSignal = reviewSignals.some(
+    (signal) => signal.includes("generic_name_signal") || signal.includes("suspect")
+  );
+
+  if (hasStrongSuspicionSignal) {
+    reasons.push("Nome genérico e marcado como suspeito na origem.");
+  } else if (
+    reviewSignals.some((signal) => signal.includes("manual_review") || signal.includes("weak_source_signal"))
+  ) {
+    reasons.push("Marcado para revisão na origem.");
+  }
+
+  if (["true", "1", "sim", "yes"].includes(normalizeImportedLoose(missingPrice))) {
+    reasons.push("Sem preço — revisar antes de salvar.");
+  }
+  const shouldSuppressMissingSkuReason = destination === "pool" && hasStrongSuspicionSignal;
+  if (
+    !shouldSuppressMissingSkuReason &&
+    ["true", "1", "sim", "yes"].includes(normalizeImportedLoose(missingSku))
+  ) {
+    reasons.push("Sem SKU — revisar antes de salvar.");
+  }
+  if (
+    reasons.length === 0 &&
+    (["true", "1", "sim", "yes"].includes(normalizeImportedLoose(genericTitle)) ||
+      ["true", "1", "sim", "yes"].includes(normalizeImportedLoose(weakCandidate)))
+  ) {
+    reasons.push("Nome pouco confiável.");
+  }
+
+  return reasons.slice(0, 2);
 }
 
 function buildStructuredReviewDescriptionSnippet(
@@ -4060,6 +4123,17 @@ function extractImportedCatalogStockQuantity(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
+  const canonicalStock = extractMetadataValue(item, [
+    "stock",
+    "estoque",
+    "quantidade_atual",
+    "quantidade atual",
+    "stock_quantity",
+  ]);
+  const parsedCanonicalStock = parseImportedDecimal(canonicalStock);
+  if (parsedCanonicalStock != null) {
+    return Math.max(0, Math.round(parsedCanonicalStock));
+  }
 
   const labeledStock =
     extractImportedLabeledValue(source, [
@@ -4080,6 +4154,10 @@ function extractImportedCatalogStockQuantity(
   const parsedLabeledStock = parseImportedDecimal(labeledStock);
   if (parsedLabeledStock != null) {
     return Math.max(0, Math.round(parsedLabeledStock));
+  }
+
+  if (isStructuredSpreadsheetImportItem(item)) {
+    return 0;
   }
 
   const fallbackStock =
@@ -4565,7 +4643,8 @@ function sanitizeImportedDescriptionText(
       "nome:",
       "nome do produto ",
       "nome do produto:",
-      "linha ",
+      "produto ou coisa ",
+      "produto ou coisa:",
       "linha:",
       "aplicacao ",
       "aplicacao:",
@@ -4579,8 +4658,14 @@ function sanitizeImportedDescriptionText(
       "preço:",
       "valor ",
       "valor:",
+      "valor final ",
+      "valor final:",
       "medidas ",
       "medidas:",
+      "largura ",
+      "largura:",
+      "comprimento ",
+      "comprimento:",
       "profundidade ",
       "profundidade:",
       "capacidade ",
@@ -4597,6 +4682,20 @@ function sanitizeImportedDescriptionText(
       "marca:",
       "sku ",
       "sku:",
+      "codigo ",
+      "codigo:",
+      "código ",
+      "código:",
+      "cat ",
+      "cat:",
+      "familia ",
+      "familia:",
+      "família ",
+      "família:",
+      "familia talvez ",
+      "familia talvez:",
+      "família talvez ",
+      "família talvez:",
       "peso ",
       "peso:",
       "peso volume ",
@@ -4609,6 +4708,10 @@ function sanitizeImportedDescriptionText(
       "cor:",
       "quantidade atual ",
       "quantidade atual:",
+      "qtd ",
+      "qtd:",
+      "qtd? ",
+      "qtd?:",
       "estoque minimo ",
       "estoque minimo:",
       "estoque máximo ",
@@ -4643,6 +4746,8 @@ function sanitizeImportedDescriptionText(
       "imagem:",
       "arquivo ",
       "arquivo:",
+      "obs ",
+      "obs:",
     ];
 
     const isCanonicalApplicationNarrative =
@@ -4661,6 +4766,10 @@ function sanitizeImportedDescriptionText(
       "validar upload inteligente",
       "validar leitura",
       "upload inteligente",
+      "suspeito",
+      "deve revisar",
+      "sem preco",
+      "nome muito generico",
       "categoria esperada no sistema",
       "salvar em configuracoes",
       "salvar em configurações",
@@ -4954,6 +5063,8 @@ function resolveExplicitImportedPriceReais(
         "preco unitario",
         "valor_venda",
         "valor venda",
+        "valor_final",
+        "valor final",
         "valor_unitario",
         "valor unitario",
       ]),
@@ -5117,6 +5228,10 @@ function extractImportedCatalogPriceCents(
   const explicitPrice = resolveExplicitImportedPriceReais(item);
   if (explicitPrice) {
     return Math.round(explicitPrice.parsedReais * 100);
+  }
+
+  if (isStructuredSpreadsheetImportItem(item)) {
+    return null;
   }
 
   const labeledPrice =
@@ -6357,6 +6472,8 @@ function buildImportedCatalogMetadata(
     dedup_key: "dedupKey" in item ? item.dedupKey : null,
     source_location_key: buildImportedSourceLocationKey(item) || null,
     source_sheet_name: extractImportedSourceSheetName(item) || null,
+    source_worksheet_row_number: extractImportedWorksheetRowNumber(item) ?? null,
+    source_sheet_scoped_key: extractImportedSheetScopedKey(item) || null,
     source_category: extractImportedSourceCategory(item) || null,
     source_subcategory: extractImportedSourceSubcategory(item) || null,
     imported_title: importedTitleOriginal,
@@ -11296,6 +11413,10 @@ async function handleSaveImportedItemsToCatalog() {
                         : String(candidateDraft?.description || "").trim()
                           ? buildStructuredDraftDescriptionSnippet(candidateDraft?.description || "")
                           : buildStructuredReviewDescriptionSnippet(item);
+                      const ignoreReasons = buildStructuredReviewIgnoreReasons(
+                        candidateValidation?.item || item,
+                        candidateValidation?.duplicateReason
+                      );
                       const originLabel = buildStructuredReviewOriginLabel(item);
                       const categoryAdjusted = candidate.finalCategory !== candidate.initialCategory;
                       const hasLocalEdits = Boolean(candidateDraft);
@@ -11364,6 +11485,11 @@ async function handleSaveImportedItemsToCatalog() {
                                   {candidateValidation.duplicateReason}
                                 </p>
                               ) : null}
+                              {!candidate.selected && !candidateValidation?.duplicateReason && ignoreReasons[0] ? (
+                                <p className="mt-2 text-sm font-medium text-amber-700">
+                                  {ignoreReasons.join(" ")}
+                                </p>
+                              ) : null}
                               {descriptionSnippet ? (
                                 <p className="mt-2 text-sm leading-6 text-slate-600">
                                   {descriptionSnippet}
@@ -11394,22 +11520,24 @@ async function handleSaveImportedItemsToCatalog() {
                               >
                                 Editar
                               </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateStructuredReviewCandidate(candidate.id, {
-                                    selected: !candidate.selected,
-                                  })
-                                }
-                                className={cx(
-                                  "rounded-xl border px-3 py-2 text-sm font-medium transition",
-                                  candidate.selected
-                                    ? "border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
-                                    : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
-                                )}
-                              >
-                                {candidate.selected ? "Ignorar item" : "Selecionar novamente"}
-                              </button>
+                              {!isDuplicate ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateStructuredReviewCandidate(candidate.id, {
+                                      selected: !candidate.selected,
+                                    })
+                                  }
+                                  className={cx(
+                                    "rounded-xl border px-3 py-2 text-sm font-medium transition",
+                                    candidate.selected
+                                      ? "border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                                      : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                                  )}
+                                >
+                                  {candidate.selected ? "Ignorar item" : "Selecionar novamente"}
+                                </button>
+                              ) : null}
                             </div>
                           </div>
                         </div>

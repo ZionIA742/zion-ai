@@ -94,9 +94,13 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     normalizedTitle.includes("peneira e cabo") ||
     normalizedTitle.includes("varios itens") ||
     normalizedTitle.includes("varios item");
+  const sourceReviewSignals = Array.from(
+    new Set((item.reviewSignals || []).map((value) => String(value || "").trim()).filter(Boolean))
+  );
   const weakCandidate = genericTitle || ambiguousBundle || (missingPrice && missingSku);
   const reviewRequired =
     weakCandidate ||
+    sourceReviewSignals.length > 0 ||
     (missingPrice && item.destination !== "pool") ||
     (missingSku && item.destination !== "pool");
   const reviewReasons = [
@@ -105,6 +109,7 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     genericTitle ? "generic_title" : "",
     ambiguousBundle ? "ambiguous_bundle" : "",
     weakCandidate ? "weak_candidate" : "",
+    ...sourceReviewSignals,
   ].filter(Boolean);
 
   return {
@@ -133,6 +138,9 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     shape: item.shape || "",
     brand: item.brand || "",
     sku: item.sku || "",
+    stock: item.stockQuantity || "",
+    estoque: item.stockQuantity || "",
+    quantidade_atual: item.stockQuantity || "",
     weight: item.weight || "",
     dosage: item.dosage || "",
     color: item.color || "",
@@ -150,6 +158,15 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     diferencial: item.diferencial || "",
     application: item.application || "",
     source_file_name: item.sourceFileName,
+    worksheet_row_number:
+      typeof item.worksheetRowNumber === "number" ? String(item.worksheetRowNumber) : "",
+    source_worksheet_row_number:
+      typeof item.worksheetRowNumber === "number" ? String(item.worksheetRowNumber) : "",
+    source_sheet_scoped_key: item.sheetScopedKey || "",
+    sheet_scoped_key: item.sheetScopedKey || "",
+    source_row_numbers: (item.sourceWorksheetRowNumbers || []).join(","),
+    source_sheet_scoped_keys: (item.sourceSheetScopedKeys || []).join(","),
+    merged_from_spreadsheet_rows: item.mergedFromSpreadsheetRows ? "true" : "false",
     missing_price: missingPrice ? "true" : "false",
     missing_sku: missingSku ? "true" : "false",
     generic_title: genericTitle ? "true" : "false",
@@ -157,6 +174,8 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     weak_candidate: weakCandidate ? "true" : "false",
     review_required: reviewRequired ? "true" : "false",
     review_reason: reviewReasons.join(","),
+    review_reasons: reviewReasons.join(","),
+    source_review_signals: sourceReviewSignals.join(","),
     review_label: reviewRequired ? "Revisar com atenção" : "",
     review_selection_default: reviewRequired ? "unselected" : "selected",
   };
