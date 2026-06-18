@@ -2044,7 +2044,6 @@ function computeStructuredPreSaveValidation(args: {
   existingReferences: StructuredDuplicateReferenceData;
 }) {
   const seenPoolNames = new Set<string>();
-  const seenCatalogNames = new Set<string>();
   const seenCatalogSkus = new Set<string>();
   const seenDuplicateIdentities = new Set<string>();
   const validItems: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview> = [];
@@ -2079,17 +2078,12 @@ function computeStructuredPreSaveValidation(args: {
         duplicateReason = "Duplicado neste arquivo.";
       } else if (normalizedSku && args.existingReferences.existingCatalogSkus.has(normalizedSku)) {
         duplicateReason = "Ja existe um item com esse SKU nesta loja.";
-      } else if (normalizedName && seenCatalogNames.has(normalizedName)) {
-        duplicateReason = "Duplicado neste arquivo.";
       } else if (normalizedName && args.existingReferences.existingCatalogNames.has(normalizedName)) {
         duplicateReason = "Ja existe um item com esse nome nesta loja.";
       }
 
       if (normalizedSku) {
         seenCatalogSkus.add(normalizedSku);
-      }
-      if (normalizedName) {
-        seenCatalogNames.add(normalizedName);
       }
       if (duplicateIdentity) {
         seenDuplicateIdentities.add(duplicateIdentity);
