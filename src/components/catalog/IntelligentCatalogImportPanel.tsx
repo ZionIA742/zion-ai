@@ -11,6 +11,11 @@ import {
   buildVisualDocumentAnalysis,
   type VisualDocumentAnalysis,
 } from "@/lib/visual-catalog-document-analysis";
+import type {
+  IntelligentImportReviewedSaveItem,
+  IntelligentImportSaveApprovedRequest,
+  IntelligentImportSaveApprovedResponse,
+} from "@/lib/onboarding-intelligent-import-save-contract";
 
 type IntelligentImportSummary = {
   totalFiles: number;
@@ -2001,6 +2006,60 @@ function buildStructuredReviewedSourceItem(
     metadata: {
       ...mergedMetadata,
     },
+  };
+}
+
+function buildReviewedImportedSaveItem(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  index: number
+): IntelligentImportReviewedSaveItem {
+  const destination = resolveImportedDestination(item);
+  const isPool = destination === "pool";
+  const poolMetrics = isPool ? extractImportedPoolMetrics(item) : null;
+  const catalogCategory =
+    destination === "quimicos" || destination === "acessorios" || destination === "outros"
+      ? destination
+      : "outros";
+  const baseMetadata = isPool
+    ? { ...(item.metadata ?? {}), __resolved_destination: destination }
+    : buildImportedCatalogMetadata(item, catalogCategory);
+
+  return {
+    clientItemId: buildImportedSaveKey(item) || `reviewed-item-${index}`,
+    description: (isPool ? buildImportedPoolDescription(item) : buildImportedCatalogDescription(item)) || null,
+    destination,
+    duplicateBlocked: false,
+    isActive: parseStructuredReviewedBoolean(item, ["is_active", "ativo", "vendivel", "vendível"], true),
+    metadata: baseMetadata,
+    name: isPool ? buildImportedPoolName(item) : buildImportedCatalogName(item),
+    poolPayload: isPool
+      ? {
+          depth_m: poolMetrics?.depth_m ?? null,
+          length_m: poolMetrics?.length_m ?? null,
+          material: poolMetrics?.material ?? null,
+          max_capacity_l: poolMetrics?.max_capacity_l ?? null,
+          price: poolMetrics?.price ?? null,
+          shape: poolMetrics?.shape ?? null,
+          weight_kg: null,
+          width_m: poolMetrics?.width_m ?? null,
+        }
+      : null,
+    priceCents: isPool ? null : extractImportedCatalogPriceCents(item),
+    reviewRequired:
+      ["true", "1", "sim", "yes"].includes(
+        normalizeImportedLoose(extractMetadataValue(item, ["review_required", "weak_candidate"]))
+      ),
+    reviewState: "approved",
+    selected: true,
+    sku: isPool ? "" : resolveImportedCatalogSku(item),
+    sourceFileName: item.sourceFileName,
+    sourceType: item.type,
+    stockQuantity: extractImportedCatalogStockQuantity(item),
+    trackStock: parseStructuredReviewedBoolean(
+      item,
+      ["track_stock", "controlar_estoque", "controlar estoque"],
+      true
+    ),
   };
 }
 
@@ -6829,7 +6888,12 @@ export default function IntelligentCatalogImportPanel({
     useState<StructuredDuplicateReferenceData>(createEmptyStructuredDuplicateReferenceData);
   const [structuredDuplicateReferencesLoading, setStructuredDuplicateReferencesLoading] =
     useState(false);
+  const parserDebugEnabled = useMemo(() => shouldEnableParserDebugFromLocation(), []);
   const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
+  const [importedCatalogDryRunResult, setImportedCatalogDryRunResult] =
+    useState<IntelligentImportSaveApprovedResponse | null>(null);
+  const [importedCatalogDryRunPayload, setImportedCatalogDryRunPayload] =
+    useState<IntelligentImportSaveApprovedRequest | null>(null);
   const [visualCatalogLoading, setVisualCatalogLoading] = useState(false);
   const [visualCatalogResult, setVisualCatalogResult] =
     useState<VisualCatalogImportResponse | null>(null);
@@ -7518,6 +7582,8 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportSelectedFilesPreview([]);
     setIntelligentImportError(null);
     setIntelligentImportSuccess(null);
+    setImportedCatalogDryRunResult(null);
+    setImportedCatalogDryRunPayload(null);
     latestExtractedImagePreviewRef.current = [];
     setIntelligentImportResult(null);
     setVisualCatalogResult(null);
@@ -7560,6 +7626,8 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportLoading(true);
     setIntelligentImportError(null);
     setIntelligentImportSuccess(null);
+    setImportedCatalogDryRunResult(null);
+    setImportedCatalogDryRunPayload(null);
     latestExtractedImagePreviewRef.current = [];
     setIntelligentImportResult(null);
     setVisualCatalogResult(null);
@@ -8702,7 +8770,7 @@ export default function IntelligentCatalogImportPanel({
     }
   }
 
-async function handleSaveImportedItemsToCatalog() {
+  async function handleSaveImportedItemsToCatalogLegacy() {
     if (!organizationId || !storeId) {
       setParentError("Não foi possível identificar a organização e a loja ativa.");
       return;
@@ -9317,6 +9385,264 @@ async function handleSaveImportedItemsToCatalog() {
       setSavingImportedCatalog(false);
     }
   }
+
+  async function handleSaveImportedItemsToCatalog() {
+    if (!organizationId || !storeId) {
+      setParentError("Nao foi possivel identificar a organizacao e a loja ativa.");
+      return;
+    }
+    if (!intelligentImportResult || !intelligentImportResult.ok) {
+      setParentError("Faca a importacao inteligente antes de salvar no sistema.");
+      return;
+    }
+
+    const reviewedSourceItems =
+      editableStructuredCandidates.length > 0
+        ? editableStructuredCandidates
+            .filter((candidate) => candidate.selected)
+            .map((candidate) =>
+              buildStructuredReviewedSourceItem(candidate, structuredCandidateDrafts[candidate.id])
+            )
+        : [];
+
+    const rawSourceItems =
+      reviewedSourceItems.length > 0
+        ? reviewedSourceItems
+        : intelligentImportResult.dedupedPreview.length > 0
+          ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
+          : intelligentImportResult.normalizedPreview;
+
+    const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
+    const sourceItems =
+      reviewedSourceItems.length > 0
+        ? filteredSourceItems
+        : dedupeImportedItemsForSave(filteredSourceItems);
+
+    if (sourceItems.length === 0) {
+      setParentError(
+        editableStructuredCandidates.length > 0
+          ? "Nenhum item selecionado para salvar."
+          : isVisualPdfImportResult(intelligentImportResult)
+            ? VISUAL_PDF_IMPORT_MESSAGE
+            : "A analise nao encontrou itens prontos para salvar. Tente um arquivo mais direto ou revise a importacao."
+      );
+      return;
+    }
+
+    const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
+    const buildRequestBody = (
+      validateOnly: boolean
+    ): IntelligentImportSaveApprovedRequest => ({
+      context: {
+        debugParser: parserDebugEnabled,
+        source: source || "intelligent_catalog_import",
+      },
+      importedFileIds: [],
+      items: payloadItems,
+      organizationId,
+      storeId,
+      validateOnly,
+    });
+
+    const buildIssueDetails = (result: IntelligentImportSaveApprovedResponse) =>
+      result.items
+        .filter((item) => item.status !== "valid" && item.status !== "saved")
+        .slice(0, 5)
+        .map((item) => {
+          const fallbackName = payloadItems[item.inputIndex]?.name || `Item ${item.inputIndex + 1}`;
+          const name = String(item.normalizedPayload?.name || fallbackName).trim() || fallbackName;
+          const reason = item.reasons.join(" ").trim() || "Falha de validacao.";
+          return `${name}: ${reason}`;
+        })
+        .join(" | ");
+
+    const runSaveRequest = async (validateOnly: boolean) => {
+      const requestBody = buildRequestBody(validateOnly);
+      const response = await fetch("/api/onboarding/intelligent-import/save-approved", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      const result = (await response.json()) as IntelligentImportSaveApprovedResponse;
+      return {
+        httpOk: response.ok,
+        requestBody,
+        result,
+      };
+    };
+
+    if (parserDebugEnabled) {
+      setParentError(
+        "Salvamento real bloqueado em debugParser=true. Use o botao 'Validar salvamento sem gravar'."
+      );
+      return;
+    }
+
+    setSavingImportedCatalog(true);
+    setParentError(null);
+    setParentSuccess(null);
+    setImportedCatalogDryRunResult(null);
+    setImportedCatalogDryRunPayload(null);
+
+    try {
+      const validation = await runSaveRequest(true);
+      const validationIssues = buildIssueDetails(validation.result);
+
+      if (!validation.httpOk || !validation.result.ok) {
+        setParentError(
+          `${validation.result.message || "Falha ao validar os itens da importacao."}${
+            validationIssues ? ` Primeiros itens: ${validationIssues}` : ""
+          }`
+        );
+        return;
+      }
+
+      const saveAttempt = await runSaveRequest(false);
+      const saveIssues = buildIssueDetails(saveAttempt.result);
+
+      if (!saveAttempt.httpOk || !saveAttempt.result.ok) {
+        setParentError(
+          `${saveAttempt.result.message || "Falha ao salvar os itens da importacao."}${
+            saveIssues ? ` Primeiros itens: ${saveIssues}` : ""
+          }`
+        );
+        return;
+      }
+
+      const savedPools = saveAttempt.result.items.filter((item) => item.destination === "pool").length;
+      const savedQuimicos = saveAttempt.result.items.filter(
+        (item) => item.destination === "quimicos"
+      ).length;
+      const savedAcessorios = saveAttempt.result.items.filter(
+        (item) => item.destination === "acessorios"
+      ).length;
+      const savedOutros = saveAttempt.result.items.filter((item) => item.destination === "outros").length;
+
+      setParentSuccess(
+        `Importacao salva com sucesso. Piscinas: ${savedPools}. Quimicos: ${savedQuimicos}. Acessorios: ${savedAcessorios}. Outros: ${savedOutros}.`
+      );
+      clearIntelligentImportState();
+      await onSaved?.();
+      void afterSaveBehavior?.();
+    } catch (error) {
+      console.error("[OnboardingPage] handleSaveImportedItemsToCatalog error:", error);
+      setParentError(
+        error instanceof Error ? error.message : "Erro ao salvar os itens importados no sistema."
+      );
+    } finally {
+      setSavingImportedCatalog(false);
+    }
+  }
+
+  async function handleValidateImportedItemsDryRun() {
+    if (!organizationId || !storeId) {
+      setParentError("Nao foi possivel identificar a organizacao e a loja ativa.");
+      return;
+    }
+    if (!intelligentImportResult || !intelligentImportResult.ok) {
+      setParentError("Faca a importacao inteligente antes de validar o salvamento.");
+      return;
+    }
+
+    const reviewedSourceItems =
+      editableStructuredCandidates.length > 0
+        ? editableStructuredCandidates
+            .filter((candidate) => candidate.selected)
+            .map((candidate) =>
+              buildStructuredReviewedSourceItem(candidate, structuredCandidateDrafts[candidate.id])
+            )
+        : [];
+
+    const rawSourceItems =
+      reviewedSourceItems.length > 0
+        ? reviewedSourceItems
+        : intelligentImportResult.dedupedPreview.length > 0
+          ? intelligentImportResult.dedupedPreview.filter((item) => !item.isDuplicate)
+          : intelligentImportResult.normalizedPreview;
+
+    const filteredSourceItems = rawSourceItems.filter((item) => !shouldSkipImportedItem(item));
+    const sourceItems =
+      reviewedSourceItems.length > 0
+        ? filteredSourceItems
+        : dedupeImportedItemsForSave(filteredSourceItems);
+
+    if (sourceItems.length === 0) {
+      setParentError(
+        editableStructuredCandidates.length > 0
+          ? "Nenhum item selecionado para validar."
+          : isVisualPdfImportResult(intelligentImportResult)
+            ? VISUAL_PDF_IMPORT_MESSAGE
+            : "A analise nao encontrou itens prontos para validar."
+      );
+      return;
+    }
+
+    const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
+    const requestBody: IntelligentImportSaveApprovedRequest = {
+      context: {
+        debugParser: parserDebugEnabled,
+        source: source || "intelligent_catalog_import",
+      },
+      importedFileIds: [],
+      items: payloadItems,
+      organizationId,
+      storeId,
+      validateOnly: true,
+    };
+
+    setSavingImportedCatalog(true);
+    setParentError(null);
+    setParentSuccess(null);
+    setImportedCatalogDryRunPayload(requestBody);
+    setImportedCatalogDryRunResult(null);
+
+    try {
+      const response = await fetch("/api/onboarding/intelligent-import/save-approved", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+      const result = (await response.json()) as IntelligentImportSaveApprovedResponse;
+      setImportedCatalogDryRunResult(result);
+
+      const issueDetails = result.items
+        .filter((item) => item.status !== "valid" && item.status !== "saved")
+        .slice(0, 5)
+        .map((item) => {
+          const fallbackName = payloadItems[item.inputIndex]?.name || `Item ${item.inputIndex + 1}`;
+          const name = String(item.normalizedPayload?.name || fallbackName).trim() || fallbackName;
+          const reason = item.reasons.join(" ").trim() || "Falha de validacao.";
+          return `${name}: ${reason}`;
+        })
+        .join(" | ");
+
+      if (!response.ok || !result.ok) {
+        setParentError(
+          `${result.message || "Falha ao validar o salvamento sem gravar."}${
+            issueDetails ? ` Primeiros itens: ${issueDetails}` : ""
+          }`
+        );
+        return;
+      }
+
+      setParentSuccess(
+        `Dry-run concluido sem gravar. Total: ${result.summary.total}. Validos: ${result.summary.valid}. Invalidos: ${result.summary.invalid}. Duplicados bloqueados: ${result.summary.blockedDuplicate}.`
+      );
+    } catch (error) {
+      console.error("[OnboardingPage] handleValidateImportedItemsDryRun error:", error);
+      setParentError(
+        error instanceof Error ? error.message : "Erro ao validar o salvamento sem gravar."
+      );
+    } finally {
+      setSavingImportedCatalog(false);
+    }
+  }
+
   useEffect(() => {
     if (!intelligentImportStorageKey || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(intelligentImportStorageKey);
@@ -11569,23 +11895,103 @@ async function handleSaveImportedItemsToCatalog() {
                           Aguarde a validacao de duplicidades para liberar o salvamento.
                         </p>
                       ) : null}
+                      {parserDebugEnabled ? (
+                        <p className="mt-2 text-sm font-medium text-amber-800">
+                          <code>debugParser=true</code> ativo. O salvamento real fica bloqueado neste modo e o teste
+                          deve usar apenas a validacao sem gravar.
+                        </p>
+                      ) : null}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleSaveImportedItemsToCatalog()}
-                      disabled={
-                        disabled ||
-                        savingImportedCatalog ||
-                        intelligentImportLoading ||
-                        structuredDuplicateReferencesLoading ||
-                        (editableStructuredCandidates.length > 0 &&
-                          structuredSelectedCandidates.length === 0)
-                      }
-                      className="rounded-xl bg-black px-5 py-3 text-sm font-medium text-white disabled:opacity-60"
-                    >
-                      {savingImportedCatalog ? "Salvando no sistema..." : "Salvar itens aprovados"}
-                    </button>
+                    <div className="flex flex-col gap-2 md:items-end">
+                      {parserDebugEnabled ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleValidateImportedItemsDryRun()}
+                          disabled={
+                            disabled ||
+                            savingImportedCatalog ||
+                            intelligentImportLoading ||
+                            structuredDuplicateReferencesLoading ||
+                            (editableStructuredCandidates.length > 0 &&
+                              structuredSelectedCandidates.length === 0)
+                          }
+                          className="rounded-xl bg-sky-900 px-5 py-3 text-sm font-medium text-white disabled:opacity-60"
+                        >
+                          {savingImportedCatalog
+                            ? "Validando sem gravar..."
+                            : "Validar salvamento sem gravar"}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveImportedItemsToCatalog()}
+                        disabled={
+                          disabled ||
+                          parserDebugEnabled ||
+                          savingImportedCatalog ||
+                          intelligentImportLoading ||
+                          structuredDuplicateReferencesLoading ||
+                          (editableStructuredCandidates.length > 0 &&
+                            structuredSelectedCandidates.length === 0)
+                        }
+                        className="rounded-xl bg-black px-5 py-3 text-sm font-medium text-white disabled:opacity-60"
+                      >
+                        {parserDebugEnabled
+                          ? "Salvar itens aprovados bloqueado em debug"
+                          : savingImportedCatalog
+                            ? "Salvando no sistema..."
+                            : "Salvar itens aprovados"}
+                      </button>
+                    </div>
                   </div>
+                  {parserDebugEnabled && importedCatalogDryRunResult ? (
+                    <div className="mt-4 rounded-2xl border border-sky-200 bg-white p-4">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-sky-950">
+                            Resultado da validacao sem gravar
+                          </p>
+                          <p className="text-xs leading-5 text-sky-900">
+                            O payload abaixo foi enviado com <code>validateOnly=true</code>. Nenhum item foi gravado.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-xs font-medium">
+                          <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-800">
+                            total {importedCatalogDryRunResult.summary.total}
+                          </span>
+                          <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">
+                            valid {importedCatalogDryRunResult.summary.valid}
+                          </span>
+                          <span className="rounded-full bg-rose-100 px-3 py-1 text-rose-800">
+                            invalid {importedCatalogDryRunResult.summary.invalid}
+                          </span>
+                          <span className="rounded-full bg-amber-100 px-3 py-1 text-amber-800">
+                            blockedDuplicate {importedCatalogDryRunResult.summary.blockedDuplicate}
+                          </span>
+                          <span className="rounded-full bg-sky-100 px-3 py-1 text-sky-800">
+                            saved {importedCatalogDryRunResult.summary.saved}
+                          </span>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-sm text-slate-700">{importedCatalogDryRunResult.message}</p>
+                      <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <summary className="cursor-pointer text-sm font-semibold text-slate-900">
+                          Payload enviado no dry-run
+                        </summary>
+                        <pre className="mt-3 max-h-[360px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">
+                          {JSON.stringify(importedCatalogDryRunPayload, null, 2)}
+                        </pre>
+                      </details>
+                      <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <summary className="cursor-pointer text-sm font-semibold text-slate-900">
+                          Resultado detalhado da validacao
+                        </summary>
+                        <pre className="mt-3 max-h-[420px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">
+                          {JSON.stringify(importedCatalogDryRunResult, null, 2)}
+                        </pre>
+                      </details>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {editingStructuredCandidate && structuredCandidateEditorDraft ? (
