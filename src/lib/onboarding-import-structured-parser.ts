@@ -217,6 +217,17 @@ export type StructuredParserFileDebug = {
     outputCount: number;
     mergedPairs: StructuredParserFragmentMergeDebug[];
   };
+  spreadsheetAtomicRows?: {
+    detected: boolean;
+    count: number;
+    narrativeSplitSkipped: boolean;
+    rows: Array<{
+      blockIndex: number;
+      sheetName?: string;
+      worksheetRowNumber?: number;
+      sheetScopedKey?: string;
+    }>;
+  };
 };
 
 const DEBUG_INTELLIGENT_IMPORT =
@@ -3499,22 +3510,17 @@ function splitDelimitedBlocks(text: string) {
 
   for (let index = 0; index < markers.length; index += 1) {
     const start = markers[index].index ?? 0;
-    const defaultEnd =
+    const end =
       index + 1 < markers.length ? markers[index + 1].index ?? normalized.length : normalized.length;
-    const markerLineEnd = normalized.indexOf("\n", start);
-    let searchStart = markerLineEnd >= 0 && markerLineEnd < defaultEnd ? markerLineEnd : start;
-    const ownMarkerContinuation = normalized
-      .slice(searchStart, defaultEnd)
-      .match(/^(?:\n\s*)+(?:PLANILHA|ABA|SHEET)\s*:[^\n]*\nLINHA\s*:[^\n]*===/i);
-    if (ownMarkerContinuation) {
-      searchStart += ownMarkerContinuation[0].length;
-    }
-    const nextSheetMarker = normalized
-      .slice(searchStart, defaultEnd)
-      .search(/\n(?:PLANILHA|ABA|SHEET)\s*:/i);
-    const end = nextSheetMarker >= 0 ? searchStart + nextSheetMarker : defaultEnd;
     const rawBlock = normalized.slice(start, end);
-    const cleanedBlock = normalizeBlock(rawBlock.replace(/^===\s*ITEM[^\n]*\n?/i, ""));
+    const cleanedBlock = stripTrailingSpreadsheetSectionHeader(
+      normalizeBlock(
+        rawBlock.replace(
+          /^===\s*ITEM\b[^\n]*(?:\n\s*(?:PLANILHA|ABA|SHEET)\s*:[^\n]*)?(?:\n\s*LINHA\s*:[^\n]*===)?\n?/i,
+          "",
+        ),
+      ),
+    );
 
     if (cleanedBlock) {
       blocks.push(cleanedBlock);
@@ -3522,6 +3528,10 @@ function splitDelimitedBlocks(text: string) {
   }
 
   return blocks;
+}
+
+function stripTrailingSpreadsheetSectionHeader(block: string) {
+  return normalizeBlock(block.replace(/\n(?:PLANILHA|ABA|SHEET)\s*:\s*[^\n]+$/g, ""));
 }
 
 function splitNumberedBlocks(text: string) {
@@ -3718,11 +3728,92 @@ function summarizeBlockForDebug(
   };
 }
 
+function extractSpreadsheetRowBlockProvenance(block: string) {
+  const normalizedBlock = normalizeBlock(block);
+  const sheetName = cleanText(
+    normalizedBlock.match(/(?:^|\n)planilha\s*:\s*([^\n]+)/i)?.[1] || ""
+  );
+  const worksheetRowNumberRaw =
+    normalizedBlock.match(/(?:^|\n)linha da planilha\s*:\s*(\d+)/i)?.[1] || "";
+  const worksheetRowNumber = worksheetRowNumberRaw ? Number(worksheetRowNumberRaw) : undefined;
+  const sheetScopedKey = cleanText(
+    normalizedBlock.match(/(?:^|\n)sheet scoped key\s*:\s*([^\n]+)/i)?.[1] || ""
+  );
+
+  const detected =
+    Boolean(sheetName) &&
+    typeof worksheetRowNumber === "number" &&
+    Number.isFinite(worksheetRowNumber) &&
+    worksheetRowNumber > 0 &&
+    Boolean(sheetScopedKey);
+
+  return {
+    detected,
+    sheetName: sheetName || undefined,
+    worksheetRowNumber: detected ? worksheetRowNumber : undefined,
+    sheetScopedKey: sheetScopedKey || undefined,
+  };
+}
+
+function summarizeSpreadsheetAtomicRows(blocks: string[]) {
+  const rows = blocks
+    .map((block, index) => ({
+      blockIndex: index,
+      ...extractSpreadsheetRowBlockProvenance(block),
+    }))
+    .filter((row) => row.detected)
+    .map(({ blockIndex, sheetName, worksheetRowNumber, sheetScopedKey }) => ({
+      blockIndex,
+      sheetName,
+      worksheetRowNumber,
+      sheetScopedKey,
+    }));
+
+  return {
+    detected: rows.length > 0 && rows.length === blocks.length,
+    count: rows.length,
+    rows: rows.slice(0, 20),
+  };
+}
+
 function chooseBlocksDetailed(extracted: ExtractedFileContent) {
   const preparedText = preprocessStructuredText(extracted.text);
   const explicitNameCandidatesBeforeSegmentation =
     captureExplicitProductNameCandidatesBeforeSegmentation(preparedText);
   const finalizeBlocks = (blocks: string[], strategy: string) => {
+    const normalizedBlocks = blocks.map((block) => normalizeBlock(block)).filter(Boolean);
+    const spreadsheetAtomicRows = summarizeSpreadsheetAtomicRows(normalizedBlocks);
+    if (strategy === "delimited_items" && spreadsheetAtomicRows.detected) {
+      const explicitNameAssignments = assignExplicitProductNamesToBlocks(
+        normalizedBlocks,
+        explicitNameCandidatesBeforeSegmentation
+      );
+      return {
+        blocks: normalizedBlocks,
+        explicitNameCandidatesBeforeSegmentation,
+        explicitNameAssignments: explicitNameAssignments.assignments,
+        explicitNamesByBlockIndex: explicitNameAssignments.assignedByBlockIndex,
+        strategy: `${strategy}+spreadsheet_atomic_rows`,
+        fragmentCoalesce: {
+          inputCount: normalizedBlocks.length,
+          outputCount: normalizedBlocks.length,
+          mergedPairs: [],
+          transitionSplits: [],
+        },
+        continuationCoalesce: {
+          inputCount: normalizedBlocks.length,
+          outputCount: normalizedBlocks.length,
+          mergedPairs: [],
+        },
+        spreadsheetAtomicRows: {
+          detected: true,
+          count: spreadsheetAtomicRows.count,
+          narrativeSplitSkipped: true,
+          rows: spreadsheetAtomicRows.rows,
+        },
+      };
+    }
+
     const segmented = blocks.flatMap((block) => splitMixedProductBlock(block));
     const coalesced = coalesceProductFragmentsAfterSplit(segmented);
     const transitionSplit = splitTransitionCarriedBlocks(coalesced.blocks);
@@ -3756,6 +3847,12 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
         inputCount: coalesced.blocks.length,
         outputCount: finalBlocks.length,
         mergedPairs: continued.mergedPairs,
+      },
+      spreadsheetAtomicRows: {
+        detected: false,
+        count: spreadsheetAtomicRows.count,
+        narrativeSplitSkipped: false,
+        rows: spreadsheetAtomicRows.rows,
       },
     };
   };
@@ -5110,6 +5207,7 @@ export function parseStructuredImportItemsDetailed(extracted: ExtractedFileConte
       },
       fragmentCoalesce: chosenBlocks.fragmentCoalesce,
       continuationCoalesce: chosenBlocks.continuationCoalesce,
+      spreadsheetAtomicRows: chosenBlocks.spreadsheetAtomicRows,
     };
   };
 

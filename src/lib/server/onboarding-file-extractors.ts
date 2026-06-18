@@ -282,6 +282,7 @@ function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
     blocks.push(
       [
         `=== ITEM ${index + 1} | PLANILHA: ${sheetName} | LINHA: ${worksheetRowNumber} ===`,
+        `Planilha: ${sheetName}`,
         `Linha da planilha: ${worksheetRowNumber}`,
         `Sheet scoped key: ${sheetScopedKey}`,
         ...pairs,
