@@ -14,6 +14,7 @@ import {
   dedupNormalizedItems,
   type DedupedImportItem,
 } from "./onboarding-import-dedup";
+import { createClient } from "@supabase/supabase-js";
 
 export type ImportableFile = {
   fileName: string;
@@ -26,6 +27,19 @@ export type IntelligentImportParams = {
   storeId: string;
   files: ImportableFile[];
   debugParser?: boolean;
+  uploadedBy?: string | null;
+  persistRawFiles?: boolean;
+  source?: string;
+};
+
+export type IntelligentImportPersistedFile = {
+  id: string;
+  originalFileName: string;
+  storageBucket: string;
+  storagePath: string;
+  sizeBytes: number;
+  mimeType: string | null;
+  status: string | null;
 };
 
 export type IntelligentImportParserDebug = {
@@ -72,6 +86,15 @@ export type IntelligentImportImageDiagnostics = {
   }>;
 };
 
+type IntelligentImportSummary = {
+  totalFiles: number;
+  extractedFiles: number;
+  normalizedItems: number;
+  dedupedItems: number;
+  duplicateItems: number;
+  extractedImages: number;
+};
+
 type IntelligentImportPreviewImage = {
   sourceFileName: string;
   originalSourceFileName?: string;
@@ -93,14 +116,10 @@ type IntelligentImportPreviewImage = {
 export type IntelligentImportResult =
   | {
       ok: true;
-      summary: {
-        totalFiles: number;
-        extractedFiles: number;
-        normalizedItems: number;
-        dedupedItems: number;
-        duplicateItems: number;
-        extractedImages: number;
-      };
+      importedFileIds: string[];
+      importedFiles: IntelligentImportPersistedFile[];
+      rawFilePersistenceWarnings: string[];
+      summary: IntelligentImportSummary;
       extractedPreview: Array<{
         fileName: string;
         mimeType: string;
@@ -119,6 +138,24 @@ export type IntelligentImportResult =
       message: string;
     };
 
+function createServiceSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error(
+      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente."
+    );
+  }
+
+  return createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
+
 const DEBUG_INTELLIGENT_IMPORT =
   process.env.NODE_ENV !== "production" ||
   process.env.DEBUG_INTELLIGENT_IMPORT === "1" ||
@@ -133,6 +170,172 @@ function buildPreview(text: string, max = 300) {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
   if (!normalized) return "";
   return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
+}
+
+function sanitizeImportRawFileName(fileName: string) {
+  return String(fileName || "arquivo")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(-120) || "arquivo";
+}
+
+function getFileExtension(fileName: string) {
+  const normalized = String(fileName || "").trim();
+  const extension = normalized.includes(".") ? normalized.split(".").pop() : "";
+  return String(extension || "").trim().toLowerCase() || null;
+}
+
+function buildImportedRawFileStoragePath(args: {
+  organizationId: string;
+  storeId: string;
+  importBatchId: string;
+  fileName: string;
+}) {
+  const safeName = sanitizeImportRawFileName(args.fileName);
+  return `${args.organizationId}/${args.storeId}/${args.importBatchId}/${crypto.randomUUID()}-${safeName}`;
+}
+
+async function persistImportedRawFiles(args: {
+  files: ImportableFile[];
+  organizationId: string;
+  storeId: string;
+  uploadedBy?: string | null;
+  importSummary: IntelligentImportSummary;
+  source?: string;
+}) {
+  const warnings: string[] = [];
+  const importedFiles: IntelligentImportPersistedFile[] = [];
+  const importedFileIds: string[] = [];
+  const importBatchId = crypto.randomUUID();
+  let supabase: ReturnType<typeof createServiceSupabaseClient>;
+
+  try {
+    supabase = createServiceSupabaseClient();
+  } catch (error) {
+    return {
+      importedFileIds,
+      importedFiles,
+      rawFilePersistenceWarnings: [
+        `Persistencia de arquivo bruto indisponivel neste ambiente: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ],
+    };
+  }
+
+  for (const file of args.files) {
+    const storagePath = buildImportedRawFileStoragePath({
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      importBatchId,
+      fileName: file.fileName,
+    });
+
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from("store-import-files")
+        .upload(storagePath, file.buffer, {
+          upsert: false,
+          contentType: file.mimeType || "application/octet-stream",
+        });
+
+      if (uploadError) {
+        warnings.push(`Falha ao persistir arquivo bruto ${file.fileName}: ${uploadError.message}`);
+        continue;
+      }
+
+      const insertPayload = {
+        organization_id: args.organizationId,
+        store_id: args.storeId,
+        uploaded_by: args.uploadedBy || null,
+        source: args.source || "onboarding_intelligent_import",
+        original_file_name: file.fileName,
+        mime_type: file.mimeType || null,
+        extension: getFileExtension(file.fileName),
+        size_bytes: file.buffer.length,
+        storage_bucket: "store-import-files",
+        storage_path: storagePath,
+        import_summary: args.importSummary,
+        status: "active",
+        import_batch_id: importBatchId,
+        file_hash: null,
+      };
+
+      let createdRow: any = null;
+      let insertError: any = null;
+
+      const fullInsert = await supabase
+        .from("store_import_files")
+        .insert(insertPayload)
+        .select("id, original_file_name, storage_bucket, storage_path, size_bytes, mime_type, status")
+        .single();
+
+      createdRow = fullInsert.data;
+      insertError = fullInsert.error;
+
+      if (insertError) {
+        const fallbackInsert = await supabase
+          .from("store_import_files")
+          .insert({
+            organization_id: args.organizationId,
+            store_id: args.storeId,
+            source: args.source || "onboarding_intelligent_import",
+            original_file_name: file.fileName,
+            mime_type: file.mimeType || null,
+            extension: getFileExtension(file.fileName),
+            size_bytes: file.buffer.length,
+            storage_bucket: "store-import-files",
+            storage_path: storagePath,
+            import_summary: args.importSummary,
+            status: "active",
+          })
+          .select("id, original_file_name, storage_bucket, storage_path, size_bytes, mime_type, status")
+          .single();
+
+        createdRow = fallbackInsert.data;
+        insertError = fallbackInsert.error;
+      }
+
+      if (insertError) {
+        const { error: rollbackError } = await supabase.storage
+          .from("store-import-files")
+          .remove([storagePath]);
+        if (rollbackError) {
+          warnings.push(
+            `Falha ao compensar storage do arquivo bruto ${file.fileName}: ${rollbackError.message}`
+          );
+        }
+        warnings.push(`Falha ao registrar metadata do arquivo bruto ${file.fileName}: ${insertError.message}`);
+        continue;
+      }
+
+      importedFileIds.push(String(createdRow.id || ""));
+      importedFiles.push({
+        id: String(createdRow.id || ""),
+        originalFileName: String(createdRow.original_file_name || file.fileName),
+        storageBucket: String((createdRow as any).storage_bucket || "store-import-files"),
+        storagePath: String(createdRow.storage_path || storagePath),
+        sizeBytes: Number((createdRow as any).size_bytes || file.buffer.length),
+        mimeType: ((createdRow as any).mime_type as string | null) ?? file.mimeType ?? null,
+        status: ((createdRow as any).status as string | null) ?? "active",
+      });
+    } catch (error) {
+      warnings.push(
+        `Falha inesperada ao persistir arquivo bruto ${file.fileName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  return {
+    importedFileIds,
+    importedFiles,
+    rawFilePersistenceWarnings: warnings,
+  };
 }
 
 function normalizeLoose(value: string) {
@@ -616,16 +819,37 @@ export async function runOnboardingIntelligentImport(
       })),
     });
 
+    const summary = {
+      totalFiles: files.length,
+      extractedFiles: extractedFiles.length,
+      normalizedItems: aliased.normalizedPreview.length,
+      dedupedItems: dedupedItems.length,
+      duplicateItems,
+      extractedImages: aliased.imagePreview.length,
+    };
+
+    const persistedRawFiles =
+      params.persistRawFiles === false
+        ? {
+            importedFileIds: [] as string[],
+            importedFiles: [] as IntelligentImportPersistedFile[],
+            rawFilePersistenceWarnings: [] as string[],
+          }
+        : await persistImportedRawFiles({
+            files,
+            organizationId: params.organizationId,
+            storeId: params.storeId,
+            uploadedBy: params.uploadedBy,
+            importSummary: summary,
+            source: params.source,
+          });
+
     return {
       ok: true,
-      summary: {
-        totalFiles: files.length,
-        extractedFiles: extractedFiles.length,
-        normalizedItems: aliased.normalizedPreview.length,
-        dedupedItems: dedupedItems.length,
-        duplicateItems,
-        extractedImages: aliased.imagePreview.length,
-      },
+      importedFileIds: persistedRawFiles.importedFileIds,
+      importedFiles: persistedRawFiles.importedFiles,
+      rawFilePersistenceWarnings: persistedRawFiles.rawFilePersistenceWarnings,
+      summary,
       extractedPreview: extractedFiles.map((file) => ({
         fileName: file.fileName,
         mimeType: file.mimeType,

@@ -61,6 +61,17 @@ type IntelligentImportResponse =
   | {
       ok: true;
       message: string;
+      importedFileIds?: string[];
+      importedFiles?: Array<{
+        id: string;
+        originalFileName: string;
+        storageBucket: string;
+        storagePath: string;
+        sizeBytes: number;
+        mimeType: string | null;
+        status: string | null;
+      }>;
+      rawFilePersistenceWarnings?: string[];
       summary: IntelligentImportSummary;
       extractedPreview: IntelligentImportExtractedPreview[];
       extractedImagePreview?: Array<{
@@ -1448,6 +1459,13 @@ function normalizeIntelligentImportResultForFrontend(
     normalizedPreview: buildFrontendNormalizedPreviewFromItems(saveReadyItems),
     dedupedPreview: dedupedPreviewForFrontend,
   };
+}
+
+function getImportedRawFileIdsFromResult(result: IntelligentImportResponse | null) {
+  if (!result?.ok || !Array.isArray(result.importedFileIds)) return [];
+  return result.importedFileIds
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
 }
 
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
@@ -9445,6 +9463,7 @@ export default function IntelligentCatalogImportPanel({
     }
 
     const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
+    const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
     const buildRequestBody = (
       validateOnly: boolean
     ): IntelligentImportSaveApprovedRequest => ({
@@ -9452,7 +9471,7 @@ export default function IntelligentCatalogImportPanel({
         debugParser: parserDebugEnabled,
         source: source || "intelligent_catalog_import",
       },
-      importedFileIds: [],
+      importedFileIds,
       items: payloadItems,
       organizationId,
       storeId,
@@ -9596,12 +9615,13 @@ export default function IntelligentCatalogImportPanel({
     }
 
     const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
+    const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
     const requestBody: IntelligentImportSaveApprovedRequest = {
       context: {
         debugParser: parserDebugEnabled,
         source: source || "intelligent_catalog_import",
       },
-      importedFileIds: [],
+      importedFileIds,
       items: payloadItems,
       organizationId,
       storeId,
@@ -9954,6 +9974,14 @@ export default function IntelligentCatalogImportPanel({
                                 {intelligentImportDiagnostics.imagesWithOriginClues}
                               </p>
                             </div>
+                            <div className="rounded-lg bg-white/80 px-3 py-2 ring-1 ring-sky-100">
+                              <p className="text-xs text-sky-700">Arquivos brutos persistidos</p>
+                              <p className="font-semibold text-sky-950">
+                                {Array.isArray(intelligentImportResult.importedFileIds)
+                                  ? intelligentImportResult.importedFileIds.length
+                                  : 0}
+                              </p>
+                            </div>
                           </div>
                         </div>
                         <div className="mt-3 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
@@ -9986,6 +10014,16 @@ export default function IntelligentCatalogImportPanel({
                           <div className="mt-3 space-y-1.5">
                             {intelligentImportDiagnostics.formatWarnings.map((warning) => (
                               <p key={warning} className="text-xs leading-5 text-sky-900">
+                                {warning}
+                              </p>
+                            ))}
+                          </div>
+                        ) : null}
+                        {intelligentImportResult.rawFilePersistenceWarnings &&
+                        intelligentImportResult.rawFilePersistenceWarnings.length > 0 ? (
+                          <div className="mt-3 space-y-1.5">
+                            {intelligentImportResult.rawFilePersistenceWarnings.map((warning) => (
+                              <p key={warning} className="text-xs leading-5 text-amber-900">
                                 {warning}
                               </p>
                             ))}

@@ -1,12 +1,118 @@
 import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { runOnboardingIntelligentImport } from "@/lib/server/onboarding-intelligent-import";
 import {
   buildUnsupportedIntelligentImportFileMessage,
   isSupportedIntelligentImportExtension,
 } from "@/lib/server/onboarding-file-extractors";
+import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+type MembershipRow = {
+  organization_id: string;
+};
+
+function createServiceSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error(
+      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente."
+    );
+  }
+
+  return createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
+
+async function authenticateAndAuthorizeImport(args: {
+  organizationId: string;
+  storeId: string;
+}) {
+  const sessionSupabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await sessionSupabase.auth.getUser();
+
+  if (authError || !user) {
+    return {
+      ok: false as const,
+      status: 401,
+      error: "UNAUTHENTICATED",
+      message: "Usuario nao autenticado.",
+    };
+  }
+
+  const { data: memberships, error: membershipError } = await sessionSupabase
+    .from("memberships")
+    .select("organization_id")
+    .eq("user_id", user.id);
+
+  if (membershipError) {
+    return {
+      ok: false as const,
+      status: 500,
+      error: "LOAD_MEMBERSHIPS_FAILED",
+      message: membershipError.message,
+    };
+  }
+
+  const organizationIds = Array.from(
+    new Set(
+      ((memberships ?? []) as MembershipRow[])
+        .map((row) => String(row.organization_id || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!organizationIds.includes(args.organizationId)) {
+    return {
+      ok: false as const,
+      status: 403,
+      error: "NO_ORGANIZATION_ACCESS",
+      message: "Usuario sem acesso a organizacao informada.",
+    };
+  }
+
+  const serviceSupabase = createServiceSupabaseClient();
+  const { data: store, error: storeError } = await serviceSupabase
+    .from("stores")
+    .select("id, organization_id")
+    .eq("id", args.storeId)
+    .in("organization_id", organizationIds)
+    .maybeSingle();
+
+  if (storeError) {
+    return {
+      ok: false as const,
+      status: 500,
+      error: "LOAD_STORE_FAILED",
+      message: storeError.message,
+    };
+  }
+
+  if (!store || String(store.organization_id || "").trim() !== args.organizationId) {
+    return {
+      ok: false as const,
+      status: 403,
+      error: "STORE_FORBIDDEN",
+      message: "Loja nao encontrada ou fora do escopo do usuario.",
+    };
+  }
+
+  return {
+    ok: true as const,
+    userId: user.id,
+  };
+}
 
 export async function POST(request: Request) {
   try {
@@ -17,6 +123,22 @@ export async function POST(request: Request) {
     const debugParserRaw = String(formData.get("debugParser") || "").trim().toLowerCase();
     const debugParser =
       debugParserRaw === "1" || debugParserRaw === "true" || debugParserRaw === "yes";
+
+    const auth = await authenticateAndAuthorizeImport({
+      organizationId,
+      storeId,
+    });
+
+    if (!auth.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: auth.error,
+          message: auth.message,
+        },
+        { status: auth.status }
+      );
+    }
 
     const uploadedEntries = formData.getAll("files");
     const invalidFileNames = uploadedEntries
@@ -59,6 +181,9 @@ export async function POST(request: Request) {
       storeId,
       files,
       debugParser,
+      uploadedBy: auth.userId,
+      persistRawFiles: true,
+      source: "onboarding_intelligent_import",
     });
 
     if (!result.ok) {
@@ -76,6 +201,9 @@ export async function POST(request: Request) {
       ok: true,
       message: "Importação inteligente processada com sucesso.",
       summary: result.summary,
+      importedFileIds: result.importedFileIds,
+      importedFiles: result.importedFiles,
+      rawFilePersistenceWarnings: result.rawFilePersistenceWarnings,
       extractedPreview: result.extractedPreview,
       extractedImagePreview: result.extractedImagePreview,
       imageDiagnostics: result.imageDiagnostics,
