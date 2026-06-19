@@ -12,6 +12,7 @@ import {
   type VisualDocumentAnalysis,
 } from "@/lib/visual-catalog-document-analysis";
 import type {
+  IntelligentImportSelectedMediaRef,
   IntelligentImportReviewedSaveItem,
   IntelligentImportSaveApprovedRequest,
   IntelligentImportSaveApprovedResponse,
@@ -1466,6 +1467,157 @@ function getImportedRawFileIdsFromResult(result: IntelligentImportResponse | nul
   return result.importedFileIds
     .map((value) => String(value || "").trim())
     .filter(Boolean);
+}
+
+function estimateDataUrlSizeBytes(dataUrl: string) {
+  const normalized = String(dataUrl || "").trim();
+  const commaIndex = normalized.indexOf(",");
+  if (commaIndex < 0) return null;
+  const base64 = normalized.slice(commaIndex + 1).replace(/\s+/g, "");
+  if (!base64) return null;
+  const padding = (base64.match(/=+$/)?.[0].length ?? 0);
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+}
+
+function mapPreviewImageSourceToMediaSourceKind(source: string | null | undefined) {
+  const normalized = String(source || "").trim().toLowerCase();
+  if (normalized === "xlsx") return "xlsx_row_image" as const;
+  if (normalized === "docx") return "docx_media" as const;
+  if (normalized === "pptx") return "pptx_media" as const;
+  if (normalized === "pdf") return "pdf_page_render" as const;
+  if (normalized === "image_file") return "image_file" as const;
+  return "unknown" as const;
+}
+
+function buildSelectedMediaRefsForSave(args: {
+  images: NonNullable<Extract<IntelligentImportResponse, { ok: true }>["extractedImagePreview"]>;
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
+}) {
+  const selectedMediaRefs: IntelligentImportSelectedMediaRef[] = [];
+  const diagnostics: string[] = [];
+
+  if (args.items.length === 0) {
+    diagnostics.push("Nenhum item elegivel para montar selectedMediaRefs.");
+    return {
+      selectedMediaRefs,
+      diagnostics,
+    };
+  }
+
+  if (args.images.length === 0) {
+    diagnostics.push("Nenhuma imagem extraida disponivel para photoPlan neste request.");
+    return {
+      selectedMediaRefs,
+      diagnostics,
+    };
+  }
+
+  let skippedNonStrongCount = 0;
+  let skippedWithoutStableLocationCount = 0;
+
+  for (const [itemIndex, item] of args.items.entries()) {
+    const sourceLocationKey = buildImportedSourceLocationKey(item);
+    const sourceFileName = String(extractImportedOriginalSourceFileName(item) || item.sourceFileName || "").trim();
+    const sheetScopedKey = extractImportedSheetScopedKey(item);
+    const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
+
+    if (!sourceFileName || (!sourceLocationKey && !sheetScopedKey)) {
+      skippedWithoutStableLocationCount += 1;
+      continue;
+    }
+
+    const image = args.images.find((candidate) => {
+      const sourceKind = mapPreviewImageSourceToMediaSourceKind(candidate.source);
+      if (sourceKind !== "xlsx_row_image") return false;
+      const candidateFileName = String(
+        candidate.originalSourceFileName || candidate.sourceFileName || ""
+      ).trim();
+      if (
+        candidateFileName &&
+        normalizeImportedLoose(candidateFileName) !== normalizeImportedLoose(sourceFileName)
+      ) {
+        return false;
+      }
+      const candidateLocationKey = buildExtractedImageSourceLocationKey({
+        sourceFileName: candidate.sourceFileName,
+        originalSourceFileName: candidate.originalSourceFileName,
+        sheetName: candidate.sheetName,
+        sheetScopedKey: candidate.sheetScopedKey,
+        worksheetRowNumber: candidate.worksheetRowNumber,
+        source: candidate.source,
+        fileName: candidate.fileName,
+      });
+      if (sourceLocationKey && candidateLocationKey) {
+        return normalizeImportedLoose(candidateLocationKey) === normalizeImportedLoose(sourceLocationKey);
+      }
+      if (sheetScopedKey && candidate.sheetScopedKey) {
+        return normalizeImportedLoose(candidate.sheetScopedKey) === normalizeImportedLoose(sheetScopedKey);
+      }
+      if (
+        worksheetRowNumber != null &&
+        typeof candidate.worksheetRowNumber === "number" &&
+        Math.floor(candidate.worksheetRowNumber) === Math.floor(worksheetRowNumber)
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    if (!image) continue;
+
+    const sourceKind = mapPreviewImageSourceToMediaSourceKind(image.source);
+    if (sourceKind !== "xlsx_row_image") {
+      skippedNonStrongCount += 1;
+      continue;
+    }
+
+    selectedMediaRefs.push({
+      associationMode: "strong_auto",
+      clientItemId: buildReviewedImportedSaveItem(item, itemIndex).clientItemId,
+      confirmedByUser: false,
+      fileName: image.fileName || null,
+      mediaRefId: [
+        "preview-media",
+        normalizeImportedLoose(String(image.originalSourceFileName || image.sourceFileName || "")),
+        normalizeImportedLoose(String(image.sheetScopedKey || "")),
+        String(image.fileName || ""),
+        itemIndex,
+      ].join("::"),
+      mimeType: image.mimeType || null,
+      pageNumber: null,
+      sheetScopedKey: image.sheetScopedKey || null,
+      sizeBytes: estimateDataUrlSizeBytes(image.dataUrl),
+      sourceFileName,
+      sourceImageId: [
+        normalizeImportedLoose(String(image.originalSourceFileName || image.sourceFileName || "")),
+        normalizeImportedLoose(String(image.sheetScopedKey || "")),
+        normalizeImportedLoose(String(image.fileName || "")),
+      ].join("::"),
+      sourceKind,
+      sourceLocationKey: sourceLocationKey || null,
+      worksheetRowNumber:
+        typeof image.worksheetRowNumber === "number" ? Math.floor(image.worksheetRowNumber) : null,
+    });
+  }
+
+  if (selectedMediaRefs.length === 0) {
+    diagnostics.push("Nenhuma midia com referencia forte/estavel foi selecionada para o photoPlan.");
+  }
+  if (skippedWithoutStableLocationCount > 0) {
+    diagnostics.push(
+      `${skippedWithoutStableLocationCount} item(ns) sem sourceLocationKey/sheetScopedKey forte ficaram fora do photoPlan.`
+    );
+  }
+  if (skippedNonStrongCount > 0) {
+    diagnostics.push(
+      `${skippedNonStrongCount} midia(s) nao-XLSX/nao-fortes foram ignoradas neste bloco e exigirao confirmacao/staging futuro.`
+    );
+  }
+
+  return {
+    selectedMediaRefs,
+    diagnostics,
+  };
 }
 
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
@@ -9463,6 +9615,10 @@ export default function IntelligentCatalogImportPanel({
     }
 
     const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
+    const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
+      images: safeExtractedImagePreview,
+      items: sourceItems,
+    });
     const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
     const buildRequestBody = (
       validateOnly: boolean
@@ -9474,6 +9630,7 @@ export default function IntelligentCatalogImportPanel({
       importedFileIds,
       items: payloadItems,
       organizationId,
+      selectedMediaRefs: selectedMediaRefBuild.selectedMediaRefs,
       storeId,
       validateOnly,
     });
@@ -9554,9 +9711,13 @@ export default function IntelligentCatalogImportPanel({
         (item) => item.destination === "acessorios"
       ).length;
       const savedOutros = saveAttempt.result.items.filter((item) => item.destination === "outros").length;
+      const photoPlanNotice =
+        saveAttempt.result.photoPlan && saveAttempt.result.photoPlan.receivedMediaRefs.length > 0
+          ? " PhotoPlan calculado, mas a persistencia de fotos finais ainda nao esta habilitada neste bloco."
+          : "";
 
       setParentSuccess(
-        `Importacao salva com sucesso. Piscinas: ${savedPools}. Quimicos: ${savedQuimicos}. Acessorios: ${savedAcessorios}. Outros: ${savedOutros}.`
+        `Importacao salva com sucesso. Piscinas: ${savedPools}. Quimicos: ${savedQuimicos}. Acessorios: ${savedAcessorios}. Outros: ${savedOutros}.${photoPlanNotice}`
       );
       clearIntelligentImportState();
       await onSaved?.();
@@ -9615,6 +9776,10 @@ export default function IntelligentCatalogImportPanel({
     }
 
     const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
+    const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
+      images: safeExtractedImagePreview,
+      items: sourceItems,
+    });
     const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
     const requestBody: IntelligentImportSaveApprovedRequest = {
       context: {
@@ -9624,6 +9789,7 @@ export default function IntelligentCatalogImportPanel({
       importedFileIds,
       items: payloadItems,
       organizationId,
+      selectedMediaRefs: selectedMediaRefBuild.selectedMediaRefs,
       storeId,
       validateOnly: true,
     };
@@ -12052,6 +12218,38 @@ export default function IntelligentCatalogImportPanel({
                           ) : null}
                         </div>
                       ) : null}
+                      {importedCatalogDryRunResult.photoPlan ? (
+                        <div className="mt-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3 text-sm text-cyan-950">
+                          <p className="font-semibold">Plano de fotos / midias</p>
+                          <p className="mt-1">
+                            midias recebidas: {importedCatalogDryRunResult.photoPlan.receivedMediaRefs.length}
+                            {" • "}
+                            fotos finais planejaveis: {importedCatalogDryRunResult.photoPlan.plannedFinalPhotos.length}
+                            {" • "}
+                            bloqueadas: {importedCatalogDryRunResult.photoPlan.blockedMediaRefs.length}
+                            {" • "}
+                            uploads finais: {importedCatalogDryRunResult.photoPlan.wouldUploadFinalPhotoObjects}
+                          </p>
+                          <p className="mt-1">
+                            wouldCreatePoolPhotos: {importedCatalogDryRunResult.photoPlan.wouldCreatePoolPhotos}
+                            {" • "}
+                            wouldCreateCatalogItemPhotos:{" "}
+                            {importedCatalogDryRunResult.photoPlan.wouldCreateCatalogItemPhotos}
+                          </p>
+                          {importedCatalogDryRunResult.photoPlan.receivedMediaRefs.length === 0 ? (
+                            <p className="mt-2 text-xs leading-5 text-cyan-900">
+                              Nenhuma midia selecionada/planejada para foto final neste dry-run.
+                            </p>
+                          ) : null}
+                          {importedCatalogDryRunResult.photoPlan.warnings.length > 0 ? (
+                            <div className="mt-2 space-y-1 text-xs leading-5 text-cyan-900">
+                              {importedCatalogDryRunResult.photoPlan.warnings.map((warning, index) => (
+                                <p key={`dry-run-photo-plan-warning-${index}`}>{warning}</p>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <summary className="cursor-pointer text-sm font-semibold text-slate-900">
                           Payload enviado no dry-run
@@ -12067,6 +12265,16 @@ export default function IntelligentCatalogImportPanel({
                           </summary>
                           <pre className="mt-3 max-h-[320px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">
                             {JSON.stringify(importedCatalogDryRunResult.importFileLinkPlan, null, 2)}
+                          </pre>
+                        </details>
+                      ) : null}
+                      {importedCatalogDryRunResult.photoPlan ? (
+                        <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <summary className="cursor-pointer text-sm font-semibold text-slate-900">
+                            Plano detalhado de fotos/midias
+                          </summary>
+                          <pre className="mt-3 max-h-[320px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">
+                            {JSON.stringify(importedCatalogDryRunResult.photoPlan, null, 2)}
                           </pre>
                         </details>
                       ) : null}

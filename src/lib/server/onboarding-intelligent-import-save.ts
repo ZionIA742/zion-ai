@@ -1,12 +1,16 @@
 import { createClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import {
+  type IntelligentImportSelectedMediaAssociationMode,
+  type IntelligentImportSelectedMediaRef,
+  type IntelligentImportSelectedMediaSourceKind,
   type IntelligentImportReviewedDestination,
   type IntelligentImportReviewedPoolPayload,
   type IntelligentImportReviewedSaveItem,
   type IntelligentImportSaveApprovedConflict,
   type IntelligentImportSaveApprovedImportFilePlan,
   type IntelligentImportSaveApprovedNormalizedPayload,
+  type IntelligentImportSaveApprovedPhotoPlan,
   type IntelligentImportSaveApprovedRequest,
   type IntelligentImportSaveApprovedResponse,
   type IntelligentImportSaveApprovedResultItem,
@@ -58,6 +62,11 @@ type ImportFileValidationResult = {
   validatedFilesByName: Map<string, ImportedFileRow[]>;
   warnings: string[];
 };
+
+type PhotoPlanClassification =
+  | "planned"
+  | "blocked"
+  | "unlinked";
 
 function createServiceSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -501,20 +510,26 @@ async function loadDuplicateReferenceData(args: {
 
 function buildResponseMessage(response: IntelligentImportSaveApprovedResponse) {
   const invalidImportFiles = response.importFileLinkPlan?.invalidImportedFileIds.length ?? 0;
+  const blockedMediaRefs = response.photoPlan?.blockedMediaRefs.length ?? 0;
+  const mediaWarnings = response.photoPlan?.warnings.length ?? 0;
 
   if (response.validateOnly) {
     if (response.ok) {
-      return `${response.summary.valid} item(ns) validos para salvar.`;
+      return `${response.summary.valid} item(ns) validos para salvar. PhotoPlan: ${response.photoPlan?.plannedFinalPhotos.length ?? 0} foto(s) planejavel(is), ${blockedMediaRefs} bloqueada(s), ${mediaWarnings} warning(s).`;
     }
 
-    return `Validacao encontrou ${response.summary.invalid} item(ns) invalidos, ${response.summary.blockedDuplicate} duplicado(s) bloqueados e ${invalidImportFiles} importedFileId(s) invalido(s).`;
+    return `Validacao encontrou ${response.summary.invalid} item(ns) invalidos, ${response.summary.blockedDuplicate} duplicado(s) bloqueados, ${invalidImportFiles} importedFileId(s) invalido(s) e ${blockedMediaRefs} mediaRef(s) bloqueado(s).`;
   }
 
   if (response.ok) {
-    return `${response.summary.saved} item(ns) salvos com sucesso.`;
+    const photoPlanNote =
+      response.photoPlan && response.photoPlan.receivedMediaRefs.length > 0
+        ? " PhotoPlan calculado, mas persistencia de fotos finais ainda nao habilitada neste bloco."
+        : "";
+    return `${response.summary.saved} item(ns) salvos com sucesso.${photoPlanNote}`;
   }
 
-  return `Salvamento bloqueado: ${response.summary.invalid} invalido(s), ${response.summary.blockedDuplicate} duplicado(s) e ${invalidImportFiles} importedFileId(s) invalido(s).`;
+  return `Salvamento bloqueado: ${response.summary.invalid} invalido(s), ${response.summary.blockedDuplicate} duplicado(s), ${invalidImportFiles} importedFileId(s) invalido(s) e ${blockedMediaRefs} mediaRef(s) bloqueado(s).`;
 }
 
 function extractSourceFileName(item: IntelligentImportReviewedSaveItem) {
@@ -532,6 +547,384 @@ function extractSourceFileName(item: IntelligentImportReviewedSaveItem) {
   }
 
   return null;
+}
+
+function extractSourceLocationKey(item: IntelligentImportReviewedSaveItem) {
+  const metadata = normalizeMetadata(item.metadata);
+  const candidates = [
+    metadata.source_location_key,
+    metadata.source_sheet_scoped_key && metadata.source_file_name
+      ? `${metadata.source_file_name}::${metadata.source_sheet_scoped_key}`
+      : null,
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+function extractSheetScopedKey(item: IntelligentImportReviewedSaveItem) {
+  const metadata = normalizeMetadata(item.metadata);
+  const candidates = [metadata.source_sheet_scoped_key, metadata.sheet_scoped_key];
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+function extractWorksheetRowNumber(item: IntelligentImportReviewedSaveItem) {
+  const metadata = normalizeMetadata(item.metadata);
+  const candidates = [
+    metadata.source_worksheet_row_number,
+    metadata.worksheet_row_number,
+    metadata.source_row_number,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = parseFiniteNumber(candidate);
+    if (parsed != null && parsed > 0) return Math.floor(parsed);
+  }
+
+  return null;
+}
+
+function normalizeSourceKind(value: unknown): IntelligentImportSelectedMediaSourceKind {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "xlsx_row_image") return "xlsx_row_image";
+  if (normalized === "docx_media") return "docx_media";
+  if (normalized === "pptx_media") return "pptx_media";
+  if (normalized === "pdf_page_render") return "pdf_page_render";
+  if (normalized === "image_file") return "image_file";
+  return "unknown";
+}
+
+function normalizeAssociationMode(value: unknown): IntelligentImportSelectedMediaAssociationMode {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "strong_auto") return "strong_auto";
+  if (normalized === "weak_confirmed") return "weak_confirmed";
+  if (normalized === "manual_upload") return "manual_upload";
+  if (normalized === "visual_evidence") return "visual_evidence";
+  if (normalized === "none") return "none";
+  return "unknown";
+}
+
+function buildNormalizedMediaRef(ref: IntelligentImportSelectedMediaRef) {
+  return {
+    associationMode: normalizeAssociationMode(ref.associationMode),
+    clientItemId: String(ref.clientItemId || "").trim(),
+    confirmedByUser: Boolean(ref.confirmedByUser),
+    fileName: String(ref.fileName || "").trim() || null,
+    mediaRefId: String(ref.mediaRefId || "").trim(),
+    mimeType: String(ref.mimeType || "").trim() || null,
+    notes: Array.isArray(ref.notes)
+      ? ref.notes.map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
+    pageNumber: parseFiniteNumber(ref.pageNumber),
+    sheetScopedKey: String(ref.sheetScopedKey || "").trim() || null,
+    sizeBytes: parseFiniteNumber(ref.sizeBytes),
+    sourceFileName: String(ref.sourceFileName || "").trim() || null,
+    sourceImageId: String(ref.sourceImageId || "").trim() || null,
+    sourceKind: normalizeSourceKind(ref.sourceKind),
+    sourceLocationKey: String(ref.sourceLocationKey || "").trim() || null,
+    stagingStorageRef: String(ref.stagingStorageRef || "").trim() || null,
+    warnings: Array.isArray(ref.warnings)
+      ? ref.warnings.map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
+    worksheetRowNumber: parseFiniteNumber(ref.worksheetRowNumber),
+  };
+}
+
+function classifyPhotoPlanMediaRef(args: {
+  item: IntelligentImportReviewedSaveItem | undefined;
+  resultItem: IntelligentImportSaveApprovedResultItem | undefined;
+  mediaRef: IntelligentImportSelectedMediaRef;
+}): {
+  classification: PhotoPlanClassification;
+  planned?: IntelligentImportSaveApprovedPhotoPlan["plannedFinalPhotos"][number];
+  blocked?: IntelligentImportSaveApprovedPhotoPlan["blockedMediaRefs"][number];
+  unlinked?: IntelligentImportSaveApprovedPhotoPlan["unlinkedMediaRefs"][number];
+  warnings: string[];
+} {
+  const normalizedRef = buildNormalizedMediaRef(args.mediaRef);
+  const warnings = [...normalizedRef.notes, ...normalizedRef.warnings];
+
+  if (!normalizedRef.mediaRefId || !normalizedRef.clientItemId) {
+    return {
+      classification: "unlinked",
+      unlinked: {
+        clientItemId: normalizedRef.clientItemId || "(missing-client-item-id)",
+        mediaRefId: normalizedRef.mediaRefId || "(missing-media-ref-id)",
+        reason: "mediaRef sem mediaRefId/clientItemId valido.",
+        sourceKind: normalizedRef.sourceKind,
+      },
+      warnings,
+    };
+  }
+
+  if (!args.item || !args.resultItem) {
+    return {
+      classification: "unlinked",
+      unlinked: {
+        clientItemId: normalizedRef.clientItemId,
+        mediaRefId: normalizedRef.mediaRefId,
+        reason: "mediaRef aponta para clientItemId que nao existe neste request.",
+        sourceKind: normalizedRef.sourceKind,
+      },
+      warnings,
+    };
+  }
+
+  if (args.resultItem.status !== "valid" && args.resultItem.status !== "saved") {
+    return {
+      classification: "blocked",
+      blocked: {
+        associationMode: normalizedRef.associationMode,
+        clientItemId: normalizedRef.clientItemId,
+        mediaRefId: normalizedRef.mediaRefId,
+        reason: "Item de destino nao esta valido/salvo; photoPlan nao pode ser aplicado.",
+        sourceKind: normalizedRef.sourceKind,
+        warnings,
+      },
+      warnings,
+    };
+  }
+
+  if (normalizedRef.associationMode === "none") {
+    return {
+      classification: "unlinked",
+      unlinked: {
+        clientItemId: normalizedRef.clientItemId,
+        mediaRefId: normalizedRef.mediaRefId,
+        reason: "Item marcado explicitamente sem foto final neste bloco.",
+        sourceKind: normalizedRef.sourceKind,
+      },
+      warnings,
+    };
+  }
+
+  const itemSourceFileName = extractSourceFileName(args.item);
+  const itemSourceLocationKey = extractSourceLocationKey(args.item);
+  const itemSheetScopedKey = extractSheetScopedKey(args.item);
+  const itemWorksheetRowNumber = extractWorksheetRowNumber(args.item);
+
+  const hasSourceFileMatch =
+    !normalizedRef.sourceFileName ||
+    !itemSourceFileName ||
+    normalizeLoose(normalizedRef.sourceFileName) === normalizeLoose(itemSourceFileName);
+  const hasSourceLocationMatch =
+    !normalizedRef.sourceLocationKey ||
+    !itemSourceLocationKey ||
+    normalizeLoose(normalizedRef.sourceLocationKey) === normalizeLoose(itemSourceLocationKey);
+  const hasSheetScopedKeyMatch =
+    !normalizedRef.sheetScopedKey ||
+    !itemSheetScopedKey ||
+    normalizeLoose(normalizedRef.sheetScopedKey) === normalizeLoose(itemSheetScopedKey);
+  const hasWorksheetRowMatch =
+    normalizedRef.worksheetRowNumber == null ||
+    itemWorksheetRowNumber == null ||
+    Math.floor(normalizedRef.worksheetRowNumber) === Math.floor(itemWorksheetRowNumber);
+
+  if (!hasSourceFileMatch || !hasSourceLocationMatch || !hasSheetScopedKeyMatch || !hasWorksheetRowMatch) {
+    return {
+      classification: "blocked",
+      blocked: {
+        associationMode: normalizedRef.associationMode,
+        clientItemId: normalizedRef.clientItemId,
+        mediaRefId: normalizedRef.mediaRefId,
+        reason: "MediaRef nao combina com a origem do item (sourceFileName/sourceLocationKey/sheetScopedKey/row).",
+        sourceKind: normalizedRef.sourceKind,
+        warnings,
+      },
+      warnings,
+    };
+  }
+
+  if (normalizedRef.associationMode === "strong_auto") {
+    if (normalizedRef.sourceKind !== "xlsx_row_image") {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "strong_auto so e planejavel para XLSX/XLSM com imagem por linha.",
+          sourceKind: normalizedRef.sourceKind,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    if (!normalizedRef.sourceFileName || (!normalizedRef.sourceLocationKey && !normalizedRef.sheetScopedKey)) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "strong_auto exige sourceFileName e sourceLocationKey/sheetScopedKey fortes.",
+          sourceKind: normalizedRef.sourceKind,
+          warnings,
+        },
+        warnings,
+      };
+    }
+  } else if (normalizedRef.associationMode === "weak_confirmed") {
+    if (!normalizedRef.confirmedByUser) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "weak_confirmed exige confirmedByUser=true.",
+          sourceKind: normalizedRef.sourceKind,
+          warnings,
+        },
+        warnings,
+      };
+    }
+  } else if (normalizedRef.associationMode === "manual_upload") {
+    if (normalizedRef.sourceKind !== "image_file") {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "manual_upload so e planejavel para image_file.",
+          sourceKind: normalizedRef.sourceKind,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    if (!normalizedRef.confirmedByUser) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "manual_upload exige confirmedByUser=true.",
+          sourceKind: normalizedRef.sourceKind,
+          warnings,
+        },
+        warnings,
+      };
+    }
+  } else if (normalizedRef.associationMode === "visual_evidence") {
+    return {
+      classification: "blocked",
+      blocked: {
+        associationMode: normalizedRef.associationMode,
+        clientItemId: normalizedRef.clientItemId,
+        mediaRefId: normalizedRef.mediaRefId,
+        reason: "Pagina renderizada/evidencia visual nunca vira foto final automatica neste bloco.",
+        sourceKind: normalizedRef.sourceKind,
+        warnings,
+      },
+      warnings,
+    };
+  } else {
+    warnings.push("AssociationMode/sourceKind nao reconhecidos com seguranca.");
+    return {
+      classification: "blocked",
+      blocked: {
+        associationMode: normalizedRef.associationMode,
+        clientItemId: normalizedRef.clientItemId,
+        mediaRefId: normalizedRef.mediaRefId,
+        reason: "MediaRef com associationMode/sourceKind desconhecidos.",
+        sourceKind: normalizedRef.sourceKind,
+        warnings,
+      },
+      warnings,
+    };
+  }
+
+  return {
+    classification: "planned",
+    planned: {
+      associationMode: normalizedRef.associationMode,
+      clientItemId: normalizedRef.clientItemId,
+      destination: args.resultItem.destination,
+      inputIndex: args.resultItem.inputIndex,
+      mediaRefId: normalizedRef.mediaRefId,
+      sourceFileName: normalizedRef.sourceFileName,
+      sourceImageId: normalizedRef.sourceImageId,
+      sourceKind: normalizedRef.sourceKind,
+      sourceLocationKey: normalizedRef.sourceLocationKey,
+    },
+    warnings,
+  };
+}
+
+function buildPhotoPlan(args: {
+  items: IntelligentImportSaveApprovedResultItem[];
+  requestItems: IntelligentImportReviewedSaveItem[];
+  selectedMediaRefs: IntelligentImportSelectedMediaRef[];
+}) {
+  const warnings: string[] = [];
+  const receivedMediaRefs: IntelligentImportSaveApprovedPhotoPlan["receivedMediaRefs"] = [];
+  const plannedFinalPhotos: IntelligentImportSaveApprovedPhotoPlan["plannedFinalPhotos"] = [];
+  const blockedMediaRefs: IntelligentImportSaveApprovedPhotoPlan["blockedMediaRefs"] = [];
+  const unlinkedMediaRefs: IntelligentImportSaveApprovedPhotoPlan["unlinkedMediaRefs"] = [];
+
+  if (args.selectedMediaRefs.length === 0) {
+    warnings.push("Nenhuma midia selecionada/planejada para foto final neste request.");
+  }
+
+  const itemByClientId = new Map(args.requestItems.map((item) => [String(item.clientItemId || "").trim(), item]));
+  const resultByClientId = new Map(args.items.map((item) => [String(item.clientItemId || "").trim(), item]));
+
+  for (const mediaRef of args.selectedMediaRefs) {
+    const normalizedRef = buildNormalizedMediaRef(mediaRef);
+    receivedMediaRefs.push({
+      associationMode: normalizedRef.associationMode,
+      clientItemId: normalizedRef.clientItemId,
+      confirmedByUser: normalizedRef.confirmedByUser,
+      fileName: normalizedRef.fileName,
+      mediaRefId: normalizedRef.mediaRefId,
+      sourceFileName: normalizedRef.sourceFileName,
+      sourceImageId: normalizedRef.sourceImageId,
+      sourceKind: normalizedRef.sourceKind,
+      sourceLocationKey: normalizedRef.sourceLocationKey,
+    });
+
+    const classified = classifyPhotoPlanMediaRef({
+      item: itemByClientId.get(normalizedRef.clientItemId),
+      resultItem: resultByClientId.get(normalizedRef.clientItemId),
+      mediaRef,
+    });
+    warnings.push(...classified.warnings);
+
+    if (classified.classification === "planned" && classified.planned) {
+      plannedFinalPhotos.push(classified.planned);
+    } else if (classified.classification === "blocked" && classified.blocked) {
+      blockedMediaRefs.push(classified.blocked);
+    } else if (classified.unlinked) {
+      unlinkedMediaRefs.push(classified.unlinked);
+    }
+  }
+
+  const dedupedWarnings = Array.from(new Set(warnings.filter(Boolean)));
+  return {
+    blockedMediaRefs,
+    plannedFinalPhotos,
+    receivedMediaRefs,
+    unlinkedMediaRefs,
+    warnings: dedupedWarnings,
+    wouldCreateCatalogItemPhotos: plannedFinalPhotos.filter((entry) => entry.destination !== "pool").length,
+    wouldCreatePoolPhotos: plannedFinalPhotos.filter((entry) => entry.destination === "pool").length,
+    wouldUploadFinalPhotoObjects: plannedFinalPhotos.length,
+  } satisfies IntelligentImportSaveApprovedPhotoPlan;
 }
 
 async function validateImportedFiles(args: {
@@ -911,6 +1304,11 @@ export async function saveApprovedIntelligentImportItems(
     items: validatedItems,
     requestItems: request.items,
   });
+  const photoPlan = buildPhotoPlan({
+    items: validatedItems,
+    requestItems: request.items,
+    selectedMediaRefs: Array.isArray(request.selectedMediaRefs) ? request.selectedMediaRefs : [],
+  });
 
   const summary = {
     blockedDuplicate: validatedItems.filter((item) => item.status === "blocked_duplicate").length,
@@ -934,6 +1332,7 @@ export async function saveApprovedIntelligentImportItems(
       message:
         "Salvamento real bloqueado porque debugParser=true. Use apenas a validacao sem gravar neste modo.",
       ok: false,
+      photoPlan,
       summary,
       validateOnly: false,
     };
@@ -946,6 +1345,7 @@ export async function saveApprovedIntelligentImportItems(
       items: validatedItems,
       message: "",
       ok: !hasBlockingIssues,
+      photoPlan,
       summary,
       validateOnly,
     };
@@ -982,6 +1382,18 @@ export async function saveApprovedIntelligentImportItems(
     items: savedItems,
     message: "",
     ok: true,
+    photoPlan: {
+      ...photoPlan,
+      warnings:
+        photoPlan.receivedMediaRefs.length > 0
+          ? Array.from(
+              new Set([
+                ...photoPlan.warnings,
+                "photoPlan calculado, mas persistencia de fotos finais ainda nao habilitada neste bloco.",
+              ])
+            )
+          : photoPlan.warnings,
+    },
     summary: {
       ...summary,
       saved: savedItems.length,

@@ -41,6 +41,42 @@ export type IntelligentImportReviewedSaveItem = {
   trackStock: boolean;
 };
 
+export type IntelligentImportSelectedMediaSourceKind =
+  | "xlsx_row_image"
+  | "docx_media"
+  | "pptx_media"
+  | "pdf_page_render"
+  | "image_file"
+  | "unknown";
+
+export type IntelligentImportSelectedMediaAssociationMode =
+  | "strong_auto"
+  | "weak_confirmed"
+  | "manual_upload"
+  | "visual_evidence"
+  | "none"
+  | "unknown";
+
+export type IntelligentImportSelectedMediaRef = {
+  associationMode: IntelligentImportSelectedMediaAssociationMode;
+  clientItemId: string;
+  confirmedByUser?: boolean;
+  fileName?: string | null;
+  mediaRefId: string;
+  mimeType?: string | null;
+  notes?: string[];
+  pageNumber?: number | null;
+  sheetScopedKey?: string | null;
+  sizeBytes?: number | null;
+  sourceFileName?: string | null;
+  sourceImageId?: string | null;
+  sourceKind: IntelligentImportSelectedMediaSourceKind;
+  sourceLocationKey?: string | null;
+  stagingStorageRef?: string | null;
+  warnings?: string[];
+  worksheetRowNumber?: number | null;
+};
+
 export type IntelligentImportSaveApprovedRequest = {
   context?: {
     debugParser?: boolean;
@@ -49,6 +85,7 @@ export type IntelligentImportSaveApprovedRequest = {
   importedFileIds?: string[];
   items: IntelligentImportReviewedSaveItem[];
   organizationId: string;
+  selectedMediaRefs?: IntelligentImportSelectedMediaRef[];
   storeId: string;
   validateOnly: boolean;
 };
@@ -129,11 +166,55 @@ export type IntelligentImportSaveApprovedImportFilePlan = {
   wouldCreateImportFileItemLinks: number;
 };
 
+export type IntelligentImportSaveApprovedPhotoPlan = {
+  blockedMediaRefs: Array<{
+    associationMode: IntelligentImportSelectedMediaAssociationMode;
+    clientItemId: string;
+    mediaRefId: string;
+    reason: string;
+    sourceKind: IntelligentImportSelectedMediaSourceKind;
+    warnings: string[];
+  }>;
+  plannedFinalPhotos: Array<{
+    associationMode: IntelligentImportSelectedMediaAssociationMode;
+    clientItemId: string;
+    destination: IntelligentImportReviewedDestination;
+    inputIndex: number;
+    mediaRefId: string;
+    sourceFileName: string | null;
+    sourceImageId: string | null;
+    sourceKind: IntelligentImportSelectedMediaSourceKind;
+    sourceLocationKey: string | null;
+  }>;
+  receivedMediaRefs: Array<{
+    associationMode: IntelligentImportSelectedMediaAssociationMode;
+    clientItemId: string;
+    confirmedByUser: boolean;
+    fileName: string | null;
+    mediaRefId: string;
+    sourceFileName: string | null;
+    sourceImageId: string | null;
+    sourceKind: IntelligentImportSelectedMediaSourceKind;
+    sourceLocationKey: string | null;
+  }>;
+  unlinkedMediaRefs: Array<{
+    clientItemId: string;
+    mediaRefId: string;
+    reason: string;
+    sourceKind: IntelligentImportSelectedMediaSourceKind;
+  }>;
+  warnings: string[];
+  wouldCreateCatalogItemPhotos: number;
+  wouldCreatePoolPhotos: number;
+  wouldUploadFinalPhotoObjects: number;
+};
+
 export type IntelligentImportSaveApprovedResponse = {
   importFileLinkPlan?: IntelligentImportSaveApprovedImportFilePlan;
   items: IntelligentImportSaveApprovedResultItem[];
   message: string;
   ok: boolean;
+  photoPlan?: IntelligentImportSaveApprovedPhotoPlan;
   summary: {
     blockedDuplicate: number;
     invalid: number;
