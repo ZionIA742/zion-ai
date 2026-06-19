@@ -11989,6 +11989,31 @@ export default function IntelligentCatalogImportPanel({
                         </div>
                       </div>
                       <p className="mt-3 text-sm text-slate-700">{importedCatalogDryRunResult.message}</p>
+                      {importedCatalogDryRunResult.importFileLinkPlan ? (
+                        <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-950">
+                          <p className="font-semibold">Plano de vinculos de arquivo bruto</p>
+                          <p className="mt-1">
+                            importedFileIds recebidos:{" "}
+                            {importedCatalogDryRunResult.importFileLinkPlan.importedFileIdsReceived.length}
+                            {" • "}
+                            arquivos validados:{" "}
+                            {importedCatalogDryRunResult.importFileLinkPlan.importFilesValidated.length}
+                            {" • "}
+                            itens vinculaveis:{" "}
+                            {importedCatalogDryRunResult.importFileLinkPlan.linkableItems.length}
+                            {" • "}
+                            vinculos que seriam criados:{" "}
+                            {importedCatalogDryRunResult.importFileLinkPlan.wouldCreateImportFileItemLinks}
+                          </p>
+                          {importedCatalogDryRunResult.importFileLinkPlan.warnings.length > 0 ? (
+                            <div className="mt-2 space-y-1 text-xs leading-5 text-indigo-900">
+                              {importedCatalogDryRunResult.importFileLinkPlan.warnings.map((warning, index) => (
+                                <p key={`dry-run-import-plan-warning-${index}`}>{warning}</p>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <summary className="cursor-pointer text-sm font-semibold text-slate-900">
                           Payload enviado no dry-run
@@ -11997,6 +12022,16 @@ export default function IntelligentCatalogImportPanel({
                           {JSON.stringify(importedCatalogDryRunPayload, null, 2)}
                         </pre>
                       </details>
+                      {importedCatalogDryRunResult.importFileLinkPlan ? (
+                        <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <summary className="cursor-pointer text-sm font-semibold text-slate-900">
+                            Plano detalhado de vinculos/import files
+                          </summary>
+                          <pre className="mt-3 max-h-[320px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">
+                            {JSON.stringify(importedCatalogDryRunResult.importFileLinkPlan, null, 2)}
+                          </pre>
+                        </details>
+                      ) : null}
                       <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <summary className="cursor-pointer text-sm font-semibold text-slate-900">
                           Resultado detalhado da validacao

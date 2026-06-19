@@ -5,6 +5,7 @@ import {
   type IntelligentImportReviewedPoolPayload,
   type IntelligentImportReviewedSaveItem,
   type IntelligentImportSaveApprovedConflict,
+  type IntelligentImportSaveApprovedImportFilePlan,
   type IntelligentImportSaveApprovedNormalizedPayload,
   type IntelligentImportSaveApprovedRequest,
   type IntelligentImportSaveApprovedResponse,
@@ -37,10 +38,25 @@ type ExistingPoolRow = {
   name: string | null;
 };
 
+type ImportedFileRow = {
+  id: string;
+  original_file_name: string | null;
+  status: string | null;
+};
+
 type SaveValidationContext = {
   existingCatalogItems: ExistingCatalogItemRow[];
   existingPoolRows: ExistingPoolRow[];
   request: IntelligentImportSaveApprovedRequest;
+};
+
+type ImportFileValidationResult = {
+  invalidImportedFileIds: string[];
+  receivedImportedFileIds: string[];
+  validatedFiles: ImportedFileRow[];
+  validatedFilesById: Map<string, ImportedFileRow>;
+  validatedFilesByName: Map<string, ImportedFileRow[]>;
+  warnings: string[];
 };
 
 function createServiceSupabaseClient() {
@@ -181,6 +197,16 @@ function normalizeDestination(value: string | null | undefined): IntelligentImpo
 function normalizeDescription(value: string | null | undefined) {
   const cleaned = String(value || "").replace(/\r/g, "").trim();
   return cleaned ? cleaned.slice(0, 4000) : null;
+}
+
+function normalizeLoose(value: string | null | undefined) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s._-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeMetadata(value: Record<string, unknown> | null | undefined) {
@@ -474,19 +500,200 @@ async function loadDuplicateReferenceData(args: {
 }
 
 function buildResponseMessage(response: IntelligentImportSaveApprovedResponse) {
+  const invalidImportFiles = response.importFileLinkPlan?.invalidImportedFileIds.length ?? 0;
+
   if (response.validateOnly) {
     if (response.ok) {
       return `${response.summary.valid} item(ns) validos para salvar.`;
     }
 
-    return `Validacao encontrou ${response.summary.invalid} item(ns) invalidos e ${response.summary.blockedDuplicate} duplicado(s) bloqueados.`;
+    return `Validacao encontrou ${response.summary.invalid} item(ns) invalidos, ${response.summary.blockedDuplicate} duplicado(s) bloqueados e ${invalidImportFiles} importedFileId(s) invalido(s).`;
   }
 
   if (response.ok) {
     return `${response.summary.saved} item(ns) salvos com sucesso.`;
   }
 
-  return `Salvamento bloqueado: ${response.summary.invalid} invalido(s) e ${response.summary.blockedDuplicate} duplicado(s).`;
+  return `Salvamento bloqueado: ${response.summary.invalid} invalido(s), ${response.summary.blockedDuplicate} duplicado(s) e ${invalidImportFiles} importedFileId(s) invalido(s).`;
+}
+
+function extractSourceFileName(item: IntelligentImportReviewedSaveItem) {
+  const metadata = normalizeMetadata(item.metadata);
+  const candidates = [
+    item.sourceFileName,
+    metadata.source_file_name,
+    metadata.source_file_name_original,
+    metadata.original_source_file_name,
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+async function validateImportedFiles(args: {
+  importedFileIds: string[];
+  organizationId: string;
+  storeId: string;
+  supabase: any;
+}) {
+  const receivedImportedFileIds = Array.from(
+    new Set(args.importedFileIds.map((value) => String(value || "").trim()).filter(Boolean))
+  );
+  const warnings: string[] = [];
+
+  if (receivedImportedFileIds.length === 0) {
+    warnings.push(
+      "Nenhum arquivo bruto persistido recebido; vinculos de importacao nao seriam criados neste dry-run."
+    );
+    return {
+      invalidImportedFileIds: [],
+      receivedImportedFileIds,
+      validatedFiles: [],
+      validatedFilesById: new Map<string, ImportedFileRow>(),
+      validatedFilesByName: new Map<string, ImportedFileRow[]>(),
+      warnings,
+    } satisfies ImportFileValidationResult;
+  }
+
+  const { data, error } = await args.supabase
+    .from("store_import_files")
+    .select("id, original_file_name, status")
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .in("id", receivedImportedFileIds);
+
+  if (error) {
+    throw new IntelligentImportSaveAccessError(
+      500,
+      "LOAD_IMPORT_FILES_FAILED",
+      error.message
+    );
+  }
+
+  const validatedFiles = ((data ?? []) as ImportedFileRow[]).filter((row) => {
+    const normalizedStatus = String(row.status || "").trim().toLowerCase();
+    return !normalizedStatus || normalizedStatus === "active" || normalizedStatus === "staged";
+  });
+  const validatedFilesById = new Map(validatedFiles.map((row) => [String(row.id || "").trim(), row]));
+  const invalidImportedFileIds = receivedImportedFileIds.filter((id) => !validatedFilesById.has(id));
+  const validatedFilesByName = new Map<string, ImportedFileRow[]>();
+
+  for (const row of validatedFiles) {
+    const key = normalizeLoose(row.original_file_name);
+    if (!key) continue;
+    const current = validatedFilesByName.get(key) ?? [];
+    current.push(row);
+    validatedFilesByName.set(key, current);
+  }
+
+  if (invalidImportedFileIds.length > 0) {
+    warnings.push(
+      `${invalidImportedFileIds.length} importedFileId(s) nao pertencem a esta loja/organizacao ou nao estao ativos/staged.`
+    );
+  }
+
+  return {
+    invalidImportedFileIds,
+    receivedImportedFileIds,
+    validatedFiles,
+    validatedFilesById,
+    validatedFilesByName,
+    warnings,
+  } satisfies ImportFileValidationResult;
+}
+
+function buildImportFileLinkPlan(args: {
+  importFileValidation: ImportFileValidationResult;
+  items: IntelligentImportSaveApprovedResultItem[];
+  requestItems: IntelligentImportReviewedSaveItem[];
+}) {
+  const warnings = [...args.importFileValidation.warnings];
+  const linkableItems: IntelligentImportSaveApprovedImportFilePlan["linkableItems"] = [];
+  const unlinkedItems: IntelligentImportSaveApprovedImportFilePlan["unlinkedItems"] = [];
+
+  for (const item of args.items) {
+    const requestItem = args.requestItems[item.inputIndex];
+    const sourceFileName = requestItem ? extractSourceFileName(requestItem) : null;
+
+    if (item.status !== "valid" && item.status !== "saved") {
+      unlinkedItems.push({
+        clientItemId: item.clientItemId,
+        inputIndex: item.inputIndex,
+        reason: "Item nao elegivel para vinculo porque nao esta valido/salvo.",
+        sourceFileName,
+      });
+      continue;
+    }
+
+    if (args.importFileValidation.validatedFiles.length === 0) {
+      unlinkedItems.push({
+        clientItemId: item.clientItemId,
+        inputIndex: item.inputIndex,
+        reason: "Nenhum arquivo bruto validado foi recebido neste request.",
+        sourceFileName,
+      });
+      continue;
+    }
+
+    if (!sourceFileName) {
+      unlinkedItems.push({
+        clientItemId: item.clientItemId,
+        inputIndex: item.inputIndex,
+        reason: "Item sem sourceFileName/source_file_name para vincular.",
+        sourceFileName,
+      });
+      continue;
+    }
+
+    const matches = args.importFileValidation.validatedFilesByName.get(normalizeLoose(sourceFileName)) ?? [];
+    if (matches.length === 1) {
+      linkableItems.push({
+        clientItemId: item.clientItemId,
+        destination: item.destination,
+        importFileId: matches[0].id,
+        inputIndex: item.inputIndex,
+        sourceFileName,
+      });
+      continue;
+    }
+
+    unlinkedItems.push({
+      clientItemId: item.clientItemId,
+      inputIndex: item.inputIndex,
+      reason:
+        matches.length === 0
+          ? "Nenhum store_import_file validado combina com o arquivo de origem."
+          : "Mais de um store_import_file validado combina com o arquivo de origem; vinculo automatico ficou ambiguo.",
+      sourceFileName,
+    });
+  }
+
+  if (args.importFileValidation.receivedImportedFileIds.length === 0) {
+    warnings.push(
+      "Nenhum importedFileId foi enviado; o save novo nao preserva vinculos de importacao automaticamente neste estagio."
+    );
+  }
+
+  return {
+    importedFileIdsReceived: args.importFileValidation.receivedImportedFileIds,
+    importFilesValidated: args.importFileValidation.validatedFiles.map((file) => ({
+      id: file.id,
+      originalFileName: String(file.original_file_name || "").trim(),
+      status: file.status,
+    })),
+    importFilesMissing: args.importFileValidation.receivedImportedFileIds.filter(
+      (id) => !args.importFileValidation.validatedFilesById.has(id)
+    ),
+    invalidImportedFileIds: args.importFileValidation.invalidImportedFileIds,
+    linkableItems,
+    unlinkedItems,
+    warnings,
+    wouldCreateImportFileItemLinks: linkableItems.length,
+  } satisfies IntelligentImportSaveApprovedImportFilePlan;
 }
 
 function buildInternalDuplicateKeys(item: IntelligentImportSaveApprovedResultItem) {
@@ -605,6 +812,62 @@ async function insertValidatedItem(args: {
   return String(data.id || "");
 }
 
+async function createImportFileLinks(args: {
+  items: IntelligentImportSaveApprovedResultItem[];
+  organizationId: string;
+  storeId: string;
+  supabase: any;
+  plan: IntelligentImportSaveApprovedImportFilePlan;
+}) {
+  const seenKeys = new Set<string>();
+
+  for (const entry of args.plan.linkableItems) {
+    const savedItem = args.items.find(
+      (item) => item.clientItemId === entry.clientItemId && item.inputIndex === entry.inputIndex
+    );
+    if (!savedItem?.persistedId) {
+      throw new Error(`PersistedId ausente para criar vinculo do item ${entry.clientItemId}.`);
+    }
+
+    const destinationType = entry.destination === "pool" ? "pool" : "catalog_item";
+    const destinationTable = entry.destination === "pool" ? "pools" : "store_catalog_items";
+    const dedupeKey = [
+      entry.importFileId,
+      destinationType,
+      destinationTable,
+      savedItem.persistedId,
+    ].join("::");
+
+    if (seenKeys.has(dedupeKey)) continue;
+    seenKeys.add(dedupeKey);
+
+    const { data: existingLink, error: existingLinkError } = await args.supabase
+      .from("store_import_file_items")
+      .select("import_file_id")
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("import_file_id", entry.importFileId)
+      .eq("destination_type", destinationType)
+      .eq("destination_table", destinationTable)
+      .eq("destination_item_id", savedItem.persistedId)
+      .maybeSingle();
+
+    if (existingLinkError) throw existingLinkError;
+    if (existingLink) continue;
+
+    const { error } = await args.supabase.from("store_import_file_items").insert({
+      import_file_id: entry.importFileId,
+      organization_id: args.organizationId,
+      store_id: args.storeId,
+      destination_type: destinationType,
+      destination_table: destinationTable,
+      destination_item_id: savedItem.persistedId,
+    });
+
+    if (error) throw error;
+  }
+}
+
 export async function saveApprovedIntelligentImportItems(
   request: IntelligentImportSaveApprovedRequest
 ): Promise<IntelligentImportSaveApprovedResponse> {
@@ -621,6 +884,13 @@ export async function saveApprovedIntelligentImportItems(
     throw new IntelligentImportSaveAccessError(400, "INVALID_ITEMS", "items deve ser um array.");
   }
 
+  const importFileValidation = await validateImportedFiles({
+    importedFileIds: Array.isArray(request.importedFileIds) ? request.importedFileIds : [],
+    organizationId: store.organization_id,
+    storeId: store.id,
+    supabase,
+  });
+
   const existingReferences = await loadDuplicateReferenceData({
     organizationId: store.organization_id,
     storeId: store.id,
@@ -636,6 +906,11 @@ export async function saveApprovedIntelligentImportItems(
   const validatedItems = applyInternalDuplicateProtection(
     request.items.map((item, index) => validateReviewedImportedItem(item, index, validationContext))
   );
+  const importFileLinkPlan = buildImportFileLinkPlan({
+    importFileValidation,
+    items: validatedItems,
+    requestItems: request.items,
+  });
 
   const summary = {
     blockedDuplicate: validatedItems.filter((item) => item.status === "blocked_duplicate").length,
@@ -645,12 +920,16 @@ export async function saveApprovedIntelligentImportItems(
     valid: validatedItems.filter((item) => item.status === "valid").length,
   };
 
-  const hasBlockingIssues = summary.invalid > 0 || summary.blockedDuplicate > 0;
+  const hasBlockingIssues =
+    summary.invalid > 0 ||
+    summary.blockedDuplicate > 0 ||
+    importFileValidation.invalidImportedFileIds.length > 0;
   const validateOnly = Boolean(request.validateOnly);
   const debugParser = Boolean(request.context?.debugParser);
 
   if (!validateOnly && debugParser) {
     const response: IntelligentImportSaveApprovedResponse = {
+      importFileLinkPlan,
       items: validatedItems,
       message:
         "Salvamento real bloqueado porque debugParser=true. Use apenas a validacao sem gravar neste modo.",
@@ -663,6 +942,7 @@ export async function saveApprovedIntelligentImportItems(
 
   if (validateOnly || hasBlockingIssues) {
     const response: IntelligentImportSaveApprovedResponse = {
+      importFileLinkPlan,
       items: validatedItems,
       message: "",
       ok: !hasBlockingIssues,
@@ -689,7 +969,16 @@ export async function saveApprovedIntelligentImportItems(
     });
   }
 
+  await createImportFileLinks({
+    items: savedItems,
+    organizationId: store.organization_id,
+    storeId: store.id,
+    supabase,
+    plan: importFileLinkPlan,
+  });
+
   const response: IntelligentImportSaveApprovedResponse = {
+    importFileLinkPlan,
     items: savedItems,
     message: "",
     ok: true,

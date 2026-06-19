@@ -103,7 +103,34 @@ export type IntelligentImportSaveApprovedResultItem = {
   status: IntelligentImportReviewedItemStatus;
 };
 
+export type IntelligentImportSaveApprovedImportFilePlan = {
+  importedFileIdsReceived: string[];
+  importFilesValidated: Array<{
+    id: string;
+    originalFileName: string;
+    status: string | null;
+  }>;
+  importFilesMissing: string[];
+  invalidImportedFileIds: string[];
+  linkableItems: Array<{
+    clientItemId: string;
+    destination: IntelligentImportReviewedDestination;
+    importFileId: string;
+    inputIndex: number;
+    sourceFileName: string | null;
+  }>;
+  unlinkedItems: Array<{
+    clientItemId: string;
+    inputIndex: number;
+    reason: string;
+    sourceFileName: string | null;
+  }>;
+  warnings: string[];
+  wouldCreateImportFileItemLinks: number;
+};
+
 export type IntelligentImportSaveApprovedResponse = {
+  importFileLinkPlan?: IntelligentImportSaveApprovedImportFilePlan;
   items: IntelligentImportSaveApprovedResultItem[];
   message: string;
   ok: boolean;
