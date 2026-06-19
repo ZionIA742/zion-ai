@@ -56,7 +56,7 @@ export type IntelligentImportSaveApprovedRequest = {
 export type IntelligentImportSaveApprovedConflict = {
   existingId: string;
   existingName: string;
-  type: "sku" | "name" | "pool_name";
+  type: "sku" | "name" | "pool_name" | "internal_duplicate";
 };
 
 export type IntelligentImportSaveApprovedNormalizedPayload =

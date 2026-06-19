@@ -2009,6 +2009,19 @@ function buildStructuredReviewedSourceItem(
   };
 }
 
+function buildStructuredSelectedReviewedSourceItems(args: {
+  candidates: EditableStructuredImportCandidate[];
+  drafts: Record<string, StructuredCandidateDraft | undefined>;
+  validationByCandidateId: Map<string, StructuredReviewCandidateValidation>;
+}) {
+  return args.candidates.flatMap((candidate) => {
+    if (!candidate.selected) return [];
+    const candidateValidation = args.validationByCandidateId.get(candidate.id);
+    if (candidateValidation?.duplicateReason) return [];
+    return [buildStructuredReviewedSourceItem(candidate, args.drafts[candidate.id])];
+  });
+}
+
 function buildReviewedImportedSaveItem(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   index: number
@@ -5160,17 +5173,19 @@ function extractImportedPoolMetrics(
     .map((value) => String(value ?? ""))
     .join(" ");
   const metricSource = normalizeImportedPoolMetricSource(source);
-  let width: number | null = null;
-  let length: number | null = null;
-  let depth: number | null = null;
-  let capacity: number | null = null;
-  let price: number | null = null;
+  let width = parseImportedDecimal(extractMetadataValue(item, ["width", "largura"]));
+  let length = parseImportedDecimal(extractMetadataValue(item, ["length", "comprimento"]));
+  let depth = parseImportedDecimal(extractMetadataValue(item, ["depth", "profundidade"]));
+  let capacity = parseImportedDecimal(
+    extractMetadataValue(item, ["capacity", "capacidade", "max_capacity_l"])
+  );
+  let price = resolveExplicitImportedPriceReais(item)?.parsedReais ?? null;
   const rectMatch =
     metricSource.match(/(?:medidas?|dimens(?:oes|[õo]es)|tamanho)\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m?/i) ||
     metricSource.match(/(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m\b/i);
   if (rectMatch) {
-    width = parseImportedDecimal(rectMatch[1]);
-    length = parseImportedDecimal(rectMatch[2]);
+    width ??= parseImportedDecimal(rectMatch[1]);
+    length ??= parseImportedDecimal(rectMatch[2]);
   }
   if (width == null) {
     const widthMatch = metricSource.match(/(?:largura|width)\s*(?:de)?\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?/i);
@@ -5182,14 +5197,14 @@ function extractImportedPoolMetrics(
   }
   const diamMatch = source.match(/(\d+[\.,]?\d*)\s*m\s*di[âa]m/i);
   if (diamMatch) {
-    width = parseImportedDecimal(diamMatch[1]);
-    length = parseImportedDecimal(diamMatch[1]);
+    width ??= parseImportedDecimal(diamMatch[1]);
+    length ??= parseImportedDecimal(diamMatch[1]);
   }
   if (width == null || length == null) {
     const normalizedDiamMatch = metricSource.match(/(\d+[\.,]?\d*)\s*m\s*diam/i);
     if (normalizedDiamMatch) {
-      width = parseImportedDecimal(normalizedDiamMatch[1]);
-      length = parseImportedDecimal(normalizedDiamMatch[1]);
+      width ??= parseImportedDecimal(normalizedDiamMatch[1]);
+      length ??= parseImportedDecimal(normalizedDiamMatch[1]);
     }
   }
   const explicitDepth = extractMetadataValue(item, ["profundidade", "depth"]);
@@ -5199,7 +5214,7 @@ function extractImportedPoolMetrics(
     depthSource.match(/^(\d+(?:[\.,]\d+)?)\s*m?$/i) ||
     metricSource.match(/prof\.?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m\b/i);
   if (depthMatch) {
-    depth = parseImportedDecimal(depthMatch[1]);
+    depth ??= parseImportedDecimal(depthMatch[1]);
   }
   if (depth == null) {
     const normalizedDepthMatch = metricSource.match(/prof(?:undidade)?\.?\s*(?:de)?\s*[:\-]?\s*(\d+(?:[\.,]\d+)?)\s*m\b/i);
@@ -5209,7 +5224,7 @@ function extractImportedPoolMetrics(
     source.match(/capacidade(?:\s+estimada|\s+m[áa]xima|\s+aproximada)?\s*(?:de)?\s*(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)?/i) ||
     source.match(/(\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*)\s*(?:l|litros?)\b/i);
   if (capacityMatch) {
-    capacity = parseImportedDecimal(capacityMatch[1]);
+    capacity ??= parseImportedDecimal(capacityMatch[1]);
   }
   if (capacity == null) {
     const normalizedCapacityMatch =
@@ -5227,7 +5242,7 @@ function extractImportedPoolMetrics(
     extractMetadataValue(item, ["tipo", "material", "matéria-prima", "materia_prima"])
   );
   const materialSource = explicitMaterial || normalizeImportedLoose(source);
-  let material = "fibra";
+  let material = explicitMaterial || "fibra";
   if (materialSource.includes("spa")) material = "spa";
   else if (materialSource.includes("vinil")) material = "vinil";
   else if (materialSource.includes("alvenaria")) material = "alvenaria";
@@ -5235,7 +5250,7 @@ function extractImportedPoolMetrics(
   else if (materialSource.includes("fibra")) material = "fibra";
   const explicitShape = normalizeImportedLoose(extractMetadataValue(item, ["formato", "shape"]));
   const shapeSource = explicitShape || normalizeImportedLoose(source);
-  let shape = "retangular";
+  let shape = explicitShape || "retangular";
   if (shapeSource.includes("com prainha") || shapeSource.includes("prainha")) {
     shape = "com prainha";
   } else if (shapeSource.includes("organica")) {
@@ -9398,11 +9413,11 @@ export default function IntelligentCatalogImportPanel({
 
     const reviewedSourceItems =
       editableStructuredCandidates.length > 0
-        ? editableStructuredCandidates
-            .filter((candidate) => candidate.selected)
-            .map((candidate) =>
-              buildStructuredReviewedSourceItem(candidate, structuredCandidateDrafts[candidate.id])
-            )
+        ? buildStructuredSelectedReviewedSourceItems({
+            candidates: editableStructuredCandidates,
+            drafts: structuredCandidateDrafts,
+            validationByCandidateId: structuredReviewValidation.byCandidateId,
+          })
         : [];
 
     const rawSourceItems =
@@ -9549,11 +9564,11 @@ export default function IntelligentCatalogImportPanel({
 
     const reviewedSourceItems =
       editableStructuredCandidates.length > 0
-        ? editableStructuredCandidates
-            .filter((candidate) => candidate.selected)
-            .map((candidate) =>
-              buildStructuredReviewedSourceItem(candidate, structuredCandidateDrafts[candidate.id])
-            )
+        ? buildStructuredSelectedReviewedSourceItems({
+            candidates: editableStructuredCandidates,
+            drafts: structuredCandidateDrafts,
+            validationByCandidateId: structuredReviewValidation.byCandidateId,
+          })
         : [];
 
     const rawSourceItems =

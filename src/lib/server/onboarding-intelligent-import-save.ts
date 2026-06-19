@@ -252,6 +252,18 @@ function buildPoolNormalizedPayload(args: {
   item: IntelligentImportReviewedSaveItem;
   poolPayload: IntelligentImportReviewedPoolPayload;
 }): Extract<IntelligentImportSaveApprovedNormalizedPayload, { type: "pool" }> {
+  const metadata = normalizeMetadata(args.item.metadata);
+  const fallbackPriceCandidates = [
+    args.poolPayload.price,
+    metadata.reviewed_price,
+    metadata.price,
+    metadata.preco,
+  ];
+  const resolvedPrice =
+    fallbackPriceCandidates
+      .map((value) => parseFiniteNumber(value))
+      .find((value) => value != null) ?? null;
+
   return {
     depth_m: parseFiniteNumber(args.poolPayload.depth_m),
     description: normalizeDescription(args.item.description),
@@ -261,7 +273,7 @@ function buildPoolNormalizedPayload(args: {
     material: String(args.poolPayload.material || "").trim() || null,
     max_capacity_l: parseFiniteNumber(args.poolPayload.max_capacity_l),
     name: String(args.item.name || "").trim(),
-    price: parseFiniteNumber(args.poolPayload.price),
+    price: resolvedPrice,
     shape: String(args.poolPayload.shape || "").trim() || null,
     stock_quantity: Math.max(0, Math.round(parseFiniteNumber(args.item.stockQuantity) ?? 0)),
     track_stock: Boolean(args.item.trackStock),
@@ -477,6 +489,62 @@ function buildResponseMessage(response: IntelligentImportSaveApprovedResponse) {
   return `Salvamento bloqueado: ${response.summary.invalid} invalido(s) e ${response.summary.blockedDuplicate} duplicado(s).`;
 }
 
+function buildInternalDuplicateKeys(item: IntelligentImportSaveApprovedResultItem) {
+  const payload = item.normalizedPayload;
+  if (!payload) return [] as string[];
+
+  if (payload.type === "pool") {
+    const normalizedName = normalizeImportDedupText(payload.name);
+    return normalizedName ? [`pool_name::${normalizedName}`] : [];
+  }
+
+  const keys: string[] = [];
+  const normalizedSku = normalizeImportDedupSku(payload.sku);
+  if (normalizedSku) {
+    keys.push(`catalog_sku::${normalizedSku}`);
+  }
+
+  const normalizedName = normalizeImportDedupText(payload.name);
+  if (normalizedName) {
+    keys.push(`catalog_name::${payload.destination}::${normalizedName}`);
+  }
+
+  return keys;
+}
+
+function applyInternalDuplicateProtection(items: IntelligentImportSaveApprovedResultItem[]) {
+  const seenByKey = new Map<string, IntelligentImportSaveApprovedResultItem>();
+
+  return items.map((item) => {
+    if (item.status !== "valid" || !item.normalizedPayload) {
+      return item;
+    }
+
+    const duplicateOf = buildInternalDuplicateKeys(item)
+      .map((key) => seenByKey.get(key))
+      .find(Boolean);
+
+    if (duplicateOf) {
+      return {
+        ...item,
+        conflict: {
+          existingId: duplicateOf.clientItemId,
+          existingName: duplicateOf.normalizedPayload?.name || duplicateOf.clientItemId,
+          type: "internal_duplicate",
+        },
+        reasons: ["Item duplicado dentro do mesmo payload/request."],
+        status: "blocked_duplicate",
+      } satisfies IntelligentImportSaveApprovedResultItem;
+    }
+
+    for (const key of buildInternalDuplicateKeys(item)) {
+      seenByKey.set(key, item);
+    }
+
+    return item;
+  });
+}
+
 async function insertValidatedItem(args: {
   organizationId: string;
   storeId: string;
@@ -565,8 +633,8 @@ export async function saveApprovedIntelligentImportItems(
     request,
   };
 
-  const validatedItems = request.items.map((item, index) =>
-    validateReviewedImportedItem(item, index, validationContext)
+  const validatedItems = applyInternalDuplicateProtection(
+    request.items.map((item, index) => validateReviewedImportedItem(item, index, validationContext))
   );
 
   const summary = {
