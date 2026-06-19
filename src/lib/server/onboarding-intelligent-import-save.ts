@@ -11,6 +11,7 @@ import {
   type IntelligentImportSaveApprovedImportFilePlan,
   type IntelligentImportSaveApprovedNormalizedPayload,
   type IntelligentImportSaveApprovedPhotoPlan,
+  type IntelligentImportSaveApprovedPhotoSaveResult,
   type IntelligentImportSaveApprovedRequest,
   type IntelligentImportSaveApprovedResponse,
   type IntelligentImportSaveApprovedResultItem,
@@ -53,8 +54,13 @@ type StagedMediaAssetRow = {
   id: string;
   import_batch_id: string | null;
   import_file_id: string | null;
+  metadata?: Record<string, unknown> | null;
+  normalized_mime_type?: string | null;
+  original_mime_type?: string | null;
+  file_name?: string | null;
   requires_user_confirmation: boolean | null;
   sheet_scoped_key: string | null;
+  size_bytes?: number | null;
   source_file_name: string | null;
   source_kind: string | null;
   source_location_key: string | null;
@@ -256,6 +262,55 @@ function matchesSourceFileNameTolerantly(left: string | null | undefined, right:
     normalizedLeft.includes(normalizedRight) ||
     normalizedRight.includes(normalizedLeft)
   );
+}
+
+function sanitizePhotoFileName(fileName: string | null | undefined) {
+  return String(fileName || "foto")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(-120) || "foto";
+}
+
+function getPhotoFileExtension(fileName: string | null | undefined, mimeType: string | null | undefined) {
+  const byName = String(fileName || "").trim().split(".").pop()?.toLowerCase();
+  if (byName) return byName;
+  const normalizedMimeType = String(mimeType || "").trim().toLowerCase();
+  if (normalizedMimeType.includes("png")) return "png";
+  if (normalizedMimeType.includes("webp")) return "webp";
+  if (normalizedMimeType.includes("gif")) return "gif";
+  if (normalizedMimeType.includes("bmp")) return "bmp";
+  return "jpg";
+}
+
+function buildFinalPoolPhotoPath(args: {
+  organizationId: string;
+  storeId: string;
+  poolId: string;
+  sortOrder: number;
+  fileName?: string | null;
+  mimeType?: string | null;
+}) {
+  return `${args.organizationId}/${args.storeId}/${args.poolId}/${Date.now()}-${args.sortOrder}.${getPhotoFileExtension(
+    args.fileName,
+    args.mimeType
+  )}`;
+}
+
+function buildFinalCatalogPhotoPath(args: {
+  organizationId: string;
+  storeId: string;
+  catalogItemId: string;
+  sortOrder: number;
+  fileName?: string | null;
+  mimeType?: string | null;
+}) {
+  return `${args.organizationId}/${args.storeId}/${args.catalogItemId}/${Date.now()}-${args.sortOrder}.${getPhotoFileExtension(
+    args.fileName,
+    args.mimeType
+  )}`;
 }
 
 function normalizeMetadata(value: Record<string, unknown> | null | undefined) {
@@ -564,7 +619,9 @@ function buildResponseMessage(response: IntelligentImportSaveApprovedResponse) {
   if (response.ok) {
     const photoPlanNote =
       response.photoPlan && response.photoPlan.receivedMediaRefs.length > 0
-        ? " PhotoPlan calculado, mas persistencia de fotos finais ainda nao habilitada neste bloco."
+        ? response.photoSaveResult
+          ? ` Promocao de fotos: ${response.photoSaveResult.promotedPhotos.length} promovida(s), ${response.photoSaveResult.failedPhotos.length} falha(s).`
+          : " PhotoPlan calculado, sem promocao de fotos finais nesta execucao."
         : "";
     return `${response.summary.saved} item(ns) salvos com sucesso.${photoPlanNote}`;
   }
@@ -1270,7 +1327,7 @@ async function validateStagedMediaAssets(args: {
   const { data, error } = await args.supabase
     .from("store_import_media_assets")
     .select(
-      "id, import_batch_id, import_file_id, source_file_name, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, association_strength, requires_user_confirmation, status, storage_bucket, storage_path"
+      "id, import_batch_id, import_file_id, source_file_name, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, association_strength, requires_user_confirmation, status, storage_bucket, storage_path, metadata, file_name, size_bytes, normalized_mime_type, original_mime_type"
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
@@ -1637,6 +1694,251 @@ async function createImportFileLinks(args: {
   }
 }
 
+async function promotePlannedImportPhotos(args: {
+  organizationId: string;
+  photoPlan: IntelligentImportSaveApprovedPhotoPlan;
+  savedItems: IntelligentImportSaveApprovedResultItem[];
+  stagedMediaValidation: StagedMediaValidationResult;
+  storeId: string;
+  supabase: any;
+}) {
+  const promotedPhotos: IntelligentImportSaveApprovedPhotoSaveResult["promotedPhotos"] = [];
+  const failedPhotos: IntelligentImportSaveApprovedPhotoSaveResult["failedPhotos"] = [];
+  const warnings: string[] = [];
+  let createdPoolPhotos = 0;
+  let createdCatalogItemPhotos = 0;
+  let uploadedFinalPhotoObjects = 0;
+  let promotedStagingAssets = 0;
+  const processedStagingAssetIds = new Set<string>();
+
+  for (const planned of args.photoPlan.plannedFinalPhotos) {
+    const savedItem = args.savedItems.find(
+      (entry) =>
+        entry.clientItemId === planned.clientItemId &&
+        entry.inputIndex === planned.inputIndex &&
+        entry.persistedId
+    );
+    const stagingAssetId = String(planned.stagingAssetId || "").trim() || null;
+    const stagedAsset = stagingAssetId
+      ? args.stagedMediaValidation.validatedAssetsById.get(stagingAssetId)
+      : undefined;
+
+    if (!savedItem?.persistedId) {
+      warnings.push(
+        `Foto planejada para ${planned.clientItemId} foi ignorada porque o item nao teve persistedId real.`
+      );
+      continue;
+    }
+
+    if (!stagingAssetId || !stagedAsset) {
+      warnings.push(
+        `Foto planejada para ${planned.clientItemId} foi ignorada porque o stagingAssetId validado nao foi encontrado.`
+      );
+      continue;
+    }
+
+    if (processedStagingAssetIds.has(stagingAssetId)) {
+      warnings.push(`stagingAssetId ${stagingAssetId} ja foi promovido neste save; duplicata ignorada.`);
+      continue;
+    }
+
+    const assetMetadata = normalizeMetadata(stagedAsset.metadata);
+    if (String(stagedAsset.status || "").trim().toLowerCase() === "promoted") {
+      warnings.push(`stagingAssetId ${stagingAssetId} ja estava promoted; promocao pulada.`);
+      continue;
+    }
+    if (assetMetadata.finalPhotoRowId && assetMetadata.finalBucket && assetMetadata.finalPath) {
+      warnings.push(`stagingAssetId ${stagingAssetId} ja possui metadata final registrada; promocao pulada.`);
+      continue;
+    }
+
+    const mimeType =
+      String(stagedAsset.normalized_mime_type || stagedAsset.original_mime_type || "").trim() ||
+      "image/jpeg";
+    const sourceStoragePath = String(stagedAsset.storage_path || "").trim();
+    let finalBucket: "pool-photos" | "store-catalog-photos";
+    let finalPath = "";
+    let finalPhotoRowId = "";
+
+    try {
+      const { data: downloadData, error: downloadError } = await args.supabase.storage
+        .from("store-import-files")
+        .download(sourceStoragePath);
+      if (downloadError || !downloadData) {
+        throw new Error(downloadError?.message || "Falha ao baixar objeto staged para promocao.");
+      }
+
+      finalBucket = planned.destination === "pool" ? "pool-photos" : "store-catalog-photos";
+      finalPath =
+        planned.destination === "pool"
+          ? buildFinalPoolPhotoPath({
+              fileName: stagedAsset.file_name,
+              mimeType,
+              organizationId: args.organizationId,
+              poolId: savedItem.persistedId,
+              sortOrder: 0,
+              storeId: args.storeId,
+            })
+          : buildFinalCatalogPhotoPath({
+              catalogItemId: savedItem.persistedId,
+              fileName: stagedAsset.file_name,
+              mimeType,
+              organizationId: args.organizationId,
+              sortOrder: 0,
+              storeId: args.storeId,
+            });
+
+      const { error: uploadError } = await args.supabase.storage
+        .from(finalBucket)
+        .upload(finalPath, downloadData, {
+          contentType: mimeType,
+          upsert: false,
+        });
+      if (uploadError) {
+        throw new Error(uploadError.message);
+      }
+      uploadedFinalPhotoObjects += 1;
+
+      if (planned.destination === "pool") {
+        const { data: photoRow, error: insertPhotoError } = await args.supabase
+          .from("pool_photos")
+          .insert({
+            file_name: sanitizePhotoFileName(stagedAsset.file_name),
+            file_size_bytes:
+              typeof stagedAsset.size_bytes === "number" && Number.isFinite(stagedAsset.size_bytes)
+                ? stagedAsset.size_bytes
+                : null,
+            organization_id: args.organizationId,
+            pool_id: savedItem.persistedId,
+            sort_order: 0,
+            storage_path: finalPath,
+            store_id: args.storeId,
+          })
+          .select("id")
+          .single();
+
+        if (insertPhotoError) {
+          const { error: cleanupError } = await args.supabase.storage.from(finalBucket).remove([finalPath]);
+          if (cleanupError) {
+            warnings.push(
+              `Falha ao limpar upload final orfao ${finalBucket}/${finalPath}: ${cleanupError.message}`
+            );
+          }
+          throw new Error(insertPhotoError.message);
+        }
+
+        finalPhotoRowId = String(photoRow.id || "");
+        createdPoolPhotos += 1;
+      } else {
+        const { data: photoRow, error: insertPhotoError } = await args.supabase
+          .from("store_catalog_item_photos")
+          .insert({
+            catalog_item_id: savedItem.persistedId,
+            file_name: sanitizePhotoFileName(stagedAsset.file_name),
+            file_size_bytes:
+              typeof stagedAsset.size_bytes === "number" && Number.isFinite(stagedAsset.size_bytes)
+                ? stagedAsset.size_bytes
+                : null,
+            sort_order: 0,
+            storage_path: finalPath,
+          })
+          .select("id")
+          .single();
+
+        if (insertPhotoError) {
+          const { error: cleanupError } = await args.supabase.storage.from(finalBucket).remove([finalPath]);
+          if (cleanupError) {
+            warnings.push(
+              `Falha ao limpar upload final orfao ${finalBucket}/${finalPath}: ${cleanupError.message}`
+            );
+          }
+          throw new Error(insertPhotoError.message);
+        }
+
+        finalPhotoRowId = String(photoRow.id || "");
+        createdCatalogItemPhotos += 1;
+      }
+
+      const mergedMetadata = {
+        ...assetMetadata,
+        destination: planned.destination,
+        destinationId: savedItem.persistedId,
+        finalBucket,
+        finalPath,
+        finalPhotoRowId,
+        promotedAt: new Date().toISOString(),
+      };
+
+      const { error: updateAssetError } = await args.supabase
+        .from("store_import_media_assets")
+        .update({
+          metadata: mergedMetadata,
+          status: "promoted",
+        })
+        .eq("id", stagingAssetId)
+        .eq("organization_id", args.organizationId)
+        .eq("store_id", args.storeId)
+        .eq("status", "staged");
+      if (updateAssetError) {
+        warnings.push(
+          `Foto final criada para ${planned.clientItemId}, mas o asset staged ${stagingAssetId} nao foi marcado como promoted: ${updateAssetError.message}`
+        );
+      } else {
+        promotedStagingAssets += 1;
+      }
+
+      processedStagingAssetIds.add(stagingAssetId);
+      promotedPhotos.push({
+        clientItemId: planned.clientItemId,
+        destination: planned.destination,
+        finalBucket,
+        finalPath,
+        finalPhotoRowId,
+        mediaRefId: planned.mediaRefId,
+        promotedStagingAssetId: stagingAssetId,
+      });
+    } catch (error) {
+      failedPhotos.push({
+        clientItemId: planned.clientItemId,
+        destination: planned.destination,
+        error: error instanceof Error ? error.message : String(error),
+        mediaRefId: planned.mediaRefId,
+        stagingAssetId,
+      });
+
+      const mergedMetadata = {
+        ...assetMetadata,
+        lastPromotionAttemptAt: new Date().toISOString(),
+        lastPromotionError: error instanceof Error ? error.message : String(error),
+      };
+
+      const { error: updateAssetError } = await args.supabase
+        .from("store_import_media_assets")
+        .update({
+          metadata: mergedMetadata,
+        })
+        .eq("id", stagingAssetId || "__missing__")
+        .eq("organization_id", args.organizationId)
+        .eq("store_id", args.storeId);
+      if (updateAssetError && stagingAssetId) {
+        warnings.push(
+          `Falha ao registrar erro de promocao no stagingAssetId ${stagingAssetId}: ${updateAssetError.message}`
+        );
+      }
+    }
+  }
+
+  return {
+    createdCatalogItemPhotos,
+    createdPoolPhotos,
+    failedPhotos,
+    promotedPhotos,
+    promotedStagingAssets,
+    uploadedFinalPhotoObjects,
+    warnings,
+  } satisfies IntelligentImportSaveApprovedPhotoSaveResult;
+}
+
 export async function saveApprovedIntelligentImportItems(
   request: IntelligentImportSaveApprovedRequest
 ): Promise<IntelligentImportSaveApprovedResponse> {
@@ -1760,6 +2062,17 @@ export async function saveApprovedIntelligentImportItems(
     supabase,
     plan: importFileLinkPlan,
   });
+  const photoSaveResult =
+    photoPlan.plannedFinalPhotos.length > 0
+      ? await promotePlannedImportPhotos({
+          organizationId: store.organization_id,
+          photoPlan,
+          savedItems,
+          stagedMediaValidation,
+          storeId: store.id,
+          supabase,
+        })
+      : undefined;
 
   const response: IntelligentImportSaveApprovedResponse = {
     importFileLinkPlan,
@@ -1773,11 +2086,12 @@ export async function saveApprovedIntelligentImportItems(
           ? Array.from(
               new Set([
                 ...photoPlan.warnings,
-                "photoPlan calculado, mas persistencia de fotos finais ainda nao habilitada neste bloco.",
+                ...(photoSaveResult?.warnings ?? []),
               ])
             )
           : photoPlan.warnings,
     },
+    photoSaveResult,
     summary: {
       ...summary,
       saved: savedItems.length,

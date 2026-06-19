@@ -9871,13 +9871,29 @@ export default function IntelligentCatalogImportPanel({
         (item) => item.destination === "acessorios"
       ).length;
       const savedOutros = saveAttempt.result.items.filter((item) => item.destination === "outros").length;
-      const photoPlanNotice =
-        saveAttempt.result.photoPlan && saveAttempt.result.photoPlan.receivedMediaRefs.length > 0
-          ? " PhotoPlan calculado, mas a persistencia de fotos finais ainda nao esta habilitada neste bloco."
+      const promotedPhotoCount =
+        saveAttempt.result.photoSaveResult?.promotedPhotos.length ??
+        ((saveAttempt.result.photoSaveResult?.createdPoolPhotos ?? 0) +
+          (saveAttempt.result.photoSaveResult?.createdCatalogItemPhotos ?? 0));
+      const failedPhotoCount = saveAttempt.result.photoSaveResult?.failedPhotos.length ?? 0;
+      const photoWarnings = saveAttempt.result.photoSaveResult?.warnings ?? [];
+      const photoImportNotice =
+        promotedPhotoCount > 0
+          ? saveAttempt.result.photoSaveResult?.createdPoolPhotos
+            ? ` Fotos de piscinas importadas: ${saveAttempt.result.photoSaveResult.createdPoolPhotos}.`
+            : ` Fotos importadas: ${promotedPhotoCount}.`
+          : "";
+      const photoFailureNotice =
+        failedPhotoCount > 0 ? ` Algumas fotos nao foram importadas: ${failedPhotoCount}.` : "";
+      const photoWarningNotice =
+        photoWarnings.length > 0
+          ? ` Warnings de fotos: ${photoWarnings.slice(0, 2).join(" | ")}${
+              photoWarnings.length > 2 ? " ..." : ""
+            }`
           : "";
 
       setParentSuccess(
-        `Importacao salva com sucesso. Piscinas: ${savedPools}. Quimicos: ${savedQuimicos}. Acessorios: ${savedAcessorios}. Outros: ${savedOutros}.${photoPlanNotice}`
+        `Importacao salva com sucesso. Piscinas: ${savedPools}. Quimicos: ${savedQuimicos}. Acessorios: ${savedAcessorios}. Outros: ${savedOutros}.${photoImportNotice}${photoFailureNotice}${photoWarningNotice}`
       );
       clearIntelligentImportState();
       await onSaved?.();

@@ -255,12 +255,37 @@ export type IntelligentImportSaveApprovedPhotoPlan = {
   wouldUploadFinalPhotoObjects: number;
 };
 
+export type IntelligentImportSaveApprovedPhotoSaveResult = {
+  createdCatalogItemPhotos: number;
+  createdPoolPhotos: number;
+  failedPhotos: Array<{
+    clientItemId: string;
+    destination: IntelligentImportReviewedDestination;
+    error: string;
+    mediaRefId: string;
+    stagingAssetId?: string | null;
+  }>;
+  promotedPhotos: Array<{
+    clientItemId: string;
+    destination: IntelligentImportReviewedDestination;
+    finalBucket: "pool-photos" | "store-catalog-photos";
+    finalPath: string;
+    finalPhotoRowId: string;
+    mediaRefId: string;
+    promotedStagingAssetId?: string | null;
+  }>;
+  promotedStagingAssets: number;
+  uploadedFinalPhotoObjects: number;
+  warnings: string[];
+};
+
 export type IntelligentImportSaveApprovedResponse = {
   importFileLinkPlan?: IntelligentImportSaveApprovedImportFilePlan;
   items: IntelligentImportSaveApprovedResultItem[];
   message: string;
   ok: boolean;
   photoPlan?: IntelligentImportSaveApprovedPhotoPlan;
+  photoSaveResult?: IntelligentImportSaveApprovedPhotoSaveResult;
   summary: {
     blockedDuplicate: number;
     invalid: number;
