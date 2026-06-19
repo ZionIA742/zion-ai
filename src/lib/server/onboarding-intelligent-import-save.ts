@@ -48,6 +48,22 @@ type ImportedFileRow = {
   status: string | null;
 };
 
+type StagedMediaAssetRow = {
+  association_strength: string | null;
+  id: string;
+  import_batch_id: string | null;
+  import_file_id: string | null;
+  requires_user_confirmation: boolean | null;
+  sheet_scoped_key: string | null;
+  source_file_name: string | null;
+  source_kind: string | null;
+  source_location_key: string | null;
+  status: string | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  worksheet_row_number: number | null;
+};
+
 type SaveValidationContext = {
   existingCatalogItems: ExistingCatalogItemRow[];
   existingPoolRows: ExistingPoolRow[];
@@ -62,6 +78,15 @@ type ImportFileValidationResult = {
   validatedFilesByName: Map<string, ImportedFileRow[]>;
   warnings: string[];
 };
+
+type StagedMediaValidationResult = {
+  receivedStagingAssetIds: string[];
+  validatedAssets: StagedMediaAssetRow[];
+  validatedAssetsById: Map<string, StagedMediaAssetRow>;
+  warnings: string[];
+};
+
+type PhotoPlanMatchMode = "clientItemId" | "fallback";
 
 type PhotoPlanClassification =
   | "planned"
@@ -216,6 +241,21 @@ function normalizeLoose(value: string | null | undefined) {
     .replace(/[^a-z0-9\s._-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeFileLikeName(value: string | null | undefined) {
+  return normalizeLoose(String(value || "").replace(/\.[^.]+$/g, "").trim());
+}
+
+function matchesSourceFileNameTolerantly(left: string | null | undefined, right: string | null | undefined) {
+  const normalizedLeft = normalizeFileLikeName(left);
+  const normalizedRight = normalizeFileLikeName(right);
+  if (!normalizedLeft || !normalizedRight) return true;
+  return (
+    normalizedLeft === normalizedRight ||
+    normalizedLeft.includes(normalizedRight) ||
+    normalizedRight.includes(normalizedLeft)
+  );
 }
 
 function normalizeMetadata(value: Record<string, unknown> | null | undefined) {
@@ -594,6 +634,19 @@ function extractWorksheetRowNumber(item: IntelligentImportReviewedSaveItem) {
   return null;
 }
 
+function extractWorksheetRowNumberFromRefLike(value: string | null | undefined) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return null;
+  const match =
+    normalized.match(/(?:^|::|[\s_-])row::?(\d{1,6})(?:$|::|[\s_-])/i) ||
+    normalized.match(/(?:^|::|[\s_-])linha::?(\d{1,6})(?:$|::|[\s_-])/i) ||
+    normalized.match(/\brow\s*(\d{1,6})\b/i) ||
+    normalized.match(/\blinha\s*(\d{1,6})\b/i);
+  if (!match?.[1]) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+}
+
 function normalizeSourceKind(value: unknown): IntelligentImportSelectedMediaSourceKind {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "xlsx_row_image") return "xlsx_row_image";
@@ -620,6 +673,8 @@ function buildNormalizedMediaRef(ref: IntelligentImportSelectedMediaRef) {
     clientItemId: String(ref.clientItemId || "").trim(),
     confirmedByUser: Boolean(ref.confirmedByUser),
     fileName: String(ref.fileName || "").trim() || null,
+    importBatchId: String(ref.importBatchId || "").trim() || null,
+    importFileId: String(ref.importFileId || "").trim() || null,
     mediaRefId: String(ref.mediaRefId || "").trim(),
     mimeType: String(ref.mimeType || "").trim() || null,
     notes: Array.isArray(ref.notes)
@@ -632,6 +687,7 @@ function buildNormalizedMediaRef(ref: IntelligentImportSelectedMediaRef) {
     sourceImageId: String(ref.sourceImageId || "").trim() || null,
     sourceKind: normalizeSourceKind(ref.sourceKind),
     sourceLocationKey: String(ref.sourceLocationKey || "").trim() || null,
+    stagingAssetId: String(ref.stagingAssetId || "").trim() || null,
     stagingStorageRef: String(ref.stagingStorageRef || "").trim() || null,
     warnings: Array.isArray(ref.warnings)
       ? ref.warnings.map((value) => String(value || "").trim()).filter(Boolean)
@@ -640,10 +696,108 @@ function buildNormalizedMediaRef(ref: IntelligentImportSelectedMediaRef) {
   };
 }
 
+function buildComparedFields(args: {
+  item: IntelligentImportReviewedSaveItem | undefined;
+  normalizedRef: ReturnType<typeof buildNormalizedMediaRef>;
+  stagedAsset?: StagedMediaAssetRow;
+}) {
+  const itemSourceFileName = args.item ? extractSourceFileName(args.item) : null;
+  const itemSourceLocationKey = args.item ? extractSourceLocationKey(args.item) : null;
+  const itemSheetScopedKey = args.item ? extractSheetScopedKey(args.item) : null;
+  const itemWorksheetRowNumber = args.item ? extractWorksheetRowNumber(args.item) : null;
+  const refWorksheetRowNumber =
+    args.normalizedRef.worksheetRowNumber ??
+    extractWorksheetRowNumberFromRefLike(args.normalizedRef.sourceLocationKey) ??
+    extractWorksheetRowNumberFromRefLike(args.normalizedRef.clientItemId);
+
+  return {
+    itemClientItemId: args.item?.clientItemId || null,
+    itemSheetScopedKey,
+    itemSourceFileName,
+    itemSourceLocationKey,
+    itemWorksheetRowNumber,
+    refClientItemId: args.normalizedRef.clientItemId,
+    refImportBatchId: args.normalizedRef.importBatchId,
+    refImportFileId: args.normalizedRef.importFileId,
+    refSheetScopedKey: args.normalizedRef.sheetScopedKey,
+    refSourceFileName: args.normalizedRef.sourceFileName,
+    refSourceLocationKey: args.normalizedRef.sourceLocationKey,
+    refWorksheetRowNumber,
+    stagedAssociationStrength: args.stagedAsset?.association_strength ?? null,
+    stagedImportBatchId: args.stagedAsset?.import_batch_id ?? null,
+    stagedImportFileId: args.stagedAsset?.import_file_id ?? null,
+    stagedSheetScopedKey: args.stagedAsset?.sheet_scoped_key ?? null,
+    stagedSourceFileName: args.stagedAsset?.source_file_name ?? null,
+    stagedSourceKind: args.stagedAsset?.source_kind ?? null,
+    stagedSourceLocationKey: args.stagedAsset?.source_location_key ?? null,
+    stagedStorageBucket: args.stagedAsset?.storage_bucket ?? null,
+    stagedStoragePath: args.stagedAsset?.storage_path ?? null,
+    stagedWorksheetRowNumber: args.stagedAsset?.worksheet_row_number ?? null,
+  } satisfies Record<string, unknown>;
+}
+
+function findFallbackPhotoPlanTarget(args: {
+  items: IntelligentImportReviewedSaveItem[];
+  normalizedRef: ReturnType<typeof buildNormalizedMediaRef>;
+  resultItems: IntelligentImportSaveApprovedResultItem[];
+}) {
+  const refWorksheetRowNumber =
+    args.normalizedRef.worksheetRowNumber ??
+    extractWorksheetRowNumberFromRefLike(args.normalizedRef.sourceLocationKey) ??
+    extractWorksheetRowNumberFromRefLike(args.normalizedRef.clientItemId);
+
+  const scored = args.items
+    .map((item, index) => {
+      const resultItem = args.resultItems[index];
+      const itemSourceFileName = extractSourceFileName(item);
+      const itemSourceLocationKey = extractSourceLocationKey(item);
+      const itemSheetScopedKey = extractSheetScopedKey(item);
+      const itemWorksheetRowNumber = extractWorksheetRowNumber(item);
+      let score = 0;
+
+      if (
+        args.normalizedRef.sourceLocationKey &&
+        itemSourceLocationKey &&
+        normalizeLoose(args.normalizedRef.sourceLocationKey) === normalizeLoose(itemSourceLocationKey)
+      ) {
+        score += 500;
+      }
+      if (
+        args.normalizedRef.sheetScopedKey &&
+        itemSheetScopedKey &&
+        normalizeLoose(args.normalizedRef.sheetScopedKey) === normalizeLoose(itemSheetScopedKey)
+      ) {
+        score += 300;
+      }
+      if (
+        refWorksheetRowNumber != null &&
+        itemWorksheetRowNumber != null &&
+        Math.floor(refWorksheetRowNumber) === Math.floor(itemWorksheetRowNumber)
+      ) {
+        score += 250;
+      }
+      if (matchesSourceFileNameTolerantly(args.normalizedRef.sourceFileName, itemSourceFileName)) {
+        score += 50;
+      }
+
+      return {
+        item,
+        resultItem,
+        score,
+      };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0] ?? null;
+}
+
 function classifyPhotoPlanMediaRef(args: {
   item: IntelligentImportReviewedSaveItem | undefined;
   resultItem: IntelligentImportSaveApprovedResultItem | undefined;
   mediaRef: IntelligentImportSelectedMediaRef;
+  matchMode: PhotoPlanMatchMode;
+  stagedMediaValidation: StagedMediaValidationResult;
 }): {
   classification: PhotoPlanClassification;
   planned?: IntelligentImportSaveApprovedPhotoPlan["plannedFinalPhotos"][number];
@@ -653,6 +807,14 @@ function classifyPhotoPlanMediaRef(args: {
 } {
   const normalizedRef = buildNormalizedMediaRef(args.mediaRef);
   const warnings = [...normalizedRef.notes, ...normalizedRef.warnings];
+  const stagedAsset = normalizedRef.stagingAssetId
+    ? args.stagedMediaValidation.validatedAssetsById.get(normalizedRef.stagingAssetId)
+    : undefined;
+  const compared = buildComparedFields({
+    item: args.item,
+    normalizedRef,
+    stagedAsset,
+  });
 
   if (!normalizedRef.mediaRefId || !normalizedRef.clientItemId) {
     return {
@@ -686,6 +848,7 @@ function classifyPhotoPlanMediaRef(args: {
       blocked: {
         associationMode: normalizedRef.associationMode,
         clientItemId: normalizedRef.clientItemId,
+        compared,
         mediaRefId: normalizedRef.mediaRefId,
         reason: "Item de destino nao esta valido/salvo; photoPlan nao pode ser aplicado.",
         sourceKind: normalizedRef.sourceKind,
@@ -708,43 +871,6 @@ function classifyPhotoPlanMediaRef(args: {
     };
   }
 
-  const itemSourceFileName = extractSourceFileName(args.item);
-  const itemSourceLocationKey = extractSourceLocationKey(args.item);
-  const itemSheetScopedKey = extractSheetScopedKey(args.item);
-  const itemWorksheetRowNumber = extractWorksheetRowNumber(args.item);
-
-  const hasSourceFileMatch =
-    !normalizedRef.sourceFileName ||
-    !itemSourceFileName ||
-    normalizeLoose(normalizedRef.sourceFileName) === normalizeLoose(itemSourceFileName);
-  const hasSourceLocationMatch =
-    !normalizedRef.sourceLocationKey ||
-    !itemSourceLocationKey ||
-    normalizeLoose(normalizedRef.sourceLocationKey) === normalizeLoose(itemSourceLocationKey);
-  const hasSheetScopedKeyMatch =
-    !normalizedRef.sheetScopedKey ||
-    !itemSheetScopedKey ||
-    normalizeLoose(normalizedRef.sheetScopedKey) === normalizeLoose(itemSheetScopedKey);
-  const hasWorksheetRowMatch =
-    normalizedRef.worksheetRowNumber == null ||
-    itemWorksheetRowNumber == null ||
-    Math.floor(normalizedRef.worksheetRowNumber) === Math.floor(itemWorksheetRowNumber);
-
-  if (!hasSourceFileMatch || !hasSourceLocationMatch || !hasSheetScopedKeyMatch || !hasWorksheetRowMatch) {
-    return {
-      classification: "blocked",
-      blocked: {
-        associationMode: normalizedRef.associationMode,
-        clientItemId: normalizedRef.clientItemId,
-        mediaRefId: normalizedRef.mediaRefId,
-        reason: "MediaRef nao combina com a origem do item (sourceFileName/sourceLocationKey/sheetScopedKey/row).",
-        sourceKind: normalizedRef.sourceKind,
-        warnings,
-      },
-      warnings,
-    };
-  }
-
   if (normalizedRef.associationMode === "strong_auto") {
     if (normalizedRef.sourceKind !== "xlsx_row_image") {
       return {
@@ -752,9 +878,11 @@ function classifyPhotoPlanMediaRef(args: {
         blocked: {
           associationMode: normalizedRef.associationMode,
           clientItemId: normalizedRef.clientItemId,
+          compared,
           mediaRefId: normalizedRef.mediaRefId,
           reason: "strong_auto so e planejavel para XLSX/XLSM com imagem por linha.",
           sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
           warnings,
         },
         warnings,
@@ -767,13 +895,143 @@ function classifyPhotoPlanMediaRef(args: {
         blocked: {
           associationMode: normalizedRef.associationMode,
           clientItemId: normalizedRef.clientItemId,
+          compared,
           mediaRefId: normalizedRef.mediaRefId,
-          reason: "strong_auto exige sourceFileName e sourceLocationKey/sheetScopedKey fortes.",
+          reason: "strong_auto exige stagingAssetId valido neste bloco.",
           sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: null,
           warnings,
         },
         warnings,
       };
+    }
+
+    if (!stagedAsset) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "stagingAssetId nao pertence a esta loja/organizacao ou nao esta staged.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    const stagedSourceKind = normalizeSourceKind(stagedAsset.source_kind);
+    const stagedAssociationStrength = normalizeAssociationMode(stagedAsset.association_strength);
+    const safeStorageBucket = String(stagedAsset.storage_bucket || "").trim().toLowerCase();
+    const safeStoragePath = String(stagedAsset.storage_path || "").trim();
+    const safeStoragePathLower = safeStoragePath.toLowerCase();
+
+    if (
+      stagedSourceKind !== "xlsx_row_image" ||
+      stagedAssociationStrength !== "strong_auto" ||
+      stagedAsset.requires_user_confirmation
+    ) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "stagingAssetId nao representa um asset strong_auto valido de XLSX/XLSM.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    if (
+      safeStorageBucket !== "store-import-files" ||
+      !safeStoragePath.includes("/media/") ||
+      safeStoragePathLower.includes("pool-photos") ||
+      safeStoragePathLower.includes("store-catalog-photos")
+    ) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "stagingAssetId nao atende aos requisitos de storage seguro deste bloco.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    if (args.matchMode === "fallback") {
+      const itemSourceFileName = extractSourceFileName(args.item);
+      const itemSourceLocationKey = extractSourceLocationKey(args.item);
+      const itemSheetScopedKey = extractSheetScopedKey(args.item);
+      const itemWorksheetRowNumber = extractWorksheetRowNumber(args.item);
+      const refWorksheetRowNumber =
+        normalizedRef.worksheetRowNumber ??
+        extractWorksheetRowNumberFromRefLike(normalizedRef.sourceLocationKey) ??
+        extractWorksheetRowNumberFromRefLike(normalizedRef.clientItemId);
+      const matchesAtLeastOneStrongCoordinate =
+        Boolean(
+          normalizedRef.sourceLocationKey &&
+            itemSourceLocationKey &&
+            normalizeLoose(normalizedRef.sourceLocationKey) === normalizeLoose(itemSourceLocationKey)
+        ) ||
+        Boolean(
+          normalizedRef.sheetScopedKey &&
+            itemSheetScopedKey &&
+            normalizeLoose(normalizedRef.sheetScopedKey) === normalizeLoose(itemSheetScopedKey)
+        ) ||
+        Boolean(
+          refWorksheetRowNumber != null &&
+            itemWorksheetRowNumber != null &&
+            Math.floor(refWorksheetRowNumber) === Math.floor(itemWorksheetRowNumber)
+        ) ||
+        matchesSourceFileNameTolerantly(normalizedRef.sourceFileName, itemSourceFileName);
+
+      if (!matchesAtLeastOneStrongCoordinate) {
+        return {
+          classification: "blocked",
+          blocked: {
+            associationMode: normalizedRef.associationMode,
+            clientItemId: normalizedRef.clientItemId,
+            compared,
+            mediaRefId: normalizedRef.mediaRefId,
+            reason: "MediaRef nao combina com a origem do item (sourceFileName/sourceLocationKey/sheetScopedKey/row).",
+            sourceKind: normalizedRef.sourceKind,
+            stagingAssetId: normalizedRef.stagingAssetId,
+            warnings,
+          },
+          warnings,
+        };
+      }
+    } else {
+      const complementaryChecks = [
+        normalizedRef.importBatchId && stagedAsset.import_batch_id
+          ? normalizeLoose(normalizedRef.importBatchId) === normalizeLoose(stagedAsset.import_batch_id)
+          : true,
+        normalizedRef.importFileId && stagedAsset.import_file_id
+          ? normalizeLoose(normalizedRef.importFileId) === normalizeLoose(stagedAsset.import_file_id)
+          : true,
+        normalizedRef.sourceFileName && stagedAsset.source_file_name
+          ? matchesSourceFileNameTolerantly(normalizedRef.sourceFileName, stagedAsset.source_file_name)
+          : true,
+      ];
+      if (complementaryChecks.some((entry) => entry === false)) {
+        warnings.push(
+          "clientItemId bateu, mas alguns campos complementares de origem nao coincidiram; asset strong_auto foi aceito assim mesmo neste bloco."
+        );
+      }
     }
   } else if (normalizedRef.associationMode === "weak_confirmed") {
     if (!normalizedRef.confirmedByUser) {
@@ -782,9 +1040,11 @@ function classifyPhotoPlanMediaRef(args: {
         blocked: {
           associationMode: normalizedRef.associationMode,
           clientItemId: normalizedRef.clientItemId,
+          compared,
           mediaRefId: normalizedRef.mediaRefId,
           reason: "weak_confirmed exige confirmedByUser=true.",
           sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
           warnings,
         },
         warnings,
@@ -797,9 +1057,11 @@ function classifyPhotoPlanMediaRef(args: {
         blocked: {
           associationMode: normalizedRef.associationMode,
           clientItemId: normalizedRef.clientItemId,
+          compared,
           mediaRefId: normalizedRef.mediaRefId,
           reason: "manual_upload so e planejavel para image_file.",
           sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
           warnings,
         },
         warnings,
@@ -812,9 +1074,11 @@ function classifyPhotoPlanMediaRef(args: {
         blocked: {
           associationMode: normalizedRef.associationMode,
           clientItemId: normalizedRef.clientItemId,
+          compared,
           mediaRefId: normalizedRef.mediaRefId,
           reason: "manual_upload exige confirmedByUser=true.",
           sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
           warnings,
         },
         warnings,
@@ -826,9 +1090,11 @@ function classifyPhotoPlanMediaRef(args: {
       blocked: {
         associationMode: normalizedRef.associationMode,
         clientItemId: normalizedRef.clientItemId,
+        compared,
         mediaRefId: normalizedRef.mediaRefId,
         reason: "Pagina renderizada/evidencia visual nunca vira foto final automatica neste bloco.",
         sourceKind: normalizedRef.sourceKind,
+        stagingAssetId: normalizedRef.stagingAssetId,
         warnings,
       },
       warnings,
@@ -840,9 +1106,11 @@ function classifyPhotoPlanMediaRef(args: {
       blocked: {
         associationMode: normalizedRef.associationMode,
         clientItemId: normalizedRef.clientItemId,
+        compared,
         mediaRefId: normalizedRef.mediaRefId,
         reason: "MediaRef com associationMode/sourceKind desconhecidos.",
         sourceKind: normalizedRef.sourceKind,
+        stagingAssetId: normalizedRef.stagingAssetId,
         warnings,
       },
       warnings,
@@ -856,7 +1124,9 @@ function classifyPhotoPlanMediaRef(args: {
       clientItemId: normalizedRef.clientItemId,
       destination: args.resultItem.destination,
       inputIndex: args.resultItem.inputIndex,
+      matchMode: args.matchMode,
       mediaRefId: normalizedRef.mediaRefId,
+      stagingAssetId: normalizedRef.stagingAssetId,
       sourceFileName: normalizedRef.sourceFileName,
       sourceImageId: normalizedRef.sourceImageId,
       sourceKind: normalizedRef.sourceKind,
@@ -870,8 +1140,9 @@ function buildPhotoPlan(args: {
   items: IntelligentImportSaveApprovedResultItem[];
   requestItems: IntelligentImportReviewedSaveItem[];
   selectedMediaRefs: IntelligentImportSelectedMediaRef[];
+  stagedMediaValidation: StagedMediaValidationResult;
 }) {
-  const warnings: string[] = [];
+  const warnings: string[] = [...args.stagedMediaValidation.warnings];
   const receivedMediaRefs: IntelligentImportSaveApprovedPhotoPlan["receivedMediaRefs"] = [];
   const plannedFinalPhotos: IntelligentImportSaveApprovedPhotoPlan["plannedFinalPhotos"] = [];
   const blockedMediaRefs: IntelligentImportSaveApprovedPhotoPlan["blockedMediaRefs"] = [];
@@ -883,6 +1154,9 @@ function buildPhotoPlan(args: {
 
   const itemByClientId = new Map(args.requestItems.map((item) => [String(item.clientItemId || "").trim(), item]));
   const resultByClientId = new Map(args.items.map((item) => [String(item.clientItemId || "").trim(), item]));
+  let acceptedByClientItemId = 0;
+  let acceptedByFallback = 0;
+  const blockedByReason = new Map<string, number>();
 
   for (const mediaRef of args.selectedMediaRefs) {
     const normalizedRef = buildNormalizedMediaRef(mediaRef);
@@ -892,23 +1166,45 @@ function buildPhotoPlan(args: {
       confirmedByUser: normalizedRef.confirmedByUser,
       fileName: normalizedRef.fileName,
       mediaRefId: normalizedRef.mediaRefId,
+      stagingAssetId: normalizedRef.stagingAssetId,
       sourceFileName: normalizedRef.sourceFileName,
       sourceImageId: normalizedRef.sourceImageId,
       sourceKind: normalizedRef.sourceKind,
       sourceLocationKey: normalizedRef.sourceLocationKey,
     });
 
+    const directItem = itemByClientId.get(normalizedRef.clientItemId);
+    const directResultItem = resultByClientId.get(normalizedRef.clientItemId);
+    const fallbackTarget =
+      !directItem || !directResultItem
+        ? findFallbackPhotoPlanTarget({
+            items: args.requestItems,
+            normalizedRef,
+            resultItems: args.items,
+          })
+        : null;
+    const matchMode: PhotoPlanMatchMode =
+      directItem && directResultItem ? "clientItemId" : fallbackTarget ? "fallback" : "clientItemId";
+
     const classified = classifyPhotoPlanMediaRef({
-      item: itemByClientId.get(normalizedRef.clientItemId),
-      resultItem: resultByClientId.get(normalizedRef.clientItemId),
+      item: directItem || fallbackTarget?.item,
+      resultItem: directResultItem || fallbackTarget?.resultItem,
+      matchMode,
       mediaRef,
+      stagedMediaValidation: args.stagedMediaValidation,
     });
     warnings.push(...classified.warnings);
 
     if (classified.classification === "planned" && classified.planned) {
       plannedFinalPhotos.push(classified.planned);
+      if (matchMode === "clientItemId") acceptedByClientItemId += 1;
+      else acceptedByFallback += 1;
     } else if (classified.classification === "blocked" && classified.blocked) {
       blockedMediaRefs.push(classified.blocked);
+      blockedByReason.set(
+        classified.blocked.reason,
+        (blockedByReason.get(classified.blocked.reason) ?? 0) + 1
+      );
     } else if (classified.unlinked) {
       unlinkedMediaRefs.push(classified.unlinked);
     }
@@ -916,6 +1212,25 @@ function buildPhotoPlan(args: {
 
   const dedupedWarnings = Array.from(new Set(warnings.filter(Boolean)));
   return {
+    debug: {
+      acceptedByClientItemId,
+      acceptedByFallback,
+      blockedByReason: Object.fromEntries(blockedByReason.entries()),
+      blockedSamples: blockedMediaRefs.slice(0, 5).map((entry) => ({
+        clientItemId: entry.clientItemId,
+        compared: entry.compared ?? {},
+        mediaRefId: entry.mediaRefId,
+        reason: entry.reason,
+        stagingAssetId: entry.stagingAssetId ?? null,
+      })),
+      plannedSamples: plannedFinalPhotos.slice(0, 5).map((entry) => ({
+        clientItemId: entry.clientItemId,
+        destination: entry.destination,
+        matchMode: entry.matchMode ?? "clientItemId",
+        mediaRefId: entry.mediaRefId,
+        stagingAssetId: entry.stagingAssetId ?? null,
+      })),
+    },
     blockedMediaRefs,
     plannedFinalPhotos,
     receivedMediaRefs,
@@ -925,6 +1240,67 @@ function buildPhotoPlan(args: {
     wouldCreatePoolPhotos: plannedFinalPhotos.filter((entry) => entry.destination === "pool").length,
     wouldUploadFinalPhotoObjects: plannedFinalPhotos.length,
   } satisfies IntelligentImportSaveApprovedPhotoPlan;
+}
+
+async function validateStagedMediaAssets(args: {
+  organizationId: string;
+  storeId: string;
+  selectedMediaRefs: IntelligentImportSelectedMediaRef[];
+  supabase: any;
+}) {
+  const receivedStagingAssetIds = Array.from(
+    new Set(
+      args.selectedMediaRefs
+        .map((ref) => String(ref.stagingAssetId || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const warnings: string[] = [];
+
+  if (receivedStagingAssetIds.length === 0) {
+    warnings.push("Nenhum stagingAssetId foi enviado neste request.");
+    return {
+      receivedStagingAssetIds,
+      validatedAssets: [],
+      validatedAssetsById: new Map<string, StagedMediaAssetRow>(),
+      warnings,
+    } satisfies StagedMediaValidationResult;
+  }
+
+  const { data, error } = await args.supabase
+    .from("store_import_media_assets")
+    .select(
+      "id, import_batch_id, import_file_id, source_file_name, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, association_strength, requires_user_confirmation, status, storage_bucket, storage_path"
+    )
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("status", "staged")
+    .in("id", receivedStagingAssetIds);
+
+  if (error) {
+    throw new IntelligentImportSaveAccessError(
+      500,
+      "LOAD_STAGED_MEDIA_ASSETS_FAILED",
+      error.message
+    );
+  }
+
+  const validatedAssets = (data ?? []) as StagedMediaAssetRow[];
+  const validatedAssetsById = new Map(validatedAssets.map((row) => [String(row.id || "").trim(), row]));
+  const missingIds = receivedStagingAssetIds.filter((id) => !validatedAssetsById.has(id));
+
+  if (missingIds.length > 0) {
+    warnings.push(
+      `${missingIds.length} stagingAssetId(s) nao pertencem a esta loja/organizacao ou nao estao staged.`
+    );
+  }
+
+  return {
+    receivedStagingAssetIds,
+    validatedAssets,
+    validatedAssetsById,
+    warnings,
+  } satisfies StagedMediaValidationResult;
 }
 
 async function validateImportedFiles(args: {
@@ -1283,6 +1659,12 @@ export async function saveApprovedIntelligentImportItems(
     storeId: store.id,
     supabase,
   });
+  const stagedMediaValidation = await validateStagedMediaAssets({
+    organizationId: store.organization_id,
+    selectedMediaRefs: Array.isArray(request.selectedMediaRefs) ? request.selectedMediaRefs : [],
+    storeId: store.id,
+    supabase,
+  });
 
   const existingReferences = await loadDuplicateReferenceData({
     organizationId: store.organization_id,
@@ -1308,6 +1690,7 @@ export async function saveApprovedIntelligentImportItems(
     items: validatedItems,
     requestItems: request.items,
     selectedMediaRefs: Array.isArray(request.selectedMediaRefs) ? request.selectedMediaRefs : [],
+    stagedMediaValidation,
   });
 
   const summary = {
@@ -1321,7 +1704,8 @@ export async function saveApprovedIntelligentImportItems(
   const hasBlockingIssues =
     summary.invalid > 0 ||
     summary.blockedDuplicate > 0 ||
-    importFileValidation.invalidImportedFileIds.length > 0;
+    importFileValidation.invalidImportedFileIds.length > 0 ||
+    photoPlan.blockedMediaRefs.length > 0;
   const validateOnly = Boolean(request.validateOnly);
   const debugParser = Boolean(request.context?.debugParser);
 

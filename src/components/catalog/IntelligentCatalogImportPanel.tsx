@@ -12,6 +12,7 @@ import {
   type VisualDocumentAnalysis,
 } from "@/lib/visual-catalog-document-analysis";
 import type {
+  IntelligentImportStagedMediaAsset,
   IntelligentImportSelectedMediaRef,
   IntelligentImportReviewedSaveItem,
   IntelligentImportSaveApprovedRequest,
@@ -65,6 +66,7 @@ type IntelligentImportResponse =
       importedFileIds?: string[];
       importedFiles?: Array<{
         id: string;
+        importBatchId?: string | null;
         originalFileName: string;
         storageBucket: string;
         storagePath: string;
@@ -72,7 +74,10 @@ type IntelligentImportResponse =
         mimeType: string | null;
         status: string | null;
       }>;
+      mediaStagingWarnings?: string[];
       rawFilePersistenceWarnings?: string[];
+      stagedMediaAssetIds?: string[];
+      stagedMediaAssets?: IntelligentImportStagedMediaAsset[];
       summary: IntelligentImportSummary;
       extractedPreview: IntelligentImportExtractedPreview[];
       extractedImagePreview?: Array<{
@@ -202,6 +207,38 @@ type VisualReviewDuplicateDiagnostics = {
   totalItems: number;
   suspiciousGroups: VisualReviewDuplicateDiagnosticGroup[];
   suspiciousItemCount: number;
+};
+type ImportedSelectedMediaRefDebug = {
+  matchedSamples: Array<{
+    clientItemId: string;
+    importBatchId: string | null;
+    importFileId: string | null;
+    sourceFileName: string | null;
+    sourceLocationKey: string | null;
+    stagedAssetId: string;
+    worksheetRowNumber: number | null;
+  }>;
+  selectedMediaRefsCount: number;
+  stagedMediaAssetsAvailable: number;
+  stagedMediaAssetSamples: Array<{
+    id: string;
+    importBatchId: string | null;
+    importFileId: string | null;
+    sourceFileName: string | null;
+    sourceLocationKey: string | null;
+    sheetScopedKey: string | null;
+    worksheetRowNumber: number | null;
+  }>;
+  unmatchedSamples: Array<{
+    clientItemId: string;
+    importBatchId: string | null;
+    importFileId: string | null;
+    reasons: string[];
+    sourceFileName: string | null;
+    sourceLocationKey: string | null;
+    sheetScopedKey: string | null;
+    worksheetRowNumber: number | null;
+  }>;
 };
 type VisualReviewSaveResult = {
   savedCount: number;
@@ -1469,36 +1506,59 @@ function getImportedRawFileIdsFromResult(result: IntelligentImportResponse | nul
     .filter(Boolean);
 }
 
-function estimateDataUrlSizeBytes(dataUrl: string) {
-  const normalized = String(dataUrl || "").trim();
-  const commaIndex = normalized.indexOf(",");
-  if (commaIndex < 0) return null;
-  const base64 = normalized.slice(commaIndex + 1).replace(/\s+/g, "");
-  if (!base64) return null;
-  const padding = (base64.match(/=+$/)?.[0].length ?? 0);
-  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+function getStagedMediaAssetsFromResult(result: IntelligentImportResponse | null) {
+  if (!result?.ok || !Array.isArray(result.stagedMediaAssets)) return [];
+  return result.stagedMediaAssets.filter((asset) => Boolean(String(asset.id || "").trim()));
 }
 
-function mapPreviewImageSourceToMediaSourceKind(source: string | null | undefined) {
-  const normalized = String(source || "").trim().toLowerCase();
-  if (normalized === "xlsx") return "xlsx_row_image" as const;
-  if (normalized === "docx") return "docx_media" as const;
-  if (normalized === "pptx") return "pptx_media" as const;
-  if (normalized === "pdf") return "pdf_page_render" as const;
-  if (normalized === "image_file") return "image_file" as const;
-  return "unknown" as const;
+function getImportedFilesFromResult(result: IntelligentImportResponse | null) {
+  if (!result?.ok || !Array.isArray(result.importedFiles)) return [];
+  return result.importedFiles.filter((file) => Boolean(String(file.id || "").trim()));
+}
+
+function normalizeImportedFileLikeName(value: string | null | undefined) {
+  return normalizeImportedLoose(String(value || "").replace(/\.[^.]+$/g, "").trim());
+}
+
+function matchesImportedSourceFileName(
+  itemFileName: string | null | undefined,
+  candidateFileName: string | null | undefined
+) {
+  const normalizedItem = normalizeImportedFileLikeName(itemFileName);
+  const normalizedCandidate = normalizeImportedFileLikeName(candidateFileName);
+  if (!normalizedItem || !normalizedCandidate) return true;
+  return (
+    normalizedItem === normalizedCandidate ||
+    normalizedItem.includes(normalizedCandidate) ||
+    normalizedCandidate.includes(normalizedItem)
+  );
 }
 
 function buildSelectedMediaRefsForSave(args: {
   images: NonNullable<Extract<IntelligentImportResponse, { ok: true }>["extractedImagePreview"]>;
   items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
+  importedFiles?: Array<{
+    id: string;
+    importBatchId?: string | null;
+    originalFileName: string;
+  }>;
+  stagedMediaAssets?: IntelligentImportStagedMediaAsset[];
 }) {
   const selectedMediaRefs: IntelligentImportSelectedMediaRef[] = [];
   const diagnostics: string[] = [];
+  const matchedSamples: ImportedSelectedMediaRefDebug["matchedSamples"] = [];
+  const unmatchedSamples: ImportedSelectedMediaRefDebug["unmatchedSamples"] = [];
 
   if (args.items.length === 0) {
     diagnostics.push("Nenhum item elegivel para montar selectedMediaRefs.");
     return {
+      debug: {
+        matchedSamples,
+        selectedMediaRefsCount: 0,
+        stagedMediaAssetsAvailable: Array.isArray(args.stagedMediaAssets) ? args.stagedMediaAssets.length : 0,
+        stagedMediaAssetSamples: [],
+        unmatchedSamples,
+      } satisfies ImportedSelectedMediaRefDebug,
       selectedMediaRefs,
       diagnostics,
     };
@@ -1506,115 +1566,206 @@ function buildSelectedMediaRefsForSave(args: {
 
   if (args.images.length === 0) {
     diagnostics.push("Nenhuma imagem extraida disponivel para photoPlan neste request.");
-    return {
-      selectedMediaRefs,
-      diagnostics,
-    };
   }
 
-  let skippedNonStrongCount = 0;
+  const stagedAssets = Array.isArray(args.stagedMediaAssets) ? args.stagedMediaAssets : [];
+  const importedFiles = Array.isArray(args.importedFiles) ? args.importedFiles : [];
+  const importedFilesByName = new Map<string, Array<(typeof importedFiles)[number]>>();
+  for (const importedFile of importedFiles) {
+    const key = normalizeImportedFileLikeName(importedFile.originalFileName);
+    if (!key) continue;
+    const current = importedFilesByName.get(key) ?? [];
+    current.push(importedFile);
+    importedFilesByName.set(key, current);
+  }
+  if (stagedAssets.length === 0) {
+    diagnostics.push("Nenhum stagedMediaAsset forte de XLSX/XLSM disponivel; photoPlan seguira vazio neste request.");
+  }
+
   let skippedWithoutStableLocationCount = 0;
+  let skippedWithoutStagingCount = 0;
 
   for (const [itemIndex, item] of args.items.entries()) {
     const sourceLocationKey = buildImportedSourceLocationKey(item);
     const sourceFileName = String(extractImportedOriginalSourceFileName(item) || item.sourceFileName || "").trim();
     const sheetScopedKey = extractImportedSheetScopedKey(item);
     const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
+    const itemClientItemId = buildReviewedImportedSaveItem(item, itemIndex).clientItemId;
+    const relatedImportedFiles =
+      importedFilesByName.get(normalizeImportedFileLikeName(sourceFileName)) ??
+      (importedFiles.length === 1 ? importedFiles : []);
+    const expectedImportBatchIds = new Set(
+      relatedImportedFiles.map((file) => String(file.importBatchId || "").trim()).filter(Boolean)
+    );
+    const expectedImportFileIds = new Set(
+      relatedImportedFiles.map((file) => String(file.id || "").trim()).filter(Boolean)
+    );
 
-    if (!sourceFileName || (!sourceLocationKey && !sheetScopedKey)) {
+    if (!sourceLocationKey && !sheetScopedKey && worksheetRowNumber == null) {
       skippedWithoutStableLocationCount += 1;
+      if (unmatchedSamples.length < 5) {
+        unmatchedSamples.push({
+          clientItemId: itemClientItemId,
+          importBatchId:
+            expectedImportBatchIds.size === 1 ? Array.from(expectedImportBatchIds)[0] : null,
+          importFileId: expectedImportFileIds.size === 1 ? Array.from(expectedImportFileIds)[0] : null,
+          reasons: ["Item sem sourceLocationKey, sheetScopedKey e worksheetRowNumber utilizaveis."],
+          sourceFileName: sourceFileName || null,
+          sourceLocationKey: sourceLocationKey || null,
+          sheetScopedKey: sheetScopedKey || null,
+          worksheetRowNumber,
+        });
+      }
       continue;
     }
 
-    const image = args.images.find((candidate) => {
-      const sourceKind = mapPreviewImageSourceToMediaSourceKind(candidate.source);
-      if (sourceKind !== "xlsx_row_image") return false;
-      const candidateFileName = String(
-        candidate.originalSourceFileName || candidate.sourceFileName || ""
-      ).trim();
-      if (
-        candidateFileName &&
-        normalizeImportedLoose(candidateFileName) !== normalizeImportedLoose(sourceFileName)
-      ) {
-        return false;
-      }
-      const candidateLocationKey = buildExtractedImageSourceLocationKey({
-        sourceFileName: candidate.sourceFileName,
-        originalSourceFileName: candidate.originalSourceFileName,
-        sheetName: candidate.sheetName,
-        sheetScopedKey: candidate.sheetScopedKey,
-        worksheetRowNumber: candidate.worksheetRowNumber,
-        source: candidate.source,
-        fileName: candidate.fileName,
-      });
-      if (sourceLocationKey && candidateLocationKey) {
-        return normalizeImportedLoose(candidateLocationKey) === normalizeImportedLoose(sourceLocationKey);
-      }
-      if (sheetScopedKey && candidate.sheetScopedKey) {
-        return normalizeImportedLoose(candidate.sheetScopedKey) === normalizeImportedLoose(sheetScopedKey);
-      }
-      if (
-        worksheetRowNumber != null &&
-        typeof candidate.worksheetRowNumber === "number" &&
-        Math.floor(candidate.worksheetRowNumber) === Math.floor(worksheetRowNumber)
-      ) {
-        return true;
-      }
-      return false;
-    });
+    const stagedAsset = stagedAssets
+      .map((candidate) => {
+        if (candidate.sourceKind !== "xlsx_row_image") {
+          return { candidate, score: -1 };
+        }
 
-    if (!image) continue;
+        const candidateImportBatchId = String(candidate.importBatchId || "").trim();
+        const candidateImportFileId = String(candidate.importFileId || "").trim();
+        const importBatchMatch =
+          expectedImportBatchIds.size === 0 ||
+          !candidateImportBatchId ||
+          expectedImportBatchIds.has(candidateImportBatchId);
+        const importFileMatch =
+          expectedImportFileIds.size === 0 ||
+          !candidateImportFileId ||
+          expectedImportFileIds.has(candidateImportFileId);
+        if (!importBatchMatch || !importFileMatch) {
+          return { candidate, score: -1 };
+        }
 
-    const sourceKind = mapPreviewImageSourceToMediaSourceKind(image.source);
-    if (sourceKind !== "xlsx_row_image") {
-      skippedNonStrongCount += 1;
+        const sourceFileMatch = matchesImportedSourceFileName(sourceFileName, candidate.sourceFileName);
+        if (sourceFileName && candidate.sourceFileName && !sourceFileMatch) {
+          return { candidate, score: -1 };
+        }
+
+        let score = 0;
+        if (candidateImportBatchId && expectedImportBatchIds.has(candidateImportBatchId)) score += 120;
+        if (candidateImportFileId && expectedImportFileIds.has(candidateImportFileId)) score += 120;
+        if (sourceFileMatch && sourceFileName && candidate.sourceFileName) score += 60;
+
+        const sourceLocationMatch =
+          sourceLocationKey &&
+          candidate.sourceLocationKey &&
+          normalizeImportedLoose(candidate.sourceLocationKey) === normalizeImportedLoose(sourceLocationKey);
+        const sheetScopedKeyMatch =
+          sheetScopedKey &&
+          candidate.sheetScopedKey &&
+          normalizeImportedLoose(candidate.sheetScopedKey) === normalizeImportedLoose(sheetScopedKey);
+        const worksheetRowMatch =
+          worksheetRowNumber != null &&
+          typeof candidate.worksheetRowNumber === "number" &&
+          Math.floor(candidate.worksheetRowNumber) === Math.floor(worksheetRowNumber);
+
+        if (sourceLocationMatch) score += 500;
+        if (sheetScopedKeyMatch) score += 350;
+        if (worksheetRowMatch) score += 250;
+        if (!sourceLocationMatch && !sheetScopedKeyMatch && !worksheetRowMatch) {
+          return { candidate, score: -1 };
+        }
+
+        return { candidate, score };
+      })
+      .filter((entry) => entry.score >= 0)
+      .sort((a, b) => b.score - a.score)[0]?.candidate;
+
+    if (!stagedAsset) {
+      skippedWithoutStagingCount += 1;
+      if (unmatchedSamples.length < 5) {
+        unmatchedSamples.push({
+          clientItemId: itemClientItemId,
+          importBatchId:
+            expectedImportBatchIds.size === 1 ? Array.from(expectedImportBatchIds)[0] : null,
+          importFileId: expectedImportFileIds.size === 1 ? Array.from(expectedImportFileIds)[0] : null,
+          reasons: [
+            sourceFileName ? `sourceFileName=${sourceFileName}` : "sourceFileName ausente no item",
+            sourceLocationKey ? `sourceLocationKey=${sourceLocationKey}` : "sourceLocationKey ausente",
+            sheetScopedKey ? `sheetScopedKey=${sheetScopedKey}` : "sheetScopedKey ausente",
+            worksheetRowNumber != null ? `worksheetRowNumber=${worksheetRowNumber}` : "worksheetRowNumber ausente",
+          ],
+          sourceFileName: sourceFileName || null,
+          sourceLocationKey: sourceLocationKey || null,
+          sheetScopedKey: sheetScopedKey || null,
+          worksheetRowNumber,
+        });
+      }
       continue;
     }
 
     selectedMediaRefs.push({
       associationMode: "strong_auto",
-      clientItemId: buildReviewedImportedSaveItem(item, itemIndex).clientItemId,
+      clientItemId: itemClientItemId,
       confirmedByUser: false,
-      fileName: image.fileName || null,
-      mediaRefId: [
-        "preview-media",
-        normalizeImportedLoose(String(image.originalSourceFileName || image.sourceFileName || "")),
-        normalizeImportedLoose(String(image.sheetScopedKey || "")),
-        String(image.fileName || ""),
-        itemIndex,
-      ].join("::"),
-      mimeType: image.mimeType || null,
+      fileName: stagedAsset.fileName || null,
+      importBatchId: stagedAsset.importBatchId || null,
+      importFileId: stagedAsset.importFileId || null,
+      mediaRefId: stagedAsset.id,
+      mimeType: stagedAsset.mimeType || null,
       pageNumber: null,
-      sheetScopedKey: image.sheetScopedKey || null,
-      sizeBytes: estimateDataUrlSizeBytes(image.dataUrl),
-      sourceFileName,
-      sourceImageId: [
-        normalizeImportedLoose(String(image.originalSourceFileName || image.sourceFileName || "")),
-        normalizeImportedLoose(String(image.sheetScopedKey || "")),
-        normalizeImportedLoose(String(image.fileName || "")),
-      ].join("::"),
-      sourceKind,
-      sourceLocationKey: sourceLocationKey || null,
+      sheetScopedKey: stagedAsset.sheetScopedKey || sheetScopedKey || null,
+      sizeBytes: stagedAsset.sizeBytes ?? null,
+      sourceFileName: sourceFileName || stagedAsset.sourceFileName || null,
+      sourceKind: "xlsx_row_image",
+      sourceLocationKey: sourceLocationKey || stagedAsset.sourceLocationKey || null,
+      stagingAssetId: stagedAsset.id,
+      stagingStorageRef: stagedAsset.stagingStorageRef || null,
       worksheetRowNumber:
-        typeof image.worksheetRowNumber === "number" ? Math.floor(image.worksheetRowNumber) : null,
+        typeof stagedAsset.worksheetRowNumber === "number"
+          ? Math.floor(stagedAsset.worksheetRowNumber)
+          : worksheetRowNumber ?? null,
     });
+    if (matchedSamples.length < 5) {
+      matchedSamples.push({
+        clientItemId: itemClientItemId,
+        importBatchId: stagedAsset.importBatchId || null,
+        importFileId: stagedAsset.importFileId || null,
+        sourceFileName: sourceFileName || stagedAsset.sourceFileName || null,
+        sourceLocationKey: sourceLocationKey || stagedAsset.sourceLocationKey || null,
+        stagedAssetId: stagedAsset.id,
+        worksheetRowNumber:
+          typeof stagedAsset.worksheetRowNumber === "number"
+            ? Math.floor(stagedAsset.worksheetRowNumber)
+            : worksheetRowNumber ?? null,
+      });
+    }
   }
 
   if (selectedMediaRefs.length === 0) {
-    diagnostics.push("Nenhuma midia com referencia forte/estavel foi selecionada para o photoPlan.");
+    diagnostics.push("Nenhum stagedMediaAsset forte/estavel foi selecionado para o photoPlan.");
   }
   if (skippedWithoutStableLocationCount > 0) {
     diagnostics.push(
       `${skippedWithoutStableLocationCount} item(ns) sem sourceLocationKey/sheetScopedKey forte ficaram fora do photoPlan.`
     );
   }
-  if (skippedNonStrongCount > 0) {
+  if (skippedWithoutStagingCount > 0) {
     diagnostics.push(
-      `${skippedNonStrongCount} midia(s) nao-XLSX/nao-fortes foram ignoradas neste bloco e exigirao confirmacao/staging futuro.`
+      `${skippedWithoutStagingCount} item(ns) com origem XLSX forte ficaram sem stagingAsset correspondente e nao entraram no photoPlan.`
     );
   }
 
   return {
+    debug: {
+      matchedSamples,
+      selectedMediaRefsCount: selectedMediaRefs.length,
+      stagedMediaAssetsAvailable: stagedAssets.length,
+      stagedMediaAssetSamples: stagedAssets.slice(0, 5).map((asset) => ({
+        id: asset.id,
+        importBatchId: asset.importBatchId || null,
+        importFileId: asset.importFileId || null,
+        sourceFileName: asset.sourceFileName || null,
+        sourceLocationKey: asset.sourceLocationKey || null,
+        sheetScopedKey: asset.sheetScopedKey || null,
+        worksheetRowNumber:
+          typeof asset.worksheetRowNumber === "number" ? Math.floor(asset.worksheetRowNumber) : null,
+      })),
+      unmatchedSamples,
+    } satisfies ImportedSelectedMediaRefDebug,
     selectedMediaRefs,
     diagnostics,
   };
@@ -4179,9 +4330,11 @@ function extractImportedWorksheetRowNumber(
 
   if (metadataCandidates != null) return metadataCandidates;
 
-  const rawText = String(item.rawText || "");
+  const rawText = [String(item.title || ""), String(item.rawText || "")].join("\n");
   const match =
     rawText.match(/(?:^|\n)linha da planilha\s*:\s*(\d+)/i) ||
+    rawText.match(/\blinha\s*(\d{1,6})\b/i) ||
+    rawText.match(/\brow\s*(\d{1,6})\b/i) ||
     rawText.match(/(?:^|\n)worksheet row number\s*:\s*(\d+)/i) ||
     rawText.match(/===\s*item\s*\d+\s*\|\s*planilha\s*:\s*[^|\n=]+\|\s*linha\s*:\s*(\d+)/i);
 
@@ -7079,6 +7232,8 @@ export default function IntelligentCatalogImportPanel({
     useState<IntelligentImportSaveApprovedResponse | null>(null);
   const [importedCatalogDryRunPayload, setImportedCatalogDryRunPayload] =
     useState<IntelligentImportSaveApprovedRequest | null>(null);
+  const [importedCatalogMediaRefDebug, setImportedCatalogMediaRefDebug] =
+    useState<ImportedSelectedMediaRefDebug | null>(null);
   const [visualCatalogLoading, setVisualCatalogLoading] = useState(false);
   const [visualCatalogResult, setVisualCatalogResult] =
     useState<VisualCatalogImportResponse | null>(null);
@@ -7769,6 +7924,7 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportSuccess(null);
     setImportedCatalogDryRunResult(null);
     setImportedCatalogDryRunPayload(null);
+    setImportedCatalogMediaRefDebug(null);
     latestExtractedImagePreviewRef.current = [];
     setIntelligentImportResult(null);
     setVisualCatalogResult(null);
@@ -7813,6 +7969,7 @@ export default function IntelligentCatalogImportPanel({
     setIntelligentImportSuccess(null);
     setImportedCatalogDryRunResult(null);
     setImportedCatalogDryRunPayload(null);
+    setImportedCatalogMediaRefDebug(null);
     latestExtractedImagePreviewRef.current = [];
     setIntelligentImportResult(null);
     setVisualCatalogResult(null);
@@ -9617,7 +9774,9 @@ export default function IntelligentCatalogImportPanel({
     const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
     const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
       images: safeExtractedImagePreview,
+      importedFiles: getImportedFilesFromResult(intelligentImportResult),
       items: sourceItems,
+      stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
     });
     const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
     const buildRequestBody = (
@@ -9677,6 +9836,7 @@ export default function IntelligentCatalogImportPanel({
     setParentSuccess(null);
     setImportedCatalogDryRunResult(null);
     setImportedCatalogDryRunPayload(null);
+    setImportedCatalogMediaRefDebug(selectedMediaRefBuild.debug);
 
     try {
       const validation = await runSaveRequest(true);
@@ -9778,7 +9938,9 @@ export default function IntelligentCatalogImportPanel({
     const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
     const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
       images: safeExtractedImagePreview,
+      importedFiles: getImportedFilesFromResult(intelligentImportResult),
       items: sourceItems,
+      stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
     });
     const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
     const requestBody: IntelligentImportSaveApprovedRequest = {
@@ -9799,6 +9961,7 @@ export default function IntelligentCatalogImportPanel({
     setParentSuccess(null);
     setImportedCatalogDryRunPayload(requestBody);
     setImportedCatalogDryRunResult(null);
+    setImportedCatalogMediaRefDebug(selectedMediaRefBuild.debug);
 
     try {
       const response = await fetch("/api/onboarding/intelligent-import/save-approved", {
@@ -12250,6 +12413,36 @@ export default function IntelligentCatalogImportPanel({
                           ) : null}
                         </div>
                       ) : null}
+                      {parserDebugEnabled && importedCatalogMediaRefDebug ? (
+                        <div className="mt-3 rounded-xl border border-fuchsia-200 bg-fuchsia-50 p-3 text-sm text-fuchsia-950">
+                          <p className="font-semibold">Debug selectedMediaRefs / staging</p>
+                          <p className="mt-1">
+                            stagedMediaAssets disponiveis: {importedCatalogMediaRefDebug.stagedMediaAssetsAvailable}
+                            {" • "}
+                            selectedMediaRefs montados: {importedCatalogMediaRefDebug.selectedMediaRefsCount}
+                          </p>
+                          {importedCatalogMediaRefDebug.matchedSamples.length > 0 ? (
+                            <div className="mt-2 space-y-1 text-xs leading-5 text-fuchsia-900">
+                              {importedCatalogMediaRefDebug.matchedSamples.map((sample, index) => (
+                                <p key={`media-ref-match-${index}`}>
+                                  match {index + 1}: item {sample.clientItemId} {"->"} {sample.stagedAssetId} | row{" "}
+                                  {sample.worksheetRowNumber ?? "-"} | file {sample.sourceFileName || "-"}
+                                </p>
+                              ))}
+                            </div>
+                          ) : null}
+                          {importedCatalogMediaRefDebug.unmatchedSamples.length > 0 ? (
+                            <div className="mt-2 space-y-1 text-xs leading-5 text-fuchsia-900">
+                              {importedCatalogMediaRefDebug.unmatchedSamples.map((sample, index) => (
+                                <p key={`media-ref-unmatched-${index}`}>
+                                  sem match {index + 1}: item {sample.clientItemId} | row{" "}
+                                  {sample.worksheetRowNumber ?? "-"} | motivos: {sample.reasons.join(" ; ")}
+                                </p>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <summary className="cursor-pointer text-sm font-semibold text-slate-900">
                           Payload enviado no dry-run
@@ -12275,6 +12468,16 @@ export default function IntelligentCatalogImportPanel({
                           </summary>
                           <pre className="mt-3 max-h-[320px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">
                             {JSON.stringify(importedCatalogDryRunResult.photoPlan, null, 2)}
+                          </pre>
+                        </details>
+                      ) : null}
+                      {parserDebugEnabled && importedCatalogMediaRefDebug ? (
+                        <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <summary className="cursor-pointer text-sm font-semibold text-slate-900">
+                            Debug detalhado de selectedMediaRefs / staging
+                          </summary>
+                          <pre className="mt-3 max-h-[320px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-100">
+                            {JSON.stringify(importedCatalogMediaRefDebug, null, 2)}
                           </pre>
                         </details>
                       ) : null}

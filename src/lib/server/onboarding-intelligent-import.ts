@@ -15,6 +15,8 @@ import {
   type DedupedImportItem,
 } from "./onboarding-import-dedup";
 import { createClient } from "@supabase/supabase-js";
+import crypto from "node:crypto";
+import type { IntelligentImportStagedMediaAsset } from "@/lib/onboarding-intelligent-import-save-contract";
 
 export type ImportableFile = {
   fileName: string;
@@ -34,6 +36,7 @@ export type IntelligentImportParams = {
 
 export type IntelligentImportPersistedFile = {
   id: string;
+  importBatchId?: string | null;
   originalFileName: string;
   storageBucket: string;
   storagePath: string;
@@ -118,7 +121,10 @@ export type IntelligentImportResult =
       ok: true;
       importedFileIds: string[];
       importedFiles: IntelligentImportPersistedFile[];
+      mediaStagingWarnings: string[];
       rawFilePersistenceWarnings: string[];
+      stagedMediaAssetIds: string[];
+      stagedMediaAssets: IntelligentImportStagedMediaAsset[];
       summary: IntelligentImportSummary;
       extractedPreview: Array<{
         fileName: string;
@@ -180,6 +186,291 @@ function sanitizeImportRawFileName(fileName: string) {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(-120) || "arquivo";
+}
+
+function getMimeExtension(mimeType: string | null | undefined) {
+  const normalized = String(mimeType || "").trim().toLowerCase();
+  if (normalized === "image/jpeg") return "jpg";
+  if (normalized === "image/png") return "png";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/gif") return "gif";
+  if (normalized === "image/bmp") return "bmp";
+  if (normalized === "image/svg+xml") return "svg";
+  return null;
+}
+
+function getMediaFileExtension(fileName: string, mimeType: string | null | undefined) {
+  const fromName = getFileExtension(fileName);
+  if (fromName) return fromName;
+  return getMimeExtension(mimeType) || "bin";
+}
+
+function buildImportedMediaStoragePath(args: {
+  organizationId: string;
+  storeId: string;
+  importBatchId: string;
+  stagingAssetId: string;
+  fileName: string;
+}) {
+  const safeName = sanitizeImportRawFileName(args.fileName);
+  return `${args.organizationId}/${args.storeId}/${args.importBatchId}/media/${args.stagingAssetId}-${safeName}`;
+}
+
+function buildImageSourceLocationKey(args: {
+  sourceFileName: string;
+  sheetScopedKey?: string | null;
+  sheetName?: string | null;
+  worksheetRowNumber?: number | null;
+}) {
+  const sourceFileName = String(args.sourceFileName || "").trim();
+  const sheetScopedKey = String(args.sheetScopedKey || "").trim();
+  if (sourceFileName && sheetScopedKey) {
+    return `${sourceFileName}::${sheetScopedKey}`;
+  }
+  const sheetName = normalizeLoose(String(args.sheetName || ""));
+  const worksheetRowNumber =
+    typeof args.worksheetRowNumber === "number" && Number.isFinite(args.worksheetRowNumber) && args.worksheetRowNumber > 0
+      ? Math.floor(args.worksheetRowNumber)
+      : null;
+  if (sourceFileName && sheetName && worksheetRowNumber != null) {
+    return `${sourceFileName}::${sheetName}::row::${worksheetRowNumber}`;
+  }
+  return "";
+}
+
+function dataUrlToBuffer(dataUrl: string) {
+  const normalized = String(dataUrl || "").trim();
+  const commaIndex = normalized.indexOf(",");
+  if (commaIndex < 0) {
+    throw new Error("dataUrl invalido para staging de midia.");
+  }
+  return Buffer.from(normalized.slice(commaIndex + 1), "base64");
+}
+
+async function persistStagedXlsxMediaAssets(args: {
+  extractedImagePreview: IntelligentImportPreviewImage[];
+  importedFiles: IntelligentImportPersistedFile[];
+  organizationId: string;
+  storeId: string;
+  uploadedBy?: string | null;
+}) {
+  const mediaStagingWarnings: string[] = [];
+  const stagedMediaAssets: IntelligentImportStagedMediaAsset[] = [];
+  const seenStagingKeys = new Set<string>();
+  const importedXlsxFiles = args.importedFiles.filter((file) => {
+    const extension = getFileExtension(file.originalFileName);
+    return extension === "xlsx" || extension === "xlsm";
+  });
+  const importedFileByName = new Map(
+    importedXlsxFiles.map((file) => [normalizeLoose(file.originalFileName), file])
+  );
+
+  if (args.extractedImagePreview.length === 0 || importedXlsxFiles.length === 0) {
+    return {
+      mediaStagingWarnings,
+      stagedMediaAssetIds: [] as string[],
+      stagedMediaAssets,
+    };
+  }
+
+  let supabase: ReturnType<typeof createServiceSupabaseClient>;
+  try {
+    supabase = createServiceSupabaseClient();
+  } catch (error) {
+    return {
+      mediaStagingWarnings: [
+        `Persistencia de staging de midia indisponivel neste ambiente: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ],
+      stagedMediaAssetIds: [] as string[],
+      stagedMediaAssets,
+    };
+  }
+
+  for (const image of args.extractedImagePreview) {
+    const sourceKind = String(image.source || "").trim().toLowerCase();
+    if (sourceKind !== "xlsx") continue;
+
+    const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim();
+    const importedFile = importedFileByName.get(normalizeLoose(sourceFileName));
+    if (!importedFile?.id || !importedFile.importBatchId) {
+      mediaStagingWarnings.push(
+        `Imagem XLSX ${image.fileName || "(sem nome)"} nao encontrou importFile/importBatch correspondente para staging.`
+      );
+      continue;
+    }
+
+    const worksheetRowNumber =
+      typeof image.worksheetRowNumber === "number" && Number.isFinite(image.worksheetRowNumber) && image.worksheetRowNumber > 0
+        ? Math.floor(image.worksheetRowNumber)
+        : null;
+    const sheetScopedKey = String(image.sheetScopedKey || "").trim() || null;
+    const sourceLocationKey =
+      buildImageSourceLocationKey({
+        sourceFileName,
+        sheetName: image.sheetName,
+        sheetScopedKey,
+        worksheetRowNumber,
+      }) || null;
+    const sourceImageId = [
+      normalizeLoose(sourceFileName),
+      normalizeLoose(String(sheetScopedKey || sourceLocationKey || image.anchorCell || "")),
+      normalizeLoose(String(image.imageRelationshipId || image.fileName || "")),
+    ]
+      .filter(Boolean)
+      .join("::");
+
+    if (!sourceFileName || (!sheetScopedKey && !sourceLocationKey) || worksheetRowNumber == null) {
+      mediaStagingWarnings.push(
+        `Imagem XLSX ${image.fileName || "(sem nome)"} ficou fora do staging por faltar sourceFileName/sheetScopedKey/worksheetRowNumber fortes.`
+      );
+      continue;
+    }
+
+    const stagingAssetId = crypto.randomUUID();
+    const fileExtension = getMediaFileExtension(image.fileName, image.mimeType);
+    const stagedFileNameBase = String(image.fileName || `xlsx-row-image.${fileExtension}`).trim();
+    const stagedFileName = stagedFileNameBase.includes(".")
+      ? stagedFileNameBase
+      : `${stagedFileNameBase}.${fileExtension}`;
+
+    try {
+      const buffer = dataUrlToBuffer(image.dataUrl);
+      const checksum = crypto.createHash("sha256").update(buffer).digest("hex");
+      const dedupeKey = [
+        importedFile.importBatchId,
+        normalizeLoose(sourceImageId || ""),
+        normalizeLoose(sourceLocationKey || ""),
+        normalizeLoose(sheetScopedKey || ""),
+        String(worksheetRowNumber || ""),
+        checksum,
+      ].join("::");
+
+      if (seenStagingKeys.has(dedupeKey)) {
+        continue;
+      }
+      seenStagingKeys.add(dedupeKey);
+
+      const storagePath = buildImportedMediaStoragePath({
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        importBatchId: importedFile.importBatchId,
+        stagingAssetId,
+        fileName: stagedFileName,
+      });
+      const { error: uploadError } = await supabase.storage
+        .from("store-import-files")
+        .upload(storagePath, buffer, {
+          upsert: false,
+          contentType: image.mimeType || "application/octet-stream",
+        });
+
+      if (uploadError) {
+        mediaStagingWarnings.push(
+          `Falha ao subir staging de imagem XLSX ${stagedFileName}: ${uploadError.message}`
+        );
+        continue;
+      }
+
+      const insertPayload = {
+        id: stagingAssetId,
+        association_strength: "strong_auto",
+        checksum,
+        created_by: args.uploadedBy || null,
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        file_name: stagedFileName,
+        height: null,
+        import_batch_id: importedFile.importBatchId,
+        import_file_id: importedFile.id,
+        metadata: {
+          anchorCell: image.anchorCell || null,
+          columnIndex: typeof image.columnIndex === "number" ? image.columnIndex : null,
+          drawingName: image.drawingName || null,
+          imageOrder: typeof image.imageOrder === "number" ? image.imageOrder : null,
+          imageRelationshipId: image.imageRelationshipId || null,
+          rowIndex: typeof image.rowIndex === "number" ? image.rowIndex : null,
+          source: "xlsx",
+          sourceFileName,
+          sheetName: image.sheetName || null,
+        },
+        normalized_mime_type: image.mimeType || null,
+        organization_id: args.organizationId,
+        original_mime_type: image.mimeType || null,
+        page_number: null,
+        requires_user_confirmation: false,
+        sheet_scoped_key: sheetScopedKey,
+        size_bytes: buffer.length,
+        source_file_name: sourceFileName,
+        source_image_id: sourceImageId || null,
+        source_kind: "xlsx_row_image",
+        source_location_key: sourceLocationKey,
+        status: "staged",
+        storage_bucket: "store-import-files",
+        storage_path: storagePath,
+        store_id: args.storeId,
+        width: null,
+        worksheet_row_number: worksheetRowNumber,
+      };
+
+      const { data: createdRow, error: insertError } = await supabase
+        .from("store_import_media_assets")
+        .insert(insertPayload)
+        .select(
+          "id, import_batch_id, import_file_id, source_file_name, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, file_name, size_bytes, normalized_mime_type, storage_bucket, storage_path, association_strength, requires_user_confirmation"
+        )
+        .single();
+
+      if (insertError) {
+        const { error: rollbackError } = await supabase.storage
+          .from("store-import-files")
+          .remove([storagePath]);
+        if (rollbackError) {
+          mediaStagingWarnings.push(
+            `Falha ao compensar storage do staging ${stagedFileName}: ${rollbackError.message}`
+          );
+        }
+        mediaStagingWarnings.push(
+          `Falha ao registrar staging de imagem XLSX ${stagedFileName}: ${insertError.message}`
+        );
+        continue;
+      }
+
+      stagedMediaAssets.push({
+        associationStrength: "strong_auto",
+        fileName: String((createdRow as any).file_name || stagedFileName),
+        id: String(createdRow.id || stagingAssetId),
+        importBatchId: String((createdRow as any).import_batch_id || importedFile.importBatchId || "").trim() || null,
+        importFileId: String((createdRow as any).import_file_id || importedFile.id || "").trim() || null,
+        mimeType: ((createdRow as any).normalized_mime_type as string | null) ?? image.mimeType ?? null,
+        requiresUserConfirmation: Boolean((createdRow as any).requires_user_confirmation),
+        sheetScopedKey: String((createdRow as any).sheet_scoped_key || "").trim() || null,
+        sizeBytes: Number((createdRow as any).size_bytes || buffer.length),
+        sourceFileName: String((createdRow as any).source_file_name || sourceFileName || "").trim() || null,
+        sourceKind: "xlsx_row_image",
+        sourceLocationKey: String((createdRow as any).source_location_key || sourceLocationKey || "").trim() || null,
+        stagingStorageRef: `store-import-files/${String((createdRow as any).storage_path || storagePath)}`,
+        storageBucket: String((createdRow as any).storage_bucket || "store-import-files"),
+        storagePath: String((createdRow as any).storage_path || storagePath),
+        worksheetRowNumber:
+          typeof (createdRow as any).worksheet_row_number === "number"
+            ? Math.floor((createdRow as any).worksheet_row_number)
+            : worksheetRowNumber,
+      });
+    } catch (error) {
+      mediaStagingWarnings.push(
+        `Falha inesperada ao persistir staging de imagem XLSX ${image.fileName || "(sem nome)"}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  return {
+    mediaStagingWarnings: Array.from(new Set(mediaStagingWarnings)),
+    stagedMediaAssetIds: stagedMediaAssets.map((asset) => asset.id),
+    stagedMediaAssets,
+  };
 }
 
 function getFileExtension(fileName: string) {
@@ -315,6 +606,7 @@ async function persistImportedRawFiles(args: {
       importedFileIds.push(String(createdRow.id || ""));
       importedFiles.push({
         id: String(createdRow.id || ""),
+        importBatchId,
         originalFileName: String(createdRow.original_file_name || file.fileName),
         storageBucket: String((createdRow as any).storage_bucket || "store-import-files"),
         storagePath: String(createdRow.storage_path || storagePath),
@@ -843,12 +1135,22 @@ export async function runOnboardingIntelligentImport(
             importSummary: summary,
             source: params.source,
           });
+    const stagedMediaPersistence = await persistStagedXlsxMediaAssets({
+      extractedImagePreview: aliased.imagePreview,
+      importedFiles: persistedRawFiles.importedFiles,
+      organizationId: params.organizationId,
+      storeId: params.storeId,
+      uploadedBy: params.uploadedBy,
+    });
 
     return {
       ok: true,
       importedFileIds: persistedRawFiles.importedFileIds,
       importedFiles: persistedRawFiles.importedFiles,
+      mediaStagingWarnings: stagedMediaPersistence.mediaStagingWarnings,
       rawFilePersistenceWarnings: persistedRawFiles.rawFilePersistenceWarnings,
+      stagedMediaAssetIds: stagedMediaPersistence.stagedMediaAssetIds,
+      stagedMediaAssets: stagedMediaPersistence.stagedMediaAssets,
       summary,
       extractedPreview: extractedFiles.map((file) => ({
         fileName: file.fileName,

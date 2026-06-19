@@ -62,6 +62,8 @@ export type IntelligentImportSelectedMediaRef = {
   clientItemId: string;
   confirmedByUser?: boolean;
   fileName?: string | null;
+  importBatchId?: string | null;
+  importFileId?: string | null;
   mediaRefId: string;
   mimeType?: string | null;
   notes?: string[];
@@ -72,8 +74,28 @@ export type IntelligentImportSelectedMediaRef = {
   sourceImageId?: string | null;
   sourceKind: IntelligentImportSelectedMediaSourceKind;
   sourceLocationKey?: string | null;
+  stagingAssetId?: string | null;
   stagingStorageRef?: string | null;
   warnings?: string[];
+  worksheetRowNumber?: number | null;
+};
+
+export type IntelligentImportStagedMediaAsset = {
+  id: string;
+  associationStrength: IntelligentImportSelectedMediaAssociationMode;
+  fileName: string;
+  importBatchId?: string | null;
+  importFileId?: string | null;
+  mimeType: string | null;
+  requiresUserConfirmation: boolean;
+  sheetScopedKey?: string | null;
+  sizeBytes: number;
+  sourceFileName: string | null;
+  sourceKind: IntelligentImportSelectedMediaSourceKind;
+  sourceLocationKey?: string | null;
+  stagingStorageRef: string;
+  storageBucket: string;
+  storagePath: string;
   worksheetRowNumber?: number | null;
 };
 
@@ -167,12 +189,33 @@ export type IntelligentImportSaveApprovedImportFilePlan = {
 };
 
 export type IntelligentImportSaveApprovedPhotoPlan = {
+  debug?: {
+    acceptedByClientItemId: number;
+    acceptedByFallback: number;
+    blockedByReason: Record<string, number>;
+    blockedSamples: Array<{
+      clientItemId: string;
+      compared: Record<string, unknown>;
+      mediaRefId: string;
+      reason: string;
+      stagingAssetId?: string | null;
+    }>;
+    plannedSamples: Array<{
+      clientItemId: string;
+      destination: IntelligentImportReviewedDestination;
+      mediaRefId: string;
+      matchMode: "clientItemId" | "fallback";
+      stagingAssetId?: string | null;
+    }>;
+  };
   blockedMediaRefs: Array<{
     associationMode: IntelligentImportSelectedMediaAssociationMode;
     clientItemId: string;
+    compared?: Record<string, unknown>;
     mediaRefId: string;
     reason: string;
     sourceKind: IntelligentImportSelectedMediaSourceKind;
+    stagingAssetId?: string | null;
     warnings: string[];
   }>;
   plannedFinalPhotos: Array<{
@@ -180,7 +223,9 @@ export type IntelligentImportSaveApprovedPhotoPlan = {
     clientItemId: string;
     destination: IntelligentImportReviewedDestination;
     inputIndex: number;
+    matchMode?: "clientItemId" | "fallback";
     mediaRefId: string;
+    stagingAssetId?: string | null;
     sourceFileName: string | null;
     sourceImageId: string | null;
     sourceKind: IntelligentImportSelectedMediaSourceKind;
@@ -192,6 +237,7 @@ export type IntelligentImportSaveApprovedPhotoPlan = {
     confirmedByUser: boolean;
     fileName: string | null;
     mediaRefId: string;
+    stagingAssetId?: string | null;
     sourceFileName: string | null;
     sourceImageId: string | null;
     sourceKind: IntelligentImportSelectedMediaSourceKind;
