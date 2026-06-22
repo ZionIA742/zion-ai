@@ -51,6 +51,7 @@ type ImportedFileRow = {
 
 type StagedMediaAssetRow = {
   association_strength: string | null;
+  expires_at?: string | null;
   id: string;
   import_batch_id: string | null;
   import_file_id: string | null;
@@ -86,6 +87,8 @@ type ImportFileValidationResult = {
 };
 
 type StagedMediaValidationResult = {
+  expiredAssetsById: Map<string, StagedMediaAssetRow>;
+  invalidExpiryAssetsById: Map<string, StagedMediaAssetRow>;
   receivedStagingAssetIds: string[];
   validatedAssets: StagedMediaAssetRow[];
   validatedAssetsById: Map<string, StagedMediaAssetRow>;
@@ -316,6 +319,105 @@ function buildFinalCatalogPhotoPath(args: {
 function normalizeMetadata(value: Record<string, unknown> | null | undefined) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value;
+}
+
+function parseIsoTimestamp(value: string | null | undefined) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return null;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getExpiryState(
+  value: string | null | undefined,
+  now: number
+): { kind: "absent" | "future" | "past" | "invalid"; parsedAtMs: number | null } {
+  if (value == null) {
+    return {
+      kind: "absent",
+      parsedAtMs: null,
+    };
+  }
+
+  const normalized = String(value).trim();
+  if (!normalized) {
+    return {
+      kind: "invalid",
+      parsedAtMs: null,
+    };
+  }
+
+  const parsedAtMs = parseIsoTimestamp(normalized);
+  if (parsedAtMs == null) {
+    return {
+      kind: "invalid",
+      parsedAtMs: null,
+    };
+  }
+
+  return {
+    kind: parsedAtMs > now ? "future" : "past",
+    parsedAtMs,
+  };
+}
+
+function splitStoragePath(storagePath: string) {
+  const normalized = String(storagePath || "").trim().replace(/^\/+|\/+$/g, "");
+  if (!normalized) {
+    return {
+      directory: "",
+      fileName: "",
+      normalizedPath: "",
+    };
+  }
+
+  const segments = normalized.split("/");
+  const fileName = segments.pop() || "";
+  return {
+    directory: segments.join("/"),
+    fileName,
+    normalizedPath: normalized,
+  };
+}
+
+async function checkStorageObjectExists(args: {
+  storageBucket: string;
+  storagePath: string;
+  supabase: any;
+}): Promise<
+  | { kind: "exists" }
+  | { kind: "missing" }
+  | { kind: "unknown_error"; message: string }
+> {
+  const pathParts = splitStoragePath(args.storagePath);
+  if (!args.storageBucket || !pathParts.fileName || !pathParts.normalizedPath) {
+    return {
+      kind: "unknown_error",
+      message: "Bucket ou path do asset staged e invalido para reconciliacao de cleanup.",
+    };
+  }
+
+  const { data, error } = await args.supabase.storage.from(args.storageBucket).list(pathParts.directory, {
+    limit: 100,
+    search: pathParts.fileName,
+  });
+
+  if (error) {
+    return {
+      kind: "unknown_error",
+      message: error.message,
+    };
+  }
+
+  const matched = Array.isArray(data)
+    ? data.some((entry: { name?: string | null } | null | undefined) => {
+        const entryName = String(entry?.name || "").trim();
+        const candidatePath = pathParts.directory ? `${pathParts.directory}/${entryName}` : entryName;
+        return entryName === pathParts.fileName && candidatePath === pathParts.normalizedPath;
+      })
+    : false;
+
+  return matched ? { kind: "exists" } : { kind: "missing" };
 }
 
 function parseFiniteNumber(value: unknown) {
@@ -867,10 +969,16 @@ function classifyPhotoPlanMediaRef(args: {
   const stagedAsset = normalizedRef.stagingAssetId
     ? args.stagedMediaValidation.validatedAssetsById.get(normalizedRef.stagingAssetId)
     : undefined;
+  const expiredStagedAsset = normalizedRef.stagingAssetId
+    ? args.stagedMediaValidation.expiredAssetsById.get(normalizedRef.stagingAssetId)
+    : undefined;
+  const invalidExpiryStagedAsset = normalizedRef.stagingAssetId
+    ? args.stagedMediaValidation.invalidExpiryAssetsById.get(normalizedRef.stagingAssetId)
+    : undefined;
   const compared = buildComparedFields({
     item: args.item,
     normalizedRef,
-    stagedAsset,
+    stagedAsset: stagedAsset ?? expiredStagedAsset ?? invalidExpiryStagedAsset,
   });
 
   if (!normalizedRef.mediaRefId || !normalizedRef.clientItemId) {
@@ -964,6 +1072,42 @@ function classifyPhotoPlanMediaRef(args: {
     }
 
     if (!stagedAsset) {
+      if (invalidExpiryStagedAsset) {
+        return {
+          classification: "blocked",
+          blocked: {
+            associationMode: normalizedRef.associationMode,
+            clientItemId: normalizedRef.clientItemId,
+            compared,
+            mediaRefId: normalizedRef.mediaRefId,
+            reason:
+              "A midia temporaria selecionada precisa ser reenviada ou reimportada antes do salvamento.",
+            sourceKind: normalizedRef.sourceKind,
+            stagingAssetId: normalizedRef.stagingAssetId,
+            warnings,
+          },
+          warnings,
+        };
+      }
+
+      if (expiredStagedAsset) {
+        return {
+          classification: "blocked",
+          blocked: {
+            associationMode: normalizedRef.associationMode,
+            clientItemId: normalizedRef.clientItemId,
+            compared,
+            mediaRefId: normalizedRef.mediaRefId,
+            reason:
+              "A midia temporaria selecionada expirou e precisa ser reenviada ou reimportada antes do salvamento.",
+            sourceKind: normalizedRef.sourceKind,
+            stagingAssetId: normalizedRef.stagingAssetId,
+            warnings,
+          },
+          warnings,
+        };
+      }
+
       return {
         classification: "blocked",
         blocked: {
@@ -1317,6 +1461,8 @@ async function validateStagedMediaAssets(args: {
   if (receivedStagingAssetIds.length === 0) {
     warnings.push("Nenhum stagingAssetId foi enviado neste request.");
     return {
+      expiredAssetsById: new Map<string, StagedMediaAssetRow>(),
+      invalidExpiryAssetsById: new Map<string, StagedMediaAssetRow>(),
       receivedStagingAssetIds,
       validatedAssets: [],
       validatedAssetsById: new Map<string, StagedMediaAssetRow>(),
@@ -1327,7 +1473,7 @@ async function validateStagedMediaAssets(args: {
   const { data, error } = await args.supabase
     .from("store_import_media_assets")
     .select(
-      "id, import_batch_id, import_file_id, source_file_name, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, association_strength, requires_user_confirmation, status, storage_bucket, storage_path, metadata, file_name, size_bytes, normalized_mime_type, original_mime_type"
+      "id, import_batch_id, import_file_id, source_file_name, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, association_strength, requires_user_confirmation, status, storage_bucket, storage_path, metadata, file_name, size_bytes, normalized_mime_type, original_mime_type, expires_at"
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
@@ -1342,17 +1488,55 @@ async function validateStagedMediaAssets(args: {
     );
   }
 
-  const validatedAssets = (data ?? []) as StagedMediaAssetRow[];
+  const now = Date.now();
+  const expiredAssets: StagedMediaAssetRow[] = [];
+  const invalidExpiryAssets: StagedMediaAssetRow[] = [];
+  const validatedAssets: StagedMediaAssetRow[] = [];
+
+  for (const row of ((data ?? []) as StagedMediaAssetRow[])) {
+    const expiryState = getExpiryState(row.expires_at, now);
+    if (expiryState.kind === "past") {
+      expiredAssets.push(row);
+      continue;
+    }
+    if (expiryState.kind === "invalid") {
+      invalidExpiryAssets.push(row);
+      continue;
+    }
+    validatedAssets.push(row);
+  }
+
   const validatedAssetsById = new Map(validatedAssets.map((row) => [String(row.id || "").trim(), row]));
-  const missingIds = receivedStagingAssetIds.filter((id) => !validatedAssetsById.has(id));
+  const expiredAssetsById = new Map(expiredAssets.map((row) => [String(row.id || "").trim(), row]));
+  const invalidExpiryAssetsById = new Map(
+    invalidExpiryAssets.map((row) => [String(row.id || "").trim(), row])
+  );
+  const missingIds = receivedStagingAssetIds.filter(
+    (id) =>
+      !validatedAssetsById.has(id) &&
+      !expiredAssetsById.has(id) &&
+      !invalidExpiryAssetsById.has(id)
+  );
 
   if (missingIds.length > 0) {
     warnings.push(
       `${missingIds.length} stagingAssetId(s) nao pertencem a esta loja/organizacao ou nao estao staged.`
     );
   }
+  if (expiredAssets.length > 0) {
+    warnings.push(
+      `${expiredAssets.length} stagingAssetId(s) expiraram e exigem reenvio ou reimportacao antes do salvamento.`
+    );
+  }
+  if (invalidExpiryAssets.length > 0) {
+    warnings.push(
+      `${invalidExpiryAssets.length} stagingAssetId(s) possuem expiracao invalida e exigem reenvio ou reimportacao antes do salvamento.`
+    );
+  }
 
   return {
+    expiredAssetsById,
+    invalidExpiryAssetsById,
     receivedStagingAssetIds,
     validatedAssets,
     validatedAssetsById,
@@ -1755,6 +1939,7 @@ async function promotePlannedImportPhotos(args: {
     const mimeType =
       String(stagedAsset.normalized_mime_type || stagedAsset.original_mime_type || "").trim() ||
       "image/jpeg";
+    const cleanupStorageBucket = String(stagedAsset.storage_bucket || "").trim();
     const sourceStoragePath = String(stagedAsset.storage_path || "").trim();
     let finalBucket: "pool-photos" | "store-catalog-photos";
     let finalPath = "";
@@ -1885,6 +2070,122 @@ async function promotePlannedImportPhotos(args: {
         );
       } else {
         promotedStagingAssets += 1;
+
+        if (cleanupStorageBucket && sourceStoragePath) {
+          const cleanupAttemptedAt = new Date().toISOString();
+          const cleanupAttemptMetadata = {
+            bucket: cleanupStorageBucket,
+            error: null,
+            outcome: "attempting",
+            path: sourceStoragePath,
+            removedAt: null,
+            attemptedAt: cleanupAttemptedAt,
+          };
+          const cleanupAttemptMergedMetadata = {
+            ...mergedMetadata,
+            stagedCleanup: cleanupAttemptMetadata,
+          };
+
+          const { error: cleanupAttemptMetadataError } = await args.supabase
+            .from("store_import_media_assets")
+            .update({
+              metadata: cleanupAttemptMergedMetadata,
+            })
+            .eq("id", stagingAssetId)
+            .eq("organization_id", args.organizationId)
+            .eq("store_id", args.storeId)
+            .eq("status", "promoted");
+
+          if (cleanupAttemptMetadataError) {
+            warnings.push(
+              `Foto final salva para ${planned.clientItemId}, mas a auditoria inicial de cleanup do staged ${stagingAssetId} falhou e a limpeza temporaria ficou pendente: ${cleanupAttemptMetadataError.message}`
+            );
+          } else {
+            const objectExistence = await checkStorageObjectExists({
+              storageBucket: cleanupStorageBucket,
+              storagePath: sourceStoragePath,
+              supabase: args.supabase,
+            });
+
+            if (objectExistence.kind === "unknown_error") {
+              const pendingCleanupMetadata = {
+                ...cleanupAttemptMergedMetadata,
+                stagedCleanup: {
+                  ...cleanupAttemptMetadata,
+                  error: objectExistence.message,
+                  outcome: "pending_error",
+                },
+              };
+              const { error: pendingCleanupMetadataError } = await args.supabase
+                .from("store_import_media_assets")
+                .update({
+                  metadata: pendingCleanupMetadata,
+                })
+                .eq("id", stagingAssetId)
+                .eq("organization_id", args.organizationId)
+                .eq("store_id", args.storeId)
+                .eq("status", "promoted");
+              if (pendingCleanupMetadataError) {
+                warnings.push(
+                  `Foto final salva para ${planned.clientItemId}, mas a auditoria da limpeza temporaria ${stagingAssetId} precisa ser reconciliada: ${pendingCleanupMetadataError.message}`
+                );
+              }
+              warnings.push(
+                `Foto final salva para ${planned.clientItemId}, mas a limpeza do arquivo temporario ${stagingAssetId} ficou pendente.`
+              );
+            } else {
+              let cleanupOutcome: "removed" | "already_missing" | "pending_error" =
+                objectExistence.kind === "missing" ? "already_missing" : "removed";
+              let cleanupErrorMessage: string | null = null;
+              let cleanupRemovedAt: string | null =
+                objectExistence.kind === "missing" ? cleanupAttemptedAt : null;
+
+              if (objectExistence.kind === "exists") {
+                const { error: cleanupError } = await args.supabase.storage
+                  .from(cleanupStorageBucket)
+                  .remove([sourceStoragePath]);
+                if (cleanupError) {
+                  cleanupOutcome = "pending_error";
+                  cleanupErrorMessage = cleanupError.message;
+                } else {
+                  cleanupRemovedAt = new Date().toISOString();
+                }
+              }
+
+              const cleanupResultMetadata = {
+                ...cleanupAttemptMergedMetadata,
+                stagedCleanup: {
+                  ...cleanupAttemptMetadata,
+                  error: cleanupErrorMessage,
+                  outcome: cleanupOutcome,
+                  removedAt: cleanupRemovedAt,
+                },
+              };
+
+              const { error: cleanupMetadataError } = await args.supabase
+                .from("store_import_media_assets")
+                .update({
+                  metadata: cleanupResultMetadata,
+                })
+                .eq("id", stagingAssetId)
+                .eq("organization_id", args.organizationId)
+                .eq("store_id", args.storeId)
+                .eq("status", "promoted");
+
+              if (cleanupMetadataError) {
+                warnings.push(
+                  `Foto final salva para ${planned.clientItemId}, mas a auditoria da limpeza temporaria ${stagingAssetId} precisa ser reconciliada: ${cleanupMetadataError.message}`
+                );
+              }
+
+              if (cleanupOutcome === "pending_error") {
+                warnings.push(
+                  `Foto final salva para ${planned.clientItemId}, mas a limpeza do arquivo temporario ${stagingAssetId} ficou pendente.`
+                );
+              }
+            }
+          }
+        }
       }
 
       processedStagingAssetIds.add(stagingAssetId);
