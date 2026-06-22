@@ -537,6 +537,27 @@ function parseXmlAttributes(tag: string) {
   return attributes;
 }
 
+const XML_OPTIONAL_PREFIX_PATTERN = String.raw`(?:[A-Za-z_][A-Za-z0-9_.-]*:)?`;
+
+function buildOptionalPrefixedXmlTagPattern(tagNames: string | string[], flags: string) {
+  const names = Array.isArray(tagNames) ? tagNames : [tagNames];
+  const tagPattern = names.join("|");
+
+  return new RegExp(
+    `<${XML_OPTIONAL_PREFIX_PATTERN}(?:${tagPattern})\\b[^>]*>([\\s\\S]*?)<\\/${XML_OPTIONAL_PREFIX_PATTERN}(?:${tagPattern})>`,
+    flags
+  );
+}
+
+function matchOptionalPrefixedXmlTag(xml: string, tagName: string) {
+  return xml.match(
+    new RegExp(
+      `<${XML_OPTIONAL_PREFIX_PATTERN}${tagName}>([\\s\\S]*?)<\\/${XML_OPTIONAL_PREFIX_PATTERN}${tagName}>`,
+      "i"
+    )
+  );
+}
+
 type XlsxDrawingAnchor = {
   relationshipId: string;
   drawingName?: string;
@@ -578,7 +599,7 @@ async function extractImagesFromXlsx(
   const sheetPathToName = new Map<string, string>();
   const missingSheetMappings = new Set<string>();
 
-  for (const match of workbookXml.matchAll(/<sheet\b[\s\S]*?\/>/gi)) {
+  for (const match of workbookXml.matchAll(/<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?sheet\b[\s\S]*?\/>/gi)) {
     const attrs = parseXmlAttributes(match[0]);
     const sheetName = attrs.name ? xmlDecode(attrs.name) : "";
     const relId = attrs["r:id"] || attrs.id || "";
@@ -702,18 +723,20 @@ async function extractImagesFromXlsx(
       const drawingXml = await drawingXmlEntry.async("text");
       const anchors: XlsxDrawingAnchor[] = [];
 
-      const anchorRegex =
-        /<(?:xdr:)?(?:twoCellAnchor|oneCellAnchor)\b[^>]*>([\s\S]*?)<\/(?:xdr:)?(?:twoCellAnchor|oneCellAnchor)>/gi;
+      const anchorRegex = buildOptionalPrefixedXmlTagPattern(
+        ["twoCellAnchor", "oneCellAnchor"],
+        "gi"
+      );
 
       let anchorIndex = 0;
       for (const anchorMatch of drawingXml.matchAll(anchorRegex)) {
         const anchorXml = anchorMatch[1] || "";
-        const rowMatch = anchorXml.match(/<(?:xdr:)?row>(\d+)<\/(?:xdr:)?row>/i);
-        const colMatch = anchorXml.match(/<(?:xdr:)?col>(\d+)<\/(?:xdr:)?col>/i);
+        const rowMatch = matchOptionalPrefixedXmlTag(anchorXml, "row");
+        const colMatch = matchOptionalPrefixedXmlTag(anchorXml, "col");
         const blipMatch = anchorXml.match(/<(?:a:)?blip[^>]*(?:r:embed|embed)="([^"]+)"/i);
-        const nameMatch =
-          anchorXml.match(/<(?:xdr:)?cNvPr[^>]*name="([^"]+)"/i) ||
-          anchorXml.match(/<xdr:cNvPr[^>]*name="([^"]+)"/i);
+        const nameMatch = anchorXml.match(
+          new RegExp(`<${XML_OPTIONAL_PREFIX_PATTERN}cNvPr[^>]*name="([^"]+)"`, "i")
+        );
 
         if (!blipMatch) continue;
 
