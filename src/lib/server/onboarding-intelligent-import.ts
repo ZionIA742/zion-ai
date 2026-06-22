@@ -701,10 +701,20 @@ function buildSheetScopedKey(sheetName: string, worksheetRowNumber: number | nul
   return `${normalizedSheetName}::row::${Number(worksheetRowNumber)}`;
 }
 
+function chooseCanonicalSheetScopedKey(item: NormalizedImportItem, fallbackSheetScopedKey: string) {
+  const sourceSheetScopedKey = String(item.metadata?.source_sheet_scoped_key || "").trim();
+  const sheetScopedKey = String(item.metadata?.sheet_scoped_key || "").trim();
+
+  if (sheetScopedKey) return sheetScopedKey;
+  if (sourceSheetScopedKey) return sourceSheetScopedKey;
+  return fallbackSheetScopedKey;
+}
+
 function enrichItemWithImportCoordinates(item: NormalizedImportItem) {
   const sourceSheetName = extractItemSheetName(item);
   const worksheetRowNumber = extractItemWorksheetRowNumber(item);
-  const sheetScopedKey = buildSheetScopedKey(sourceSheetName, worksheetRowNumber);
+  const derivedSheetScopedKey = buildSheetScopedKey(sourceSheetName, worksheetRowNumber);
+  const canonicalSheetScopedKey = chooseCanonicalSheetScopedKey(item, derivedSheetScopedKey);
   const originalSourceFileName = String(item.sourceFileName || "").trim();
 
   return {
@@ -719,7 +729,7 @@ function enrichItemWithImportCoordinates(item: NormalizedImportItem) {
         sourceSheetName ||
         "",
       source_worksheet_row_number: worksheetRowNumber != null ? String(worksheetRowNumber) : "",
-      source_sheet_scoped_key: sheetScopedKey || "",
+      source_sheet_scoped_key: canonicalSheetScopedKey || "",
     },
   };
 }

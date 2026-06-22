@@ -5231,7 +5231,9 @@ function parseSingleBlockDetailed(
     : fieldMap["dosagem"] || extractLooseDosage(normalizedBlock);
   const fallbackSku = collectAllSkuCandidates(normalizedBlock)[0] || "";
   const effectiveSku = spreadsheetIdentityResolution.resolvedSku || resolvedSku || fallbackSku;
-  const sheetName = cleanText(fieldMap["planilha"] || fieldMap["aba"] || fieldMap["sheet"] || "");
+  const sheetName =
+    provenance.sheetName ||
+    cleanText(fieldMap["planilha"] || fieldMap["aba"] || fieldMap["sheet"] || "");
   const sourceCategory = cleanText(fieldMap["categoria"] || "");
   const sourceSubcategory = cleanText(fieldMap["subcategoria"] || "");
 
