@@ -964,6 +964,36 @@ type StructuredUnifiedReviewItem = {
   warnings: string[];
   blockingReasons: string[];
 };
+function getStructuredCompactStatus(item: StructuredUnifiedReviewItem) {
+  const duplicateReason = String(item.duplicateReason || "").trim();
+  if (duplicateReason) {
+    return {
+      label: duplicateReason.replace(/\.$/, ""),
+      tone: "blocked" as const,
+    };
+  }
+
+  const primaryBlockingReason = String(item.blockingReasons[0] || "").trim();
+  if (primaryBlockingReason) {
+    return {
+      label: primaryBlockingReason.replace(/\.$/, ""),
+      tone: "blocked" as const,
+    };
+  }
+
+  const primaryWarning = String(item.warnings[0] || "").trim();
+  if (primaryWarning) {
+    return {
+      label: primaryWarning.replace(/\.$/, ""),
+      tone: "warning" as const,
+    };
+  }
+
+  return {
+    label: item.candidate.selected ? "Pronto para salvar" : "Revisar antes de salvar",
+    tone: item.candidate.selected ? ("ready" as const) : ("warning" as const),
+  };
+}
 function getVisualReviewImagePageNumber(image: VisualReviewExtractedImagePreview) {
   if (typeof image.worksheetRowNumber === "number" && image.worksheetRowNumber > 0) {
     return Math.floor(image.worksheetRowNumber);
@@ -2327,7 +2357,7 @@ function hasIsolatedManualReviewSignal(
 ) {
   const signals = getStructuredReviewSignalList(item);
   if (signals.length === 0) return false;
-  return signals.every((signal) => normalizeImportedLoose(signal) === "manual_review_signal");
+  return signals.every((signal) => isManualReviewSignal(signal));
 }
 function shouldStartStructuredImportCandidateSelected(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
@@ -2389,9 +2419,7 @@ function buildStructuredSelectionDebugSnapshot(args: {
     isDuplicate: Boolean((args.item as { isDuplicate?: boolean }).isDuplicate),
     review_required: extractMetadataValue(args.item, ["review_required"]) || "",
     weak_candidate: extractMetadataValue(args.item, ["weak_candidate"]) || "",
-    manual_review_signal: sourceReviewSignals.some(
-      (signal) => normalizeImportedLoose(signal) === "manual_review_signal"
-    ),
+    manual_review_signal: sourceReviewSignals.some((signal) => isManualReviewSignal(signal)),
     review_selection_default: extractMetadataValue(args.item, ["review_selection_default"]) || "",
     source_review_signals: sourceReviewSignals,
     source_sheet_name: extractImportedSourceSheetName(args.item) || "",
@@ -6205,6 +6233,10 @@ function normalizeImportedLoose(value: string | null | undefined) {
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+const NORMALIZED_MANUAL_REVIEW_SIGNAL = normalizeImportedLoose("manual_review_signal");
+function isManualReviewSignal(value: string | null | undefined) {
+  return normalizeImportedLoose(value) === NORMALIZED_MANUAL_REVIEW_SIGNAL;
 }
 function extractMetadataValue(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
@@ -11585,50 +11617,53 @@ export default function IntelligentCatalogImportPanel({
                       </span>
                     </div>
                   </div>
-                  <div className="mt-3 space-y-3">
+                  <div className="mt-4 rounded-2xl border border-emerald-100 bg-white/70 p-2 shadow-inner">
+                    <div className="max-h-[min(68vh,52rem)] overflow-y-auto overscroll-contain pr-1">
+                      <div className="space-y-2">
                     {structuredUnifiedReviewItems.map((item) => {
                       const primaryPhoto = item.photoResolution.primary;
                       const photoAmbiguous = item.photoResolution.state === "ambiguous";
+                      const compactStatus = getStructuredCompactStatus(item);
                       return (
                         <div
                           key={item.candidate.id}
-                          className="rounded-lg bg-white p-3 ring-1 ring-emerald-100"
+                          className="rounded-xl bg-white p-2.5 shadow-sm ring-1 ring-emerald-100"
                         >
-                          <div className="grid gap-3 lg:grid-cols-[120px_minmax(0,1fr)_auto] lg:items-start">
+                          <div className="grid gap-3 md:grid-cols-[88px_minmax(0,1fr)] xl:grid-cols-[88px_minmax(0,1fr)_220px] xl:items-start">
                             <div className="min-w-0">
                               {primaryPhoto?.dataUrl ? (
                                 <img
                                   src={primaryPhoto.dataUrl}
                                   alt={primaryPhoto.fileName}
-                                  className="h-24 w-full rounded-lg object-cover ring-1 ring-gray-200"
+                                      className="h-20 w-20 rounded-lg object-cover ring-1 ring-gray-200 md:h-24 md:w-24"
                                 />
                               ) : (
-                                <div className="flex h-24 w-full items-center justify-center rounded-lg bg-gray-100 px-3 text-center text-xs text-gray-500 ring-1 ring-gray-200">
+                                    <div className="flex h-20 w-20 items-center justify-center rounded-lg bg-gray-100 p-2 text-center text-[11px] leading-4 text-gray-500 ring-1 ring-gray-200 md:h-24 md:w-24">
                                   {photoAmbiguous
                                     ? `${item.photoResolution.candidates.length} fotos encontradas, associacao ambigua`
                                     : "Nenhuma foto associada"}
                                 </div>
                               )}
-                              <div className="mt-2 space-y-1 text-[11px] leading-4 text-gray-600">
+                              {false ? <div className="mt-2 space-y-1 text-[11px] leading-4 text-gray-600">
                                 <p className="font-medium text-gray-700">Origem da foto</p>
                                 <p>
                                   {primaryPhoto
-                                    ? `${primaryPhoto.fileName} • ${primaryPhoto.association}`
+                                    ? `${primaryPhoto?.fileName || ""} • ${primaryPhoto?.association || ""}`
                                     : item.photoResolution.message}
                                 </p>
-                                {primaryPhoto?.sourceFileName ? <p>Arquivo: {primaryPhoto.sourceFileName}</p> : null}
+                                {primaryPhoto?.sourceFileName ? <p>Arquivo: {primaryPhoto!.sourceFileName}</p> : null}
                                 {primaryPhoto ? (
                                   <p>
-                                    Midia: {primaryPhoto.id} • Forca: {primaryPhoto.associationStrength}
+                                    Midia: {primaryPhoto!.id} • Forca: {primaryPhoto!.associationStrength}
                                   </p>
                                 ) : null}
-                              </div>
+                              </div> : null}
                             </div>
                             <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
                                 <span
                                   className={cx(
-                                    "rounded-full px-2.5 py-1 text-[11px] font-medium ring-1",
+                                    "rounded-full px-2 py-0.5 text-[11px] font-medium ring-1",
                                     item.duplicateReason
                                       ? "bg-rose-100 text-rose-800 ring-rose-200"
                                       : item.candidate.selected
@@ -11638,39 +11673,32 @@ export default function IntelligentCatalogImportPanel({
                                 >
                                   {item.stateLabel}
                                 </span>
-                                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200">
+                                <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200">
                                   {getStructuredReviewCategoryLabel(item.candidate.finalCategory)}
                                 </span>
-                                <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200">
-                                  Leitura estruturada
-                                </span>
-                                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200">
-                                  {item.confidencePercent}% confianca
-                                </span>
                                 {item.hasLocalEdits ? (
-                                  <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-800 ring-1 ring-violet-200">
+                                  <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-800 ring-1 ring-violet-200">
                                     Editado
                                   </span>
                                 ) : null}
                                 {item.categoryAdjusted ? (
-                                  <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200">
+                                  <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200">
                                     Categoria ajustada
                                   </span>
                                 ) : null}
                               </div>
-                              <p className="mt-3 text-sm font-semibold text-gray-950">
+                              <p className="mt-2 text-sm font-semibold leading-5 text-gray-950">
                                 {item.displayName || "Item estruturado"}
                               </p>
-                              <p className="mt-1 text-xs text-gray-600">
+                              <p className="mt-1 text-xs leading-5 text-gray-600">
                                 {item.sku ? `SKU ${item.sku}` : "Sem SKU"}{" "}
-                                {" | "}
+                                {" • "}
                                 {item.priceLabel || "Sem preco"}{" "}
-                                {" | "}
+                                {" • "}
                                 {item.stockLabel ? `Estoque ${item.stockLabel}` : "Sem estoque"}
                               </p>
-                              <p className="mt-2 text-xs leading-5 text-gray-700">
+                              {false ? <div className="mt-2 text-xs leading-5 text-gray-700">
                                 Tipo final: {item.sourceKind} • Origem: {item.originLabel || "Leitura estruturada"}
-                              </p>
                               <p className="mt-1 text-xs leading-5 text-gray-600">
                                 Arquivo: {item.sourceFileName || "Nao informado"}
                                 {item.sourceSheetName ? ` • Aba: ${item.sourceSheetName}` : ""}
@@ -11681,11 +11709,27 @@ export default function IntelligentCatalogImportPanel({
                                   sourceLocationKey: {item.sourceLocationKey}
                                 </p>
                               ) : null}
+                              </div> : null}
+                              <div
+                                className={cx(
+                                  "mt-2 inline-flex max-w-full rounded-lg px-2.5 py-1 text-xs font-medium ring-1",
+                                  compactStatus.tone === "blocked"
+                                    ? "bg-rose-50 text-rose-800 ring-rose-200"
+                                    : compactStatus.tone === "warning"
+                                      ? "bg-amber-50 text-amber-900 ring-amber-200"
+                                      : "bg-emerald-50 text-emerald-900 ring-emerald-200"
+                                )}
+                              >
+                                <span className="truncate">{compactStatus.label}</span>
+                              </div>
+                              {false ? <>
                               {item.descriptionSnippet ? (
                                 <p className="mt-2 text-sm leading-6 text-gray-700">
                                   {item.descriptionSnippet}
                                 </p>
                               ) : null}
+                              </> : null}
+                              {false ? <>
                               {item.warnings.length > 0 ? (
                                 <div className="mt-2 space-y-1 rounded-md bg-amber-50 p-2 text-xs leading-5 text-amber-900 ring-1 ring-amber-100">
                                   {item.warnings.map((warning, index) => (
@@ -11693,6 +11737,8 @@ export default function IntelligentCatalogImportPanel({
                                   ))}
                                 </div>
                               ) : null}
+                              </> : null}
+                              {false ? <>
                               {item.blockingReasons.length > 0 ? (
                                 <div className="mt-2 space-y-1 rounded-md bg-rose-50 p-2 text-xs leading-5 text-rose-900 ring-1 ring-rose-100">
                                   {item.blockingReasons.map((reason, index) => (
@@ -11700,9 +11746,10 @@ export default function IntelligentCatalogImportPanel({
                                   ))}
                                 </div>
                               ) : null}
+                              </> : null}
                             </div>
-                            <div className="flex flex-col gap-2 lg:w-56">
-                              <label className="text-xs font-medium text-slate-700">Salvar como</label>
+                            <div className="flex min-w-0 flex-col gap-2 md:col-span-2 xl:col-span-1 xl:w-[220px]">
+                              <label className="text-[11px] font-medium uppercase tracking-[0.08em] text-slate-600">Categoria</label>
                               <select
                                 value={item.candidate.finalCategory}
                                 onChange={(event) =>
@@ -11710,7 +11757,7 @@ export default function IntelligentCatalogImportPanel({
                                     finalCategory: event.target.value as StructuredReviewCategory,
                                   })
                                 }
-                                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none"
+                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none"
                               >
                                 <option value="pool">Piscina</option>
                                 <option value="quimicos">Quimico</option>
@@ -11720,7 +11767,7 @@ export default function IntelligentCatalogImportPanel({
                               <button
                                 type="button"
                                 onClick={() => openStructuredCandidateEditor(item.candidate)}
-                                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-50"
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-50"
                               >
                                 Editar detalhes
                               </button>
@@ -11733,7 +11780,7 @@ export default function IntelligentCatalogImportPanel({
                                     })
                                   }
                                   className={cx(
-                                    "rounded-xl border px-3 py-2 text-sm font-medium transition",
+                                    "rounded-lg border px-3 py-2 text-sm font-medium transition",
                                     item.candidate.selected
                                       ? "border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
                                       : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
@@ -11747,9 +11794,11 @@ export default function IntelligentCatalogImportPanel({
                         </div>
                       );
                     })}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              ) : null}
+                ) : null}
               {intelligentImportResult?.ok &&
               !hasVisualPdfImportResult &&
               editableStructuredCandidates.length > 0 &&
