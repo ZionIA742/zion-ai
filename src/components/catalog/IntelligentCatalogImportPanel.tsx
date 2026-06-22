@@ -6770,6 +6770,7 @@ export default function IntelligentCatalogImportPanel({
   const [structuredDuplicateReferencesLoading, setStructuredDuplicateReferencesLoading] =
     useState(false);
   const parserDebugEnabled = useMemo(() => shouldEnableParserDebugFromLocation(), []);
+  const isDebugParserMode = parserDebugEnabled;
   const [savingImportedCatalog, setSavingImportedCatalog] = useState(false);
   const [importedCatalogDryRunResult, setImportedCatalogDryRunResult] =
     useState<IntelligentImportSaveApprovedResponse | null>(null);
@@ -8271,6 +8272,13 @@ export default function IntelligentCatalogImportPanel({
   }
   
   async function handleSaveApprovedVisualReviewItemsToCatalog() {
+    if (isDebugParserMode) {
+      setParentError(
+        "Modo de diagnostico ativo: o salvamento visual esta bloqueado para proteger o catalogo."
+      );
+      return;
+    }
+
     if (!organizationId || !storeId) {
       setParentError("Nao foi possivel identificar a organizacao e a loja ativa.");
       return;
@@ -10488,20 +10496,35 @@ export default function IntelligentCatalogImportPanel({
                                         </p>
                                       </div>
                                       {visualReviewSavePreview.readyItems.length > 0 ? (
-                                        <p className="mt-1 text-emerald-900">
-                                          Estes itens aprovados ja podem ser salvos no catalogo.
-                                        </p>
+                                        <>
+                                          <p className="mt-1 text-emerald-900">
+                                            Estes itens aprovados ja podem ser salvos no catalogo.
+                                          </p>
+                                          {isDebugParserMode ? (
+                                            <p className="mt-2 text-sm font-medium text-amber-800">
+                                              <code>debugParser=true</code> ativo. O salvamento visual legado fica
+                                              bloqueado neste modo para proteger o catalogo.
+                                            </p>
+                                          ) : null}
+                                        </>
                                       ) : null}
                                       {visualReviewSavePreview.readyItems.length > 0 ? (
                                         <button
                                           type="button"
                                           onClick={() => void handleSaveApprovedVisualReviewItemsToCatalog()}
-                                          disabled={disabled || savingImportedCatalog || intelligentImportLoading}
+                                          disabled={
+                                            disabled ||
+                                            savingImportedCatalog ||
+                                            intelligentImportLoading ||
+                                            isDebugParserMode
+                                          }
                                           className="mt-3 rounded-lg bg-black px-4 py-2 text-xs font-medium text-white disabled:opacity-60"
                                         >
                                           {savingImportedCatalog
                                             ? "Salvando itens aprovados..."
-                                            : "Salvar itens aprovados no catalogo"}
+                                            : isDebugParserMode
+                                              ? "Salvamento visual bloqueado em diagnostico"
+                                              : "Salvar itens aprovados no catalogo"}
                                         </button>
                                       ) : null}
                                       {visualReviewSavePreview.blockedItems.length > 0 ? (
