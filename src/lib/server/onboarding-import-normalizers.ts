@@ -81,6 +81,7 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
   const explicitSubcategory = String(item.sourceSubcategory || "").trim();
   const explicitSheetName = String(item.sheetName || "").trim();
   const resolvedCategory = explicitCategory || (item.destination === "pool" ? "pool" : item.destination);
+  const categorySource = explicitCategory ? "explicit" : "inferred";
   const normalizedTitle = normalizeLoose(item.title || "");
   const missingPrice = !String(item.price || "").trim();
   const missingSku = !String(item.sku || "").trim();
@@ -116,8 +117,15 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     categoria: resolvedCategory,
     category: resolvedCategory,
     category_name: resolvedCategory,
+    explicit_category: explicitCategory,
+    explicit_category_name: explicitCategory,
+    inferred_destination: item.destination,
+    category_source: categorySource,
     destination: item.destination,
-    __resolved_destination: item.destination,
+    __resolved_destination: "",
+    title: item.title || "",
+    nome: item.title || "",
+    productName: item.title || "",
     subcategoria: explicitSubcategory,
     source_subcategory: explicitSubcategory,
     sub_category: explicitSubcategory,
@@ -125,7 +133,7 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     planilha: explicitSheetName,
     aba: explicitSheetName,
     sheet: explicitSheetName,
-    source_category: resolvedCategory,
+    source_category: explicitCategory,
     clean_description: item.description || "",
     clean_description_status: item.descriptionStatus || "",
     description_canonicalized: item.descriptionStatus ? "true" : "false",
@@ -137,15 +145,20 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     material: item.material || "",
     shape: item.shape || "",
     brand: item.brand || "",
+    line: item.line || "",
+    linha: item.line || "",
     sku: item.sku || "",
     stock: item.stockQuantity || "",
     estoque: item.stockQuantity || "",
     quantidade_atual: item.stockQuantity || "",
+    unit: item.unit || "",
+    unidade: item.unit || "",
     weight: item.weight || "",
     dosage: item.dosage || "",
     color: item.color || "",
     usage: item.usage || "",
     notes: item.notes || "",
+    technical_notes: item.notes || "",
     indication: item.indication || "",
     composition: item.composition || "",
     embalagem: item.embalagem || "",

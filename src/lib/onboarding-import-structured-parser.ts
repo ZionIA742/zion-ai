@@ -25,7 +25,9 @@ export type StructuredImportItem = {
   material?: string;
   shape?: string;
   brand?: string;
+  line?: string;
   sku?: string;
+  unit?: string;
   weight?: string;
   dosage?: string;
   color?: string;
@@ -307,6 +309,29 @@ const CANONICAL_FIELD_KEY_BY_ALIAS = Object.entries(STRUCTURED_FIELD_ALIASES).re
   return acc;
 }, {});
 
+[
+  ["codigo do produto", "cÃ³digo"],
+  ["cÃ³digo do produto", "cÃ³digo"],
+  ["categoria final", "categoria"],
+  ["categoria do produto", "categoria"],
+  ["subcategoria", "subcategoria"],
+  ["quantidade em estoque", "estoque"],
+  ["saldo em estoque", "estoque"],
+  ["unidade", "unidade"],
+  ["marca / linha", "marca / linha"],
+  ["marca e linha", "marca / linha"],
+  ["linha", "linha"],
+  ["observacoes tecnicas", "observaÃ§Ãµes"],
+  ["observaÃ§Ãµes tÃ©cnicas", "observaÃ§Ãµes"],
+  ["notas tecnicas", "observaÃ§Ãµes"],
+  ["notas tÃ©cnicas", "observaÃ§Ãµes"],
+  ["preco de venda (r$)", "preço venda"],
+  ["preço de venda (r$)", "preço venda"],
+  ["valor de venda", "preço venda"],
+].forEach(([alias, canonicalKey]) => {
+  CANONICAL_FIELD_KEY_BY_ALIAS[normalizeLoose(alias)] = canonicalKey;
+});
+
 const DEBUG_INTELLIGENT_IMPORT =
   process.env.NEXT_PUBLIC_DEBUG_INTELLIGENT_IMPORT === "1" ||
   process.env.DEBUG_INTELLIGENT_IMPORT === "1" ||
@@ -437,6 +462,26 @@ const INLINE_FIELD_LABELS = [
   "aba",
   "sheet",
 ].sort((a, b) => b.length - a.length);
+
+INLINE_FIELD_LABELS.push(
+  "cÃ³digo do produto",
+  "codigo do produto",
+  "categoria final",
+  "categoria do produto",
+  "preço de venda (r$)",
+  "preco de venda (r$)",
+  "valor de venda",
+  "quantidade em estoque",
+  "saldo em estoque",
+  "unidade",
+  "marca / linha",
+  "marca e linha",
+  "observaÃ§Ãµes tÃ©cnicas",
+  "observacoes tecnicas",
+  "notas tÃ©cnicas",
+  "notas tecnicas"
+);
+INLINE_FIELD_LABELS.sort((a, b) => b.length - a.length);
 
 const BLOCKED_SKU_VALUES = new Set([
   "de",
@@ -614,6 +659,8 @@ function canonicalizeFieldKey(value: string) {
   if (
     normalized === "observacao" ||
     normalized === "observacoes" ||
+    normalized === "observacoes tecnicas" ||
+    normalized === "notas tecnicas" ||
     normalized === "notas" ||
     normalized === "notes"
   ) {
@@ -623,10 +670,14 @@ function canonicalizeFieldKey(value: string) {
   if (normalized === "aplicacao") return "aplicação";
   if (normalized === "composicao") return "composição";
   if (normalized === "funcao" || normalized === "finalidade") return "função";
-  if (normalized === "codigo") return "código";
+  if (normalized === "codigo" || normalized === "codigo do produto") return "código";
   if (normalized === "peso volume" || normalized === "peso / volume") return "peso/volume";
   if (normalized === "dimensoes" || normalized === "medidas") return "medidas";
   if (normalized === "nome do produto" || normalized === "nome comercial") return "nome do produto";
+  if (normalized === "categoria final" || normalized === "categoria do produto") return "categoria";
+  if (normalized === "quantidade em estoque" || normalized === "saldo em estoque") return "estoque";
+  if (normalized === "unidade") return "unidade";
+  if (normalized === "marca e linha") return "marca / linha";
   if (normalized === "titulo") return "título";
   if (normalized === "estoque minimo") return "estoque mínimo";
   if (normalized === "estoque maximo") return "estoque máximo";
@@ -841,7 +892,7 @@ function lineHasProductSignal(line: string) {
   const cleaned = cleanText(line);
   if (!cleaned) return false;
   if (Array.from(cleaned.matchAll(DIRECT_SKU_REGEX)).length > 0) return true;
-  if (/\b(?:sku|c[oÃ³]digo|cod)\s*[:\-]?\s*[a-z0-9-]/i.test(cleaned)) return true;
+  if (/\b(?:sku|c[oÃ³]digo(?:\s+do\s+produto)?|cod(?:igo)?(?:\s+do\s+produto)?)\s*[:\-]?\s*[a-z0-9-]/i.test(cleaned)) return true;
   if (PRODUCT_WORD_REGEX.test(cleaned)) return true;
   if (collectAllPriceCandidates(cleaned).length > 0) return true;
   return false;
@@ -1372,7 +1423,7 @@ function splitMixedProductBlock(block: string) {
       lineHasProductSignal(line) &&
       (Array.from(line.matchAll(DIRECT_SKU_REGEX)).length > 0 ||
         PRODUCT_WORD_REGEX.test(stripNarrativeLeadIn(line)) ||
-        /\b(?:sku|c[oÃ³]digo|cod)\b/i.test(line));
+      /\b(?:sku|c[oÃ³]digo(?:\s+do\s+produto)?|cod(?:igo)?(?:\s+do\s+produto)?)\b/i.test(line));
 
     if (startsNewProduct) {
       pushCurrent();
@@ -3301,7 +3352,9 @@ function mergeStructuredImportItems(
       material: pickPreferredText(primary.material, secondary.material),
       shape: pickPreferredText(primary.shape, secondary.shape),
       brand: pickPreferredText(primary.brand, secondary.brand),
+      line: pickPreferredText(primary.line, secondary.line),
       sku: pickPreferredText(primary.sku, secondary.sku),
+      unit: pickPreferredText(primary.unit, secondary.unit),
       weight: pickPreferredText(primary.weight, secondary.weight),
       dosage: pickPreferredText(primary.dosage, secondary.dosage),
       color: pickPreferredText(primary.color, secondary.color),
@@ -3452,6 +3505,43 @@ function extractLooseBrand(text: string) {
   return cleanText(match?.[1] || match?.[0] || "");
 }
 
+function resolveStructuredBrandAndLine(fieldMap: Record<string, string>) {
+  const explicitBrand = cleanText(fieldMap["marca"] || "");
+  const explicitLine = cleanText(fieldMap["linha"] || "");
+  const combinedBrandLine = cleanText(fieldMap["marca / linha"] || "");
+
+  if (explicitBrand || explicitLine) {
+    return {
+      brand: explicitBrand,
+      line: explicitLine,
+    };
+  }
+
+  if (!combinedBrandLine) {
+    return {
+      brand: "",
+      line: "",
+    };
+  }
+
+  const splitParts = combinedBrandLine
+    .split(/\s*(?:\/|\|| - )\s*/g)
+    .map((part) => cleanText(part))
+    .filter(Boolean);
+
+  if (splitParts.length === 2 && splitParts[0] && splitParts[1]) {
+    return {
+      brand: splitParts[0],
+      line: splitParts[1],
+    };
+  }
+
+  return {
+    brand: "",
+    line: combinedBrandLine,
+  };
+}
+
 function isValidSkuCandidate(value: string | null | undefined) {
   const raw = cleanText(value || "");
   const normalized = normalizeLoose(raw);
@@ -3468,10 +3558,29 @@ function sanitizeSku(value: string | null | undefined) {
   return isValidSkuCandidate(cleaned) ? cleaned : "";
 }
 
+function resolveStructuredSkuFieldValue(fieldMap: Record<string, string>) {
+  return (
+    fieldMap["sku"] ||
+    resolveStructuredCodeFieldValue(fieldMap) ||
+    ""
+  );
+}
+
+function resolveStructuredCodeFieldValue(fieldMap: Record<string, string>) {
+  return (
+    fieldMap["codigo"] ||
+    fieldMap["código"] ||
+    fieldMap["cÃ³digo"] ||
+    ""
+  );
+}
+
 function extractRobustSkuCandidates(text: string) {
   const candidates = [
     ...Array.from(
-      String(text || "").matchAll(/\b(?:sku|c[oÃ³]digo|cod)\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/gi)
+      String(text || "").matchAll(
+        /\b(?:sku|c[oÃ³]digo(?:\s+do\s+produto)?|cod(?:igo)?(?:\s+do\s+produto)?)\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/gi
+      )
     ).map((match) => sanitizeSku(match[1] || "")),
     ...Array.from(String(text || "").matchAll(DIRECT_SKU_REGEX)).map((match) =>
       sanitizeSku(match[0] || "")
@@ -3557,7 +3666,7 @@ function collectAllPriceCandidates(text: string) {
 function extractLooseSku(text: string) {
   const patterns = [
     /\bsku\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/i,
-    /\bc[oó]digo\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/i,
+    /\bc[oó]digo(?:\s+do\s+produto)?\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/i,
     /\b(acc-\d{3,}|out-\d{3,}|qmc-\d{3,})\b/i,
   ];
 
@@ -4051,11 +4160,11 @@ function coalesceSpreadsheetContinuationRows(blocks: string[]) {
           ? "description"
           : "sku"
     );
-    const previousSku = sanitizeSku(previousParsed.fieldMap["sku"] || previousParsed.fieldMap["código"] || "") ||
+    const previousSku = sanitizeSku(resolveStructuredSkuFieldValue(previousParsed.fieldMap)) ||
       collectAllSkuCandidates(previousBlock)[0] ||
       "";
     const previousPrice = chooseBestPriceFromFieldMap(previousParsed.fieldMap);
-    const currentSku = sanitizeSku(currentParsed.fieldMap["sku"] || currentParsed.fieldMap["código"] || "") ||
+    const currentSku = sanitizeSku(resolveStructuredSkuFieldValue(currentParsed.fieldMap)) ||
       collectAllSkuCandidates(currentBlock)[0] ||
       "";
     const currentPrice = chooseBestPriceFromFieldMap(currentParsed.fieldMap) || collectAllPriceCandidates(currentBlock)[0] || "";
@@ -4548,7 +4657,9 @@ function injectExplicitProductNameIntoFieldMap(
 
 function extractAllSkuCandidates(text: string) {
   const matches = Array.from(
-    String(text || "").matchAll(/\b(?:sku|c[oó]digo)\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/gi)
+    String(text || "").matchAll(
+      /\b(?:sku|c[oó]digo(?:\s+do\s+produto)?)\s*[:\-]?\s*([a-z0-9][a-z0-9\-_.\/]{2,})\b/gi
+    )
   )
     .map((match) => sanitizeSku(match[1] || ""))
     .filter(Boolean);
@@ -4995,12 +5106,12 @@ function enrichFieldMapWithLooseExtraction(
     if (looseShape) fieldMap["formato"] = looseShape;
   }
 
-  if (!fieldMap["marca"]) {
+  if (!fieldMap["marca"] && !fieldMap["marca / linha"]) {
     const looseBrand = extractLooseBrand(sourceText);
     if (looseBrand) fieldMap["marca"] = looseBrand;
   }
 
-  if (!fieldMap["sku"] && !fieldMap["codigo"] && !fieldMap["código"]) {
+  if (!resolveStructuredSkuFieldValue(fieldMap)) {
     const looseSku = extractLooseSku(sourceText);
     if (looseSku) fieldMap["sku"] = looseSku;
   }
@@ -5223,12 +5334,11 @@ function parseSingleBlockDetailed(
   const title =
     spreadsheetIdentityResolution.resolvedTitle || chooseTitle(fieldMap, plainLines, fileName, index);
 
-  const resolvedSku = sanitizeSku(
-    fieldMap["sku"] || fieldMap["codigo"] || fieldMap["código"] || ""
-  );
+  const resolvedSku = sanitizeSku(resolveStructuredSkuFieldValue(fieldMap));
   const resolvedDosage = findStandaloneFieldLabel(fieldMap["dosagem"] || "")
     ? extractLooseDosage(normalizedBlock)
     : fieldMap["dosagem"] || extractLooseDosage(normalizedBlock);
+  const resolvedBrandAndLine = resolveStructuredBrandAndLine(fieldMap);
   const fallbackSku = collectAllSkuCandidates(normalizedBlock)[0] || "";
   const effectiveSku = spreadsheetIdentityResolution.resolvedSku || resolvedSku || fallbackSku;
   const sheetName =
@@ -5351,8 +5461,10 @@ function parseSingleBlockDetailed(
     capacity: fieldMap["capacidade"] || "",
     material: fieldMap["material"] || "",
     shape: fieldMap["formato"] || "",
-    brand: fieldMap["marca"] || "",
+    brand: resolvedBrandAndLine.brand,
+    line: resolvedBrandAndLine.line,
     sku: effectiveSku,
+    unit: fieldMap["unidade"] || "",
     weight: fieldMap["peso"] || fieldMap["peso/volume"] || fieldMap["volume"] || "",
     dosage: resolvedDosage,
     color: fieldMap["cor"] || "",

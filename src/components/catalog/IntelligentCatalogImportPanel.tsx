@@ -2120,14 +2120,14 @@ function resolveImportedExplicitDestination(
   const explicitCandidates = [
     extractMetadataValue(item, [
       "__resolved_destination",
-      "destination",
+      "reviewed_category",
       "destino",
       "categoryhint",
       "category_hint",
+      "explicit_category",
+      "explicit_category_name",
     ]),
     extractImportedSourceCategory(item),
-    extractImportedSourceSubcategory(item),
-    extractImportedSourceSheetName(item),
   ];
 
   for (const candidate of explicitCandidates) {
@@ -2359,15 +2359,37 @@ function hasIsolatedManualReviewSignal(
   if (signals.length === 0) return false;
   return signals.every((signal) => isManualReviewSignal(signal));
 }
+function isSafeStructuredManualReviewAutoApproval(args: {
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  photoResolution: StructuredReviewPhotoResolution;
+  duplicateBlocked: boolean;
+}) {
+  if (args.duplicateBlocked) {
+    return false;
+  }
+  if (args.photoResolution.state === "ambiguous") {
+    return false;
+  }
+  return (
+    hasIsolatedManualReviewSignal(args.item) &&
+    isStructuredCandidateCompleteForAutoSelection(args.item)
+  );
+}
 function shouldStartStructuredImportCandidateSelected(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   photoResolution: StructuredReviewPhotoResolution
 ) {
+  if (
+    isSafeStructuredManualReviewAutoApproval({
+      item,
+      photoResolution,
+      duplicateBlocked: false,
+    })
+  ) {
+    return true;
+  }
   if (photoResolution.state === "ambiguous") {
     return false;
-  }
-  if (hasIsolatedManualReviewSignal(item) && isStructuredCandidateCompleteForAutoSelection(item)) {
-    return true;
   }
   const reviewSelectionDefault = extractMetadataValue(item, ["review_selection_default"]);
   if (normalizeImportedLoose(reviewSelectionDefault) === "unselected") {
@@ -2435,6 +2457,208 @@ function buildStructuredSelectionDebugSnapshot(args: {
         : shouldStartStructuredImportCandidateSelected(args.item, args.photoResolution),
     selected: args.selected,
   };
+}
+
+function extractStructuredSelectionRawCategoryValue(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const source = String(item.rawText || "");
+  return (
+    extractImportedLabeledValue(source, [
+      "Categoria Final",
+      "Categoria",
+      "Category Final",
+      "Category",
+    ]) || ""
+  ).trim();
+}
+
+function classifyStructuredSelectionReason(args: {
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  photoResolution: StructuredReviewPhotoResolution;
+}) {
+  if (
+    isSafeStructuredManualReviewAutoApproval({
+      item: args.item,
+      photoResolution: args.photoResolution,
+      duplicateBlocked: false,
+    })
+  ) {
+    return "isolated_manual_review_auto_approved";
+  }
+  if (args.photoResolution.state === "ambiguous") {
+    return "ambiguous_photo";
+  }
+  const reviewSelectionDefault = extractMetadataValue(args.item, ["review_selection_default"]);
+  if (normalizeImportedLoose(reviewSelectionDefault) === "unselected") {
+    return "review_selection_default_unselected";
+  }
+  const reviewRequired = extractMetadataValue(args.item, ["review_required", "weak_candidate"]);
+  if (["true", "1", "sim", "yes"].includes(normalizeImportedLoose(reviewRequired))) {
+    return "review_required_or_weak_candidate";
+  }
+  return "selected_by_default";
+}
+
+function shouldEmitStructuredSelectionRuntimeDebug(
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>
+) {
+  return shouldEnableParserDebugFromLocation() && items.length > 0 && items.length <= 30;
+}
+
+function buildStructuredSelectionRuntimeDebugEntry(args: {
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
+  index: number;
+  photoResolution: StructuredReviewPhotoResolution;
+  selected: boolean | null;
+  finalCategory: StructuredReviewCategory;
+  phase: "before" | "after";
+}) {
+  const finalDisplayName = buildStructuredReviewDisplayName(args.item, args.finalCategory);
+  const explicitDestination = resolveImportedExplicitDestination(args.item);
+  const inferredDestination = inferImportedDestination(args.item);
+  const computedSelection = shouldStartStructuredImportCandidateSelected(args.item, args.photoResolution);
+  const sourceReviewSignals = getStructuredReviewSignalList(args.item);
+
+  return {
+    phase: args.phase,
+    index: args.index,
+    originalTitle: String(args.item.title || "").trim(),
+    finalCardName: String(finalDisplayName || "").trim(),
+    sku: String(resolveImportedCatalogSku(args.item) || "").trim(),
+    sourceFileName: String(args.item.sourceFileName || "").trim(),
+    sheetName: String(extractImportedSourceSheetName(args.item) || "").trim(),
+    worksheetRowNumber: extractImportedWorksheetRowNumber(args.item),
+    sheetScopedKey: String(extractImportedSheetScopedKey(args.item) || "").trim(),
+    rawCategoryValue: extractStructuredSelectionRawCategoryValue(args.item),
+    metadataCategoria: String(args.item.metadata?.categoria || "").trim(),
+    metadataCategory: String(args.item.metadata?.category || "").trim(),
+    metadataCategoryName: String(args.item.metadata?.category_name || "").trim(),
+    metadataSourceCategory: String(args.item.metadata?.source_category || "").trim(),
+    metadataSourceSubcategory: String(args.item.metadata?.source_subcategory || "").trim(),
+    explicitDestination,
+    inferredDestination,
+    finalCategory: args.finalCategory,
+    finalDestination: args.finalCategory,
+    finalType: args.finalCategory === "pool" ? "pool" : "catalog_item",
+    sourceType: String(args.item.type || "").trim(),
+    reviewRequired: extractMetadataValue(args.item, ["review_required"]) || "",
+    weakCandidate: extractMetadataValue(args.item, ["weak_candidate"]) || "",
+    reviewSelectionDefault: extractMetadataValue(args.item, ["review_selection_default"]) || "",
+    sourceReviewSignals,
+    photoState: args.photoResolution.state,
+    duplicateSource: Boolean((args.item as { isDuplicate?: boolean }).isDuplicate),
+    duplicateOf: String((args.item as { duplicateOf?: string | null }).duplicateOf || "").trim() || null,
+    duplicateBlocked: false,
+    hasIsolatedManualReviewSignal: hasIsolatedManualReviewSignal(args.item),
+    isStructuredCandidateCompleteForAutoSelection:
+      isStructuredCandidateCompleteForAutoSelection(args.item),
+    shouldStartStructuredImportCandidateSelected: computedSelection,
+    selectionReason: classifyStructuredSelectionReason({
+      item: args.item,
+      photoResolution: args.photoResolution,
+    }),
+    selected: args.selected,
+  };
+}
+
+function emitStructuredSelectionRuntimeDebug(args: {
+  items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
+  builtCandidates: EditableStructuredImportCandidate[];
+  images: VisualReviewExtractedImagePreview[];
+  stagedMediaAssets: IntelligentImportStagedMediaAsset[];
+}) {
+  if (!shouldEmitStructuredSelectionRuntimeDebug(args.items)) {
+    return;
+  }
+
+  const before = args.items.map((item, index) => {
+    const photoResolution = resolveStructuredReviewPhotoResolution({
+      item,
+      images: args.images,
+      stagedMediaAssets: args.stagedMediaAssets,
+    });
+    const finalCategory = resolveImportedDestination(item);
+    return buildStructuredSelectionRuntimeDebugEntry({
+      item,
+      index,
+      photoResolution,
+      selected: null,
+      finalCategory,
+      phase: "before",
+    });
+  });
+
+  const after = args.builtCandidates.map((candidate, index) => {
+    const photoResolution = resolveStructuredReviewPhotoResolution({
+      item: candidate.sourceItem,
+      images: args.images,
+      stagedMediaAssets: args.stagedMediaAssets,
+    });
+    return buildStructuredSelectionRuntimeDebugEntry({
+      item: candidate.sourceItem,
+      index,
+      photoResolution,
+      selected: candidate.selected,
+      finalCategory: candidate.finalCategory,
+      phase: "after",
+    });
+  });
+
+  const selectedCount = after.filter((entry) => entry.selected === true).length;
+  const selectionReasonCounts = after.reduce<Record<string, number>>((acc, entry) => {
+    acc[entry.selectionReason] = (acc[entry.selectionReason] || 0) + 1;
+    return acc;
+  }, {});
+  const finalDestinationCounts = after.reduce<Record<string, number>>((acc, entry) => {
+    acc[entry.finalDestination] = (acc[entry.finalDestination] || 0) + 1;
+    return acc;
+  }, {});
+  const ignoredItems = after
+    .filter((entry) => entry.selected !== true)
+    .map((entry) => ({
+      sku: entry.sku,
+      title: entry.originalTitle,
+      selectionReason: entry.selectionReason,
+      finalDestination: entry.finalDestination,
+    }));
+  const summary = {
+    total: after.length,
+    selected: selectedCount,
+    ignored: Math.max(0, after.length - selectedCount),
+    bySelectionReason: selectionReasonCounts,
+    byFinalDestination: finalDestinationCounts,
+    ignoredItems,
+  };
+  const runtimeDebugPayload = {
+    before,
+    after,
+    summary,
+  };
+  const debugWindow = window as typeof window & {
+    __zionP8StructuredSelectionRuntimeDebug?: typeof runtimeDebugPayload;
+  };
+  debugWindow.__zionP8StructuredSelectionRuntimeDebug = runtimeDebugPayload;
+
+  console.table(
+    [...before, ...after].map((entry) => ({
+      phase: entry.phase,
+      index: entry.index,
+      sku: entry.sku,
+      originalTitle: entry.originalTitle,
+      finalCardName: entry.finalCardName,
+      finalDestination: entry.finalDestination,
+      reviewSelectionDefault: entry.reviewSelectionDefault,
+      reviewRequired: entry.reviewRequired,
+      weakCandidate: entry.weakCandidate,
+      photoState: entry.photoState,
+      selectionReason: entry.selectionReason,
+      selected: entry.selected,
+      sheetName: entry.sheetName,
+      worksheetRowNumber: entry.worksheetRowNumber,
+    }))
+  );
+  console.info("[ZION P8 structured-selection-runtime]", runtimeDebugPayload);
 }
 
 function buildStructuredReviewedCatalogDescription(draft: StructuredCandidateDraft) {
@@ -2769,7 +2993,11 @@ function buildStructuredSelectedReviewedSourceItems(args: {
 
 function buildReviewedImportedSaveItem(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
-  index: number
+  index: number,
+  options?: {
+    duplicateBlocked?: boolean;
+    photoResolution?: StructuredReviewPhotoResolution;
+  }
 ): IntelligentImportReviewedSaveItem {
   const destination = resolveImportedDestination(item);
   const isPool = destination === "pool";
@@ -2781,6 +3009,16 @@ function buildReviewedImportedSaveItem(
   const baseMetadata = isPool
     ? { ...(item.metadata ?? {}), __resolved_destination: destination }
     : buildImportedCatalogMetadata(item, catalogCategory);
+  const reviewRequiredByMetadata = ["true", "1", "sim", "yes"].includes(
+    normalizeImportedLoose(extractMetadataValue(item, ["review_required", "weak_candidate"]))
+  );
+  const canAutoApproveManualReview = options?.photoResolution
+    ? isSafeStructuredManualReviewAutoApproval({
+        item,
+        photoResolution: options.photoResolution,
+        duplicateBlocked: Boolean(options.duplicateBlocked),
+      })
+    : false;
 
   return {
     clientItemId: buildImportedSaveKey(item) || `reviewed-item-${index}`,
@@ -2803,10 +3041,7 @@ function buildReviewedImportedSaveItem(
         }
       : null,
     priceCents: isPool ? null : extractImportedCatalogPriceCents(item),
-    reviewRequired:
-      ["true", "1", "sim", "yes"].includes(
-        normalizeImportedLoose(extractMetadataValue(item, ["review_required", "weak_candidate"]))
-      ),
+    reviewRequired: canAutoApproveManualReview ? false : reviewRequiredByMetadata,
     reviewState: "approved",
     selected: true,
     sku: isPool ? "" : resolveImportedCatalogSku(item),
@@ -4684,15 +4919,28 @@ function extractImportedSourceCategory(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
+  const categorySource = normalizeImportedLoose(
+    extractMetadataValue(item, ["category_source"])
+  );
+  const explicitMetadataCategory =
+    extractMetadataValue(item, ["explicit_category", "explicit_category_name", "source_category"]) || "";
+
+  if (explicitMetadataCategory) {
+    return explicitMetadataCategory.trim();
+  }
+
+  if (categorySource === "explicit") {
+    const compatibleExplicitCategory =
+      extractMetadataValue(item, ["categoria", "category", "category_name"]) || "";
+    if (compatibleExplicitCategory) {
+      return compatibleExplicitCategory.trim();
+    }
+  }
+
   return (
-    extractMetadataValue(item, [
-      "source_category",
-      "categoria",
-      "category",
-      "category_name",
-    ]) ||
+    extractMetadataValue(item, ["source_category"]) ||
     extractImportedLabeledValue(source, ["Categoria", "Category"]) ||
-    extractImportedSourceSheetName(item)
+    ""
   ).trim();
 }
 
@@ -7460,9 +7708,11 @@ export default function IntelligentCatalogImportPanel({
         : String(structuredCandidateDrafts[candidate.id]?.description || "").trim()
           ? buildStructuredDraftDescriptionSnippet(structuredCandidateDrafts[candidate.id]?.description || "")
           : buildStructuredReviewDescriptionSnippet(reviewedItem);
-      const shouldDowngradeManualReviewToWarning =
-        hasIsolatedManualReviewSignal(reviewedItem) &&
-        isStructuredCandidateCompleteForAutoSelection(reviewedItem);
+      const shouldDowngradeManualReviewToWarning = isSafeStructuredManualReviewAutoApproval({
+        item: reviewedItem,
+        photoResolution,
+        duplicateBlocked: Boolean(duplicateReason),
+      });
       const blockingReasons = buildStructuredReviewIgnoreReasons(reviewedItem, duplicateReason).filter((reason) => {
         if (!shouldDowngradeManualReviewToWarning) return true;
         return !normalizeImportedLoose(reason).includes("marcado para revisao na origem");
@@ -7525,6 +7775,13 @@ export default function IntelligentCatalogImportPanel({
       safeExtractedImagePreview,
       stagedMediaAssets
     );
+
+    emitStructuredSelectionRuntimeDebug({
+      items: structuredSourceCandidates,
+      builtCandidates,
+      images: safeExtractedImagePreview,
+      stagedMediaAssets,
+    });
 
     if (shouldEnableParserDebugFromLocation()) {
       const before = structuredSourceCandidates
@@ -9265,7 +9522,16 @@ export default function IntelligentCatalogImportPanel({
       return;
     }
 
-    const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
+    const payloadItems = sourceItems.map((item, index) =>
+      buildReviewedImportedSaveItem(item, index, {
+        duplicateBlocked: false,
+        photoResolution: resolveStructuredReviewPhotoResolution({
+          item,
+          images: safeExtractedImagePreview,
+          stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
+        }),
+      })
+    );
     const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
       images: safeExtractedImagePreview,
       importedFiles: getImportedFilesFromResult(intelligentImportResult),
@@ -9445,7 +9711,16 @@ export default function IntelligentCatalogImportPanel({
       return;
     }
 
-    const payloadItems = sourceItems.map((item, index) => buildReviewedImportedSaveItem(item, index));
+    const payloadItems = sourceItems.map((item, index) =>
+      buildReviewedImportedSaveItem(item, index, {
+        duplicateBlocked: false,
+        photoResolution: resolveStructuredReviewPhotoResolution({
+          item,
+          images: safeExtractedImagePreview,
+          stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
+        }),
+      })
+    );
     const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
       images: safeExtractedImagePreview,
       importedFiles: getImportedFilesFromResult(intelligentImportResult),
