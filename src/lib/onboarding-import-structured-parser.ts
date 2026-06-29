@@ -4109,6 +4109,49 @@ function summarizeSpreadsheetAtomicRows(blocks: string[]) {
   };
 }
 
+function countStructuredFieldLikeLines(block: string) {
+  return normalizeBlock(block)
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean)
+    .filter((line) => /^[^:\n]{2,80}:\s+\S+/u.test(line)).length;
+}
+
+function summarizeDelimitedStructuredBlocks(blocks: string[]) {
+  const rows = blocks
+    .map((block, index) => {
+      const { fieldMap } = parseFieldLines(block);
+      const hasExplicitTitle = Boolean(
+        cleanText(
+          fieldMap["nome do produto"] ||
+            fieldMap["nome"] ||
+            fieldMap["produto"] ||
+            fieldMap["item"] ||
+            fieldMap["título"] ||
+            fieldMap["titulo"] ||
+            ""
+        )
+      );
+      const hasCommercialIdentity = Boolean(
+        cleanText(resolveStructuredSkuFieldValue(fieldMap)) ||
+          cleanText(chooseBestPriceFromFieldMap(fieldMap)) ||
+          cleanText(fieldMap["categoria"] || "")
+      );
+      const fieldLikeLines = countStructuredFieldLikeLines(block);
+
+      return {
+        blockIndex: index,
+        detected: hasExplicitTitle && hasCommercialIdentity && fieldLikeLines >= 6,
+      };
+    })
+    .filter((row) => row.detected);
+
+  return {
+    detected: rows.length > 0 && rows.length === blocks.length,
+    count: rows.length,
+  };
+}
+
 function coalesceSpreadsheetContinuationRows(blocks: string[]) {
   const mergedBlocks: string[] = [];
   const mergedPairs: Array<{
@@ -4243,6 +4286,43 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
         spreadsheetContinuationCoalesce: spreadsheetContinuation.trace,
         spreadsheetAtomicRows: {
           detected: true,
+          count: spreadsheetAtomicRows.count,
+          narrativeSplitSkipped: true,
+          rows: spreadsheetAtomicRows.rows,
+        },
+      };
+    }
+
+    const structuredDelimitedBlocks = summarizeDelimitedStructuredBlocks(normalizedBlocks);
+    if (strategy === "delimited_items" && structuredDelimitedBlocks.detected) {
+      const explicitNameAssignments = assignExplicitProductNamesToBlocks(
+        normalizedBlocks,
+        explicitNameCandidatesBeforeSegmentation
+      );
+      return {
+        blocks: normalizedBlocks,
+        explicitNameCandidatesBeforeSegmentation,
+        explicitNameAssignments: explicitNameAssignments.assignments,
+        explicitNamesByBlockIndex: explicitNameAssignments.assignedByBlockIndex,
+        strategy: `${strategy}+structured_atomic_blocks`,
+        fragmentCoalesce: {
+          inputCount: normalizedBlocks.length,
+          outputCount: normalizedBlocks.length,
+          mergedPairs: [],
+          transitionSplits: [],
+        },
+        continuationCoalesce: {
+          inputCount: normalizedBlocks.length,
+          outputCount: normalizedBlocks.length,
+          mergedPairs: [],
+        },
+        spreadsheetContinuationCoalesce: {
+          inputCount: normalizedBlocks.length,
+          outputCount: normalizedBlocks.length,
+          mergedPairs: [],
+        },
+        spreadsheetAtomicRows: {
+          detected: false,
           count: spreadsheetAtomicRows.count,
           narrativeSplitSkipped: true,
           rows: spreadsheetAtomicRows.rows,

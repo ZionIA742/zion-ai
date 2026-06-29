@@ -1,6 +1,7 @@
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
+import { XMLParser } from "fast-xml-parser";
 import { createRequire } from "node:module";
 
 const nodeRequire = createRequire(`${process.cwd()}/package.json`);
@@ -146,6 +147,357 @@ function cleanInlineText(value: string) {
     .trim();
 }
 
+type DocxStructuralEntry =
+  | {
+      kind: "paragraph";
+      text: string;
+    }
+  | {
+      kind: "table";
+      rows: string[][];
+    };
+
+type DocxTableFieldPair = {
+  label: string;
+  value: string;
+  canonicalKey: string;
+};
+
+type DocxProductTableCandidate = {
+  pairs: DocxTableFieldPair[];
+  recognizedFieldCount: number;
+  primaryFieldCount: number;
+  score: number;
+};
+
+const DOCX_COMMERCIAL_FIELD_ALIASES: Record<string, string[]> = {
+  sku: ["sku", "codigo", "código", "cod", "cod/ref", "referencia", "referência", "ref"],
+  nome: ["nome", "nome do produto", "nome comercial", "produto", "item", "titulo", "título"],
+  preco: [
+    "preco",
+    "preço",
+    "preco venda",
+    "preço venda",
+    "preco venda r",
+    "preço venda r",
+    "preco venda r$",
+    "preço venda r$",
+    "valor",
+    "valor final",
+  ],
+  categoria: ["categoria", "cat", "familia", "família", "tipo"],
+  estoque: ["estoque", "quantidade", "quantidade atual", "qtd", "qtd?"],
+  dosagem: ["dosagem"],
+  aplicacao: ["aplicacao", "aplicação", "uso", "uso / observacao", "uso / observação"],
+  descricao: ["descricao", "descrição", "descricao detalhada", "descrição detalhada"],
+  observacoes: ["observacoes", "observações", "observacoes tecnicas", "observações técnicas", "obs"],
+  embalagem: ["embalagem", "packaging"],
+  volume: ["peso/volume", "peso / volume", "peso", "volume", "capacidade"],
+  linha: ["linha", "marca", "marca / linha", "marca e linha"],
+  composicao: ["composicao", "composição"],
+  indicacao: ["indicacao", "indicação"],
+};
+
+const DOCX_CANONICAL_LABEL_BY_KEY: Record<string, string> = {
+  sku: "SKU",
+  nome: "Nome do produto",
+  preco: "Preço venda (R$)",
+  categoria: "Categoria",
+  estoque: "Estoque",
+  dosagem: "Dosagem",
+  aplicacao: "Aplicação",
+  descricao: "Descrição detalhada",
+  observacoes: "Observações técnicas",
+  embalagem: "Embalagem",
+  volume: "Peso/Volume",
+  linha: "Linha",
+  composicao: "Composição",
+  indicacao: "Indicação",
+};
+
+const DOCX_LABEL_KEY_TO_CANONICAL_KEY = Object.entries(DOCX_COMMERCIAL_FIELD_ALIASES).reduce<
+  Record<string, string>
+>((acc, [canonicalKey, aliases]) => {
+  aliases.forEach((alias) => {
+    acc[normalizeLooseKey(alias)] = canonicalKey;
+  });
+  return acc;
+}, {});
+
+function collectDocxXmlText(node: unknown): string {
+  if (typeof node === "string") return node;
+  if (Array.isArray(node)) {
+    return node.map((entry) => collectDocxXmlText(entry)).join("");
+  }
+  if (!node || typeof node !== "object") return "";
+
+  let output = "";
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "#text") {
+      output += String(value || "");
+      continue;
+    }
+    if (key === "w:t") {
+      output += collectDocxXmlText(value);
+      continue;
+    }
+    if (key === "w:tab") {
+      output += "\t";
+      continue;
+    }
+    if (key === "w:br" || key === "w:cr") {
+      output += "\n";
+      continue;
+    }
+    if (key === ":@") continue;
+    output += collectDocxXmlText(value);
+  }
+
+  return output;
+}
+
+function extractDocxParagraphText(paragraphNode: unknown) {
+  return cleanInlineText(collectDocxXmlText(paragraphNode));
+}
+
+function extractDocxTableRows(tableNode: unknown) {
+  if (!Array.isArray(tableNode)) return [] as string[][];
+
+  const rows: string[][] = [];
+
+  for (const entry of tableNode) {
+    if (!entry || typeof entry !== "object" || !("w:tr" in entry)) continue;
+    const tableRow = (entry as Record<string, unknown>)["w:tr"];
+    if (!Array.isArray(tableRow)) continue;
+
+    const rowCells: string[] = [];
+    for (const rowEntry of tableRow) {
+      if (!rowEntry || typeof rowEntry !== "object" || !("w:tc" in rowEntry)) continue;
+      const tableCell = (rowEntry as Record<string, unknown>)["w:tc"];
+      const cellText = extractDocxParagraphText(tableCell);
+      rowCells.push(cellText);
+    }
+
+    if (rowCells.some((cell) => cell.trim() !== "")) {
+      rows.push(rowCells.map((cell) => cleanInlineText(cell)));
+    }
+  }
+
+  return rows;
+}
+
+async function extractStructuralEntriesFromDocx(buffer: Buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const documentXml = await zip.file("word/document.xml")?.async("text");
+
+  if (!documentXml) {
+    return [] as DocxStructuralEntry[];
+  }
+
+  const parser = new XMLParser({
+    preserveOrder: true,
+    ignoreAttributes: false,
+    processEntities: true,
+    trimValues: false,
+  });
+  const parsed = parser.parse(documentXml) as Array<Record<string, unknown>>;
+  const documentNode = parsed.find((entry) => "w:document" in entry)?.["w:document"];
+  const bodyNode =
+    Array.isArray(documentNode) &&
+    documentNode.find(
+      (entry) => entry && typeof entry === "object" && "w:body" in (entry as Record<string, unknown>)
+    );
+  const bodyEntries =
+    bodyNode && typeof bodyNode === "object" && "w:body" in bodyNode
+      ? ((bodyNode as Record<string, unknown>)["w:body"] as Array<Record<string, unknown>>)
+      : [];
+
+  const entries: DocxStructuralEntry[] = [];
+
+  for (const bodyEntry of bodyEntries || []) {
+    if ("w:p" in bodyEntry) {
+      entries.push({
+        kind: "paragraph",
+        text: extractDocxParagraphText(bodyEntry["w:p"]),
+      });
+      continue;
+    }
+
+    if ("w:tbl" in bodyEntry) {
+      entries.push({
+        kind: "table",
+        rows: extractDocxTableRows(bodyEntry["w:tbl"]),
+      });
+    }
+  }
+
+  return entries;
+}
+
+function canonicalizeDocxFieldLabel(value: string) {
+  return DOCX_LABEL_KEY_TO_CANONICAL_KEY[normalizeLooseKey(value)] || "";
+}
+
+function buildDocxProductTableCandidate(rows: string[][]): DocxProductTableCandidate {
+  const pairs: DocxTableFieldPair[] = [];
+  const recognizedKeys = new Set<string>();
+  const primaryKeys = new Set<string>();
+
+  rows.forEach((row) => {
+    const cells = row.map((cell) => cleanInlineText(cell)).filter(Boolean);
+    if (cells.length < 2) return;
+
+    const label = cleanInlineText(cells[0] || "");
+    const value = cleanInlineText(cells.slice(1).join(" | "));
+    if (!label || !value) return;
+
+    const canonicalKey = canonicalizeDocxFieldLabel(label);
+    if (canonicalKey) {
+      recognizedKeys.add(canonicalKey);
+      if (["sku", "nome", "preco", "categoria"].includes(canonicalKey)) {
+        primaryKeys.add(canonicalKey);
+      }
+    }
+
+    pairs.push({
+      label,
+      value,
+      canonicalKey,
+    });
+  });
+
+  return {
+    pairs,
+    recognizedFieldCount: recognizedKeys.size,
+    primaryFieldCount: primaryKeys.size,
+    score: recognizedKeys.size * 2 + primaryKeys.size,
+  };
+}
+
+function isDocxProductTableCandidate(candidate: DocxProductTableCandidate) {
+  return (
+    candidate.pairs.length >= 4 &&
+    candidate.recognizedFieldCount >= 4 &&
+    candidate.primaryFieldCount >= 2 &&
+    candidate.score >= 10
+  );
+}
+
+function appendDocxField(fieldLines: string[], seenKeys: Set<string>, label: string, value: string) {
+  const cleanedLabel = cleanInlineText(label);
+  const cleanedValue = cleanInlineText(value);
+  if (!cleanedLabel || !cleanedValue) return;
+
+  const dedupeKey = `${normalizeLooseKey(cleanedLabel)}::${normalizeLooseKey(cleanedValue)}`;
+  if (seenKeys.has(dedupeKey)) return;
+  seenKeys.add(dedupeKey);
+  fieldLines.push(`${cleanedLabel}: ${cleanedValue}`);
+}
+
+function classifyDocxNarrativeParagraph(text: string) {
+  const cleaned = cleanInlineText(text);
+  if (!cleaned) {
+    return {
+      label: "",
+      value: "",
+    };
+  }
+
+  const labeledMatch = cleaned.match(/^([^:]{2,60}):\s*(.+)$/u);
+  if (labeledMatch) {
+    const rawLabel = cleanInlineText(labeledMatch[1] || "");
+    const value = cleanInlineText(labeledMatch[2] || "");
+    const canonicalKey = canonicalizeDocxFieldLabel(rawLabel);
+
+    if (canonicalKey) {
+      return {
+        label: DOCX_CANONICAL_LABEL_BY_KEY[canonicalKey] || rawLabel,
+        value,
+      };
+    }
+
+    return {
+      label: rawLabel,
+      value,
+    };
+  }
+
+  return {
+    label: "Descrição detalhada",
+    value: cleaned,
+  };
+}
+
+function buildStructuredDocxText(entries: DocxStructuralEntry[]) {
+  const productBlocks: string[] = [];
+  let nonProductTables = 0;
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry.kind !== "table") continue;
+
+    const tableCandidate = buildDocxProductTableCandidate(entry.rows);
+    if (!isDocxProductTableCandidate(tableCandidate)) {
+      nonProductTables += 1;
+      continue;
+    }
+
+    const previousEntry = entries[index - 1];
+    const contextualTitle =
+      previousEntry && previousEntry.kind === "paragraph" ? cleanInlineText(previousEntry.text) : "";
+
+    const fieldLines: string[] = [];
+    const seenKeys = new Set<string>();
+
+    if (contextualTitle) {
+      appendDocxField(fieldLines, seenKeys, "Título", contextualTitle);
+    }
+
+    tableCandidate.pairs.forEach((pair) => {
+      const label = pair.canonicalKey
+        ? DOCX_CANONICAL_LABEL_BY_KEY[pair.canonicalKey] || pair.label
+        : pair.label;
+      appendDocxField(fieldLines, seenKeys, label, pair.value);
+    });
+
+    let trailingIndex = index + 1;
+    while (trailingIndex < entries.length) {
+      const nextEntry = entries[trailingIndex];
+      if (nextEntry.kind === "table") {
+        const nextCandidate = buildDocxProductTableCandidate(nextEntry.rows);
+        if (isDocxProductTableCandidate(nextCandidate)) break;
+        trailingIndex += 1;
+        continue;
+      }
+
+      const paragraphText = cleanInlineText(nextEntry.text);
+      if (!paragraphText) break;
+
+      const classified = classifyDocxNarrativeParagraph(paragraphText);
+      appendDocxField(fieldLines, seenKeys, classified.label, classified.value);
+      trailingIndex += 1;
+    }
+
+    if (fieldLines.length === 0) continue;
+
+    productBlocks.push(
+      [`=== ITEM ${productBlocks.length + 1} | DOCX ===`, ...fieldLines].join("\n")
+    );
+  }
+
+  const structuredText = cleanInlineText(productBlocks.join("\n\n"));
+  const looksReliable =
+    productBlocks.length > 0 &&
+    productBlocks.length >= Math.max(1, nonProductTables === 0 ? 1 : Math.floor(nonProductTables / 3));
+
+  return {
+    text: structuredText,
+    blockCount: productBlocks.length,
+    nonProductTables,
+    looksReliable,
+  };
+}
+
 async function extractImagesFromZip(params: {
   buffer: Buffer;
   mediaPrefix: string;
@@ -181,9 +533,25 @@ async function extractImagesFromZip(params: {
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
+  const structuralEntries = await extractStructuralEntriesFromDocx(buffer);
+  const structuredDocx = buildStructuredDocxText(structuralEntries);
+
+  if (structuredDocx.looksReliable) {
+    debugIntelligentImport("extractTextFromDocx:structured", {
+      blockCount: structuredDocx.blockCount,
+      nonProductTables: structuredDocx.nonProductTables,
+      entryCount: structuralEntries.length,
+      preview: structuredDocx.text.slice(0, 500),
+    });
+    return structuredDocx.text;
+  }
+
   const result = await mammoth.extractRawText({ buffer });
   const text = cleanInlineText(result.value || "");
   debugIntelligentImport("extractTextFromDocx", {
+    usedFallback: true,
+    structuralBlocks: structuredDocx.blockCount,
+    structuralNonProductTables: structuredDocx.nonProductTables,
     textLength: text.length,
     preview: text.slice(0, 300),
   });
