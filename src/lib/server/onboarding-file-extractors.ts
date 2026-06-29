@@ -38,6 +38,10 @@ export type ExtractedImageAsset = {
   source: "docx" | "xlsx" | "pptx" | "pdf" | "image_file";
   mimeType: string;
   dataUrl: string;
+  sourceKind?: string;
+  placement?: "inline_table" | "inline_anchor" | "inline_document" | "unknown";
+  evidenceType?: "visual_evidence";
+  associationState?: "evidence_confirmable" | "evidence_ambiguous" | "evidence_unmatched";
   sheetName?: string;
   rowIndex?: number;
   columnIndex?: number;
@@ -47,6 +51,13 @@ export type ExtractedImageAsset = {
   imageOrder?: number;
   worksheetRowNumber?: number;
   sheetScopedKey?: string;
+  docxRelId?: string;
+  docxMediaPath?: string;
+  docxBodyIndex?: number;
+  docxTableIndex?: number;
+  docxTableCell?: string;
+  documentOrderKey?: string;
+  docxBlockKey?: string;
 };
 
 export type ExtractedFileContent = {
@@ -151,10 +162,15 @@ type DocxStructuralEntry =
   | {
       kind: "paragraph";
       text: string;
+      bodyIndex: number;
     }
   | {
       kind: "table";
       rows: string[][];
+      bodyIndex: number;
+      tableIndex: number;
+      blockKey: string | null;
+      documentOrderKey: string | null;
     };
 
 type DocxTableFieldPair = {
@@ -168,6 +184,21 @@ type DocxProductTableCandidate = {
   recognizedFieldCount: number;
   primaryFieldCount: number;
   score: number;
+};
+
+type DocxInlineImageReference = {
+  relId: string;
+  placement: ExtractedImageAsset["placement"];
+  bodyIndex: number;
+  tableIndex: number | null;
+  tableCell: string | null;
+  imageIndexWithinCell: number;
+  documentOrderKey: string;
+};
+
+type DocxStructuredExtractionResult = {
+  entries: DocxStructuralEntry[];
+  images: ExtractedImageAsset[];
 };
 
 const DOCX_COMMERCIAL_FIELD_ALIASES: Record<string, string[]> = {
@@ -286,12 +317,156 @@ function extractDocxTableRows(tableNode: unknown) {
   return rows;
 }
 
-async function extractStructuralEntriesFromDocx(buffer: Buffer) {
+function buildDocxBlockKey(tableIndex: number, bodyIndex: number, tableCell?: string | null) {
+  const baseKey = `docx::table::${tableIndex + 1}::body::${bodyIndex + 1}`;
+  return tableCell ? `${baseKey}::cell::${tableCell}` : baseKey;
+}
+
+function buildDocxDocumentOrderKey(args: {
+  bodyIndex: number;
+  tableIndex?: number | null;
+  tableCell?: string | null;
+  imageIndexWithinCell?: number | null;
+}) {
+  const parts = [`body-${args.bodyIndex + 1}`];
+  if (typeof args.tableIndex === "number" && args.tableIndex >= 0) {
+    parts.push(`table-${args.tableIndex + 1}`);
+  }
+  if (args.tableCell) {
+    parts.push(`cell-${args.tableCell}`);
+  }
+  if (typeof args.imageIndexWithinCell === "number" && args.imageIndexWithinCell >= 0) {
+    parts.push(`image-${args.imageIndexWithinCell + 1}`);
+  }
+  return parts.join("::");
+}
+
+async function extractDocxImageRelationshipTargets(zip: JSZip) {
+  const relationshipsXml = await zip.file("word/_rels/document.xml.rels")?.async("text");
+  if (!relationshipsXml) return new Map<string, string>();
+
+  const targets = new Map<string, string>();
+  for (const match of relationshipsXml.matchAll(
+    /<Relationship\b[^>]*\bId="([^"]+)"[^>]*\bTarget="([^"]+)"[^>]*>/gi
+  )) {
+    const relId = String(match[1] || "").trim();
+    const target = String(match[2] || "").trim();
+    if (!relId || !target) continue;
+    const resolvedPath = resolveZipTargetPath("word/document.xml", target);
+    if (resolvedPath.startsWith("word/media/")) {
+      targets.set(relId, resolvedPath);
+    }
+  }
+  return targets;
+}
+
+function extractDocxAttributeValue(node: unknown, attributeName: string): string {
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      const value = extractDocxAttributeValue(entry, attributeName);
+      if (value) return value;
+    }
+    return "";
+  }
+  if (!node || typeof node !== "object") return "";
+  const record = node as Record<string, unknown>;
+  const directValue = String(record[attributeName] || "").trim();
+  if (directValue) return directValue;
+  const attrs = record[":@"];
+  if (attrs && typeof attrs === "object") {
+    const attrValue = String((attrs as Record<string, unknown>)[attributeName] || "").trim();
+    if (attrValue) return attrValue;
+  }
+  return "";
+}
+
+function collectDocxInlineImageReferences(
+  node: unknown,
+  context: {
+    bodyIndex: number;
+    tableIndex: number | null;
+    tableCell: string | null;
+    placement: ExtractedImageAsset["placement"];
+  },
+  acc: DocxInlineImageReference[],
+  seen: Set<string>,
+  state = { imageIndexWithinCell: 0 }
+) {
+  if (Array.isArray(node)) {
+    node.forEach((entry) => collectDocxInlineImageReferences(entry, context, acc, seen, state));
+    return;
+  }
+
+  if (!node || typeof node !== "object") return;
+  const record = node as Record<string, unknown>;
+
+  for (const [key, value] of Object.entries(record)) {
+    const nextPlacement =
+      key === "wp:inline"
+        ? ("inline_table" as const)
+        : key === "wp:anchor"
+          ? ("inline_anchor" as const)
+          : context.placement;
+
+    if (key === "a:blip") {
+      const relId =
+        extractDocxAttributeValue(value, "@_r:embed") ||
+        extractDocxAttributeValue(value, "@_r:link") ||
+        extractDocxAttributeValue(record, "@_r:embed") ||
+        extractDocxAttributeValue(record, "@_r:link");
+      if (relId) {
+        const imageIndexWithinCell = state.imageIndexWithinCell;
+        state.imageIndexWithinCell += 1;
+        const documentOrderKey = buildDocxDocumentOrderKey({
+          bodyIndex: context.bodyIndex,
+          tableIndex: context.tableIndex,
+          tableCell: context.tableCell,
+          imageIndexWithinCell,
+        });
+        const dedupeKey = [
+          relId,
+          context.bodyIndex,
+          context.tableIndex ?? "",
+          context.tableCell ?? "",
+          documentOrderKey,
+        ].join("::");
+        if (!seen.has(dedupeKey)) {
+          seen.add(dedupeKey);
+          acc.push({
+            relId,
+            placement: nextPlacement || context.placement || "unknown",
+            bodyIndex: context.bodyIndex,
+            tableIndex: context.tableIndex,
+            tableCell: context.tableCell,
+            imageIndexWithinCell,
+            documentOrderKey,
+          });
+        }
+      }
+    }
+
+    collectDocxInlineImageReferences(
+      value,
+      {
+        ...context,
+        placement: nextPlacement || context.placement,
+      },
+      acc,
+      seen,
+      state
+    );
+  }
+}
+
+async function extractStructuralEntriesFromDocx(buffer: Buffer): Promise<DocxStructuredExtractionResult> {
   const zip = await JSZip.loadAsync(buffer);
   const documentXml = await zip.file("word/document.xml")?.async("text");
 
   if (!documentXml) {
-    return [] as DocxStructuralEntry[];
+    return {
+      entries: [],
+      images: [],
+    };
   }
 
   const parser = new XMLParser({
@@ -311,27 +486,122 @@ async function extractStructuralEntriesFromDocx(buffer: Buffer) {
     bodyNode && typeof bodyNode === "object" && "w:body" in bodyNode
       ? ((bodyNode as Record<string, unknown>)["w:body"] as Array<Record<string, unknown>>)
       : [];
+  const relationshipTargets = await extractDocxImageRelationshipTargets(zip);
 
   const entries: DocxStructuralEntry[] = [];
+  const imageReferences: DocxInlineImageReference[] = [];
+  const seenImageReferences = new Set<string>();
+  let tableIndex = 0;
 
-  for (const bodyEntry of bodyEntries || []) {
+  for (const [bodyIndex, bodyEntry] of (bodyEntries || []).entries()) {
     if ("w:p" in bodyEntry) {
+      collectDocxInlineImageReferences(
+        bodyEntry["w:p"],
+        {
+          bodyIndex,
+          tableIndex: null,
+          tableCell: null,
+          placement: "inline_document",
+        },
+        imageReferences,
+        seenImageReferences
+      );
       entries.push({
         kind: "paragraph",
         text: extractDocxParagraphText(bodyEntry["w:p"]),
+        bodyIndex,
       });
       continue;
     }
 
     if ("w:tbl" in bodyEntry) {
+      const currentTableIndex = tableIndex;
+      tableIndex += 1;
+      const tableNode = bodyEntry["w:tbl"];
+      if (Array.isArray(tableNode)) {
+        let rowNumber = 0;
+        for (const rowEntry of tableNode) {
+          if (!rowEntry || typeof rowEntry !== "object" || !("w:tr" in rowEntry)) continue;
+          const tableRow = (rowEntry as Record<string, unknown>)["w:tr"];
+          if (!Array.isArray(tableRow)) continue;
+          rowNumber += 1;
+          let cellNumber = 0;
+          for (const cellEntry of tableRow) {
+            if (!cellEntry || typeof cellEntry !== "object" || !("w:tc" in cellEntry)) continue;
+            cellNumber += 1;
+            const tableCell = (cellEntry as Record<string, unknown>)["w:tc"];
+            collectDocxInlineImageReferences(
+              tableCell,
+              {
+                bodyIndex,
+                tableIndex: currentTableIndex,
+                tableCell: `r${rowNumber}c${cellNumber}`,
+                placement: "inline_table",
+              },
+              imageReferences,
+              seenImageReferences
+            );
+          }
+        }
+      }
       entries.push({
         kind: "table",
         rows: extractDocxTableRows(bodyEntry["w:tbl"]),
+        bodyIndex,
+        tableIndex: currentTableIndex,
+        blockKey: null,
+        documentOrderKey: buildDocxDocumentOrderKey({
+          bodyIndex,
+          tableIndex: currentTableIndex,
+        }),
       });
     }
   }
 
-  return entries;
+  const images: ExtractedImageAsset[] = [];
+  for (const [imageIndex, imageReference] of imageReferences.entries()) {
+    const mediaPath = relationshipTargets.get(imageReference.relId) || "";
+    const fileName = mediaPath.split("/").pop() || `docx-image-${imageIndex + 1}`;
+    const zipEntry = mediaPath ? zip.file(mediaPath) : null;
+    if (!zipEntry) continue;
+    const mediaBuffer = await zipEntry.async("nodebuffer");
+    const mimeType = getImageMimeTypeFromExtension(fileName);
+    const isInlineTable =
+      imageReference.tableIndex != null && imageReference.placement === "inline_table";
+    images.push({
+      fileName,
+      source: "docx",
+      sourceKind: "docx_inline_table_image",
+      mimeType,
+      dataUrl: bufferToDataUrl(mediaBuffer, mimeType),
+      placement: imageReference.placement || "unknown",
+      evidenceType: "visual_evidence",
+      associationState: isInlineTable ? "evidence_confirmable" : "evidence_unmatched",
+      imageOrder: imageIndex,
+      docxRelId: imageReference.relId,
+      docxMediaPath: mediaPath || undefined,
+      docxBodyIndex: imageReference.bodyIndex + 1,
+      docxTableIndex:
+        typeof imageReference.tableIndex === "number" && imageReference.tableIndex >= 0
+          ? imageReference.tableIndex + 1
+          : undefined,
+      docxTableCell: imageReference.tableCell || undefined,
+      documentOrderKey: imageReference.documentOrderKey,
+      docxBlockKey:
+        typeof imageReference.tableIndex === "number" && imageReference.tableIndex >= 0
+          ? buildDocxBlockKey(
+              imageReference.tableIndex,
+              imageReference.bodyIndex,
+              imageReference.tableCell
+            )
+          : undefined,
+    });
+  }
+
+  return {
+    entries,
+    images,
+  };
 }
 
 function canonicalizeDocxFieldLabel(value: string) {
@@ -428,6 +698,27 @@ function classifyDocxNarrativeParagraph(text: string) {
   };
 }
 
+function buildDocxNarrativeCellFieldLines(text: string) {
+  const cleaned = cleanInlineText(text);
+  if (!cleaned) return [] as string[];
+
+  const labeledText = cleaned.replace(
+    /(?<!^)(?=(?:Tipo|Formato|Medidas|Profundidade|Capacidade|Prazo estimado|Faixa de pre[cç]o|Acabamento|Observa(?:c|ç)(?:o|õ)es)\s*:)/giu,
+    "\n"
+  );
+  const lines = labeledText
+    .split(/\n+/)
+    .map((line) => cleanInlineText(line))
+    .filter(Boolean);
+  if (lines.length < 2) return [];
+
+  const title = lines[0] || "";
+  const labeledLines = lines.slice(1).filter((line) => /^[^:]{2,40}:\s*.+$/u.test(line));
+  if (!title || labeledLines.length < 3) return [];
+
+  return [title, ...labeledLines];
+}
+
 function buildStructuredDocxText(entries: DocxStructuralEntry[]) {
   const productBlocks: string[] = [];
   let nonProductTables = 0;
@@ -438,6 +729,32 @@ function buildStructuredDocxText(entries: DocxStructuralEntry[]) {
 
     const tableCandidate = buildDocxProductTableCandidate(entry.rows);
     if (!isDocxProductTableCandidate(tableCandidate)) {
+      const cellBlocks: string[] = [];
+      entry.rows.forEach((row, rowIndex) => {
+        row.forEach((cell, cellIndex) => {
+          const fieldLines = buildDocxNarrativeCellFieldLines(cell);
+          if (fieldLines.length === 0) return;
+          const cellKey = `r${rowIndex + 1}c${cellIndex + 1}`;
+          const blockKey = buildDocxBlockKey(entry.tableIndex, entry.bodyIndex, cellKey);
+          const documentOrderKey = buildDocxDocumentOrderKey({
+            bodyIndex: entry.bodyIndex,
+            tableIndex: entry.tableIndex,
+            tableCell: cellKey,
+          });
+          cellBlocks.push([
+            `=== ITEM ${productBlocks.length + cellBlocks.length + 1} | DOCX ===`,
+            `DOCX Block Key: ${blockKey}`,
+            `Document Order Key: ${documentOrderKey}`,
+            `DOCX Body Index: ${entry.bodyIndex + 1}`,
+            `DOCX Table Index: ${entry.tableIndex + 1}`,
+            ...fieldLines,
+          ].join("\n"));
+        });
+      });
+      if (cellBlocks.length > 0) {
+        productBlocks.push(...cellBlocks);
+        continue;
+      }
       nonProductTables += 1;
       continue;
     }
@@ -448,6 +765,18 @@ function buildStructuredDocxText(entries: DocxStructuralEntry[]) {
 
     const fieldLines: string[] = [];
     const seenKeys = new Set<string>();
+    const blockKey = buildDocxBlockKey(entry.tableIndex, entry.bodyIndex);
+    const documentOrderKey =
+      entry.documentOrderKey ||
+      buildDocxDocumentOrderKey({
+        bodyIndex: entry.bodyIndex,
+        tableIndex: entry.tableIndex,
+      });
+
+    appendDocxField(fieldLines, seenKeys, "DOCX Block Key", blockKey);
+    appendDocxField(fieldLines, seenKeys, "Document Order Key", documentOrderKey);
+    appendDocxField(fieldLines, seenKeys, "DOCX Body Index", String(entry.bodyIndex + 1));
+    appendDocxField(fieldLines, seenKeys, "DOCX Table Index", String(entry.tableIndex + 1));
 
     if (contextualTitle) {
       appendDocxField(fieldLines, seenKeys, "Título", contextualTitle);
@@ -533,14 +862,14 @@ async function extractImagesFromZip(params: {
 }
 
 async function extractTextFromDocx(buffer: Buffer) {
-  const structuralEntries = await extractStructuralEntriesFromDocx(buffer);
-  const structuredDocx = buildStructuredDocxText(structuralEntries);
+  const structuralExtraction = await extractStructuralEntriesFromDocx(buffer);
+  const structuredDocx = buildStructuredDocxText(structuralExtraction.entries);
 
   if (structuredDocx.looksReliable) {
     debugIntelligentImport("extractTextFromDocx:structured", {
       blockCount: structuredDocx.blockCount,
       nonProductTables: structuredDocx.nonProductTables,
-      entryCount: structuralEntries.length,
+      entryCount: structuralExtraction.entries.length,
       preview: structuredDocx.text.slice(0, 500),
     });
     return structuredDocx.text;
@@ -829,11 +1158,21 @@ async function extractTextFromPdf(buffer: Buffer) {
 }
 
 async function extractImagesFromDocx(buffer: Buffer) {
-  return extractImagesFromZip({
-    buffer,
-    mediaPrefix: "word/media/",
-    source: "docx",
+  const structuralExtraction = await extractStructuralEntriesFromDocx(buffer);
+  debugIntelligentImport("extractImagesFromDocx:structured", {
+    count: structuralExtraction.images.length,
+    preview: structuralExtraction.images.slice(0, 12).map((image) => ({
+      fileName: image.fileName,
+      docxRelId: image.docxRelId,
+      docxBodyIndex: image.docxBodyIndex,
+      docxTableIndex: image.docxTableIndex,
+      docxTableCell: image.docxTableCell,
+      documentOrderKey: image.documentOrderKey,
+      docxBlockKey: image.docxBlockKey,
+      associationState: image.associationState,
+    })),
   });
+  return structuralExtraction.images;
 }
 
 function columnNumberToLetters(columnNumberZeroBased: number) {

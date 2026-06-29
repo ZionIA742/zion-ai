@@ -85,8 +85,12 @@ type IntelligentImportResponse =
         originalSourceFileName?: string;
         fileName: string;
         source: string;
+        sourceKind?: string;
         mimeType: string;
         dataUrl: string;
+        placement?: string;
+        evidenceType?: string;
+        associationState?: string;
         sheetName?: string;
         rowIndex?: number;
         columnIndex?: number;
@@ -94,6 +98,13 @@ type IntelligentImportResponse =
         imageOrder?: number;
         worksheetRowNumber?: number;
         sheetScopedKey?: string;
+        docxRelId?: string;
+        docxMediaPath?: string;
+        docxBodyIndex?: number;
+        docxTableIndex?: number;
+        docxTableCell?: string;
+        documentOrderKey?: string;
+        docxBlockKey?: string;
       }>;
       normalizedPreview: IntelligentImportNormalizedPreview[];
       dedupedPreview: IntelligentImportDedupedPreview[];
@@ -899,13 +910,14 @@ type StructuredReviewPhotoAssociation =
   | "sheet_scoped_key"
   | "source_location_key"
   | "sheet_row_unique"
+  | "docx_block_key"
   | "ambiguous"
   | "none";
 type StructuredReviewPhotoCandidate = {
   id: string;
   key: string;
   association: Exclude<StructuredReviewPhotoAssociation, "ambiguous" | "none">;
-  associationStrength: "strong_auto";
+  associationStrength: "strong_auto" | "visual_evidence" | "weak_confirmed";
   fileName: string;
   sourceFileName: string;
   mimeType: string;
@@ -917,6 +929,13 @@ type StructuredReviewPhotoCandidate = {
   worksheetRowNumber: number | null;
   stagingAssetId: string | null;
   stagingStorageRef: string | null;
+  placement: string;
+  evidenceType: string;
+  associationState: string;
+  docxBlockKey: string;
+  docxMediaPath: string;
+  docxTableCell: string;
+  documentOrderKey: string;
 };
 type StructuredReviewPhotoResolution =
   | {
@@ -932,6 +951,15 @@ type StructuredReviewPhotoResolution =
       primary: null;
       candidates: StructuredReviewPhotoCandidate[];
       message: string;
+    }
+  | {
+      state: "evidence";
+      association: "docx_block_key";
+      primary: StructuredReviewPhotoCandidate | null;
+      candidates: StructuredReviewPhotoCandidate[];
+      message: string;
+      evidenceState: "evidence_confirmable" | "weak_confirmed" | "evidence_ambiguous" | "evidence_unmatched";
+      confirmedCandidateKeys: string[];
     }
   | {
       state: "none";
@@ -1031,11 +1059,27 @@ function buildStructuredReviewSuggestedImageKey(
   return [
     "structured-review-image",
     String(image.originalSourceFileName || image.sourceFileName || "").trim().toLowerCase(),
+    String(image.docxBlockKey || "").trim().toLowerCase(),
     String(image.sheetScopedKey || "").trim().toLowerCase(),
     String(image.worksheetRowNumber ?? ""),
     String(image.fileName || "imagem-extraida").trim().toLowerCase(),
     index,
   ].join("::");
+}
+function extractImportedDocxBlockKey(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const metadataCandidates = [
+    item.metadata?.docx_block_key,
+    item.metadata?.docxBlockKey,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (metadataCandidates.length > 0) return metadataCandidates[0];
+
+  const rawText = [String(item.title || ""), String(item.rawText || "")].join("\n");
+  const match = rawText.match(/(?:^|\n)docx block key\s*:\s*([^\n]+)/i);
+  return String(match?.[1] || "").trim();
 }
 function normalizeStructuredReviewSourceFileName(value: string | null | undefined) {
   return normalizeImportedLoose(String(value || "").replace(/\.[^.]+$/g, "").trim());
@@ -1099,19 +1143,24 @@ function buildStructuredReviewPhotoCandidate(
   image: VisualReviewExtractedImagePreview,
   association: StructuredReviewPhotoCandidate["association"],
   index: number,
-  stagedMediaAssets: IntelligentImportStagedMediaAsset[]
+  stagedMediaAssets: IntelligentImportStagedMediaAsset[],
+  confirmed = false
 ): StructuredReviewPhotoCandidate {
   const stagedAsset = findStructuredReviewStagedAssetForImage(image, stagedMediaAssets);
   return {
     id: stagedAsset?.id || buildStructuredReviewSuggestedImageKey(image, index),
     key: buildStructuredReviewSuggestedImageKey(image, index),
     association,
-    associationStrength: "strong_auto",
+    associationStrength: confirmed
+      ? "weak_confirmed"
+      : association === "docx_block_key"
+        ? "visual_evidence"
+        : "strong_auto",
     fileName: image.fileName || "imagem-extraida",
     sourceFileName: String(image.originalSourceFileName || image.sourceFileName || "").trim(),
     mimeType: image.mimeType || "image/png",
     dataUrl: image.dataUrl,
-    sourceKind: String(image.source || "").trim() || "xlsx",
+    sourceKind: String(image.sourceKind || image.source || "").trim() || "xlsx",
     sheetName: String(image.sheetName || "").trim(),
     sheetScopedKey: String(image.sheetScopedKey || "").trim(),
     sourceLocationKey: buildStructuredPreviewImageSourceLocationKey(image),
@@ -1121,12 +1170,20 @@ function buildStructuredReviewPhotoCandidate(
         : null,
     stagingAssetId: stagedAsset?.id || null,
     stagingStorageRef: stagedAsset?.stagingStorageRef || null,
+    placement: String(image.placement || "").trim(),
+    evidenceType: String(image.evidenceType || "").trim(),
+    associationState: String(image.associationState || "").trim(),
+    docxBlockKey: String(image.docxBlockKey || "").trim(),
+    docxMediaPath: String(image.docxMediaPath || "").trim(),
+    docxTableCell: String(image.docxTableCell || "").trim(),
+    documentOrderKey: String(image.documentOrderKey || "").trim(),
   };
 }
 function resolveStructuredReviewPhotoResolution(args: {
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
   images: VisualReviewExtractedImagePreview[];
   stagedMediaAssets: IntelligentImportStagedMediaAsset[];
+  confirmedDocxImageKeys?: string[];
 }) : StructuredReviewPhotoResolution {
   const itemSourceFileName = normalizeStructuredReviewSourceFileName(
     extractImportedOriginalSourceFileName(args.item) || args.item.sourceFileName
@@ -1135,6 +1192,10 @@ function resolveStructuredReviewPhotoResolution(args: {
   const itemSourceLocationKey = normalizeImportedLoose(buildImportedSourceLocationKey(args.item));
   const itemSheetName = normalizeImportedLoose(extractImportedSourceSheetName(args.item));
   const itemWorksheetRowNumber = extractImportedWorksheetRowNumber(args.item);
+  const itemDocxBlockKey = normalizeImportedLoose(extractImportedDocxBlockKey(args.item));
+  const confirmedDocxImageKeys = new Set(
+    (args.confirmedDocxImageKeys ?? []).map((value) => normalizeImportedLoose(value)).filter(Boolean)
+  );
 
   const candidateImages = args.images
     .map((image, index) => ({ image, index }))
@@ -1242,6 +1303,51 @@ function resolveStructuredReviewPhotoResolution(args: {
         buildStructuredReviewPhotoCandidate(image, "sheet_row_unique", index, args.stagedMediaAssets)
       ),
       message: "Mais de uma foto corresponde a esta aba + linha.",
+    };
+  }
+
+  const docxBlockMatches = args.images
+    .map((image, index) => ({ image, index }))
+    .filter(({ image }) => normalizeImportedLoose(String(image.source || "")) === "docx")
+    .filter(
+      ({ image }) =>
+        normalizeImportedLoose(String(image.placement || "")) ===
+        normalizeImportedLoose("inline_table")
+    )
+    .filter(({ image }) => {
+      const imageSourceFileName = normalizeStructuredReviewSourceFileName(
+        image.originalSourceFileName || image.sourceFileName
+      );
+      return !itemSourceFileName || !imageSourceFileName || itemSourceFileName === imageSourceFileName;
+    })
+    .filter(({ image }) => {
+      const imageDocxBlockKey = normalizeImportedLoose(String(image.docxBlockKey || "").trim());
+      return Boolean(itemDocxBlockKey && imageDocxBlockKey && itemDocxBlockKey === imageDocxBlockKey);
+    });
+  if (docxBlockMatches.length > 0) {
+    const candidates = docxBlockMatches.map(({ image, index }) =>
+      buildStructuredReviewPhotoCandidate(
+        image,
+        "docx_block_key",
+        index,
+        args.stagedMediaAssets,
+        confirmedDocxImageKeys.has(normalizeImportedLoose(buildStructuredReviewSuggestedImageKey(image, index)))
+      )
+    );
+    const confirmedCandidateKeys = candidates
+      .map((candidate) => candidate.key)
+      .filter((candidateKey) => confirmedDocxImageKeys.has(normalizeImportedLoose(candidateKey)));
+    return {
+      state: "evidence",
+      association: "docx_block_key",
+      primary: candidates[0] ?? null,
+      candidates,
+      message:
+        confirmedCandidateKeys.length > 0
+          ? `${confirmedCandidateKeys.length} foto(s) confirmada(s) neste bloco.`
+          : `${candidates.length} foto(s) encontradas neste bloco - confirme para incluir no catalogo.`,
+      evidenceState: confirmedCandidateKeys.length > 0 ? "weak_confirmed" : "evidence_confirmable",
+      confirmedCandidateKeys,
     };
   }
 
@@ -1419,6 +1525,7 @@ type EditableStructuredImportCandidate = {
 };
 type StructuredCandidateDraft = {
   finalCategory: StructuredReviewCategory;
+  confirmedDocxImageKeys: string[];
   name: string;
   sku: string;
   price: string;
@@ -1865,6 +1972,7 @@ function matchesImportedSourceFileName(
 function buildSelectedMediaRefsForSave(args: {
   images: NonNullable<Extract<IntelligentImportResponse, { ok: true }>["extractedImagePreview"]>;
   items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
+  confirmedDocxImageKeysByItemKey?: Record<string, string[] | undefined>;
   importedFiles?: Array<{
     id: string;
     importBatchId?: string | null;
@@ -1914,11 +2022,52 @@ function buildSelectedMediaRefsForSave(args: {
   let skippedWithoutStagingCount = 0;
 
   for (const [itemIndex, item] of args.items.entries()) {
+    const itemSaveKey = buildImportedSaveKey(item);
     const sourceLocationKey = buildImportedSourceLocationKey(item);
     const sourceFileName = String(extractImportedOriginalSourceFileName(item) || item.sourceFileName || "").trim();
     const sheetScopedKey = extractImportedSheetScopedKey(item);
     const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
     const itemClientItemId = buildReviewedImportedSaveItem(item, itemIndex).clientItemId;
+    const confirmedDocxKeys = new Set(
+      (args.confirmedDocxImageKeysByItemKey?.[itemSaveKey] ?? [])
+        .map((value) => normalizeImportedLoose(value))
+        .filter(Boolean)
+    );
+    if (confirmedDocxKeys.size > 0) {
+      const matchingDocxImages = args.images
+        .map((image, imageIndex) => ({
+          image,
+          key: buildStructuredReviewSuggestedImageKey(image, imageIndex),
+        }))
+        .filter(({ image, key }) => {
+          if (normalizeImportedLoose(String(image.source || "")) !== "docx") return false;
+          if (!confirmedDocxKeys.has(normalizeImportedLoose(key))) return false;
+          return matchesImportedSourceFileName(sourceFileName, image.originalSourceFileName || image.sourceFileName);
+        });
+      matchingDocxImages.forEach(({ image, key }) => {
+        selectedMediaRefs.push({
+          associationMode: "weak_confirmed",
+          clientItemId: itemClientItemId,
+          confirmedByUser: true,
+          fileName: image.fileName || null,
+          importBatchId: null,
+          importFileId: null,
+          mediaRefId: key,
+          mimeType: image.mimeType || null,
+          pageNumber: null,
+          sheetScopedKey: null,
+          sizeBytes: null,
+          sourceFileName: sourceFileName || image.sourceFileName || null,
+          sourceImageId: String(image.docxRelId || key).trim() || key,
+          sourceKind: "docx_media",
+          sourceLocationKey:
+            sourceFileName && image.docxBlockKey ? `${sourceFileName}::${image.docxBlockKey}` : image.docxBlockKey || null,
+          stagingAssetId: null,
+          stagingStorageRef: null,
+          worksheetRowNumber: null,
+        });
+      });
+    }
     const relatedImportedFiles =
       importedFilesByName.get(normalizeImportedFileLikeName(sourceFileName)) ??
       (importedFiles.length === 1 ? importedFiles : []);
@@ -2239,7 +2388,7 @@ function buildStructuredReviewIgnoreReasons(
     !shouldSuppressMissingSkuReason &&
     ["true", "1", "sim", "yes"].includes(normalizeImportedLoose(missingSku))
   ) {
-    reasons.push("Sem SKU — revisar antes de salvar.");
+    reasons.push("SKU nao informado.");
   }
   if (
     reasons.length === 0 &&
@@ -2413,6 +2562,7 @@ function buildEditableStructuredImportCandidates(
       item,
       images,
       stagedMediaAssets,
+      confirmedDocxImageKeys: [],
     });
     return {
       id: `${buildImportedSaveKey(item)}::review::${index}`,
@@ -2577,6 +2727,7 @@ function emitStructuredSelectionRuntimeDebug(args: {
       item,
       images: args.images,
       stagedMediaAssets: args.stagedMediaAssets,
+      confirmedDocxImageKeys: [],
     });
     const finalCategory = resolveImportedDestination(item);
     return buildStructuredSelectionRuntimeDebugEntry({
@@ -2594,6 +2745,7 @@ function emitStructuredSelectionRuntimeDebug(args: {
       item: candidate.sourceItem,
       images: args.images,
       stagedMediaAssets: args.stagedMediaAssets,
+      confirmedDocxImageKeys: [],
     });
     return buildStructuredSelectionRuntimeDebugEntry({
       item: candidate.sourceItem,
@@ -3097,6 +3249,7 @@ function buildStructuredCandidateDraft(
 
   return {
     finalCategory,
+    confirmedDocxImageKeys: [],
     name,
     sku: String(resolveImportedCatalogSku(item) || "").trim(),
     price: formatStructuredDraftPriceValue(item),
@@ -5721,6 +5874,7 @@ function sanitizeImportedDescriptionText(
     const normalized = normalizeImportedLoose(line);
     if (!normalized) return false;
     if (normalized === titleLoose) return false;
+    if (normalized === "docx") return false;
     if (/^\d+\s+of\s+\d+$/.test(normalized)) return false;
     if (/^(pagina|page|pag)\s+\d+$/.test(normalized)) return false;
     if (normalized === "logo depois aparece") return false;
@@ -5831,6 +5985,14 @@ function sanitizeImportedDescriptionText(
       "sheet scoped key:",
       "source scoped key ",
       "source scoped key:",
+      "document order key ",
+      "document order key:",
+      "docx block key ",
+      "docx block key:",
+      "docx body index ",
+      "docx body index:",
+      "docx table index ",
+      "docx table index:",
       "linha da planilha ",
       "linha da planilha:",
       "foto ",
@@ -7684,6 +7846,7 @@ export default function IntelligentCatalogImportPanel({
         item: reviewedItem,
         images: safeExtractedImagePreview,
         stagedMediaAssets,
+        confirmedDocxImageKeys: structuredCandidateDrafts[candidate.id]?.confirmedDocxImageKeys ?? [],
       });
       const sourceFileName = String(
         extractImportedOriginalSourceFileName(reviewedItem) || reviewedItem.sourceFileName || ""
@@ -7713,12 +7876,25 @@ export default function IntelligentCatalogImportPanel({
         photoResolution,
         duplicateBlocked: Boolean(duplicateReason),
       });
-      const blockingReasons = buildStructuredReviewIgnoreReasons(reviewedItem, duplicateReason).filter((reason) => {
+      const rawBlockingReasons = buildStructuredReviewIgnoreReasons(reviewedItem, duplicateReason);
+      const blockingReasons = rawBlockingReasons.filter((reason) => {
+        const normalizedReason = normalizeImportedLoose(reason);
+        if (normalizedReason.includes("sem sku") || normalizedReason.includes("sku nao informado")) {
+          return false;
+        }
         if (!shouldDowngradeManualReviewToWarning) return true;
-        return !normalizeImportedLoose(reason).includes("marcado para revisao na origem");
+        return !normalizedReason.includes("marcado para revisao na origem");
       });
       const signals = getStructuredReviewSignalList(reviewedItem);
       const warnings: string[] = [];
+      if (
+        rawBlockingReasons.some((reason) => {
+          const normalizedReason = normalizeImportedLoose(reason);
+          return normalizedReason.includes("sem sku") || normalizedReason.includes("sku nao informado");
+        })
+      ) {
+        warnings.push("SKU nao informado.");
+      }
       if (shouldDowngradeManualReviewToWarning) {
         warnings.push("Revisao recomendada pela origem.");
       } else if (
@@ -7729,6 +7905,12 @@ export default function IntelligentCatalogImportPanel({
       if (photoResolution.state === "ambiguous") {
         warnings.push("Foto encontrada com associacao ambigua. Nenhuma foto foi escolhida automaticamente.");
         blockingReasons.push("Foto encontrada com associacao ambigua.");
+      } else if (photoResolution.state === "evidence") {
+        if (photoResolution.evidenceState === "weak_confirmed") {
+          warnings.push("Fotos do DOCX confirmadas localmente para este produto.");
+        } else {
+          warnings.push("Fotos do DOCX encontradas como evidencia confirmavel. Confirme antes de incluir no catalogo.");
+        }
       } else if (photoResolution.state === "none") {
         warnings.push("Nenhuma foto associada.");
       }
@@ -7790,6 +7972,7 @@ export default function IntelligentCatalogImportPanel({
             item,
             images: safeExtractedImagePreview,
             stagedMediaAssets,
+            confirmedDocxImageKeys: [],
           });
           return buildStructuredSelectionDebugSnapshot({
             item,
@@ -7804,6 +7987,7 @@ export default function IntelligentCatalogImportPanel({
             item: candidate.sourceItem,
             images: safeExtractedImagePreview,
             stagedMediaAssets,
+            confirmedDocxImageKeys: [],
           });
           return buildStructuredSelectionDebugSnapshot({
             item: candidate.sourceItem,
@@ -7868,6 +8052,13 @@ export default function IntelligentCatalogImportPanel({
         ? editableStructuredCandidates.find((candidate) => candidate.id === editingStructuredCandidateId) ?? null
         : null,
     [editableStructuredCandidates, editingStructuredCandidateId]
+  );
+  const editingStructuredPhotoResolution = useMemo(
+    () =>
+      editingStructuredCandidateId
+        ? structuredUnifiedReviewItems.find((item) => item.candidate.id === editingStructuredCandidateId)?.photoResolution ?? null
+        : null,
+    [editingStructuredCandidateId, structuredUnifiedReviewItems]
   );
   const visualPdfTotalPages = useMemo(() => {
     const pageNumbers = safeExtractedImagePreview
@@ -9529,10 +9720,22 @@ export default function IntelligentCatalogImportPanel({
           item,
           images: safeExtractedImagePreview,
           stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
+          confirmedDocxImageKeys: [],
         }),
       })
     );
+    const candidateIdByItemKey = new Map(
+      editableStructuredCandidates.map((candidate) => [buildImportedSaveKey(candidate.sourceItem), candidate.id])
+    );
+    const confirmedDocxImageKeysByItemKey = Object.fromEntries(
+      sourceItems.map((item) => {
+        const itemKey = buildImportedSaveKey(item);
+        const candidateId = candidateIdByItemKey.get(itemKey);
+        return [itemKey, candidateId ? structuredCandidateDrafts[candidateId]?.confirmedDocxImageKeys ?? [] : []];
+      })
+    );
     const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
+      confirmedDocxImageKeysByItemKey,
       images: safeExtractedImagePreview,
       importedFiles: getImportedFilesFromResult(intelligentImportResult),
       items: sourceItems,
@@ -9718,10 +9921,22 @@ export default function IntelligentCatalogImportPanel({
           item,
           images: safeExtractedImagePreview,
           stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
+          confirmedDocxImageKeys: [],
         }),
       })
     );
+    const candidateIdByItemKey = new Map(
+      editableStructuredCandidates.map((candidate) => [buildImportedSaveKey(candidate.sourceItem), candidate.id])
+    );
+    const confirmedDocxImageKeysByItemKey = Object.fromEntries(
+      sourceItems.map((item) => {
+        const itemKey = buildImportedSaveKey(item);
+        const candidateId = candidateIdByItemKey.get(itemKey);
+        return [itemKey, candidateId ? structuredCandidateDrafts[candidateId]?.confirmedDocxImageKeys ?? [] : []];
+      })
+    );
     const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
+      confirmedDocxImageKeysByItemKey,
       images: safeExtractedImagePreview,
       importedFiles: getImportedFilesFromResult(intelligentImportResult),
       items: sourceItems,
@@ -11898,6 +12113,13 @@ export default function IntelligentCatalogImportPanel({
                     {structuredUnifiedReviewItems.map((item) => {
                       const primaryPhoto = item.photoResolution.primary;
                       const photoAmbiguous = item.photoResolution.state === "ambiguous";
+                      const photoEvidence = item.photoResolution.state === "evidence";
+                      const photoEvidenceCount =
+                        item.photoResolution.state === "evidence" ? item.photoResolution.candidates.length : 0;
+                      const confirmedEvidenceCount =
+                        item.photoResolution.state === "evidence"
+                          ? item.photoResolution.confirmedCandidateKeys.length
+                          : 0;
                       const compactStatus = getStructuredCompactStatus(item);
                       return (
                         <div
@@ -11907,11 +12129,25 @@ export default function IntelligentCatalogImportPanel({
                           <div className="grid gap-3 md:grid-cols-[88px_minmax(0,1fr)] xl:grid-cols-[88px_minmax(0,1fr)_220px] xl:items-start">
                             <div className="min-w-0">
                               {primaryPhoto?.dataUrl ? (
-                                <img
-                                  src={primaryPhoto.dataUrl}
-                                  alt={primaryPhoto.fileName}
-                                      className="h-20 w-20 rounded-lg object-cover ring-1 ring-gray-200 md:h-24 md:w-24"
-                                />
+                                <div className="space-y-2">
+                                  <img
+                                    src={primaryPhoto.dataUrl}
+                                    alt={primaryPhoto.fileName}
+                                    className="h-20 w-20 rounded-lg object-cover ring-1 ring-gray-200 md:h-24 md:w-24"
+                                  />
+                                  {photoEvidence && item.photoResolution.candidates.length > 1 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {item.photoResolution.candidates.slice(1, 4).map((candidate) => (
+                                        <img
+                                          key={candidate.key}
+                                          src={candidate.dataUrl}
+                                          alt={candidate.fileName}
+                                          className="h-8 w-8 rounded-md object-cover ring-1 ring-gray-200"
+                                        />
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
                               ) : (
                                     <div className="flex h-20 w-20 items-center justify-center rounded-lg bg-gray-100 p-2 text-center text-[11px] leading-4 text-gray-500 ring-1 ring-gray-200 md:h-24 md:w-24">
                                   {photoAmbiguous
@@ -11966,7 +12202,7 @@ export default function IntelligentCatalogImportPanel({
                                 {item.displayName || "Item estruturado"}
                               </p>
                               <p className="mt-1 text-xs leading-5 text-gray-600">
-                                {item.sku ? `SKU ${item.sku}` : "Sem SKU"}{" "}
+                                {item.sku ? `SKU ${item.sku}` : "SKU nao informado"}{" "}
                                 {" • "}
                                 {item.priceLabel || "Sem preco"}{" "}
                                 {" • "}
@@ -11997,6 +12233,13 @@ export default function IntelligentCatalogImportPanel({
                               >
                                 <span className="truncate">{compactStatus.label}</span>
                               </div>
+                              {photoEvidence ? (
+                                <p className="mt-2 text-xs leading-5 text-amber-900">
+                                  {confirmedEvidenceCount > 0
+                                    ? `${confirmedEvidenceCount} foto(s) do documento confirmada(s) para este produto.`
+                                    : `${photoEvidenceCount} foto(s) encontradas neste bloco - confirme para incluir no catalogo.`}
+                                </p>
+                              ) : null}
                               {false ? <>
                               {item.descriptionSnippet ? (
                                 <p className="mt-2 text-sm leading-6 text-gray-700">
@@ -12559,6 +12802,96 @@ export default function IntelligentCatalogImportPanel({
                             className="rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none"
                           />
                         </label>
+                        {editingStructuredPhotoResolution?.state === "evidence" ? (
+                          <div className="md:col-span-2 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-amber-950">Fotos encontradas no documento</p>
+                                <p className="mt-1 text-sm text-amber-900">
+                                  {editingStructuredPhotoResolution.confirmedCandidateKeys.length > 0
+                                    ? `${editingStructuredPhotoResolution.confirmedCandidateKeys.length} foto(s) confirmada(s) neste produto.`
+                                    : `${editingStructuredPhotoResolution.candidates.length} foto(s) encontradas neste bloco - confirme para incluir no catalogo.`}
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setStructuredCandidateEditorDraft((current) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            confirmedDocxImageKeys: editingStructuredPhotoResolution.candidates.map(
+                                              (candidate) => candidate.key
+                                            ),
+                                          }
+                                        : current
+                                    )
+                                  }
+                                  className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900"
+                                >
+                                  Confirmar todas
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setStructuredCandidateEditorDraft((current) =>
+                                      current ? { ...current, confirmedDocxImageKeys: [] } : current
+                                    )
+                                  }
+                                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700"
+                                >
+                                  Desmarcar todas
+                                </button>
+                              </div>
+                            </div>
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                              {editingStructuredPhotoResolution.candidates.map((candidate) => {
+                                const checked = structuredCandidateEditorDraft.confirmedDocxImageKeys.includes(candidate.key);
+                                return (
+                                  <label
+                                    key={candidate.key}
+                                    className={cx(
+                                      "overflow-hidden rounded-2xl border bg-white",
+                                      checked ? "border-emerald-300 ring-2 ring-emerald-200" : "border-slate-200"
+                                    )}
+                                  >
+                                    <img
+                                      src={candidate.dataUrl}
+                                      alt={candidate.fileName}
+                                      className="h-28 w-full object-cover"
+                                    />
+                                    <div className="space-y-2 p-3">
+                                      <div className="flex items-center gap-2">
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={(event) =>
+                                            setStructuredCandidateEditorDraft((current) => {
+                                              if (!current) return current;
+                                              const nextKeys = event.target.checked
+                                                ? Array.from(new Set([...current.confirmedDocxImageKeys, candidate.key]))
+                                                : current.confirmedDocxImageKeys.filter((key) => key !== candidate.key);
+                                              return {
+                                                ...current,
+                                                confirmedDocxImageKeys: nextKeys,
+                                              };
+                                            })
+                                          }
+                                          className="h-4 w-4 rounded border-slate-300 text-emerald-600"
+                                        />
+                                        <span className="text-sm font-medium text-slate-900">
+                                          {checked ? "Confirmada" : "Evidencia do documento"}
+                                        </span>
+                                      </div>
+                                      <p className="truncate text-xs text-slate-600">{candidate.fileName}</p>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : null}
                         <label className="flex flex-col gap-1.5 text-sm text-slate-700">
                           <span className="font-medium">SKU</span>
                           <input

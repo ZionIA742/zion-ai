@@ -103,8 +103,12 @@ type IntelligentImportPreviewImage = {
   originalSourceFileName?: string;
   fileName: string;
   source: ExtractedImageAsset["source"];
+  sourceKind?: string;
   mimeType: string;
   dataUrl: string;
+  placement?: string;
+  evidenceType?: string;
+  associationState?: string;
   sheetName?: string;
   rowIndex?: number;
   columnIndex?: number;
@@ -114,6 +118,13 @@ type IntelligentImportPreviewImage = {
   imageOrder?: number;
   worksheetRowNumber?: number;
   sheetScopedKey?: string;
+  docxRelId?: string;
+  docxMediaPath?: string;
+  docxBodyIndex?: number;
+  docxTableIndex?: number;
+  docxTableCell?: string;
+  documentOrderKey?: string;
+  docxBlockKey?: string;
 };
 
 export type IntelligentImportResult =
@@ -693,6 +704,30 @@ function extractItemWorksheetRowNumber(item: NormalizedImportItem) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function extractItemDocxLabeledValue(item: NormalizedImportItem, labels: string[]) {
+  const metadataCandidates = labels
+    .flatMap((label) => [
+      item.metadata?.[label],
+      item.metadata?.[label.toLowerCase()],
+      item.metadata?.[label.replace(/\s+/g, "_").toLowerCase()],
+    ])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (metadataCandidates.length > 0) {
+    return metadataCandidates[0];
+  }
+
+  const rawText = String(item.rawText || "");
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = rawText.match(new RegExp(`(?:^|\\n)${escaped}\\s*:\\s*([^\\n]+)`, "i"));
+    if (match?.[1]) {
+      return String(match[1] || "").trim();
+    }
+  }
+  return "";
+}
+
 function buildSheetScopedKey(sheetName: string, worksheetRowNumber: number | null | undefined) {
   const normalizedSheetName = normalizeLoose(sheetName);
   if (!normalizedSheetName || !Number.isFinite(worksheetRowNumber as number) || Number(worksheetRowNumber) <= 0) {
@@ -716,6 +751,10 @@ function enrichItemWithImportCoordinates(item: NormalizedImportItem) {
   const derivedSheetScopedKey = buildSheetScopedKey(sourceSheetName, worksheetRowNumber);
   const canonicalSheetScopedKey = chooseCanonicalSheetScopedKey(item, derivedSheetScopedKey);
   const originalSourceFileName = String(item.sourceFileName || "").trim();
+  const docxBlockKey = extractItemDocxLabeledValue(item, ["DOCX Block Key"]);
+  const documentOrderKey = extractItemDocxLabeledValue(item, ["Document Order Key"]);
+  const docxBodyIndex = extractItemDocxLabeledValue(item, ["DOCX Body Index"]);
+  const docxTableIndex = extractItemDocxLabeledValue(item, ["DOCX Table Index"]);
 
   return {
     ...item,
@@ -730,6 +769,16 @@ function enrichItemWithImportCoordinates(item: NormalizedImportItem) {
         "",
       source_worksheet_row_number: worksheetRowNumber != null ? String(worksheetRowNumber) : "",
       source_sheet_scoped_key: canonicalSheetScopedKey || "",
+      docx_block_key:
+        String(item.metadata?.docx_block_key || item.metadata?.docxBlockKey || "").trim() || docxBlockKey || "",
+      document_order_key:
+        String(item.metadata?.document_order_key || item.metadata?.documentOrderKey || "").trim() ||
+        documentOrderKey ||
+        "",
+      docx_body_index:
+        String(item.metadata?.docx_body_index || item.metadata?.docxBodyIndex || "").trim() || docxBodyIndex || "",
+      docx_table_index:
+        String(item.metadata?.docx_table_index || item.metadata?.docxTableIndex || "").trim() || docxTableIndex || "",
     },
   };
 }
@@ -1023,8 +1072,12 @@ export async function runOnboardingIntelligentImport(
         originalSourceFileName: file.fileName,
         fileName: image.fileName,
         source: image.source,
+        sourceKind: image.sourceKind,
         mimeType: image.mimeType,
         dataUrl: image.dataUrl,
+        placement: image.placement,
+        evidenceType: image.evidenceType,
+        associationState: image.associationState,
         sheetName: image.sheetName,
         rowIndex: image.rowIndex,
         columnIndex: image.columnIndex,
@@ -1034,6 +1087,13 @@ export async function runOnboardingIntelligentImport(
         imageOrder: image.imageOrder,
         worksheetRowNumber: image.worksheetRowNumber,
         sheetScopedKey: image.sheetScopedKey,
+        docxRelId: image.docxRelId,
+        docxMediaPath: image.docxMediaPath,
+        docxBodyIndex: image.docxBodyIndex,
+        docxTableIndex: image.docxTableIndex,
+        docxTableCell: image.docxTableCell,
+        documentOrderKey: image.documentOrderKey,
+        docxBlockKey: image.docxBlockKey,
       }))
     );
 
@@ -1043,12 +1103,16 @@ export async function runOnboardingIntelligentImport(
         sourceFileName: image.sourceFileName,
         fileName: image.fileName,
         source: image.source,
+        sourceKind: image.sourceKind,
         mimeType: image.mimeType,
+        placement: image.placement,
+        associationState: image.associationState,
         sheetName: image.sheetName,
         rowIndex: image.rowIndex,
         columnIndex: image.columnIndex,
         anchorCell: image.anchorCell,
         imageOrder: image.imageOrder,
+        docxBlockKey: image.docxBlockKey,
       })),
     });
 
@@ -1066,11 +1130,13 @@ export async function runOnboardingIntelligentImport(
         sourceFileName: image.sourceFileName,
         fileName: image.fileName,
         source: image.source,
+        sourceKind: image.sourceKind,
         sheetName: image.sheetName,
         rowIndex: image.rowIndex,
         columnIndex: image.columnIndex,
         anchorCell: image.anchorCell,
         imageOrder: image.imageOrder,
+        docxBlockKey: image.docxBlockKey,
       })),
       imageDiagnostics,
     });
