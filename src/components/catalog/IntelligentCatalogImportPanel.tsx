@@ -5587,7 +5587,8 @@ function dedupeImportedItemsForSave(
 }
 
 function buildImportedCatalogName(
-  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  options?: { skipDescriptionFallback?: boolean }
 ) {
   const pickName = (value: string | null | undefined) => {
     const cleaned = cleanupImportedDescriptionLine(String(value || ""));
@@ -5616,16 +5617,18 @@ function buildImportedCatalogName(
   const raw = String(item.rawText ?? "").trim();
   if (!raw) return "Item importado";
 
-  const fromDescription = extractImportedNameFromNarrative(
-    [
-      extractMetadataValue(item, ["clean_description", "description", "descricao", "descriÃ§Ã£o"]),
-      buildImportedCatalogDescription(item) || "",
-      raw,
-    ]
-      .filter(Boolean)
-      .join("\n")
-  );
-  if (fromDescription) return fromDescription;
+  if (!options?.skipDescriptionFallback) {
+    const fromDescription = extractImportedNameFromNarrative(
+      [
+        extractMetadataValue(item, ["clean_description", "description", "descricao", "descriÃ§Ã£o"]),
+        buildImportedCatalogDescription(item) || "",
+        raw,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+    if (fromDescription) return fromDescription;
+  }
 
   const fromRaw = extractImportedLabeledValue(raw, ["Nome do produto", "Produto", "Nome"]);
   const safeFromRaw = pickName(fromRaw);
@@ -5862,7 +5865,7 @@ function sanitizeImportedDescriptionText(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const descriptionState = getImportedDescriptionCanonicalState(item);
-  const title = buildImportedCatalogName(item);
+  const title = buildImportedCatalogName(item, { skipDescriptionFallback: true });
   const titleLoose = normalizeImportedLoose(title);
   const rawLines = String(source || "")
     .replace(/\r/g, "")

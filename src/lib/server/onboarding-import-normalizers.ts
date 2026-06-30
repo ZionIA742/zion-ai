@@ -45,6 +45,41 @@ function normalizeLoose(value: string) {
     .trim();
 }
 
+const GENERIC_STRUCTURED_TITLES = new Set([
+  "piscina",
+  "produto",
+  "item",
+  "kit",
+  "acessorio",
+  "acessorios",
+  "quimico",
+  "quimicos",
+]);
+
+const POOL_CONTEXT_TERMS = [
+  "piscina",
+  "fibra",
+  "vinil",
+  "alvenaria",
+  "profundidade",
+  "largura",
+  "comprimento",
+  "capacidade",
+  "casa de maquinas",
+  "instalacao embutida",
+];
+
+const ACCESSORY_CONTEXT_TERMS = [
+  "escada",
+  "refletor",
+  "aspirador",
+  "peneira",
+  "cabo telescopico",
+  "cabo",
+  "mangueira",
+  "skimmer",
+];
+
 function isGenericTitle(value: string) {
   const normalized = normalizeLoose(value);
   if (!normalized) return true;
@@ -62,6 +97,120 @@ function isGenericTitle(value: string) {
   return blocked.some(
     (item) => normalized === normalizeLoose(item) || normalized.startsWith(normalizeLoose(item))
   );
+}
+
+function textIncludesAny(normalizedText: string, terms: string[]) {
+  return terms.some((term) => normalizedText.includes(normalizeLoose(term)));
+}
+
+function hasPoolDimensionSignals(item: StructuredImportItem) {
+  if (String(item.dimensions || "").trim()) return true;
+  if (String(item.depth || "").trim() && String(item.size || "").trim()) return true;
+
+  const normalizedRaw = normalizeLoose(item.rawBlock || "");
+  return (
+    /\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*(?:\s*x\s*\d+[\.,]?\d*)?\s*m\b/.test(normalizedRaw) ||
+    normalizedRaw.includes("profundidade") ||
+    normalizedRaw.includes("capacidade")
+  );
+}
+
+function collectStructuralReviewSignals(item: StructuredImportItem) {
+  const signals = new Set<string>();
+  const normalizedTitle = normalizeLoose(item.title || "");
+  const normalizedRaw = normalizeLoose(item.rawBlock || "");
+  const normalizedDescription = normalizeLoose(item.description || "");
+  const combinedText = [normalizedTitle, normalizedRaw, normalizedDescription].filter(Boolean).join(" ");
+  const priceProbeText = String(item.rawBlock || item.description || item.title || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, " ");
+
+  const genericTitle =
+    !normalizedTitle ||
+    GENERIC_STRUCTURED_TITLES.has(normalizedTitle) ||
+    normalizedTitle.includes("produto promocao verao") ||
+    normalizedTitle.includes("produto promocao") ||
+    normalizedTitle === "qmc d2 005";
+  if (genericTitle) {
+    signals.add("generic_title");
+  }
+
+  if (item.missingName || item.titleStatus === "missing_name") {
+    signals.add("missing_name");
+  }
+
+  if (item.ambiguousTitle || item.titleStatus === "ambiguous") {
+    signals.add("ambiguous_title");
+  }
+
+  const priceMatches =
+    priceProbeText.match(
+      /(?:r\$\s*\d+(?:\.\d{3})*,\d{2}|preco\s*[:\-]?\s*\d+(?:\.\d{3})*,\d{2}|valor\s*[:\-]?\s*\d+(?:\.\d{3})*,\d{2})/g
+    ) ?? [];
+  if (priceMatches.length > 1) {
+    signals.add("multiple_prices");
+  }
+
+  const skuMatches =
+    combinedText.match(/\b(?:qmc|acc|out|otr)(?:[-\s]?[a-z0-9]{1,8}){1,4}\b/g) ?? [];
+  if (skuMatches.length > 1) {
+    signals.add("multiple_skus");
+  }
+
+  const hasPoolContext = textIncludesAny(combinedText, POOL_CONTEXT_TERMS);
+  const hasAccessoryContext = textIncludesAny(combinedText, ACCESSORY_CONTEXT_TERMS);
+  if (hasPoolContext && hasAccessoryContext) {
+    signals.add("mixed_product_context");
+  }
+
+  if (
+    item.destination !== "pool" &&
+    hasPoolContext &&
+    hasAccessoryContext &&
+    hasPoolDimensionSignals(item)
+  ) {
+    signals.add("possible_merged_items");
+  }
+
+  if (item.destination === "pool" && !hasPoolDimensionSignals(item)) {
+    signals.add("pool_missing_required_measures");
+  }
+
+  return {
+    genericTitle,
+    signals: Array.from(signals),
+  };
+}
+
+function buildReviewReasons(args: {
+  missingPrice: boolean;
+  missingSku: boolean;
+  genericTitle: boolean;
+  ambiguousBundle: boolean;
+  weakCandidate: boolean;
+  sourceReviewSignals: string[];
+  structuralSignals: string[];
+}) {
+  const reasons = [
+    args.structuralSignals.includes("missing_name") ? "missing_name" : "",
+    args.structuralSignals.includes("ambiguous_title") ? "ambiguous_title" : "",
+    args.structuralSignals.includes("generic_title") ? "generic_title" : "",
+    args.structuralSignals.includes("multiple_prices") ? "multiple_prices_in_block" : "",
+    args.structuralSignals.includes("multiple_skus") ? "multiple_skus_in_block" : "",
+    args.structuralSignals.includes("possible_merged_items") ? "possible_merged_items" : "",
+    args.structuralSignals.includes("mixed_product_context") ? "mixed_product_context" : "",
+    args.structuralSignals.includes("pool_missing_required_measures")
+      ? "pool_missing_required_measures"
+      : "",
+    args.ambiguousBundle ? "ambiguous_bundle" : "",
+    args.weakCandidate ? "weak_candidate" : "",
+    args.missingPrice ? "missing_price" : "",
+    args.missingSku ? "missing_sku" : "",
+    ...args.sourceReviewSignals,
+  ].filter(Boolean);
+
+  return Array.from(new Set(reasons));
 }
 
 function resolveNormalizedType(item: StructuredImportItem): NormalizedImportItemType {
@@ -85,11 +234,8 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
   const normalizedTitle = normalizeLoose(item.title || "");
   const missingPrice = !String(item.price || "").trim();
   const missingSku = !String(item.sku || "").trim();
-  const genericTitle =
-    !normalizedTitle ||
-    normalizedTitle.includes("produto promocao verao") ||
-    normalizedTitle.includes("produto promocao") ||
-    normalizedTitle === "qmc d2 005";
+  const structuralSignals = collectStructuralReviewSignals(item);
+  const genericTitle = structuralSignals.genericTitle;
   const ambiguousBundle =
     normalizedTitle.includes("kit limpeza completo") ||
     normalizedTitle.includes("peneira e cabo") ||
@@ -98,20 +244,36 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
   const sourceReviewSignals = Array.from(
     new Set((item.reviewSignals || []).map((value) => String(value || "").trim()).filter(Boolean))
   );
-  const weakCandidate = genericTitle || ambiguousBundle || (missingPrice && missingSku);
+  const sourceReviewSignalsWithoutMissingOnly = sourceReviewSignals.filter(
+    (signal) => signal !== "missing_price_signal" && signal !== "missing_sku_signal"
+  );
+  const structuralReviewRequired =
+    structuralSignals.signals.includes("missing_name") ||
+    structuralSignals.signals.includes("ambiguous_title") ||
+    structuralSignals.signals.includes("generic_title") ||
+    structuralSignals.signals.includes("multiple_prices") ||
+    structuralSignals.signals.includes("multiple_skus") ||
+    structuralSignals.signals.includes("possible_merged_items") ||
+    structuralSignals.signals.includes("mixed_product_context") ||
+    structuralSignals.signals.includes("pool_missing_required_measures");
+  const weakCandidate =
+    structuralReviewRequired ||
+    ambiguousBundle ||
+    (missingPrice && missingSku && (genericTitle || sourceReviewSignalsWithoutMissingOnly.length > 0));
   const reviewRequired =
-    weakCandidate ||
-    sourceReviewSignals.length > 0 ||
-    (missingPrice && item.destination !== "pool") ||
-    (missingSku && item.destination !== "pool");
-  const reviewReasons = [
-    missingPrice ? "missing_price" : "",
-    missingSku ? "missing_sku" : "",
-    genericTitle ? "generic_title" : "",
-    ambiguousBundle ? "ambiguous_bundle" : "",
-    weakCandidate ? "weak_candidate" : "",
-    ...sourceReviewSignals,
-  ].filter(Boolean);
+    structuralReviewRequired ||
+    sourceReviewSignalsWithoutMissingOnly.length > 0 ||
+    ambiguousBundle ||
+    (missingPrice && missingSku && (genericTitle || sourceReviewSignalsWithoutMissingOnly.length > 0));
+  const reviewReasons = buildReviewReasons({
+    missingPrice,
+    missingSku,
+    genericTitle,
+    ambiguousBundle,
+    weakCandidate,
+    sourceReviewSignals,
+    structuralSignals: structuralSignals.signals,
+  });
 
   return {
     categoria: resolvedCategory,
@@ -185,6 +347,10 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     generic_title: genericTitle ? "true" : "false",
     ambiguous_bundle: ambiguousBundle ? "true" : "false",
     weak_candidate: weakCandidate ? "true" : "false",
+    title_status: item.titleStatus || "",
+    missing_name: item.missingName ? "true" : "false",
+    ambiguous_title: item.ambiguousTitle ? "true" : "false",
+    structural_review_signals: structuralSignals.signals.join(","),
     review_required: reviewRequired ? "true" : "false",
     review_reason: reviewReasons.join(","),
     review_reasons: reviewReasons.join(","),
