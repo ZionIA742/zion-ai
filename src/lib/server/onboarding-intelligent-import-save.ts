@@ -515,6 +515,20 @@ function buildPoolNormalizedPayload(args: {
   };
 }
 
+function hasExplicitHumanReviewConfirmation(metadata: Record<string, unknown> | null | undefined) {
+  if (!metadata || typeof metadata !== "object") return false;
+  const candidates = [
+    metadata.review_confirmed_by_user,
+    metadata.human_review_confirmed,
+    metadata.review_confirmation_state,
+  ];
+
+  return candidates.some((value) => {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "sim" || normalized === "yes" || normalized === "confirmed";
+  });
+}
+
 function validateReviewedImportedItem(
   item: IntelligentImportReviewedSaveItem,
   inputIndex: number,
@@ -522,11 +536,14 @@ function validateReviewedImportedItem(
 ): IntelligentImportSaveApprovedResultItem {
   const reasons: string[] = [];
   const destination = normalizeDestination(item.destination);
+  const reviewConfirmedByUser = hasExplicitHumanReviewConfirmation(item.metadata);
 
   if (!item.selected) reasons.push("Item nao marcado como selecionado/aprovado.");
   if (item.reviewState !== "approved") reasons.push("Item nao esta em estado approved.");
   if (item.duplicateBlocked) reasons.push("Item marcado como duplicado/bloqueado na origem.");
-  if (item.reviewRequired) reasons.push("Item ainda exige revisao antes do salvamento.");
+  if (item.reviewRequired && !reviewConfirmedByUser) {
+    reasons.push("Item ainda exige revisao antes do salvamento.");
+  }
   if (!destination) reasons.push("Destino/categoria invalido.");
 
   const safeName = String(item.name || "").trim();
@@ -557,7 +574,7 @@ function validateReviewedImportedItem(
     });
 
     if (!normalizedPayload.name) reasons.push("Nome da piscina obrigatorio.");
-    if (normalizedPayload.price == null || normalizedPayload.price < 0) {
+    if (normalizedPayload.price != null && normalizedPayload.price < 0) {
       reasons.push("Preco invalido para piscina.");
     }
     if (normalizedPayload.width_m == null || normalizedPayload.length_m == null || normalizedPayload.depth_m == null) {
@@ -603,8 +620,7 @@ function validateReviewedImportedItem(
     item,
   });
   const normalizedSku = normalizeImportDedupSku(normalizedPayload.sku);
-  if (!normalizedSku) reasons.push("SKU obrigatorio para item de catalogo.");
-  if (normalizedPayload.price_cents == null || normalizedPayload.price_cents < 0) {
+  if (normalizedPayload.price_cents != null && normalizedPayload.price_cents < 0) {
     reasons.push("Preco invalido para item de catalogo.");
   }
 

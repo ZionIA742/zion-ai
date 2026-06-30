@@ -1520,6 +1520,7 @@ type EditableStructuredImportCandidate = {
   id: string;
   sourceItem: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
   selected: boolean;
+  humanReviewConfirmed: boolean;
   finalCategory: StructuredReviewCategory;
   initialCategory: StructuredReviewCategory;
 };
@@ -2381,7 +2382,7 @@ function buildStructuredReviewIgnoreReasons(
   }
 
   if (["true", "1", "sim", "yes"].includes(normalizeImportedLoose(missingPrice))) {
-    reasons.push("Sem preço — revisar antes de salvar.");
+    reasons.push("Preco nao informado.");
   }
   const shouldSuppressMissingSkuReason = destination === "pool" && hasStrongSuspicionSignal;
   if (
@@ -2568,6 +2569,7 @@ function buildEditableStructuredImportCandidates(
       id: `${buildImportedSaveKey(item)}::review::${index}`,
       sourceItem: item,
       selected: shouldStartStructuredImportCandidateSelected(item, photoResolution),
+      humanReviewConfirmed: false,
       finalCategory,
       initialCategory: finalCategory,
     } satisfies EditableStructuredImportCandidate;
@@ -2613,6 +2615,32 @@ function extractStructuredSelectionRawCategoryValue(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
+  const metadata = item.metadata && typeof item.metadata === "object"
+    ? (item.metadata as Record<string, unknown>)
+    : null;
+  const explicitSkuValues = [
+    "sku" in item ? (item as { sku?: unknown }).sku : undefined,
+    "code" in item ? (item as { code?: unknown }).code : undefined,
+    metadata?.reviewed_sku,
+    metadata?.sku,
+    metadata?.codigo,
+    metadata?.["código"],
+    metadata?.["cÃ³digo"],
+    metadata?.["cÃƒÂ³digo"],
+  ];
+  const hasExplicitSkuField = explicitSkuValues.some((value) => value != null);
+  if (hasExplicitSkuField) {
+    const explicitSku = explicitSkuValues.find((value) => String(value || "").trim()) ?? "";
+    return normalizeImportedSkuPlaceholder(String(explicitSku || "").slice(0, 120));
+  }
+  const normalizedImportedSku = normalizeImportedSkuPlaceholder(
+    (
+      extractMetadataValue(item, ["sku", "codigo", "cÃ³digo"]) ||
+      extractImportedLabeledValue(source, ["SKU", "CÃ³digo", "Codigo"]) ||
+      ""
+    ).slice(0, 120)
+  );
+  return normalizedImportedSku;
   return (
     extractImportedLabeledValue(source, [
       "Categoria Final",
@@ -2906,6 +2934,7 @@ function buildStructuredReviewedDescription(
   draft: StructuredCandidateDraft
 ) {
   const finalCategory = draft.finalCategory || candidate.finalCategory;
+  const normalizedDraftSku = normalizeImportedSkuPlaceholder(draft.sku.trim());
   const baselineDraft = buildStructuredCandidateDraft(candidate.sourceItem, finalCategory);
   const userEditedDescription = Boolean(draft.descriptionEdited);
   const structuredFieldsChanged = [
@@ -2994,12 +3023,31 @@ function buildStructuredReviewedSourceItem(
   candidate: EditableStructuredImportCandidate,
   draft?: StructuredCandidateDraft | null
 ) {
+  const reviewConfirmedByUser = candidate.humanReviewConfirmed;
+  const reviewConfirmationState = reviewConfirmedByUser ? "confirmed" : "pending";
+  const reviewConfirmationSource = reviewConfirmedByUser ? "structured_selection_toggle" : "";
   if (!draft) {
-    return {
+    const normalizedSourceSku = normalizeImportedSkuPlaceholder(resolveImportedCatalogSku(candidate.sourceItem));
+    const sourceItemWithNormalizedSku = {
       ...candidate.sourceItem,
+      sku: normalizedSourceSku,
+      code: normalizedSourceSku,
+    };
+    return {
+      ...sourceItemWithNormalizedSku,
+      dedupKey: buildImportedSaveKey(sourceItemWithNormalizedSku),
       metadata: {
         ...(candidate.sourceItem.metadata ?? {}),
         __resolved_destination: candidate.finalCategory,
+        sku: normalizedSourceSku,
+        codigo: normalizedSourceSku,
+        "código": normalizedSourceSku,
+        reviewed_sku: normalizedSourceSku,
+        dedup_key: buildImportedSaveKey(sourceItemWithNormalizedSku),
+        human_review_confirmed: reviewConfirmedByUser ? "true" : "false",
+        review_confirmed_by_user: reviewConfirmedByUser ? "true" : "false",
+        review_confirmation_state: reviewConfirmationState,
+        review_confirmation_source: reviewConfirmationSource,
       },
     };
   }
@@ -3012,6 +3060,7 @@ function buildStructuredReviewedSourceItem(
   const depthValue = parseImportedDecimal(draft.depth);
   const weightValue = parseImportedDecimal(draft.weight);
   const finalCategory = draft.finalCategory || candidate.finalCategory;
+  const normalizedDraftSku = normalizeImportedSkuPlaceholder(draft.sku.trim());
   const { finalDescription, userEditedDescription, structuredFieldsChanged } =
     buildStructuredReviewedDescription(candidate, draft);
   const originalSourceCategory = resolveImportedDestination(candidate.sourceItem);
@@ -3029,9 +3078,9 @@ function buildStructuredReviewedSourceItem(
     title: draft.name.trim(),
     nome: draft.name.trim(),
     productName: draft.name.trim(),
-    sku: draft.sku.trim(),
-    codigo: draft.sku.trim(),
-    "código": draft.sku.trim(),
+    sku: normalizedDraftSku,
+    codigo: normalizedDraftSku,
+    "código": normalizedDraftSku,
     price: draft.price.trim(),
     preco: draft.price.trim(),
     "preço": draft.price.trim(),
@@ -3046,10 +3095,14 @@ function buildStructuredReviewedSourceItem(
     clean_description: finalDescription,
     reviewed_description: finalDescription,
     reviewed_name: draft.name.trim(),
-    reviewed_sku: draft.sku.trim(),
+    reviewed_sku: normalizedDraftSku,
     reviewed_price: draft.price.trim(),
     reviewed_stock_quantity: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
     reviewed_category: finalCategory,
+    human_review_confirmed: reviewConfirmedByUser ? "true" : "false",
+    review_confirmed_by_user: reviewConfirmedByUser ? "true" : "false",
+    review_confirmation_state: reviewConfirmationState,
+    review_confirmation_source: reviewConfirmationSource,
     reviewed_description_mode: userEditedDescription
       ? "manual"
       : structuredFieldsChanged
@@ -3120,13 +3173,20 @@ function buildStructuredReviewedSourceItem(
     origem: candidate.sourceItem.metadata?.origem || "",
   } satisfies Record<string, string>;
 
-  return {
+  const reviewedSourceItem = {
     ...candidate.sourceItem,
+    sku: normalizedDraftSku,
+    code: normalizedDraftSku,
     title: draft.name.trim() || candidate.sourceItem.title,
     rawText: buildStructuredDraftRawText(candidate.sourceItem, draft),
     metadata: {
       ...mergedMetadata,
     },
+  };
+
+  return {
+    ...reviewedSourceItem,
+    dedupKey: buildImportedSaveKey(reviewedSourceItem),
   };
 }
 
@@ -5338,10 +5398,52 @@ function isStructuredSpreadsheetImportItem(
   );
 }
 
+function normalizeImportedSkuPlaceholder(value: string | null | undefined) {
+  const cleaned = String(value || "").trim().slice(0, 120);
+  const normalized = normalizeImportedLoose(cleaned);
+  if (!cleaned || !normalized) return "";
+
+  const placeholderSignals = [
+    "sem sku",
+    "sku nao informado",
+    "sku nao informada",
+    "sku ausente",
+    "sem codigo",
+    "codigo nao informado",
+    "codigo nao informada",
+    "codigo ausente",
+    "sem referencia",
+    "referencia nao informada",
+    "referencia ausente",
+    "sem ref",
+    "revisar",
+    "a revisar",
+    "deve revisar",
+  ];
+
+  const isPlaceholder = placeholderSignals.some(
+    (signal) =>
+      normalized === signal ||
+      normalized.startsWith(`${signal} `) ||
+      normalized.endsWith(` ${signal}`) ||
+      normalized.includes(` ${signal} `)
+  );
+
+  return isPlaceholder ? "" : cleaned;
+}
+
 function extractImportedCatalogSku(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
+  const normalizedImportedSku = normalizeImportedSkuPlaceholder(
+    (
+      extractMetadataValue(item, ["sku", "codigo", "cÃ³digo"]) ||
+      extractImportedLabeledValue(source, ["SKU", "CÃ³digo", "Codigo"]) ||
+      ""
+    ).slice(0, 120)
+  );
+  return normalizedImportedSku;
   return (
     extractMetadataValue(item, ["sku", "codigo", "código"]) ||
     extractImportedLabeledValue(source, ["SKU", "Código", "Codigo"]) ||
@@ -5353,9 +5455,44 @@ function resolveImportedCatalogSku(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
   const source = String(item.rawText || "");
+  const metadata =
+    item.metadata && typeof item.metadata === "object"
+      ? (item.metadata as Record<string, unknown>)
+      : null;
+  const topLevelItem = item as Record<string, unknown>;
+  const explicitSkuCandidates = [
+    "sku" in topLevelItem ? topLevelItem.sku : undefined,
+    "code" in topLevelItem ? topLevelItem.code : undefined,
+    "codigo" in topLevelItem ? topLevelItem.codigo : undefined,
+    metadata?.reviewed_sku,
+    metadata?.sku,
+    metadata?.codigo,
+    metadata?.["código"],
+    metadata?.["cÃ³digo"],
+    metadata?.["cÃƒÂ³digo"],
+  ];
+  const hasExplicitSkuField = explicitSkuCandidates.some((value) => value != null);
+  if (hasExplicitSkuField) {
+    const explicitSku = explicitSkuCandidates.find((value) => String(value ?? "").trim()) ?? "";
+    return normalizeImportedSkuPlaceholder(String(explicitSku ?? "").slice(0, 120));
+  }
   const canonicalSku = extractMetadataValue(item, ["sku", "codigo", "cÃ³digo"]);
   if (canonicalSku) {
-    return canonicalSku.slice(0, 120);
+    return normalizeImportedSkuPlaceholder(canonicalSku);
+  }
+
+  const normalizedImportedSku = normalizeImportedSkuPlaceholder(
+    (extractImportedLabeledValue(source, ["SKU", "CÃƒÂ³digo", "Codigo"]) || "").slice(0, 120)
+  );
+  if (normalizedImportedSku) {
+    return normalizedImportedSku;
+  }
+
+  const normalizedFallbackImportedSku = normalizeImportedSkuPlaceholder(
+    (extractImportedLabeledValue(source, ["SKU", "CÃƒÂ³digo", "Codigo"]) || "").slice(0, 120)
+  );
+  if (normalizedFallbackImportedSku) {
+    return normalizedFallbackImportedSku;
   }
 
   if (isStructuredSpreadsheetImportItem(item)) {
@@ -6366,6 +6503,18 @@ function extractImportedPoolMetrics(
     extractMetadataValue(item, ["capacity", "capacidade", "max_capacity_l"])
   );
   let price = resolveExplicitImportedPriceReais(item)?.parsedReais ?? null;
+  const threeDimMatch =
+    metricSource.match(
+      /(?:medidas?|dimens(?:oes|[õo]es)|tamanho)\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m\b/i
+    ) ||
+    metricSource.match(
+      /(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m\b/i
+    );
+  if (threeDimMatch) {
+    width ??= parseImportedDecimal(threeDimMatch[1]);
+    length ??= parseImportedDecimal(threeDimMatch[2]);
+    depth ??= parseImportedDecimal(threeDimMatch[3]);
+  }
   const rectMatch =
     metricSource.match(/(?:medidas?|dimens(?:oes|[õo]es)|tamanho)\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m?/i) ||
     metricSource.match(/(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m\b/i);
@@ -7352,6 +7501,7 @@ function buildImportedCatalogMetadata(
   const sku =
     resolveImportedCatalogSku(item) ||
     extractMetadataValue(item, ["sku", "codigo", "código"]);
+  const normalizedCatalogSku = normalizeImportedSkuPlaceholder(sku);
   const line =
     extractMetadataValue(item, ["linha", "line"]) ||
     extractImportedLabeledValue(source, ["Linha"]);
@@ -7398,7 +7548,7 @@ function buildImportedCatalogMetadata(
     source_file_name: item.sourceFileName,
     source_type: item.type,
     confidence: item.confidence,
-    dedup_key: "dedupKey" in item ? item.dedupKey : null,
+    dedup_key: buildImportedSaveKey(item) || null,
     source_location_key: buildImportedSourceLocationKey(item) || null,
     source_sheet_name: extractImportedSourceSheetName(item) || null,
     source_worksheet_row_number: extractImportedWorksheetRowNumber(item) ?? null,
@@ -7424,7 +7574,9 @@ function buildImportedCatalogMetadata(
     descricao: cleanDescription,
     reviewed_description: extractMetadataValue(item, ["reviewed_description"]) || cleanDescription,
     reviewed_name: extractMetadataValue(item, ["reviewed_name", "title", "nome", "productName"]) || "",
-    reviewed_sku: extractMetadataValue(item, ["reviewed_sku", "sku", "codigo", "código"]) || "",
+    reviewed_sku: normalizeImportedSkuPlaceholder(
+      extractMetadataValue(item, ["reviewed_sku", "sku", "codigo", "cÃ³digo"]) || ""
+    ),
     reviewed_price:
       extractMetadataValue(item, ["reviewed_price"]) ||
       extractMetadataValue(item, ["price", "preco", "preço"]) ||
@@ -7432,7 +7584,16 @@ function buildImportedCatalogMetadata(
     reviewed_stock_quantity:
       extractMetadataValue(item, ["reviewed_stock_quantity", "stock_quantity", "stock", "estoque"]) || "",
     reviewed_category: extractMetadataValue(item, ["reviewed_category", "categoria", "category"]) || category,
-    sku,
+    review_required: extractMetadataValue(item, ["review_required"]) || "",
+    weak_candidate: extractMetadataValue(item, ["weak_candidate"]) || "",
+    review_selection_default: extractMetadataValue(item, ["review_selection_default"]) || "",
+    source_review_signals: extractMetadataValue(item, ["source_review_signals"]) || "",
+    structural_review_signals: extractMetadataValue(item, ["structural_review_signals"]) || "",
+    human_review_confirmed: extractMetadataValue(item, ["human_review_confirmed"]) || "",
+    review_confirmed_by_user: extractMetadataValue(item, ["review_confirmed_by_user"]) || "",
+    review_confirmation_state: extractMetadataValue(item, ["review_confirmation_state"]) || "",
+    review_confirmation_source: extractMetadataValue(item, ["review_confirmation_source"]) || "",
+    sku: normalizedCatalogSku,
     line,
     application: cleanedApplication,
     embalagem: cleanedPackaging,
@@ -7859,9 +8020,10 @@ export default function IntelligentCatalogImportPanel({
       const displayName =
         String(structuredCandidateDrafts[candidate.id]?.name || "").trim() ||
         buildStructuredReviewDisplayName(reviewedItem, candidate.finalCategory);
-      const sku =
+      const sku = normalizeImportedSkuPlaceholder(
         String(structuredCandidateDrafts[candidate.id]?.sku || "").trim() ||
-        String(resolveImportedCatalogSku(reviewedItem) || "").trim();
+          String(resolveImportedCatalogSku(reviewedItem) || "").trim()
+      );
       const stockQuantity = extractImportedCatalogStockQuantity(reviewedItem);
       const stockLabel =
         String(structuredCandidateDrafts[candidate.id]?.stock || "").trim() ||
@@ -12298,6 +12460,9 @@ export default function IntelligentCatalogImportPanel({
                                   onClick={() =>
                                     updateStructuredReviewCandidate(item.candidate.id, {
                                       selected: !item.candidate.selected,
+                                      humanReviewConfirmed: item.candidate.selected
+                                        ? item.candidate.humanReviewConfirmed
+                                        : true,
                                     })
                                   }
                                   className={cx(
@@ -12488,6 +12653,9 @@ export default function IntelligentCatalogImportPanel({
                                   onClick={() =>
                                     updateStructuredReviewCandidate(candidate.id, {
                                       selected: !candidate.selected,
+                                      humanReviewConfirmed: candidate.selected
+                                        ? candidate.humanReviewConfirmed
+                                        : true,
                                     })
                                   }
                                   className={cx(

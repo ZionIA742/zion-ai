@@ -80,6 +80,13 @@ const ACCESSORY_CONTEXT_TERMS = [
   "skimmer",
 ];
 
+const POSITIONAL_FRAGMENT_SIGNALS = [
+  "fragment_price_lead",
+  "fragment_detail_lead",
+  "fragment_description_residue",
+  "weak_nominal_anchor",
+] as const;
+
 function isGenericTitle(value: string) {
   const normalized = normalizeLoose(value);
   if (!normalized) return true;
@@ -177,6 +184,12 @@ function collectStructuralReviewSignals(item: StructuredImportItem) {
     signals.add("pool_missing_required_measures");
   }
 
+  for (const reviewSignal of item.reviewSignals || []) {
+    if (POSITIONAL_FRAGMENT_SIGNALS.includes(reviewSignal as (typeof POSITIONAL_FRAGMENT_SIGNALS)[number])) {
+      signals.add(reviewSignal);
+    }
+  }
+
   return {
     genericTitle,
     signals: Array.from(signals),
@@ -203,6 +216,10 @@ function buildReviewReasons(args: {
     args.structuralSignals.includes("pool_missing_required_measures")
       ? "pool_missing_required_measures"
       : "",
+    args.structuralSignals.includes("fragment_price_lead") ? "fragment_price_lead" : "",
+    args.structuralSignals.includes("fragment_detail_lead") ? "fragment_detail_lead" : "",
+    args.structuralSignals.includes("fragment_description_residue") ? "fragment_description_residue" : "",
+    args.structuralSignals.includes("weak_nominal_anchor") ? "weak_nominal_anchor" : "",
     args.ambiguousBundle ? "ambiguous_bundle" : "",
     args.weakCandidate ? "weak_candidate" : "",
     args.missingPrice ? "missing_price" : "",
@@ -255,7 +272,11 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     structuralSignals.signals.includes("multiple_skus") ||
     structuralSignals.signals.includes("possible_merged_items") ||
     structuralSignals.signals.includes("mixed_product_context") ||
-    structuralSignals.signals.includes("pool_missing_required_measures");
+    structuralSignals.signals.includes("pool_missing_required_measures") ||
+    structuralSignals.signals.includes("fragment_price_lead") ||
+    structuralSignals.signals.includes("fragment_detail_lead") ||
+    structuralSignals.signals.includes("fragment_description_residue") ||
+    structuralSignals.signals.includes("weak_nominal_anchor");
   const weakCandidate =
     structuralReviewRequired ||
     ambiguousBundle ||

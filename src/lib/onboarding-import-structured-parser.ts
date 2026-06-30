@@ -865,6 +865,84 @@ function stripTrailingStructuredDetails(value: string) {
   );
 }
 
+function looksLikeMissingSkuPlaceholder(value: string | null | undefined) {
+  const normalized = normalizeLoose(value || "");
+  if (!normalized) return false;
+
+  const placeholderSignals = [
+    "sem sku",
+    "sku nao informado",
+    "sku nao informada",
+    "sku ausente",
+    "sem codigo",
+    "codigo nao informado",
+    "codigo nao informada",
+    "codigo ausente",
+    "sem referencia",
+    "referencia nao informada",
+    "referencia ausente",
+    "sem ref",
+    "a revisar",
+    "deve revisar",
+    "revisar",
+  ];
+
+  return placeholderSignals.some(
+    (signal) =>
+      normalized === signal ||
+      normalized.startsWith(`${signal} `) ||
+      normalized.endsWith(` ${signal}`) ||
+      normalized.includes(` ${signal} `)
+  );
+}
+
+function tailContainsOnlyPositionalOperationalTokens(value: string) {
+  const normalized = normalizeLoose(value || "");
+  if (!normalized) return true;
+  if (looksLikeMissingSkuPlaceholder(normalized)) return true;
+
+  const remainder = cleanText(
+    normalized
+      .replace(/\b(?:sem|sku|codigo|cod|referencia|ref|nao|informad[oa]|ausente|a|deve|revisar)\b/giu, " ")
+      .replace(/\s+/g, " ")
+  );
+
+  return !remainder;
+}
+
+function stripTrailingPositionalLineArtifacts(value: string) {
+  let current = cleanText(value || "");
+  if (!current) return "";
+
+  current = cleanText(
+    current.replace(
+      /\s*(?:[-:;|/,]+)?\s*(?:sem\s+(?:sku|c[oó]digo|cod(?:igo)?|ref(?:er[eê]ncia)?)|(?:sku|c[oó]d(?:igo)?|cod(?:igo)?|ref(?:er[eê]ncia)?)\s+(?:n[aã]o\s+informad[oa]|ausente)|a\s+revisar|deve\s+revisar|revisar)\b.*$/iu,
+      ""
+    )
+  );
+
+  const priceMatch = current.match(/\s+r\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})\b/iu);
+  if (!priceMatch || priceMatch.index == null || priceMatch.index <= 0) {
+    return current;
+  }
+
+  const beforePrice = cleanText(current.slice(0, priceMatch.index));
+  const suffix = cleanText(current.slice(priceMatch.index));
+  const normalizedSuffix = cleanText(
+    suffix
+      .replace(/r\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})/giu, " ")
+      .replace(/\b\d+\b/gu, " ")
+      .replace(/\b(?:un|und|unds|unidade|unidades)\b/giu, " ")
+      .replace(/[-:;|/,]+/g, " ")
+  );
+
+  if (!normalizedSuffix || tailContainsOnlyPositionalOperationalTokens(normalizedSuffix)) {
+    return beforePrice || current;
+  }
+
+  return current;
+}
+
 function isLikelySectionContextLine(line: string) {
   const normalizedLine = normalizeLoose(line);
   if (!normalizedLine) return true;
@@ -3450,6 +3528,13 @@ function extractLoosePrice(text: string) {
 }
 
 function extractLooseDimensions(text: string) {
+  const threeDimMatch = text.match(
+    /\b(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*(?:m|metros?)\b/i
+  );
+  if (threeDimMatch) {
+    return `${threeDimMatch[1]} x ${threeDimMatch[2]} x ${threeDimMatch[3]} m`;
+  }
+
   const rectMatch = text.match(/\b(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)\s*m\b/i);
   if (rectMatch) {
     return `${rectMatch[1]} x ${rectMatch[2]} m`;
@@ -3547,6 +3632,7 @@ function isValidSkuCandidate(value: string | null | undefined) {
   const normalized = normalizeLoose(raw);
   if (!raw || raw.length < 4) return false;
   if (BLOCKED_SKU_VALUES.has(normalized)) return false;
+  if (looksLikeMissingSkuPlaceholder(normalized)) return false;
   if (/^(sim|nao|não|max|home|slim)$/i.test(raw)) return false;
   if (!/[a-z]/i.test(raw) || !/\d/.test(raw)) return false;
   if (!/^[a-z0-9][a-z0-9\-_.\/]{2,}$/i.test(raw)) return false;
@@ -4254,7 +4340,23 @@ function coalesceSpreadsheetContinuationRows(blocks: string[]) {
 }
 
 function chooseBlocksDetailed(extracted: ExtractedFileContent) {
-  const preparedText = preprocessStructuredText(extracted.text);
+  const positionalBlocks = Array.isArray(extracted.positionalTextBlocks)
+    ? extracted.positionalTextBlocks
+        .filter((block) => {
+          const text = cleanText(block.text);
+          if (!text) return false;
+          return true;
+        })
+        .filter((block) => Boolean(cleanText(block.text)))
+        .sort((left, right) => {
+          if (left.pageNumber !== right.pageNumber) return left.pageNumber - right.pageNumber;
+          return left.blockIndex - right.blockIndex;
+        })
+        .map((block) => cleanText(block.text))
+        .filter(Boolean)
+    : [];
+  const baseText = positionalBlocks.length > 0 ? positionalBlocks.join("\n\n") : extracted.text;
+  const preparedText = preprocessStructuredText(baseText);
   const explicitNameCandidatesBeforeSegmentation =
     captureExplicitProductNameCandidatesBeforeSegmentation(preparedText);
   const finalizeBlocks = (blocks: string[], strategy: string) => {
@@ -4330,6 +4432,42 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
       };
     }
 
+    if (strategy === "pdf_positional_blocks") {
+      const explicitNameAssignments = assignExplicitProductNamesToBlocks(
+        normalizedBlocks,
+        explicitNameCandidatesBeforeSegmentation
+      );
+      return {
+        blocks: normalizedBlocks,
+        explicitNameCandidatesBeforeSegmentation,
+        explicitNameAssignments: explicitNameAssignments.assignments,
+        explicitNamesByBlockIndex: explicitNameAssignments.assignedByBlockIndex,
+        strategy,
+        fragmentCoalesce: {
+          inputCount: normalizedBlocks.length,
+          outputCount: normalizedBlocks.length,
+          mergedPairs: [],
+          transitionSplits: [],
+        },
+        continuationCoalesce: {
+          inputCount: normalizedBlocks.length,
+          outputCount: normalizedBlocks.length,
+          mergedPairs: [],
+        },
+        spreadsheetContinuationCoalesce: {
+          inputCount: normalizedBlocks.length,
+          outputCount: normalizedBlocks.length,
+          mergedPairs: [],
+        },
+        spreadsheetAtomicRows: {
+          detected: false,
+          count: spreadsheetAtomicRows.count,
+          narrativeSplitSkipped: true,
+          rows: spreadsheetAtomicRows.rows,
+        },
+      };
+    }
+
     const segmented = blocks.flatMap((block) => splitMixedProductBlock(block));
     const coalesced = coalesceProductFragmentsAfterSplit(segmented);
     const transitionSplit = splitTransitionCarriedBlocks(coalesced.blocks);
@@ -4377,6 +4515,10 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
       },
     };
   };
+
+  if (positionalBlocks.length > 0) {
+    return finalizeBlocks(positionalBlocks, "pdf_positional_blocks");
+  }
 
   const delimited = splitDelimitedBlocks(preparedText);
   if (delimited.length > 0) {
@@ -4467,7 +4609,7 @@ function parseFieldLines(block: string) {
 function pickUsableTitleCandidate(value: string | null | undefined) {
   const candidates = String(value || "")
     .split("\n")
-    .map((line) => stripTrailingStructuredDetails(stripNarrativeLeadIn(line)))
+    .map((line) => stripTrailingPositionalLineArtifacts(stripTrailingStructuredDetails(stripNarrativeLeadIn(line))))
     .filter(Boolean);
 
   return (
@@ -4522,7 +4664,11 @@ function evaluateSpreadsheetRowTitleCandidate(
   const value = cleanText(rawValue || "");
   const candidate =
     field === "product_like"
-      ? cleanText(stripTrailingStructuredDetails(stripSpreadsheetContinuationLeadIn(value)))
+      ? cleanText(
+          stripTrailingPositionalLineArtifacts(
+            stripTrailingStructuredDetails(stripSpreadsheetContinuationLeadIn(value))
+          )
+        )
       : pickUsableTitleCandidate(stripSpreadsheetContinuationLeadIn(value));
   const normalizedCandidate = normalizeLoose(candidate);
 
@@ -5306,6 +5452,78 @@ function inferCandidateAlerts(
   return alerts;
 }
 
+function normalizeFragmentSignalText(value: string | null | undefined) {
+  return normalizeLoose(cleanText(value || ""));
+}
+
+function startsWithPriceLikeFragment(value: string) {
+  return /^(?:r\$\s*\d|\d+(?:[.,]\d{2})\b)/i.test(cleanText(value));
+}
+
+function startsWithDetailLikeFragment(value: string) {
+  return /^(?:apenas\s+informa|texto\s+perdido|valor\s+colocado|sem\s+preco|sem\s+sku|instalacao|estoque|categoria|medidas?|largura|comprimento|profundidade|capacidade|observa(?:cao|coes)|notas?)/i.test(
+    normalizeFragmentSignalText(value)
+  );
+}
+
+function hasReliableNominalAnchor(args: {
+  title: string;
+  rawBlock: string;
+  sku: string;
+  destination: StructuredImportDestination;
+}) {
+  const normalizedTitle = normalizeFragmentSignalText(args.title);
+  const normalizedRawBlock = normalizeFragmentSignalText(args.rawBlock);
+  const alphaWordCount = normalizedTitle
+    .split(" ")
+    .filter((token) => token.length >= 3 && /[a-z]/.test(token)).length;
+
+  if (cleanText(args.sku)) return true;
+  if (PRODUCT_WORD_REGEX.test(args.title)) return true;
+  if (args.destination === "pool" && /\bpiscina\b/.test(normalizedRawBlock)) return true;
+  if (alphaWordCount >= 3 && !startsWithPriceLikeFragment(args.title) && !startsWithDetailLikeFragment(args.title)) {
+    return true;
+  }
+
+  return false;
+}
+
+function collectPositionalFragmentReviewSignals(args: {
+  title: string;
+  rawBlock: string;
+  sku: string;
+  destination: StructuredImportDestination;
+  description: string;
+}) {
+  const signals = new Set<string>();
+  const normalizedTitle = normalizeFragmentSignalText(args.title);
+  const normalizedDescription = normalizeFragmentSignalText(args.description);
+  const reliableNominalAnchor = hasReliableNominalAnchor(args);
+  const shortAlphaText =
+    normalizedTitle.replace(/[^a-z\s]/g, " ").trim().length > 0 &&
+    normalizedTitle.split(" ").filter((token) => /[a-z]/.test(token)).length <= 4;
+
+  if (startsWithPriceLikeFragment(args.title)) {
+    signals.add("fragment_price_lead");
+  }
+  if (startsWithDetailLikeFragment(args.title)) {
+    signals.add("fragment_detail_lead");
+  }
+  if (
+    !reliableNominalAnchor &&
+    (normalizedDescription.startsWith(normalizedTitle) ||
+      startsWithDetailLikeFragment(args.rawBlock) ||
+      /^(?:apenas|texto|valor|sem)\b/.test(normalizedTitle))
+  ) {
+    signals.add("fragment_description_residue");
+  }
+  if (!reliableNominalAnchor && (shortAlphaText || startsWithPriceLikeFragment(args.title))) {
+    signals.add("weak_nominal_anchor");
+  }
+
+  return Array.from(signals);
+}
+
 function isWeakFragmentItem(item: StructuredImportItem) {
   const normalizedTitle = normalizeLoose(item.title);
   if (!normalizedTitle) return true;
@@ -5501,13 +5719,24 @@ function parseSingleBlockDetailed(
     missingName: canonicalTitle.missingName,
     ambiguousTitle: canonicalTitle.ambiguousTitle,
   });
-  const reviewSignals = collectSpreadsheetReviewSignals({
-    provenanceDetected: provenance.detected,
-    fieldMap,
-    title: titleForDescription,
-    price: promotedPrice,
-    sku: effectiveSku,
-  });
+  const reviewSignals = Array.from(
+    new Set([
+      ...collectSpreadsheetReviewSignals({
+        provenanceDetected: provenance.detected,
+        fieldMap,
+        title: titleForDescription,
+        price: promotedPrice,
+        sku: effectiveSku,
+      }),
+      ...collectPositionalFragmentReviewSignals({
+        title: titleForDescription,
+        rawBlock: normalizedBlock,
+        sku: effectiveSku,
+        destination,
+        description: canonicalDescription.canonicalDescription,
+      }),
+    ])
+  );
 
   const item: StructuredImportItem = {
     sourceFileName: fileName,
