@@ -1520,10 +1520,13 @@ type EditableStructuredImportCandidate = {
   id: string;
   sourceItem: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
   selected: boolean;
+  manuallyIgnored: boolean;
   humanReviewConfirmed: boolean;
   finalCategory: StructuredReviewCategory;
   initialCategory: StructuredReviewCategory;
 };
+type StructuredReviewListFilter = "all" | "selected" | "deselected" | "ignored";
+type StructuredReviewAction = "save" | "dry-run";
 type StructuredCandidateDraft = {
   finalCategory: StructuredReviewCategory;
   confirmedDocxImageKeys: string[];
@@ -1625,6 +1628,38 @@ type IntelligentCatalogImportPanelProps = {
 
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
+}
+function areStructuredReviewDraftsEqual(
+  left: StructuredCandidateDraft | null | undefined,
+  right: StructuredCandidateDraft | null | undefined
+) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+function getStructuredReviewListStatus(item: StructuredUnifiedReviewItem) {
+  if (item.candidate.manuallyIgnored) return "ignored" as const;
+  if (item.candidate.selected && !item.duplicateReason) return "selected" as const;
+  return "deselected" as const;
+}
+function buildStructuredReviewSearchText(item: StructuredUnifiedReviewItem) {
+  return normalizeImportedLoose(
+    [
+      item.displayName,
+      item.reviewedItem.title,
+      item.sku,
+      getStructuredReviewCategoryLabel(item.candidate.finalCategory),
+      extractMetadataValue(item.reviewedItem, [
+        "reviewed_category",
+        "__resolved_destination",
+        "category",
+        "categoria",
+      ]),
+      extractMetadataValue(item.reviewedItem, ["brand", "marca"]),
+      extractMetadataValue(item.reviewedItem, ["line", "linha", "finish_line"]),
+      extractMetadataValue(item.reviewedItem, ["model", "modelo"]),
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
 }
 function formatFileSize(size: number) {
   if (!Number.isFinite(size) || size <= 0) return "0 B";
@@ -2569,6 +2604,7 @@ function buildEditableStructuredImportCandidates(
       id: `${buildImportedSaveKey(item)}::review::${index}`,
       sourceItem: item,
       selected: shouldStartStructuredImportCandidateSelected(item, photoResolution),
+      manuallyIgnored: false,
       humanReviewConfirmed: false,
       finalCategory,
       initialCategory: finalCategory,
@@ -7805,6 +7841,15 @@ export default function IntelligentCatalogImportPanel({
   const [editableStructuredCandidates, setEditableStructuredCandidates] = useState<
     EditableStructuredImportCandidate[]
   >([]);
+  const [structuredReviewFilter, setStructuredReviewFilter] =
+    useState<StructuredReviewListFilter>("all");
+  const [structuredReviewSearchQuery, setStructuredReviewSearchQuery] = useState("");
+  const [structuredReviewRevisionVersion, setStructuredReviewRevisionVersion] = useState(0);
+  const [structuredReviewConfirmedVersion, setStructuredReviewConfirmedVersion] = useState<number | null>(
+    null
+  );
+  const [structuredReviewPendingAction, setStructuredReviewPendingAction] =
+    useState<StructuredReviewAction | null>(null);
   const [structuredCandidateDrafts, setStructuredCandidateDrafts] = useState<
     Record<string, StructuredCandidateDraft>
   >({});
@@ -7992,14 +8037,6 @@ export default function IntelligentCatalogImportPanel({
       }),
     [editableStructuredCandidates, structuredReviewValidation]
   );
-  const structuredIgnoredCandidatesCount = useMemo(
-    () =>
-      editableStructuredCandidates.filter((candidate) => {
-        const candidateValidation = structuredReviewValidation.byCandidateId.get(candidate.id);
-        return !candidate.selected || Boolean(candidateValidation?.duplicateReason);
-      }).length,
-    [editableStructuredCandidates, structuredReviewValidation]
-  );
   const structuredUnifiedReviewItems = useMemo<StructuredUnifiedReviewItem[]>(() => {
     const stagedMediaAssets = getStagedMediaAssetsFromResult(intelligentImportResult);
     return editableStructuredCandidates.map((candidate) => {
@@ -8097,6 +8134,8 @@ export default function IntelligentCatalogImportPanel({
         confidencePercent: Math.round((reviewedItem.confidence || 0) * 100),
         stateLabel: duplicateReason
           ? "Nao sera salvo"
+          : candidate.manuallyIgnored
+            ? "Ignorado manualmente"
           : candidate.selected
             ? "Selecionado para salvar"
             : "Revisar antes de salvar",
@@ -8115,6 +8154,47 @@ export default function IntelligentCatalogImportPanel({
     structuredCandidateDrafts,
     structuredReviewValidation,
   ]);
+  const structuredReviewCounts = useMemo(() => {
+    return structuredUnifiedReviewItems.reduce(
+      (acc, item) => {
+        acc.found += 1;
+        const status = getStructuredReviewListStatus(item);
+        if (status === "selected") acc.selected += 1;
+        else if (status === "ignored") acc.ignored += 1;
+        else acc.deselected += 1;
+        return acc;
+      },
+      {
+        found: 0,
+        selected: 0,
+        deselected: 0,
+        ignored: 0,
+      }
+    );
+  }, [structuredUnifiedReviewItems]);
+  const structuredReviewHasGlobalConfirmation = useMemo(
+    () =>
+      structuredReviewCounts.selected > 0 &&
+      structuredReviewConfirmedVersion != null &&
+      structuredReviewConfirmedVersion === structuredReviewRevisionVersion,
+    [structuredReviewConfirmedVersion, structuredReviewCounts.selected, structuredReviewRevisionVersion]
+  );
+  const normalizedStructuredReviewSearchQuery = useMemo(
+    () => normalizeImportedLoose(structuredReviewSearchQuery),
+    [structuredReviewSearchQuery]
+  );
+  const filteredStructuredUnifiedReviewItems = useMemo(
+    () =>
+      structuredUnifiedReviewItems.filter((item) => {
+        const status = getStructuredReviewListStatus(item);
+        if (structuredReviewFilter !== "all" && status !== structuredReviewFilter) {
+          return false;
+        }
+        if (!normalizedStructuredReviewSearchQuery) return true;
+        return buildStructuredReviewSearchText(item).includes(normalizedStructuredReviewSearchQuery);
+      }),
+    [normalizedStructuredReviewSearchQuery, structuredReviewFilter, structuredUnifiedReviewItems]
+  );
   useEffect(() => {
     const stagedMediaAssets = getStagedMediaAssetsFromResult(intelligentImportResult);
     const builtCandidates = buildEditableStructuredImportCandidates(
@@ -8177,6 +8257,11 @@ export default function IntelligentCatalogImportPanel({
     setStructuredCandidateDrafts({});
     setEditingStructuredCandidateId(null);
     setStructuredCandidateEditorDraft(null);
+    setStructuredReviewFilter("all");
+    setStructuredReviewSearchQuery("");
+    setStructuredReviewRevisionVersion(0);
+    setStructuredReviewConfirmedVersion(null);
+    setStructuredReviewPendingAction(null);
   }, [structuredSourceCandidatesSignature]);
   useEffect(() => {
     if (!organizationId || !storeId || hasVisualPdfImportResult || editableStructuredCandidates.length === 0) {
@@ -8708,6 +8793,11 @@ export default function IntelligentCatalogImportPanel({
     setVisualDocumentMapResult(null);
     setVisualDocumentMapSessionCache({});
     setIntelligentImportRecovered(false);
+    setStructuredReviewFilter("all");
+    setStructuredReviewSearchQuery("");
+    setStructuredReviewRevisionVersion(0);
+    setStructuredReviewConfirmedVersion(null);
+    setStructuredReviewPendingAction(null);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
     }
@@ -8905,9 +8995,18 @@ export default function IntelligentCatalogImportPanel({
     candidateId: string,
     patch: Partial<EditableStructuredImportCandidate>
   ) {
+    let changed = false;
     setEditableStructuredCandidates((current) =>
       current.map((candidate) =>
-        candidate.id === candidateId ? { ...candidate, ...patch } : candidate
+        candidate.id === candidateId
+          ? (() => {
+              const nextCandidate = { ...candidate, ...patch };
+              if (JSON.stringify(nextCandidate) !== JSON.stringify(candidate)) {
+                changed = true;
+              }
+              return nextCandidate;
+            })()
+          : candidate
       )
     );
     if (typeof patch.finalCategory !== "undefined") {
@@ -8928,6 +9027,10 @@ export default function IntelligentCatalogImportPanel({
           ? { ...current, finalCategory: nextFinalCategory }
           : current
       );
+    }
+    if (changed) {
+      setStructuredReviewRevisionVersion((current) => current + 1);
+      setStructuredReviewPendingAction(null);
     }
   }
 
@@ -8951,6 +9054,13 @@ export default function IntelligentCatalogImportPanel({
 
   function applyStructuredCandidateEditorChanges() {
     if (!editingStructuredCandidateId || !structuredCandidateEditorDraft) return;
+    const currentDraft = structuredCandidateDrafts[editingStructuredCandidateId];
+    const currentCandidate = editableStructuredCandidates.find(
+      (candidate) => candidate.id === editingStructuredCandidateId
+    );
+    const changed =
+      !areStructuredReviewDraftsEqual(currentDraft, structuredCandidateEditorDraft) ||
+      currentCandidate?.finalCategory !== structuredCandidateEditorDraft.finalCategory;
 
     setStructuredCandidateDrafts((current) => ({
       ...current,
@@ -8964,8 +9074,28 @@ export default function IntelligentCatalogImportPanel({
           : candidate
       )
     );
+    if (changed) {
+      setStructuredReviewRevisionVersion((current) => current + 1);
+      setStructuredReviewPendingAction(null);
+    }
 
     closeStructuredCandidateEditor();
+  }
+
+  function ensureStructuredReviewGlobalConfirmation(action: StructuredReviewAction) {
+    if (structuredReviewCounts.selected === 0) {
+      setParentError(
+        action === "dry-run" ? "Nenhum item selecionado para validar." : "Nenhum item selecionado para salvar."
+      );
+      return false;
+    }
+    if (structuredReviewHasGlobalConfirmation) {
+      return true;
+    }
+    setStructuredReviewPendingAction(action);
+    setParentError(null);
+    setParentSuccess(null);
+    return false;
   }
 
   async function runVisualEvidenceScanBatch(params: {
@@ -9835,13 +9965,16 @@ export default function IntelligentCatalogImportPanel({
     }
   }
 
-  async function handleSaveImportedItemsToCatalog() {
+  async function handleSaveImportedItemsToCatalog(options?: { skipGlobalConfirmation?: boolean }) {
     if (!organizationId || !storeId) {
       setParentError("Nao foi possivel identificar a organizacao e a loja ativa.");
       return;
     }
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       setParentError("Faca a importacao inteligente antes de salvar no sistema.");
+      return;
+    }
+    if (!options?.skipGlobalConfirmation && !ensureStructuredReviewGlobalConfirmation("save")) {
       return;
     }
 
@@ -10036,13 +10169,16 @@ export default function IntelligentCatalogImportPanel({
     }
   }
 
-  async function handleValidateImportedItemsDryRun() {
+  async function handleValidateImportedItemsDryRun(options?: { skipGlobalConfirmation?: boolean }) {
     if (!organizationId || !storeId) {
       setParentError("Nao foi possivel identificar a organizacao e a loja ativa.");
       return;
     }
     if (!intelligentImportResult || !intelligentImportResult.ok) {
       setParentError("Faca a importacao inteligente antes de validar o salvamento.");
+      return;
+    }
+    if (!options?.skipGlobalConfirmation && !ensureStructuredReviewGlobalConfirmation("dry-run")) {
       return;
     }
 
@@ -12251,7 +12387,7 @@ export default function IntelligentCatalogImportPanel({
               !hasVisualPdfImportResult &&
               structuredUnifiedReviewItems.length > 0 ? (
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4">
-                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)] md:items-start">
                     <div>
                       <p className="text-base font-semibold text-emerald-950">
                         Itens estruturados consolidados para revisao
@@ -12260,22 +12396,84 @@ export default function IntelligentCatalogImportPanel({
                         A leitura estruturada agora usa o mesmo card rico da revisao visual, sem mudar o salvamento seguro do backend.
                       </p>
                     </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 rounded-2xl border border-emerald-100 bg-white/80 p-3 md:grid-cols-[minmax(0,1fr)_320px]">
                     <div className="flex flex-wrap gap-2 text-xs">
                       <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-200">
-                        {editableStructuredCandidates.length} encontrados
+                        {structuredReviewCounts.found} encontrados
                       </span>
                       <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-200">
-                        {structuredSelectedCandidates.length} selecionados
+                        {structuredReviewCounts.selected} selecionados
                       </span>
                       <span className="rounded-full bg-white px-3 py-1 font-medium text-amber-800 ring-1 ring-amber-200">
-                        {structuredIgnoredCandidatesCount} ignorados
+                        {structuredReviewCounts.deselected} desmarcados
                       </span>
+                      <span className="rounded-full bg-white px-3 py-1 font-medium text-slate-700 ring-1 ring-slate-200">
+                        {structuredReviewCounts.ignored} ignorados
+                      </span>
+                    </div>
+                    <label className="relative block">
+                      <span className="sr-only">Buscar item na revisao</span>
+                      <svg
+                        aria-hidden="true"
+                        viewBox="0 0 20 20"
+                        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                      >
+                        <circle cx="8.5" cy="8.5" r="5.5" />
+                        <path d="M13 13l4 4" strokeLinecap="round" />
+                      </svg>
+                      <input
+                        type="search"
+                        value={structuredReviewSearchQuery}
+                        onChange={(event) => setStructuredReviewSearchQuery(event.target.value)}
+                        placeholder="Buscar por nome, SKU, categoria, marca, linha ou modelo"
+                        className="w-full rounded-xl border border-emerald-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-800 outline-none ring-0 placeholder:text-slate-400"
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-2 md:col-span-2">
+                      {[
+                        ["all", "Todos"],
+                        ["selected", "Selecionados"],
+                        ["deselected", "Desmarcados"],
+                        ["ignored", "Ignorados"],
+                      ].map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setStructuredReviewFilter(value as StructuredReviewListFilter)}
+                          className={cx(
+                            "rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition",
+                            structuredReviewFilter === value
+                              ? "bg-emerald-900 text-white ring-emerald-900"
+                              : "bg-white text-emerald-900 ring-emerald-200 hover:bg-emerald-50"
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                      {structuredReviewHasGlobalConfirmation ? (
+                        <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-medium text-emerald-800 ring-1 ring-emerald-200">
+                          Revisao global confirmada
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200">
+                          Confirmacao global pendente
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="mt-4 rounded-2xl border border-emerald-100 bg-white/70 p-2 shadow-inner">
                     <div className="max-h-[min(68vh,52rem)] overflow-y-auto overscroll-contain pr-1">
+                      {filteredStructuredUnifiedReviewItems.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-emerald-200 bg-white/80 px-4 py-6 text-sm text-slate-600">
+                          Nenhum item corresponde ao filtro ou busca atual.
+                        </div>
+                      ) : (
                       <div className="space-y-2">
-                    {structuredUnifiedReviewItems.map((item) => {
+                    {filteredStructuredUnifiedReviewItems.map((item) => {
                       const primaryPhoto = item.photoResolution.primary;
                       const photoAmbiguous = item.photoResolution.state === "ambiguous";
                       const photoEvidence = item.photoResolution.state === "evidence";
@@ -12342,6 +12540,8 @@ export default function IntelligentCatalogImportPanel({
                                     "rounded-full px-2 py-0.5 text-[11px] font-medium ring-1",
                                     item.duplicateReason
                                       ? "bg-rose-100 text-rose-800 ring-rose-200"
+                                      : item.candidate.manuallyIgnored
+                                        ? "bg-slate-100 text-slate-700 ring-slate-200"
                                       : item.candidate.selected
                                         ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
                                         : "bg-amber-100 text-amber-800 ring-amber-200"
@@ -12460,6 +12660,7 @@ export default function IntelligentCatalogImportPanel({
                                   onClick={() =>
                                     updateStructuredReviewCandidate(item.candidate.id, {
                                       selected: !item.candidate.selected,
+                                      manuallyIgnored: item.candidate.selected,
                                       humanReviewConfirmed: item.candidate.selected
                                         ? item.candidate.humanReviewConfirmed
                                         : true,
@@ -12481,6 +12682,7 @@ export default function IntelligentCatalogImportPanel({
                       );
                     })}
                       </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -12506,16 +12708,16 @@ export default function IntelligentCatalogImportPanel({
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center text-xs">
                       <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                        <p className="font-semibold text-slate-900">{editableStructuredCandidates.length}</p>
+                        <p className="font-semibold text-slate-900">{structuredReviewCounts.found}</p>
                         <p className="mt-1 text-slate-600">Encontrados</p>
                       </div>
                       <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
-                        <p className="font-semibold text-emerald-900">{structuredSelectedCandidates.length}</p>
+                        <p className="font-semibold text-emerald-900">{structuredReviewCounts.selected}</p>
                         <p className="mt-1 text-emerald-700">Selecionados</p>
                       </div>
                       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-                        <p className="font-semibold text-amber-900">{structuredIgnoredCandidatesCount}</p>
-                        <p className="mt-1 text-amber-700">Ignorados</p>
+                        <p className="font-semibold text-amber-900">{structuredReviewCounts.deselected}</p>
+                        <p className="mt-1 text-amber-700">Desmarcados</p>
                       </div>
                     </div>
                   </div>
@@ -12549,9 +12751,11 @@ export default function IntelligentCatalogImportPanel({
                       const hasLocalEdits = Boolean(candidateDraft);
                       const stateLabel = isDuplicate
                         ? "Nao sera salvo"
+                        : candidate.manuallyIgnored
+                          ? "Ignorado manualmente"
                         : candidate.selected
                           ? "Selecionado para salvar"
-                          : "Ignorado";
+                          : "Revisar antes de salvar";
 
                       return (
                         <div
@@ -12573,6 +12777,8 @@ export default function IntelligentCatalogImportPanel({
                                     "rounded-full px-2.5 py-1 text-[11px] font-medium ring-1",
                                     isDuplicate
                                       ? "bg-rose-100 text-rose-800 ring-rose-200"
+                                      : candidate.manuallyIgnored
+                                        ? "bg-slate-100 text-slate-700 ring-slate-200"
                                       : candidate.selected
                                         ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
                                       : "bg-amber-100 text-amber-800 ring-amber-200"
@@ -12651,11 +12857,12 @@ export default function IntelligentCatalogImportPanel({
                                 <button
                                   type="button"
                                   onClick={() =>
-                                    updateStructuredReviewCandidate(candidate.id, {
-                                      selected: !candidate.selected,
-                                      humanReviewConfirmed: candidate.selected
-                                        ? candidate.humanReviewConfirmed
-                                        : true,
+                                  updateStructuredReviewCandidate(candidate.id, {
+                                    selected: !candidate.selected,
+                                    manuallyIgnored: candidate.selected,
+                                    humanReviewConfirmed: candidate.selected
+                                      ? candidate.humanReviewConfirmed
+                                      : true,
                                     })
                                   }
                                   className={cx(
@@ -12692,6 +12899,13 @@ export default function IntelligentCatalogImportPanel({
                       structuredSelectedCandidates.length === 0 ? (
                         <p className="mt-2 text-sm font-medium text-amber-700">
                           Nenhum item valido selecionado para salvar.
+                        </p>
+                      ) : null}
+                      {editableStructuredCandidates.length > 0 && structuredSelectedCandidates.length > 0 ? (
+                        <p className="mt-2 text-sm font-medium text-slate-700">
+                          {structuredReviewHasGlobalConfirmation
+                            ? "A revisao global atual ja foi confirmada."
+                            : "Antes da acao final, confirme globalmente a revisao dos itens selecionados."}
                         </p>
                       ) : null}
                       {structuredDuplicateReferencesLoading ? (
@@ -12913,6 +13127,66 @@ export default function IntelligentCatalogImportPanel({
                       </details>
                     </div>
                   ) : null}
+                </div>
+              ) : null}
+              {structuredReviewPendingAction ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+                  <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+                    <p className="text-sm font-medium text-slate-500">Confirmacao global da revisao</p>
+                    <h3 className="mt-1 text-lg font-semibold text-slate-900">
+                      {structuredReviewPendingAction === "dry-run"
+                        ? `Validar revisao de ${structuredReviewCounts.selected} item(ns)`
+                        : `Salvar revisao de ${structuredReviewCounts.selected} item(ns)`}
+                    </h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-700">
+                      Esta etapa confirma que os itens auto-selecionados tambem foram revisados por humano antes da acao final.
+                    </p>
+                    <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                      <div className="rounded-xl bg-slate-50 p-3">
+                        <p className="text-slate-500">Encontrados</p>
+                        <p className="mt-1 text-lg font-semibold text-slate-900">{structuredReviewCounts.found}</p>
+                      </div>
+                      <div className="rounded-xl bg-emerald-50 p-3">
+                        <p className="text-emerald-700">Selecionados</p>
+                        <p className="mt-1 text-lg font-semibold text-emerald-900">{structuredReviewCounts.selected}</p>
+                      </div>
+                      <div className="rounded-xl bg-amber-50 p-3">
+                        <p className="text-amber-700">Desmarcados</p>
+                        <p className="mt-1 text-lg font-semibold text-amber-900">{structuredReviewCounts.deselected}</p>
+                      </div>
+                      <div className="rounded-xl bg-slate-100 p-3">
+                        <p className="text-slate-600">Ignorados</p>
+                        <p className="mt-1 text-lg font-semibold text-slate-900">{structuredReviewCounts.ignored}</p>
+                      </div>
+                    </div>
+                    <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setStructuredReviewPendingAction(null)}
+                        className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Voltar para revisar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const pendingAction = structuredReviewPendingAction;
+                          setStructuredReviewConfirmedVersion(structuredReviewRevisionVersion);
+                          setStructuredReviewPendingAction(null);
+                          if (pendingAction === "dry-run") {
+                            void handleValidateImportedItemsDryRun({ skipGlobalConfirmation: true });
+                            return;
+                          }
+                          void handleSaveImportedItemsToCatalog({ skipGlobalConfirmation: true });
+                        }}
+                        className="rounded-xl bg-emerald-900 px-4 py-2 text-sm font-medium text-white"
+                      >
+                        {structuredReviewPendingAction === "dry-run"
+                          ? `Confirmar revisao e validar ${structuredReviewCounts.selected} itens`
+                          : `Confirmar revisao e salvar ${structuredReviewCounts.selected} itens`}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : null}
               {editingStructuredCandidate && structuredCandidateEditorDraft ? (
