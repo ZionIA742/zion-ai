@@ -13,11 +13,13 @@ import {
 } from "@/lib/visual-catalog-document-analysis";
 import type {
   IntelligentImportGlobalReviewConfirmation,
+  IntelligentImportWritablePriceStatus,
   IntelligentImportStagedMediaAsset,
   IntelligentImportSelectedMediaRef,
   IntelligentImportReviewedSaveItem,
   IntelligentImportSaveApprovedRequest,
   IntelligentImportSaveApprovedResponse,
+  IntelligentImportWritableStockStatus,
   IntelligentImportStructuredReviewSnapshot,
   IntelligentImportStructuredReviewSnapshotEntry,
 } from "@/lib/onboarding-intelligent-import-save-contract";
@@ -774,6 +776,58 @@ function mapVisualReviewCategoryToCatalogCategory(
 function parseVisualReviewPriceCents(value: string) {
   return parseVisualReviewPriceInput(value).cents;
 }
+
+function isImportedOnRequestPriceText(value: string) {
+  const normalized = normalizeImportedLoose(value);
+  if (!normalized) return false;
+
+  return [
+    "sob consulta",
+    "a consultar",
+    "preco sob consulta",
+    "consulte valor",
+  ].some((phrase) => normalized.includes(phrase));
+}
+
+function classifyStructuredReviewedPrice(value: string): {
+  amount: number | null;
+  cents: number | null;
+  priceStatus: IntelligentImportWritablePriceStatus;
+} {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return {
+      amount: null,
+      cents: null,
+      priceStatus: "missing",
+    };
+  }
+
+  if (isImportedOnRequestPriceText(raw)) {
+    return {
+      amount: null,
+      cents: null,
+      priceStatus: "on_request",
+    };
+  }
+
+  const parsed = parseImportedDecimal(raw);
+  if (parsed == null) {
+    return {
+      amount: null,
+      cents: null,
+      priceStatus: "invalid",
+    };
+  }
+
+  const amount = Math.max(0, parsed);
+  return {
+    amount,
+    cents: Math.max(0, Math.round(amount * 100)),
+    priceStatus: "valid",
+  };
+}
+
 function parseVisualReviewPriceInput(value: string): {
   amount: number | null;
   cents: number | null;
@@ -820,6 +874,56 @@ function parseVisualReviewStockQuantity(value: string) {
   const parsed = parseImportedDecimal(value);
   return parsed == null ? 0 : Math.max(0, Math.round(parsed));
 }
+
+function resolveStructuredReviewedStockState(args: {
+  rawStock: string;
+  trackStock: boolean;
+}): {
+  stockQuantity: number | null;
+  stockStatus: IntelligentImportWritableStockStatus;
+} {
+  if (!args.trackStock) {
+    return {
+      stockQuantity: null,
+      stockStatus: "not_tracked",
+    };
+  }
+
+  const trimmed = String(args.rawStock || "").trim();
+  if (!trimmed) {
+    return {
+      stockQuantity: null,
+      stockStatus: "unknown",
+    };
+  }
+
+  const parsed = parseImportedDecimal(trimmed);
+  if (parsed == null) {
+    return {
+      stockQuantity: null,
+      stockStatus: "unknown",
+    };
+  }
+
+  const normalizedQuantity = Math.max(0, Math.round(parsed));
+  return {
+    stockQuantity: normalizedQuantity,
+    stockStatus: normalizedQuantity > 0 ? "available" : "zero",
+  };
+}
+
+function resolveStructuredReviewedStockInput(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const reviewedStockQuantity = readImportedMetadataValue(item, ["reviewed_stock_quantity"]);
+  if (reviewedStockQuantity !== undefined) {
+    return String(reviewedStockQuantity || "");
+  }
+
+  const extractedStockQuantity = extractImportedCatalogStockQuantity(item);
+  return extractedStockQuantity == null ? "" : String(extractedStockQuantity);
+}
+
 function parseVisualReviewPoolMetrics(item: EditableVisualReviewItem) {
   const source = normalizeImportedPoolMetricSource(
     [item.dimensionsText, item.material, item.description].filter(Boolean).join(" ")
@@ -827,8 +931,8 @@ function parseVisualReviewPoolMetrics(item: EditableVisualReviewItem) {
   const numbers = (source.match(/\d+(?:[\.,]\d+)?/g) ?? [])
     .map((value) => parseImportedDecimal(value))
     .filter((value): value is number => value != null && value > 0);
-  const width = numbers[0] ?? null;
-  const length = numbers[1] ?? null;
+  const length = numbers[0] ?? null;
+  const width = numbers[1] ?? null;
   const depth = numbers[2] ?? null;
   const capacityMatch = source.match(/(\d{3,}(?:[\.,]\d+)?)\s*(?:l|litros?)\b/i);
   const capacity = capacityMatch ? parseImportedDecimal(capacityMatch[1]) : null;
@@ -1666,9 +1770,11 @@ function buildStructuredReviewFinalFingerprint(item: IntelligentImportReviewedSa
         }
       : null,
     priceCents: item.priceCents ?? null,
+    priceStatus: item.priceStatus,
     reviewRequired: Boolean(item.reviewRequired),
     sku: String(item.sku || "").trim(),
-    stockQuantity: Number(item.stockQuantity || 0),
+    stockQuantity: item.stockQuantity ?? null,
+    stockStatus: item.stockStatus,
     trackStock: Boolean(item.trackStock),
   });
   return `structured-final-v1:${computeStableReviewHash(serialized)}`;
@@ -2405,6 +2511,19 @@ function getStructuredReviewCategoryLabel(category: StructuredReviewCategory) {
 function formatStructuredReviewPriceLabel(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const explicitReviewedPrice = extractImportedPriceFieldValue(item);
+  const explicitReviewedPriceMetadata = readImportedMetadataValue(item, [
+    "reviewed_price",
+    "price",
+    "preco",
+    "preÃƒÂ§o",
+    "price_label",
+    "preco_venda",
+    "preÃƒÂ§o_venda",
+    "valor",
+  ]);
+  if (explicitReviewedPriceMetadata !== undefined) return explicitReviewedPrice;
+
   const priceCents = extractImportedCatalogPriceCents(item);
   if (priceCents == null) return "";
   const renderedLabel = new Intl.NumberFormat("pt-BR", {
@@ -3133,6 +3252,7 @@ function buildStructuredReviewedSourceItem(
   const reviewConfirmationSource = reviewConfirmedByUser ? "structured_selection_toggle" : "";
   if (!draft) {
     const normalizedSourceSku = normalizeImportedSkuPlaceholder(resolveImportedCatalogSku(candidate.sourceItem));
+    const extractedStockQuantity = extractImportedCatalogStockQuantity(candidate.sourceItem);
     const sourceItemWithNormalizedSku = {
       ...candidate.sourceItem,
       sku: normalizedSourceSku,
@@ -3148,6 +3268,9 @@ function buildStructuredReviewedSourceItem(
         codigo: normalizedSourceSku,
         "código": normalizedSourceSku,
         reviewed_sku: normalizedSourceSku,
+        ...(extractedStockQuantity == null
+          ? {}
+          : { reviewed_stock_quantity: String(extractedStockQuantity) }),
         dedup_key: buildImportedSaveKey(sourceItemWithNormalizedSku),
         human_review_confirmed: reviewConfirmedByUser ? "true" : "false",
         review_confirmed_by_user: reviewConfirmedByUser ? "true" : "false",
@@ -3336,6 +3459,17 @@ function buildReviewedImportedSaveItem(
         duplicateBlocked: Boolean(options.duplicateBlocked),
       })
     : false;
+  const rawReviewedPrice = extractImportedPriceFieldValue(item);
+  const reviewedPrice = classifyStructuredReviewedPrice(rawReviewedPrice);
+  const reviewedTrackStock = parseStructuredReviewedBoolean(
+    item,
+    ["track_stock", "controlar_estoque", "controlar estoque"],
+    true
+  );
+  const reviewedStock = resolveStructuredReviewedStockState({
+    rawStock: resolveStructuredReviewedStockInput(item),
+    trackStock: reviewedTrackStock,
+  });
 
   return {
     clientItemId: buildImportedSaveKey(item) || `reviewed-item-${index}`,
@@ -3351,25 +3485,23 @@ function buildReviewedImportedSaveItem(
           length_m: poolMetrics?.length_m ?? null,
           material: poolMetrics?.material ?? null,
           max_capacity_l: poolMetrics?.max_capacity_l ?? null,
-          price: poolMetrics?.price ?? null,
+          price: reviewedPrice.amount,
           shape: poolMetrics?.shape ?? null,
           weight_kg: null,
           width_m: poolMetrics?.width_m ?? null,
         }
       : null,
-    priceCents: isPool ? null : extractImportedCatalogPriceCents(item),
+    priceCents: isPool ? null : reviewedPrice.cents,
+    priceStatus: reviewedPrice.priceStatus,
     reviewRequired: canAutoApproveManualReview ? false : reviewRequiredByMetadata,
     reviewState: "approved",
     selected: true,
     sku: isPool ? "" : resolveImportedCatalogSku(item),
     sourceFileName: item.sourceFileName,
     sourceType: item.type,
-    stockQuantity: extractImportedCatalogStockQuantity(item),
-    trackStock: parseStructuredReviewedBoolean(
-      item,
-      ["track_stock", "controlar_estoque", "controlar estoque"],
-      true
-    ),
+    stockQuantity: reviewedStock.stockQuantity,
+    stockStatus: reviewedStock.stockStatus,
+    trackStock: reviewedTrackStock,
   };
 }
 
@@ -3379,7 +3511,20 @@ function formatStructuredDraftPriceValue(
   const explicitPrice = String(
     extractMetadataValue(item, ["price", "preco", "preço", "price_label"]) || ""
   ).trim();
-  if (explicitPrice) return explicitPrice;
+  void explicitPrice;
+
+  const explicitReviewedPrice = extractImportedPriceFieldValue(item);
+  const explicitReviewedPriceMetadata = readImportedMetadataValue(item, [
+    "reviewed_price",
+    "price",
+    "preco",
+    "preÃƒÂ§o",
+    "price_label",
+    "preco_venda",
+    "preÃƒÂ§o_venda",
+    "valor",
+  ]);
+  if (explicitReviewedPriceMetadata !== undefined) return explicitReviewedPrice;
 
   const priceCents = extractImportedCatalogPriceCents(item);
   if (priceCents == null) return "";
@@ -3411,6 +3556,11 @@ function buildStructuredCandidateDraft(
       ? buildImportedPoolDescription(item)
       : buildImportedCatalogDescription(item);
   const stockQuantity = extractImportedCatalogStockQuantity(item);
+  const sourceTrackStock = parseStructuredReviewedBoolean(
+    item,
+    ["track_stock", "controlar_estoque", "controlar estoque"],
+    true
+  );
 
   return {
     finalCategory,
@@ -3418,11 +3568,11 @@ function buildStructuredCandidateDraft(
     name,
     sku: String(resolveImportedCatalogSku(item) || "").trim(),
     price: formatStructuredDraftPriceValue(item),
-    stock: stockQuantity > 0 ? String(stockQuantity) : "",
+    stock: stockQuantity != null ? String(stockQuantity) : "",
     description: description || "",
     descriptionEdited: false,
     isActive: true,
-    trackStock: true,
+    trackStock: sourceTrackStock,
     brand: String(extractMetadataValue(item, ["brand", "marca"]) || "").trim(),
     material: String(extractMetadataValue(item, ["material"]) || "").trim(),
     shape: String(extractMetadataValue(item, ["shape", "formato"]) || "").trim(),
@@ -5610,7 +5760,9 @@ function resolveImportedCatalogSku(
 function extractImportedCatalogStockQuantity(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
-  const source = String(item.rawText || "");
+  const source = [item.title, item.rawText, ...Object.values(item.metadata ?? {})]
+    .map((value) => String(value ?? ""))
+    .join(" ");
   const canonicalStock = extractMetadataValue(item, [
     "stock",
     "estoque",
@@ -5645,7 +5797,7 @@ function extractImportedCatalogStockQuantity(
   }
 
   if (isStructuredSpreadsheetImportItem(item)) {
-    return 0;
+    return null;
   }
 
   const fallbackStock =
@@ -5653,7 +5805,7 @@ function extractImportedCatalogStockQuantity(
     extractMetadataValue(item, ["stock", "estoque"]);
 
   const parsedFallbackStock = parseImportedDecimal(fallbackStock);
-  if (parsedFallbackStock == null) return 0;
+  if (parsedFallbackStock == null) return null;
   return Math.max(0, Math.round(parsedFallbackStock));
 }
 
@@ -5673,7 +5825,7 @@ function buildImportedCatalogFallbackIdentity(
     sourceFileName ? `file::${sourceFileName}` : "file::unknown",
     itemName ? `name::${itemName}` : "name::sem_nome",
     priceCents != null ? `price::${priceCents}` : "price::na",
-    stockQuantity > 0 ? `stock::${stockQuantity}` : "stock::0",
+    stockQuantity != null ? `stock::${stockQuantity}` : "stock::na",
     packageHint ? `package::${packageHint}` : "package::na",
   ];
 
@@ -6440,11 +6592,16 @@ function buildImportedCatalogDescription(
 function parseImportedDecimal(value: string | null | undefined) {
   if (value == null) return null;
 
-  const source = String(value)
+  let source = String(value)
     .trim()
     .replace(/[^\d,.-]/g, "");
 
   if (!source) return null;
+
+  // Accept valid numeric values even when the OCR/parser leaves harmless
+  // trailing punctuation residues such as "18.900,00.." or "84,90."
+  source = source.replace(/[.,-]+$/g, "");
+  if (!source || !/\d/.test(source)) return null;
 
   const lastComma = source.lastIndexOf(",");
   const lastDot = source.lastIndexOf(".");
@@ -6587,6 +6744,49 @@ function resolveExplicitImportedPriceReais(
   return null;
 }
 
+function extractImportedPriceFieldValue(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  const metadataValue = readImportedMetadataValue(item, [
+      "reviewed_price",
+      "price",
+      "preco",
+      "preÃƒÂ§o",
+      "price_label",
+      "preco_venda",
+      "preÃƒÂ§o_venda",
+      "valor",
+    ]);
+  if (metadataValue !== undefined) return String(metadataValue || "").trim();
+
+  const source = String(item.rawText || "");
+  return (
+    extractImportedLabeledValue(source, [
+      "PreÃ§o venda (R$)",
+      "PreÃ§o de venda (R$)",
+      "PreÃ§o venda",
+      "PreÃ§o de venda",
+      "Preco venda (R$)",
+      "Preco de venda (R$)",
+      "Preco venda",
+      "Preco de venda",
+      "PreÃ§o final (R$)",
+      "PreÃ§o final",
+      "Preco final (R$)",
+      "Preco final",
+      "PreÃ§o unitÃ¡rio (R$)",
+      "PreÃ§o unitÃ¡rio",
+      "Preco unitario (R$)",
+      "Preco unitario",
+      "Valor unitÃ¡rio",
+      "Valor unitario",
+      "PreÃ§o",
+      "Preco",
+      "Valor",
+    ]) || ""
+  ).trim();
+}
+
 function normalizeImportedPoolMetricSource(value: string) {
   return String(value || "")
     .replace(/[×✕]/g, "x")
@@ -6616,16 +6816,16 @@ function extractImportedPoolMetrics(
       /(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m\b/i
     );
   if (threeDimMatch) {
-    width ??= parseImportedDecimal(threeDimMatch[1]);
-    length ??= parseImportedDecimal(threeDimMatch[2]);
+    length ??= parseImportedDecimal(threeDimMatch[1]);
+    width ??= parseImportedDecimal(threeDimMatch[2]);
     depth ??= parseImportedDecimal(threeDimMatch[3]);
   }
   const rectMatch =
     metricSource.match(/(?:medidas?|dimens(?:oes|[õo]es)|tamanho)\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m?/i) ||
     metricSource.match(/(\d+[\.,]?\d*)\s*m?\s*(?:x|por)\s*(\d+[\.,]?\d*)\s*m\b/i);
   if (rectMatch) {
-    width ??= parseImportedDecimal(rectMatch[1]);
-    length ??= parseImportedDecimal(rectMatch[2]);
+    length ??= parseImportedDecimal(rectMatch[1]);
+    width ??= parseImportedDecimal(rectMatch[2]);
   }
   if (width == null) {
     const widthMatch = metricSource.match(/(?:largura|width)\s*(?:de)?\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m?/i);
@@ -6718,6 +6918,7 @@ function extractImportedPoolMetrics(
 function extractImportedCatalogPriceCents(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
 ) {
+  const explicitPriceField = extractImportedPriceFieldValue(item);
   const source = String(item.rawText || "");
   const metadataEntries = Object.entries(item.metadata ?? {});
   const normalizedMetadataEntries = metadataEntries.map(([key, value]) => [
@@ -6739,9 +6940,9 @@ function extractImportedCatalogPriceCents(
     }
   }
 
-  const explicitPrice = resolveExplicitImportedPriceReais(item);
-  if (explicitPrice) {
-    return Math.round(explicitPrice.parsedReais * 100);
+  const explicitPrice = classifyStructuredReviewedPrice(explicitPriceField);
+  if (explicitPrice.priceStatus === "valid" && explicitPrice.cents != null) {
+    return explicitPrice.cents;
   }
 
   if (isStructuredSpreadsheetImportItem(item)) {

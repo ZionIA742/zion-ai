@@ -4,6 +4,34 @@ export type IntelligentImportReviewedDestination =
   | "acessorios"
   | "outros";
 
+export const INTELLIGENT_IMPORT_PRICE_STATUS_VALUES = [
+  "valid",
+  "missing",
+  "invalid",
+  "on_request",
+  "unknown_legacy",
+] as const;
+export type IntelligentImportPriceStatus =
+  (typeof INTELLIGENT_IMPORT_PRICE_STATUS_VALUES)[number];
+export type IntelligentImportWritablePriceStatus = Exclude<
+  IntelligentImportPriceStatus,
+  "unknown_legacy"
+>;
+
+export const INTELLIGENT_IMPORT_STOCK_STATUS_VALUES = [
+  "available",
+  "zero",
+  "unknown",
+  "unknown_legacy",
+  "not_tracked",
+] as const;
+export type IntelligentImportStockStatus =
+  (typeof INTELLIGENT_IMPORT_STOCK_STATUS_VALUES)[number];
+export type IntelligentImportWritableStockStatus = Exclude<
+  IntelligentImportStockStatus,
+  "unknown_legacy"
+>;
+
 export type IntelligentImportReviewedItemStatus =
   | "valid"
   | "invalid"
@@ -31,13 +59,15 @@ export type IntelligentImportReviewedSaveItem = {
   name: string;
   poolPayload?: IntelligentImportReviewedPoolPayload | null;
   priceCents?: number | null;
+  priceStatus: IntelligentImportWritablePriceStatus;
   reviewRequired?: boolean;
   reviewState: "approved" | "ignored" | "pending";
   selected: boolean;
   sku?: string | null;
   sourceFileName?: string | null;
   sourceType?: string | null;
-  stockQuantity: number;
+  stockQuantity: number | null;
+  stockStatus: IntelligentImportWritableStockStatus;
   trackStock: boolean;
 };
 
@@ -162,8 +192,10 @@ export type IntelligentImportSaveApprovedNormalizedPayload =
       metadata: Record<string, unknown>;
       name: string;
       price_cents: number | null;
+      price_status: IntelligentImportWritablePriceStatus;
       sku: string | null;
-      stock_quantity: number;
+      stock_quantity: number | null;
+      stock_status: IntelligentImportWritableStockStatus;
       track_stock: boolean;
       type: "catalog_item";
     }
@@ -177,8 +209,10 @@ export type IntelligentImportSaveApprovedNormalizedPayload =
       max_capacity_l: number | null;
       name: string;
       price: number | null;
+      price_status: IntelligentImportWritablePriceStatus;
       shape: string | null;
-      stock_quantity: number;
+      stock_quantity: number | null;
+      stock_status: IntelligentImportWritableStockStatus;
       track_stock: boolean;
       type: "pool";
       weight_kg: number | null;

@@ -1,7 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import {
+  INTELLIGENT_IMPORT_PRICE_STATUS_VALUES,
+  INTELLIGENT_IMPORT_STOCK_STATUS_VALUES,
   type IntelligentImportGlobalReviewConfirmation,
+  type IntelligentImportWritablePriceStatus,
   type IntelligentImportSelectedMediaAssociationMode,
   type IntelligentImportSelectedMediaRef,
   type IntelligentImportSelectedMediaSourceKind,
@@ -16,6 +19,7 @@ import {
   type IntelligentImportSaveApprovedRequest,
   type IntelligentImportSaveApprovedResponse,
   type IntelligentImportSaveApprovedResultItem,
+  type IntelligentImportWritableStockStatus,
   type IntelligentImportStructuredReviewSnapshot,
   type IntelligentImportStructuredReviewSnapshotEntry,
 } from "@/lib/onboarding-intelligent-import-save-contract";
@@ -245,6 +249,26 @@ function normalizeDescription(value: string | null | undefined) {
   return cleaned ? cleaned.slice(0, 4000) : null;
 }
 
+function normalizeWritablePriceStatus(
+  value: unknown
+): IntelligentImportWritablePriceStatus | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "unknown_legacy") return null;
+  return (INTELLIGENT_IMPORT_PRICE_STATUS_VALUES as readonly string[]).includes(normalized)
+    ? (normalized as IntelligentImportWritablePriceStatus)
+    : null;
+}
+
+function normalizeWritableStockStatus(
+  value: unknown
+): IntelligentImportWritableStockStatus | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "unknown_legacy") return null;
+  return (INTELLIGENT_IMPORT_STOCK_STATUS_VALUES as readonly string[]).includes(normalized)
+    ? (normalized as IntelligentImportWritableStockStatus)
+    : null;
+}
+
 function normalizeLoose(value: string | null | undefined) {
   return String(value || "")
     .toLowerCase()
@@ -375,9 +399,11 @@ function buildStructuredReviewFinalFingerprint(item: IntelligentImportReviewedSa
         }
       : null,
     priceCents: item.priceCents ?? null,
+    priceStatus: item.priceStatus,
     reviewRequired: Boolean(item.reviewRequired),
     sku: String(item.sku || "").trim(),
-    stockQuantity: Number(item.stockQuantity || 0),
+    stockQuantity: item.stockQuantity ?? null,
+    stockStatus: item.stockStatus,
     trackStock: Boolean(item.trackStock),
   });
   return `structured-final-v1:${computeStableReviewHash(serialized)}`;
@@ -635,8 +661,13 @@ function buildCatalogNormalizedPayload(args: {
       typeof args.item.priceCents === "number" && Number.isFinite(args.item.priceCents)
         ? Math.round(args.item.priceCents)
         : null,
+    price_status: normalizeWritablePriceStatus(args.item.priceStatus) ?? "invalid",
     sku: String(args.item.sku || "").trim() || null,
-    stock_quantity: Math.max(0, Math.round(parseFiniteNumber(args.item.stockQuantity) ?? 0)),
+    stock_quantity:
+      parseFiniteNumber(args.item.stockQuantity) == null
+        ? null
+        : Math.max(0, Math.round(parseFiniteNumber(args.item.stockQuantity) as number)),
+    stock_status: normalizeWritableStockStatus(args.item.stockStatus) ?? "unknown",
     track_stock: Boolean(args.item.trackStock),
     type: "catalog_item",
   };
@@ -646,17 +677,7 @@ function buildPoolNormalizedPayload(args: {
   item: IntelligentImportReviewedSaveItem;
   poolPayload: IntelligentImportReviewedPoolPayload;
 }): Extract<IntelligentImportSaveApprovedNormalizedPayload, { type: "pool" }> {
-  const metadata = normalizeMetadata(args.item.metadata);
-  const fallbackPriceCandidates = [
-    args.poolPayload.price,
-    metadata.reviewed_price,
-    metadata.price,
-    metadata.preco,
-  ];
-  const resolvedPrice =
-    fallbackPriceCandidates
-      .map((value) => parseFiniteNumber(value))
-      .find((value) => value != null) ?? null;
+  const normalizedStockQuantity = parseFiniteNumber(args.item.stockQuantity);
 
   return {
     depth_m: parseFiniteNumber(args.poolPayload.depth_m),
@@ -667,9 +688,12 @@ function buildPoolNormalizedPayload(args: {
     material: String(args.poolPayload.material || "").trim() || null,
     max_capacity_l: parseFiniteNumber(args.poolPayload.max_capacity_l),
     name: String(args.item.name || "").trim(),
-    price: resolvedPrice,
+    price: parseFiniteNumber(args.poolPayload.price),
+    price_status: normalizeWritablePriceStatus(args.item.priceStatus) ?? "invalid",
     shape: String(args.poolPayload.shape || "").trim() || null,
-    stock_quantity: Math.max(0, Math.round(parseFiniteNumber(args.item.stockQuantity) ?? 0)),
+    stock_quantity:
+      normalizedStockQuantity == null ? null : Math.max(0, Math.round(normalizedStockQuantity)),
+    stock_status: normalizeWritableStockStatus(args.item.stockStatus) ?? "unknown",
     track_stock: Boolean(args.item.trackStock),
     type: "pool",
     weight_kg: parseFiniteNumber(args.poolPayload.weight_kg),
@@ -689,6 +713,66 @@ function hasExplicitHumanReviewConfirmation(metadata: Record<string, unknown> | 
     const normalized = String(value ?? "").trim().toLowerCase();
     return normalized === "true" || normalized === "1" || normalized === "sim" || normalized === "yes" || normalized === "confirmed";
   });
+}
+
+function validateNormalizedPriceState(args: {
+  priceStatus: IntelligentImportWritablePriceStatus | null;
+  value: number | null;
+}): string | null {
+  if (!args.priceStatus) {
+    return "price_status invalido para item importado.";
+  }
+
+  if (args.priceStatus === "valid") {
+    if (args.value == null) return "price_status=valid exige preco numerico.";
+    return null;
+  }
+
+  if (args.value != null) {
+    return `price_status=${args.priceStatus} exige preco numerico nulo.`;
+  }
+
+  return null;
+}
+
+function validateNormalizedStockState(args: {
+  stockQuantity: number | null;
+  stockStatus: IntelligentImportWritableStockStatus | null;
+  trackStock: boolean;
+}): string | null {
+  if (!args.stockStatus) {
+    return "stock_status invalido para item importado.";
+  }
+
+  if (args.stockStatus === "available") {
+    if (!args.trackStock || args.stockQuantity == null || args.stockQuantity <= 0) {
+      return "stock_status=available exige track_stock=true e stock_quantity > 0.";
+    }
+    return null;
+  }
+
+  if (args.stockStatus === "zero") {
+    if (!args.trackStock || args.stockQuantity !== 0) {
+      return "stock_status=zero exige track_stock=true e stock_quantity = 0.";
+    }
+    return null;
+  }
+
+  if (args.stockStatus === "unknown") {
+    if (!args.trackStock || args.stockQuantity != null) {
+      return "stock_status=unknown exige track_stock=true e stock_quantity=null.";
+    }
+    return null;
+  }
+
+  if (args.stockStatus === "not_tracked") {
+    if (args.trackStock || args.stockQuantity != null) {
+      return "stock_status=not_tracked exige track_stock=false e stock_quantity=null.";
+    }
+    return null;
+  }
+
+  return "stock_status invalido para item importado.";
 }
 
 function validateStructuredReviewAudit(args: {
@@ -843,6 +927,8 @@ function validateReviewedImportedItem(
   const reasons: string[] = [];
   const destination = normalizeDestination(item.destination);
   const reviewConfirmedByUser = hasExplicitHumanReviewConfirmation(item.metadata);
+  const requestedPriceStatus = normalizeWritablePriceStatus(item.priceStatus);
+  const requestedStockStatus = normalizeWritableStockStatus(item.stockStatus);
 
   if (!item.selected) reasons.push("Item nao marcado como selecionado/aprovado.");
   if (item.reviewState !== "approved") reasons.push("Item nao esta em estado approved.");
@@ -851,6 +937,8 @@ function validateReviewedImportedItem(
     reasons.push("Item ainda exige revisao antes do salvamento.");
   }
   if (!destination) reasons.push("Destino/categoria invalido.");
+  if (!requestedPriceStatus) reasons.push("price_status invalido para item importado.");
+  if (!requestedStockStatus) reasons.push("stock_status invalido para item importado.");
 
   const safeName = String(item.name || "").trim();
   if (!safeName) reasons.push("Nome do item obrigatorio.");
@@ -883,6 +971,17 @@ function validateReviewedImportedItem(
     if (normalizedPayload.price != null && normalizedPayload.price < 0) {
       reasons.push("Preco invalido para piscina.");
     }
+    const poolPriceStateIssue = validateNormalizedPriceState({
+      priceStatus: normalizedPayload.price_status,
+      value: normalizedPayload.price,
+    });
+    if (poolPriceStateIssue) reasons.push(poolPriceStateIssue);
+    const poolStockStateIssue = validateNormalizedStockState({
+      stockQuantity: normalizedPayload.stock_quantity,
+      stockStatus: normalizedPayload.stock_status,
+      trackStock: normalizedPayload.track_stock,
+    });
+    if (poolStockStateIssue) reasons.push(poolStockStateIssue);
     if (normalizedPayload.width_m == null || normalizedPayload.length_m == null || normalizedPayload.depth_m == null) {
       reasons.push("Piscina sem medidas obrigatorias.");
     }
@@ -929,6 +1028,18 @@ function validateReviewedImportedItem(
   if (normalizedPayload.price_cents != null && normalizedPayload.price_cents < 0) {
     reasons.push("Preco invalido para item de catalogo.");
   }
+  const catalogPriceStateIssue = validateNormalizedPriceState({
+    priceStatus: normalizedPayload.price_status,
+    value:
+      normalizedPayload.price_cents == null ? null : normalizedPayload.price_cents / 100,
+  });
+  if (catalogPriceStateIssue) reasons.push(catalogPriceStateIssue);
+  const catalogStockStateIssue = validateNormalizedStockState({
+    stockQuantity: normalizedPayload.stock_quantity,
+    stockStatus: normalizedPayload.stock_status,
+    trackStock: normalizedPayload.track_stock,
+  });
+  if (catalogStockStateIssue) reasons.push(catalogStockStateIssue);
 
   if (normalizedSku) {
     const existingBySku = context.existingCatalogItems.find(
@@ -2191,10 +2302,12 @@ async function insertValidatedItem(args: {
         max_capacity_l: normalizedPayload.max_capacity_l ?? 0,
         weight_kg: normalizedPayload.weight_kg,
         price: normalizedPayload.price,
+        price_status: normalizedPayload.price_status,
         description: normalizedPayload.description,
         is_active: normalizedPayload.is_active,
         track_stock: normalizedPayload.track_stock,
         stock_quantity: normalizedPayload.stock_quantity,
+        stock_status: normalizedPayload.stock_status,
       })
       .select("id")
       .single();
@@ -2212,10 +2325,12 @@ async function insertValidatedItem(args: {
       name: normalizedPayload.name,
       description: normalizedPayload.description,
       price_cents: normalizedPayload.price_cents,
+      price_status: normalizedPayload.price_status,
       currency: normalizedPayload.currency,
       is_active: normalizedPayload.is_active,
       track_stock: normalizedPayload.track_stock,
       stock_quantity: normalizedPayload.stock_quantity,
+      stock_status: normalizedPayload.stock_status,
       metadata: normalizedPayload.metadata,
     })
     .select("id")

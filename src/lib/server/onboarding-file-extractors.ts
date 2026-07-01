@@ -1525,19 +1525,23 @@ function chooseHeaderRow(rows: unknown[][]) {
 }
 
 function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
-  const usefulRows = rows.filter(isUsefulRow);
+  const usefulRows = rows
+    .map((row, index) => ({
+      row,
+      worksheetRowNumber: index + 1,
+    }))
+    .filter((entry) => isUsefulRow(entry.row));
   if (usefulRows.length === 0) return [];
 
-  const headerIndex = chooseHeaderRow(usefulRows);
-  const headerRow = usefulRows[headerIndex] || [];
+  const headerIndex = chooseHeaderRow(usefulRows.map((entry) => entry.row));
+  const headerRow = usefulRows[headerIndex]?.row || [];
   const headers = headerRow.map((cell, index) => normalizeHeaderLabel(cell, index));
   const dataRows = usefulRows.slice(headerIndex + 1);
 
   const blocks: string[] = [];
 
-  dataRows.forEach((row, index) => {
+  dataRows.forEach(({ row, worksheetRowNumber }, index) => {
     const pairs: string[] = [];
-    const worksheetRowNumber = headerIndex + 2 + index;
     const sheetScopedKey = `${normalizeLooseKey(sheetName)}::row::${worksheetRowNumber}`;
 
     headers.forEach((header, columnIndex) => {
