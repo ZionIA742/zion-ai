@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import {
+  type IntelligentImportGlobalReviewConfirmation,
   type IntelligentImportSelectedMediaAssociationMode,
   type IntelligentImportSelectedMediaRef,
   type IntelligentImportSelectedMediaSourceKind,
@@ -15,6 +16,8 @@ import {
   type IntelligentImportSaveApprovedRequest,
   type IntelligentImportSaveApprovedResponse,
   type IntelligentImportSaveApprovedResultItem,
+  type IntelligentImportStructuredReviewSnapshot,
+  type IntelligentImportStructuredReviewSnapshotEntry,
 } from "@/lib/onboarding-intelligent-import-save-contract";
 import {
   normalizeImportDedupSku,
@@ -321,6 +324,165 @@ function normalizeMetadata(value: Record<string, unknown> | null | undefined) {
   return value;
 }
 
+type NormalizedStructuredReviewSnapshot = {
+  entries: IntelligentImportStructuredReviewSnapshotEntry[];
+  kind: "structured_review_v1";
+  revisionVersion: number | null;
+};
+
+type StructuredReviewAuditValidation = {
+  globalReviewConfirmation: IntelligentImportGlobalReviewConfirmation;
+  persistedImportFileIds: string[];
+  snapshot: NormalizedStructuredReviewSnapshot;
+  summary: IntelligentImportGlobalReviewConfirmation["summary"];
+};
+
+type ImportFileAuditPersistenceResult = {
+  attempted: boolean;
+  error?: string | null;
+  persisted: boolean;
+  skippedReason?: string | null;
+  updatedImportFileIds: string[];
+  validateOnly: boolean;
+};
+
+function computeStableReviewHash(input: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function buildStructuredReviewFinalFingerprint(item: IntelligentImportReviewedSaveItem) {
+  const serialized = JSON.stringify({
+    clientItemId: String(item.clientItemId || "").trim(),
+    description: String(item.description || "").trim(),
+    destination: item.destination,
+    isActive: Boolean(item.isActive),
+    name: String(item.name || "").trim(),
+    poolPayload: item.poolPayload
+      ? {
+          depth_m: item.poolPayload.depth_m ?? null,
+          length_m: item.poolPayload.length_m ?? null,
+          material: item.poolPayload.material ?? null,
+          max_capacity_l: item.poolPayload.max_capacity_l ?? null,
+          price: item.poolPayload.price ?? null,
+          shape: item.poolPayload.shape ?? null,
+          weight_kg: item.poolPayload.weight_kg ?? null,
+          width_m: item.poolPayload.width_m ?? null,
+        }
+      : null,
+    priceCents: item.priceCents ?? null,
+    reviewRequired: Boolean(item.reviewRequired),
+    sku: String(item.sku || "").trim(),
+    stockQuantity: Number(item.stockQuantity || 0),
+    trackStock: Boolean(item.trackStock),
+  });
+  return `structured-final-v1:${computeStableReviewHash(serialized)}`;
+}
+
+function buildStructuredReviewSnapshotSignature(
+  entries: IntelligentImportStructuredReviewSnapshotEntry[]
+) {
+  const serialized = entries
+    .slice()
+    .sort((left, right) => left.candidateKey.localeCompare(right.candidateKey))
+    .map((entry) => [
+      entry.candidateKey,
+      entry.state,
+      entry.finalCategory,
+      entry.reviewRequired ? "1" : "0",
+      entry.humanReviewConfirmed ? "1" : "0",
+      entry.finalFingerprint,
+    ]);
+  return `structured-review-v1:${computeStableReviewHash(JSON.stringify(serialized))}:${serialized.length}`;
+}
+
+function normalizeGlobalReviewConfirmation(
+  value: unknown
+): IntelligentImportGlobalReviewConfirmation | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.confirmed !== true) return null;
+
+  const confirmedAt = String(candidate.confirmedAt || "").trim();
+  const confirmedAtMs = parseIsoTimestamp(confirmedAt);
+  if (!confirmedAt || confirmedAtMs == null) return null;
+
+  const rawSummary =
+    candidate.summary && typeof candidate.summary === "object" && !Array.isArray(candidate.summary)
+      ? (candidate.summary as Record<string, unknown>)
+      : null;
+  if (!rawSummary) return null;
+
+  const toCount = (input: unknown) => {
+    const value = Number(input);
+    if (!Number.isFinite(value) || value < 0) return 0;
+    return Math.max(0, Math.round(value));
+  };
+
+  const reviewStateSignature = String(candidate.reviewStateSignature || "").trim() || null;
+  const rawRevisionVersion = Number(candidate.revisionVersion);
+  const revisionVersion = Number.isFinite(rawRevisionVersion) ? Math.round(rawRevisionVersion) : null;
+
+  return {
+    confirmed: true,
+    confirmedAt: new Date(confirmedAtMs).toISOString(),
+    reviewStateSignature,
+    revisionVersion,
+    summary: {
+      deselectedCount: toCount(rawSummary.deselectedCount),
+      foundCount: toCount(rawSummary.foundCount),
+      ignoredCount: toCount(rawSummary.ignoredCount),
+      selectedCount: toCount(rawSummary.selectedCount),
+    },
+  };
+}
+
+function normalizeStructuredReviewSnapshot(
+  value: unknown
+): NormalizedStructuredReviewSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind !== "structured_review_v1") return null;
+  if (!Array.isArray(candidate.entries)) return null;
+  const rawRevisionVersion = Number(candidate.revisionVersion);
+  const revisionVersion = Number.isFinite(rawRevisionVersion) ? Math.round(rawRevisionVersion) : null;
+  const entries: IntelligentImportStructuredReviewSnapshotEntry[] = [];
+  const seenCandidateKeys = new Set<string>();
+
+  for (const rawEntry of candidate.entries) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) return null;
+    const entry = rawEntry as Record<string, unknown>;
+    const candidateKey = String(entry.candidateKey || "").trim();
+    const finalCategory = String(entry.finalCategory || "").trim() as IntelligentImportReviewedDestination;
+    const finalFingerprint = String(entry.finalFingerprint || "").trim();
+    const state = String(entry.state || "").trim();
+    if (!candidateKey || !finalFingerprint) return null;
+    if (!["selected", "deselected", "ignored"].includes(state)) return null;
+    if (!["pool", "quimicos", "acessorios", "outros"].includes(finalCategory)) return null;
+    if (seenCandidateKeys.has(candidateKey)) return null;
+    seenCandidateKeys.add(candidateKey);
+    entries.push({
+      candidateKey,
+      finalCategory,
+      finalFingerprint,
+      humanReviewConfirmed: Boolean(entry.humanReviewConfirmed),
+      reviewRequired: Boolean(entry.reviewRequired),
+      state: state as IntelligentImportStructuredReviewSnapshotEntry["state"],
+    });
+  }
+
+  if (entries.length === 0) return null;
+  return {
+    entries,
+    kind: "structured_review_v1",
+    revisionVersion,
+  };
+}
+
 function parseIsoTimestamp(value: string | null | undefined) {
   const normalized = String(value || "").trim();
   if (!normalized) return null;
@@ -527,6 +689,150 @@ function hasExplicitHumanReviewConfirmation(metadata: Record<string, unknown> | 
     const normalized = String(value ?? "").trim().toLowerCase();
     return normalized === "true" || normalized === "1" || normalized === "sim" || normalized === "yes" || normalized === "confirmed";
   });
+}
+
+function validateStructuredReviewAudit(args: {
+  importFileValidation: ImportFileValidationResult;
+  request: IntelligentImportSaveApprovedRequest;
+}): { ok: true; value: StructuredReviewAuditValidation } | { message: string; ok: false } {
+  const globalReviewConfirmation = normalizeGlobalReviewConfirmation(
+    args.request.reviewAudit?.globalReviewConfirmation
+  );
+  if (!globalReviewConfirmation) {
+    return {
+      message: "global_review_confirmation_required",
+      ok: false,
+    };
+  }
+
+  const snapshot = normalizeStructuredReviewSnapshot(args.request.reviewAudit?.structuredReviewSnapshot);
+  if (!snapshot) {
+    return {
+      message: "structured_review_snapshot_required",
+      ok: false,
+    };
+  }
+
+  if (
+    snapshot.revisionVersion != null &&
+    globalReviewConfirmation.revisionVersion != null &&
+    snapshot.revisionVersion !== globalReviewConfirmation.revisionVersion
+  ) {
+    return {
+      message: "RevisionVersion divergente entre a confirmacao global e o snapshot da revisao.",
+      ok: false,
+    };
+  }
+
+  const summary = snapshot.entries.reduce(
+    (acc, entry) => {
+      acc.foundCount += 1;
+      if (entry.state === "selected") acc.selectedCount += 1;
+      else if (entry.state === "ignored") acc.ignoredCount += 1;
+      else acc.deselectedCount += 1;
+      return acc;
+    },
+    {
+      deselectedCount: 0,
+      foundCount: 0,
+      ignoredCount: 0,
+      selectedCount: 0,
+    } satisfies IntelligentImportGlobalReviewConfirmation["summary"]
+  );
+
+  if (
+    summary.selectedCount !== globalReviewConfirmation.summary.selectedCount ||
+    summary.deselectedCount !== globalReviewConfirmation.summary.deselectedCount ||
+    summary.ignoredCount !== globalReviewConfirmation.summary.ignoredCount ||
+    summary.foundCount !== globalReviewConfirmation.summary.foundCount
+  ) {
+    return {
+      message: "Resumo da confirmacao global nao corresponde ao snapshot canonico recalculado no backend.",
+      ok: false,
+    };
+  }
+
+  const recalculatedSignature = buildStructuredReviewSnapshotSignature(snapshot.entries);
+  if (recalculatedSignature !== globalReviewConfirmation.reviewStateSignature) {
+    return {
+      message: "Assinatura da confirmacao global diverge do snapshot canonico recalculado no backend.",
+      ok: false,
+    };
+  }
+
+  const persistedImportFileIds = args.importFileValidation.validatedFiles
+    .map((row) => String(row.id || "").trim())
+    .filter(Boolean);
+  if (persistedImportFileIds.length === 0) {
+    return {
+      message: "Nenhum importedFileId valido foi recebido para auditar esta revisao estruturada.",
+      ok: false,
+    };
+  }
+
+  const selectedSnapshotEntries = snapshot.entries.filter((entry) => entry.state === "selected");
+  if (selectedSnapshotEntries.length !== args.request.items.length) {
+    return {
+      message: "Quantidade de itens selecionados no snapshot nao corresponde ao payload final enviado.",
+      ok: false,
+    };
+  }
+
+  const requestItemByClientItemId = new Map<string, IntelligentImportReviewedSaveItem>();
+  for (const item of args.request.items) {
+    const clientItemId = String(item.clientItemId || "").trim();
+    if (!clientItemId || requestItemByClientItemId.has(clientItemId)) {
+      return {
+        message: "Payload final possui clientItemId ausente ou duplicado para a revisao estruturada.",
+        ok: false,
+      };
+    }
+    requestItemByClientItemId.set(clientItemId, item);
+  }
+
+  for (const snapshotEntry of selectedSnapshotEntries) {
+    const selectedItem = requestItemByClientItemId.get(snapshotEntry.candidateKey);
+    if (!selectedItem) {
+      return {
+        message: `Item selecionado ${snapshotEntry.candidateKey} do snapshot nao foi enviado no payload final.`,
+        ok: false,
+      };
+    }
+    if (normalizeDestination(selectedItem.destination) !== snapshotEntry.finalCategory) {
+      return {
+        message: `Categoria final divergente para o item ${snapshotEntry.candidateKey}.`,
+        ok: false,
+      };
+    }
+    if (Boolean(selectedItem.reviewRequired) !== snapshotEntry.reviewRequired) {
+      return {
+        message: `Indicador reviewRequired divergente para o item ${snapshotEntry.candidateKey}.`,
+        ok: false,
+      };
+    }
+    if (hasExplicitHumanReviewConfirmation(selectedItem.metadata) !== snapshotEntry.humanReviewConfirmed) {
+      return {
+        message: `Confirmacao individual divergente para o item ${snapshotEntry.candidateKey}.`,
+        ok: false,
+      };
+    }
+    if (buildStructuredReviewFinalFingerprint(selectedItem) !== snapshotEntry.finalFingerprint) {
+      return {
+        message: `Fingerprint final divergente para o item ${snapshotEntry.candidateKey}.`,
+        ok: false,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      globalReviewConfirmation,
+      persistedImportFileIds,
+      snapshot,
+      summary,
+    },
+  };
 }
 
 function validateReviewedImportedItem(
@@ -1745,6 +2051,87 @@ function buildInternalDuplicateKeys(item: IntelligentImportSaveApprovedResultIte
   return keys;
 }
 
+async function persistImportFileReviewAudit(args: {
+  globalReviewConfirmation: IntelligentImportGlobalReviewConfirmation;
+  importFileIds: string[];
+  supabase: any;
+  validateOnly: boolean;
+}): Promise<ImportFileAuditPersistenceResult> {
+  const uniqueImportFileIds = Array.from(
+    new Set(args.importFileIds.map((value) => String(value || "").trim()).filter(Boolean))
+  );
+  if (uniqueImportFileIds.length === 0) {
+    return {
+      attempted: false,
+      persisted: false,
+      skippedReason: "no_import_file_ids_to_audit",
+      updatedImportFileIds: [],
+      validateOnly: args.validateOnly,
+    };
+  }
+
+  const { data, error } = await args.supabase
+    .from("store_import_files")
+    .select("id, import_summary")
+    .in("id", uniqueImportFileIds);
+  if (error) {
+    return {
+      attempted: true,
+      error: error.message,
+      persisted: false,
+      updatedImportFileIds: [],
+      validateOnly: args.validateOnly,
+    };
+  }
+
+  const rows = (data ?? []) as Array<{ id: string; import_summary?: Record<string, unknown> | null }>;
+  for (const row of rows) {
+    const importSummary = normalizeMetadata(row.import_summary);
+    const reviewAudit = normalizeMetadata(importSummary.review_audit as Record<string, unknown> | null | undefined);
+    const latestGlobalConfirmation = {
+      confirmedAt: args.globalReviewConfirmation.confirmedAt,
+      importedFileIds: uniqueImportFileIds,
+      operation: "save_real_precondition" as const,
+      persistedAt: new Date().toISOString(),
+      reviewStateSignature: args.globalReviewConfirmation.reviewStateSignature ?? null,
+      revisionVersion: args.globalReviewConfirmation.revisionVersion ?? null,
+      summary: args.globalReviewConfirmation.summary,
+      validateOnly: args.validateOnly,
+    };
+    const nextImportSummary = {
+      ...importSummary,
+      review_audit: {
+        ...reviewAudit,
+        latest_global_confirmation: latestGlobalConfirmation,
+      },
+    };
+    const { error: updateError } = await args.supabase
+      .from("store_import_files")
+      .update({
+        import_summary: nextImportSummary,
+      })
+      .eq("id", row.id);
+    if (updateError) {
+      return {
+        attempted: true,
+        error: updateError.message,
+        persisted: false,
+        updatedImportFileIds: rows
+          .map((entry) => String(entry.id || "").trim())
+          .filter((entryId) => entryId && entryId !== String(row.id || "").trim()),
+        validateOnly: args.validateOnly,
+      };
+    }
+  }
+
+  return {
+    attempted: true,
+    persisted: true,
+    updatedImportFileIds: rows.map((row) => String(row.id || "").trim()).filter(Boolean),
+    validateOnly: args.validateOnly,
+  };
+}
+
 function applyInternalDuplicateProtection(items: IntelligentImportSaveApprovedResultItem[]) {
   const seenByKey = new Map<string, IntelligentImportSaveApprovedResultItem>();
 
@@ -2278,12 +2665,76 @@ export async function saveApprovedIntelligentImportItems(
     storeId: store.id,
     supabase,
   });
+  if (importFileValidation.receivedImportedFileIds.length === 0) {
+    const response: IntelligentImportSaveApprovedResponse = {
+      items: [],
+      message: "imported_file_ids_required_for_approved_intelligent_import",
+      ok: false,
+      reviewAudit: {
+        globalReviewConfirmation:
+          normalizeGlobalReviewConfirmation(request.reviewAudit?.globalReviewConfirmation),
+        importFileAudit: {
+          attempted: false,
+          persisted: false,
+          skippedReason: "imported_file_ids_required_for_approved_intelligent_import",
+          updatedImportFileIds: [],
+          validateOnly: Boolean(request.validateOnly),
+        },
+        structuredReviewSnapshot:
+          normalizeStructuredReviewSnapshot(request.reviewAudit?.structuredReviewSnapshot),
+      },
+      summary: {
+        blockedDuplicate: 0,
+        invalid: 0,
+        saved: 0,
+        total: 0,
+        valid: 0,
+      },
+      validateOnly: Boolean(request.validateOnly),
+    };
+    return response;
+  }
   const stagedMediaValidation = await validateStagedMediaAssets({
     organizationId: store.organization_id,
     selectedMediaRefs: Array.isArray(request.selectedMediaRefs) ? request.selectedMediaRefs : [],
     storeId: store.id,
     supabase,
   });
+  const structuredReviewAuditValidation = validateStructuredReviewAudit({
+    importFileValidation,
+    request,
+  });
+  if (!structuredReviewAuditValidation.ok) {
+    const response: IntelligentImportSaveApprovedResponse = {
+      items: [],
+      message: structuredReviewAuditValidation.message,
+      ok: false,
+      reviewAudit: {
+        globalReviewConfirmation:
+          normalizeGlobalReviewConfirmation(request.reviewAudit?.globalReviewConfirmation),
+        importFileAudit: {
+          attempted: false,
+          persisted: false,
+          skippedReason: "global_review_validation_failed",
+          updatedImportFileIds: [],
+          validateOnly: Boolean(request.validateOnly),
+        },
+        structuredReviewSnapshot:
+          normalizeStructuredReviewSnapshot(request.reviewAudit?.structuredReviewSnapshot),
+      },
+      summary: {
+        blockedDuplicate: 0,
+        invalid: 0,
+        saved: 0,
+        total: 0,
+        valid: 0,
+      },
+      validateOnly: Boolean(request.validateOnly),
+    };
+    return response;
+  }
+  const structuredReviewAudit = structuredReviewAuditValidation.value;
+  const globalReviewConfirmation = structuredReviewAudit.globalReviewConfirmation;
 
   const existingReferences = await loadDuplicateReferenceData({
     organizationId: store.organization_id,
@@ -2336,23 +2787,97 @@ export async function saveApprovedIntelligentImportItems(
         "Salvamento real bloqueado porque debugParser=true. Use apenas a validacao sem gravar neste modo.",
       ok: false,
       photoPlan,
+      reviewAudit: {
+        globalReviewConfirmation,
+        importFileAudit: {
+          attempted: false,
+          persisted: false,
+          skippedReason: "debug_parser_no_persist",
+          updatedImportFileIds: [],
+          validateOnly: false,
+        },
+        structuredReviewSnapshot: structuredReviewAudit?.snapshot ?? null,
+      },
       summary,
       validateOnly: false,
     };
     return response;
   }
 
-  if (validateOnly || hasBlockingIssues) {
+  if (validateOnly) {
+    const importFileAudit = {
+      attempted: false,
+      persisted: false,
+      skippedReason: "validate_only_no_persist",
+      updatedImportFileIds: [],
+      validateOnly: true,
+    } satisfies ImportFileAuditPersistenceResult;
     const response: IntelligentImportSaveApprovedResponse = {
       importFileLinkPlan,
       items: validatedItems,
       message: "",
       ok: !hasBlockingIssues,
       photoPlan,
+      reviewAudit: {
+        globalReviewConfirmation,
+        importFileAudit,
+        structuredReviewSnapshot: structuredReviewAudit?.snapshot ?? null,
+      },
       summary,
-      validateOnly,
+      validateOnly: true,
     };
     response.message = buildResponseMessage(response);
+    return response;
+  }
+
+  if (hasBlockingIssues) {
+    const response: IntelligentImportSaveApprovedResponse = {
+      importFileLinkPlan,
+      items: validatedItems,
+      message: "",
+      ok: false,
+      photoPlan,
+      reviewAudit: {
+        globalReviewConfirmation,
+        importFileAudit: {
+          attempted: false,
+          persisted: false,
+          skippedReason: "blocking_issues_no_persist",
+          updatedImportFileIds: [],
+          validateOnly: false,
+        },
+        structuredReviewSnapshot: structuredReviewAudit?.snapshot ?? null,
+      },
+      summary,
+      validateOnly: false,
+    };
+    response.message = buildResponseMessage(response);
+    return response;
+  }
+
+  const importFileAudit = await persistImportFileReviewAudit({
+    globalReviewConfirmation: structuredReviewAudit.globalReviewConfirmation,
+    importFileIds: structuredReviewAudit.persistedImportFileIds,
+    supabase,
+    validateOnly: false,
+  });
+  if (importFileAudit.attempted && !importFileAudit.persisted) {
+    const response: IntelligentImportSaveApprovedResponse = {
+      importFileLinkPlan,
+      items: validatedItems,
+      message:
+        importFileAudit.error ||
+        "A auditoria do checkpoint global falhou antes do save real em store_import_files.",
+      ok: false,
+      photoPlan,
+      reviewAudit: {
+        globalReviewConfirmation,
+        importFileAudit,
+        structuredReviewSnapshot: structuredReviewAudit?.snapshot ?? null,
+      },
+      summary,
+      validateOnly: false,
+    };
     return response;
   }
 
@@ -2409,6 +2934,11 @@ export async function saveApprovedIntelligentImportItems(
           : photoPlan.warnings,
     },
     photoSaveResult,
+    reviewAudit: {
+      globalReviewConfirmation,
+      importFileAudit,
+      structuredReviewSnapshot: structuredReviewAudit?.snapshot ?? null,
+    },
     summary: {
       ...summary,
       saved: savedItems.length,

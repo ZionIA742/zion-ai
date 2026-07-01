@@ -12,11 +12,14 @@ import {
   type VisualDocumentAnalysis,
 } from "@/lib/visual-catalog-document-analysis";
 import type {
+  IntelligentImportGlobalReviewConfirmation,
   IntelligentImportStagedMediaAsset,
   IntelligentImportSelectedMediaRef,
   IntelligentImportReviewedSaveItem,
   IntelligentImportSaveApprovedRequest,
   IntelligentImportSaveApprovedResponse,
+  IntelligentImportStructuredReviewSnapshot,
+  IntelligentImportStructuredReviewSnapshotEntry,
 } from "@/lib/onboarding-intelligent-import-save-contract";
 
 type IntelligentImportSummary = {
@@ -1634,6 +1637,72 @@ function areStructuredReviewDraftsEqual(
   right: StructuredCandidateDraft | null | undefined
 ) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+function computeStableReviewHash(input: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+function buildStructuredReviewFinalFingerprint(item: IntelligentImportReviewedSaveItem) {
+  const serialized = JSON.stringify({
+    clientItemId: String(item.clientItemId || "").trim(),
+    description: String(item.description || "").trim(),
+    destination: item.destination,
+    isActive: Boolean(item.isActive),
+    name: String(item.name || "").trim(),
+    poolPayload: item.poolPayload
+      ? {
+          depth_m: item.poolPayload.depth_m ?? null,
+          length_m: item.poolPayload.length_m ?? null,
+          material: item.poolPayload.material ?? null,
+          max_capacity_l: item.poolPayload.max_capacity_l ?? null,
+          price: item.poolPayload.price ?? null,
+          shape: item.poolPayload.shape ?? null,
+          weight_kg: item.poolPayload.weight_kg ?? null,
+          width_m: item.poolPayload.width_m ?? null,
+        }
+      : null,
+    priceCents: item.priceCents ?? null,
+    reviewRequired: Boolean(item.reviewRequired),
+    sku: String(item.sku || "").trim(),
+    stockQuantity: Number(item.stockQuantity || 0),
+    trackStock: Boolean(item.trackStock),
+  });
+  return `structured-final-v1:${computeStableReviewHash(serialized)}`;
+}
+function buildStructuredReviewStateSignature(
+  entries: IntelligentImportStructuredReviewSnapshotEntry[]
+) {
+  const serialized = entries
+    .slice()
+    .sort((left, right) => left.candidateKey.localeCompare(right.candidateKey))
+    .map((entry) => [
+      entry.candidateKey,
+      entry.state,
+      entry.finalCategory,
+      entry.reviewRequired ? "1" : "0",
+      entry.humanReviewConfirmed ? "1" : "0",
+      entry.finalFingerprint,
+    ]);
+  const input = JSON.stringify(serialized);
+  return `structured-review-v1:${computeStableReviewHash(input)}:${serialized.length}`;
+}
+function hasStructuredReviewHumanConfirmationValue(
+  metadata: Record<string, unknown> | null | undefined
+) {
+  if (!metadata || typeof metadata !== "object") return false;
+  const candidates = [
+    metadata.review_confirmed_by_user,
+    metadata.human_review_confirmed,
+    metadata.review_confirmation_state,
+  ];
+  return candidates.some((value) => {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "sim" || normalized === "yes" || normalized === "confirmed";
+  });
 }
 function getStructuredReviewListStatus(item: StructuredUnifiedReviewItem) {
   if (item.candidate.manuallyIgnored) return "ignored" as const;
@@ -7845,9 +7914,8 @@ export default function IntelligentCatalogImportPanel({
     useState<StructuredReviewListFilter>("all");
   const [structuredReviewSearchQuery, setStructuredReviewSearchQuery] = useState("");
   const [structuredReviewRevisionVersion, setStructuredReviewRevisionVersion] = useState(0);
-  const [structuredReviewConfirmedVersion, setStructuredReviewConfirmedVersion] = useState<number | null>(
-    null
-  );
+  const [structuredReviewGlobalConfirmation, setStructuredReviewGlobalConfirmation] =
+    useState<IntelligentImportGlobalReviewConfirmation | null>(null);
   const [structuredReviewPendingAction, setStructuredReviewPendingAction] =
     useState<StructuredReviewAction | null>(null);
   const [structuredCandidateDrafts, setStructuredCandidateDrafts] = useState<
@@ -8172,12 +8240,40 @@ export default function IntelligentCatalogImportPanel({
       }
     );
   }, [structuredUnifiedReviewItems]);
+  const structuredReviewSnapshot = useMemo<IntelligentImportStructuredReviewSnapshot | null>(() => {
+    if (structuredUnifiedReviewItems.length === 0) return null;
+    const entries = structuredUnifiedReviewItems.map((item, index) => {
+      const saveItem = buildReviewedImportedSaveItem(item.reviewedItem, index, {
+        duplicateBlocked: Boolean(item.duplicateReason),
+        photoResolution: item.photoResolution,
+      });
+      return {
+        candidateKey: String(saveItem.clientItemId || item.candidate.id).trim() || item.candidate.id,
+        finalCategory: item.candidate.finalCategory,
+        finalFingerprint: buildStructuredReviewFinalFingerprint(saveItem),
+        humanReviewConfirmed: hasStructuredReviewHumanConfirmationValue(
+          item.reviewedItem.metadata as Record<string, unknown> | null | undefined
+        ),
+        reviewRequired: Boolean(saveItem.reviewRequired),
+        state: getStructuredReviewListStatus(item),
+      } satisfies IntelligentImportStructuredReviewSnapshotEntry;
+    });
+    return {
+      entries,
+      kind: "structured_review_v1",
+      revisionVersion: structuredReviewRevisionVersion,
+    };
+  }, [structuredReviewRevisionVersion, structuredUnifiedReviewItems]);
+  const structuredReviewStateSignature = useMemo(
+    () => buildStructuredReviewStateSignature(structuredReviewSnapshot?.entries ?? []),
+    [structuredReviewSnapshot]
+  );
   const structuredReviewHasGlobalConfirmation = useMemo(
     () =>
       structuredReviewCounts.selected > 0 &&
-      structuredReviewConfirmedVersion != null &&
-      structuredReviewConfirmedVersion === structuredReviewRevisionVersion,
-    [structuredReviewConfirmedVersion, structuredReviewCounts.selected, structuredReviewRevisionVersion]
+      structuredReviewGlobalConfirmation?.confirmed === true &&
+      structuredReviewGlobalConfirmation.reviewStateSignature === structuredReviewStateSignature,
+    [structuredReviewCounts.selected, structuredReviewGlobalConfirmation, structuredReviewStateSignature]
   );
   const normalizedStructuredReviewSearchQuery = useMemo(
     () => normalizeImportedLoose(structuredReviewSearchQuery),
@@ -8260,7 +8356,7 @@ export default function IntelligentCatalogImportPanel({
     setStructuredReviewFilter("all");
     setStructuredReviewSearchQuery("");
     setStructuredReviewRevisionVersion(0);
-    setStructuredReviewConfirmedVersion(null);
+    setStructuredReviewGlobalConfirmation(null);
     setStructuredReviewPendingAction(null);
   }, [structuredSourceCandidatesSignature]);
   useEffect(() => {
@@ -8796,7 +8892,7 @@ export default function IntelligentCatalogImportPanel({
     setStructuredReviewFilter("all");
     setStructuredReviewSearchQuery("");
     setStructuredReviewRevisionVersion(0);
-    setStructuredReviewConfirmedVersion(null);
+    setStructuredReviewGlobalConfirmation(null);
     setStructuredReviewPendingAction(null);
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -9096,6 +9192,23 @@ export default function IntelligentCatalogImportPanel({
     setParentError(null);
     setParentSuccess(null);
     return false;
+  }
+
+  function buildStructuredReviewGlobalConfirmationPayload() {
+    if (!structuredReviewHasGlobalConfirmation || !structuredReviewGlobalConfirmation) {
+      return null;
+    }
+    return {
+      ...structuredReviewGlobalConfirmation,
+      reviewStateSignature: structuredReviewStateSignature,
+      revisionVersion: structuredReviewRevisionVersion,
+      summary: {
+        deselectedCount: structuredReviewCounts.deselected,
+        foundCount: structuredReviewCounts.found,
+        ignoredCount: structuredReviewCounts.ignored,
+        selectedCount: structuredReviewCounts.selected,
+      },
+    } satisfies IntelligentImportGlobalReviewConfirmation;
   }
 
   async function runVisualEvidenceScanBatch(params: {
@@ -9965,7 +10078,10 @@ export default function IntelligentCatalogImportPanel({
     }
   }
 
-  async function handleSaveImportedItemsToCatalog(options?: { skipGlobalConfirmation?: boolean }) {
+  async function handleSaveImportedItemsToCatalog(options?: {
+    globalReviewConfirmationOverride?: IntelligentImportGlobalReviewConfirmation | null;
+    skipGlobalConfirmation?: boolean;
+  }) {
     if (!organizationId || !storeId) {
       setParentError("Nao foi possivel identificar a organizacao e a loja ativa.");
       return;
@@ -10040,6 +10156,8 @@ export default function IntelligentCatalogImportPanel({
       stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
     });
     const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
+    const globalReviewConfirmation =
+      options?.globalReviewConfirmationOverride ?? buildStructuredReviewGlobalConfirmationPayload();
     const buildRequestBody = (
       validateOnly: boolean
     ): IntelligentImportSaveApprovedRequest => ({
@@ -10050,6 +10168,10 @@ export default function IntelligentCatalogImportPanel({
       importedFileIds,
       items: payloadItems,
       organizationId,
+      reviewAudit: {
+        globalReviewConfirmation,
+        structuredReviewSnapshot,
+      },
       selectedMediaRefs: selectedMediaRefBuild.selectedMediaRefs,
       storeId,
       validateOnly,
@@ -10169,7 +10291,10 @@ export default function IntelligentCatalogImportPanel({
     }
   }
 
-  async function handleValidateImportedItemsDryRun(options?: { skipGlobalConfirmation?: boolean }) {
+  async function handleValidateImportedItemsDryRun(options?: {
+    globalReviewConfirmationOverride?: IntelligentImportGlobalReviewConfirmation | null;
+    skipGlobalConfirmation?: boolean;
+  }) {
     if (!organizationId || !storeId) {
       setParentError("Nao foi possivel identificar a organizacao e a loja ativa.");
       return;
@@ -10244,6 +10369,8 @@ export default function IntelligentCatalogImportPanel({
       stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
     });
     const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
+    const globalReviewConfirmation =
+      options?.globalReviewConfirmationOverride ?? buildStructuredReviewGlobalConfirmationPayload();
     const requestBody: IntelligentImportSaveApprovedRequest = {
       context: {
         debugParser: parserDebugEnabled,
@@ -10252,6 +10379,10 @@ export default function IntelligentCatalogImportPanel({
       importedFileIds,
       items: payloadItems,
       organizationId,
+      reviewAudit: {
+        globalReviewConfirmation,
+        structuredReviewSnapshot,
+      },
       selectedMediaRefs: selectedMediaRefBuild.selectedMediaRefs,
       storeId,
       validateOnly: true,
@@ -12398,20 +12529,6 @@ export default function IntelligentCatalogImportPanel({
                     </div>
                   </div>
                   <div className="mt-4 grid gap-3 rounded-2xl border border-emerald-100 bg-white/80 p-3 md:grid-cols-[minmax(0,1fr)_320px]">
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-200">
-                        {structuredReviewCounts.found} encontrados
-                      </span>
-                      <span className="rounded-full bg-white px-3 py-1 font-medium text-emerald-900 ring-1 ring-emerald-200">
-                        {structuredReviewCounts.selected} selecionados
-                      </span>
-                      <span className="rounded-full bg-white px-3 py-1 font-medium text-amber-800 ring-1 ring-amber-200">
-                        {structuredReviewCounts.deselected} desmarcados
-                      </span>
-                      <span className="rounded-full bg-white px-3 py-1 font-medium text-slate-700 ring-1 ring-slate-200">
-                        {structuredReviewCounts.ignored} ignorados
-                      </span>
-                    </div>
                     <label className="relative block">
                       <span className="sr-only">Buscar item na revisao</span>
                       <svg
@@ -12433,27 +12550,29 @@ export default function IntelligentCatalogImportPanel({
                         className="w-full rounded-xl border border-emerald-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-800 outline-none ring-0 placeholder:text-slate-400"
                       />
                     </label>
-                    <div className="flex flex-wrap gap-2 md:col-span-2">
-                      {[
-                        ["all", "Todos"],
-                        ["selected", "Selecionados"],
-                        ["deselected", "Desmarcados"],
-                        ["ignored", "Ignorados"],
-                      ].map(([value, label]) => (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() => setStructuredReviewFilter(value as StructuredReviewListFilter)}
-                          className={cx(
-                            "rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition",
-                            structuredReviewFilter === value
-                              ? "bg-emerald-900 text-white ring-emerald-900"
-                              : "bg-white text-emerald-900 ring-emerald-200 hover:bg-emerald-50"
-                          )}
-                        >
-                          {label}
-                        </button>
-                      ))}
+                    <div className="flex flex-col gap-2 md:col-span-2 md:flex-row md:items-center md:justify-between">
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          ["all", "Todos", structuredReviewCounts.found],
+                          ["selected", "Selecionados", structuredReviewCounts.selected],
+                          ["deselected", "Desmarcados", structuredReviewCounts.deselected],
+                          ["ignored", "Ignorados", structuredReviewCounts.ignored],
+                        ].map(([value, label, count]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setStructuredReviewFilter(value as StructuredReviewListFilter)}
+                            className={cx(
+                              "rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition",
+                              structuredReviewFilter === value
+                                ? "bg-emerald-900 text-white ring-emerald-900"
+                                : "bg-white text-emerald-900 ring-emerald-200 hover:bg-emerald-50"
+                            )}
+                          >
+                            {label} ({count})
+                          </button>
+                        ))}
+                      </div>
                       {structuredReviewHasGlobalConfirmation ? (
                         <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-medium text-emerald-800 ring-1 ring-emerald-200">
                           Revisao global confirmada
@@ -13171,13 +13290,31 @@ export default function IntelligentCatalogImportPanel({
                         type="button"
                         onClick={() => {
                           const pendingAction = structuredReviewPendingAction;
-                          setStructuredReviewConfirmedVersion(structuredReviewRevisionVersion);
+                          const confirmation = {
+                            confirmed: true,
+                            confirmedAt: new Date().toISOString(),
+                            reviewStateSignature: structuredReviewStateSignature,
+                            revisionVersion: structuredReviewRevisionVersion,
+                            summary: {
+                              deselectedCount: structuredReviewCounts.deselected,
+                              foundCount: structuredReviewCounts.found,
+                              ignoredCount: structuredReviewCounts.ignored,
+                              selectedCount: structuredReviewCounts.selected,
+                            },
+                          } satisfies IntelligentImportGlobalReviewConfirmation;
+                          setStructuredReviewGlobalConfirmation(confirmation);
                           setStructuredReviewPendingAction(null);
                           if (pendingAction === "dry-run") {
-                            void handleValidateImportedItemsDryRun({ skipGlobalConfirmation: true });
+                            void handleValidateImportedItemsDryRun({
+                              globalReviewConfirmationOverride: confirmation,
+                              skipGlobalConfirmation: true,
+                            });
                             return;
                           }
-                          void handleSaveImportedItemsToCatalog({ skipGlobalConfirmation: true });
+                          void handleSaveImportedItemsToCatalog({
+                            globalReviewConfirmationOverride: confirmation,
+                            skipGlobalConfirmation: true,
+                          });
                         }}
                         className="rounded-xl bg-emerald-900 px-4 py-2 text-sm font-medium text-white"
                       >

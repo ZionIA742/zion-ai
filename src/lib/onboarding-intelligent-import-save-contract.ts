@@ -80,6 +80,36 @@ export type IntelligentImportSelectedMediaRef = {
   worksheetRowNumber?: number | null;
 };
 
+export type IntelligentImportGlobalReviewConfirmationSummary = {
+  deselectedCount: number;
+  foundCount: number;
+  ignoredCount: number;
+  selectedCount: number;
+};
+
+export type IntelligentImportGlobalReviewConfirmation = {
+  confirmed: true;
+  confirmedAt: string;
+  reviewStateSignature?: string | null;
+  revisionVersion?: number | null;
+  summary: IntelligentImportGlobalReviewConfirmationSummary;
+};
+
+export type IntelligentImportStructuredReviewSnapshotEntry = {
+  candidateKey: string;
+  finalCategory: IntelligentImportReviewedDestination;
+  finalFingerprint: string;
+  humanReviewConfirmed: boolean;
+  reviewRequired: boolean;
+  state: "selected" | "deselected" | "ignored";
+};
+
+export type IntelligentImportStructuredReviewSnapshot = {
+  entries: IntelligentImportStructuredReviewSnapshotEntry[];
+  kind: "structured_review_v1";
+  revisionVersion?: number | null;
+};
+
 export type IntelligentImportStagedMediaAsset = {
   id: string;
   associationStrength: IntelligentImportSelectedMediaAssociationMode;
@@ -107,6 +137,10 @@ export type IntelligentImportSaveApprovedRequest = {
   importedFileIds?: string[];
   items: IntelligentImportReviewedSaveItem[];
   organizationId: string;
+  reviewAudit?: {
+    globalReviewConfirmation?: IntelligentImportGlobalReviewConfirmation | null;
+    structuredReviewSnapshot?: IntelligentImportStructuredReviewSnapshot | null;
+  };
   selectedMediaRefs?: IntelligentImportSelectedMediaRef[];
   storeId: string;
   validateOnly: boolean;
@@ -286,6 +320,18 @@ export type IntelligentImportSaveApprovedResponse = {
   ok: boolean;
   photoPlan?: IntelligentImportSaveApprovedPhotoPlan;
   photoSaveResult?: IntelligentImportSaveApprovedPhotoSaveResult;
+  reviewAudit?: {
+    importFileAudit?: {
+      attempted: boolean;
+      error?: string | null;
+      persisted: boolean;
+      skippedReason?: string | null;
+      updatedImportFileIds: string[];
+      validateOnly: boolean;
+    };
+    globalReviewConfirmation?: IntelligentImportGlobalReviewConfirmation | null;
+    structuredReviewSnapshot?: IntelligentImportStructuredReviewSnapshot | null;
+  };
   summary: {
     blockedDuplicate: number;
     invalid: number;

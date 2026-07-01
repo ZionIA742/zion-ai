@@ -16,6 +16,7 @@ export async function POST(request: Request) {
       importedFileIds: Array.isArray(body.importedFileIds) ? body.importedFileIds : [],
       items: Array.isArray(body.items) ? body.items : [],
       organizationId: String(body.organizationId || "").trim(),
+      reviewAudit: body.reviewAudit,
       selectedMediaRefs: Array.isArray(body.selectedMediaRefs) ? body.selectedMediaRefs : [],
       storeId: String(body.storeId || "").trim(),
       validateOnly: Boolean(body.validateOnly),
