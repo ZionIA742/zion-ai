@@ -57,6 +57,50 @@ type CharacteristicRow = {
   value: string;
 };
 
+type ManualPriceStatus = "valid" | "missing";
+type ManualStockStatus = "available" | "zero" | "unknown" | "not_tracked";
+
+function resolveManualPriceStatus(value: number | null): ManualPriceStatus {
+  return value == null ? "missing" : "valid";
+}
+
+function resolveManualStockState(args: {
+  rawQuantity: string;
+  trackStock: boolean;
+}): {
+  stockQuantity: number | null;
+  stockStatus: ManualStockStatus;
+} {
+  if (!args.trackStock) {
+    return {
+      stockQuantity: null,
+      stockStatus: "not_tracked" as const,
+    };
+  }
+
+  const trimmedQuantity = args.rawQuantity.trim();
+  if (!trimmedQuantity) {
+    return {
+      stockQuantity: null,
+      stockStatus: "unknown" as const,
+    };
+  }
+
+  const parsedQuantity = Number(trimmedQuantity);
+  const normalizedQuantity = Number.isFinite(parsedQuantity) ? Math.max(0, Math.round(parsedQuantity)) : null;
+  if (normalizedQuantity == null) {
+    return {
+      stockQuantity: null,
+      stockStatus: "unknown" as const,
+    };
+  }
+
+  return {
+    stockQuantity: normalizedQuantity,
+    stockStatus: normalizedQuantity > 0 ? ("available" as const) : ("zero" as const),
+  };
+}
+
 const STORAGE_BUCKET = "pool-photos";
 const MAX_POOL_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
@@ -532,6 +576,10 @@ export default function PiscinasPage() {
       const parsedLength = parseLooseNumber(editPoolForm.length_m);
       const parsedDepth = parseLooseNumber(editPoolForm.depth_m);
       const parsedWeight = parseLooseNumber(editPoolForm.weight_kg);
+      const stockState = resolveManualStockState({
+        rawQuantity: editPoolForm.stock_quantity,
+        trackStock: editPoolForm.track_stock,
+      });
       const nextCapacity =
         parsedWidth != null && parsedLength != null && parsedDepth != null
           ? Math.max(1, Math.round(parsedWidth * parsedLength * parsedDepth * 1000))
@@ -551,11 +599,10 @@ export default function PiscinasPage() {
           max_capacity_l: nextCapacity,
           weight_kg: parsedWeight,
           is_active: editPoolForm.is_active,
+          price_status: resolveManualPriceStatus(parsedPrice),
+          stock_status: stockState.stockStatus,
           track_stock: editPoolForm.track_stock,
-          stock_quantity:
-            editPoolForm.track_stock && editPoolForm.stock_quantity.trim()
-              ? Number(editPoolForm.stock_quantity)
-              : null,
+          stock_quantity: stockState.stockQuantity,
         })
         .eq("id", poolId)
         .eq("organization_id", organizationId)

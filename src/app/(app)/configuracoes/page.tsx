@@ -220,6 +220,54 @@ type CatalogFormState = {
   track_stock: boolean;
 };
 
+type ManualPriceStatus = "valid" | "missing";
+type ManualStockStatus = "available" | "zero" | "unknown" | "not_tracked";
+
+function resolveManualPriceStatus(value: number | null): ManualPriceStatus {
+  return value == null ? "missing" : "valid";
+}
+
+function resolveManualPriceStatusFromCents(value: number | null): ManualPriceStatus {
+  return value == null ? "missing" : "valid";
+}
+
+function resolveManualStockState(args: {
+  rawQuantity: string;
+  trackStock: boolean;
+}): {
+  stockQuantity: number | null;
+  stockStatus: ManualStockStatus;
+} {
+  if (!args.trackStock) {
+    return {
+      stockQuantity: null,
+      stockStatus: "not_tracked" as const,
+    };
+  }
+
+  const trimmedQuantity = args.rawQuantity.trim();
+  if (!trimmedQuantity) {
+    return {
+      stockQuantity: null,
+      stockStatus: "unknown" as const,
+    };
+  }
+
+  const parsedQuantity = Number(trimmedQuantity.replace(",", "."));
+  const normalizedQuantity = Number.isFinite(parsedQuantity) ? Math.max(0, Math.round(parsedQuantity)) : null;
+  if (normalizedQuantity == null) {
+    return {
+      stockQuantity: null,
+      stockStatus: "unknown" as const,
+    };
+  }
+
+  return {
+    stockQuantity: normalizedQuantity,
+    stockStatus: normalizedQuantity > 0 ? ("available" as const) : ("zero" as const),
+  };
+}
+
 type OperationDraftState = {
   operating_days: string;
   operating_hours: string;
@@ -3875,7 +3923,6 @@ export default function ConfiguracoesPage() {
     const lengthM = parseNumberInput(poolForm.length_m);
     const depthM = parseNumberInput(poolForm.depth_m);
     const price = parseNumberInput(poolForm.price);
-    const parsedStock = parseNumberInput(poolForm.stock_quantity);
 
     if (!poolName) {
       setErrorText("Preencha pelo menos o nome da piscina antes de salvar.");
@@ -3924,6 +3971,10 @@ export default function ConfiguracoesPage() {
     try {
       const composedPoolDescription = buildPoolManualDescription(poolForm);
       const maxCapacityL = Math.max(1, Math.round(widthM * lengthM * depthM * 1000));
+      const stockState = resolveManualStockState({
+        rawQuantity: poolForm.stock_quantity,
+        trackStock: poolForm.track_stock,
+      });
 
       const insertPayload = {
         organization_id: organizationId,
@@ -3936,8 +3987,10 @@ export default function ConfiguracoesPage() {
         material,
         max_capacity_l: maxCapacityL,
         price,
+        price_status: resolveManualPriceStatus(price),
         description: composedPoolDescription || null,
-        stock_quantity: parsedStock === null ? null : Math.round(parsedStock),
+        stock_quantity: stockState.stockQuantity,
+        stock_status: stockState.stockStatus,
         is_active: poolForm.is_active,
         track_stock: poolForm.track_stock,
       };
@@ -4080,7 +4133,10 @@ export default function ConfiguracoesPage() {
 
     try {
       const parsedPrice = parseNumberInput(catalogForm.price);
-      const parsedStock = parseNumberInput(catalogForm.stock_quantity);
+      const stockState = resolveManualStockState({
+        rawQuantity: catalogForm.stock_quantity,
+        trackStock: catalogForm.track_stock,
+      });
       const metadataPayload = {
         categoria: catalogForm.category,
         brand: cleanText(catalogForm.brand) || null,
@@ -4104,10 +4160,14 @@ export default function ConfiguracoesPage() {
         name: itemName,
         description: cleanText(catalogForm.description) || null,
         price_cents: parsedPrice === null ? null : Math.round(parsedPrice * 100),
+        price_status: resolveManualPriceStatusFromCents(
+          parsedPrice === null ? null : Math.round(parsedPrice * 100)
+        ),
         currency: "BRL",
         is_active: catalogForm.is_active,
         track_stock: catalogForm.track_stock,
-        stock_quantity: parsedStock === null ? null : Math.round(parsedStock),
+        stock_quantity: stockState.stockQuantity,
+        stock_status: stockState.stockStatus,
         metadata: metadataPayload,
       };
 
@@ -4805,6 +4865,14 @@ export default function ConfiguracoesPage() {
         return;
       }
 
+      if (widthM === null || lengthM === null || depthM === null) {
+        setManualCatalogItemModalError(
+          "Preencha largura, comprimento e profundidade da piscina antes de salvar."
+        );
+        setManualCatalogItemModalSuccess(null);
+        return;
+      }
+
       if (widthInput && widthM === null) {
         setManualCatalogItemModalError("Preencha uma largura válida em metros.");
         setManualCatalogItemModalSuccess(null);
@@ -4868,7 +4936,10 @@ export default function ConfiguracoesPage() {
           widthM !== null && lengthM !== null && depthM !== null
             ? Math.max(1, Math.round(widthM * lengthM * depthM * 1000))
             : null;
-        const stockQuantity = poolForm.track_stock ? stockValue ?? 0 : stockValue;
+        const stockState = resolveManualStockState({
+          rawQuantity: poolForm.stock_quantity,
+          trackStock: poolForm.track_stock,
+        });
 
         const { data: createdPool, error: insertError } = await supabase
           .from("pools")
@@ -4884,8 +4955,10 @@ export default function ConfiguracoesPage() {
             max_capacity_l: maxCapacityL,
             weight_kg: null,
             price,
+            price_status: resolveManualPriceStatus(price),
             description: composedPoolDescription || null,
-            stock_quantity: stockQuantity,
+            stock_quantity: stockState.stockQuantity,
+            stock_status: stockState.stockStatus,
             is_active: poolForm.is_active,
             track_stock: poolForm.track_stock,
           })
@@ -5060,7 +5133,10 @@ export default function ConfiguracoesPage() {
         }
       }
 
-      const stockQuantity = catalogForm.track_stock ? stockValue ?? 0 : stockValue;
+      const stockState = resolveManualStockState({
+        rawQuantity: catalogForm.stock_quantity,
+        trackStock: catalogForm.track_stock,
+      });
       const metadataPayload = {
         categoria: manualCatalogItemCategory,
         brand: cleanText(catalogForm.brand) || null,
@@ -5086,10 +5162,14 @@ export default function ConfiguracoesPage() {
           name: itemName,
           description: cleanText(catalogForm.description) || null,
           price_cents: price === null ? null : Math.round(price * 100),
+          price_status: resolveManualPriceStatusFromCents(
+            price === null ? null : Math.round(price * 100)
+          ),
           currency: "BRL",
           is_active: catalogForm.is_active,
           track_stock: catalogForm.track_stock,
-          stock_quantity: stockQuantity,
+          stock_quantity: stockState.stockQuantity,
+          stock_status: stockState.stockStatus,
           metadata: metadataPayload,
         })
         .select("id")

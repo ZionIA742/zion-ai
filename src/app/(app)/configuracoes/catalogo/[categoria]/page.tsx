@@ -93,6 +93,50 @@ type CharacteristicRow = {
   value: string;
 };
 
+type ManualPriceStatus = "valid" | "missing";
+type ManualStockStatus = "available" | "zero" | "unknown" | "not_tracked";
+
+function resolveManualPriceStatusFromCents(value: number | null): ManualPriceStatus {
+  return value == null ? "missing" : "valid";
+}
+
+function resolveManualStockState(args: {
+  rawQuantity: string;
+  trackStock: boolean;
+}): {
+  stockQuantity: number | null;
+  stockStatus: ManualStockStatus;
+} {
+  if (!args.trackStock) {
+    return {
+      stockQuantity: null,
+      stockStatus: "not_tracked" as const,
+    };
+  }
+
+  const trimmedQuantity = args.rawQuantity.trim();
+  if (!trimmedQuantity) {
+    return {
+      stockQuantity: null,
+      stockStatus: "unknown" as const,
+    };
+  }
+
+  const parsedQuantity = Number(trimmedQuantity.replace(/[^\d-]/g, ""));
+  const normalizedQuantity = Number.isFinite(parsedQuantity) ? Math.max(0, Math.round(parsedQuantity)) : null;
+  if (normalizedQuantity == null) {
+    return {
+      stockQuantity: null,
+      stockStatus: "unknown" as const,
+    };
+  }
+
+  return {
+    stockQuantity: normalizedQuantity,
+    stockStatus: normalizedQuantity > 0 ? ("available" as const) : ("zero" as const),
+  };
+}
+
 const STORAGE_BUCKET = "store-catalog-photos";
 const MAX_CATALOG_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
@@ -743,6 +787,11 @@ export default function CatalogCategoryPage() {
       const parsedStockQuantity = editForm.track_stock && editForm.stock_quantity.trim()
         ? Number(editForm.stock_quantity.replace(/[^\d-]/g, ""))
         : null;
+      const stockState = resolveManualStockState({
+        rawQuantity: editForm.stock_quantity,
+        trackStock: editForm.track_stock,
+      });
+      const priceCents = priceInputToCents(editForm.price);
 
       if (editForm.track_stock && editForm.stock_quantity.trim() && !Number.isFinite(parsedStockQuantity)) {
         throw new Error("A quantidade em estoque precisa ser um número válido.");
@@ -783,10 +832,12 @@ export default function CatalogCategoryPage() {
         name: editForm.name.trim(),
         sku: editForm.sku.trim() || null,
         description: finalDescription || null,
-        price_cents: priceInputToCents(editForm.price),
+        price_cents: priceCents,
         is_active: editForm.is_active,
+        price_status: resolveManualPriceStatusFromCents(priceCents),
+        stock_status: stockState.stockStatus,
         track_stock: editForm.track_stock,
-        stock_quantity: parsedStockQuantity,
+        stock_quantity: stockState.stockQuantity,
         metadata: nextMetadata,
       };
 
