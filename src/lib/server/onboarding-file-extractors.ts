@@ -1524,14 +1524,75 @@ function chooseHeaderRow(rows: unknown[][]) {
   return bestIndex;
 }
 
-function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
+type XlsxWorksheetLogicalRowEntry = {
+  row: unknown[];
+  physicalWorksheetRowNumber: number;
+  logicalWorksheetRowNumber: number;
+};
+
+type XlsxWorksheetLogicalCoordinates = {
+  itemBlocks: string[];
+  physicalToLogicalRowMap: Map<number, number>;
+  usefulRowsCount: number;
+  headerIndex: number;
+  dataRowsCount: number;
+  headerPreview: string[];
+};
+
+function getWorksheetDisplayValue(cell: XLSX.CellObject | undefined) {
+  if (!cell) return "";
+  if (typeof cell.w === "string") return cell.w;
+  if (cell.v == null) return "";
+  if (typeof cell.v === "string") return cell.v;
+  return XLSX.utils.format_cell(cell);
+}
+
+function readWorksheetRowsPreservingPhysicalLayout(sheet: XLSX.WorkSheet) {
+  const ref = String(sheet["!ref"] || "").trim();
+  if (!ref) return [] as unknown[][];
+
+  const range = XLSX.utils.decode_range(ref);
+  const rows: unknown[][] = [];
+
+  for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+    const row: unknown[] = [];
+
+    for (let columnIndex = range.s.c; columnIndex <= range.e.c; columnIndex += 1) {
+      const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+      row.push(getWorksheetDisplayValue(sheet[cellAddress]));
+    }
+
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function buildSheetLogicalCoordinates(
+  sheetName: string,
+  rows: unknown[][]
+): XlsxWorksheetLogicalCoordinates {
   const usefulRows = rows
-    .map((row, index) => ({
+    .map((row, physicalIndex) => ({
       row,
-      worksheetRowNumber: index + 1,
+      physicalWorksheetRowNumber: physicalIndex + 1,
     }))
-    .filter((entry) => isUsefulRow(entry.row));
-  if (usefulRows.length === 0) return [];
+    .filter((entry) => isUsefulRow(entry.row))
+    .map((entry, usefulIndex) => ({
+      ...entry,
+      logicalWorksheetRowNumber: usefulIndex + 1,
+    }));
+
+  if (usefulRows.length === 0) {
+    return {
+      itemBlocks: [],
+      physicalToLogicalRowMap: new Map<number, number>(),
+      usefulRowsCount: 0,
+      headerIndex: 0,
+      dataRowsCount: 0,
+      headerPreview: [],
+    };
+  }
 
   const headerIndex = chooseHeaderRow(usefulRows.map((entry) => entry.row));
   const headerRow = usefulRows[headerIndex]?.row || [];
@@ -1539,10 +1600,11 @@ function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
   const dataRows = usefulRows.slice(headerIndex + 1);
 
   const blocks: string[] = [];
+  const physicalToLogicalRowMap = new Map<number, number>();
 
-  dataRows.forEach(({ row, worksheetRowNumber }, index) => {
+  dataRows.forEach(({ row, logicalWorksheetRowNumber, physicalWorksheetRowNumber }, index) => {
     const pairs: string[] = [];
-    const sheetScopedKey = `${normalizeLooseKey(sheetName)}::row::${worksheetRowNumber}`;
+    const sheetScopedKey = `${normalizeLooseKey(sheetName)}::row::${logicalWorksheetRowNumber}`;
 
     headers.forEach((header, columnIndex) => {
       const value = String(row[columnIndex] ?? "")
@@ -1556,12 +1618,13 @@ function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
     });
 
     if (pairs.length === 0) return;
+    physicalToLogicalRowMap.set(physicalWorksheetRowNumber, logicalWorksheetRowNumber);
 
     blocks.push(
       [
-        `=== ITEM ${index + 1} | PLANILHA: ${sheetName} | LINHA: ${worksheetRowNumber} ===`,
+        `=== ITEM ${index + 1} | PLANILHA: ${sheetName} | LINHA: ${logicalWorksheetRowNumber} ===`,
         `Planilha: ${sheetName}`,
-        `Linha da planilha: ${worksheetRowNumber}`,
+        `Linha da planilha: ${logicalWorksheetRowNumber}`,
         `Sheet scoped key: ${sheetScopedKey}`,
         ...pairs,
       ].join("\n")
@@ -1577,9 +1640,22 @@ function buildItemBlocksFromSheet(sheetName: string, rows: unknown[][]) {
     blocks: blocks.length,
     firstBlockPreview: blocks[0]?.slice(0, 300) ?? "",
     lastBlockPreview: blocks[blocks.length - 1]?.slice(0, 300) ?? "",
+    rowMapPreview: Array.from(physicalToLogicalRowMap.entries())
+      .slice(0, 5)
+      .map(([physicalWorksheetRowNumber, logicalWorksheetRowNumber]) => ({
+        physicalWorksheetRowNumber,
+        logicalWorksheetRowNumber,
+      })),
   });
 
-  return blocks;
+  return {
+    itemBlocks: blocks,
+    physicalToLogicalRowMap,
+    usefulRowsCount: usefulRows.length,
+    headerIndex,
+    dataRowsCount: dataRows.length,
+    headerPreview: headers.slice(0, 20),
+  };
 }
 
 async function extractTextFromXlsx(buffer: Buffer) {
@@ -1600,14 +1676,8 @@ async function extractTextFromXlsx(buffer: Buffer) {
     const sheet = workbook.Sheets[sheetName];
     if (!sheet) continue;
 
-    const rows = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,
-      raw: false,
-      defval: "",
-      blankrows: false,
-    }) as unknown[][];
-
-    const itemBlocks = buildItemBlocksFromSheet(sheetName, rows);
+    const rows = readWorksheetRowsPreservingPhysicalLayout(sheet);
+    const { itemBlocks } = buildSheetLogicalCoordinates(sheetName, rows);
 
     parts.push(`PLANILHA: ${sheetName}`);
 
@@ -1866,7 +1936,24 @@ type XlsxDrawingAnchor = {
 async function extractImagesFromXlsx(
   buffer: Buffer
 ): Promise<{ assets: ExtractedImageAsset[]; diagnostics: XlsxImageExtractionDiagnostics }> {
+  const workbook = XLSX.read(buffer, {
+    type: "buffer",
+    cellDates: false,
+    raw: false,
+    dense: false,
+  });
   const zip = await JSZip.loadAsync(buffer);
+  const sheetLogicalCoordinatesByName = new Map<
+    string,
+    ReturnType<typeof buildSheetLogicalCoordinates>
+  >();
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    const rows = readWorksheetRowsPreservingPhysicalLayout(sheet);
+    sheetLogicalCoordinatesByName.set(sheetName, buildSheetLogicalCoordinates(sheetName, rows));
+  }
 
   const workbookXmlPath = "xl/workbook.xml";
   const workbookXml = zip.files[workbookXmlPath]
@@ -2087,13 +2174,19 @@ async function extractImagesFromXlsx(
     const sheetName =
       separatorIndex >= 0 ? sheetDrawingKey.slice(0, separatorIndex) : sheetDrawingKey;
     const drawingPath = separatorIndex >= 0 ? sheetDrawingKey.slice(separatorIndex + 2) : "";
+    const logicalCoordinates = sheetLogicalCoordinatesByName.get(sheetName);
+    const physicalToLogicalRowMap = logicalCoordinates?.physicalToLogicalRowMap;
 
     for (const anchor of anchors) {
       const mapped = drawingMediaMap.get(`${drawingPath}::${anchor.relationshipId}`);
       if (!mapped) continue;
 
-      const worksheetRowNumber =
+      const physicalWorksheetRowNumber =
         typeof anchor.rowIndex === "number" ? anchor.rowIndex + 1 : undefined;
+      const worksheetRowNumber =
+        typeof physicalWorksheetRowNumber === "number"
+          ? physicalToLogicalRowMap?.get(physicalWorksheetRowNumber)
+          : undefined;
       const sheetScopedKey =
         sheetName && typeof worksheetRowNumber === "number"
           ? `${normalizeLooseKey(sheetName)}::row::${worksheetRowNumber}`
@@ -2144,6 +2237,21 @@ async function extractImagesFromXlsx(
       sheetName: mappedSheetName,
       sheetPath,
     })),
+    sheetLogicalCoordinates: Array.from(sheetLogicalCoordinatesByName.entries()).map(
+      ([sheetName, logicalCoordinates]) => ({
+        sheetName,
+        usefulRows: logicalCoordinates.usefulRowsCount,
+        headerIndex: logicalCoordinates.headerIndex,
+        dataRows: logicalCoordinates.dataRowsCount,
+        mappedRows: logicalCoordinates.physicalToLogicalRowMap.size,
+        rowMapPreview: Array.from(logicalCoordinates.physicalToLogicalRowMap.entries())
+          .slice(0, 5)
+          .map(([physicalWorksheetRowNumber, logicalWorksheetRowNumber]) => ({
+            physicalWorksheetRowNumber,
+            logicalWorksheetRowNumber,
+          })),
+      })
+    ),
     mediaBuffers: mediaBuffers.size,
     drawingMediaLinks: drawingMediaMap.size,
     count: assets.length,
