@@ -1,0 +1,28 @@
+﻿=== ITEM 1 ===
+Nome: Produto Alfa
+SKU: P8F2A001
+Categoria: Químico
+Preço: R$ 123,45
+Estoque: 5
+Descrição: Produto de teste com preço e estoque disponíveis.
+
+=== ITEM 2 ===
+Nome: Produto Beta
+SKU: P8F2B002
+Categoria: Acessório
+Preço: R$ 0,00
+Estoque: 0
+Descrição: Produto de teste com preço e estoque explicitamente zerados.
+
+=== ITEM 3 ===
+Nome: Produto Gama
+SKU: P8F2C003
+Categoria: Outro
+Descrição: Produto de teste sem preço e sem estoque informados.
+
+=== ITEM 4 ===
+Nome: Produto Delta
+SKU: P8F2D004
+Categoria: Químico
+Preço: Sob consulta
+Descrição: Produto de teste com preço informado sob consulta.

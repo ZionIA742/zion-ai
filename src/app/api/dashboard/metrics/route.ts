@@ -1,6 +1,11 @@
 // src/app/api/dashboard/metrics/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import {
+  getCatalogPriceSemantics,
+  getCatalogPriceSemanticsFromNumber,
+  getCatalogStockSemantics,
+} from "@/lib/catalog/presentation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -108,9 +113,11 @@ type CatalogItemRow = {
   name: string;
   price_cents: number | null;
   currency: string;
+  price_status?: string | null;
   is_active: boolean;
   track_stock: boolean;
   stock_quantity: number | null;
+  stock_status?: string | null;
   metadata: Record<string, any> | null;
   created_at: string;
   updated_at: string;
@@ -120,9 +127,11 @@ type PoolRow = {
   id: string;
   name: string | null;
   price: number | string | null;
+  price_status?: string | null;
   is_active: boolean;
   track_stock: boolean;
   stock_quantity: number | null;
+  stock_status?: string | null;
   created_at: string | null;
 };
 
@@ -272,6 +281,10 @@ function getCatalogCategoryLabel(category: string) {
 
 function mapCatalogItemForDashboard(item: CatalogItemRow) {
   const category = getCatalogCategory(item);
+  const price = getCatalogPriceSemantics({
+    priceStatus: item.price_status,
+    priceCents: item.price_cents,
+  });
 
   return {
     id: item.id,
@@ -279,34 +292,33 @@ function mapCatalogItemForDashboard(item: CatalogItemRow) {
     name: item.name,
     category,
     categoryLabel: getCatalogCategoryLabel(category),
-    priceCents: item.price_cents,
+    priceCents: price.priceCents,
     currency: item.currency,
+    priceStatus: price.resolvedStatus,
     stockQuantity: item.stock_quantity,
+    stockStatus: item.stock_status,
     isActive: item.is_active,
     trackStock: item.track_stock,
   };
 }
 
-function poolPriceToCents(value: number | string | null | undefined) {
-  const numericValue = Number(value || 0);
-
-  if (!Number.isFinite(numericValue) || numericValue <= 0) {
-    return 0;
-  }
-
-  return Math.round(numericValue * 100);
-}
-
 function mapPoolForDashboard(pool: PoolRow) {
+  const price = getCatalogPriceSemanticsFromNumber({
+    priceStatus: pool.price_status,
+    price: pool.price,
+  });
+
   return {
     id: `pool:${pool.id}`,
     sku: null,
     name: pool.name || "Piscina sem nome",
     category: "pools",
     categoryLabel: "Piscinas",
-    priceCents: poolPriceToCents(pool.price),
+    priceCents: price.priceCents,
     currency: "BRL",
+    priceStatus: price.resolvedStatus,
     stockQuantity: pool.stock_quantity,
+    stockStatus: pool.stock_status,
     isActive: pool.is_active,
     trackStock: pool.track_stock,
   };
@@ -471,7 +483,7 @@ export async function GET(request: Request) {
 
       supabase
         .from("store_catalog_items")
-        .select("id,sku,name,price_cents,currency,is_active,track_stock,stock_quantity,metadata,created_at,updated_at")
+        .select("id,sku,name,price_cents,currency,price_status,is_active,track_stock,stock_quantity,stock_status,metadata,created_at,updated_at")
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
         .order("updated_at", { ascending: false })
@@ -479,7 +491,7 @@ export async function GET(request: Request) {
 
       supabase
         .from("pools")
-        .select("id,name,price,is_active,track_stock,stock_quantity,created_at")
+        .select("id,name,price,price_status,is_active,track_stock,stock_quantity,stock_status,created_at")
         .eq("organization_id", organizationId)
         .eq("store_id", storeId)
         .order("created_at", { ascending: false })
@@ -640,35 +652,108 @@ export async function GET(request: Request) {
     const allDashboardCatalogItems = [...dashboardPoolItems, ...dashboardCatalogItems];
 
     const activeCatalogItems = allDashboardCatalogItems.filter((item) => item.isActive);
-    const stockTrackedItems = allDashboardCatalogItems.filter((item) => item.trackStock);
-    const zeroStockItems = stockTrackedItems.filter((item) => (item.stockQuantity || 0) <= 0);
+    const stockTrackedItems = allDashboardCatalogItems.filter((item) => {
+      const stock = getCatalogStockSemantics({
+        stockStatus: item.stockStatus,
+        stockQuantity: item.stockQuantity,
+        trackStock: item.trackStock,
+      });
+      return !stock.isNotTracked;
+    });
+    const zeroStockItems = stockTrackedItems.filter((item) =>
+      getCatalogStockSemantics({
+        stockStatus: item.stockStatus,
+        stockQuantity: item.stockQuantity,
+        trackStock: item.trackStock,
+      }).isZero
+    );
     const lowStockItems = stockTrackedItems
       .filter((item) => {
-        const stock = item.stockQuantity ?? 0;
-        return stock > 0 && stock <= 3;
+        const stock = getCatalogStockSemantics({
+          stockStatus: item.stockStatus,
+          stockQuantity: item.stockQuantity,
+          trackStock: item.trackStock,
+        });
+        return stock.isAvailable && stock.quantity != null && stock.quantity <= 3;
       })
-      .sort((a, b) => (a.stockQuantity ?? 0) - (b.stockQuantity ?? 0));
+      .sort((a, b) => {
+        const stockA =
+          getCatalogStockSemantics({
+            stockStatus: a.stockStatus,
+            stockQuantity: a.stockQuantity,
+            trackStock: a.trackStock,
+          }).quantity ?? Number.MAX_SAFE_INTEGER;
+        const stockB =
+          getCatalogStockSemantics({
+            stockStatus: b.stockStatus,
+            stockQuantity: b.stockQuantity,
+            trackStock: b.trackStock,
+          }).quantity ?? Number.MAX_SAFE_INTEGER;
+        return stockA - stockB;
+      });
 
-    const estimatedInventoryValueCents = stockTrackedItems.reduce((sum, item) => {
-      const price = item.priceCents || 0;
-      const quantity = item.stockQuantity || 0;
-      return sum + price * quantity;
+    const estimatedInventoryValueCents = activeCatalogItems.reduce((sum, item) => {
+      const stock = getCatalogStockSemantics({
+        stockStatus: item.stockStatus,
+        stockQuantity: item.stockQuantity,
+        trackStock: item.trackStock,
+      });
+      const price = getCatalogPriceSemantics({
+        priceStatus: item.priceStatus,
+        priceCents: item.priceCents,
+      });
+      if (!stock.isAvailable || stock.quantity == null || !price.hasNumericPrice || price.priceCents == null) {
+        return sum;
+      }
+
+      return sum + price.priceCents * stock.quantity;
     }, 0);
 
-    const inventoryValueByCategoryCents = stockTrackedItems.reduce(
+    const inventoryValueByCategoryCents = activeCatalogItems.reduce(
       (acc, item) => {
+        const stock = getCatalogStockSemantics({
+          stockStatus: item.stockStatus,
+          stockQuantity: item.stockQuantity,
+          trackStock: item.trackStock,
+        });
+        const price = getCatalogPriceSemantics({
+          priceStatus: item.priceStatus,
+          priceCents: item.priceCents,
+        });
+        if (!stock.isAvailable || stock.quantity == null || !price.hasNumericPrice || price.priceCents == null) {
+          return acc;
+        }
+
         const category = item.category;
-        const price = item.priceCents || 0;
-        const quantity = item.stockQuantity || 0;
-        acc[category] = (acc[category] || 0) + price * quantity;
+        acc[category] = (acc[category] || 0) + price.priceCents * stock.quantity;
         return acc;
       },
       { pools: 0, chemicals: 0, accessories: 0, others: 0 } as Record<string, number>
     );
 
     const inStockItems = stockTrackedItems
-      .filter((item) => (item.stockQuantity || 0) > 0)
-      .sort((a, b) => (b.stockQuantity || 0) - (a.stockQuantity || 0));
+      .filter((item) =>
+        getCatalogStockSemantics({
+          stockStatus: item.stockStatus,
+          stockQuantity: item.stockQuantity,
+          trackStock: item.trackStock,
+        }).isAvailable
+      )
+      .sort((a, b) => {
+        const stockA =
+          getCatalogStockSemantics({
+            stockStatus: a.stockStatus,
+            stockQuantity: a.stockQuantity,
+            trackStock: a.trackStock,
+          }).quantity ?? 0;
+        const stockB =
+          getCatalogStockSemantics({
+            stockStatus: b.stockStatus,
+            stockQuantity: b.stockQuantity,
+            trackStock: b.trackStock,
+          }).quantity ?? 0;
+        return stockB - stockA;
+      });
 
     const successfulAiRuns = aiRuns.filter((run) => {
       const status = normalizeText(run.status);

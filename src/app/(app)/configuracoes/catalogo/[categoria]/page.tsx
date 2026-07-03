@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
+import { getCatalogPriceSemantics, getCatalogStockSemantics } from "@/lib/catalog/presentation";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type CatalogItemMetadata = {
@@ -49,9 +50,11 @@ type CatalogItemRow = {
   description: string | null;
   price_cents: number | null;
   currency: string;
+  price_status?: string | null;
   is_active: boolean;
   track_stock: boolean;
   stock_quantity: number | null;
+  stock_status?: string | null;
   metadata: CatalogItemMetadata | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -151,14 +154,6 @@ function categoryLabel(category: string) {
   if (category === "acessorios") return "Acessórios";
   if (category === "quimicos") return "Produtos químicos";
   return "Outros itens";
-}
-
-function formatMoney(cents: number | null | undefined) {
-  if (typeof cents !== "number") return "Sem preço";
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(cents / 100);
 }
 
 function formatFileSize(size: number) {
@@ -329,6 +324,15 @@ function pushCharacteristic(rows: CharacteristicRow[], label: string, value: unk
 function buildCatalogCharacteristics(item: CatalogItemRow, category: string): CharacteristicRow[] {
   const metadata = item.metadata || {};
   const rows: CharacteristicRow[] = [];
+  const price = getCatalogPriceSemantics({
+    priceStatus: item.price_status,
+    priceCents: item.price_cents,
+  });
+  const stock = getCatalogStockSemantics({
+    stockStatus: item.stock_status,
+    stockQuantity: item.stock_quantity,
+    trackStock: item.track_stock,
+  });
 
   const dimensionsParts = [
     metadata.width_cm ? `L ${formatLooseNumber(metadata.width_cm)} cm` : "",
@@ -337,7 +341,8 @@ function buildCatalogCharacteristics(item: CatalogItemRow, category: string): Ch
   ].filter(Boolean);
 
   pushCharacteristic(rows, "Nome", item.name);
-  if (typeof item.price_cents === "number") pushCharacteristic(rows, "Preço", formatMoney(item.price_cents));
+  pushCharacteristic(rows, "Preço", price.label);
+  pushCharacteristic(rows, "Estoque", stock.valueLabel);
   pushCharacteristic(rows, "SKU", item.sku || metadata.sku);
   pushCharacteristic(rows, "Marca", metadata.brand);
   pushCharacteristic(rows, "Linha / modelo", metadata.line || metadata.model);
@@ -1161,6 +1166,15 @@ async function handleDeleteItem(itemId: string) {
             const itemPhotos = photosByItemId[item.id] || [];
             const isEditing = editingItemId === item.id;
             const characteristics = buildCatalogCharacteristics(item, category);
+            const priceLabel = getCatalogPriceSemantics({
+              priceStatus: item.price_status,
+              priceCents: item.price_cents,
+            }).label;
+            const stockLabel = getCatalogStockSemantics({
+              stockStatus: item.stock_status,
+              stockQuantity: item.stock_quantity,
+              trackStock: item.track_stock,
+            }).label;
             const complementaryDescription = buildComplementaryDescription(
               item,
               characteristics
@@ -1183,15 +1197,9 @@ async function handleDeleteItem(itemId: string) {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      <DetailChip value={formatMoney(item.price_cents)} />
+                      <DetailChip value={priceLabel} />
                       <DetailChip value={item.is_active ? "Ativo" : "Inativo"} />
-                      <DetailChip
-                        value={
-                          item.track_stock
-                            ? `Estoque: ${item.stock_quantity ?? 0}`
-                            : "Sem estoque"
-                        }
-                      />
+                      <DetailChip value={stockLabel} />
                       <button
                         type="button"
                         onClick={() => startEditing(item)}

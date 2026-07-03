@@ -3,6 +3,10 @@
 import Link from "next/link";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
+import {
+  getCatalogPriceSemanticsFromNumber,
+  getCatalogStockSemantics,
+} from "@/lib/catalog/presentation";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type PoolRow = {
@@ -18,10 +22,12 @@ type PoolRow = {
   max_capacity_l: number | null;
   weight_kg: number | null;
   price: number | null;
+  price_status?: string | null;
   description: string | null;
   is_active: boolean;
   track_stock: boolean;
   stock_quantity: number | null;
+  stock_status?: string | null;
   created_at?: string | null;
 };
 
@@ -104,14 +110,6 @@ function resolveManualStockState(args: {
 const STORAGE_BUCKET = "pool-photos";
 const MAX_POOL_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
-
-function moneyBRL(value: number | null) {
-  if (value == null) return "Sem preço";
-  return `R$ ${Number(value).toLocaleString("pt-BR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
 
 function getPublicImageUrl(storagePath: string) {
   const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
@@ -238,8 +236,18 @@ function pushCharacteristic(rows: CharacteristicRow[], label: string, value: str
 
 function buildPoolCharacteristics(pool: PoolRow): CharacteristicRow[] {
   const rows: CharacteristicRow[] = [];
+  const price = getCatalogPriceSemanticsFromNumber({
+    priceStatus: pool.price_status,
+    price: pool.price,
+  });
+  const stock = getCatalogStockSemantics({
+    stockStatus: pool.stock_status,
+    stockQuantity: pool.stock_quantity,
+    trackStock: pool.track_stock,
+  });
   pushCharacteristic(rows, "Nome", pool.name || "");
-  if (pool.price != null) pushCharacteristic(rows, "Preço", moneyBRL(pool.price));
+  pushCharacteristic(rows, "Preço", price.label);
+  pushCharacteristic(rows, "Estoque", stock.valueLabel);
   pushCharacteristic(rows, "Formato", pool.shape);
   pushCharacteristic(rows, "Material", pool.material);
   if (pool.width_m != null) pushCharacteristic(rows, "Largura", `${pool.width_m} m`);
@@ -872,6 +880,15 @@ export default function PiscinasPage() {
             const poolPhotos = photosByPoolId[pool.id] || [];
             const isEditing = editingPoolId === pool.id;
             const characteristics = buildPoolCharacteristics(pool);
+            const priceLabel = getCatalogPriceSemanticsFromNumber({
+              priceStatus: pool.price_status,
+              price: pool.price,
+            }).label;
+            const stockLabel = getCatalogStockSemantics({
+              stockStatus: pool.stock_status,
+              stockQuantity: pool.stock_quantity,
+              trackStock: pool.track_stock,
+            }).label;
             const complementaryDescription = buildComplementaryDescription(
               pool,
               characteristics
@@ -896,15 +913,9 @@ export default function PiscinasPage() {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      <DetailChip value={moneyBRL(pool.price)} />
+                      <DetailChip value={priceLabel} />
                       <DetailChip value={pool.is_active ? "Ativa" : "Inativa"} />
-                      <DetailChip
-                        value={
-                          pool.track_stock
-                            ? `Estoque: ${pool.stock_quantity ?? 0}`
-                            : "Sem estoque"
-                        }
-                      />
+                      <DetailChip value={stockLabel} />
                       <button
                         type="button"
                         onClick={() => startEditing(pool)}

@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
+import { getCatalogPriceSemantics, getCatalogStockSemantics } from "@/lib/catalog/presentation";
 
 type DashboardMetrics = {
   ok: boolean;
@@ -141,54 +142,62 @@ type DashboardMetrics = {
       scheduledEnd: string;
       lastPromptedAt: string | null;
     }>;
-    allCatalogItems?: Array<{
-      id: string;
-      sku: string | null;
-      name: string;
-      category?: string;
-      categoryLabel?: string;
-      priceCents: number | null;
-      currency: string;
-      stockQuantity: number | null;
-      isActive: boolean;
-      trackStock?: boolean;
-    }>;
+      allCatalogItems?: Array<{
+        id: string;
+        sku: string | null;
+        name: string;
+        category?: string;
+        categoryLabel?: string;
+        priceCents: number | null;
+        priceStatus?: string | null;
+        currency: string;
+        stockQuantity: number | null;
+        stockStatus?: string | null;
+        isActive: boolean;
+        trackStock?: boolean;
+      }>;
     inStockItems?: Array<{
       id: string;
       sku: string | null;
-      name: string;
-      category?: string;
-      categoryLabel?: string;
-      priceCents: number | null;
-      currency: string;
-      stockQuantity: number | null;
-      isActive: boolean;
-      trackStock?: boolean;
-    }>;
+        name: string;
+        category?: string;
+        categoryLabel?: string;
+        priceCents: number | null;
+        priceStatus?: string | null;
+        currency: string;
+        stockQuantity: number | null;
+        stockStatus?: string | null;
+        isActive: boolean;
+        trackStock?: boolean;
+      }>;
     lowStockItems: Array<{
       id: string;
       sku: string | null;
-      name: string;
-      category?: string;
-      categoryLabel?: string;
-      priceCents: number | null;
-      currency: string;
-      stockQuantity: number | null;
-      isActive: boolean;
-      trackStock?: boolean;
-    }>;
+        name: string;
+        category?: string;
+        categoryLabel?: string;
+        priceCents: number | null;
+        priceStatus?: string | null;
+        currency: string;
+        stockQuantity: number | null;
+        stockStatus?: string | null;
+        isActive: boolean;
+        trackStock?: boolean;
+      }>;
     zeroStockItems: Array<{
       id: string;
       sku: string | null;
-      name: string;
-      category?: string;
-      categoryLabel?: string;
-      priceCents: number | null;
-      currency: string;
-      stockQuantity: number | null;
-      isActive: boolean;
-      trackStock?: boolean;
-    }>;
+        name: string;
+        category?: string;
+        categoryLabel?: string;
+        priceCents: number | null;
+        priceStatus?: string | null;
+        currency: string;
+        stockQuantity: number | null;
+        stockStatus?: string | null;
+        isActive: boolean;
+        trackStock?: boolean;
+      }>;
     operationalAlerts: Array<{
       type: string;
       title: string;
@@ -226,6 +235,64 @@ function formatCurrencyFromCents(value: number | null | undefined) {
     style: "currency",
     currency: "BRL",
   }).format(Number(value || 0) / 100);
+}
+
+function getDashboardItemStockLabel(item: {
+  stockQuantity: number | null;
+  stockStatus?: string | null;
+  trackStock?: boolean;
+}) {
+  return getCatalogStockSemantics({
+    stockStatus: item.stockStatus,
+    stockQuantity: item.stockQuantity,
+    trackStock: item.trackStock,
+  }).label;
+}
+
+function getDashboardItemStockValue(item: {
+  stockQuantity: number | null;
+  stockStatus?: string | null;
+  trackStock?: boolean;
+}) {
+  return getCatalogStockSemantics({
+    stockStatus: item.stockStatus,
+    stockQuantity: item.stockQuantity,
+    trackStock: item.trackStock,
+  }).valueLabel;
+}
+
+function getDashboardItemPriceLabel(item: {
+  priceCents: number | null;
+  priceStatus?: string | null;
+}) {
+  return getCatalogPriceSemantics({
+    priceStatus: item.priceStatus,
+    priceCents: item.priceCents,
+  }).label;
+}
+
+function getDashboardInventoryValueLabel(item: {
+  priceCents: number | null;
+  priceStatus?: string | null;
+  stockQuantity: number | null;
+  stockStatus?: string | null;
+  trackStock?: boolean;
+}) {
+  const price = getCatalogPriceSemantics({
+    priceStatus: item.priceStatus,
+    priceCents: item.priceCents,
+  });
+  const stock = getCatalogStockSemantics({
+    stockStatus: item.stockStatus,
+    stockQuantity: item.stockQuantity,
+    trackStock: item.trackStock,
+  });
+
+  if (!price.hasNumericPrice || price.priceCents == null || !stock.isAvailable || stock.quantity == null) {
+    return "Não calculado";
+  }
+
+  return formatCurrencyFromCents(price.priceCents * stock.quantity);
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -517,7 +584,9 @@ function CatalogItemsList({
     name: string;
     categoryLabel?: string;
     priceCents: number | null;
+    priceStatus?: string | null;
     stockQuantity: number | null;
+    stockStatus?: string | null;
     isActive: boolean;
     trackStock?: boolean;
   }>;
@@ -556,17 +625,15 @@ function CatalogItemsList({
             </div>
             <div>
               <span className="font-medium text-zinc-950">Estoque: </span>
-              {item.trackStock === false ? "Sem controle" : formatNumber(item.stockQuantity || 0)}
+              {getDashboardItemStockValue(item)}
             </div>
             <div>
               <span className="font-medium text-zinc-950">Valor unitário: </span>
-              {formatCurrencyFromCents(item.priceCents)}
+              {getDashboardItemPriceLabel(item)}
             </div>
             <div>
               <span className="font-medium text-zinc-950">Valor em estoque: </span>
-              {item.trackStock === false
-                ? "Sem controle"
-                : formatCurrencyFromCents((item.priceCents || 0) * (item.stockQuantity || 0))}
+              {getDashboardInventoryValueLabel(item)}
             </div>
           </div>
         </div>
@@ -3004,12 +3071,12 @@ export default function DashboardPage() {
                         </div>
 
                         <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
-                          Qtd: {formatNumber(item.stockQuantity || 0)}
+                          {getDashboardItemStockLabel(item)}
                         </span>
                       </div>
 
                       <p className="mt-3 text-sm text-zinc-500">
-                        Valor unitário: {formatCurrencyFromCents(item.priceCents)}
+                        Valor unitário: {getDashboardItemPriceLabel(item)}
                       </p>
                     </div>
                   ))}
@@ -3043,12 +3110,12 @@ export default function DashboardPage() {
                         </div>
 
                         <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
-                          Qtd: {formatNumber(item.stockQuantity || 0)}
+                          {getDashboardItemStockLabel(item)}
                         </span>
                       </div>
 
                       <p className="mt-3 text-sm text-zinc-500">
-                        Valor unitário: {formatCurrencyFromCents(item.priceCents)}
+                        Valor unitário: {getDashboardItemPriceLabel(item)}
                       </p>
                     </div>
                   ))}

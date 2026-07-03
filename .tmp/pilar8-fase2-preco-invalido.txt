@@ -1,0 +1,7 @@
+﻿=== ITEM 1 ===
+Nome: Epsilon
+SKU: P8F2E005
+Categoria: Químico
+Preço: ABCDE
+Estoque: 2
+Descrição: Item de teste com preço textual inválido e estoque disponível.
