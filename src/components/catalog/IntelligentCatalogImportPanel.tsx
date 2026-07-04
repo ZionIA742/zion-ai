@@ -828,6 +828,12 @@ function classifyStructuredReviewedPrice(value: string): {
   };
 }
 
+function hasStructuredInvalidPriceReviewRequirement(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview
+) {
+  return classifyStructuredReviewedPrice(extractImportedPriceFieldValue(item)).priceStatus === "invalid";
+}
+
 function parseVisualReviewPriceInput(value: string): {
   amount: number | null;
   cents: number | null;
@@ -2607,6 +2613,9 @@ function buildStructuredReviewIgnoreReasons(
   if (["true", "1", "sim", "yes"].includes(normalizeImportedLoose(missingPrice))) {
     reasons.push("Preco nao informado.");
   }
+  if (hasStructuredInvalidPriceReviewRequirement(item)) {
+    reasons.push("Preco invalido na importacao. Revise e confirme manualmente antes de salvar.");
+  }
   const shouldSuppressMissingSkuReason = destination === "pool" && hasStrongSuspicionSignal;
   if (
     !shouldSuppressMissingSkuReason &&
@@ -2752,6 +2761,9 @@ function shouldStartStructuredImportCandidateSelected(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   photoResolution: StructuredReviewPhotoResolution
 ) {
+  if (hasStructuredInvalidPriceReviewRequirement(item)) {
+    return false;
+  }
   if (
     isSafeStructuredManualReviewAutoApproval({
       item,
@@ -2879,6 +2891,9 @@ function classifyStructuredSelectionReason(args: {
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
   photoResolution: StructuredReviewPhotoResolution;
 }) {
+  if (hasStructuredInvalidPriceReviewRequirement(args.item)) {
+    return "invalid_price_requires_review";
+  }
   if (
     isSafeStructuredManualReviewAutoApproval({
       item: args.item,
@@ -3250,6 +3265,20 @@ function buildStructuredReviewedSourceItem(
   const reviewConfirmedByUser = candidate.humanReviewConfirmed;
   const reviewConfirmationState = reviewConfirmedByUser ? "confirmed" : "pending";
   const reviewConfirmationSource = reviewConfirmedByUser ? "structured_selection_toggle" : "";
+  const invalidPriceRequiresReview = hasStructuredInvalidPriceReviewRequirement(
+    draft
+      ? {
+          ...candidate.sourceItem,
+          metadata: {
+            ...(candidate.sourceItem.metadata ?? {}),
+            reviewed_price: draft.price.trim(),
+            price: draft.price.trim(),
+            preco: draft.price.trim(),
+            "preÃ§o": draft.price.trim(),
+          },
+        }
+      : candidate.sourceItem
+  );
   if (!draft) {
     const normalizedSourceSku = normalizeImportedSkuPlaceholder(resolveImportedCatalogSku(candidate.sourceItem));
     const extractedStockQuantity = extractImportedCatalogStockQuantity(candidate.sourceItem);
@@ -3272,6 +3301,7 @@ function buildStructuredReviewedSourceItem(
           ? {}
           : { reviewed_stock_quantity: String(extractedStockQuantity) }),
         dedup_key: buildImportedSaveKey(sourceItemWithNormalizedSku),
+        review_required: invalidPriceRequiresReview ? "true" : extractMetadataValue(candidate.sourceItem, ["review_required"]) || "",
         human_review_confirmed: reviewConfirmedByUser ? "true" : "false",
         review_confirmed_by_user: reviewConfirmedByUser ? "true" : "false",
         review_confirmation_state: reviewConfirmationState,
@@ -3327,6 +3357,7 @@ function buildStructuredReviewedSourceItem(
     reviewed_price: draft.price.trim(),
     reviewed_stock_quantity: stockValue != null ? String(Math.max(0, Math.round(stockValue))) : "",
     reviewed_category: finalCategory,
+    review_required: invalidPriceRequiresReview ? "true" : extractMetadataValue(candidate.sourceItem, ["review_required"]) || "",
     human_review_confirmed: reviewConfirmedByUser ? "true" : "false",
     review_confirmed_by_user: reviewConfirmedByUser ? "true" : "false",
     review_confirmation_state: reviewConfirmationState,
@@ -3452,6 +3483,7 @@ function buildReviewedImportedSaveItem(
   const reviewRequiredByMetadata = ["true", "1", "sim", "yes"].includes(
     normalizeImportedLoose(extractMetadataValue(item, ["review_required", "weak_candidate"]))
   );
+  const invalidPriceRequiresReview = hasStructuredInvalidPriceReviewRequirement(item);
   const canAutoApproveManualReview = options?.photoResolution
     ? isSafeStructuredManualReviewAutoApproval({
         item,
@@ -3493,7 +3525,8 @@ function buildReviewedImportedSaveItem(
       : null,
     priceCents: isPool ? null : reviewedPrice.cents,
     priceStatus: reviewedPrice.priceStatus,
-    reviewRequired: canAutoApproveManualReview ? false : reviewRequiredByMetadata,
+    reviewRequired:
+      invalidPriceRequiresReview || (canAutoApproveManualReview ? false : reviewRequiredByMetadata),
     reviewState: "approved",
     selected: true,
     sku: isPool ? "" : resolveImportedCatalogSku(item),
