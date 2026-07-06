@@ -249,6 +249,18 @@ function buildImageSourceLocationKey(args: {
   return "";
 }
 
+function buildDocxImageSourceLocationKey(args: {
+  sourceFileName: string;
+  docxBlockKey?: string | null;
+}) {
+  const sourceFileName = String(args.sourceFileName || "").trim();
+  const docxBlockKey = String(args.docxBlockKey || "").trim();
+  if (sourceFileName && docxBlockKey) {
+    return `${sourceFileName}::${docxBlockKey}`;
+  }
+  return docxBlockKey || "";
+}
+
 function dataUrlToBuffer(dataUrl: string) {
   const normalized = String(dataUrl || "").trim();
   const commaIndex = normalized.indexOf(",");
@@ -258,7 +270,7 @@ function dataUrlToBuffer(dataUrl: string) {
   return Buffer.from(normalized.slice(commaIndex + 1), "base64");
 }
 
-async function persistStagedXlsxMediaAssets(args: {
+async function persistStagedExtractedMediaAssets(args: {
   extractedImagePreview: IntelligentImportPreviewImage[];
   importedFiles: IntelligentImportPersistedFile[];
   organizationId: string;
@@ -268,15 +280,14 @@ async function persistStagedXlsxMediaAssets(args: {
   const mediaStagingWarnings: string[] = [];
   const stagedMediaAssets: IntelligentImportStagedMediaAsset[] = [];
   const seenStagingKeys = new Set<string>();
-  const importedXlsxFiles = args.importedFiles.filter((file) => {
-    const extension = getFileExtension(file.originalFileName);
-    return extension === "xlsx" || extension === "xlsm";
-  });
-  const importedFileByName = new Map(
-    importedXlsxFiles.map((file) => [normalizeLoose(file.originalFileName), file])
-  );
+  const importedFilesByName = new Map<string, IntelligentImportPersistedFile>();
+  for (const importedFile of args.importedFiles) {
+    const key = normalizeLoose(importedFile.originalFileName);
+    if (!key || importedFilesByName.has(key)) continue;
+    importedFilesByName.set(key, importedFile);
+  }
 
-  if (args.extractedImagePreview.length === 0 || importedXlsxFiles.length === 0) {
+  if (args.extractedImagePreview.length === 0 || args.importedFiles.length === 0) {
     return {
       mediaStagingWarnings,
       stagedMediaAssetIds: [] as string[],
@@ -301,47 +312,70 @@ async function persistStagedXlsxMediaAssets(args: {
 
   for (const image of args.extractedImagePreview) {
     const sourceKind = String(image.source || "").trim().toLowerCase();
-    if (sourceKind !== "xlsx") continue;
+    if (sourceKind !== "xlsx" && sourceKind !== "docx") continue;
 
     const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim();
-    const importedFile = importedFileByName.get(normalizeLoose(sourceFileName));
+    const importedFile = importedFilesByName.get(normalizeLoose(sourceFileName));
     if (!importedFile?.id || !importedFile.importBatchId) {
       mediaStagingWarnings.push(
-        `Imagem XLSX ${image.fileName || "(sem nome)"} nao encontrou importFile/importBatch correspondente para staging.`
+        `Imagem ${sourceKind.toUpperCase()} ${image.fileName || "(sem nome)"} nao encontrou importFile/importBatch correspondente para staging.`
       );
       continue;
     }
 
+    const isXlsxImage = sourceKind === "xlsx";
+    const isDocxImage = sourceKind === "docx";
     const worksheetRowNumber =
       typeof image.worksheetRowNumber === "number" && Number.isFinite(image.worksheetRowNumber) && image.worksheetRowNumber > 0
         ? Math.floor(image.worksheetRowNumber)
         : null;
     const sheetScopedKey = String(image.sheetScopedKey || "").trim() || null;
-    const sourceLocationKey =
-      buildImageSourceLocationKey({
-        sourceFileName,
-        sheetName: image.sheetName,
-        sheetScopedKey,
-        worksheetRowNumber,
-      }) || null;
-    const sourceImageId = [
-      normalizeLoose(sourceFileName),
-      normalizeLoose(String(sheetScopedKey || sourceLocationKey || image.anchorCell || "")),
-      normalizeLoose(String(image.imageRelationshipId || image.fileName || "")),
-    ]
-      .filter(Boolean)
-      .join("::");
+    const docxBlockKey = String(image.docxBlockKey || "").trim() || null;
+    const sourceLocationKey = isXlsxImage
+      ? buildImageSourceLocationKey({
+          sourceFileName,
+          sheetName: image.sheetName,
+          sheetScopedKey,
+          worksheetRowNumber,
+        }) || null
+      : buildDocxImageSourceLocationKey({
+          sourceFileName,
+          docxBlockKey,
+        }) || null;
+    const sourceImageId = isXlsxImage
+      ? [
+          normalizeLoose(sourceFileName),
+          normalizeLoose(String(sheetScopedKey || sourceLocationKey || image.anchorCell || "")),
+          normalizeLoose(String(image.imageRelationshipId || image.fileName || "")),
+        ]
+          .filter(Boolean)
+          .join("::")
+      : [
+          normalizeLoose(sourceFileName),
+          normalizeLoose(String(image.docxRelId || image.fileName || "")),
+          normalizeLoose(String(sourceLocationKey || docxBlockKey || "")),
+        ]
+          .filter(Boolean)
+          .join("::");
 
-    if (!sourceFileName || (!sheetScopedKey && !sourceLocationKey) || worksheetRowNumber == null) {
+    if (
+      !sourceFileName ||
+      (isXlsxImage && ((!sheetScopedKey && !sourceLocationKey) || worksheetRowNumber == null)) ||
+      (isDocxImage && !sourceLocationKey)
+    ) {
       mediaStagingWarnings.push(
-        `Imagem XLSX ${image.fileName || "(sem nome)"} ficou fora do staging por faltar sourceFileName/sheetScopedKey/worksheetRowNumber fortes.`
+        isXlsxImage
+          ? `Imagem XLSX ${image.fileName || "(sem nome)"} ficou fora do staging por faltar sourceFileName/sheetScopedKey/worksheetRowNumber fortes.`
+          : `Imagem DOCX ${image.fileName || "(sem nome)"} ficou fora do staging por faltar sourceFileName/docxBlockKey fortes.`
       );
       continue;
     }
 
     const stagingAssetId = crypto.randomUUID();
     const fileExtension = getMediaFileExtension(image.fileName, image.mimeType);
-    const stagedFileNameBase = String(image.fileName || `xlsx-row-image.${fileExtension}`).trim();
+    const stagedFileNameBase = String(
+      image.fileName || (isXlsxImage ? `xlsx-row-image.${fileExtension}` : `docx-media-image.${fileExtension}`)
+    ).trim();
     const stagedFileName = stagedFileNameBase.includes(".")
       ? stagedFileNameBase
       : `${stagedFileNameBase}.${fileExtension}`;
@@ -351,9 +385,11 @@ async function persistStagedXlsxMediaAssets(args: {
       const checksum = crypto.createHash("sha256").update(buffer).digest("hex");
       const dedupeKey = [
         importedFile.importBatchId,
+        sourceKind,
         normalizeLoose(sourceImageId || ""),
         normalizeLoose(sourceLocationKey || ""),
         normalizeLoose(sheetScopedKey || ""),
+        normalizeLoose(docxBlockKey || ""),
         String(worksheetRowNumber || ""),
         checksum,
       ].join("::");
@@ -379,14 +415,14 @@ async function persistStagedXlsxMediaAssets(args: {
 
       if (uploadError) {
         mediaStagingWarnings.push(
-          `Falha ao subir staging de imagem XLSX ${stagedFileName}: ${uploadError.message}`
+          `Falha ao subir staging de imagem ${sourceKind.toUpperCase()} ${stagedFileName}: ${uploadError.message}`
         );
         continue;
       }
 
       const insertPayload = {
         id: stagingAssetId,
-        association_strength: "strong_auto",
+        association_strength: isXlsxImage ? "strong_auto" : "visual_evidence",
         checksum,
         created_by: args.uploadedBy || null,
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
@@ -401,27 +437,39 @@ async function persistStagedXlsxMediaAssets(args: {
           imageOrder: typeof image.imageOrder === "number" ? image.imageOrder : null,
           imageRelationshipId: image.imageRelationshipId || null,
           rowIndex: typeof image.rowIndex === "number" ? image.rowIndex : null,
-          source: "xlsx",
+          source: sourceKind,
           sourceFileName,
           sheetName: image.sheetName || null,
+          docxRelId: image.docxRelId || null,
+          docxMediaPath: image.docxMediaPath || null,
+          docxBodyIndex:
+            typeof image.docxBodyIndex === "number" ? Math.floor(image.docxBodyIndex) : null,
+          docxTableIndex:
+            typeof image.docxTableIndex === "number" ? Math.floor(image.docxTableIndex) : null,
+          docxTableCell: image.docxTableCell || null,
+          docxBlockKey,
+          documentOrderKey: image.documentOrderKey || null,
+          placement: image.placement || null,
+          evidenceType: image.evidenceType || null,
+          associationState: image.associationState || null,
         },
         normalized_mime_type: image.mimeType || null,
         organization_id: args.organizationId,
         original_mime_type: image.mimeType || null,
         page_number: null,
-        requires_user_confirmation: false,
+        requires_user_confirmation: isDocxImage,
         sheet_scoped_key: sheetScopedKey,
         size_bytes: buffer.length,
         source_file_name: sourceFileName,
         source_image_id: sourceImageId || null,
-        source_kind: "xlsx_row_image",
+        source_kind: isXlsxImage ? "xlsx_row_image" : "docx_media",
         source_location_key: sourceLocationKey,
         status: "staged",
         storage_bucket: "store-import-files",
         storage_path: storagePath,
         store_id: args.storeId,
         width: null,
-        worksheet_row_number: worksheetRowNumber,
+        worksheet_row_number: isXlsxImage ? worksheetRowNumber : null,
       };
 
       const { data: createdRow, error: insertError } = await supabase
@@ -442,13 +490,13 @@ async function persistStagedXlsxMediaAssets(args: {
           );
         }
         mediaStagingWarnings.push(
-          `Falha ao registrar staging de imagem XLSX ${stagedFileName}: ${insertError.message}`
+          `Falha ao registrar staging de imagem ${sourceKind.toUpperCase()} ${stagedFileName}: ${insertError.message}`
         );
         continue;
       }
 
       stagedMediaAssets.push({
-        associationStrength: "strong_auto",
+        associationStrength: isXlsxImage ? "strong_auto" : "visual_evidence",
         fileName: String((createdRow as any).file_name || stagedFileName),
         id: String(createdRow.id || stagingAssetId),
         importBatchId: String((createdRow as any).import_batch_id || importedFile.importBatchId || "").trim() || null,
@@ -458,7 +506,7 @@ async function persistStagedXlsxMediaAssets(args: {
         sheetScopedKey: String((createdRow as any).sheet_scoped_key || "").trim() || null,
         sizeBytes: Number((createdRow as any).size_bytes || buffer.length),
         sourceFileName: String((createdRow as any).source_file_name || sourceFileName || "").trim() || null,
-        sourceKind: "xlsx_row_image",
+        sourceKind: isXlsxImage ? "xlsx_row_image" : "docx_media",
         sourceLocationKey: String((createdRow as any).source_location_key || sourceLocationKey || "").trim() || null,
         stagingStorageRef: `store-import-files/${String((createdRow as any).storage_path || storagePath)}`,
         storageBucket: String((createdRow as any).storage_bucket || "store-import-files"),
@@ -466,11 +514,13 @@ async function persistStagedXlsxMediaAssets(args: {
         worksheetRowNumber:
           typeof (createdRow as any).worksheet_row_number === "number"
             ? Math.floor((createdRow as any).worksheet_row_number)
-            : worksheetRowNumber,
+            : isXlsxImage
+              ? worksheetRowNumber
+              : null,
       });
     } catch (error) {
       mediaStagingWarnings.push(
-        `Falha inesperada ao persistir staging de imagem XLSX ${image.fileName || "(sem nome)"}: ${
+        `Falha inesperada ao persistir staging de imagem ${sourceKind.toUpperCase()} ${image.fileName || "(sem nome)"}: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
@@ -1211,7 +1261,7 @@ export async function runOnboardingIntelligentImport(
             importSummary: summary,
             source: params.source,
           });
-    const stagedMediaPersistence = await persistStagedXlsxMediaAssets({
+    const stagedMediaPersistence = await persistStagedExtractedMediaAssets({
       extractedImagePreview: aliased.imagePreview,
       importedFiles: persistedRawFiles.importedFiles,
       organizationId: params.organizationId,

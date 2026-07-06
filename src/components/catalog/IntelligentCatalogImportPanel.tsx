@@ -12,6 +12,7 @@ import {
   type VisualDocumentAnalysis,
 } from "@/lib/visual-catalog-document-analysis";
 import type {
+  IntelligentImportDocxMediaReviewAudit,
   IntelligentImportGlobalReviewConfirmation,
   IntelligentImportWritablePriceStatus,
   IntelligentImportStagedMediaAsset,
@@ -255,6 +256,19 @@ type ImportedSelectedMediaRefDebug = {
     sheetScopedKey: string | null;
     worksheetRowNumber: number | null;
   }>;
+};
+type ManualDocxSelectedMediaRefInput = {
+  clientItemId: string;
+  fileName: string | null;
+  importBatchId: string | null;
+  importFileId: string | null;
+  mediaRefId: string;
+  mimeType: string | null;
+  sourceFileName: string | null;
+  sourceImageId: string | null;
+  sourceLocationKey: string | null;
+  stagingAssetId: string;
+  stagingStorageRef: string | null;
 };
 type VisualReviewSaveResult = {
   savedCount: number;
@@ -1216,6 +1230,16 @@ function buildStructuredPreviewImageSourceLocationKey(image: VisualReviewExtract
   }
   return "";
 }
+function buildStructuredPreviewDocxSourceLocationKey(image: VisualReviewExtractedImagePreview) {
+  const sourceFileName = normalizeStructuredReviewSourceFileName(
+    image.originalSourceFileName || image.sourceFileName
+  );
+  const docxBlockKey = normalizeImportedLoose(String(image.docxBlockKey || "").trim());
+  if (sourceFileName && docxBlockKey) {
+    return `${sourceFileName}::${docxBlockKey}`;
+  }
+  return docxBlockKey || "";
+}
 function findStructuredReviewStagedAssetForImage(
   image: VisualReviewExtractedImagePreview,
   stagedMediaAssets: IntelligentImportStagedMediaAsset[]
@@ -1248,6 +1272,31 @@ function findStructuredReviewStagedAssetForImage(
         assetWorksheetRowNumber != null &&
         worksheetRowNumber === assetWorksheetRowNumber)
     );
+  });
+
+  return matches.length === 1 ? matches[0] : null;
+}
+function findStructuredReviewExtractedDocxImageForStagedAsset(
+  stagedAsset: IntelligentImportStagedMediaAsset,
+  images: VisualReviewExtractedImagePreview[]
+) {
+  const assetSourceKind = normalizeImportedLoose(String(stagedAsset.sourceKind || "").trim());
+  if (assetSourceKind !== "docx_media") return null;
+
+  const assetSourceFileName = normalizeStructuredReviewSourceFileName(stagedAsset.sourceFileName);
+  const assetSourceLocationKey = normalizeImportedLoose(String(stagedAsset.sourceLocationKey || "").trim());
+
+  const matches = images.filter((image) => {
+    if (normalizeImportedLoose(String(image.source || "")) !== "docx") return false;
+    const imageSourceFileName = normalizeStructuredReviewSourceFileName(
+      image.originalSourceFileName || image.sourceFileName
+    );
+    if (assetSourceFileName && imageSourceFileName && assetSourceFileName !== imageSourceFileName) return false;
+    const imageSourceLocationKey = normalizeImportedLoose(buildStructuredPreviewDocxSourceLocationKey(image));
+    if (assetSourceLocationKey && imageSourceLocationKey) {
+      return assetSourceLocationKey === imageSourceLocationKey;
+    }
+    return false;
   });
 
   return matches.length === 1 ? matches[0] : null;
@@ -1592,6 +1641,22 @@ type PersistedIntelligentImportState = {
   result: IntelligentImportResponse | null;
   successMessage: string | null;
   errorMessage: string | null;
+  structuredDocxMediaDraft?: PersistedStructuredDocxMediaDraft | null;
+};
+type PersistedStructuredDocxMediaDraftEntry = {
+  clientItemId: string | null;
+  decision: "associated" | "not_use";
+  importBatchId: string | null;
+  importFileId: string | null;
+  selectedCandidateId: string | null;
+  sourceFileName: string | null;
+  stagingAssetId: string;
+};
+type PersistedStructuredDocxMediaDraft = {
+  entries: PersistedStructuredDocxMediaDraftEntry[];
+  importedFileIds: string[];
+  importBatchIds: string[];
+  kind: "docx_media_draft_v1";
 };
 type VisualAnalysisCacheFileMeta = {
   name: string;
@@ -1668,6 +1733,18 @@ type StructuredCandidateDraft = {
   installationNotes: string;
   application: string;
   technicalNotes: string;
+};
+type StructuredPendingDocxMediaDecisionStatus = "pending" | "associated" | "not_use";
+type StructuredPendingDocxMediaDecision = {
+  selectedCandidateId: string | null;
+  status: StructuredPendingDocxMediaDecisionStatus;
+};
+type StructuredPendingDocxMediaReviewEntry = {
+  stagedAsset: IntelligentImportStagedMediaAsset;
+  image: VisualReviewExtractedImagePreview | null;
+  decision: StructuredPendingDocxMediaDecision;
+  sourceLocationKey: string;
+  targetCandidate: StructuredUnifiedReviewItem | null;
 };
 type StructuredPreSaveValidationItem = {
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
@@ -1959,16 +2036,81 @@ function removeFromLocalStorageSafe(key: string) {
   }
 }
 
+function buildPersistableIntelligentImportResult(
+  result: IntelligentImportResponse | null
+): IntelligentImportResponse | null {
+  if (!result?.ok) return result;
+  if (isVisualPdfImportResult(result)) {
+    return null;
+  }
+  return {
+    ...result,
+    extractedImagePreview: Array.isArray(result.extractedImagePreview)
+      ? result.extractedImagePreview.map((image) => ({
+          ...image,
+          dataUrl: "",
+        }))
+      : [],
+    parserDebug: undefined,
+  };
+}
+
+function normalizePersistedStructuredDocxMediaDraft(
+  value: unknown
+): PersistedStructuredDocxMediaDraft | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind !== "docx_media_draft_v1" || !Array.isArray(candidate.entries)) return null;
+
+  const importedFileIds = Array.isArray(candidate.importedFileIds)
+    ? candidate.importedFileIds.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  const importBatchIds = Array.isArray(candidate.importBatchIds)
+    ? candidate.importBatchIds.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+
+  const entries: PersistedStructuredDocxMediaDraftEntry[] = [];
+  const seenStagingAssetIds = new Set<string>();
+  for (const rawEntry of candidate.entries) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) continue;
+    const entry = rawEntry as Record<string, unknown>;
+    const stagingAssetId = String(entry.stagingAssetId || "").trim();
+    const decision = String(entry.decision || "").trim();
+    if (!stagingAssetId || seenStagingAssetIds.has(stagingAssetId)) continue;
+    if (decision !== "associated" && decision !== "not_use") continue;
+    seenStagingAssetIds.add(stagingAssetId);
+    entries.push({
+      clientItemId: String(entry.clientItemId || "").trim() || null,
+      decision: decision as PersistedStructuredDocxMediaDraftEntry["decision"],
+      importBatchId: String(entry.importBatchId || "").trim() || null,
+      importFileId: String(entry.importFileId || "").trim() || null,
+      selectedCandidateId: String(entry.selectedCandidateId || "").trim() || null,
+      sourceFileName: String(entry.sourceFileName || "").trim() || null,
+      stagingAssetId,
+    });
+  }
+
+  return {
+    entries,
+    importedFileIds: Array.from(new Set(importedFileIds)),
+    importBatchIds: Array.from(new Set(importBatchIds)),
+    kind: "docx_media_draft_v1",
+  };
+}
+
 function buildLightPersistedIntelligentImportState(params: {
   selectedFiles: IntelligentImportSelectedFilePreview[];
+  result: IntelligentImportResponse | null;
   successMessage: string | null;
   errorMessage: string | null;
+  structuredDocxMediaDraft?: PersistedStructuredDocxMediaDraft | null;
 }): PersistedIntelligentImportState {
   return {
     selectedFiles: params.selectedFiles,
-    result: null,
+    result: buildPersistableIntelligentImportResult(params.result),
     successMessage: params.successMessage,
     errorMessage: params.errorMessage,
+    structuredDocxMediaDraft: params.structuredDocxMediaDraft || null,
   };
 }
 function decorateIntelligentImportResultWithImageFallback(
@@ -2168,6 +2310,51 @@ function getImportedFilesFromResult(result: IntelligentImportResponse | null) {
   return result.importedFiles.filter((file) => Boolean(String(file.id || "").trim()));
 }
 
+function getImportedBatchIdsFromResult(result: IntelligentImportResponse | null) {
+  return Array.from(
+    new Set(
+      getImportedFilesFromResult(result)
+        .map((file) => String(file.importBatchId || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function buildStructuredDocxMediaDraftFromEntries(args: {
+  docxMediaEntries: StructuredPendingDocxMediaReviewEntry[];
+  importedBatchIds: string[];
+  importedFileIds: string[];
+  selectedTargetClientItemIdByCandidateId: Map<string, string>;
+}) {
+  const entries = args.docxMediaEntries.flatMap((entry) => {
+    if (entry.decision.status === "pending") return [];
+    const clientItemId =
+      entry.decision.status === "associated" && entry.targetCandidate
+        ? args.selectedTargetClientItemIdByCandidateId.get(entry.targetCandidate.candidate.id) || null
+        : null;
+    return [
+      {
+        clientItemId,
+        decision:
+          entry.decision.status === "associated" && entry.targetCandidate ? "associated" : "not_use",
+        importBatchId: entry.stagedAsset.importBatchId || null,
+        importFileId: entry.stagedAsset.importFileId || null,
+        selectedCandidateId: entry.targetCandidate?.candidate.id || entry.decision.selectedCandidateId || null,
+        sourceFileName: entry.stagedAsset.sourceFileName || null,
+        stagingAssetId: entry.stagedAsset.id,
+      } satisfies PersistedStructuredDocxMediaDraftEntry,
+    ];
+  });
+
+  if (entries.length === 0) return null;
+  return {
+    entries,
+    importedFileIds: Array.from(new Set(args.importedFileIds.filter(Boolean))),
+    importBatchIds: Array.from(new Set(args.importedBatchIds.filter(Boolean))),
+    kind: "docx_media_draft_v1",
+  } satisfies PersistedStructuredDocxMediaDraft;
+}
+
 function normalizeImportedFileLikeName(value: string | null | undefined) {
   return normalizeImportedLoose(String(value || "").replace(/\.[^.]+$/g, "").trim());
 }
@@ -2189,7 +2376,7 @@ function matchesImportedSourceFileName(
 function buildSelectedMediaRefsForSave(args: {
   images: NonNullable<Extract<IntelligentImportResponse, { ok: true }>["extractedImagePreview"]>;
   items: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview>;
-  confirmedDocxImageKeysByItemKey?: Record<string, string[] | undefined>;
+  manualDocxSelections?: ManualDocxSelectedMediaRefInput[];
   importedFiles?: Array<{
     id: string;
     importBatchId?: string | null;
@@ -2222,6 +2409,7 @@ function buildSelectedMediaRefsForSave(args: {
   }
 
   const stagedAssets = Array.isArray(args.stagedMediaAssets) ? args.stagedMediaAssets : [];
+  const manualDocxSelections = Array.isArray(args.manualDocxSelections) ? args.manualDocxSelections : [];
   const importedFiles = Array.isArray(args.importedFiles) ? args.importedFiles : [];
   const importedFilesByName = new Map<string, Array<(typeof importedFiles)[number]>>();
   for (const importedFile of importedFiles) {
@@ -2231,60 +2419,45 @@ function buildSelectedMediaRefsForSave(args: {
     current.push(importedFile);
     importedFilesByName.set(key, current);
   }
-  if (stagedAssets.length === 0) {
+  if (stagedAssets.length === 0 && manualDocxSelections.length === 0) {
     diagnostics.push("Nenhum stagedMediaAsset forte de XLSX/XLSM disponivel; photoPlan seguira vazio neste request.");
+  }
+  const seenMediaRefIds = new Set<string>();
+  for (const selection of manualDocxSelections) {
+    if (!selection.clientItemId || !selection.mediaRefId || !selection.stagingAssetId) continue;
+    if (seenMediaRefIds.has(selection.mediaRefId)) continue;
+    seenMediaRefIds.add(selection.mediaRefId);
+    selectedMediaRefs.push({
+      associationMode: "weak_confirmed",
+      clientItemId: selection.clientItemId,
+      confirmedByUser: true,
+      fileName: selection.fileName,
+      importBatchId: selection.importBatchId,
+      importFileId: selection.importFileId,
+      mediaRefId: selection.mediaRefId,
+      mimeType: selection.mimeType,
+      pageNumber: null,
+      sheetScopedKey: null,
+      sizeBytes: null,
+      sourceFileName: selection.sourceFileName,
+      sourceImageId: selection.sourceImageId,
+      sourceKind: "docx_media",
+      sourceLocationKey: selection.sourceLocationKey,
+      stagingAssetId: selection.stagingAssetId,
+      stagingStorageRef: selection.stagingStorageRef,
+      worksheetRowNumber: null,
+    });
   }
 
   let skippedWithoutStableLocationCount = 0;
   let skippedWithoutStagingCount = 0;
 
   for (const [itemIndex, item] of args.items.entries()) {
-    const itemSaveKey = buildImportedSaveKey(item);
     const sourceLocationKey = buildImportedSourceLocationKey(item);
     const sourceFileName = String(extractImportedOriginalSourceFileName(item) || item.sourceFileName || "").trim();
     const sheetScopedKey = extractImportedSheetScopedKey(item);
     const worksheetRowNumber = extractImportedWorksheetRowNumber(item);
     const itemClientItemId = buildReviewedImportedSaveItem(item, itemIndex).clientItemId;
-    const confirmedDocxKeys = new Set(
-      (args.confirmedDocxImageKeysByItemKey?.[itemSaveKey] ?? [])
-        .map((value) => normalizeImportedLoose(value))
-        .filter(Boolean)
-    );
-    if (confirmedDocxKeys.size > 0) {
-      const matchingDocxImages = args.images
-        .map((image, imageIndex) => ({
-          image,
-          key: buildStructuredReviewSuggestedImageKey(image, imageIndex),
-        }))
-        .filter(({ image, key }) => {
-          if (normalizeImportedLoose(String(image.source || "")) !== "docx") return false;
-          if (!confirmedDocxKeys.has(normalizeImportedLoose(key))) return false;
-          return matchesImportedSourceFileName(sourceFileName, image.originalSourceFileName || image.sourceFileName);
-        });
-      matchingDocxImages.forEach(({ image, key }) => {
-        selectedMediaRefs.push({
-          associationMode: "weak_confirmed",
-          clientItemId: itemClientItemId,
-          confirmedByUser: true,
-          fileName: image.fileName || null,
-          importBatchId: null,
-          importFileId: null,
-          mediaRefId: key,
-          mimeType: image.mimeType || null,
-          pageNumber: null,
-          sheetScopedKey: null,
-          sizeBytes: null,
-          sourceFileName: sourceFileName || image.sourceFileName || null,
-          sourceImageId: String(image.docxRelId || key).trim() || key,
-          sourceKind: "docx_media",
-          sourceLocationKey:
-            sourceFileName && image.docxBlockKey ? `${sourceFileName}::${image.docxBlockKey}` : image.docxBlockKey || null,
-          stagingAssetId: null,
-          stagingStorageRef: null,
-          worksheetRowNumber: null,
-        });
-      });
-    }
     const relatedImportedFiles =
       importedFilesByName.get(normalizeImportedFileLikeName(sourceFileName)) ??
       (importedFiles.length === 1 ? importedFiles : []);
@@ -2463,6 +2636,43 @@ function buildSelectedMediaRefsForSave(args: {
     selectedMediaRefs,
     diagnostics,
   };
+}
+
+function buildManualDocxSelectedMediaRefInputs(args: {
+  docxMediaEntries: StructuredPendingDocxMediaReviewEntry[];
+  selectedTargetClientItemIdByCandidateId: Map<string, string>;
+}) {
+  return args.docxMediaEntries.flatMap((entry) => {
+    if (entry.decision.status !== "associated" || !entry.targetCandidate) return [];
+    const clientItemId = args.selectedTargetClientItemIdByCandidateId.get(entry.targetCandidate.candidate.id);
+    if (!clientItemId) return [];
+    return [
+      {
+        clientItemId,
+        fileName: entry.stagedAsset.fileName || entry.image?.fileName || null,
+        importBatchId: entry.stagedAsset.importBatchId || null,
+        importFileId: entry.stagedAsset.importFileId || null,
+        mediaRefId: entry.stagedAsset.id,
+        mimeType: entry.stagedAsset.mimeType || entry.image?.mimeType || null,
+        sourceFileName:
+          entry.stagedAsset.sourceFileName ||
+          String(entry.image?.originalSourceFileName || entry.image?.sourceFileName || "").trim() ||
+          null,
+        sourceImageId: String(entry.image?.docxRelId || entry.stagedAsset.id || "").trim() || null,
+        sourceLocationKey: entry.stagedAsset.sourceLocationKey || entry.sourceLocationKey || null,
+        stagingAssetId: entry.stagedAsset.id,
+        stagingStorageRef: entry.stagedAsset.stagingStorageRef || null,
+      } satisfies ManualDocxSelectedMediaRefInput,
+    ];
+  });
+}
+
+function getStructuredPendingDocxMediaBlockingMessage(summary: {
+  pendingCount: number;
+  totalCount: number;
+}) {
+  if (summary.pendingCount <= 0) return null;
+  return `Existem ${summary.pendingCount} de ${summary.totalCount} imagem(ns) DOCX staged aguardando decisao humana. Associe manualmente cada foto a um item ou marque como nao usar antes de validar/salvar.`;
 }
 
 type ImportedDestination = "pool" | "acessorios" | "quimicos" | "outros";
@@ -8141,6 +8351,7 @@ export default function IntelligentCatalogImportPanel({
   const [intelligentImportRecovered, setIntelligentImportRecovered] = useState(false);
   const [intelligentImportResult, setIntelligentImportResult] =
     useState<IntelligentImportResponse | null>(null);
+  const restoredStructuredDocxDraftKeyRef = useRef<string | null>(null);
   const [editableStructuredCandidates, setEditableStructuredCandidates] = useState<
     EditableStructuredImportCandidate[]
   >([]);
@@ -8154,6 +8365,9 @@ export default function IntelligentCatalogImportPanel({
     useState<StructuredReviewAction | null>(null);
   const [structuredCandidateDrafts, setStructuredCandidateDrafts] = useState<
     Record<string, StructuredCandidateDraft>
+  >({});
+  const [structuredPendingDocxMediaDecisions, setStructuredPendingDocxMediaDecisions] = useState<
+    Record<string, StructuredPendingDocxMediaDecision>
   >({});
   const [editingStructuredCandidateId, setEditingStructuredCandidateId] = useState<string | null>(null);
   const [structuredCandidateEditorDraft, setStructuredCandidateEditorDraft] =
@@ -8456,6 +8670,109 @@ export default function IntelligentCatalogImportPanel({
     structuredCandidateDrafts,
     structuredReviewValidation,
   ]);
+  const structuredDocxMediaAssociationTargets = useMemo(
+    () =>
+      structuredUnifiedReviewItems.filter(
+        (item) => !item.duplicateReason && item.candidate.selected && !item.candidate.manuallyIgnored
+      ),
+    [structuredUnifiedReviewItems]
+  );
+  const structuredDocxTargetClientItemIdByCandidateId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of structuredDocxMediaAssociationTargets) {
+      const clientItemId = buildImportedSaveKey(item.reviewedItem);
+      if (!clientItemId) continue;
+      map.set(item.candidate.id, clientItemId);
+    }
+    return map;
+  }, [structuredDocxMediaAssociationTargets]);
+  const structuredDocxCandidateIdByClientItemId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [candidateId, clientItemId] of structuredDocxTargetClientItemIdByCandidateId.entries()) {
+      if (!clientItemId) continue;
+      map.set(clientItemId, candidateId);
+    }
+    return map;
+  }, [structuredDocxTargetClientItemIdByCandidateId]);
+  const structuredPendingDocxMediaReviewEntries = useMemo<StructuredPendingDocxMediaReviewEntry[]>(() => {
+    const stagedMediaAssets = getStagedMediaAssetsFromResult(intelligentImportResult).filter(
+      (asset) => asset.sourceKind === "docx_media"
+    );
+    const targetByCandidateId = new Map(
+      structuredDocxMediaAssociationTargets.map((item) => [item.candidate.id, item] as const)
+    );
+
+    return stagedMediaAssets.map((stagedAsset) => {
+      const decision = structuredPendingDocxMediaDecisions[stagedAsset.id] ?? {
+        selectedCandidateId: null,
+        status: "pending",
+      };
+      const targetCandidate = decision.selectedCandidateId
+        ? targetByCandidateId.get(decision.selectedCandidateId) ?? null
+        : null;
+      return {
+        stagedAsset,
+        image: findStructuredReviewExtractedDocxImageForStagedAsset(stagedAsset, safeExtractedImagePreview),
+        decision,
+        sourceLocationKey: String(stagedAsset.sourceLocationKey || "").trim(),
+        targetCandidate,
+      };
+    });
+  }, [
+    intelligentImportResult,
+    safeExtractedImagePreview,
+    structuredDocxMediaAssociationTargets,
+    structuredPendingDocxMediaDecisions,
+  ]);
+  const structuredPendingDocxMediaSummary = useMemo(() => {
+    let pendingCount = 0;
+    let associatedCount = 0;
+    let notUseCount = 0;
+
+    for (const entry of structuredPendingDocxMediaReviewEntries) {
+      if (entry.decision.status === "not_use") {
+        notUseCount += 1;
+        continue;
+      }
+      if (entry.decision.status === "associated" && entry.targetCandidate) {
+        associatedCount += 1;
+        continue;
+      }
+      pendingCount += 1;
+    }
+
+    return {
+      associatedCount,
+      notUseCount,
+      pendingCount,
+      totalCount: structuredPendingDocxMediaReviewEntries.length,
+    };
+  }, [structuredPendingDocxMediaReviewEntries]);
+  const structuredDocxAssociatedCountByCandidateId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of structuredPendingDocxMediaReviewEntries) {
+      if (entry.decision.status !== "associated" || !entry.targetCandidate) continue;
+      counts.set(
+        entry.targetCandidate.candidate.id,
+        (counts.get(entry.targetCandidate.candidate.id) ?? 0) + 1
+      );
+    }
+    return counts;
+  }, [structuredPendingDocxMediaReviewEntries]);
+  const persistedStructuredDocxMediaDraft = useMemo(
+    () =>
+      buildStructuredDocxMediaDraftFromEntries({
+        docxMediaEntries: structuredPendingDocxMediaReviewEntries,
+        importedBatchIds: getImportedBatchIdsFromResult(intelligentImportResult),
+        importedFileIds: getImportedRawFileIdsFromResult(intelligentImportResult),
+        selectedTargetClientItemIdByCandidateId: structuredDocxTargetClientItemIdByCandidateId,
+      }),
+    [
+      intelligentImportResult,
+      structuredPendingDocxMediaReviewEntries,
+      structuredDocxTargetClientItemIdByCandidateId,
+    ]
+  );
   const structuredReviewCounts = useMemo(() => {
     return structuredUnifiedReviewItems.reduce(
       (acc, item) => {
@@ -8585,6 +8902,7 @@ export default function IntelligentCatalogImportPanel({
   }, [intelligentImportResult, safeExtractedImagePreview, structuredSourceCandidatesSignature]);
   useEffect(() => {
     setStructuredCandidateDrafts({});
+    setStructuredPendingDocxMediaDecisions({});
     setEditingStructuredCandidateId(null);
     setStructuredCandidateEditorDraft(null);
     setStructuredReviewFilter("all");
@@ -9128,6 +9446,8 @@ export default function IntelligentCatalogImportPanel({
     setStructuredReviewRevisionVersion(0);
     setStructuredReviewGlobalConfirmation(null);
     setStructuredReviewPendingAction(null);
+    setStructuredPendingDocxMediaDecisions({});
+    restoredStructuredDocxDraftKeyRef.current = null;
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
     }
@@ -9173,6 +9493,7 @@ export default function IntelligentCatalogImportPanel({
     setVisualDocumentMapResult(null);
     setVisualDocumentMapSessionCache({});
     setIntelligentImportRecovered(false);
+    restoredStructuredDocxDraftKeyRef.current = null;
     try {
       const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
       setIntelligentImportSelectedFilesPreview(selectedFilesPreview);
@@ -9419,6 +9740,13 @@ export default function IntelligentCatalogImportPanel({
       );
       return false;
     }
+    const pendingDocxMediaMessage = getStructuredPendingDocxMediaBlockingMessage(
+      structuredPendingDocxMediaSummary
+    );
+    if (pendingDocxMediaMessage) {
+      setParentError(pendingDocxMediaMessage);
+      return false;
+    }
     if (structuredReviewHasGlobalConfirmation) {
       return true;
     }
@@ -9443,6 +9771,29 @@ export default function IntelligentCatalogImportPanel({
         selectedCount: structuredReviewCounts.selected,
       },
     } satisfies IntelligentImportGlobalReviewConfirmation;
+  }
+  function buildDocxMediaReviewAuditPayload(
+    selectedTargetClientItemIdByCandidateId?: Map<string, string>
+  ): IntelligentImportDocxMediaReviewAudit | null {
+    if (structuredPendingDocxMediaReviewEntries.length === 0) return null;
+    return {
+      entries: structuredPendingDocxMediaReviewEntries.map((entry) => ({
+        clientItemId:
+          entry.decision.status === "associated" && entry.targetCandidate
+            ? selectedTargetClientItemIdByCandidateId?.get(entry.targetCandidate.candidate.id) || null
+            : null,
+        decision: entry.decision.status === "associated" && entry.targetCandidate ? "associated" : "not_use",
+        sourceFileName: entry.stagedAsset.sourceFileName || null,
+        stagingAssetId: entry.stagedAsset.id,
+      })),
+      kind: "docx_media_review_v1",
+      summary: {
+        associatedCount: structuredPendingDocxMediaSummary.associatedCount,
+        notUseCount: structuredPendingDocxMediaSummary.notUseCount,
+        pendingCount: structuredPendingDocxMediaSummary.pendingCount,
+        totalCount: structuredPendingDocxMediaSummary.totalCount,
+      },
+    };
   }
 
   async function runVisualEvidenceScanBatch(params: {
@@ -10360,6 +10711,13 @@ export default function IntelligentCatalogImportPanel({
       );
       return;
     }
+    const pendingDocxMediaMessage = getStructuredPendingDocxMediaBlockingMessage(
+      structuredPendingDocxMediaSummary
+    );
+    if (pendingDocxMediaMessage) {
+      setParentError(pendingDocxMediaMessage);
+      return;
+    }
 
     const payloadItems = sourceItems.map((item, index) =>
       buildReviewedImportedSaveItem(item, index, {
@@ -10375,23 +10733,29 @@ export default function IntelligentCatalogImportPanel({
     const candidateIdByItemKey = new Map(
       editableStructuredCandidates.map((candidate) => [buildImportedSaveKey(candidate.sourceItem), candidate.id])
     );
-    const confirmedDocxImageKeysByItemKey = Object.fromEntries(
-      sourceItems.map((item) => {
-        const itemKey = buildImportedSaveKey(item);
-        const candidateId = candidateIdByItemKey.get(itemKey);
-        return [itemKey, candidateId ? structuredCandidateDrafts[candidateId]?.confirmedDocxImageKeys ?? [] : []];
-      })
-    );
+    const selectedTargetClientItemIdByCandidateId = new Map<string, string>();
+    sourceItems.forEach((item, index) => {
+      const itemKey = buildImportedSaveKey(item);
+      const candidateId = candidateIdByItemKey.get(itemKey);
+      const clientItemId = payloadItems[index]?.clientItemId;
+      if (candidateId && clientItemId) {
+        selectedTargetClientItemIdByCandidateId.set(candidateId, clientItemId);
+      }
+    });
     const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
-      confirmedDocxImageKeysByItemKey,
       images: safeExtractedImagePreview,
       importedFiles: getImportedFilesFromResult(intelligentImportResult),
       items: sourceItems,
+      manualDocxSelections: buildManualDocxSelectedMediaRefInputs({
+        docxMediaEntries: structuredPendingDocxMediaReviewEntries,
+        selectedTargetClientItemIdByCandidateId,
+      }),
       stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
     });
     const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
     const globalReviewConfirmation =
       options?.globalReviewConfirmationOverride ?? buildStructuredReviewGlobalConfirmationPayload();
+    const docxMediaReview = buildDocxMediaReviewAuditPayload(selectedTargetClientItemIdByCandidateId);
     const buildRequestBody = (
       validateOnly: boolean
     ): IntelligentImportSaveApprovedRequest => ({
@@ -10403,6 +10767,7 @@ export default function IntelligentCatalogImportPanel({
       items: payloadItems,
       organizationId,
       reviewAudit: {
+        docxMediaReview,
         globalReviewConfirmation,
         structuredReviewSnapshot,
       },
@@ -10573,6 +10938,13 @@ export default function IntelligentCatalogImportPanel({
       );
       return;
     }
+    const pendingDocxMediaMessage = getStructuredPendingDocxMediaBlockingMessage(
+      structuredPendingDocxMediaSummary
+    );
+    if (pendingDocxMediaMessage) {
+      setParentError(pendingDocxMediaMessage);
+      return;
+    }
 
     const payloadItems = sourceItems.map((item, index) =>
       buildReviewedImportedSaveItem(item, index, {
@@ -10588,23 +10960,29 @@ export default function IntelligentCatalogImportPanel({
     const candidateIdByItemKey = new Map(
       editableStructuredCandidates.map((candidate) => [buildImportedSaveKey(candidate.sourceItem), candidate.id])
     );
-    const confirmedDocxImageKeysByItemKey = Object.fromEntries(
-      sourceItems.map((item) => {
-        const itemKey = buildImportedSaveKey(item);
-        const candidateId = candidateIdByItemKey.get(itemKey);
-        return [itemKey, candidateId ? structuredCandidateDrafts[candidateId]?.confirmedDocxImageKeys ?? [] : []];
-      })
-    );
+    const selectedTargetClientItemIdByCandidateId = new Map<string, string>();
+    sourceItems.forEach((item, index) => {
+      const itemKey = buildImportedSaveKey(item);
+      const candidateId = candidateIdByItemKey.get(itemKey);
+      const clientItemId = payloadItems[index]?.clientItemId;
+      if (candidateId && clientItemId) {
+        selectedTargetClientItemIdByCandidateId.set(candidateId, clientItemId);
+      }
+    });
     const selectedMediaRefBuild = buildSelectedMediaRefsForSave({
-      confirmedDocxImageKeysByItemKey,
       images: safeExtractedImagePreview,
       importedFiles: getImportedFilesFromResult(intelligentImportResult),
       items: sourceItems,
+      manualDocxSelections: buildManualDocxSelectedMediaRefInputs({
+        docxMediaEntries: structuredPendingDocxMediaReviewEntries,
+        selectedTargetClientItemIdByCandidateId,
+      }),
       stagedMediaAssets: getStagedMediaAssetsFromResult(intelligentImportResult),
     });
     const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
     const globalReviewConfirmation =
       options?.globalReviewConfirmationOverride ?? buildStructuredReviewGlobalConfirmationPayload();
+    const docxMediaReview = buildDocxMediaReviewAuditPayload(selectedTargetClientItemIdByCandidateId);
     const requestBody: IntelligentImportSaveApprovedRequest = {
       context: {
         debugParser: parserDebugEnabled,
@@ -10614,6 +10992,7 @@ export default function IntelligentCatalogImportPanel({
       items: payloadItems,
       organizationId,
       reviewAudit: {
+        docxMediaReview,
         globalReviewConfirmation,
         structuredReviewSnapshot,
       },
@@ -10682,14 +11061,23 @@ export default function IntelligentCatalogImportPanel({
     }
     try {
       const parsed = JSON.parse(raw) as PersistedIntelligentImportState;
+      const persistedResult =
+        parsed.result && typeof parsed.result === "object"
+          ? normalizeIntelligentImportResultForFrontend(parsed.result as IntelligentImportResponse)
+          : null;
       setIntelligentImportSelectedFilesPreview(
         Array.isArray(parsed.selectedFiles) ? parsed.selectedFiles : []
       );
-      latestExtractedImagePreviewRef.current = [];
-      setIntelligentImportResult(null);
+      latestExtractedImagePreviewRef.current =
+        persistedResult?.ok && Array.isArray(persistedResult.extractedImagePreview)
+          ? persistedResult.extractedImagePreview
+          : [];
+      setIntelligentImportResult(persistedResult);
       setIntelligentImportSuccess(parsed.successMessage ?? null);
       setIntelligentImportError(parsed.errorMessage ?? null);
-      setIntelligentImportRecovered(Boolean((parsed.selectedFiles?.length ?? 0) > 0));
+      setIntelligentImportRecovered(
+        Boolean((parsed.selectedFiles?.length ?? 0) > 0 || persistedResult?.ok)
+      );
     } catch (error) {
       console.error("[OnboardingPage] intelligent import restore error:", error);
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -10708,15 +11096,131 @@ export default function IntelligentCatalogImportPanel({
     }
     const payload = buildLightPersistedIntelligentImportState({
       selectedFiles: visibleIntelligentImportFiles,
+      result: intelligentImportResult,
       successMessage: intelligentImportSuccess,
       errorMessage: intelligentImportError,
+      structuredDocxMediaDraft: persistedStructuredDocxMediaDraft,
     });
     persistToLocalStorageSafe(intelligentImportStorageKey, JSON.stringify(payload));
   }, [
     intelligentImportStorageKey,
+    intelligentImportResult,
+    persistedStructuredDocxMediaDraft,
     visibleIntelligentImportFiles,
     intelligentImportSuccess,
     intelligentImportError,
+  ]);
+  useEffect(() => {
+    if (!intelligentImportStorageKey || typeof window === "undefined") return;
+    if (!intelligentImportResult?.ok) return;
+
+    const importedFileIds = getImportedRawFileIdsFromResult(intelligentImportResult);
+    const importedBatchIds = getImportedBatchIdsFromResult(intelligentImportResult);
+    const stagedDocxAssets = getStagedMediaAssetsFromResult(intelligentImportResult).filter(
+      (asset) => asset.sourceKind === "docx_media"
+    );
+    if (importedFileIds.length === 0 || importedBatchIds.length === 0 || stagedDocxAssets.length === 0) {
+      restoredStructuredDocxDraftKeyRef.current = null;
+      return;
+    }
+
+    const currentScopeKey = [
+      Array.from(new Set(importedFileIds)).sort().join("|"),
+      Array.from(new Set(importedBatchIds)).sort().join("|"),
+      stagedDocxAssets.map((asset) => asset.id).sort().join("|"),
+    ].join("::");
+    if (restoredStructuredDocxDraftKeyRef.current === currentScopeKey) return;
+
+    const raw = window.localStorage.getItem(intelligentImportStorageKey);
+    if (!raw) {
+      restoredStructuredDocxDraftKeyRef.current = currentScopeKey;
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as PersistedIntelligentImportState;
+      const persistedDraft = normalizePersistedStructuredDocxMediaDraft(parsed.structuredDocxMediaDraft);
+      if (!persistedDraft) {
+        restoredStructuredDocxDraftKeyRef.current = currentScopeKey;
+        return;
+      }
+
+      const sameImportedFiles =
+        importedFileIds.length === persistedDraft.importedFileIds.length &&
+        importedFileIds.every((id) => persistedDraft.importedFileIds.includes(id));
+      const sameImportBatches =
+        importedBatchIds.length === persistedDraft.importBatchIds.length &&
+        importedBatchIds.every((id) => persistedDraft.importBatchIds.includes(id));
+      if (!sameImportedFiles || !sameImportBatches) {
+        restoredStructuredDocxDraftKeyRef.current = currentScopeKey;
+        return;
+      }
+
+      const stagedAssetById = new Map(stagedDocxAssets.map((asset) => [asset.id, asset] as const));
+      const restoredDecisions: Record<string, StructuredPendingDocxMediaDecision> = {};
+      for (const entry of persistedDraft.entries) {
+        const stagedAsset = stagedAssetById.get(entry.stagingAssetId);
+        if (!stagedAsset) continue;
+        if (
+          entry.importFileId &&
+          stagedAsset.importFileId &&
+          entry.importFileId !== stagedAsset.importFileId
+        ) {
+          continue;
+        }
+        if (
+          entry.importBatchId &&
+          stagedAsset.importBatchId &&
+          entry.importBatchId !== stagedAsset.importBatchId
+        ) {
+          continue;
+        }
+
+        let selectedCandidateId: string | null = entry.selectedCandidateId || null;
+        if (
+          entry.decision === "associated" &&
+          entry.clientItemId &&
+          (!selectedCandidateId ||
+            structuredDocxTargetClientItemIdByCandidateId.get(selectedCandidateId) !== entry.clientItemId)
+        ) {
+          selectedCandidateId = structuredDocxCandidateIdByClientItemId.get(entry.clientItemId) || null;
+        }
+
+        if (entry.decision === "associated") {
+          if (
+            !selectedCandidateId ||
+            !structuredDocxTargetClientItemIdByCandidateId.has(selectedCandidateId)
+          ) {
+            restoredDecisions[entry.stagingAssetId] = {
+              selectedCandidateId: null,
+              status: "pending",
+            };
+            continue;
+          }
+          restoredDecisions[entry.stagingAssetId] = {
+            selectedCandidateId,
+            status: "associated",
+          };
+          continue;
+        }
+
+        restoredDecisions[entry.stagingAssetId] = {
+          selectedCandidateId: null,
+          status: "not_use",
+        };
+      }
+
+      setStructuredPendingDocxMediaDecisions(restoredDecisions);
+      restoredStructuredDocxDraftKeyRef.current = currentScopeKey;
+    } catch (error) {
+      console.error("[OnboardingPage] structured DOCX draft restore error:", error);
+      restoredStructuredDocxDraftKeyRef.current = currentScopeKey;
+    }
+  }, [
+    intelligentImportResult,
+    intelligentImportStorageKey,
+    structuredDocxCandidateIdByClientItemId,
+    structuredDocxTargetClientItemIdByCandidateId,
   ]);
   return (
     <>
@@ -12819,6 +13323,178 @@ export default function IntelligentCatalogImportPanel({
                     </div>
                   </div>
                   <div className="mt-4 rounded-2xl border border-emerald-100 bg-white/70 p-2 shadow-inner">
+                    {structuredPendingDocxMediaReviewEntries.length > 0 ? (
+                      <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-amber-950">Midias DOCX com revisao humana obrigatoria</p>
+                            <p className="mt-1 text-xs leading-5 text-amber-900">
+                              Nenhuma foto DOCX entra automaticamente. Cada midia staged precisa ser associada manualmente a um item ou marcada como nao usar.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            <span className="rounded-full bg-white px-2.5 py-1 font-medium text-amber-900 ring-1 ring-amber-200">
+                              Pendentes: {structuredPendingDocxMediaSummary.pendingCount}
+                            </span>
+                            <span className="rounded-full bg-white px-2.5 py-1 font-medium text-emerald-800 ring-1 ring-emerald-200">
+                              Associadas: {structuredPendingDocxMediaSummary.associatedCount}
+                            </span>
+                            <span className="rounded-full bg-white px-2.5 py-1 font-medium text-slate-700 ring-1 ring-slate-200">
+                              Nao usar: {structuredPendingDocxMediaSummary.notUseCount}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                          {structuredPendingDocxMediaReviewEntries.map((entry) => {
+                            const statusTone =
+                              entry.decision.status === "associated" && entry.targetCandidate
+                                ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
+                                : entry.decision.status === "not_use"
+                                  ? "bg-slate-100 text-slate-700 ring-slate-200"
+                                  : "bg-amber-100 text-amber-800 ring-amber-200";
+                            const statusLabel =
+                              entry.decision.status === "associated" && entry.targetCandidate
+                                ? `Associada a ${entry.targetCandidate.displayName || "item"}`
+                                : entry.decision.status === "not_use"
+                                  ? "Marcada como nao usar"
+                                  : "Revisao necessaria";
+                            return (
+                              <div
+                                key={entry.stagedAsset.id}
+                                className="rounded-2xl border border-amber-200 bg-white/90 p-3 shadow-sm"
+                              >
+                                <div className="flex gap-3">
+                                  {entry.image?.dataUrl ? (
+                                    <img
+                                      src={entry.image.dataUrl}
+                                      alt={entry.stagedAsset.fileName}
+                                      className="h-20 w-20 flex-none rounded-xl object-cover ring-1 ring-slate-200"
+                                    />
+                                  ) : (
+                                    <div className="flex h-20 w-20 flex-none items-center justify-center rounded-xl bg-slate-100 text-[11px] text-slate-500 ring-1 ring-slate-200">
+                                      Sem preview
+                                    </div>
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className={cx("rounded-full px-2 py-0.5 text-[11px] font-medium ring-1", statusTone)}>
+                                        {statusLabel}
+                                      </span>
+                                      <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200">
+                                        stagingAssetId {entry.stagedAsset.id.slice(0, 8)}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 truncate text-sm font-semibold text-slate-900">
+                                      {entry.stagedAsset.fileName}
+                                    </p>
+                                    <p className="mt-1 text-xs text-slate-600">
+                                      Arquivo: {entry.stagedAsset.sourceFileName || "Nao informado"}
+                                    </p>
+                                    <p className="mt-1 text-xs text-slate-600">
+                                      Origem: {entry.image?.docxTableCell ? `celula ${entry.image.docxTableCell}` : "DOCX staged"}
+                                    </p>
+                                    {entry.sourceLocationKey ? (
+                                      <p className="mt-1 break-all text-[11px] text-slate-500">
+                                        sourceLocationKey: {entry.sourceLocationKey}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+                                  <select
+                                    value={entry.decision.selectedCandidateId || ""}
+                                    onChange={(event) =>
+                                      setStructuredPendingDocxMediaDecisions((current) => {
+                                        const currentEntry = current[entry.stagedAsset.id] ?? {
+                                          selectedCandidateId: null,
+                                          status: "pending" as const,
+                                        };
+                                        const nextCandidateId = String(event.target.value || "").trim() || null;
+                                        return {
+                                          ...current,
+                                          [entry.stagedAsset.id]: {
+                                            selectedCandidateId: nextCandidateId,
+                                            status:
+                                              currentEntry.status === "associated" &&
+                                              currentEntry.selectedCandidateId !== nextCandidateId
+                                                ? "pending"
+                                                : currentEntry.status === "not_use"
+                                                  ? "pending"
+                                                  : currentEntry.status,
+                                          },
+                                        };
+                                      })
+                                    }
+                                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
+                                  >
+                                    <option value="">Escolha o item de destino</option>
+                                    {structuredDocxMediaAssociationTargets.map((target) => (
+                                      <option key={target.candidate.id} value={target.candidate.id}>
+                                        {target.displayName || "Item"}{target.sku ? ` • ${target.sku}` : ""}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    disabled={!entry.decision.selectedCandidateId}
+                                    onClick={() =>
+                                      setStructuredPendingDocxMediaDecisions((current) => ({
+                                        ...current,
+                                        [entry.stagedAsset.id]: {
+                                          selectedCandidateId:
+                                            current[entry.stagedAsset.id]?.selectedCandidateId ||
+                                            entry.decision.selectedCandidateId ||
+                                            null,
+                                          status: "associated",
+                                        },
+                                      }))
+                                    }
+                                    className={cx(
+                                      "rounded-xl px-3 py-2 text-sm font-medium text-white transition",
+                                      entry.decision.selectedCandidateId
+                                        ? "bg-emerald-900 hover:bg-emerald-800"
+                                        : "cursor-not-allowed bg-slate-300"
+                                    )}
+                                  >
+                                    Associar foto
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setStructuredPendingDocxMediaDecisions((current) => ({
+                                        ...current,
+                                        [entry.stagedAsset.id]: {
+                                          selectedCandidateId: current[entry.stagedAsset.id]?.selectedCandidateId || null,
+                                          status: "not_use",
+                                        },
+                                      }))
+                                    }
+                                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                                  >
+                                    Nao usar esta foto
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setStructuredPendingDocxMediaDecisions((current) => ({
+                                        ...current,
+                                        [entry.stagedAsset.id]: {
+                                          selectedCandidateId: current[entry.stagedAsset.id]?.selectedCandidateId || null,
+                                          status: "pending",
+                                        },
+                                      }))
+                                    }
+                                    className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900 transition hover:bg-amber-50"
+                                  >
+                                    Reabrir
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="max-h-[min(68vh,52rem)] overflow-y-auto overscroll-contain pr-1">
                       {filteredStructuredUnifiedReviewItems.length === 0 ? (
                         <div className="rounded-xl border border-dashed border-emerald-200 bg-white/80 px-4 py-6 text-sm text-slate-600">
@@ -12830,6 +13506,8 @@ export default function IntelligentCatalogImportPanel({
                       const primaryPhoto = item.photoResolution.primary;
                       const photoAmbiguous = item.photoResolution.state === "ambiguous";
                       const photoEvidence = item.photoResolution.state === "evidence";
+                      const manuallyAssociatedDocxCount =
+                        structuredDocxAssociatedCountByCandidateId.get(item.candidate.id) ?? 0;
                       const photoEvidenceCount =
                         item.photoResolution.state === "evidence" ? item.photoResolution.candidates.length : 0;
                       const confirmedEvidenceCount =
@@ -12913,6 +13591,11 @@ export default function IntelligentCatalogImportPanel({
                                 {item.categoryAdjusted ? (
                                   <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200">
                                     Categoria ajustada
+                                  </span>
+                                ) : null}
+                                {manuallyAssociatedDocxCount > 0 ? (
+                                  <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900 ring-1 ring-amber-200">
+                                    {manuallyAssociatedDocxCount} foto(s) DOCX associada(s) manualmente
                                   </span>
                                 ) : null}
                               </div>
@@ -13512,6 +14195,14 @@ export default function IntelligentCatalogImportPanel({
                         <p className="mt-1 text-lg font-semibold text-slate-900">{structuredReviewCounts.ignored}</p>
                       </div>
                     </div>
+                    {structuredPendingDocxMediaSummary.totalCount > 0 ? (
+                      <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                        Midias DOCX staged nesta revisao: {structuredPendingDocxMediaSummary.totalCount}. Pendentes:{" "}
+                        {structuredPendingDocxMediaSummary.pendingCount}. Associadas manualmente:{" "}
+                        {structuredPendingDocxMediaSummary.associatedCount}. Marcadas como nao usar:{" "}
+                        {structuredPendingDocxMediaSummary.notUseCount}.
+                      </div>
+                    ) : null}
                     <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                       <button
                         type="button"
@@ -13620,91 +14311,29 @@ export default function IntelligentCatalogImportPanel({
                         </label>
                         {editingStructuredPhotoResolution?.state === "evidence" ? (
                           <div className="md:col-span-2 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
-                            <div className="flex flex-wrap items-center justify-between gap-3">
-                              <div>
-                                <p className="text-sm font-semibold text-amber-950">Fotos encontradas no documento</p>
-                                <p className="mt-1 text-sm text-amber-900">
-                                  {editingStructuredPhotoResolution.confirmedCandidateKeys.length > 0
-                                    ? `${editingStructuredPhotoResolution.confirmedCandidateKeys.length} foto(s) confirmada(s) neste produto.`
-                                    : `${editingStructuredPhotoResolution.candidates.length} foto(s) encontradas neste bloco - confirme para incluir no catalogo.`}
-                                </p>
-                              </div>
-                              <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setStructuredCandidateEditorDraft((current) =>
-                                      current
-                                        ? {
-                                            ...current,
-                                            confirmedDocxImageKeys: editingStructuredPhotoResolution.candidates.map(
-                                              (candidate) => candidate.key
-                                            ),
-                                          }
-                                        : current
-                                    )
-                                  }
-                                  className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900"
-                                >
-                                  Confirmar todas
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setStructuredCandidateEditorDraft((current) =>
-                                      current ? { ...current, confirmedDocxImageKeys: [] } : current
-                                    )
-                                  }
-                                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700"
-                                >
-                                  Desmarcar todas
-                                </button>
-                              </div>
-                            </div>
+                            <p className="text-sm font-semibold text-amber-950">Fotos encontradas no documento</p>
+                            <p className="mt-1 text-sm text-amber-900">
+                              As imagens DOCX staged nao entram no save por confirmacao local neste editor. Use a area
+                              de revisao de midias DOCX para associar cada foto manualmente a um item ou marcar como
+                              nao usar.
+                            </p>
                             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                              {editingStructuredPhotoResolution.candidates.map((candidate) => {
-                                const checked = structuredCandidateEditorDraft.confirmedDocxImageKeys.includes(candidate.key);
-                                return (
-                                  <label
-                                    key={candidate.key}
-                                    className={cx(
-                                      "overflow-hidden rounded-2xl border bg-white",
-                                      checked ? "border-emerald-300 ring-2 ring-emerald-200" : "border-slate-200"
-                                    )}
-                                  >
-                                    <img
-                                      src={candidate.dataUrl}
-                                      alt={candidate.fileName}
-                                      className="h-28 w-full object-cover"
-                                    />
-                                    <div className="space-y-2 p-3">
-                                      <div className="flex items-center gap-2">
-                                        <input
-                                          type="checkbox"
-                                          checked={checked}
-                                          onChange={(event) =>
-                                            setStructuredCandidateEditorDraft((current) => {
-                                              if (!current) return current;
-                                              const nextKeys = event.target.checked
-                                                ? Array.from(new Set([...current.confirmedDocxImageKeys, candidate.key]))
-                                                : current.confirmedDocxImageKeys.filter((key) => key !== candidate.key);
-                                              return {
-                                                ...current,
-                                                confirmedDocxImageKeys: nextKeys,
-                                              };
-                                            })
-                                          }
-                                          className="h-4 w-4 rounded border-slate-300 text-emerald-600"
-                                        />
-                                        <span className="text-sm font-medium text-slate-900">
-                                          {checked ? "Confirmada" : "Evidencia do documento"}
-                                        </span>
-                                      </div>
-                                      <p className="truncate text-xs text-slate-600">{candidate.fileName}</p>
-                                    </div>
-                                  </label>
-                                );
-                              })}
+                              {editingStructuredPhotoResolution.candidates.map((candidate) => (
+                                <div
+                                  key={candidate.key}
+                                  className="overflow-hidden rounded-2xl border border-slate-200 bg-white"
+                                >
+                                  <img
+                                    src={candidate.dataUrl}
+                                    alt={candidate.fileName}
+                                    className="h-28 w-full object-cover"
+                                  />
+                                  <div className="space-y-1 p-3">
+                                    <p className="truncate text-sm font-medium text-slate-900">{candidate.fileName}</p>
+                                    <p className="text-xs text-slate-600">Evidencia visual do DOCX</p>
+                                  </div>
+                                </div>
+                              ))}
                             </div>
                           </div>
                         ) : null}

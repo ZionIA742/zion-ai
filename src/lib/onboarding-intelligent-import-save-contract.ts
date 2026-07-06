@@ -139,6 +139,22 @@ export type IntelligentImportStructuredReviewSnapshot = {
   kind: "structured_review_v1";
   revisionVersion?: number | null;
 };
+export type IntelligentImportDocxMediaReviewEntry = {
+  clientItemId?: string | null;
+  decision: "associated" | "not_use";
+  sourceFileName?: string | null;
+  stagingAssetId: string;
+};
+export type IntelligentImportDocxMediaReviewAudit = {
+  entries: IntelligentImportDocxMediaReviewEntry[];
+  kind: "docx_media_review_v1";
+  summary: {
+    associatedCount: number;
+    notUseCount: number;
+    pendingCount: number;
+    totalCount: number;
+  };
+};
 
 export type IntelligentImportStagedMediaAsset = {
   id: string;
@@ -168,6 +184,7 @@ export type IntelligentImportSaveApprovedRequest = {
   items: IntelligentImportReviewedSaveItem[];
   organizationId: string;
   reviewAudit?: {
+    docxMediaReview?: IntelligentImportDocxMediaReviewAudit | null;
     globalReviewConfirmation?: IntelligentImportGlobalReviewConfirmation | null;
     structuredReviewSnapshot?: IntelligentImportStructuredReviewSnapshot | null;
   };
@@ -355,6 +372,7 @@ export type IntelligentImportSaveApprovedResponse = {
   photoPlan?: IntelligentImportSaveApprovedPhotoPlan;
   photoSaveResult?: IntelligentImportSaveApprovedPhotoSaveResult;
   reviewAudit?: {
+    docxMediaReview?: IntelligentImportDocxMediaReviewAudit | null;
     importFileAudit?: {
       attempted: boolean;
       error?: string | null;

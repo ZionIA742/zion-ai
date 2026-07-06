@@ -3,6 +3,8 @@ import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import {
   INTELLIGENT_IMPORT_PRICE_STATUS_VALUES,
   INTELLIGENT_IMPORT_STOCK_STATUS_VALUES,
+  type IntelligentImportDocxMediaReviewAudit,
+  type IntelligentImportDocxMediaReviewEntry,
   type IntelligentImportGlobalReviewConfirmation,
   type IntelligentImportWritablePriceStatus,
   type IntelligentImportSelectedMediaAssociationMode,
@@ -52,6 +54,7 @@ type ExistingPoolRow = {
 
 type ImportedFileRow = {
   id: string;
+  import_batch_id: string | null;
   original_file_name: string | null;
   status: string | null;
 };
@@ -69,6 +72,7 @@ type StagedMediaAssetRow = {
   requires_user_confirmation: boolean | null;
   sheet_scoped_key: string | null;
   size_bytes?: number | null;
+  source_image_id?: string | null;
   source_file_name: string | null;
   source_kind: string | null;
   source_location_key: string | null;
@@ -353,8 +357,16 @@ type NormalizedStructuredReviewSnapshot = {
   kind: "structured_review_v1";
   revisionVersion: number | null;
 };
+type NormalizedDocxMediaReviewAudit = {
+  entries: IntelligentImportDocxMediaReviewEntry[];
+  kind: "docx_media_review_v1";
+  summary: IntelligentImportDocxMediaReviewAudit["summary"];
+};
 
 type StructuredReviewAuditValidation = {
+  docxCanonicalStagedAssets: StagedMediaAssetRow[];
+  docxCanonicalStagedAssetsById: Map<string, StagedMediaAssetRow>;
+  docxMediaReview: NormalizedDocxMediaReviewAudit | null;
   globalReviewConfirmation: IntelligentImportGlobalReviewConfirmation;
   persistedImportFileIds: string[];
   snapshot: NormalizedStructuredReviewSnapshot;
@@ -506,6 +518,175 @@ function normalizeStructuredReviewSnapshot(
     entries,
     kind: "structured_review_v1",
     revisionVersion,
+  };
+}
+
+function normalizeDocxMediaReviewAudit(value: unknown): NormalizedDocxMediaReviewAudit | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind !== "docx_media_review_v1") return null;
+  if (!Array.isArray(candidate.entries)) return null;
+
+  const rawSummary =
+    candidate.summary && typeof candidate.summary === "object" && !Array.isArray(candidate.summary)
+      ? (candidate.summary as Record<string, unknown>)
+      : null;
+  if (!rawSummary) return null;
+
+  const toCount = (input: unknown) => {
+    const value = Number(input);
+    if (!Number.isFinite(value) || value < 0) return 0;
+    return Math.max(0, Math.round(value));
+  };
+
+  const entries: IntelligentImportDocxMediaReviewEntry[] = [];
+  const seenStagingAssetIds = new Set<string>();
+  for (const rawEntry of candidate.entries) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) return null;
+    const entry = rawEntry as Record<string, unknown>;
+    const stagingAssetId = String(entry.stagingAssetId || "").trim();
+    const decision = String(entry.decision || "").trim();
+    const clientItemId = String(entry.clientItemId || "").trim() || null;
+    const sourceFileName = String(entry.sourceFileName || "").trim() || null;
+    if (!stagingAssetId || seenStagingAssetIds.has(stagingAssetId)) return null;
+    if (decision !== "associated" && decision !== "not_use") return null;
+    if (decision === "associated" && !clientItemId) return null;
+    if (decision === "not_use" && clientItemId) return null;
+    seenStagingAssetIds.add(stagingAssetId);
+    entries.push({
+      clientItemId,
+      decision: decision as IntelligentImportDocxMediaReviewEntry["decision"],
+      sourceFileName,
+      stagingAssetId,
+    });
+  }
+
+  return {
+    entries,
+    kind: "docx_media_review_v1",
+    summary: {
+      associatedCount: toCount(rawSummary.associatedCount),
+      notUseCount: toCount(rawSummary.notUseCount),
+      pendingCount: toCount(rawSummary.pendingCount),
+      totalCount: toCount(rawSummary.totalCount),
+    },
+  };
+}
+
+function parseDocxMediaReviewAudit(
+  value: unknown
+): { ok: true; value: NormalizedDocxMediaReviewAudit | null } | { message: string; ok: false } {
+  if (value == null) {
+    return {
+      ok: true,
+      value: null,
+    };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      message: "Payload de auditoria DOCX invalido.",
+      ok: false,
+    };
+  }
+
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind !== "docx_media_review_v1") {
+    return {
+      message: "docxMediaReview.kind invalido.",
+      ok: false,
+    };
+  }
+  if (!Array.isArray(candidate.entries)) {
+    return {
+      message: "docxMediaReview.entries invalido.",
+      ok: false,
+    };
+  }
+
+  const rawSummary =
+    candidate.summary && typeof candidate.summary === "object" && !Array.isArray(candidate.summary)
+      ? (candidate.summary as Record<string, unknown>)
+      : null;
+  if (!rawSummary) {
+    return {
+      message: "docxMediaReview.summary invalido.",
+      ok: false,
+    };
+  }
+
+  const toCount = (input: unknown) => {
+    const parsed = Number(input);
+    if (!Number.isFinite(parsed) || parsed < 0) return 0;
+    return Math.max(0, Math.round(parsed));
+  };
+
+  const entries: IntelligentImportDocxMediaReviewEntry[] = [];
+  const seenStagingAssetIds = new Set<string>();
+  for (const rawEntry of candidate.entries) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+      return {
+        message: "Entrada de auditoria DOCX invalida.",
+        ok: false,
+      };
+    }
+    const entry = rawEntry as Record<string, unknown>;
+    const stagingAssetId = String(entry.stagingAssetId || "").trim();
+    const decision = String(entry.decision || "").trim();
+    const clientItemId = String(entry.clientItemId || "").trim() || null;
+    const sourceFileName = String(entry.sourceFileName || "").trim() || null;
+
+    if (!stagingAssetId) {
+      return {
+        message: "Toda decisao DOCX precisa de stagingAssetId.",
+        ok: false,
+      };
+    }
+    if (seenStagingAssetIds.has(stagingAssetId)) {
+      return {
+        message: `Auditoria DOCX contem stagingAssetId duplicado: ${stagingAssetId}.`,
+        ok: false,
+      };
+    }
+    if (decision !== "associated" && decision !== "not_use") {
+      return {
+        message: `Decisao DOCX invalida para ${stagingAssetId}.`,
+        ok: false,
+      };
+    }
+    if (decision === "associated" && !clientItemId) {
+      return {
+        message: `Midia DOCX ${stagingAssetId} foi marcada como associada sem clientItemId.`,
+        ok: false,
+      };
+    }
+    if (decision === "not_use" && clientItemId) {
+      return {
+        message: `Midia DOCX ${stagingAssetId} foi marcada como nao usar, mas recebeu clientItemId indevido.`,
+        ok: false,
+      };
+    }
+
+    seenStagingAssetIds.add(stagingAssetId);
+    entries.push({
+      clientItemId,
+      decision: decision as IntelligentImportDocxMediaReviewEntry["decision"],
+      sourceFileName,
+      stagingAssetId,
+    });
+  }
+
+  return {
+    ok: true,
+    value: {
+      entries,
+      kind: "docx_media_review_v1",
+      summary: {
+        associatedCount: toCount(rawSummary.associatedCount),
+        notUseCount: toCount(rawSummary.notUseCount),
+        pendingCount: toCount(rawSummary.pendingCount),
+        totalCount: toCount(rawSummary.totalCount),
+      },
+    },
   };
 }
 
@@ -776,9 +957,24 @@ function validateNormalizedStockState(args: {
 }
 
 function validateStructuredReviewAudit(args: {
+  organizationId: string;
   importFileValidation: ImportFileValidationResult;
   request: IntelligentImportSaveApprovedRequest;
-}): { ok: true; value: StructuredReviewAuditValidation } | { message: string; ok: false } {
+  selectedMediaRefs: IntelligentImportSelectedMediaRef[];
+  storeId: string;
+  supabase: any;
+}): Promise<{ ok: true; value: StructuredReviewAuditValidation } | { message: string; ok: false }> {
+  return validateStructuredReviewAuditInternal(args);
+}
+
+async function validateStructuredReviewAuditInternal(args: {
+  organizationId: string;
+  importFileValidation: ImportFileValidationResult;
+  request: IntelligentImportSaveApprovedRequest;
+  selectedMediaRefs: IntelligentImportSelectedMediaRef[];
+  storeId: string;
+  supabase: any;
+}): Promise<{ ok: true; value: StructuredReviewAuditValidation } | { message: string; ok: false }> {
   const globalReviewConfirmation = normalizeGlobalReviewConfirmation(
     args.request.reviewAudit?.globalReviewConfirmation
   );
@@ -790,6 +986,14 @@ function validateStructuredReviewAudit(args: {
   }
 
   const snapshot = normalizeStructuredReviewSnapshot(args.request.reviewAudit?.structuredReviewSnapshot);
+  const docxMediaReviewParse = parseDocxMediaReviewAudit(args.request.reviewAudit?.docxMediaReview);
+  if (!docxMediaReviewParse.ok) {
+    return {
+      message: docxMediaReviewParse.message,
+      ok: false,
+    };
+  }
+  const docxMediaReview = docxMediaReviewParse.value;
   if (!snapshot) {
     return {
       message: "structured_review_snapshot_required",
@@ -847,9 +1051,261 @@ function validateStructuredReviewAudit(args: {
   const persistedImportFileIds = args.importFileValidation.validatedFiles
     .map((row) => String(row.id || "").trim())
     .filter(Boolean);
+  const persistedImportFileIdToBatchId = new Map<string, string>();
+  for (const row of args.importFileValidation.validatedFiles) {
+    const importFileId = String(row.id || "").trim();
+    const importBatchId = String(row.import_batch_id || "").trim();
+    if (!importFileId || !importBatchId) continue;
+    const previousImportBatchId = persistedImportFileIdToBatchId.get(importFileId);
+    if (previousImportBatchId && previousImportBatchId !== importBatchId) {
+      return {
+        message: `O importedFileId ${importFileId} apareceu associado a mais de um importBatchId valido nesta revisao.`,
+        ok: false,
+      };
+    }
+    persistedImportFileIdToBatchId.set(importFileId, importBatchId);
+  }
   if (persistedImportFileIds.length === 0) {
     return {
       message: "Nenhum importedFileId valido foi recebido para auditar esta revisao estruturada.",
+      ok: false,
+    };
+  }
+  if (persistedImportFileIdToBatchId.size === 0) {
+    return {
+      message: "Nenhum importBatchId valido foi encontrado para auditar esta revisao estruturada.",
+      ok: false,
+    };
+  }
+
+  const { data: stagedDocxRows, error: stagedDocxError } = await args.supabase
+    .from("store_import_media_assets")
+    .select(
+      "id, import_batch_id, import_file_id, source_file_name, source_image_id, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, association_strength, requires_user_confirmation, status, storage_bucket, storage_path, metadata, file_name, size_bytes, normalized_mime_type, original_mime_type, expires_at"
+    )
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("status", "staged")
+    .eq("source_kind", "docx_media")
+    .in("import_file_id", persistedImportFileIds);
+
+  if (stagedDocxError) {
+    return {
+      message: `Falha ao validar auditoria das midias DOCX staged: ${stagedDocxError.message}`,
+      ok: false,
+    };
+  }
+
+  const normalizedDocxRows = ((stagedDocxRows ?? []) as StagedMediaAssetRow[]).filter((row) => {
+    const stagingAssetId = String(row.id || "").trim();
+    const importFileId = String(row.import_file_id || "").trim();
+    const importBatchId = String(row.import_batch_id || "").trim();
+    return (
+      Boolean(stagingAssetId) &&
+      Boolean(importFileId) &&
+      Boolean(importBatchId) &&
+      persistedImportFileIdToBatchId.get(importFileId) === importBatchId
+    );
+  });
+  const docxCanonicalStagedAssetsById = new Map(
+    normalizedDocxRows.map((row) => [String(row.id || "").trim(), row] as const)
+  );
+
+  if (normalizedDocxRows.length > 0) {
+    if (!docxMediaReview) {
+      return {
+        message:
+          "docx_media_review_required: existem imagens DOCX staged nesta importacao e cada uma precisa de decisao explicita.",
+        ok: false,
+      };
+    }
+
+    const canonicalStagingAssetIds = new Set(docxCanonicalStagedAssetsById.keys());
+    const selectedDocxRefs = args.selectedMediaRefs
+      .map((ref) => buildNormalizedMediaRef(ref))
+      .filter((ref) => ref.sourceKind === "docx_media");
+    const selectedDocxRefIds = new Set<string>();
+    const selectedDocxRefsByStagingAssetId = new Map<string, typeof selectedDocxRefs>();
+    const reviewByStagingAssetId = new Map<string, IntelligentImportDocxMediaReviewEntry>();
+    let associatedCount = 0;
+    let notUseCount = 0;
+
+    if (docxMediaReview.entries.length !== normalizedDocxRows.length) {
+      return {
+        message:
+          "A auditoria DOCX precisa conter exatamente uma decisao por stagingAssetId canonico desta importacao.",
+        ok: false,
+      };
+    }
+
+    for (const entry of docxMediaReview.entries) {
+      const stagingAssetId = String(entry.stagingAssetId || "").trim();
+      if (!stagingAssetId) {
+        return {
+          message: "Toda decisao DOCX precisa de stagingAssetId.",
+          ok: false,
+        };
+      }
+      if (reviewByStagingAssetId.has(stagingAssetId)) {
+        return {
+          message: `Auditoria DOCX contem stagingAssetId duplicado: ${stagingAssetId}.`,
+          ok: false,
+        };
+      }
+      if (!canonicalStagingAssetIds.has(stagingAssetId)) {
+        return {
+          message: `A auditoria DOCX contem stagingAssetId fora da importacao atual: ${stagingAssetId}.`,
+          ok: false,
+        };
+      }
+      if (entry.decision !== "associated" && entry.decision !== "not_use") {
+        return {
+          message: `Decisao DOCX invalida para ${stagingAssetId}.`,
+          ok: false,
+        };
+      }
+      if (entry.decision === "associated") {
+        if (!String(entry.clientItemId || "").trim()) {
+          return {
+            message: `Midia DOCX ${stagingAssetId} foi marcada como associada sem clientItemId.`,
+            ok: false,
+          };
+        }
+        associatedCount += 1;
+      } else {
+        if (String(entry.clientItemId || "").trim()) {
+          return {
+            message: `Midia DOCX ${stagingAssetId} foi marcada como nao usar, mas recebeu clientItemId indevido.`,
+            ok: false,
+          };
+        }
+        notUseCount += 1;
+      }
+      reviewByStagingAssetId.set(stagingAssetId, entry);
+    }
+
+    for (const ref of selectedDocxRefs) {
+      const mediaRefId = String(ref.mediaRefId || "").trim();
+      const stagingAssetId = String(ref.stagingAssetId || "").trim();
+      if (!stagingAssetId) {
+        return {
+          message: "Toda midia DOCX weak_confirmed precisa de stagingAssetId valido.",
+          ok: false,
+        };
+      }
+      if (mediaRefId && selectedDocxRefIds.has(mediaRefId)) {
+        return {
+          message: `selectedMediaRefs contem mediaRefId DOCX duplicado: ${mediaRefId}.`,
+          ok: false,
+        };
+      }
+      if (mediaRefId) {
+        selectedDocxRefIds.add(mediaRefId);
+      }
+      if (!canonicalStagingAssetIds.has(stagingAssetId)) {
+        return {
+          message: `selectedMediaRefs contem stagingAssetId DOCX fora da importacao atual: ${stagingAssetId}.`,
+          ok: false,
+        };
+      }
+      const currentRefs = selectedDocxRefsByStagingAssetId.get(stagingAssetId) ?? [];
+      currentRefs.push(ref);
+      selectedDocxRefsByStagingAssetId.set(stagingAssetId, currentRefs);
+      if (currentRefs.length > 1) {
+        return {
+          message: `selectedMediaRefs contem stagingAssetId DOCX duplicado: ${stagingAssetId}.`,
+          ok: false,
+        };
+      }
+    }
+
+    const backendSummary = {
+      associatedCount,
+      notUseCount,
+      pendingCount: Math.max(0, normalizedDocxRows.length - associatedCount - notUseCount),
+      totalCount: docxMediaReview.entries.length,
+    };
+
+    if (backendSummary.pendingCount !== 0) {
+      return {
+        message: "A auditoria DOCX precisa decidir explicitamente cada midia staged desta importacao.",
+        ok: false,
+      };
+    }
+    if (
+      docxMediaReview.summary.totalCount !== backendSummary.totalCount ||
+      docxMediaReview.summary.associatedCount !== backendSummary.associatedCount ||
+      docxMediaReview.summary.notUseCount !== backendSummary.notUseCount ||
+      docxMediaReview.summary.pendingCount !== backendSummary.pendingCount
+    ) {
+      return {
+        message: "Resumo da auditoria DOCX diverge da contagem canonica recalculada no backend.",
+        ok: false,
+      };
+    }
+    if (reviewByStagingAssetId.size !== canonicalStagingAssetIds.size) {
+      return {
+        message: "A auditoria DOCX precisa particionar exatamente o conjunto canonico de midias staged desta importacao.",
+        ok: false,
+      };
+    }
+
+    for (const row of normalizedDocxRows) {
+      const stagingAssetId = String(row.id || "").trim();
+      const reviewEntry = reviewByStagingAssetId.get(stagingAssetId);
+      if (!reviewEntry) {
+        return {
+          message: `Midia DOCX staged ${stagingAssetId} ficou sem decisao explicita na auditoria.`,
+          ok: false,
+        };
+      }
+
+      const matchingRefs = selectedDocxRefsByStagingAssetId.get(stagingAssetId) ?? [];
+      if (reviewEntry.decision === "not_use") {
+        if (matchingRefs.length > 0) {
+          return {
+            message: `Midia DOCX ${stagingAssetId} foi marcada como nao usar, mas apareceu em selectedMediaRefs.`,
+            ok: false,
+          };
+        }
+        continue;
+      }
+
+      if (!reviewEntry.clientItemId) {
+        return {
+          message: `Midia DOCX ${stagingAssetId} foi marcada como associada sem clientItemId de destino.`,
+          ok: false,
+        };
+      }
+      if (matchingRefs.length !== 1) {
+        return {
+          message: `Midia DOCX ${stagingAssetId} precisa gerar exatamente um mediaRef weak_confirmed no save.`,
+          ok: false,
+        };
+      }
+      const matchingRef = matchingRefs[0];
+      if (
+        matchingRef.associationMode !== "weak_confirmed" ||
+        !matchingRef.confirmedByUser ||
+        matchingRef.clientItemId !== reviewEntry.clientItemId
+      ) {
+        return {
+          message: `MediaRef da midia DOCX ${stagingAssetId} nao corresponde a decisao humana auditada.`,
+          ok: false,
+        };
+      }
+    }
+  } else if (
+    docxMediaReview &&
+    (docxMediaReview.entries.length > 0 ||
+      docxMediaReview.summary.totalCount > 0 ||
+      docxMediaReview.summary.associatedCount > 0 ||
+      docxMediaReview.summary.notUseCount > 0 ||
+      docxMediaReview.summary.pendingCount > 0)
+  ) {
+    return {
+      message:
+        "A auditoria DOCX foi enviada, mas esta importacao nao possui midias DOCX staged correspondentes.",
       ok: false,
     };
   }
@@ -911,6 +1367,9 @@ function validateStructuredReviewAudit(args: {
   return {
     ok: true,
     value: {
+      docxCanonicalStagedAssets: normalizedDocxRows,
+      docxCanonicalStagedAssetsById,
+      docxMediaReview,
       globalReviewConfirmation,
       persistedImportFileIds,
       snapshot,
@@ -1668,6 +2127,22 @@ function classifyPhotoPlanMediaRef(args: {
       }
     }
   } else if (normalizedRef.associationMode === "weak_confirmed") {
+    if (normalizedRef.sourceKind !== "docx_media") {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "weak_confirmed so e planejavel para docx_media com revisao humana.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
     if (!normalizedRef.confirmedByUser) {
       return {
         classification: "blocked",
@@ -1677,6 +2152,153 @@ function classifyPhotoPlanMediaRef(args: {
           compared,
           mediaRefId: normalizedRef.mediaRefId,
           reason: "weak_confirmed exige confirmedByUser=true.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
+    if (!normalizedRef.importBatchId || !normalizedRef.importFileId) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "weak_confirmed DOCX exige importFileId e importBatchId canonicos.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    if (!stagedAsset) {
+      if (invalidExpiryStagedAsset) {
+        return {
+          classification: "blocked",
+          blocked: {
+            associationMode: normalizedRef.associationMode,
+            clientItemId: normalizedRef.clientItemId,
+            compared,
+            mediaRefId: normalizedRef.mediaRefId,
+            reason:
+              "A midia DOCX confirmada precisa ser reimportada antes do salvamento.",
+            sourceKind: normalizedRef.sourceKind,
+            stagingAssetId: normalizedRef.stagingAssetId,
+            warnings,
+          },
+          warnings,
+        };
+      }
+
+      if (expiredStagedAsset) {
+        return {
+          classification: "blocked",
+          blocked: {
+            associationMode: normalizedRef.associationMode,
+            clientItemId: normalizedRef.clientItemId,
+            compared,
+            mediaRefId: normalizedRef.mediaRefId,
+            reason:
+              "A midia DOCX confirmada expirou e precisa ser reimportada antes do salvamento.",
+            sourceKind: normalizedRef.sourceKind,
+            stagingAssetId: normalizedRef.stagingAssetId,
+            warnings,
+          },
+          warnings,
+        };
+      }
+
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "stagingAssetId DOCX nao pertence a esta loja/organizacao ou nao esta staged.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    const stagedSourceKind = normalizeSourceKind(stagedAsset.source_kind);
+    const stagedAssociationStrength = normalizeAssociationMode(stagedAsset.association_strength);
+    const safeStorageBucket = String(stagedAsset.storage_bucket || "").trim().toLowerCase();
+    const safeStoragePath = String(stagedAsset.storage_path || "").trim();
+    const safeStoragePathLower = safeStoragePath.toLowerCase();
+
+    if (
+      stagedSourceKind !== "docx_media" ||
+      stagedAssociationStrength !== "visual_evidence" ||
+      !stagedAsset.requires_user_confirmation
+    ) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "stagingAssetId nao representa um asset DOCX staged revisavel valido.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    if (
+      safeStorageBucket !== "store-import-files" ||
+      !safeStoragePath.includes("/media/") ||
+      safeStoragePathLower.includes("pool-photos") ||
+      safeStoragePathLower.includes("store-catalog-photos")
+    ) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "stagingAssetId DOCX nao atende aos requisitos de storage seguro deste bloco.",
+          sourceKind: normalizedRef.sourceKind,
+          stagingAssetId: normalizedRef.stagingAssetId,
+          warnings,
+        },
+        warnings,
+      };
+    }
+
+    const canonicalChecks = [
+      Boolean(stagedAsset.import_batch_id) &&
+        normalizeLoose(normalizedRef.importBatchId) === normalizeLoose(stagedAsset.import_batch_id),
+      Boolean(stagedAsset.import_file_id) &&
+        normalizeLoose(normalizedRef.importFileId) === normalizeLoose(stagedAsset.import_file_id),
+      normalizedRef.sourceFileName && stagedAsset.source_file_name
+        ? matchesSourceFileNameTolerantly(normalizedRef.sourceFileName, stagedAsset.source_file_name)
+        : true,
+      normalizedRef.sourceLocationKey && stagedAsset.source_location_key
+        ? normalizeLoose(normalizedRef.sourceLocationKey) === normalizeLoose(stagedAsset.source_location_key)
+        : true,
+    ];
+    if (canonicalChecks.some((entry) => entry === false)) {
+      return {
+        classification: "blocked",
+        blocked: {
+          associationMode: normalizedRef.associationMode,
+          clientItemId: normalizedRef.clientItemId,
+          compared,
+          mediaRefId: normalizedRef.mediaRefId,
+          reason: "MediaRef DOCX weak_confirmed diverge do asset staged canonico desta importacao.",
           sourceKind: normalizedRef.sourceKind,
           stagingAssetId: normalizedRef.stagingAssetId,
           warnings,
@@ -1906,7 +2528,7 @@ async function validateStagedMediaAssets(args: {
   const { data, error } = await args.supabase
     .from("store_import_media_assets")
     .select(
-      "id, import_batch_id, import_file_id, source_file_name, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, association_strength, requires_user_confirmation, status, storage_bucket, storage_path, metadata, file_name, size_bytes, normalized_mime_type, original_mime_type, expires_at"
+      "id, import_batch_id, import_file_id, source_file_name, source_image_id, source_kind, source_location_key, sheet_scoped_key, worksheet_row_number, association_strength, requires_user_confirmation, status, storage_bucket, storage_path, metadata, file_name, size_bytes, normalized_mime_type, original_mime_type, expires_at"
     )
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
@@ -2004,7 +2626,7 @@ async function validateImportedFiles(args: {
 
   const { data, error } = await args.supabase
     .from("store_import_files")
-    .select("id, original_file_name, status")
+    .select("id, import_batch_id, original_file_name, status")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .in("id", receivedImportedFileIds);
@@ -2758,6 +3380,176 @@ async function promotePlannedImportPhotos(args: {
   } satisfies IntelligentImportSaveApprovedPhotoSaveResult;
 }
 
+async function cancelDiscardedDocxMediaAssets(args: {
+  docxCanonicalStagedAssetsById: Map<string, StagedMediaAssetRow>;
+  docxMediaReview: NormalizedDocxMediaReviewAudit | null;
+  organizationId: string;
+  storeId: string;
+  supabase: any;
+}) {
+  const warnings: string[] = [];
+  const discardedEntries =
+    args.docxMediaReview?.entries.filter((entry) => entry.decision === "not_use") ?? [];
+
+  if (discardedEntries.length === 0) {
+    return {
+      cancelledAssets: [] as string[],
+      warnings,
+    };
+  }
+
+  const cancelledAssets: string[] = [];
+
+  for (const entry of discardedEntries) {
+    const stagingAssetId = String(entry.stagingAssetId || "").trim();
+    if (!stagingAssetId) continue;
+    const stagedAsset = args.docxCanonicalStagedAssetsById.get(stagingAssetId);
+    if (!stagedAsset) {
+      warnings.push(
+        `Midia DOCX marcada como nao usar ${stagingAssetId} nao foi encontrada no conjunto canonico validado para cancelamento.`
+      );
+      continue;
+    }
+
+    const storageBucket = String(stagedAsset.storage_bucket || "").trim();
+    const storagePath = String(stagedAsset.storage_path || "").trim();
+    const cancelledAt = new Date().toISOString();
+    const assetMetadata = normalizeMetadata(stagedAsset.metadata);
+    const cleanupMetadataBase = {
+      attemptedAt: cancelledAt,
+      bucket: storageBucket || null,
+      decision: "not_use",
+      error: null as string | null,
+      outcome: "attempting" as "attempting" | "removed" | "already_missing" | "pending_error",
+      path: storagePath || null,
+      removedAt: null as string | null,
+      source: "docx_human_review",
+    };
+    const cancelledMetadata = {
+      ...assetMetadata,
+      cancelledAt,
+      cancelledByReview: true,
+      cancellationReason: "docx_media_not_use",
+      docxHumanReviewDecision: "not_use",
+      stagedCleanup: cleanupMetadataBase,
+    };
+
+    const { error: cancelError } = await args.supabase
+      .from("store_import_media_assets")
+      .update({
+        metadata: cancelledMetadata,
+        status: "cancelled",
+      })
+      .eq("id", stagingAssetId)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("status", "staged");
+
+    if (cancelError) {
+      warnings.push(
+        `Falha ao marcar staged DOCX ${stagingAssetId} como cancelado: ${cancelError.message}`
+      );
+      continue;
+    }
+
+    cancelledAssets.push(stagingAssetId);
+
+    if (!storageBucket || !storagePath) {
+      warnings.push(
+        `Asset DOCX ${stagingAssetId} foi cancelado sem bucket/path suficiente para cleanup do objeto staged.`
+      );
+      continue;
+    }
+
+    const objectExistence = await checkStorageObjectExists({
+      storageBucket,
+      storagePath,
+      supabase: args.supabase,
+    });
+
+    if (objectExistence.kind === "unknown_error") {
+      const { error: metadataError } = await args.supabase
+        .from("store_import_media_assets")
+        .update({
+          metadata: {
+            ...cancelledMetadata,
+            stagedCleanup: {
+              ...cleanupMetadataBase,
+              error: objectExistence.message,
+              outcome: "pending_error",
+            },
+          },
+        })
+        .eq("id", stagingAssetId)
+        .eq("organization_id", args.organizationId)
+        .eq("store_id", args.storeId)
+        .eq("status", "cancelled");
+
+      if (metadataError) {
+        warnings.push(
+          `Asset DOCX ${stagingAssetId} foi cancelado, mas a auditoria de cleanup pendente falhou: ${metadataError.message}`
+        );
+      }
+      warnings.push(
+        `Asset DOCX ${stagingAssetId} foi cancelado, mas a limpeza do objeto staged ficou pendente.`
+      );
+      continue;
+    }
+
+    let cleanupOutcome: "removed" | "already_missing" | "pending_error" =
+      objectExistence.kind === "missing" ? "already_missing" : "removed";
+    let cleanupErrorMessage: string | null = null;
+    let cleanupRemovedAt: string | null =
+      objectExistence.kind === "missing" ? cancelledAt : null;
+
+    if (objectExistence.kind === "exists") {
+      const { error: cleanupError } = await args.supabase.storage
+        .from(storageBucket)
+        .remove([storagePath]);
+      if (cleanupError) {
+        cleanupOutcome = "pending_error";
+        cleanupErrorMessage = cleanupError.message;
+      } else {
+        cleanupRemovedAt = new Date().toISOString();
+      }
+    }
+
+    const { error: cleanupMetadataError } = await args.supabase
+      .from("store_import_media_assets")
+      .update({
+        metadata: {
+          ...cancelledMetadata,
+          stagedCleanup: {
+            ...cleanupMetadataBase,
+            error: cleanupErrorMessage,
+            outcome: cleanupOutcome,
+            removedAt: cleanupRemovedAt,
+          },
+        },
+      })
+      .eq("id", stagingAssetId)
+      .eq("organization_id", args.organizationId)
+      .eq("store_id", args.storeId)
+      .eq("status", "cancelled");
+
+    if (cleanupMetadataError) {
+      warnings.push(
+        `Asset DOCX ${stagingAssetId} foi cancelado, mas a auditoria da limpeza temporaria precisa ser reconciliada: ${cleanupMetadataError.message}`
+      );
+    }
+    if (cleanupOutcome === "pending_error") {
+      warnings.push(
+        `Asset DOCX ${stagingAssetId} foi cancelado, mas a limpeza do arquivo temporario ficou pendente.`
+      );
+    }
+  }
+
+  return {
+    cancelledAssets,
+    warnings: Array.from(new Set(warnings.filter(Boolean))),
+  };
+}
+
 export async function saveApprovedIntelligentImportItems(
   request: IntelligentImportSaveApprovedRequest
 ): Promise<IntelligentImportSaveApprovedResponse> {
@@ -2786,6 +3578,7 @@ export async function saveApprovedIntelligentImportItems(
       message: "imported_file_ids_required_for_approved_intelligent_import",
       ok: false,
       reviewAudit: {
+        docxMediaReview: normalizeDocxMediaReviewAudit(request.reviewAudit?.docxMediaReview),
         globalReviewConfirmation:
           normalizeGlobalReviewConfirmation(request.reviewAudit?.globalReviewConfirmation),
         importFileAudit: {
@@ -2815,9 +3608,13 @@ export async function saveApprovedIntelligentImportItems(
     storeId: store.id,
     supabase,
   });
-  const structuredReviewAuditValidation = validateStructuredReviewAudit({
+  const structuredReviewAuditValidation = await validateStructuredReviewAudit({
+    organizationId: store.organization_id,
     importFileValidation,
     request,
+    selectedMediaRefs: Array.isArray(request.selectedMediaRefs) ? request.selectedMediaRefs : [],
+    storeId: store.id,
+    supabase,
   });
   if (!structuredReviewAuditValidation.ok) {
     const response: IntelligentImportSaveApprovedResponse = {
@@ -2825,6 +3622,7 @@ export async function saveApprovedIntelligentImportItems(
       message: structuredReviewAuditValidation.message,
       ok: false,
       reviewAudit: {
+        docxMediaReview: normalizeDocxMediaReviewAudit(request.reviewAudit?.docxMediaReview),
         globalReviewConfirmation:
           normalizeGlobalReviewConfirmation(request.reviewAudit?.globalReviewConfirmation),
         importFileAudit: {
@@ -2903,6 +3701,7 @@ export async function saveApprovedIntelligentImportItems(
       ok: false,
       photoPlan,
       reviewAudit: {
+        docxMediaReview: structuredReviewAudit.docxMediaReview,
         globalReviewConfirmation,
         importFileAudit: {
           attempted: false,
@@ -2934,6 +3733,7 @@ export async function saveApprovedIntelligentImportItems(
       ok: !hasBlockingIssues,
       photoPlan,
       reviewAudit: {
+        docxMediaReview: structuredReviewAudit.docxMediaReview,
         globalReviewConfirmation,
         importFileAudit,
         structuredReviewSnapshot: structuredReviewAudit?.snapshot ?? null,
@@ -2953,6 +3753,7 @@ export async function saveApprovedIntelligentImportItems(
       ok: false,
       photoPlan,
       reviewAudit: {
+        docxMediaReview: structuredReviewAudit.docxMediaReview,
         globalReviewConfirmation,
         importFileAudit: {
           attempted: false,
@@ -2986,6 +3787,7 @@ export async function saveApprovedIntelligentImportItems(
       ok: false,
       photoPlan,
       reviewAudit: {
+        docxMediaReview: structuredReviewAudit.docxMediaReview,
         globalReviewConfirmation,
         importFileAudit,
         structuredReviewSnapshot: structuredReviewAudit?.snapshot ?? null,
@@ -3030,6 +3832,13 @@ export async function saveApprovedIntelligentImportItems(
           supabase,
         })
       : undefined;
+  const discardedDocxMediaCleanup = await cancelDiscardedDocxMediaAssets({
+    docxCanonicalStagedAssetsById: structuredReviewAudit.docxCanonicalStagedAssetsById,
+    docxMediaReview: structuredReviewAudit.docxMediaReview,
+    organizationId: store.organization_id,
+    storeId: store.id,
+    supabase,
+  });
 
   const response: IntelligentImportSaveApprovedResponse = {
     importFileLinkPlan,
@@ -3044,12 +3853,14 @@ export async function saveApprovedIntelligentImportItems(
               new Set([
                 ...photoPlan.warnings,
                 ...(photoSaveResult?.warnings ?? []),
+                ...discardedDocxMediaCleanup.warnings,
               ])
             )
-          : photoPlan.warnings,
+          : Array.from(new Set([...photoPlan.warnings, ...discardedDocxMediaCleanup.warnings])),
     },
     photoSaveResult,
     reviewAudit: {
+      docxMediaReview: structuredReviewAudit.docxMediaReview,
       globalReviewConfirmation,
       importFileAudit,
       structuredReviewSnapshot: structuredReviewAudit?.snapshot ?? null,
