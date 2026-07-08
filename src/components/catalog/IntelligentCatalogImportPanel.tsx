@@ -1810,6 +1810,33 @@ type StructuredReviewCandidateValidation = {
   duplicateReason: string | null;
 };
 
+const STRUCTURED_REVIEW_REASON_LABELS: Record<string, string> = {
+  ambiguous_bundle: "Possivel combinacao ambigua de itens no mesmo bloco.",
+  ambiguous_title: "Titulo ambiguo.",
+  fragment_description_residue: "Trecho residual sem ancora nominal confiavel.",
+  fragment_detail_lead: "Trecho iniciado por detalhe tecnico, com estrutura suspeita.",
+  fragment_price_lead: "Trecho iniciado por preco, com estrutura suspeita.",
+  generic_name_signal: "Origem marcou o nome como generico.",
+  generic_title: "Nome generico detectado.",
+  manual_review_signal: "Origem marcou o item para revisao manual.",
+  missing_name: "Nome ausente ou incompleto.",
+  missing_price: "Preco nao informado.",
+  missing_price_signal: "Origem indicou ausencia de preco.",
+  missing_sku: "SKU nao informado.",
+  missing_sku_signal: "Origem indicou ausencia de SKU.",
+  mixed_product_context: "Contexto misto de produtos/categorias no mesmo item.",
+  multiple_prices: "Multiplos precos detectados no mesmo item.",
+  multiple_prices_in_block: "Multiplos precos detectados no mesmo item.",
+  multiple_skus: "Multiplos SKUs detectados no mesmo item.",
+  multiple_skus_in_block: "Multiplos SKUs detectados no mesmo item.",
+  pool_missing_required_measures: "Piscina sem medidas obrigatorias suficientes.",
+  possible_merged_items: "Possivel mistura de produtos no mesmo bloco.",
+  suspect_source_marker: "Origem marcou o item como suspeito.",
+  weak_candidate: "Item marcado como candidato fraco para revisao.",
+  weak_nominal_anchor: "Nome com baixa confianca estrutural.",
+  weak_source_signal: "Origem indicou leitura fraca ou duvidosa.",
+};
+
 const VISUAL_PDF_IMPORT_MESSAGE =
   "PDF visual detectado. O arquivo tem paginas renderizadas, mas nao possui texto extraivel suficiente para gerar itens automaticamente nesta etapa. Para importar esse catalogo, sera necessario OCR/vision por pagina.";
 const VISUAL_ANALYSIS_CACHE_VERSION = 1;
@@ -2896,10 +2923,81 @@ function parseImportedCommaSeparatedMetadata(value: string | null | undefined) {
     .filter(Boolean);
 }
 
+function formatStructuredReviewReasonLabel(code: string) {
+  const normalized = normalizeImportedLoose(code).replace(/\s+/g, "_");
+  return STRUCTURED_REVIEW_REASON_LABELS[normalized] || "";
+}
+
+function buildStructuredReviewDetailedReasons(
+  item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
+  duplicateReason?: string | null
+) {
+  if (duplicateReason) return [duplicateReason];
+
+  const metadataReasonCodes = Array.from(
+    new Set(
+      [
+        ...parseImportedCommaSeparatedMetadata(
+          extractMetadataValue(item, ["review_reasons", "review_reason"])
+        ),
+        ...parseImportedCommaSeparatedMetadata(
+          extractMetadataValue(item, ["source_review_signals"])
+        ),
+        ...parseImportedCommaSeparatedMetadata(
+          extractMetadataValue(item, ["structural_review_signals"])
+        ),
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  const reasons = metadataReasonCodes
+    .map((code) => formatStructuredReviewReasonLabel(code))
+    .filter(Boolean);
+
+  if (reasons.length === 0) {
+    const fallbackCodes = [
+      ["missing_name", extractMetadataValue(item, ["missing_name"])],
+      ["ambiguous_title", extractMetadataValue(item, ["ambiguous_title"])],
+      ["generic_title", extractMetadataValue(item, ["generic_title"])],
+      ["missing_price", extractMetadataValue(item, ["missing_price"])],
+      ["missing_sku", extractMetadataValue(item, ["missing_sku"])],
+      ["weak_candidate", extractMetadataValue(item, ["weak_candidate"])],
+    ] as const;
+
+    for (const [code, rawValue] of fallbackCodes) {
+      if (["true", "1", "sim", "yes"].includes(normalizeImportedLoose(rawValue))) {
+        const label = formatStructuredReviewReasonLabel(code);
+        if (label) reasons.push(label);
+      }
+    }
+  }
+
+  const uniqueReasons = Array.from(new Set(reasons));
+  if (uniqueReasons.length > 0) {
+    return uniqueReasons.slice(0, 4);
+  }
+
+  const reviewRequired = extractMetadataValue(item, ["review_required", "weak_candidate"]);
+  if (["true", "1", "sim", "yes"].includes(normalizeImportedLoose(reviewRequired))) {
+    return ["Revisao obrigatoria sem motivo detalhado."];
+  }
+
+  return [];
+}
+
 function buildStructuredReviewIgnoreReasons(
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview,
   duplicateReason?: string | null
 ) {
+  const detailedReasons = buildStructuredReviewDetailedReasons(item, duplicateReason);
+  if (hasStructuredInvalidPriceReviewRequirement(item)) {
+    detailedReasons.unshift("Preco invalido na importacao. Revise e confirme manualmente antes de salvar.");
+  }
+  if (detailedReasons.length > 0) {
+    return Array.from(new Set(detailedReasons)).slice(0, 4);
+  }
   if (duplicateReason) return [duplicateReason];
 
   const reasons: string[] = [];
@@ -3974,6 +4072,7 @@ function computeStructuredPreSaveValidation(args: {
 }) {
   const seenPoolNames = new Set<string>();
   const seenCatalogSkus = new Set<string>();
+  const seenCatalogNamesByDestination = new Set<string>();
   const seenDuplicateIdentities = new Set<string>();
   const validItems: Array<IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview> = [];
   const blockedItems: StructuredPreSaveValidationItem[] = [];
@@ -3985,12 +4084,16 @@ function computeStructuredPreSaveValidation(args: {
       destination === "pool" ? buildImportedPoolName(item) : buildImportedCatalogName(item)
     );
     const normalizedSku = normalizeImportDedupSku(resolveImportedCatalogSku(item));
+    const catalogNameKey =
+      destination !== "pool" && normalizedName ? `${destination}::${normalizedName}` : "";
     const duplicateIdentity = buildStructuredCandidateDuplicateIdentity(item, destination, normalizedName);
 
     let duplicateReason: string | null = null;
 
     if (destination === "pool") {
-      if (duplicateIdentity && seenDuplicateIdentities.has(duplicateIdentity)) {
+      if (normalizedName && seenPoolNames.has(normalizedName)) {
+        duplicateReason = "Duplicado neste arquivo: outra piscina com este nome ja aparece na revisao.";
+      } else if (duplicateIdentity && seenDuplicateIdentities.has(duplicateIdentity)) {
         duplicateReason = "Duplicado neste arquivo.";
       } else if (normalizedName && args.existingReferences.existingPoolNames.has(normalizedName)) {
         duplicateReason = "Ja existe uma piscina com esse nome nesta loja.";
@@ -4003,7 +4106,11 @@ function computeStructuredPreSaveValidation(args: {
         seenDuplicateIdentities.add(duplicateIdentity);
       }
     } else {
-      if (duplicateIdentity && seenDuplicateIdentities.has(duplicateIdentity)) {
+      if (normalizedSku && seenCatalogSkus.has(normalizedSku)) {
+        duplicateReason = "Duplicado neste arquivo: SKU repetido na revisao.";
+      } else if (catalogNameKey && seenCatalogNamesByDestination.has(catalogNameKey)) {
+        duplicateReason = "Duplicado neste arquivo: nome repetido nesta categoria.";
+      } else if (duplicateIdentity && seenDuplicateIdentities.has(duplicateIdentity)) {
         duplicateReason = "Duplicado neste arquivo.";
       } else if (normalizedSku && args.existingReferences.existingCatalogSkus.has(normalizedSku)) {
         duplicateReason = "Ja existe um item com esse SKU nesta loja.";
@@ -4013,6 +4120,9 @@ function computeStructuredPreSaveValidation(args: {
 
       if (normalizedSku) {
         seenCatalogSkus.add(normalizedSku);
+      }
+      if (catalogNameKey) {
+        seenCatalogNamesByDestination.add(catalogNameKey);
       }
       if (duplicateIdentity) {
         seenDuplicateIdentities.add(duplicateIdentity);
@@ -9172,6 +9282,8 @@ export default function IntelligentCatalogImportPanel({
     return structuredUnifiedReviewItems.reduce(
       (acc, item) => {
         acc.found += 1;
+        if (item.duplicateReason) acc.duplicates += 1;
+        if (item.candidate.selected && !item.candidate.manuallyIgnored) acc.selectedRequested += 1;
         const status = getStructuredReviewListStatus(item);
         if (status === "selected") acc.selected += 1;
         else if (status === "ignored") acc.ignored += 1;
@@ -9180,6 +9292,8 @@ export default function IntelligentCatalogImportPanel({
       },
       {
         found: 0,
+        duplicates: 0,
+        selectedRequested: 0,
         selected: 0,
         deselected: 0,
         ignored: 0,
@@ -11718,6 +11832,22 @@ export default function IntelligentCatalogImportPanel({
                   </div>
                   {visibleIntelligentImportFiles.length > 0 ? (
                     <div className="flex min-w-0 flex-col gap-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 md:flex-row md:items-center md:justify-between">
+                      <div className="w-full">
+                        <p className="text-xs font-medium text-slate-500">
+                          {visibleIntelligentImportFiles.length} arquivo(s) selecionado(s)
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {visibleIntelligentImportFiles.map((file) => (
+                            <span
+                              key={`${file.name}-${file.lastModified}`}
+                              className="max-w-full rounded-full bg-slate-50 px-2.5 py-1 text-xs text-slate-700 ring-1 ring-slate-200"
+                              title={`${file.name} â€¢ ${file.type || "tipo nao informado"} â€¢ ${formatFileSize(file.size ?? 0)}`}
+                            >
+                              {file.name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                       <span className="truncate font-medium text-gray-900">
                         {visibleIntelligentImportFiles[0]?.name}
                         {visibleIntelligentImportFiles.length > 1
@@ -11797,6 +11927,29 @@ export default function IntelligentCatalogImportPanel({
                   ) : null}
                   {intelligentImportResult?.ok ? (
                     <div className="space-y-3">
+                      {getImportedFilesFromResult(intelligentImportResult).length > 0 ? (
+                        <div className="rounded-xl border border-slate-200 bg-white p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-sm font-semibold text-slate-900">
+                              Arquivos enviados nesta analise
+                            </p>
+                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+                              {getImportedFilesFromResult(intelligentImportResult).length} arquivo(s) bruto(s) persistido(s)
+                            </span>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {getImportedFilesFromResult(intelligentImportResult).map((file) => (
+                              <span
+                                key={file.id}
+                                className="max-w-full rounded-full bg-slate-50 px-2.5 py-1 text-xs text-slate-700 ring-1 ring-slate-200"
+                                title={file.originalFileName}
+                              >
+                                {file.originalFileName}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="hidden">
                         <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
                           <p className="text-xs text-gray-500">Arquivos enviados</p>
@@ -13689,7 +13842,7 @@ export default function IntelligentCatalogImportPanel({
                       <div className="flex flex-wrap gap-2">
                         {[
                           ["all", "Todos", structuredReviewCounts.found],
-                          ["selected", "Selecionados", structuredReviewCounts.selected],
+                          ["selected", "Validos", structuredReviewCounts.selected],
                           ["deselected", "Desmarcados", structuredReviewCounts.deselected],
                           ["ignored", "Ignorados", structuredReviewCounts.ignored],
                         ].map(([value, label, count]) => (
@@ -13717,6 +13870,47 @@ export default function IntelligentCatalogImportPanel({
                           Confirmacao global pendente
                         </span>
                       )}
+                    </div>
+                    <div className="grid gap-2 md:col-span-2 md:grid-cols-5">
+                      <div className="rounded-xl border border-emerald-100 bg-white px-3 py-2">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-slate-500">
+                          Encontrados
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-slate-900">{structuredReviewCounts.found}</p>
+                        <p className="text-xs text-slate-500">Total bruto do preview</p>
+                      </div>
+                      <div className="rounded-xl border border-rose-100 bg-white px-3 py-2">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-slate-500">
+                          Duplicados
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-rose-800">{structuredReviewCounts.duplicates}</p>
+                        <p className="text-xs text-slate-500">Nao serao salvos</p>
+                      </div>
+                      <div className="rounded-xl border border-sky-100 bg-white px-3 py-2">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-slate-500">
+                          Unicos
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-sky-900">
+                          {Math.max(0, structuredReviewCounts.found - structuredReviewCounts.duplicates)}
+                        </p>
+                        <p className="text-xs text-slate-500">Itens nao duplicados</p>
+                      </div>
+                      <div className="rounded-xl border border-amber-100 bg-white px-3 py-2">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-slate-500">
+                          Marcados
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-amber-900">
+                          {structuredReviewCounts.selectedRequested}
+                        </p>
+                        <p className="text-xs text-slate-500">Selecionados na revisao</p>
+                      </div>
+                      <div className="rounded-xl border border-emerald-100 bg-white px-3 py-2">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-slate-500">
+                          Validos
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-emerald-900">{structuredReviewCounts.selected}</p>
+                        <p className="text-xs text-slate-500">Prontos para salvar</p>
+                      </div>
                     </div>
                   </div>
                   <div className="mt-4 rounded-2xl border border-emerald-100 bg-white/70 p-2 shadow-inner">
@@ -14135,6 +14329,11 @@ export default function IntelligentCatalogImportPanel({
                                 </p>
                               ) : null}
                               </div> : null}
+                              <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                                Arquivo: {item.sourceFileName || "Nao informado"}
+                                {item.sourceSheetName ? ` â€¢ Aba: ${item.sourceSheetName}` : ""}
+                                {item.worksheetRowNumber != null ? ` â€¢ Linha: ${item.worksheetRowNumber}` : ""}
+                              </p>
                               <div
                                 className={cx(
                                   "mt-2 inline-flex max-w-full rounded-lg px-2.5 py-1 text-xs font-medium ring-1",
@@ -14147,6 +14346,30 @@ export default function IntelligentCatalogImportPanel({
                               >
                                 <span className="truncate">{displayCompactStatus.label}</span>
                               </div>
+                              {item.blockingReasons.length > 0 ? (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {item.blockingReasons.map((reason, index) => (
+                                    <span
+                                      key={`${item.candidate.id}-blocking-tag-${index}`}
+                                      className="rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-800 ring-1 ring-rose-200"
+                                    >
+                                      {reason}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : null}
+                              {item.warnings.length > 0 ? (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {item.warnings.map((warning, index) => (
+                                    <span
+                                      key={`${item.candidate.id}-warning-tag-${index}`}
+                                      className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-900 ring-1 ring-amber-200"
+                                    >
+                                      {warning}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : null}
                               {photoEvidence ? (
                                 <p className="mt-2 text-xs leading-5 text-amber-900">
                                   {confirmedEvidenceCount > 0
@@ -14255,14 +14478,22 @@ export default function IntelligentCatalogImportPanel({
                         </p>
                       ) : null}
                     </div>
-                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="grid grid-cols-2 gap-2 text-center text-xs md:grid-cols-5">
                       <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
                         <p className="font-semibold text-slate-900">{structuredReviewCounts.found}</p>
                         <p className="mt-1 text-slate-600">Encontrados</p>
                       </div>
+                      <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2">
+                        <p className="font-semibold text-rose-900">{structuredReviewCounts.duplicates}</p>
+                        <p className="mt-1 text-rose-700">Duplicados</p>
+                      </div>
                       <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
-                        <p className="font-semibold text-emerald-900">{structuredReviewCounts.selected}</p>
-                        <p className="mt-1 text-emerald-700">Selecionados</p>
+                        <p className="font-semibold text-emerald-900">{structuredReviewCounts.selectedRequested}</p>
+                        <p className="mt-1 text-emerald-700">Marcados</p>
+                      </div>
+                      <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2">
+                        <p className="font-semibold text-sky-900">{structuredReviewCounts.selected}</p>
+                        <p className="mt-1 text-sky-700">Validos</p>
                       </div>
                       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
                         <p className="font-semibold text-amber-900">{structuredReviewCounts.deselected}</p>
@@ -14443,6 +14674,9 @@ export default function IntelligentCatalogImportPanel({
                         Só os itens selecionados na revisão acima serão salvos. Piscinas continuam indo para
                         Piscinas, produtos químicos para Químicos, acessórios para Acessórios e o restante para
                         Outros.
+                      </p>
+                      <p className="mt-2 text-sm font-medium text-slate-700">
+                        Marcados na revisao: {structuredReviewCounts.selectedRequested}. Validos para salvar agora: {structuredReviewCounts.selected}. Duplicados ja bloqueados na UI: {structuredReviewCounts.duplicates}.
                       </p>
                       {editableStructuredCandidates.length > 0 &&
                       structuredSelectedCandidates.length === 0 ? (
