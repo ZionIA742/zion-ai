@@ -4085,7 +4085,7 @@ function computeStructuredPreSaveValidation(args: {
     );
     const normalizedSku = normalizeImportDedupSku(resolveImportedCatalogSku(item));
     const catalogNameKey =
-      destination !== "pool" && normalizedName ? `${destination}::${normalizedName}` : "";
+      destination !== "pool" && !normalizedSku && normalizedName ? `${destination}::${normalizedName}` : "";
     const duplicateIdentity = buildStructuredCandidateDuplicateIdentity(item, destination, normalizedName);
 
     let duplicateReason: string | null = null;
@@ -4108,13 +4108,13 @@ function computeStructuredPreSaveValidation(args: {
     } else {
       if (normalizedSku && seenCatalogSkus.has(normalizedSku)) {
         duplicateReason = "Duplicado neste arquivo: SKU repetido na revisao.";
-      } else if (catalogNameKey && seenCatalogNamesByDestination.has(catalogNameKey)) {
+      } else if (!normalizedSku && catalogNameKey && seenCatalogNamesByDestination.has(catalogNameKey)) {
         duplicateReason = "Duplicado neste arquivo: nome repetido nesta categoria.";
       } else if (duplicateIdentity && seenDuplicateIdentities.has(duplicateIdentity)) {
         duplicateReason = "Duplicado neste arquivo.";
       } else if (normalizedSku && args.existingReferences.existingCatalogSkus.has(normalizedSku)) {
         duplicateReason = "Ja existe um item com esse SKU nesta loja.";
-      } else if (normalizedName && args.existingReferences.existingCatalogNames.has(normalizedName)) {
+      } else if (!normalizedSku && normalizedName && args.existingReferences.existingCatalogNames.has(normalizedName)) {
         duplicateReason = "Ja existe um item com esse nome nesta loja.";
       }
 

@@ -1520,7 +1520,7 @@ function validateReviewedImportedItem(
   }
 
   const normalizedName = normalizeImportDedupText(normalizedPayload.name);
-  if (normalizedName) {
+  if (!normalizedSku && normalizedName) {
     const existingByName = context.existingCatalogItems.find((row) => {
       if (normalizeImportDedupText(row.name) !== normalizedName) return false;
       const rowCategory = resolveExistingCatalogCategory(row.metadata);
@@ -2773,15 +2773,11 @@ function buildInternalDuplicateKeys(item: IntelligentImportSaveApprovedResultIte
   const keys: string[] = [];
   const normalizedSku = normalizeImportDedupSku(payload.sku);
   if (normalizedSku) {
-    keys.push(`catalog_sku::${normalizedSku}`);
+    return [`catalog_sku::${normalizedSku}`];
   }
 
   const normalizedName = normalizeImportDedupText(payload.name);
-  if (normalizedName) {
-    keys.push(`catalog_name::${payload.destination}::${normalizedName}`);
-  }
-
-  return keys;
+  return normalizedName ? [`catalog_name::${payload.destination}::${normalizedName}`] : [];
 }
 
 async function persistImportFileReviewAudit(args: {
