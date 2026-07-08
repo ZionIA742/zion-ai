@@ -1746,6 +1746,46 @@ type StructuredPendingDocxMediaReviewEntry = {
   sourceLocationKey: string;
   targetCandidate: StructuredUnifiedReviewItem | null;
 };
+type StructuredDocxPreviewStatus =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "missing"
+  | "expired"
+  | "invalid"
+  | "unavailable";
+type StructuredDocxPreviewState = {
+  expiresAt: string | null;
+  message: string | null;
+  requestKey: string;
+  signedUrl: string | null;
+  status: StructuredDocxPreviewStatus;
+};
+type StructuredPlannedDocxPhotoPreview = {
+  count: number;
+  previewState: StructuredDocxPreviewState | null;
+  previewStatus: "loading" | "ready" | "unavailable";
+  previewUrl: string | null;
+  stagedAsset: IntelligentImportStagedMediaAsset;
+};
+type StructuredDocxPreviewApiResponse =
+  | {
+      ok: true;
+      expiresAt?: string | null;
+      importBatchId?: string | null;
+      importFileId?: string | null;
+      signedUrl: string;
+      stagingAssetId: string;
+      state: "ready";
+    }
+  | {
+      ok: false;
+      importBatchId?: string | null;
+      importFileId?: string | null;
+      message: string;
+      stagingAssetId?: string;
+      state: "expired" | "invalid" | "missing" | "unavailable";
+    };
 type StructuredPreSaveValidationItem = {
   item: IntelligentImportDedupedPreview | IntelligentImportNormalizedPreview;
   destination: ImportedDestination;
@@ -2317,6 +2357,69 @@ function getImportedBatchIdsFromResult(result: IntelligentImportResponse | null)
         .map((file) => String(file.importBatchId || "").trim())
         .filter(Boolean)
     )
+  );
+}
+function buildStructuredDocxPreviewRequestKey(
+  organizationId: string | null | undefined,
+  storeId: string | null | undefined,
+  stagedAsset: IntelligentImportStagedMediaAsset
+) {
+  return [
+    String(organizationId || "").trim(),
+    String(storeId || "").trim(),
+    String(stagedAsset.importBatchId || "").trim(),
+    String(stagedAsset.importFileId || "").trim(),
+    String(stagedAsset.id || "").trim(),
+    String(stagedAsset.storageBucket || "").trim(),
+    String(stagedAsset.storagePath || "").trim(),
+  ].join("::");
+}
+function getStructuredDocxPreviewStateAssetId(stagingAssetId: string | null | undefined) {
+  return String(stagingAssetId || "").trim();
+}
+function getStructuredDocxPreviewFallbackMessage(stagedAsset: IntelligentImportStagedMediaAsset) {
+  const importBatchId = String(stagedAsset.importBatchId || "").trim();
+  const importFileId = String(stagedAsset.importFileId || "").trim();
+  if (!importBatchId || !importFileId) {
+    return "A preview segura desta midia nao esta disponivel porque o lote ou arquivo canonico da importacao atual nao foi identificado.";
+  }
+  return "Carregando preview segura desta midia staged...";
+}
+function getStructuredDocxPreviewCardMessage(
+  previewState: StructuredDocxPreviewState | null | undefined,
+  stagedAsset: IntelligentImportStagedMediaAsset
+) {
+  if (!previewState) {
+    return getStructuredDocxPreviewFallbackMessage(stagedAsset);
+  }
+  if (previewState.message) return previewState.message;
+  if (previewState.status === "loading") {
+    return "Carregando preview segura desta midia staged...";
+  }
+  return getStructuredDocxPreviewFallbackMessage(stagedAsset);
+}
+function getStructuredPlannedDocxPhotoSummaryLabel(count: number) {
+  return count === 1 ? "1 foto planejada para salvar" : `${count} fotos planejadas para salvar`;
+}
+function getStructuredPlannedDocxPhotoStateMessage(preview: StructuredPlannedDocxPhotoPreview) {
+  if (preview.previewStatus === "ready") {
+    return "Foto planejada nesta revisao";
+  }
+  if (preview.previewStatus === "loading") {
+    return "Foto planejada - carregando visualizacao";
+  }
+  return "Foto planejada - visualizacao indisponivel";
+}
+function areStructuredDocxPreviewStatesEqual(
+  left: StructuredDocxPreviewState | null | undefined,
+  right: StructuredDocxPreviewState | null | undefined
+) {
+  return (
+    (left?.status || null) === (right?.status || null) &&
+    (left?.message || null) === (right?.message || null) &&
+    (left?.signedUrl || null) === (right?.signedUrl || null) &&
+    (left?.expiresAt || null) === (right?.expiresAt || null) &&
+    (left?.requestKey || null) === (right?.requestKey || null)
   );
 }
 
@@ -8369,6 +8472,11 @@ export default function IntelligentCatalogImportPanel({
   const [structuredPendingDocxMediaDecisions, setStructuredPendingDocxMediaDecisions] = useState<
     Record<string, StructuredPendingDocxMediaDecision>
   >({});
+  const [structuredDocxPreviewStates, setStructuredDocxPreviewStates] = useState<
+    Record<string, StructuredDocxPreviewState>
+  >({});
+  const structuredDocxPreviewStatesRef = useRef<Record<string, StructuredDocxPreviewState>>({});
+  const structuredDocxPreviewInFlightRequestKeysRef = useRef<Record<string, string>>({});
   const [editingStructuredCandidateId, setEditingStructuredCandidateId] = useState<string | null>(null);
   const [structuredCandidateEditorDraft, setStructuredCandidateEditorDraft] =
     useState<StructuredCandidateDraft | null>(null);
@@ -8724,6 +8832,254 @@ export default function IntelligentCatalogImportPanel({
     structuredDocxMediaAssociationTargets,
     structuredPendingDocxMediaDecisions,
   ]);
+  const structuredDocxPreviewScopeSignature = useMemo(
+    () =>
+      structuredPendingDocxMediaReviewEntries
+        .map((entry) =>
+          [
+            entry.stagedAsset.id,
+            entry.stagedAsset.importBatchId || "",
+            entry.stagedAsset.importFileId || "",
+            entry.stagedAsset.storageBucket || "",
+            entry.stagedAsset.storagePath || "",
+          ].join("::")
+        )
+        .sort()
+        .join("|"),
+    [structuredPendingDocxMediaReviewEntries]
+  );
+  useEffect(() => {
+    structuredDocxPreviewStatesRef.current = structuredDocxPreviewStates;
+  }, [structuredDocxPreviewStates]);
+  useEffect(() => {
+    const stagedEntries = structuredPendingDocxMediaReviewEntries.map((entry) => entry.stagedAsset);
+    if (stagedEntries.length === 0) {
+      structuredDocxPreviewInFlightRequestKeysRef.current = {};
+      setStructuredDocxPreviewStates({});
+      return;
+    }
+    if (!organizationId || !storeId) {
+      setStructuredDocxPreviewStates((current) => {
+        const next: Record<string, StructuredDocxPreviewState> = {};
+        for (const stagedAsset of stagedEntries) {
+          const assetId = getStructuredDocxPreviewStateAssetId(stagedAsset.id);
+          next[assetId] = {
+            expiresAt: null,
+            message: "Nao foi possivel identificar a organizacao e a loja ativas para carregar a preview segura.",
+            requestKey: buildStructuredDocxPreviewRequestKey(organizationId, storeId, stagedAsset),
+            signedUrl: null,
+            status: "invalid",
+          };
+        }
+        const currentKeys = Object.keys(current);
+        const nextKeys = Object.keys(next);
+        const isSame =
+          currentKeys.length === nextKeys.length &&
+          nextKeys.every((key) => {
+            const left = current[key];
+            const right = next[key];
+            return (
+              left?.status === right?.status &&
+              left?.message === right?.message &&
+              left?.signedUrl === right?.signedUrl &&
+              left?.expiresAt === right?.expiresAt &&
+              left?.requestKey === right?.requestKey
+            );
+          });
+        return isSame ? current : next;
+      });
+      return;
+    }
+
+    const requestKeyByAssetId = new Map(
+      stagedEntries.map((stagedAsset) => [
+        getStructuredDocxPreviewStateAssetId(stagedAsset.id),
+        buildStructuredDocxPreviewRequestKey(organizationId, storeId, stagedAsset),
+      ] as const)
+    );
+
+    setStructuredDocxPreviewStates((current) => {
+      const next: Record<string, StructuredDocxPreviewState> = {};
+      for (const stagedAsset of stagedEntries) {
+        const assetId = getStructuredDocxPreviewStateAssetId(stagedAsset.id);
+        const requestKey = requestKeyByAssetId.get(assetId) || "";
+        const existing = current[assetId];
+        if (existing && existing.requestKey === requestKey) {
+          next[assetId] = existing;
+        } else {
+          next[assetId] = {
+            expiresAt: null,
+            message: getStructuredDocxPreviewFallbackMessage(stagedAsset),
+            requestKey,
+            signedUrl: null,
+            status: "idle",
+          };
+        }
+      }
+      const currentKeys = Object.keys(current);
+      const nextKeys = Object.keys(next);
+      const isSame =
+        currentKeys.length === nextKeys.length &&
+        nextKeys.every((key) => areStructuredDocxPreviewStatesEqual(current[key], next[key]));
+      return isSame ? current : next;
+    });
+
+    const previewTargets = stagedEntries.filter((stagedAsset) => {
+      const assetId = getStructuredDocxPreviewStateAssetId(stagedAsset.id);
+      const requestKey = requestKeyByAssetId.get(assetId) || "";
+      const currentState = structuredDocxPreviewStatesRef.current[assetId];
+      const inFlightRequestKey = structuredDocxPreviewInFlightRequestKeysRef.current[assetId];
+      return (
+        !currentState ||
+        currentState.requestKey !== requestKey ||
+        currentState.status === "idle" ||
+        (currentState.status === "loading" && inFlightRequestKey !== requestKey)
+      );
+    });
+    if (previewTargets.length === 0) return;
+
+    let cancelled = false;
+    const activeControllers: Array<{
+      assetId: string;
+      controller: AbortController;
+      requestKey: string;
+    }> = [];
+
+    void Promise.all(
+      previewTargets.map(async (stagedAsset) => {
+        const assetId = getStructuredDocxPreviewStateAssetId(stagedAsset.id);
+        const requestKey = requestKeyByAssetId.get(assetId) || "";
+        const controller = new AbortController();
+        activeControllers.push({
+          assetId,
+          controller,
+          requestKey,
+        });
+        structuredDocxPreviewInFlightRequestKeysRef.current[assetId] = requestKey;
+        setStructuredDocxPreviewStates((current) => {
+          const existing = current[assetId];
+          if (
+            existing &&
+            existing.requestKey === requestKey &&
+            (existing.status === "loading" || existing.status === "ready")
+          ) {
+            return current;
+          }
+          return {
+            ...current,
+            [assetId]: {
+              expiresAt: null,
+              message: getStructuredDocxPreviewFallbackMessage(stagedAsset),
+              requestKey,
+              signedUrl: existing?.requestKey === requestKey ? existing.signedUrl : null,
+              status: "loading",
+            },
+          };
+        });
+
+        const importBatchId = String(stagedAsset.importBatchId || "").trim();
+        const importFileId = String(stagedAsset.importFileId || "").trim();
+        if (!importBatchId || !importFileId) {
+          if (cancelled) return;
+          setStructuredDocxPreviewStates((current) => ({
+            ...current,
+            [assetId]: {
+              expiresAt: null,
+              message:
+                "A preview segura desta midia nao esta disponivel porque o lote ou arquivo canonico da importacao atual nao foi identificado.",
+              requestKey,
+              signedUrl: null,
+              status: "invalid",
+            },
+          }));
+          return;
+        }
+
+        try {
+          const response = await fetch("/api/onboarding/intelligent-import/staged-media-preview", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              organizationId,
+              storeId,
+              stagingAssetId: stagedAsset.id,
+              importBatchId,
+              importFileId,
+            }),
+          });
+          const result = (await response.json()) as StructuredDocxPreviewApiResponse;
+          if (cancelled) return;
+
+          if (!response.ok || !result.ok) {
+            setStructuredDocxPreviewStates((current) => ({
+              ...current,
+              [assetId]: {
+                expiresAt: null,
+                message:
+                  !result.ok && result.message
+                    ? result.message
+                    : "Nao foi possivel gerar a preview segura desta midia staged.",
+                requestKey,
+                signedUrl: null,
+                status: !result.ok ? result.state : "unavailable",
+              },
+            }));
+            return;
+          }
+
+          const nextSignedUrl = String(result.signedUrl || "").trim();
+          setStructuredDocxPreviewStates((current) => ({
+            ...current,
+            [assetId]: {
+              expiresAt: String(result.expiresAt || "").trim() || null,
+              message: null,
+              requestKey,
+              signedUrl: nextSignedUrl || null,
+              status: nextSignedUrl ? "ready" : "unavailable",
+            },
+          }));
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          if (cancelled) return;
+          setStructuredDocxPreviewStates((current) => ({
+            ...current,
+            [assetId]: {
+              expiresAt: null,
+              message:
+                error instanceof Error
+                  ? `Falha ao carregar a preview segura desta midia staged: ${error.message}`
+                  : "Falha ao carregar a preview segura desta midia staged.",
+              requestKey,
+              signedUrl: null,
+              status: "unavailable",
+            },
+          }));
+        } finally {
+          if (structuredDocxPreviewInFlightRequestKeysRef.current[assetId] === requestKey) {
+            delete structuredDocxPreviewInFlightRequestKeysRef.current[assetId];
+          }
+        }
+      })
+    );
+
+    return () => {
+      cancelled = true;
+      for (const activeController of activeControllers) {
+        if (structuredDocxPreviewInFlightRequestKeysRef.current[activeController.assetId] === activeController.requestKey) {
+          delete structuredDocxPreviewInFlightRequestKeysRef.current[activeController.assetId];
+        }
+        activeController.controller.abort();
+      }
+    };
+  }, [
+    organizationId,
+    storeId,
+    structuredDocxPreviewScopeSignature,
+    structuredPendingDocxMediaReviewEntries,
+  ]);
   const structuredPendingDocxMediaSummary = useMemo(() => {
     let pendingCount = 0;
     let associatedCount = 0;
@@ -8748,17 +9104,56 @@ export default function IntelligentCatalogImportPanel({
       totalCount: structuredPendingDocxMediaReviewEntries.length,
     };
   }, [structuredPendingDocxMediaReviewEntries]);
-  const structuredDocxAssociatedCountByCandidateId = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const entry of structuredPendingDocxMediaReviewEntries) {
-      if (entry.decision.status !== "associated" || !entry.targetCandidate) continue;
-      counts.set(
-        entry.targetCandidate.candidate.id,
-        (counts.get(entry.targetCandidate.candidate.id) ?? 0) + 1
-      );
+  const structuredPlannedDocxPhotoPreviewByCandidateId = useMemo(() => {
+    const byCandidateId = new Map<string, StructuredPlannedDocxPhotoPreview>();
+    const associatedEntries = structuredPendingDocxMediaReviewEntries
+      .filter((entry) => entry.decision.status === "associated" && entry.targetCandidate)
+      .slice()
+      .sort((left, right) => {
+        const leftLocation = String(left.sourceLocationKey || left.stagedAsset.sourceLocationKey || "").trim();
+        const rightLocation = String(right.sourceLocationKey || right.stagedAsset.sourceLocationKey || "").trim();
+        if (leftLocation !== rightLocation) return leftLocation.localeCompare(rightLocation);
+        const leftFileName = String(left.stagedAsset.fileName || "").trim();
+        const rightFileName = String(right.stagedAsset.fileName || "").trim();
+        if (leftFileName !== rightFileName) return leftFileName.localeCompare(rightFileName);
+        return String(left.stagedAsset.id || "").trim().localeCompare(String(right.stagedAsset.id || "").trim());
+      });
+
+    for (const entry of associatedEntries) {
+      const candidateId = String(entry.targetCandidate?.candidate.id || "").trim();
+      if (!candidateId) continue;
+
+      const current = byCandidateId.get(candidateId);
+      if (current) {
+        byCandidateId.set(candidateId, {
+          ...current,
+          count: current.count + 1,
+        });
+        continue;
+      }
+
+      const previewAssetId = getStructuredDocxPreviewStateAssetId(entry.stagedAsset.id);
+      const previewState = structuredDocxPreviewStates[previewAssetId] ?? null;
+      const previewUrl =
+        previewState?.status === "ready" ? String(previewState.signedUrl || "").trim() || null : null;
+      const previewStatus =
+        previewUrl
+          ? "ready"
+          : !previewState || previewState.status === "idle" || previewState.status === "loading"
+            ? "loading"
+            : "unavailable";
+
+      byCandidateId.set(candidateId, {
+        count: 1,
+        previewState,
+        previewStatus,
+        previewUrl,
+        stagedAsset: entry.stagedAsset,
+      });
     }
-    return counts;
-  }, [structuredPendingDocxMediaReviewEntries]);
+
+    return byCandidateId;
+  }, [structuredDocxPreviewStates, structuredPendingDocxMediaReviewEntries]);
   const persistedStructuredDocxMediaDraft = useMemo(
     () =>
       buildStructuredDocxMediaDraftFromEntries({
@@ -9447,6 +9842,7 @@ export default function IntelligentCatalogImportPanel({
     setStructuredReviewGlobalConfirmation(null);
     setStructuredReviewPendingAction(null);
     setStructuredPendingDocxMediaDecisions({});
+    setStructuredDocxPreviewStates({});
     restoredStructuredDocxDraftKeyRef.current = null;
     if (intelligentImportStorageKey && typeof window !== "undefined") {
       removeFromLocalStorageSafe(intelligentImportStorageKey);
@@ -9493,6 +9889,7 @@ export default function IntelligentCatalogImportPanel({
     setVisualDocumentMapResult(null);
     setVisualDocumentMapSessionCache({});
     setIntelligentImportRecovered(false);
+    setStructuredDocxPreviewStates({});
     restoredStructuredDocxDraftKeyRef.current = null;
     try {
       const selectedFilesPreview = await buildSelectedFilePreviews(intelligentImportFiles);
@@ -13344,8 +13741,13 @@ export default function IntelligentCatalogImportPanel({
                             </span>
                           </div>
                         </div>
-                        <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                        <div className="mt-3 max-h-[min(68vh,52rem)] overflow-y-auto overscroll-contain pr-1">
+                          <div className="space-y-3">
                           {structuredPendingDocxMediaReviewEntries.map((entry) => {
+                            const previewAssetId = getStructuredDocxPreviewStateAssetId(entry.stagedAsset.id);
+                            const previewState = structuredDocxPreviewStates[previewAssetId];
+                            const previewUrl =
+                              previewState?.status === "ready" ? String(previewState.signedUrl || "").trim() : "";
                             const statusTone =
                               entry.decision.status === "associated" && entry.targetCandidate
                                 ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
@@ -13363,26 +13765,53 @@ export default function IntelligentCatalogImportPanel({
                                 key={entry.stagedAsset.id}
                                 className="rounded-2xl border border-amber-200 bg-white/90 p-3 shadow-sm"
                               >
-                                <div className="flex gap-3">
-                                  {entry.image?.dataUrl ? (
-                                    <img
-                                      src={entry.image.dataUrl}
-                                      alt={entry.stagedAsset.fileName}
-                                      className="h-20 w-20 flex-none rounded-xl object-cover ring-1 ring-slate-200"
-                                    />
-                                  ) : (
-                                    <div className="flex h-20 w-20 flex-none items-center justify-center rounded-xl bg-slate-100 text-[11px] text-slate-500 ring-1 ring-slate-200">
-                                      Sem preview
-                                    </div>
-                                  )}
-                                  <div className="min-w-0 flex-1">
+                                <div className="grid gap-3 lg:grid-cols-[96px_minmax(0,1fr)_minmax(280px,360px)] lg:items-start">
+                                  <div className="flex justify-start lg:block">
+                                    {previewUrl ? (
+                                      <img
+                                        src={previewUrl}
+                                        alt={entry.stagedAsset.fileName}
+                                        className="h-20 w-20 flex-none rounded-xl object-cover ring-1 ring-slate-200 md:h-24 md:w-24"
+                                        onError={() =>
+                                          setStructuredDocxPreviewStates((current) => {
+                                            const currentState = current[previewAssetId];
+                                            if (!currentState || currentState.requestKey !== previewState?.requestKey) {
+                                              return current;
+                                            }
+                                            return {
+                                              ...current,
+                                              [previewAssetId]: {
+                                                ...currentState,
+                                                message:
+                                                  "Nao foi possivel abrir a preview segura desta imagem. A midia continua pendente para decisao humana.",
+                                                signedUrl: null,
+                                                status: "unavailable",
+                                              },
+                                            };
+                                          })
+                                        }
+                                      />
+                                    ) : (
+                                      <div className="flex h-20 w-20 flex-none items-center justify-center rounded-xl bg-slate-100 px-2 text-center text-[11px] leading-4 text-slate-500 ring-1 ring-slate-200 md:h-24 md:w-24">
+                                        {getStructuredDocxPreviewCardMessage(previewState, entry.stagedAsset)}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="min-w-0">
                                     <div className="flex flex-wrap items-center gap-2">
                                       <span className={cx("rounded-full px-2 py-0.5 text-[11px] font-medium ring-1", statusTone)}>
                                         {statusLabel}
                                       </span>
-                                      <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200">
-                                        stagingAssetId {entry.stagedAsset.id.slice(0, 8)}
-                                      </span>
+                                      {previewState?.status === "ready" ? (
+                                        <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200">
+                                          Preview segura pronta
+                                        </span>
+                                      ) : null}
+                                      {isDebugParserMode ? (
+                                        <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 ring-1 ring-slate-200">
+                                          stagingAssetId {entry.stagedAsset.id.slice(0, 8)}
+                                        </span>
+                                      ) : null}
                                     </div>
                                     <p className="mt-2 truncate text-sm font-semibold text-slate-900">
                                       {entry.stagedAsset.fileName}
@@ -13393,14 +13822,19 @@ export default function IntelligentCatalogImportPanel({
                                     <p className="mt-1 text-xs text-slate-600">
                                       Origem: {entry.image?.docxTableCell ? `celula ${entry.image.docxTableCell}` : "DOCX staged"}
                                     </p>
-                                    {entry.sourceLocationKey ? (
+                                    {previewState?.status !== "ready" ? (
+                                      <p className="mt-1 text-xs text-amber-800">
+                                        {getStructuredDocxPreviewCardMessage(previewState, entry.stagedAsset)}
+                                      </p>
+                                    ) : null}
+                                    {isDebugParserMode && entry.sourceLocationKey ? (
                                       <p className="mt-1 break-all text-[11px] text-slate-500">
                                         sourceLocationKey: {entry.sourceLocationKey}
                                       </p>
                                     ) : null}
                                   </div>
-                                </div>
-                                <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+                                  <div className="min-w-0">
+                                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
                                   <select
                                     value={entry.decision.selectedCandidateId || ""}
                                     onChange={(event) =>
@@ -13425,7 +13859,7 @@ export default function IntelligentCatalogImportPanel({
                                         };
                                       })
                                     }
-                                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
+                                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
                                   >
                                     <option value="">Escolha o item de destino</option>
                                     {structuredDocxMediaAssociationTargets.map((target) => (
@@ -13490,8 +13924,11 @@ export default function IntelligentCatalogImportPanel({
                                   </button>
                                 </div>
                               </div>
+                                </div>
+                              </div>
                             );
                           })}
+                          </div>
                         </div>
                       </div>
                     ) : null}
@@ -13506,8 +13943,12 @@ export default function IntelligentCatalogImportPanel({
                       const primaryPhoto = item.photoResolution.primary;
                       const photoAmbiguous = item.photoResolution.state === "ambiguous";
                       const photoEvidence = item.photoResolution.state === "evidence";
-                      const manuallyAssociatedDocxCount =
-                        structuredDocxAssociatedCountByCandidateId.get(item.candidate.id) ?? 0;
+                      const plannedDocxPhotoPreview =
+                        structuredPlannedDocxPhotoPreviewByCandidateId.get(item.candidate.id) ?? null;
+                      const plannedDocxPreviewAssetId = plannedDocxPhotoPreview
+                        ? getStructuredDocxPreviewStateAssetId(plannedDocxPhotoPreview.stagedAsset.id)
+                        : null;
+                      const manuallyAssociatedDocxCount = plannedDocxPhotoPreview?.count ?? 0;
                       const photoEvidenceCount =
                         item.photoResolution.state === "evidence" ? item.photoResolution.candidates.length : 0;
                       const confirmedEvidenceCount =
@@ -13515,6 +13956,22 @@ export default function IntelligentCatalogImportPanel({
                           ? item.photoResolution.confirmedCandidateKeys.length
                           : 0;
                       const compactStatus = getStructuredCompactStatus(item);
+                      const shouldReplaceNoPhotoStatus =
+                        Boolean(plannedDocxPhotoPreview) &&
+                        compactStatus.tone === "warning" &&
+                        normalizeImportedLoose(compactStatus.label).includes("nenhuma foto associada");
+                      const displayCompactStatus = shouldReplaceNoPhotoStatus
+                        ? {
+                            label:
+                              plannedDocxPhotoPreview?.previewStatus === "ready"
+                                ? getStructuredPlannedDocxPhotoSummaryLabel(plannedDocxPhotoPreview.count)
+                                : getStructuredPlannedDocxPhotoStateMessage(plannedDocxPhotoPreview!),
+                            tone:
+                              plannedDocxPhotoPreview?.previewStatus === "ready"
+                                ? ("ready" as const)
+                                : ("warning" as const),
+                          }
+                        : compactStatus;
                       return (
                         <div
                           key={item.candidate.id}
@@ -13522,7 +13979,63 @@ export default function IntelligentCatalogImportPanel({
                         >
                           <div className="grid gap-3 md:grid-cols-[88px_minmax(0,1fr)] xl:grid-cols-[88px_minmax(0,1fr)_220px] xl:items-start">
                             <div className="min-w-0">
-                              {primaryPhoto?.dataUrl ? (
+                              {plannedDocxPhotoPreview?.previewUrl ? (
+                                <div className="space-y-2">
+                                  <img
+                                    src={plannedDocxPhotoPreview.previewUrl}
+                                    alt={plannedDocxPhotoPreview.stagedAsset.fileName}
+                                    className="h-20 w-20 rounded-lg object-cover ring-1 ring-gray-200 md:h-24 md:w-24"
+                                    onError={() =>
+                                      plannedDocxPreviewAssetId
+                                        ? setStructuredDocxPreviewStates((current) => {
+                                            const currentState = current[plannedDocxPreviewAssetId];
+                                            if (
+                                              !currentState ||
+                                              currentState.requestKey !== plannedDocxPhotoPreview.previewState?.requestKey
+                                            ) {
+                                              return current;
+                                            }
+                                            return {
+                                              ...current,
+                                              [plannedDocxPreviewAssetId]: {
+                                                ...currentState,
+                                                message:
+                                                  "Nao foi possivel abrir a visualizacao segura desta foto planejada. A associacao manual continua pendente para salvar.",
+                                                signedUrl: null,
+                                                status: "unavailable",
+                                              },
+                                            };
+                                          })
+                                        : undefined
+                                    }
+                                  />
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-medium leading-4 text-sky-900">
+                                      {getStructuredPlannedDocxPhotoStateMessage(plannedDocxPhotoPreview)}
+                                    </p>
+                                    <p className="text-[11px] leading-4 text-slate-600">
+                                      {getStructuredPlannedDocxPhotoSummaryLabel(plannedDocxPhotoPreview.count)}
+                                    </p>
+                                  </div>
+                                </div>
+                              ) : plannedDocxPhotoPreview ? (
+                                <div className="space-y-2">
+                                  <div className="flex h-20 w-20 items-center justify-center rounded-lg bg-sky-50 p-2 text-center text-[11px] leading-4 text-sky-900 ring-1 ring-sky-200 md:h-24 md:w-24">
+                                    {getStructuredPlannedDocxPhotoStateMessage(plannedDocxPhotoPreview)}
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-medium leading-4 text-sky-900">
+                                      {getStructuredPlannedDocxPhotoSummaryLabel(plannedDocxPhotoPreview.count)}
+                                    </p>
+                                    {plannedDocxPhotoPreview.previewStatus === "unavailable" ? (
+                                      <p className="text-[11px] leading-4 text-slate-600">
+                                        {plannedDocxPhotoPreview.previewState?.message ||
+                                          "A visualizacao segura desta foto planejada nao esta disponivel nesta sessao."}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ) : primaryPhoto?.dataUrl ? (
                                 <div className="space-y-2">
                                   <img
                                     src={primaryPhoto.dataUrl}
@@ -13595,7 +14108,7 @@ export default function IntelligentCatalogImportPanel({
                                 ) : null}
                                 {manuallyAssociatedDocxCount > 0 ? (
                                   <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900 ring-1 ring-amber-200">
-                                    {manuallyAssociatedDocxCount} foto(s) DOCX associada(s) manualmente
+                                    {getStructuredPlannedDocxPhotoSummaryLabel(manuallyAssociatedDocxCount)}
                                   </span>
                                 ) : null}
                               </div>
@@ -13625,14 +14138,14 @@ export default function IntelligentCatalogImportPanel({
                               <div
                                 className={cx(
                                   "mt-2 inline-flex max-w-full rounded-lg px-2.5 py-1 text-xs font-medium ring-1",
-                                  compactStatus.tone === "blocked"
+                                  displayCompactStatus.tone === "blocked"
                                     ? "bg-rose-50 text-rose-800 ring-rose-200"
-                                    : compactStatus.tone === "warning"
+                                    : displayCompactStatus.tone === "warning"
                                       ? "bg-amber-50 text-amber-900 ring-amber-200"
                                       : "bg-emerald-50 text-emerald-900 ring-emerald-200"
                                 )}
                               >
-                                <span className="truncate">{compactStatus.label}</span>
+                                <span className="truncate">{displayCompactStatus.label}</span>
                               </div>
                               {photoEvidence ? (
                                 <p className="mt-2 text-xs leading-5 text-amber-900">
