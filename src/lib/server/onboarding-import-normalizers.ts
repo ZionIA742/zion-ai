@@ -268,6 +268,27 @@ function isStrongStructuredSpreadsheetRow(item: StructuredImportItem) {
   return isSpreadsheetSource && hasRowProvenance && hasStructuredIdentity && !item.mergedFromSpreadsheetRows;
 }
 
+function isStrongStructuredDocxItem(item: StructuredImportItem) {
+  const sourceFileName = String(item.sourceFileName || "").trim().toLowerCase();
+  if (!sourceFileName.endsWith(".docx")) return false;
+
+  const rawBlock = String(item.rawBlock || "");
+  const hasDocxProvenance =
+    /(?:^|\n)docx block key\s*:/i.test(rawBlock) &&
+    /(?:^|\n)docx body index\s*:/i.test(rawBlock) &&
+    /(?:^|\n)docx table index\s*:/i.test(rawBlock);
+  if (!hasDocxProvenance) return false;
+
+  const hasStructuredIdentity =
+    Boolean(String(item.sourceCategory || item.categoria || "").trim()) &&
+    Boolean(String(item.title || "").trim()) &&
+    Boolean(String(item.sku || "").trim()) &&
+    Boolean(String(item.price || "").trim());
+  if (!hasStructuredIdentity) return false;
+
+  return collectStructuredSkuMatches(rawBlock).length === 1;
+}
+
 function hasPoolDimensionSignals(item: StructuredImportItem) {
   if (String(item.dimensions || "").trim()) return true;
   if (String(item.depth || "").trim() && String(item.size || "").trim()) return true;
@@ -323,14 +344,16 @@ function collectStructuralReviewSignals(item: StructuredImportItem) {
   }
 
   const strongStructuredSpreadsheetRow = isStrongStructuredSpreadsheetRow(item);
+  const strongStructuredDocxItem = isStrongStructuredDocxItem(item);
+  const strongStructuredItem = strongStructuredSpreadsheetRow || strongStructuredDocxItem;
   const hasPoolContext = textIncludesAny(combinedText, POOL_CONTEXT_TERMS);
   const hasAccessoryContext = textIncludesAny(combinedText, ACCESSORY_CONTEXT_TERMS);
-  if (!strongStructuredSpreadsheetRow && hasPoolContext && hasAccessoryContext) {
+  if (!strongStructuredItem && hasPoolContext && hasAccessoryContext) {
     signals.add("mixed_product_context");
   }
 
   if (
-    !strongStructuredSpreadsheetRow &&
+    !strongStructuredItem &&
     item.destination !== "pool" &&
     hasPoolContext &&
     hasAccessoryContext &&
@@ -401,9 +424,62 @@ function resolveNormalizedType(item: StructuredImportItem): NormalizedImportItem
   return "unknown";
 }
 
+function canonicalCategoryForDestination(destination: StructuredImportItem["destination"]) {
+  if (destination === "pool") return "pool";
+  if (destination === "quimicos") return "quimicos";
+  if (destination === "acessorios") return "acessorios";
+  if (destination === "outros") return "outros";
+  return "";
+}
+
+function resolveCategoryMetadata(item: StructuredImportItem) {
+  const rawExplicitCategory = String(item.sourceCategory || item.categoria || "").trim();
+  const rawExplicitSubcategory = String(item.sourceSubcategory || "").trim();
+  const categoryParts = rawExplicitCategory
+    .split("\n")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  const subcategoryParts = rawExplicitSubcategory
+    .split("\n")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+
+  const canonicalDestinationCategory = canonicalCategoryForDestination(item.destination);
+  const primaryCategoryCandidate = categoryParts[0] || rawExplicitCategory;
+  const normalizedPrimaryCategoryCandidate = normalizeLoose(primaryCategoryCandidate);
+  const explicitCategory =
+    !normalizedPrimaryCategoryCandidate
+      ? canonicalDestinationCategory
+      : normalizedPrimaryCategoryCandidate === "pool" ||
+          normalizedPrimaryCategoryCandidate === "piscina" ||
+          normalizedPrimaryCategoryCandidate === "piscinas"
+        ? "pool"
+        : normalizedPrimaryCategoryCandidate === "quimico" ||
+            normalizedPrimaryCategoryCandidate === "quimicos"
+          ? "quimicos"
+          : normalizedPrimaryCategoryCandidate === "acessorio" ||
+              normalizedPrimaryCategoryCandidate === "acessorios"
+            ? "acessorios"
+            : normalizedPrimaryCategoryCandidate === "outro" ||
+                normalizedPrimaryCategoryCandidate === "outros"
+              ? "outros"
+              : canonicalDestinationCategory || primaryCategoryCandidate;
+
+  const mergedSubcategoryParts = [...categoryParts.slice(1), ...subcategoryParts].filter(Boolean);
+  const explicitSubcategory = Array.from(
+    new Map(mergedSubcategoryParts.map((part) => [normalizeLoose(part), part])).values()
+  ).join("\n");
+
+  return {
+    explicitCategory,
+    explicitSubcategory,
+  };
+}
+
 function buildMetadata(item: StructuredImportItem): Record<string, string> {
-  const explicitCategory = String(item.sourceCategory || item.categoria || "").trim();
-  const explicitSubcategory = String(item.sourceSubcategory || "").trim();
+  const categoryMetadata = resolveCategoryMetadata(item);
+  const explicitCategory = categoryMetadata.explicitCategory;
+  const explicitSubcategory = categoryMetadata.explicitSubcategory;
   const explicitSheetName = String(item.sheetName || "").trim();
   const resolvedCategory = explicitCategory || (item.destination === "pool" ? "pool" : item.destination);
   const categorySource = explicitCategory ? "explicit" : "inferred";
