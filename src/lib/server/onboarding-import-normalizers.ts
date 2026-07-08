@@ -117,6 +117,24 @@ function textIncludesAny(normalizedText: string, terms: string[]) {
   return terms.some((term) => normalizedText.includes(normalizeLoose(term)));
 }
 
+function isStrongStructuredSpreadsheetRow(item: StructuredImportItem) {
+  const sourceFileName = String(item.sourceFileName || "").trim().toLowerCase();
+  const isSpreadsheetSource =
+    sourceFileName.endsWith(".xlsx") || sourceFileName.endsWith(".xlsm") || sourceFileName.endsWith(".xls");
+  const hasRowProvenance =
+    typeof item.worksheetRowNumber === "number" &&
+    Number.isFinite(item.worksheetRowNumber) &&
+    item.worksheetRowNumber > 0 &&
+    Boolean(String(item.sheetScopedKey || "").trim());
+  const hasStructuredIdentity =
+    Boolean(String(item.sourceCategory || item.categoria || "").trim()) &&
+    Boolean(String(item.title || "").trim()) &&
+    Boolean(String(item.sku || "").trim()) &&
+    Boolean(String(item.price || "").trim());
+
+  return isSpreadsheetSource && hasRowProvenance && hasStructuredIdentity && !item.mergedFromSpreadsheetRows;
+}
+
 function hasPoolDimensionSignals(item: StructuredImportItem) {
   if (String(item.dimensions || "").trim()) return true;
   if (String(item.depth || "").trim() && String(item.size || "").trim()) return true;
@@ -171,13 +189,15 @@ function collectStructuralReviewSignals(item: StructuredImportItem) {
     signals.add("multiple_skus");
   }
 
+  const strongStructuredSpreadsheetRow = isStrongStructuredSpreadsheetRow(item);
   const hasPoolContext = textIncludesAny(combinedText, POOL_CONTEXT_TERMS);
   const hasAccessoryContext = textIncludesAny(combinedText, ACCESSORY_CONTEXT_TERMS);
-  if (hasPoolContext && hasAccessoryContext) {
+  if (!strongStructuredSpreadsheetRow && hasPoolContext && hasAccessoryContext) {
     signals.add("mixed_product_context");
   }
 
   if (
+    !strongStructuredSpreadsheetRow &&
     item.destination !== "pool" &&
     hasPoolContext &&
     hasAccessoryContext &&
