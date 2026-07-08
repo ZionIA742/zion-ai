@@ -87,11 +87,144 @@ const POSITIONAL_FRAGMENT_SIGNALS = [
   "weak_nominal_anchor",
 ] as const;
 
-const STRUCTURED_SKU_PATTERN =
-  /\b(?:qmc|acc|out|otr)(?=(?:[-\s]?[a-z0-9]{1,8}){1,4}\b)(?=[-\s]*[a-z0-9]*\d)(?:[-\s]?[a-z0-9]{1,8}){1,4}\b/g;
+const STRUCTURED_SKU_PATTERN = /\b(?:qmc|acc|out|otr)\b/gi;
 
-function collectStructuredSkuMatches(text: string) {
-  return text.match(STRUCTURED_SKU_PATTERN) ?? [];
+function normalizeStructuredSkuValue(value: string) {
+  return String(value || "")
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .trim();
+}
+
+export function collectStructuredSkuMatches(text: string) {
+  const sourceText = String(text || "");
+  const candidates = Array.from(sourceText.matchAll(STRUCTURED_SKU_PATTERN))
+    .map((match) => {
+      const start = match.index ?? -1;
+      if (start < 0) {
+        return {
+          rawValue: "",
+          normalizedValue: "",
+          start: -1,
+          end: -1,
+        };
+      }
+      const prefixEnd = start + String(match[0] || "").length;
+      const suffixCandidates: Array<{
+        separator: string;
+        token: string;
+        tokenEnd: number;
+      }> = [];
+      let cursor = prefixEnd;
+      while (suffixCandidates.length < 4) {
+        const remainder = sourceText.slice(cursor);
+        const tokenMatch = remainder.match(/^([-\s]+)([a-z0-9]{1,8})/i);
+        if (!tokenMatch) break;
+        const separator = tokenMatch[1] || "";
+        const token = tokenMatch[2] || "";
+        if (!separator || !token) break;
+        suffixCandidates.push({
+          separator,
+          token,
+          tokenEnd: cursor + tokenMatch[0].length,
+        });
+        cursor += tokenMatch[0].length;
+      }
+
+      let bestSuffixLength = 0;
+      for (let length = Math.min(4, suffixCandidates.length); length >= 1; length -= 1) {
+        const tokens = suffixCandidates.slice(0, length).map((entry) => entry.token);
+        if (!tokens[tokens.length - 1] || !/\d/.test(tokens[tokens.length - 1] || "")) continue;
+        let digitSeen = false;
+        let alphaOnlyBeforeDigitCount = 0;
+        let valid = true;
+        for (const token of tokens) {
+          const hasDigit = /\d/.test(token);
+          if (!digitSeen) {
+            if (hasDigit) {
+              digitSeen = true;
+              continue;
+            }
+            alphaOnlyBeforeDigitCount += 1;
+            if (alphaOnlyBeforeDigitCount > 1) {
+              valid = false;
+              break;
+            }
+            continue;
+          }
+          if (!hasDigit) {
+            valid = false;
+            break;
+          }
+        }
+        if (valid && digitSeen) {
+          bestSuffixLength = length;
+          break;
+        }
+      }
+
+      if (bestSuffixLength === 0) {
+        return {
+          rawValue: "",
+          normalizedValue: "",
+          start: -1,
+          end: -1,
+        };
+      }
+
+      let expandedStart = start;
+      let qualifierCount = 0;
+      while (qualifierCount < 3) {
+        if (expandedStart < 2 || sourceText[expandedStart - 1] !== "-") break;
+        let tokenEnd = expandedStart - 1;
+        let tokenStart = tokenEnd - 1;
+        while (tokenStart >= 0 && /[a-z0-9]/i.test(sourceText[tokenStart])) {
+          tokenStart -= 1;
+        }
+        tokenStart += 1;
+        const token = sourceText.slice(tokenStart, tokenEnd);
+        if (!/^[a-z0-9]{1,8}$/i.test(token)) break;
+        expandedStart = tokenStart;
+        qualifierCount += 1;
+      }
+
+      const rawEnd = suffixCandidates[bestSuffixLength - 1]?.tokenEnd ?? prefixEnd;
+      const rawValue = String(sourceText.slice(expandedStart, rawEnd) || "").trim();
+      const normalizedValue = normalizeStructuredSkuValue(rawValue);
+      return {
+        rawValue,
+        normalizedValue,
+        start: expandedStart,
+        end: expandedStart + rawValue.length,
+      };
+    })
+    .filter((candidate) => candidate.rawValue && candidate.normalizedValue && candidate.start >= 0)
+    .sort((left, right) => {
+      const leftLength = left.end - left.start;
+      const rightLength = right.end - right.start;
+      if (left.start !== right.start) return left.start - right.start;
+      return rightLength - leftLength;
+    });
+
+  const accepted: typeof candidates = [];
+  for (const candidate of candidates) {
+    const containedByAccepted = accepted.some(
+      (existing) =>
+        existing.start <= candidate.start &&
+        existing.end >= candidate.end &&
+        (existing.end - existing.start > candidate.end - candidate.start ||
+          existing.normalizedValue === candidate.normalizedValue)
+    );
+    if (containedByAccepted) continue;
+    accepted.push(candidate);
+  }
+
+  return Array.from(
+    new Map(accepted.map((candidate) => [candidate.normalizedValue, candidate.rawValue])).values()
+  );
 }
 
 function isGenericTitle(value: string) {
