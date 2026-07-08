@@ -110,10 +110,27 @@ function resolveManualStockState(args: {
 const STORAGE_BUCKET = "pool-photos";
 const MAX_POOL_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+const SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 function getPublicImageUrl(storagePath: string) {
   const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
   return data.publicUrl;
+}
+
+async function getPoolPhotoUrl(storagePath: string) {
+  const normalizedPath = String(storagePath || "").trim();
+  if (!normalizedPath) return null;
+
+  const { data, error } = await supabase.storage
+    .from(STORAGE_BUCKET)
+    .createSignedUrl(normalizedPath, SIGNED_URL_TTL_SECONDS);
+
+  if (!error && data?.signedUrl) {
+    return data.signedUrl;
+  }
+
+  const publicUrl = getPublicImageUrl(normalizedPath);
+  return publicUrl || null;
 }
 
 function formatPriceInput(value: string) {
@@ -368,6 +385,7 @@ export default function PiscinasPage() {
 
   const [pools, setPools] = useState<PoolRow[]>([]);
   const [photosByPoolId, setPhotosByPoolId] = useState<Record<string, PoolPhotoRow[]>>({});
+  const [photoUrlByPhotoId, setPhotoUrlByPhotoId] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [successText, setSuccessText] = useState<string | null>(null);
@@ -393,6 +411,7 @@ export default function PiscinasPage() {
     if (!organizationId || !activeStoreId) {
       setPools([]);
       setPhotosByPoolId({});
+      setPhotoUrlByPhotoId({});
       setLoading(false);
       return;
     }
@@ -415,6 +434,7 @@ export default function PiscinasPage() {
 
       if (nextPools.length === 0) {
         setPhotosByPoolId({});
+        setPhotoUrlByPhotoId({});
         return;
       }
 
@@ -422,8 +442,11 @@ export default function PiscinasPage() {
       const { data: photoRows, error: photosError } = await supabase
         .from("pool_photos")
         .select("*")
+        .eq("organization_id", organizationId)
+        .eq("store_id", activeStoreId)
         .in("pool_id", poolIds)
-        .order("sort_order", { ascending: true });
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true });
 
       if (photosError) throw photosError;
 
@@ -433,6 +456,21 @@ export default function PiscinasPage() {
         grouped[photo.pool_id].push(photo);
       }
       setPhotosByPoolId(grouped);
+
+      const resolvedUrls = await Promise.all(
+        ((photoRows || []) as PoolPhotoRow[]).map(async (photo) => {
+          const url = await getPoolPhotoUrl(photo.storage_path);
+          return [photo.id, url] as const;
+        })
+      );
+
+      const nextPhotoUrlByPhotoId: Record<string, string> = {};
+      for (const [photoId, url] of resolvedUrls) {
+        if (url) {
+          nextPhotoUrlByPhotoId[photoId] = url;
+        }
+      }
+      setPhotoUrlByPhotoId(nextPhotoUrlByPhotoId);
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao carregar piscinas.");
     } finally {
@@ -878,6 +916,8 @@ export default function PiscinasPage() {
         <div className="space-y-4">
           {filteredPools.map((pool) => {
             const poolPhotos = photosByPoolId[pool.id] || [];
+            const primaryPoolPhoto = poolPhotos[0] || null;
+            const primaryPoolPhotoUrl = primaryPoolPhoto ? photoUrlByPhotoId[primaryPoolPhoto.id] || "" : "";
             const isEditing = editingPoolId === pool.id;
             const characteristics = buildPoolCharacteristics(pool);
             const priceLabel = getCatalogPriceSemanticsFromNumber({
@@ -1170,6 +1210,35 @@ export default function PiscinasPage() {
                   ) : null}
 
                   <SectionCard title="Fotos da piscina">
+                    {!isEditing && primaryPoolPhoto ? (
+                      <div className="mb-3 overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
+                        {primaryPoolPhotoUrl ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedPoolPhoto({
+                                url: primaryPoolPhotoUrl,
+                                alt: primaryPoolPhoto.file_name || pool.name || "Foto da piscina",
+                                fileName: primaryPoolPhoto.file_name || pool.name || "Foto da piscina",
+                              })
+                            }
+                            className="block w-full cursor-zoom-in bg-gray-100 text-left"
+                            aria-label="Abrir foto principal da piscina em tamanho grande"
+                          >
+                            <img
+                              src={primaryPoolPhotoUrl}
+                              alt={primaryPoolPhoto.file_name || pool.name || "Foto da piscina"}
+                              className="block h-48 w-full object-cover sm:h-56"
+                            />
+                          </button>
+                        ) : (
+                          <div className="flex h-48 items-center justify-center px-4 text-sm text-gray-500 sm:h-56">
+                            Carregando foto principal...
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+
                     {isEditing ? (
                       <div className="space-y-3">
                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
@@ -1225,6 +1294,7 @@ export default function PiscinasPage() {
                           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
                             {poolPhotos.map((photo) => {
                               const isDeletingPhoto = deletingPoolPhotoId === photo.id;
+                              const photoUrl = photoUrlByPhotoId[photo.id] || "";
 
                               return (
                                 <div
@@ -1233,21 +1303,29 @@ export default function PiscinasPage() {
                                 >
                                   <button
                                     type="button"
-                                    onClick={() =>
+                                    onClick={() => {
+                                      if (!photoUrl) return;
                                       setExpandedPoolPhoto({
-                                        url: getPublicImageUrl(photo.storage_path),
+                                        url: photoUrl,
                                         alt: photo.file_name || pool.name || "Foto da piscina",
                                         fileName: photo.file_name || pool.name || "Foto da piscina",
-                                      })
-                                    }
+                                      });
+                                    }}
                                     className="block w-full cursor-zoom-in bg-gray-100 text-left"
                                     aria-label="Abrir foto da piscina em tamanho grande"
+                                    disabled={!photoUrl}
                                   >
-                                    <img
-                                      src={getPublicImageUrl(photo.storage_path)}
-                                      alt={photo.file_name || pool.name || "Foto da piscina"}
-                                      className="block h-24 w-full object-cover"
-                                    />
+                                    {photoUrl ? (
+                                      <img
+                                        src={photoUrl}
+                                        alt={photo.file_name || pool.name || "Foto da piscina"}
+                                        className="block h-24 w-full object-cover"
+                                      />
+                                    ) : (
+                                      <div className="flex h-24 items-center justify-center px-2 text-center text-xs text-gray-500">
+                                        Carregando foto...
+                                      </div>
+                                    )}
                                   </button>
                                   <div className="space-y-2 p-2.5">
                                     <div className="truncate text-[11px] text-gray-600">
@@ -1274,31 +1352,43 @@ export default function PiscinasPage() {
                       </div>
                     ) : (
                       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
-                        {poolPhotos.map((photo) => (
-                          <div
-                            key={photo.id}
-                            className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
-                          >
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setExpandedPoolPhoto({
-                                  url: getPublicImageUrl(photo.storage_path),
-                                  alt: photo.file_name || pool.name || "Foto da piscina",
-                                  fileName: photo.file_name || pool.name || "Foto da piscina",
-                                })
-                              }
-                              className="block w-full cursor-zoom-in bg-gray-100 text-left"
-                              aria-label="Abrir foto da piscina em tamanho grande"
+                        {poolPhotos.map((photo) => {
+                          const photoUrl = photoUrlByPhotoId[photo.id] || "";
+
+                          return (
+                            <div
+                              key={photo.id}
+                              className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
                             >
-                              <img
-                                src={getPublicImageUrl(photo.storage_path)}
-                                alt={photo.file_name || pool.name || "Foto da piscina"}
-                                className="block h-16 w-full object-cover"
-                              />
-                            </button>
-                          </div>
-                        ))}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!photoUrl) return;
+                                  setExpandedPoolPhoto({
+                                    url: photoUrl,
+                                    alt: photo.file_name || pool.name || "Foto da piscina",
+                                    fileName: photo.file_name || pool.name || "Foto da piscina",
+                                  });
+                                }}
+                                className="block w-full cursor-zoom-in bg-gray-100 text-left"
+                                aria-label="Abrir foto da piscina em tamanho grande"
+                                disabled={!photoUrl}
+                              >
+                                {photoUrl ? (
+                                  <img
+                                    src={photoUrl}
+                                    alt={photo.file_name || pool.name || "Foto da piscina"}
+                                    className="block h-16 w-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="flex h-16 items-center justify-center px-2 text-center text-[11px] text-gray-500">
+                                    Carregando...
+                                  </div>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </SectionCard>
