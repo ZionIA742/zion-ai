@@ -87,6 +87,13 @@ const POSITIONAL_FRAGMENT_SIGNALS = [
   "weak_nominal_anchor",
 ] as const;
 
+const STRUCTURED_SKU_PATTERN =
+  /\b(?:qmc|acc|out|otr)(?=(?:[-\s]?[a-z0-9]{1,8}){1,4}\b)(?=[-\s]*[a-z0-9]*\d)(?:[-\s]?[a-z0-9]{1,8}){1,4}\b/g;
+
+function collectStructuredSkuMatches(text: string) {
+  return text.match(STRUCTURED_SKU_PATTERN) ?? [];
+}
+
 function isGenericTitle(value: string) {
   const normalized = normalizeLoose(value);
   if (!normalized) return true;
@@ -159,8 +166,7 @@ function collectStructuralReviewSignals(item: StructuredImportItem) {
     signals.add("multiple_prices");
   }
 
-  const skuMatches =
-    combinedText.match(/\b(?:qmc|acc|out|otr)(?:[-\s]?[a-z0-9]{1,8}){1,4}\b/g) ?? [];
+  const skuMatches = collectStructuredSkuMatches(combinedText);
   if (skuMatches.length > 1) {
     signals.add("multiple_skus");
   }

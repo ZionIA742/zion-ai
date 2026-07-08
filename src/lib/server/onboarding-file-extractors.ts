@@ -1537,7 +1537,52 @@ type XlsxWorksheetLogicalCoordinates = {
   headerIndex: number;
   dataRowsCount: number;
   headerPreview: string[];
+  looksLikeStructuredProductSheet: boolean;
 };
+
+const XLSX_PRODUCT_HEADER_GROUPS = [
+  ["sku", "codigo", "codigo de barras", "referencia", "ref"],
+  ["nome", "nome do item", "nome do produto", "produto", "item"],
+  ["categoria", "subcategoria", "tipo", "grupo", "linha"],
+  ["descricao curta", "descricao detalhada", "descricao", "aplicacao principal"],
+  ["preco custo", "preco venda", "preco", "valor"],
+  ["estoque inicial", "estoque minimo", "estoque"],
+];
+
+function countStructuredProductHeaderSignals(headers: string[]) {
+  const normalizedHeaders = headers.map((header) => normalizeLooseKey(header));
+  let matchedGroups = 0;
+
+  for (const aliases of XLSX_PRODUCT_HEADER_GROUPS) {
+    const matched = aliases.some((alias) =>
+      normalizedHeaders.some(
+        (header) => header === normalizeLooseKey(alias) || header.includes(normalizeLooseKey(alias))
+      )
+    );
+    if (matched) matchedGroups += 1;
+  }
+
+  return matchedGroups;
+}
+
+function looksLikeStructuredProductSheet(args: {
+  sheetName: string;
+  headers: string[];
+  dataRowsCount: number;
+}) {
+  const matchedHeaderGroups = countStructuredProductHeaderSignals(args.headers);
+  const normalizedSheetName = normalizeLooseKey(args.sheetName);
+  const sheetNameLooksLikeGuide =
+    normalizedSheetName.includes("legenda") ||
+    normalizedSheetName.includes("guia") ||
+    normalizedSheetName.includes("instrucao") ||
+    normalizedSheetName.includes("instrucoes") ||
+    normalizedSheetName.includes("observacao");
+
+  if (matchedHeaderGroups >= 4) return true;
+  if (matchedHeaderGroups >= 3 && args.dataRowsCount >= 5 && !sheetNameLooksLikeGuide) return true;
+  return false;
+}
 
 function getWorksheetDisplayValue(cell: XLSX.CellObject | undefined) {
   if (!cell) return "";
@@ -1591,6 +1636,7 @@ function buildSheetLogicalCoordinates(
       headerIndex: 0,
       dataRowsCount: 0,
       headerPreview: [],
+      looksLikeStructuredProductSheet: false,
     };
   }
 
@@ -1598,6 +1644,30 @@ function buildSheetLogicalCoordinates(
   const headerRow = usefulRows[headerIndex]?.row || [];
   const headers = headerRow.map((cell, index) => normalizeHeaderLabel(cell, index));
   const dataRows = usefulRows.slice(headerIndex + 1);
+  const isStructuredProductSheet = looksLikeStructuredProductSheet({
+    sheetName,
+    headers,
+    dataRowsCount: dataRows.length,
+  });
+
+  if (!isStructuredProductSheet) {
+    debugIntelligentImport("buildItemBlocksFromSheet:skipped_non_product_sheet", {
+      sheetName,
+      usefulRows: usefulRows.length,
+      headerIndex,
+      headerPreview: headers.slice(0, 20),
+      dataRows: dataRows.length,
+    });
+    return {
+      itemBlocks: [],
+      physicalToLogicalRowMap: new Map<number, number>(),
+      usefulRowsCount: usefulRows.length,
+      headerIndex,
+      dataRowsCount: dataRows.length,
+      headerPreview: headers.slice(0, 20),
+      looksLikeStructuredProductSheet: false,
+    };
+  }
 
   const blocks: string[] = [];
   const physicalToLogicalRowMap = new Map<number, number>();
@@ -1655,6 +1725,7 @@ function buildSheetLogicalCoordinates(
     headerIndex,
     dataRowsCount: dataRows.length,
     headerPreview: headers.slice(0, 20),
+    looksLikeStructuredProductSheet: true,
   };
 }
 
@@ -1677,7 +1748,10 @@ async function extractTextFromXlsx(buffer: Buffer) {
     if (!sheet) continue;
 
     const rows = readWorksheetRowsPreservingPhysicalLayout(sheet);
-    const { itemBlocks } = buildSheetLogicalCoordinates(sheetName, rows);
+    const { itemBlocks, looksLikeStructuredProductSheet } = buildSheetLogicalCoordinates(sheetName, rows);
+    if (!looksLikeStructuredProductSheet) {
+      continue;
+    }
 
     parts.push(`PLANILHA: ${sheetName}`);
 
