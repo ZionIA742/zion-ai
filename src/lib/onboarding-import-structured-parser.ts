@@ -1808,7 +1808,10 @@ function cleanDescriptionLine(line: string, title: string) {
   const withoutNarrativeLeadIn = stripTransitionLeadInFromDescriptionPart(withoutTransitionTail);
   if (!withoutNarrativeLeadIn) return "";
 
-  const normalizedLine = normalizeLoose(withoutNarrativeLeadIn);
+  const withoutLeadingDescriptionLabel = stripLeadingDescriptionFieldLabel(withoutNarrativeLeadIn).value;
+  if (!withoutLeadingDescriptionLabel) return "";
+
+  const normalizedLine = normalizeLoose(withoutLeadingDescriptionLabel);
   const normalizedTitle = normalizeLoose(title);
 
   if (!normalizedLine || normalizedLine === normalizedTitle) return "";
@@ -1831,6 +1834,10 @@ function cleanDescriptionLine(line: string, title: string) {
   if (normalizedLine.startsWith("preco ")) return "";
   if (normalizedLine.startsWith("preço ")) return "";
   if (normalizedLine.startsWith("valor ")) return "";
+  if (normalizedLine.startsWith("document order key")) return "";
+  if (normalizedLine.startsWith("docx block key")) return "";
+  if (normalizedLine.startsWith("docx body index")) return "";
+  if (normalizedLine.startsWith("docx table index")) return "";
   if (normalizedLine.startsWith("quantidade atual")) return "";
   if (normalizedLine.startsWith("estoque minimo")) return "";
   if (normalizedLine.startsWith("estoque mínimo")) return "";
@@ -1839,11 +1846,13 @@ function cleanDescriptionLine(line: string, title: string) {
   if (normalizedLine.startsWith("controlar estoque")) return "";
   if (normalizedLine.includes("validar leitura do upload inteligente")) return "";
   if (normalizedLine.includes("arquivo de teste")) return "";
+  if (normalizedLine.includes("referencias visuais")) return "";
+  if (normalizedLine === "docx" || normalizedLine === "docx ===") return "";
   if (normalizedLine.includes("aba estoque")) return "";
   if (normalizedLine.includes("sheet estoque")) return "";
   if (looksLikeGarbageDescriptionLine(normalizedLine)) return "";
 
-  const withoutRepeatedInlineFields = withoutNarrativeLeadIn
+  const withoutRepeatedInlineFields = withoutLeadingDescriptionLabel
     .replace(/\s*(Embalagem|Aplica[cç][aã]o|Dosagem|Categoria|Linha|Subcategoria|Planilha|Aba)\s*:\s*.*$/i, "")
     .replace(/\s*(Observa[cç][oõ]es?)\s*:\s*(Controlar estoque|Item sazonal|Validar.*)$/i, "")
     .trim();
@@ -1914,6 +1923,8 @@ function collectDescriptionCandidateParts(
 ) {
   const primaryDescriptionKeys = ["descriÃ§Ã£o", "descriÃ§Ã£o comercial"];
   const secondaryDescriptionKeys = ["indicaÃ§Ã£o", "observaÃ§Ãµes"];
+  primaryDescriptionKeys.push("descrição", "descrição detalhada", "descrição comercial");
+  secondaryDescriptionKeys.push("indicação", "observações", "observação");
 
   const pickedPrimaryParts = primaryDescriptionKeys
     .map((key) => fieldMap[key])
@@ -1959,6 +1970,7 @@ function stripLeadingDescriptionFieldLabel(value: string) {
     "nome",
     "produto",
     "item",
+    "titulo",
     "descriÃ§Ã£o detalhada",
     "descricao detalhada",
     "descriÃ§Ã£o comercial",
@@ -1972,7 +1984,19 @@ function stripLeadingDescriptionFieldLabel(value: string) {
     "indicaÃ§Ã£o",
     "indicacao",
   ];
-  supportedLabels.push("uso / observacao", "uso/observacao", "uso recomendado", "obs");
+  supportedLabels.push(
+    "uso / observacao",
+    "uso/observacao",
+    "uso recomendado",
+    "obs",
+    "título",
+    "descrição detalhada",
+    "descrição comercial",
+    "descrição",
+    "observações",
+    "observação",
+    "indicação"
+  );
   const labelPattern = supportedLabels.map((label) => escapeRegExp(label)).join("|");
 
   for (;;) {
@@ -2077,6 +2101,12 @@ function trimTrailingMechanicalDescriptionTail(value: string) {
 
 function partLooksLikeDocumentArtifact(normalized: string) {
   if (!normalized) return true;
+  if (normalized === "docx" || normalized === "docx ===") return true;
+  if (normalized.startsWith("document order key")) return true;
+  if (normalized.startsWith("docx block key")) return true;
+  if (normalized.startsWith("docx body index")) return true;
+  if (normalized.startsWith("docx table index")) return true;
+  if (normalized.includes("referencias visuais")) return true;
   if (normalized.includes("fim do arquivo teste")) return true;
   if (normalized.includes("tabela meio quebrada")) return true;
   if (normalized.includes("arquivo de teste")) return true;
@@ -2087,6 +2117,29 @@ function partLooksLikeDocumentArtifact(normalized: string) {
   if (normalized.includes("guia de leitura")) return true;
   if (normalized.includes("cabecalho solto")) return true;
   return false;
+}
+
+function partLooksLikeStandaloneProductTitleResidue(text: string) {
+  const cleaned = cleanText(text);
+  if (!cleaned) return false;
+  if (/[.!?;:]/.test(cleaned)) return false;
+
+  const words = cleaned.split(/\s+/u).filter(Boolean);
+  if (words.length < 2 || words.length > 8) return false;
+
+  const connectorWords = new Set(["de", "da", "do", "das", "dos", "e", "para", "com", "sem", "a"]);
+  let titleLikeWords = 0;
+
+  for (const word of words) {
+    if (connectorWords.has(normalizeLoose(word))) continue;
+    if (/^(?:\p{Lu}[\p{L}\d-]*|[\p{Ll}]*\p{Lu}[\p{L}\d-]*|[\p{L}]*\d+[\p{L}\d-]*)$/u.test(word)) {
+      titleLikeWords += 1;
+      continue;
+    }
+    return false;
+  }
+
+  return titleLikeWords >= 2;
 }
 
 function partLooksLikeTransitionArtifact(normalized: string) {
@@ -3012,6 +3065,23 @@ function classifySemanticDescriptionClause(args: {
       originalText: previewDescriptionClauseText(originalClauseText),
       removedStructuredSpans: structuredExtraction.removedSpans,
       semanticRemainder: "",
+    };
+  }
+
+  if (
+    args.source !== "original_title_suffix" &&
+    partLooksLikeStandaloneProductTitleResidue(clause)
+  ) {
+    return {
+      text: previewDescriptionClauseText(clause),
+      normalized,
+      classification: "title_residue" as const,
+      action: "removed" as const,
+      reason: "standalone_product_title_residue",
+      source: args.source,
+      originalText: previewDescriptionClauseText(originalClauseText),
+      removedStructuredSpans: structuredExtraction.removedSpans,
+      semanticRemainder: previewDescriptionClauseText(clause),
     };
   }
 
