@@ -4420,6 +4420,14 @@ function normalizePdfStructuredLabel(label: string) {
   return normalized;
 }
 
+function slugifyPdfStructuredSourceSegment(value: string) {
+  return normalizeLoose(value)
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
 function toPdfStructuredFieldLabel(label: string) {
   const normalized = normalizePdfStructuredLabel(label);
   if (normalized === "sku") return "SKU";
@@ -4507,6 +4515,148 @@ function extractPdfStructuredDescription(text: string) {
 
   return (
     lines.find((line) => /\b[eé]\s+um\b/i.test(line) && !isPdfStructuredPageArtifactLine(line)) || ""
+  );
+}
+
+function extractPdfPoolTitleFromText(text: string) {
+  const lines = normalizeBlock(text)
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const narrativeMatch = line.match(/\b(Piscina\s+.+?\b\d{3,4})(?:\s+com\b|$)/iu);
+    const candidate = pickUsableTitleCandidate(narrativeMatch?.[1] || "");
+    if (candidate) return candidate;
+  }
+
+  const narrative = cleanText(lines.join(" "));
+  const match = narrative.match(/\b(Piscina\s+.+?\b\d{3,4})(?:\s+com\b|$)/iu);
+  return pickUsableTitleCandidate(match?.[1] || "");
+}
+
+function extractPdfPoolDescriptionFromPageBlocks(blocks: string[]) {
+  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+    const currentLines = normalizeBlock(blocks[blockIndex] || "")
+      .split("\n")
+      .map((line) => cleanText(line))
+      .filter(Boolean);
+    if (!currentLines.some((line) => /\bpiscina\b.+\bcom\s+formato\b/iu.test(line))) continue;
+
+    const descriptionParts: string[] = [];
+    let reachedSentenceEnd = false;
+    for (let index = blockIndex; index < Math.min(blocks.length, blockIndex + 3); index += 1) {
+      const lines = normalizeBlock(blocks[index] || "")
+        .split("\n")
+        .map((line) => cleanText(line))
+        .filter(Boolean);
+      for (const line of lines) {
+        if (isPdfStructuredPageArtifactLine(line)) continue;
+        if (/^(?:tipo|formato|medidas|profundidade|capacidade|prazo\s+estimado|faixa\s+de\s+pre[cç]o|acabamento)\b/iu.test(line)) {
+          reachedSentenceEnd = true;
+          break;
+        }
+        descriptionParts.push(line);
+        if (/[.!?]$/u.test(line)) {
+          reachedSentenceEnd = true;
+          break;
+        }
+      }
+      if (reachedSentenceEnd) break;
+    }
+
+    const mergedDescription = cleanText(descriptionParts.join(" "));
+    if (mergedDescription) {
+      return mergedDescription;
+    }
+  }
+
+  const narrative = cleanText(normalizeBlock(blocks.join("\n")).replace(/\n+/g, " "));
+  const sentenceMatch = narrative.match(/\b(Piscina\s+.+?\b\d{3,4}\s+com\s+formato.+?\.)/iu);
+  return cleanText(sentenceMatch?.[1] || "");
+}
+
+function extractPdfPoolDepth(text: string) {
+  const match = cleanText(text).match(/\bprofundidade\s*(?:de|do|da)?\s*[:\-]?\s*(\d+[\.,]?\d*)\s*m\b/iu);
+  return match?.[1] ? `${match[1]} m` : "";
+}
+
+function extractPdfPoolLeadTime(text: string) {
+  return cleanText(text).match(/\bprazo\s+estimado\s+(\d+\s+dias?)\b/iu)?.[1] || "";
+}
+
+function extractPdfPoolPriceRange(text: string) {
+  const match = cleanText(text).match(
+    /\bfaixa\s+de\s+pre[cç]o\s*(?:[:\-])?\s*(r\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?\s+a\s+r\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?)/iu
+  );
+  return cleanText(match?.[1] || "");
+}
+
+function looksLikePdfPoolValueBlock(text: string) {
+  const normalizedBlock = normalizeBlock(text);
+  const lines = normalizedBlock.split("\n").map((line) => cleanText(line)).filter(Boolean);
+  if (lines.length < 4 || lines.length > 8) return false;
+  if (!lines.some((line) => /\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/iu.test(line))) return false;
+  if (!lines.some((line) => /\b\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*\s*(?:l|litros?)\b/iu.test(line))) return false;
+  if (lines.some((line) => /\bprazo\s+estimado\b|\bfaixa\s+de\s+pre[cç]o\b|\buso\s+sugerido\b/iu.test(line))) {
+    return false;
+  }
+  return true;
+}
+
+function buildStructuredPdfPoolPageBlock(args: {
+  fileName: string;
+  pageNumber: number;
+  pageBlocks: string[];
+}) {
+  const title = extractPdfPoolTitleFromText(args.pageBlocks.join("\n"));
+  if (!title) return "";
+
+  const description = extractPdfPoolDescriptionFromPageBlocks(args.pageBlocks);
+  const combinedText = normalizeBlock(args.pageBlocks.join("\n"));
+  const valueBlock =
+    args.pageBlocks.find((block) => looksLikePdfPoolValueBlock(block)) ||
+    "";
+  const valueLines = normalizeBlock(valueBlock)
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter((line) => Boolean(line) && !/^pagina\s+\d+$/iu.test(normalizeLoose(line)));
+
+  const dimensions = valueLines.find((line) => /\b\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*\s*m\b/iu.test(line)) ||
+    extractLooseDimensions(combinedText);
+  const capacity = valueLines.find((line) => /\b\d{1,3}(?:\.\d{3})+|\d+[\.,]?\d*\s*(?:l|litros?)\b/iu.test(line)) ||
+    extractLooseCapacity(combinedText);
+  const material = valueLines[0] || extractLooseMaterial(combinedText);
+  const shape = valueLines[1] || extractLooseShape(combinedText);
+  const acabamento = valueLines.length >= 5 ? valueLines[valueLines.length - 1] || "" : "";
+  const depth = extractPdfPoolDepth(combinedText) || extractLooseDepth(combinedText);
+  const leadTime = extractPdfPoolLeadTime(combinedText);
+  const priceRange = extractPdfPoolPriceRange(combinedText);
+  const sourceLocationKey = `pdf::${args.fileName}::page::${args.pageNumber}::pool::${slugifyPdfStructuredSourceSegment(title) || `page-${args.pageNumber}`}`;
+
+  if (!description || !dimensions || !depth || !capacity || !material || !shape || !priceRange) {
+    return "";
+  }
+
+  const notesParts = [
+    leadTime ? `Prazo estimado: ${leadTime}` : "",
+    acabamento ? `Acabamento: ${acabamento}` : "",
+  ].filter(Boolean);
+
+  return normalizeBlock(
+    [
+      `Produto: ${title}`,
+      `Descricao: ${description}`,
+      `Categoria: pool`,
+      `Material: ${material}`,
+      `Formato: ${shape}`,
+      `Medidas: ${dimensions}`,
+      `Profundidade: ${depth}`,
+      `Capacidade: ${capacity}`,
+      `Preco: ${priceRange}`,
+      ...notesParts.map((part) => `Observacoes: ${part}`),
+      `Sheet Scoped Key: ${sourceLocationKey}`,
+    ].join("\n")
   );
 }
 
@@ -4643,15 +4793,20 @@ function coalesceStructuredPdfPageBlocks(
       }) || "";
     const labels = labelSource ? extractPdfStructuredLabelLines(labelSource) : [];
     const values = valueSource ? extractPdfStructuredValueLines(valueSource) : [];
-    if (!labelSource || !valueSource) continue;
-
-    const synthesized = buildStructuredPdfPageBlock({
-      fileName,
-      pageNumber,
-      labels,
-      values,
-      pageBlocks,
-    });
+    const synthesized =
+      labelSource && valueSource
+        ? buildStructuredPdfPageBlock({
+            fileName,
+            pageNumber,
+            labels,
+            values,
+            pageBlocks,
+          })
+        : buildStructuredPdfPoolPageBlock({
+            fileName,
+            pageNumber,
+            pageBlocks,
+          });
     if (synthesized) {
       synthesizedBlocks.push(synthesized);
     }
