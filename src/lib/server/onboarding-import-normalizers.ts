@@ -250,6 +250,40 @@ function textIncludesAny(normalizedText: string, terms: string[]) {
   return terms.some((term) => normalizedText.includes(normalizeLoose(term)));
 }
 
+function extractStructuredPriceRange(value: string) {
+  const source = String(value || "").trim();
+  if (!source) return null;
+
+  const rangeMatch = source.match(
+    /((?:r\$\s*)?(?:\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d{4,}(?:,\d{2})?|\d+[.,]\d{2})\s*(?:a|ate|até)\s*(?:r\$\s*)?(?:\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d{4,}(?:,\d{2})?|\d+[.,]\d{2}))/i
+  );
+  if (!rangeMatch) return null;
+
+  const values = Array.from(
+    rangeMatch[1].matchAll(
+      /(?:r\$\s*)?(\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d{4,}(?:,\d{2})?|\d+[.,]\d{2})/gi
+    )
+  )
+    .map((match) => {
+      const raw = String(match[1] || "").trim();
+      const parsed = Number(raw.replace(/\./g, "").replace(",", "."));
+      return Number.isFinite(parsed) ? { raw, parsed } : null;
+    })
+    .filter((entry): entry is { raw: string; parsed: number } => Boolean(entry));
+
+  if (values.length < 2) return null;
+  const [first, second] = values;
+  const min = Math.min(first.parsed, second.parsed);
+  const max = Math.max(first.parsed, second.parsed);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0) return null;
+
+  return {
+    raw: rangeMatch[1].trim(),
+    min,
+    max,
+  };
+}
+
 function isStrongStructuredSpreadsheetRow(item: StructuredImportItem) {
   const sourceFileName = String(item.sourceFileName || "").trim().toLowerCase();
   const isSpreadsheetSource =
@@ -334,7 +368,8 @@ function collectStructuralReviewSignals(item: StructuredImportItem) {
     priceProbeText.match(
       /(?:r\$\s*\d+(?:\.\d{3})*,\d{2}|preco\s*[:\-]?\s*\d+(?:\.\d{3})*,\d{2}|valor\s*[:\-]?\s*\d+(?:\.\d{3})*,\d{2})/g
     ) ?? [];
-  if (priceMatches.length > 1) {
+  const structuredPriceRange = extractStructuredPriceRange(item.price || "");
+  if (priceMatches.length > 1 && !structuredPriceRange) {
     signals.add("multiple_prices");
   }
 
@@ -530,6 +565,7 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     sourceReviewSignals,
     structuralSignals: structuralSignals.signals,
   });
+  const structuredPriceRange = extractStructuredPriceRange(item.price || "");
 
   return {
     categoria: resolvedCategory,
@@ -557,6 +593,9 @@ function buildMetadata(item: StructuredImportItem): Record<string, string> {
     description_canonicalized: item.descriptionStatus ? "true" : "false",
     imported_clean_description_original: item.originalDescription || "",
     price: item.price || "",
+    price_range: structuredPriceRange?.raw || "",
+    price_range_min: structuredPriceRange ? String(structuredPriceRange.min) : "",
+    price_range_max: structuredPriceRange ? String(structuredPriceRange.max) : "",
     dimensions: item.dimensions || "",
     depth: item.depth || "",
     capacity: item.capacity || "",

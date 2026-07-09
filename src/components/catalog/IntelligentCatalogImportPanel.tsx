@@ -803,10 +803,60 @@ function isImportedOnRequestPriceText(value: string) {
   ].some((phrase) => normalized.includes(phrase));
 }
 
-function classifyStructuredReviewedPrice(value: string): {
+function extractImportedMonetaryValues(value: string) {
+  const matches = Array.from(
+    String(value || "").matchAll(
+      /(?:r\$\s*)?(\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d{4,}(?:,\d{2})?|\d+[.,]\d{2})/gi
+    )
+  );
+
+  return matches
+    .map((match) => {
+      const raw = String(match[1] || "").trim();
+      const parsed = parseImportedDecimal(raw);
+      return parsed != null
+        ? {
+            raw,
+            parsed,
+          }
+        : null;
+    })
+    .filter((entry): entry is { raw: string; parsed: number } => Boolean(entry));
+}
+
+function extractImportedPriceRange(value: string): {
+  raw: string;
+  min: number;
+  max: number;
+} | null {
+  const source = String(value || "").trim();
+  if (!source) return null;
+
+  const rangeMatch = source.match(
+    /((?:r\$\s*)?(?:\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d{4,}(?:,\d{2})?|\d+[.,]\d{2})\s*(?:a|ate|até)\s*(?:r\$\s*)?(?:\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d{4,}(?:,\d{2})?|\d+[.,]\d{2}))/i
+  );
+  if (!rangeMatch) return null;
+
+  const moneyValues = extractImportedMonetaryValues(rangeMatch[1] || "");
+  if (moneyValues.length < 2) return null;
+
+  const [first, second] = moneyValues;
+  const min = Math.min(first.parsed, second.parsed);
+  const max = Math.max(first.parsed, second.parsed);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0) return null;
+
+  return {
+    raw: String(rangeMatch[1] || source).replace(/\s+/g, " ").trim(),
+    min,
+    max,
+  };
+}
+
+function classifyImportedPriceValue(value: string): {
   amount: number | null;
   cents: number | null;
   priceStatus: IntelligentImportWritablePriceStatus;
+  range: { raw: string; min: number; max: number } | null;
 } {
   const raw = String(value || "").trim();
   if (!raw) {
@@ -814,6 +864,7 @@ function classifyStructuredReviewedPrice(value: string): {
       amount: null,
       cents: null,
       priceStatus: "missing",
+      range: null,
     };
   }
 
@@ -822,6 +873,27 @@ function classifyStructuredReviewedPrice(value: string): {
       amount: null,
       cents: null,
       priceStatus: "on_request",
+      range: null,
+    };
+  }
+
+  const range = extractImportedPriceRange(raw);
+  if (range) {
+    return {
+      amount: range.min,
+      cents: Math.max(0, Math.round(range.min * 100)),
+      priceStatus: "valid",
+      range,
+    };
+  }
+
+  const moneyValues = extractImportedMonetaryValues(raw);
+  if (moneyValues.length > 1) {
+    return {
+      amount: null,
+      cents: null,
+      priceStatus: "invalid",
+      range: null,
     };
   }
 
@@ -831,6 +903,7 @@ function classifyStructuredReviewedPrice(value: string): {
       amount: null,
       cents: null,
       priceStatus: "invalid",
+      range: null,
     };
   }
 
@@ -839,6 +912,20 @@ function classifyStructuredReviewedPrice(value: string): {
     amount,
     cents: Math.max(0, Math.round(amount * 100)),
     priceStatus: "valid",
+    range: null,
+  };
+}
+
+function classifyStructuredReviewedPrice(value: string): {
+  amount: number | null;
+  cents: number | null;
+  priceStatus: IntelligentImportWritablePriceStatus;
+} {
+  const classified = classifyImportedPriceValue(value);
+  return {
+    amount: classified.amount,
+    cents: classified.cents,
+    priceStatus: classified.priceStatus,
   };
 }
 
@@ -872,8 +959,8 @@ function parseVisualReviewPriceInput(value: string): {
     };
   }
 
-  const parsed = parseImportedDecimal(raw);
-  if (parsed == null) {
+  const classified = classifyImportedPriceValue(raw);
+  if (classified.priceStatus !== "valid" || classified.amount == null || classified.cents == null) {
     return {
       amount: null,
       cents: null,
@@ -882,10 +969,9 @@ function parseVisualReviewPriceInput(value: string): {
     };
   }
 
-  const amount = Math.max(0, parsed);
   return {
-    amount,
-    cents: Math.max(0, Math.round(amount * 100)),
+    amount: classified.amount,
+    cents: classified.cents,
     error: null,
     isAmbiguous: false,
   };
@@ -7187,12 +7273,12 @@ function resolveExplicitImportedPriceReais(
   for (const candidate of explicitCandidates) {
     const rawValue = String(candidate.value || "").trim();
     if (!rawValue) continue;
-    const parsedReais = parseImportedDecimal(rawValue);
-    if (parsedReais != null) {
+    const classified = classifyImportedPriceValue(rawValue);
+    if (classified.priceStatus === "valid" && classified.amount != null) {
       return {
         source: candidate.source,
         value: rawValue,
-        parsedReais,
+        parsedReais: classified.amount,
       };
     }
   }
@@ -8217,11 +8303,16 @@ function buildImportedPoolDescription(
     "reviewed_description",
     "final_reviewed_description",
   ]);
-  if (reviewedDescription) {
-    return String(reviewedDescription || "").trim();
-  }
+  const baseDescription = reviewedDescription
+    ? String(reviewedDescription || "").trim()
+    : buildImportedCleanDescription(item) || "";
+  const explicitRange = extractMetadataValue(item, ["price_range"]);
+  const fallbackRange = extractImportedPriceRange(
+    extractMetadataValue(item, ["reviewed_price", "price", "preco", "preÃ§o", "price_label"])
+  )?.raw;
+  const priceRangeLine = explicitRange || fallbackRange ? `Faixa de preÃ§o: ${explicitRange || fallbackRange}` : "";
 
-  return buildImportedCleanDescription(item);
+  return dedupeDescriptionLines([baseDescription, priceRangeLine].filter(Boolean)).join("\n").trim() || null;
 }
 
 function extractImportedWeightOrVolume(
