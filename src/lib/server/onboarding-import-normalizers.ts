@@ -323,6 +323,28 @@ function isStrongStructuredDocxItem(item: StructuredImportItem) {
   return collectStructuredSkuMatches(rawBlock).length === 1;
 }
 
+function isStrongStructuredPdfPageItem(item: StructuredImportItem) {
+  const sourceFileName = String(item.sourceFileName || "").trim().toLowerCase();
+  if (!sourceFileName.endsWith(".pdf")) return false;
+
+  const rawBlock = String(item.rawBlock || "");
+  const sheetScopedKey = String(item.sheetScopedKey || "").trim();
+  const hasPdfPageScopedKey =
+    /^pdf::.+::page::\d+::/i.test(sheetScopedKey) ||
+    /(?:^|\n)sheet scoped key\s*:\s*pdf::.+::page::\d+::/i.test(rawBlock);
+  if (!hasPdfPageScopedKey) return false;
+
+  const category = String(item.sourceCategory || item.categoria || "").trim().toLowerCase();
+  const hasStructuredIdentity =
+    Boolean(String(item.title || "").trim()) &&
+    Boolean(category) &&
+    Boolean(String(item.price || "").trim()) &&
+    (category === "pool" || Boolean(String(item.sku || "").trim()));
+  if (!hasStructuredIdentity) return false;
+
+  return rawBlock.includes("Produto:");
+}
+
 function hasPoolDimensionSignals(item: StructuredImportItem) {
   if (String(item.dimensions || "").trim()) return true;
   if (String(item.depth || "").trim() && String(item.size || "").trim()) return true;
@@ -380,7 +402,9 @@ function collectStructuralReviewSignals(item: StructuredImportItem) {
 
   const strongStructuredSpreadsheetRow = isStrongStructuredSpreadsheetRow(item);
   const strongStructuredDocxItem = isStrongStructuredDocxItem(item);
-  const strongStructuredItem = strongStructuredSpreadsheetRow || strongStructuredDocxItem;
+  const strongStructuredPdfPageItem = isStrongStructuredPdfPageItem(item);
+  const strongStructuredItem =
+    strongStructuredSpreadsheetRow || strongStructuredDocxItem || strongStructuredPdfPageItem;
   const hasPoolContext = textIncludesAny(combinedText, POOL_CONTEXT_TERMS);
   const hasAccessoryContext = textIncludesAny(combinedText, ACCESSORY_CONTEXT_TERMS);
   if (!strongStructuredItem && hasPoolContext && hasAccessoryContext) {

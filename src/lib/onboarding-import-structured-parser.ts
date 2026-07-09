@@ -4420,6 +4420,23 @@ function normalizePdfStructuredLabel(label: string) {
   return normalized;
 }
 
+const PDF_STRUCTURED_REQUIRED_LABELS = ["sku", "categoria", "preco", "estoque"] as const;
+const PDF_STRUCTURED_ORDERED_LABELS = [
+  "sku",
+  "categoria",
+  "linha",
+  "modelo",
+  "aplicacao",
+  "material",
+  "compatibilidade",
+  "embalagem",
+  "preco",
+  "estoque",
+  "marca",
+  "dosagem",
+  "observacoes",
+] as const;
+
 function slugifyPdfStructuredSourceSegment(value: string) {
   return normalizeLoose(value)
     .replace(/\s+/g, "-")
@@ -4433,10 +4450,14 @@ function toPdfStructuredFieldLabel(label: string) {
   if (normalized === "sku") return "SKU";
   if (normalized === "categoria") return "Categoria";
   if (normalized === "linha") return "Linha";
+  if (normalized === "modelo") return "Modelo";
   if (normalized === "aplicacao") return "Aplicacao";
+  if (normalized === "material") return "Material";
+  if (normalized === "compatibilidade") return "Compatibilidade";
   if (normalized === "embalagem") return "Embalagem";
   if (normalized === "preco") return "Preco";
   if (normalized === "estoque") return "Estoque";
+  if (normalized === "marca") return "Marca";
   if (normalized === "dosagem") return "Dosagem";
   if (normalized === "observacoes") return "Observacoes";
   return titleCaseLabel(label);
@@ -4457,7 +4478,7 @@ function isPdfStructuredPageArtifactLine(line: string) {
   );
 }
 
-function extractPdfStructuredLabelLines(text: string) {
+function extractPdfStructuredLabelCandidates(text: string) {
   const lines = normalizeBlock(text)
     .split("\n")
     .map((line) => cleanText(line))
@@ -4475,7 +4496,29 @@ function extractPdfStructuredLabelLines(text: string) {
     .map((line) => normalizePdfStructuredLabel(line))
     .filter(Boolean);
 
+  return labels;
+}
+
+function extractPdfStructuredLabelLines(text: string) {
+  const labels = extractPdfStructuredLabelCandidates(text);
+
   return labels.length >= 5 ? labels : [];
+}
+
+function collectPdfStructuredLabelLines(pageBlocks: string[]) {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+
+  for (const block of pageBlocks) {
+    for (const label of extractPdfStructuredLabelCandidates(block)) {
+      const normalized = normalizePdfStructuredLabel(label);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      labels.push(normalized);
+    }
+  }
+
+  return labels;
 }
 
 function extractPdfStructuredValueLines(text: string) {
@@ -4488,6 +4531,31 @@ function extractPdfStructuredValueLines(text: string) {
   const valorIndex = lines.findIndex((line) => normalizeLoose(line) === "valor");
   const startIndex = valorIndex >= 0 ? valorIndex + 1 : 0;
   return lines.slice(startIndex).filter((line) => !isPdfStructuredPageArtifactLine(line));
+}
+
+function collectPdfStructuredValueLines(pageBlocks: string[]) {
+  const values: string[] = [];
+  let collecting = false;
+
+  for (const block of pageBlocks) {
+    const blockValues = extractPdfStructuredValueLines(block);
+    const hasExplicitValueHeader = normalizeBlock(block)
+      .split("\n")
+      .map((line) => cleanText(line))
+      .some((line) => normalizeLoose(line) === "valor");
+
+    if (hasExplicitValueHeader) {
+      collecting = true;
+    }
+
+    if (!collecting || blockValues.length === 0) {
+      continue;
+    }
+
+    values.push(...blockValues);
+  }
+
+  return values;
 }
 
 function extractPdfStructuredTitleFromDescription(text: string) {
@@ -4514,7 +4582,7 @@ function extractPdfStructuredDescription(text: string) {
     .filter(Boolean);
 
   return (
-    lines.find((line) => /\b[eé]\s+um\b/i.test(line) && !isPdfStructuredPageArtifactLine(line)) || ""
+    lines.find((line) => /\s+[eé]\s+um\b/i.test(line) && !isPdfStructuredPageArtifactLine(line)) || ""
   );
 }
 
@@ -4696,12 +4764,7 @@ function buildStructuredPdfPageBlock(args: {
   }
 
   const uniqueLabels = new Set(normalizedLabels);
-  if (
-    !uniqueLabels.has("sku") ||
-    !uniqueLabels.has("categoria") ||
-    !uniqueLabels.has("preco") ||
-    !uniqueLabels.has("estoque")
-  ) {
+  if (PDF_STRUCTURED_REQUIRED_LABELS.some((label) => !uniqueLabels.has(label))) {
     return "";
   }
 
@@ -4736,23 +4799,12 @@ function buildStructuredPdfPageBlock(args: {
   const description =
     args.pageBlocks.map((block) => extractPdfStructuredDescription(block)).find(Boolean) || "";
   const sourceLocationKey = `pdf::${args.fileName}::page::${args.pageNumber}::sku::${sku}`;
-  const orderedLabels = [
-    "sku",
-    "categoria",
-    "linha",
-    "aplicacao",
-    "embalagem",
-    "preco",
-    "estoque",
-    "dosagem",
-    "observacoes",
-  ];
 
   return normalizeBlock(
     [
       `Produto: ${title}`,
       description ? `Descricao: ${description}` : "",
-      ...orderedLabels.map((label) => {
+      ...PDF_STRUCTURED_ORDERED_LABELS.map((label) => {
         const value = valueMap.get(label) || "";
         if (!value) return "";
         return `${toPdfStructuredFieldLabel(label)}: ${value}`;
@@ -4785,16 +4837,12 @@ function coalesceStructuredPdfPageBlocks(
   for (const [pageNumber, pageBlocks] of Array.from(blocksByPage.entries()).sort(
     (left, right) => left[0] - right[0]
   )) {
-    const labelSource = pageBlocks.find((block) => extractPdfStructuredLabelLines(block).length >= 5) || "";
-    const valueSource =
-      pageBlocks.find((block) => {
-        const values = extractPdfStructuredValueLines(block);
-        return values.length >= 5 && collectAllSkuCandidates(values.join("\n")).length >= 1;
-      }) || "";
-    const labels = labelSource ? extractPdfStructuredLabelLines(labelSource) : [];
-    const values = valueSource ? extractPdfStructuredValueLines(valueSource) : [];
+    const labels = collectPdfStructuredLabelLines(pageBlocks);
+    const values = collectPdfStructuredValueLines(pageBlocks);
     const synthesized =
-      labelSource && valueSource
+      labels.length >= 5 &&
+      values.length >= labels.length &&
+      collectAllSkuCandidates(values.join("\n")).length >= 1
         ? buildStructuredPdfPageBlock({
             fileName,
             pageNumber,
