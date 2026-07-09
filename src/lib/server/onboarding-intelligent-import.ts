@@ -312,7 +312,7 @@ async function persistStagedExtractedMediaAssets(args: {
 
   for (const image of args.extractedImagePreview) {
     const sourceKind = String(image.source || "").trim().toLowerCase();
-    if (sourceKind !== "xlsx" && sourceKind !== "docx") continue;
+    if (sourceKind !== "xlsx" && sourceKind !== "docx" && sourceKind !== "pdf") continue;
 
     const sourceFileName = String(image.originalSourceFileName || image.sourceFileName || "").trim();
     const importedFile = importedFilesByName.get(normalizeLoose(sourceFileName));
@@ -325,47 +325,49 @@ async function persistStagedExtractedMediaAssets(args: {
 
     const isXlsxImage = sourceKind === "xlsx";
     const isDocxImage = sourceKind === "docx";
+    const isPdfImage = sourceKind === "pdf";
     const worksheetRowNumber =
       typeof image.worksheetRowNumber === "number" && Number.isFinite(image.worksheetRowNumber) && image.worksheetRowNumber > 0
         ? Math.floor(image.worksheetRowNumber)
         : null;
     const sheetScopedKey = String(image.sheetScopedKey || "").trim() || null;
     const docxBlockKey = String(image.docxBlockKey || "").trim() || null;
-    const sourceLocationKey = isXlsxImage
-      ? buildImageSourceLocationKey({
+    const sourceLocationKey = isDocxImage
+      ? buildDocxImageSourceLocationKey({
+          sourceFileName,
+          docxBlockKey,
+        }) || null
+      : buildImageSourceLocationKey({
           sourceFileName,
           sheetName: image.sheetName,
           sheetScopedKey,
           worksheetRowNumber,
-        }) || null
-      : buildDocxImageSourceLocationKey({
-          sourceFileName,
-          docxBlockKey,
         }) || null;
-    const sourceImageId = isXlsxImage
+    const sourceImageId = isDocxImage
       ? [
           normalizeLoose(sourceFileName),
-          normalizeLoose(String(sheetScopedKey || sourceLocationKey || image.anchorCell || "")),
-          normalizeLoose(String(image.imageRelationshipId || image.fileName || "")),
+          normalizeLoose(String(image.docxRelId || image.fileName || "")),
+          normalizeLoose(String(sourceLocationKey || docxBlockKey || "")),
         ]
           .filter(Boolean)
           .join("::")
       : [
           normalizeLoose(sourceFileName),
-          normalizeLoose(String(image.docxRelId || image.fileName || "")),
-          normalizeLoose(String(sourceLocationKey || docxBlockKey || "")),
+          normalizeLoose(String(sheetScopedKey || sourceLocationKey || image.anchorCell || "")),
+          normalizeLoose(String(image.imageRelationshipId || image.fileName || "")),
         ]
           .filter(Boolean)
           .join("::");
 
     if (
       !sourceFileName ||
-      (isXlsxImage && ((!sheetScopedKey && !sourceLocationKey) || worksheetRowNumber == null)) ||
+      ((isXlsxImage || isPdfImage) &&
+        ((!sheetScopedKey && !sourceLocationKey) || worksheetRowNumber == null)) ||
       (isDocxImage && !sourceLocationKey)
     ) {
       mediaStagingWarnings.push(
-        isXlsxImage
-          ? `Imagem XLSX ${image.fileName || "(sem nome)"} ficou fora do staging por faltar sourceFileName/sheetScopedKey/worksheetRowNumber fortes.`
+        isXlsxImage || isPdfImage
+          ? `Imagem ${isPdfImage ? "PDF" : "XLSX"} ${image.fileName || "(sem nome)"} ficou fora do staging por faltar sourceFileName/sheetScopedKey/worksheetRowNumber fortes.`
           : `Imagem DOCX ${image.fileName || "(sem nome)"} ficou fora do staging por faltar sourceFileName/docxBlockKey fortes.`
       );
       continue;
@@ -422,7 +424,7 @@ async function persistStagedExtractedMediaAssets(args: {
 
       const insertPayload = {
         id: stagingAssetId,
-        association_strength: isXlsxImage ? "strong_auto" : "visual_evidence",
+        association_strength: isDocxImage ? "visual_evidence" : "strong_auto",
         checksum,
         created_by: args.uploadedBy || null,
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
@@ -452,24 +454,25 @@ async function persistStagedExtractedMediaAssets(args: {
           placement: image.placement || null,
           evidenceType: image.evidenceType || null,
           associationState: image.associationState || null,
+          pageNumber: isPdfImage && worksheetRowNumber != null ? worksheetRowNumber : null,
         },
         normalized_mime_type: image.mimeType || null,
         organization_id: args.organizationId,
         original_mime_type: image.mimeType || null,
-        page_number: null,
+        page_number: isPdfImage ? worksheetRowNumber : null,
         requires_user_confirmation: isDocxImage,
         sheet_scoped_key: sheetScopedKey,
         size_bytes: buffer.length,
         source_file_name: sourceFileName,
         source_image_id: sourceImageId || null,
-        source_kind: isXlsxImage ? "xlsx_row_image" : "docx_media",
+        source_kind: isDocxImage ? "docx_media" : isPdfImage ? "pdf_page_render" : "xlsx_row_image",
         source_location_key: sourceLocationKey,
         status: "staged",
         storage_bucket: "store-import-files",
         storage_path: storagePath,
         store_id: args.storeId,
         width: null,
-        worksheet_row_number: isXlsxImage ? worksheetRowNumber : null,
+        worksheet_row_number: isXlsxImage || isPdfImage ? worksheetRowNumber : null,
       };
 
       const { data: createdRow, error: insertError } = await supabase
@@ -496,7 +499,7 @@ async function persistStagedExtractedMediaAssets(args: {
       }
 
       stagedMediaAssets.push({
-        associationStrength: isXlsxImage ? "strong_auto" : "visual_evidence",
+        associationStrength: isDocxImage ? "visual_evidence" : "strong_auto",
         fileName: String((createdRow as any).file_name || stagedFileName),
         id: String(createdRow.id || stagingAssetId),
         importBatchId: String((createdRow as any).import_batch_id || importedFile.importBatchId || "").trim() || null,
@@ -506,7 +509,7 @@ async function persistStagedExtractedMediaAssets(args: {
         sheetScopedKey: String((createdRow as any).sheet_scoped_key || "").trim() || null,
         sizeBytes: Number((createdRow as any).size_bytes || buffer.length),
         sourceFileName: String((createdRow as any).source_file_name || sourceFileName || "").trim() || null,
-        sourceKind: isXlsxImage ? "xlsx_row_image" : "docx_media",
+        sourceKind: isDocxImage ? "docx_media" : isPdfImage ? "pdf_page_render" : "xlsx_row_image",
         sourceLocationKey: String((createdRow as any).source_location_key || sourceLocationKey || "").trim() || null,
         stagingStorageRef: `store-import-files/${String((createdRow as any).storage_path || storagePath)}`,
         storageBucket: String((createdRow as any).storage_bucket || "store-import-files"),
@@ -514,7 +517,7 @@ async function persistStagedExtractedMediaAssets(args: {
         worksheetRowNumber:
           typeof (createdRow as any).worksheet_row_number === "number"
             ? Math.floor((createdRow as any).worksheet_row_number)
-            : isXlsxImage
+            : isXlsxImage || isPdfImage
               ? worksheetRowNumber
               : null,
       });

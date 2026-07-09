@@ -1929,7 +1929,7 @@ function classifyPhotoPlanMediaRef(args: {
   }
 
   if (normalizedRef.associationMode === "strong_auto") {
-    if (normalizedRef.sourceKind !== "xlsx_row_image") {
+    if (normalizedRef.sourceKind !== "xlsx_row_image" && normalizedRef.sourceKind !== "pdf_page_render") {
       return {
         classification: "blocked",
         blocked: {
@@ -1937,7 +1937,7 @@ function classifyPhotoPlanMediaRef(args: {
           clientItemId: normalizedRef.clientItemId,
           compared,
           mediaRefId: normalizedRef.mediaRefId,
-          reason: "strong_auto so e planejavel para XLSX/XLSM com imagem por linha.",
+          reason: "strong_auto so e planejavel para XLSX/XLSM ou PDF com imagem forte por origem.",
           sourceKind: normalizedRef.sourceKind,
           stagingAssetId: normalizedRef.stagingAssetId,
           warnings,
@@ -2023,7 +2023,7 @@ function classifyPhotoPlanMediaRef(args: {
     const safeStoragePathLower = safeStoragePath.toLowerCase();
 
     if (
-      stagedSourceKind !== "xlsx_row_image" ||
+      (stagedSourceKind !== "xlsx_row_image" && stagedSourceKind !== "pdf_page_render") ||
       stagedAssociationStrength !== "strong_auto" ||
       stagedAsset.requires_user_confirmation
     ) {
@@ -2034,7 +2034,7 @@ function classifyPhotoPlanMediaRef(args: {
           clientItemId: normalizedRef.clientItemId,
           compared,
           mediaRefId: normalizedRef.mediaRefId,
-          reason: "stagingAssetId nao representa um asset strong_auto valido de XLSX/XLSM.",
+          reason: "stagingAssetId nao representa um asset strong_auto valido de XLSX/XLSM/PDF.",
           sourceKind: normalizedRef.sourceKind,
           stagingAssetId: normalizedRef.stagingAssetId,
           warnings,

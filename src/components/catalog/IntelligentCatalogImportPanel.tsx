@@ -2636,9 +2636,10 @@ function buildSelectedMediaRefsForSave(args: {
     importedFilesByName.set(key, current);
   }
   if (stagedAssets.length === 0 && manualDocxSelections.length === 0) {
-    diagnostics.push("Nenhum stagedMediaAsset forte de XLSX/XLSM disponivel; photoPlan seguira vazio neste request.");
+    diagnostics.push("Nenhum stagedMediaAsset forte de XLSX/XLSM/PDF disponivel; photoPlan seguira vazio neste request.");
   }
   const seenMediaRefIds = new Set<string>();
+  const consumedStrongAutoStagingAssetIds = new Set<string>();
   for (const selection of manualDocxSelections) {
     if (!selection.clientItemId || !selection.mediaRefId || !selection.stagingAssetId) continue;
     if (seenMediaRefIds.has(selection.mediaRefId)) continue;
@@ -2704,7 +2705,10 @@ function buildSelectedMediaRefsForSave(args: {
 
     const stagedAsset = stagedAssets
       .map((candidate) => {
-        if (candidate.sourceKind !== "xlsx_row_image") {
+        if (candidate.sourceKind !== "xlsx_row_image" && candidate.sourceKind !== "pdf_page_render") {
+          return { candidate, score: -1 };
+        }
+        if (consumedStrongAutoStagingAssetIds.has(candidate.id)) {
           return { candidate, score: -1 };
         }
 
@@ -2789,11 +2793,14 @@ function buildSelectedMediaRefsForSave(args: {
       importFileId: stagedAsset.importFileId || null,
       mediaRefId: stagedAsset.id,
       mimeType: stagedAsset.mimeType || null,
-      pageNumber: null,
+      pageNumber:
+        stagedAsset.sourceKind === "pdf_page_render" && typeof stagedAsset.worksheetRowNumber === "number"
+          ? Math.floor(stagedAsset.worksheetRowNumber)
+          : null,
       sheetScopedKey: stagedAsset.sheetScopedKey || sheetScopedKey || null,
       sizeBytes: stagedAsset.sizeBytes ?? null,
       sourceFileName: sourceFileName || stagedAsset.sourceFileName || null,
-      sourceKind: "xlsx_row_image",
+      sourceKind: stagedAsset.sourceKind,
       sourceLocationKey: sourceLocationKey || stagedAsset.sourceLocationKey || null,
       stagingAssetId: stagedAsset.id,
       stagingStorageRef: stagedAsset.stagingStorageRef || null,
@@ -2802,6 +2809,7 @@ function buildSelectedMediaRefsForSave(args: {
           ? Math.floor(stagedAsset.worksheetRowNumber)
           : worksheetRowNumber ?? null,
     });
+    consumedStrongAutoStagingAssetIds.add(stagedAsset.id);
     if (matchedSamples.length < 5) {
       matchedSamples.push({
         clientItemId: itemClientItemId,
@@ -2828,7 +2836,7 @@ function buildSelectedMediaRefsForSave(args: {
   }
   if (skippedWithoutStagingCount > 0) {
     diagnostics.push(
-      `${skippedWithoutStagingCount} item(ns) com origem XLSX forte ficaram sem stagingAsset correspondente e nao entraram no photoPlan.`
+      `${skippedWithoutStagingCount} item(ns) com origem XLSX/PDF forte ficaram sem stagingAsset correspondente e nao entraram no photoPlan.`
     );
   }
 
@@ -6006,6 +6014,18 @@ function extractImportedWorksheetRowNumber(
 
   if (metadataCandidates != null) return metadataCandidates;
 
+  const pdfPageCandidate = [
+    String(item.metadata?.sheet_scoped_key || "").trim(),
+    String(item.metadata?.source_sheet_scoped_key || "").trim(),
+    String(item.metadata?.source_location_key || "").trim(),
+    String(item.rawText || "").trim(),
+  ]
+    .map((value) => value.match(/(?:^|::|\b)page::?(\d{1,6})(?:$|::|\b)/i)?.[1] || "")
+    .map((value) => Number(value))
+    .find((value) => Number.isFinite(value) && value > 0);
+
+  if (pdfPageCandidate != null) return pdfPageCandidate;
+
   const rawText = [String(item.title || ""), String(item.rawText || "")].join("\n");
   const match =
     rawText.match(/(?:^|\n)linha da planilha\s*:\s*(\d+)/i) ||
@@ -6057,11 +6077,22 @@ function extractImportedSheetScopedKey(
   const explicitCandidates = getImportedExplicitSheetScopedKeyCandidates(item);
 
   for (const explicitCandidate of explicitCandidates) {
+    const pdfPageMatch = explicitCandidate.match(/(?:^|::|\b)page::?(\d{1,6})(?:$|::|\b)/i);
+    if (pdfPageMatch?.[1]) {
+      return `pdf::page::${Number(pdfPageMatch[1])}`;
+    }
     const normalizedExplicitCandidate = normalizeImportedLoose(explicitCandidate);
     if (!normalizedExplicitCandidate) continue;
     if (derivedCandidates.some((candidate) => normalizeImportedLoose(candidate) === normalizedExplicitCandidate)) {
       return explicitCandidate;
     }
+  }
+
+  if (
+    sheetNameCandidates.some((candidate) => normalizeImportedLoose(candidate) === normalizeImportedLoose("PDF")) &&
+    worksheetRowNumber != null
+  ) {
+    return `pdf::page::${worksheetRowNumber}`;
   }
 
   if (explicitCandidates.length > 0) {
