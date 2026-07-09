@@ -143,6 +143,7 @@ function resolveManualStockState(args: {
 const STORAGE_BUCKET = "store-catalog-photos";
 const MAX_CATALOG_PHOTOS = 10;
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+const SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 function normalizeCategory(category: string | null | undefined) {
   if (category === "acessorios") return "acessorios";
@@ -224,6 +225,22 @@ function formatLooseNumber(value: unknown) {
 function getPublicImageUrl(storagePath: string) {
   const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
   return data.publicUrl;
+}
+
+async function getCatalogPhotoUrl(storagePath: string) {
+  const normalizedPath = String(storagePath || "").trim();
+  if (!normalizedPath) return null;
+
+  const { data, error } = await supabase.storage
+    .from(STORAGE_BUCKET)
+    .createSignedUrl(normalizedPath, SIGNED_URL_TTL_SECONDS);
+
+  if (!error && data?.signedUrl) {
+    return data.signedUrl;
+  }
+
+  const publicUrl = getPublicImageUrl(normalizedPath);
+  return publicUrl || null;
 }
 
 function cleanLooseText(value: string | null | undefined) {
@@ -573,6 +590,7 @@ export default function CatalogCategoryPage() {
 
   const [items, setItems] = useState<CatalogItemRow[]>([]);
   const [photosByItemId, setPhotosByItemId] = useState<Record<string, CatalogItemPhotoRow[]>>({});
+  const [photoUrlByPhotoId, setPhotoUrlByPhotoId] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [successText, setSuccessText] = useState<string | null>(null);
@@ -598,6 +616,7 @@ export default function CatalogCategoryPage() {
     if (!organizationId || !activeStoreId) {
       setItems([]);
       setPhotosByItemId({});
+      setPhotoUrlByPhotoId({});
       setLoading(false);
       return;
     }
@@ -623,25 +642,48 @@ export default function CatalogCategoryPage() {
 
       if (filtered.length === 0) {
         setPhotosByItemId({});
+        setPhotoUrlByPhotoId({});
         return;
       }
 
       const itemIds = filtered.map((item) => item.id);
-      const { data: photoRows, error: photosError } = await supabase
-        .from("store_catalog_item_photos")
-        .select("*")
-        .in("catalog_item_id", itemIds)
-        .order("sort_order", { ascending: true });
+      const photoRows: CatalogItemPhotoRow[] = [];
+      for (const ids of chunkArray(itemIds, 200)) {
+        if (ids.length === 0) continue;
 
-      if (photosError) throw photosError;
+        const { data: photoChunk, error: photosError } = await supabase
+          .from("store_catalog_item_photos")
+          .select("*")
+          .in("catalog_item_id", ids)
+          .order("sort_order", { ascending: true })
+          .order("created_at", { ascending: true });
+
+        if (photosError) throw photosError;
+        photoRows.push(...((photoChunk || []) as CatalogItemPhotoRow[]));
+      }
 
       const grouped: Record<string, CatalogItemPhotoRow[]> = {};
-      for (const photo of (photoRows || []) as CatalogItemPhotoRow[]) {
+      for (const photo of photoRows) {
         if (!grouped[photo.catalog_item_id]) grouped[photo.catalog_item_id] = [];
         grouped[photo.catalog_item_id].push(photo);
       }
 
       setPhotosByItemId(grouped);
+
+      const resolvedUrls = await Promise.all(
+        photoRows.map(async (photo) => {
+          const url = await getCatalogPhotoUrl(photo.storage_path);
+          return [photo.id, url] as const;
+        })
+      );
+
+      const nextPhotoUrlByPhotoId: Record<string, string> = {};
+      for (const [photoId, url] of resolvedUrls) {
+        if (url) {
+          nextPhotoUrlByPhotoId[photoId] = url;
+        }
+      }
+      setPhotoUrlByPhotoId(nextPhotoUrlByPhotoId);
     } catch (error: any) {
       setErrorText(error?.message ?? "Erro ao carregar itens do catálogo.");
     } finally {
@@ -1589,6 +1631,7 @@ async function handleDeleteItem(itemId: string) {
                           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
                             {itemPhotos.map((photo) => {
                               const isDeletingPhoto = deletingPhotoId === photo.id;
+                              const photoUrl = photoUrlByPhotoId[photo.id] || "";
 
                               return (
                                 <div
@@ -1597,21 +1640,29 @@ async function handleDeleteItem(itemId: string) {
                                 >
                                   <button
                                     type="button"
-                                    onClick={() =>
+                                    onClick={() => {
+                                      if (!photoUrl) return;
                                       setSelectedCatalogPhoto({
-                                        url: getPublicImageUrl(photo.storage_path),
+                                        url: photoUrl,
                                         fileName: photo.file_name || "Foto",
                                         itemName: item.name,
-                                      })
-                                    }
+                                      });
+                                    }}
                                     className="block w-full cursor-zoom-in text-left"
                                     aria-label={`Abrir foto ${photo.file_name || item.name}`}
+                                    disabled={!photoUrl}
                                   >
-                                    <img
-                                      src={getPublicImageUrl(photo.storage_path)}
-                                      alt={photo.file_name || item.name}
-                                      className="block h-24 w-full object-cover"
-                                    />
+                                    {photoUrl ? (
+                                      <img
+                                        src={photoUrl}
+                                        alt={photo.file_name || item.name}
+                                        className="block h-24 w-full object-cover"
+                                      />
+                                    ) : (
+                                      <div className="flex h-24 items-center justify-center px-2 text-center text-xs text-gray-500">
+                                        Carregando foto...
+                                      </div>
+                                    )}
                                   </button>
                                   <div className="space-y-2 p-2.5">
                                     <div className="truncate text-[11px] text-gray-600">
@@ -1638,31 +1689,43 @@ async function handleDeleteItem(itemId: string) {
                       </div>
                     ) : (
                       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6">
-                        {itemPhotos.map((photo) => (
-                          <div
-                            key={photo.id}
-                            className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
-                          >
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setSelectedCatalogPhoto({
-                                  url: getPublicImageUrl(photo.storage_path),
-                                  fileName: photo.file_name || "Foto",
-                                  itemName: item.name,
-                                })
-                              }
-                              className="block w-full cursor-zoom-in text-left"
-                              aria-label={`Abrir foto ${photo.file_name || item.name}`}
+                        {itemPhotos.map((photo) => {
+                          const photoUrl = photoUrlByPhotoId[photo.id] || "";
+
+                          return (
+                            <div
+                              key={photo.id}
+                              className="overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
                             >
-                              <img
-                                src={getPublicImageUrl(photo.storage_path)}
-                                alt={photo.file_name || item.name}
-                                className="block h-16 w-full object-cover"
-                              />
-                            </button>
-                          </div>
-                        ))}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!photoUrl) return;
+                                  setSelectedCatalogPhoto({
+                                    url: photoUrl,
+                                    fileName: photo.file_name || "Foto",
+                                    itemName: item.name,
+                                  });
+                                }}
+                                className="block w-full cursor-zoom-in text-left"
+                                aria-label={`Abrir foto ${photo.file_name || item.name}`}
+                                disabled={!photoUrl}
+                              >
+                                {photoUrl ? (
+                                  <img
+                                    src={photoUrl}
+                                    alt={photo.file_name || item.name}
+                                    className="block h-16 w-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="flex h-16 items-center justify-center px-2 text-center text-[11px] text-gray-500">
+                                    Carregando...
+                                  </div>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </SectionCard>
