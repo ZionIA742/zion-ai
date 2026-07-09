@@ -6692,12 +6692,49 @@ function dedupeDescriptionLines(lines: string[]) {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const line of lines) {
-    const key = normalizeImportedLoose(line);
+    const key = normalizeImportedDescriptionLineForDedup(line);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     result.push(line.trim());
   }
   return result;
+}
+
+const IMPORTED_PRICE_RANGE_LABEL = "Faixa de pre\u00e7o:";
+const IMPORTED_PRICE_RANGE_LINE_PATTERN =
+  /^\s*Faixa de pre(?:\u00e7o|co|\u00c3\u00a7o)\s*:\s*(.+)\s*$/iu;
+
+function normalizeImportedDescriptionLineForDedup(value: string | null | undefined) {
+  const source = String(value || "").trim();
+  if (!source) return "";
+  const priceRangeMatch = source.match(IMPORTED_PRICE_RANGE_LINE_PATTERN);
+  if (priceRangeMatch?.[1]) {
+    return normalizeImportedLoose(`${IMPORTED_PRICE_RANGE_LABEL} ${priceRangeMatch[1]}`);
+  }
+  return normalizeImportedLoose(source);
+}
+
+function splitImportedPoolDescriptionPriceRange(description: string | null | undefined) {
+  const remainingLines: string[] = [];
+  let extractedRange = "";
+
+  for (const rawLine of String(description || "").split(/\r?\n+/)) {
+    const line = String(rawLine || "").trim();
+    if (!line) continue;
+    const priceRangeMatch = line.match(IMPORTED_PRICE_RANGE_LINE_PATTERN);
+    if (priceRangeMatch?.[1]) {
+      if (!extractedRange) {
+        extractedRange = cleanupImportedDescriptionLine(priceRangeMatch[1]);
+      }
+      continue;
+    }
+    remainingLines.push(line);
+  }
+
+  return {
+    description: remainingLines.join("\n").trim(),
+    extractedRange,
+  };
 }
 
 function escapeImportedRegExp(value: string) {
@@ -8306,13 +8343,19 @@ function buildImportedPoolDescription(
   const baseDescription = reviewedDescription
     ? String(reviewedDescription || "").trim()
     : buildImportedCleanDescription(item) || "";
+  const { description: descriptionWithoutRange, extractedRange: existingRange } =
+    splitImportedPoolDescriptionPriceRange(baseDescription);
   const explicitRange = extractMetadataValue(item, ["price_range"]);
   const fallbackRange = extractImportedPriceRange(
     extractMetadataValue(item, ["reviewed_price", "price", "preco", "preÃ§o", "price_label"])
   )?.raw;
-  const priceRangeLine = explicitRange || fallbackRange ? `Faixa de preÃ§o: ${explicitRange || fallbackRange}` : "";
+  const finalRange = cleanupImportedDescriptionLine(explicitRange || fallbackRange || existingRange);
+  const priceRangeLine = finalRange ? `${IMPORTED_PRICE_RANGE_LABEL} ${finalRange}` : "";
 
-  return dedupeDescriptionLines([baseDescription, priceRangeLine].filter(Boolean)).join("\n").trim() || null;
+  return (
+    dedupeDescriptionLines([descriptionWithoutRange, priceRangeLine].filter(Boolean)).join("\n").trim() ||
+    null
+  );
 }
 
 function extractImportedWeightOrVolume(
