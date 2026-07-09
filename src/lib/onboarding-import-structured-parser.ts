@@ -1,4 +1,7 @@
-import type { ExtractedFileContent } from "./server/onboarding-file-extractors";
+import type {
+  ExtractedFileContent,
+  ExtractedPositionalTextBlock,
+} from "./server/onboarding-file-extractors";
 
 export type StructuredImportDestination = "pool" | "quimicos" | "acessorios" | "outros";
 
@@ -4409,6 +4412,254 @@ function coalesceSpreadsheetContinuationRows(blocks: string[]) {
   };
 }
 
+function normalizePdfStructuredLabel(label: string) {
+  const normalized = normalizeLoose(label);
+  if (!normalized) return "";
+  if (normalized === "valor") return "preco";
+  if (normalized === "estoque inicial") return "estoque";
+  return normalized;
+}
+
+function toPdfStructuredFieldLabel(label: string) {
+  const normalized = normalizePdfStructuredLabel(label);
+  if (normalized === "sku") return "SKU";
+  if (normalized === "categoria") return "Categoria";
+  if (normalized === "linha") return "Linha";
+  if (normalized === "aplicacao") return "Aplicacao";
+  if (normalized === "embalagem") return "Embalagem";
+  if (normalized === "preco") return "Preco";
+  if (normalized === "estoque") return "Estoque";
+  if (normalized === "dosagem") return "Dosagem";
+  if (normalized === "observacoes") return "Observacoes";
+  return titleCaseLabel(label);
+}
+
+function isPdfStructuredPageArtifactLine(line: string) {
+  const normalized = normalizeLoose(line);
+  if (!normalized) return true;
+
+  return (
+    normalized === "campo" ||
+    normalized === "valor" ||
+    /^pagina\s+\d+$/iu.test(normalized) ||
+    /^quimic[oa]\s+\d+$/iu.test(normalized) ||
+    normalized.startsWith("catalogo de teste") ||
+    normalized.startsWith("arquivo ficticio criado para validar importacao") ||
+    normalized.startsWith("uso sugerido")
+  );
+}
+
+function extractPdfStructuredLabelLines(text: string) {
+  const lines = normalizeBlock(text)
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+  if (lines.length === 0) return [];
+
+  const campoIndex = lines.findIndex((line) => normalizeLoose(line) === "campo");
+  const candidateLines = campoIndex >= 0 ? lines.slice(campoIndex + 1) : lines;
+  const labels = candidateLines
+    .map((line) => cleanText(line))
+    .filter((line) => {
+      const normalized = normalizeLoose(line);
+      return Boolean(findStandaloneFieldLabel(line)) || normalized === "estoque inicial";
+    })
+    .map((line) => normalizePdfStructuredLabel(line))
+    .filter(Boolean);
+
+  return labels.length >= 5 ? labels : [];
+}
+
+function extractPdfStructuredValueLines(text: string) {
+  const lines = normalizeBlock(text)
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+  if (lines.length === 0) return [];
+
+  const valorIndex = lines.findIndex((line) => normalizeLoose(line) === "valor");
+  const startIndex = valorIndex >= 0 ? valorIndex + 1 : 0;
+  return lines.slice(startIndex).filter((line) => !isPdfStructuredPageArtifactLine(line));
+}
+
+function extractPdfStructuredTitleFromDescription(text: string) {
+  const lines = normalizeBlock(text)
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const match = line.match(/^(.+?)\s+[eé]\s+um\b/i);
+    const candidate = cleanText(match?.[1] || "");
+    if (candidate && !isPdfStructuredPageArtifactLine(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function extractPdfStructuredDescription(text: string) {
+  const lines = normalizeBlock(text)
+    .split("\n")
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+
+  return (
+    lines.find((line) => /\b[eé]\s+um\b/i.test(line) && !isPdfStructuredPageArtifactLine(line)) || ""
+  );
+}
+
+function extractPdfStructuredTitleFromPageBlocks(blocks: string[]) {
+  for (const block of blocks) {
+    const titleFromDescription = extractPdfStructuredTitleFromDescription(block);
+    if (titleFromDescription) return titleFromDescription;
+  }
+
+  for (const block of blocks) {
+    const lines = normalizeBlock(block)
+      .split("\n")
+      .map((line) => cleanText(line))
+      .filter(Boolean);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const candidate = lines[index] || "";
+      if (!candidate || isPdfStructuredPageArtifactLine(candidate)) continue;
+      if (findStandaloneFieldLabel(candidate)) continue;
+      if (collectAllSkuCandidates(candidate).length > 0) continue;
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function buildStructuredPdfPageBlock(args: {
+  fileName: string;
+  pageNumber: number;
+  labels: string[];
+  values: string[];
+  pageBlocks: string[];
+}) {
+  const normalizedLabels = args.labels.map((label) => normalizePdfStructuredLabel(label)).filter(Boolean);
+  if (normalizedLabels.length < 5 || args.values.length < normalizedLabels.length) {
+    return "";
+  }
+
+  const uniqueLabels = new Set(normalizedLabels);
+  if (
+    !uniqueLabels.has("sku") ||
+    !uniqueLabels.has("categoria") ||
+    !uniqueLabels.has("preco") ||
+    !uniqueLabels.has("estoque")
+  ) {
+    return "";
+  }
+
+  const valueMap = new Map<string, string>();
+  normalizedLabels.forEach((label, index) => {
+    const value =
+      index === normalizedLabels.length - 1
+        ? cleanText(args.values.slice(index).join(" "))
+        : cleanText(args.values[index] || "");
+    if (!value) return;
+
+    const existing = valueMap.get(label);
+    if (!existing) {
+      valueMap.set(label, value);
+      return;
+    }
+
+    if (normalizeLoose(existing) === normalizeLoose(value)) return;
+    valueMap.set(label, cleanText(`${existing} ${value}`));
+  });
+
+  const sku = sanitizeSku(valueMap.get("sku") || "");
+  const price = valueMap.get("preco") || "";
+  const category = valueMap.get("categoria") || "";
+  if (!sku || !price || !category) {
+    return "";
+  }
+
+  const title = extractPdfStructuredTitleFromPageBlocks(args.pageBlocks);
+  if (!title) return "";
+
+  const description =
+    args.pageBlocks.map((block) => extractPdfStructuredDescription(block)).find(Boolean) || "";
+  const sourceLocationKey = `pdf::${args.fileName}::page::${args.pageNumber}::sku::${sku}`;
+  const orderedLabels = [
+    "sku",
+    "categoria",
+    "linha",
+    "aplicacao",
+    "embalagem",
+    "preco",
+    "estoque",
+    "dosagem",
+    "observacoes",
+  ];
+
+  return normalizeBlock(
+    [
+      `Produto: ${title}`,
+      description ? `Descricao: ${description}` : "",
+      ...orderedLabels.map((label) => {
+        const value = valueMap.get(label) || "";
+        if (!value) return "";
+        return `${toPdfStructuredFieldLabel(label)}: ${value}`;
+      }),
+      `Sheet Scoped Key: ${sourceLocationKey}`,
+    ]
+      .filter(Boolean)
+      .join("\n")
+  );
+}
+
+function coalesceStructuredPdfPageBlocks(
+  positionalBlocks: ExtractedPositionalTextBlock[],
+  fileName: string
+) {
+  if (!fileName.toLowerCase().endsWith(".pdf") || positionalBlocks.length === 0) {
+    return [];
+  }
+
+  const blocksByPage = new Map<number, string[]>();
+  for (const block of positionalBlocks) {
+    const text = cleanText(block.text);
+    if (!text) continue;
+    const pageBlocks = blocksByPage.get(block.pageNumber) || [];
+    pageBlocks.push(text);
+    blocksByPage.set(block.pageNumber, pageBlocks);
+  }
+
+  const synthesizedBlocks: string[] = [];
+  for (const [pageNumber, pageBlocks] of Array.from(blocksByPage.entries()).sort(
+    (left, right) => left[0] - right[0]
+  )) {
+    const labelSource = pageBlocks.find((block) => extractPdfStructuredLabelLines(block).length >= 5) || "";
+    const valueSource =
+      pageBlocks.find((block) => {
+        const values = extractPdfStructuredValueLines(block);
+        return values.length >= 5 && collectAllSkuCandidates(values.join("\n")).length >= 1;
+      }) || "";
+    const labels = labelSource ? extractPdfStructuredLabelLines(labelSource) : [];
+    const values = valueSource ? extractPdfStructuredValueLines(valueSource) : [];
+    if (!labelSource || !valueSource) continue;
+
+    const synthesized = buildStructuredPdfPageBlock({
+      fileName,
+      pageNumber,
+      labels,
+      values,
+      pageBlocks,
+    });
+    if (synthesized) {
+      synthesizedBlocks.push(synthesized);
+    }
+  }
+
+  return synthesizedBlocks;
+}
+
 function chooseBlocksDetailed(extracted: ExtractedFileContent) {
   const positionalBlocks = Array.isArray(extracted.positionalTextBlocks)
     ? extracted.positionalTextBlocks
@@ -4422,10 +4673,11 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
           if (left.pageNumber !== right.pageNumber) return left.pageNumber - right.pageNumber;
           return left.blockIndex - right.blockIndex;
         })
-        .map((block) => cleanText(block.text))
-        .filter(Boolean)
     : [];
-  const baseText = positionalBlocks.length > 0 ? positionalBlocks.join("\n\n") : extracted.text;
+  const positionalBlockTexts = positionalBlocks.map((block) => cleanText(block.text)).filter(Boolean);
+  const coalescedPdfBlocks = coalesceStructuredPdfPageBlocks(positionalBlocks, extracted.fileName);
+  const basePositionalBlocks = coalescedPdfBlocks.length > 0 ? coalescedPdfBlocks : positionalBlockTexts;
+  const baseText = basePositionalBlocks.length > 0 ? basePositionalBlocks.join("\n\n") : extracted.text;
   const preparedText = preprocessStructuredText(baseText);
   const explicitNameCandidatesBeforeSegmentation =
     captureExplicitProductNameCandidatesBeforeSegmentation(preparedText);
@@ -4502,7 +4754,7 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
       };
     }
 
-    if (strategy === "pdf_positional_blocks") {
+    if (strategy.startsWith("pdf_positional")) {
       const explicitNameAssignments = assignExplicitProductNamesToBlocks(
         normalizedBlocks,
         explicitNameCandidatesBeforeSegmentation
@@ -4586,8 +4838,11 @@ function chooseBlocksDetailed(extracted: ExtractedFileContent) {
     };
   };
 
-  if (positionalBlocks.length > 0) {
-    return finalizeBlocks(positionalBlocks, "pdf_positional_blocks");
+  if (basePositionalBlocks.length > 0) {
+    return finalizeBlocks(
+      basePositionalBlocks,
+      coalescedPdfBlocks.length > 0 ? "pdf_positional_pages" : "pdf_positional_blocks"
+    );
   }
 
   const delimited = splitDelimitedBlocks(preparedText);
