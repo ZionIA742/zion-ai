@@ -23,7 +23,10 @@ begin
       'Constraint public.customers.customers_merged_into_customer_same_org_fkey not found';
   end if;
 
-  if position('ON DELETE SET NULL (merged_into_customer_id)' in v_definition) > 0 then
+  if position(
+    'ON DELETE SET NULL (merged_into_customer_id)'
+    in v_definition
+  ) > 0 then
     return;
   end if;
 
