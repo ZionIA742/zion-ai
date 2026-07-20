@@ -53,6 +53,39 @@ type AiSalesReplyUsage = {
   pricingSource?: string;
 };
 
+async function transitionConversationStateAsInternalActor(args: {
+  supabase: any;
+  conversationId: string;
+  toState: string;
+  reason: string;
+  actorType: "ai" | "system";
+  source: string;
+  eventKey?: string | null;
+  metadata?: Record<string, unknown> | null;
+}) {
+  const { error } = await args.supabase.rpc(
+    "transition_conversation_state_internal",
+    {
+      p_conversation_id: args.conversationId,
+      p_to_state: args.toState,
+      p_reason: args.reason,
+      p_actor_type: args.actorType,
+      p_source: args.source,
+      p_event_key: args.eventKey ?? null,
+      p_metadata: args.metadata ?? {},
+    }
+  );
+
+  return { error };
+}
+
+function buildAiSalesAutoProgressEventKey(args: {
+  taskId: string;
+  step: "prepare_qualification" | "prepare_budget" | "budget_direct";
+}) {
+  return `ai_sales_auto_progress:${args.taskId}:${args.step}`;
+}
+
 type CatalogPhotoAction = {
   shouldSend: true;
   reason: "explicit_strong_product_photo_request";
@@ -1062,15 +1095,19 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
       conversationStatus: stateSnapshot.conversationStatus,
     });
 
-    const { error: qualificationError } = await args.supabase.rpc(
-      "panel_transition_conversation_state_scoped",
-      {
-        p_organization_id: args.organizationId,
-        p_conversation_id: args.conversationId,
-        p_to_state: "qualificacao",
-        p_reason: "auto_progress_from_ai_sales_quote_request_prepare_qualification",
-      }
-    );
+    const { error: qualificationError } =
+      await transitionConversationStateAsInternalActor({
+        supabase: args.supabase,
+        conversationId: args.conversationId,
+        toState: "qualificacao",
+        reason: "auto_progress_from_ai_sales_quote_request_prepare_qualification",
+        actorType: "ai",
+        source: "ai_sales_auto_progress",
+        eventKey: buildAiSalesAutoProgressEventKey({
+          taskId: args.taskId,
+          step: "prepare_qualification",
+        }),
+      });
 
     if (qualificationError) {
       console.warn("[zion-ai-sales-handoff] falha na primeira etapa do autoavanço para orçamento", {
@@ -1101,15 +1138,19 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
       toState: "qualificacao",
     });
 
-    const { error: budgetAfterQualificationError } = await args.supabase.rpc(
-      "panel_transition_conversation_state_scoped",
-      {
-        p_organization_id: args.organizationId,
-        p_conversation_id: args.conversationId,
-        p_to_state: "orcamento",
-        p_reason: "auto_progress_from_ai_sales_quote_request",
-      }
-    );
+    const { error: budgetAfterQualificationError } =
+      await transitionConversationStateAsInternalActor({
+        supabase: args.supabase,
+        conversationId: args.conversationId,
+        toState: "orcamento",
+        reason: "auto_progress_from_ai_sales_quote_request",
+        actorType: "ai",
+        source: "ai_sales_auto_progress",
+        eventKey: buildAiSalesAutoProgressEventKey({
+          taskId: args.taskId,
+          step: "prepare_budget",
+        }),
+      });
 
     if (budgetAfterQualificationError) {
       console.warn("[zion-ai-sales-handoff] falha na segunda etapa do autoavanço para orçamento", {
@@ -1160,15 +1201,18 @@ async function maybeAutoProgressCrmToBudgetFromQuoteHandoff(args: {
     conversationStatus: stateSnapshot.conversationStatus,
   });
 
-  const { error } = await args.supabase.rpc(
-    "panel_transition_conversation_state_scoped",
-    {
-      p_organization_id: args.organizationId,
-      p_conversation_id: args.conversationId,
-      p_to_state: "orcamento",
-      p_reason: "auto_progress_from_ai_sales_quote_request",
-    }
-  );
+  const { error } = await transitionConversationStateAsInternalActor({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+    toState: "orcamento",
+    reason: "auto_progress_from_ai_sales_quote_request",
+    actorType: "ai",
+    source: "ai_sales_auto_progress",
+    eventKey: buildAiSalesAutoProgressEventKey({
+      taskId: args.taskId,
+      step: "budget_direct",
+    }),
+  });
 
   if (error) {
     console.warn("[zion-ai-sales-handoff] erro ao autoavancar CRM para orçamento", {
@@ -1311,15 +1355,14 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
     isHumanActive: stateSnapshot.isHumanActive,
   });
 
-  const { error } = await args.supabase.rpc(
-    "panel_transition_conversation_state_scoped",
-    {
-      p_organization_id: args.organizationId,
-      p_conversation_id: args.conversationId,
-      p_to_state: "qualificacao",
-      p_reason: "auto_progress_from_ai_sales_qualification_signal",
-    }
-  );
+  const { error } = await transitionConversationStateAsInternalActor({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+    toState: "qualificacao",
+    reason: "auto_progress_from_ai_sales_qualification_signal",
+    actorType: "ai",
+    source: "ai_sales_auto_progress",
+  });
 
   if (error) {
     console.warn("[zion-ai-sales-qualification] erro ao autoavançar CRM para qualificação", {

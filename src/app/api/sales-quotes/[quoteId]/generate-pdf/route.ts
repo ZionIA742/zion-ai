@@ -88,17 +88,27 @@ async function loadCurrentQuoteConversationState(args: {
 
 async function transitionQuoteConversationState(args: {
   supabase: any;
+  actorUserId: string;
   organizationId: string;
   conversationId: string;
   toState: "qualificacao" | "orcamento";
   reason: string;
 }) {
-  const { error } = await args.supabase.rpc("panel_transition_conversation_state_scoped", {
-    p_organization_id: args.organizationId,
-    p_conversation_id: args.conversationId,
-    p_to_state: args.toState,
-    p_reason: args.reason,
-  });
+  const { error } = await args.supabase.rpc(
+    "transition_conversation_state_by_user",
+    {
+      p_conversation_id: args.conversationId,
+      p_to_state: args.toState,
+      p_actor_user_id: args.actorUserId,
+      p_reason: args.reason,
+      p_source: "quote_pdf_generation",
+      p_request_organization_id: args.organizationId,
+      p_event_key: null,
+      p_metadata: {
+        source: "quote_pdf_generation",
+      },
+    }
+  );
 
   if (error) {
     throw new QuoteAccessError(
@@ -111,6 +121,7 @@ async function transitionQuoteConversationState(args: {
 
 async function ensureQuoteConversationReadyForGeneration(args: {
   supabase: any;
+  actorUserId: string;
   organizationId: string;
   conversationId: string | null;
   leadId: string | null;
@@ -150,6 +161,7 @@ async function ensureQuoteConversationReadyForGeneration(args: {
   if (initialState === "novo_lead") {
     await transitionQuoteConversationState({
       supabase: args.supabase,
+      actorUserId: args.actorUserId,
       organizationId: args.organizationId,
       conversationId,
       toState: "qualificacao",
@@ -173,6 +185,7 @@ async function ensureQuoteConversationReadyForGeneration(args: {
 
     await transitionQuoteConversationState({
       supabase: args.supabase,
+      actorUserId: args.actorUserId,
       organizationId: args.organizationId,
       conversationId,
       toState: "orcamento",
@@ -181,6 +194,7 @@ async function ensureQuoteConversationReadyForGeneration(args: {
   } else if (initialState === "qualificacao") {
     await transitionQuoteConversationState({
       supabase: args.supabase,
+      actorUserId: args.actorUserId,
       organizationId: args.organizationId,
       conversationId,
       toState: "orcamento",
@@ -266,6 +280,7 @@ export async function POST(
     const scope = await resolveAuthorizedExistingQuote(quoteId);
     await ensureQuoteConversationReadyForGeneration({
       supabase: scope.supabase,
+      actorUserId: scope.user.id,
       organizationId: scope.organizationId,
       conversationId: scope.conversation?.id || scope.quote.conversation_id || null,
       leadId: scope.lead?.id || scope.quote.lead_id || null,
