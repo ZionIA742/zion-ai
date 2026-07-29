@@ -1,13 +1,12 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
-import AppShellClient from "./AppShellClient";
 import { resolveAccountAccessPageGate } from "@/lib/account-access-page-gate";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import { resolveAccessForRequest } from "@/lib/server/account-access-resolver";
 
 export const runtime = "nodejs";
 
-export default async function AppLayout({
+export default async function OnboardingLayout({
   children,
 }: {
   children: ReactNode;
@@ -24,11 +23,11 @@ export default async function AppLayout({
     redirect("/account/access-unavailable");
   }
 
-  const gate = resolveAccountAccessPageGate(resolution, "store_app");
+  const gate = resolveAccountAccessPageGate(resolution, "onboarding");
 
   if (gate.action === "redirect") {
     redirect(gate.destination);
   }
 
-  return <AppShellClient>{children}</AppShellClient>;
+  return <>{children}</>;
 }

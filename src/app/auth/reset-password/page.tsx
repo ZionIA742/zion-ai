@@ -6,26 +6,15 @@ import { supabase } from "@/lib/supabaseClient";
 
 type RecoveryStatus = "checking" | "ready" | "saving" | "success" | "error";
 
-function validateStrongPassword(password: string) {
-  const value = String(password || "").trim();
-
-  return (
-    value.length >= 8 &&
-    /[A-Z]/.test(value) &&
-    /\d/.test(value) &&
-    /[@.!?$%#&*-]/.test(value)
-  );
-}
-
 function getFriendlyErrorMessage(message: string | null | undefined) {
   const normalized = String(message || "").toLowerCase();
 
   if (!normalized) {
-    return "Não foi possível continuar. Tente abrir o link novamente.";
+    return "Nao foi possivel continuar. Tente abrir o link novamente.";
   }
 
   if (normalized.includes("expired") || normalized.includes("invalid")) {
-    return "Esse link expirou ou não é mais válido. Volte para o login e peça um novo link.";
+    return "Esse link expirou ou nao e mais valido. Volte para o login e peca um novo link.";
   }
 
   if (normalized.includes("same password")) {
@@ -33,10 +22,10 @@ function getFriendlyErrorMessage(message: string | null | undefined) {
   }
 
   if (normalized.includes("weak") || normalized.includes("password")) {
-    return "Use uma senha mais forte, com pelo menos 6 caracteres.";
+    return "Use uma senha mais forte, com pelo menos 8 caracteres, uma letra maiuscula, um numero e um caractere especial.";
   }
 
-  return message || "Não foi possível continuar. Tente novamente.";
+  return message || "Nao foi possivel continuar. Tente novamente.";
 }
 
 function getRecoveryLinkErrorMessage(params: URLSearchParams) {
@@ -49,14 +38,42 @@ function getRecoveryLinkErrorMessage(params: URLSearchParams) {
     return null;
   }
 
-  return "Este link de recuperação expirou ou é inválido. Solicite uma nova recuperação de senha.";
+  return "Este link expirou ou e invalido. Solicite uma nova recuperacao de senha.";
+}
+
+function getUnknownErrorMessage(error: unknown, fallback: string) {
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    return (error as { message: string }).message;
+  }
+
+  return fallback;
+}
+
+async function fetchPasswordFlow() {
+  const response = await fetch("/api/account/password-flow", {
+    method: "GET",
+  });
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok || !payload?.flow) {
+    throw new Error(
+      payload?.message || "Nao foi possivel validar o fluxo seguro desta conta.",
+    );
+  }
+
+  return payload as { flow: string; message: string };
 }
 
 export default function ResetPasswordPage() {
   const router = useRouter();
-
   const [status, setStatus] = useState<RecoveryStatus>("checking");
-  const [message, setMessage] = useState("Validando link de recuperação...");
+  const [message, setMessage] = useState("Validando link...");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -92,19 +109,33 @@ export default function ResetPasswordPage() {
 
         if (error || !data.session) {
           setStatus("error");
-          setMessage("Link de recuperação não encontrado. Volte para o login e peça um novo link.");
+          setMessage("Link nao encontrado. Volte para o login e peca um novo link.");
+          return;
+        }
+
+        const trustedFlow = await fetchPasswordFlow();
+
+        if (cancelled) return;
+
+        if (trustedFlow.flow !== "recovery") {
+          setStatus("error");
+          setMessage(
+            trustedFlow.flow === "first_access"
+              ? "Este link nao pertence a recuperacao comum. Use o convite mais recente para criar a primeira senha."
+              : trustedFlow.message,
+          );
           return;
         }
 
         setStatus("ready");
-        setMessage("Digite sua nova senha para concluir a recuperação.");
-      } catch (error: any) {
+        setMessage(trustedFlow.message);
+      } catch (error: unknown) {
         if (cancelled) return;
         setStatus("error");
         setMessage(
           getFriendlyErrorMessage(
-            error?.message || "Não foi possível validar o link de recuperação."
-          )
+            getUnknownErrorMessage(error, "Nao foi possivel validar o link."),
+          ),
         );
       }
     }
@@ -126,17 +157,22 @@ export default function ResetPasswordPage() {
     const nextPassword = password.trim();
     const nextConfirmPassword = confirmPassword.trim();
 
-    if (!validateStrongPassword(nextPassword)) {
+    if (
+      nextPassword.length < 8 ||
+      !/[A-Z]/.test(nextPassword) ||
+      !/\d/.test(nextPassword) ||
+      !/[@.!?$%#&*-]/.test(nextPassword)
+    ) {
       setStatus("error");
       setMessage(
-        "A senha precisa ter pelo menos 8 caracteres, uma letra maiúscula, um número e um caractere especial."
+        "A senha precisa ter pelo menos 8 caracteres, uma letra maiuscula, um numero e um caractere especial.",
       );
       return;
     }
 
     if (nextPassword !== nextConfirmPassword) {
       setStatus("error");
-      setMessage("As senhas não estão iguais.");
+      setMessage("As senhas nao estao iguais.");
       return;
     }
 
@@ -150,22 +186,24 @@ export default function ResetPasswordPage() {
 
       if (error) {
         setStatus("error");
-        setMessage(getFriendlyErrorMessage(error.message));
+        setMessage(getFriendlyErrorMessage(error.message ?? ""));
         return;
       }
 
       setPassword("");
       setConfirmPassword("");
       setStatus("success");
-      setMessage("Senha alterada com sucesso. Você já pode entrar no ZION.");
+      setMessage("Senha alterada com sucesso.");
 
       window.setTimeout(() => {
         router.replace("/login");
-      }, 1200);
-    } catch (error: any) {
+      }, 700);
+    } catch (error: unknown) {
       setStatus("error");
       setMessage(
-        getFriendlyErrorMessage(error?.message || "Não foi possível salvar a nova senha.")
+        getFriendlyErrorMessage(
+          getUnknownErrorMessage(error, "Nao foi possivel salvar a nova senha."),
+        ),
       );
     }
   }
@@ -173,7 +211,7 @@ export default function ResetPasswordPage() {
   const isSaving = status === "saving";
   const canSubmit =
     status === "ready" && password.trim().length > 0 && confirmPassword.trim().length > 0;
-  const shouldShowForm = status !== "error";
+  const shouldShowForm = status === "ready" || status === "saving";
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-black px-4 text-white">
@@ -189,8 +227,8 @@ export default function ResetPasswordPage() {
             status === "success"
               ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
               : status === "error"
-              ? "border-red-500/30 bg-red-500/10 text-red-100"
-              : "border-white/10 bg-white/[0.04] text-zinc-200",
+                ? "border-red-500/30 bg-red-500/10 text-red-100"
+                : "border-white/10 bg-white/[0.04] text-zinc-200",
           ].join(" ")}
         >
           {message}
@@ -205,7 +243,7 @@ export default function ResetPasswordPage() {
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   type={showPassword ? "text" : "password"}
-                  disabled={status === "checking" || status === "saving" || status === "success"}
+                  disabled={status !== "ready"}
                   className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
                   placeholder="Digite a nova senha"
                   autoComplete="new-password"
@@ -214,7 +252,7 @@ export default function ResetPasswordPage() {
                 <button
                   type="button"
                   onClick={() => setShowPassword((current) => !current)}
-                  disabled={status === "checking" || status === "saving" || status === "success"}
+                  disabled={status !== "ready"}
                   className="absolute inset-y-0 right-2 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                   aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
                   title={showPassword ? "Ocultar senha" : "Mostrar senha"}
@@ -261,7 +299,7 @@ export default function ResetPasswordPage() {
                   value={confirmPassword}
                   onChange={(event) => setConfirmPassword(event.target.value)}
                   type={showConfirmPassword ? "text" : "password"}
-                  disabled={status === "checking" || status === "saving" || status === "success"}
+                  disabled={status !== "ready"}
                   className="w-full rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 pr-11 text-sm text-white outline-none focus:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
                   placeholder="Repita a nova senha"
                   autoComplete="new-password"
@@ -270,7 +308,7 @@ export default function ResetPasswordPage() {
                 <button
                   type="button"
                   onClick={() => setShowConfirmPassword((current) => !current)}
-                  disabled={status === "checking" || status === "saving" || status === "success"}
+                  disabled={status !== "ready"}
                   className="absolute inset-y-0 right-2 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                   aria-label={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
                   title={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
@@ -311,8 +349,9 @@ export default function ResetPasswordPage() {
             </div>
 
             <button
-              disabled={!canSubmit || isSaving}
-              className="w-full rounded-2xl bg-white px-3 py-2 text-sm font-semibold text-black hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+              type="submit"
+              disabled={isSaving || !canSubmit}
+              className="w-full rounded-2xl bg-white px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSaving ? "Salvando..." : "Salvar nova senha"}
             </button>

@@ -1,7 +1,15 @@
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { createClient } from "@supabase/supabase-js";
-import { createServerClient } from "@supabase/ssr";
+import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
+import {
+  createZionAdminApiDeniedResponse,
+  createZionAdminApiJsonResponse,
+} from "@/lib/server/zion-admin-api-response";
+import {
+  getFirstAccessInviteCooldownRemainingMs,
+  getProvisioningAccountAccessSummary,
+  getAuthAdminUserById,
+  maskEmail,
+} from "@/lib/server/zion-account-provisioning";
 
 type StoreRow = {
   id: string;
@@ -133,6 +141,32 @@ type StoreCatalogConfigRow = StoreBooleanConfigRow & {
   is_active: boolean | null;
 };
 
+type OwnerMembershipRow = {
+  organization_id: string;
+  user_id: string;
+  role: string | null;
+  created_at: string | null;
+};
+
+type StoreAccountAccessSnapshot = {
+  responsibleName: string | null;
+  emailMasked: string;
+  userId: string | null;
+  status:
+    | "first_access_pending"
+    | "first_access_completed"
+    | "provisioning_pending"
+    | "provisioning_failed"
+    | "invalid_account"
+    | "ambiguous"
+    | "missing";
+  statusLabel: string;
+  canResend: boolean;
+  lastInviteSentAt: string | null;
+  firstAccessCompletedAt: string | null;
+  cooldownRemainingMs: number;
+};
+
 type TokenUsageBreakdown = {
   salesChatTokens: number;
   assistantChatTokens: number;
@@ -188,45 +222,12 @@ type StoreOverviewMetrics = {
   whatsappErrors: number;
 };
 
-async function getAuthenticatedUser() {
-  const cookieStore = await cookies();
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
-        },
-        set() {
-          // Route Handler: não alteramos cookies aqui.
-        },
-        remove() {
-          // Route Handler: não alteramos cookies aqui.
-        },
-      },
-    },
-  );
-
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
-
-  if (error || !user) {
-    return null;
-  }
-
-  return user;
-}
-
 function getServiceSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !serviceRoleKey) {
-    throw new Error("Supabase service role não configurada.");
+    throw new Error("Configuracao interna indisponivel.");
   }
 
   return createClient(url, serviceRoleKey, {
@@ -236,6 +237,8 @@ function getServiceSupabaseClient() {
     },
   });
 }
+
+const OVERVIEW_LOAD_ERROR = "Falha tecnica ao carregar dados complementares do overview.";
 
 async function getExactCount(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
@@ -248,7 +251,7 @@ async function getExactCount(
   if (error) {
     return {
       count: null,
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -269,7 +272,7 @@ async function getActiveMessagesExactCount(
   if (error) {
     return {
       count: null,
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -728,6 +731,12 @@ function applyPendingIssueDetails(args: {
   }
 }
 
+function normalizeRole(value: string | null | undefined) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
 function getSaoPauloDateParts(date: Date) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Sao_Paulo",
@@ -886,7 +895,7 @@ async function loadStoreIdRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -907,7 +916,7 @@ async function loadActiveMessageRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -930,7 +939,7 @@ async function loadSalesAiMessageRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -950,7 +959,7 @@ async function loadStoreOnboardingConfigRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -971,7 +980,7 @@ async function loadStoreBooleanConfigRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -991,7 +1000,7 @@ async function loadStoreAuthConfigRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -1011,7 +1020,7 @@ async function loadStoreCatalogConfigRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -1032,7 +1041,7 @@ async function loadQueueRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -1054,7 +1063,7 @@ async function loadAiRunQueueIssueRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -1076,7 +1085,7 @@ async function loadSalesActionQueueIssueRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -1098,7 +1107,7 @@ async function loadWhatsappInboxIssueRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -1120,7 +1129,7 @@ async function loadAiRunRows(
   if (error) {
     return {
       rows: [],
-      error: error.message,
+      error: OVERVIEW_LOAD_ERROR,
     };
   }
 
@@ -1130,36 +1139,139 @@ async function loadAiRunRows(
   };
 }
 
+async function loadStoreAccountAccessSnapshots(
+  supabase: ReturnType<typeof getServiceSupabaseClient>,
+  stores: StoreRow[],
+) {
+  const organizationIds = Array.from(
+    new Set(stores.map((store) => store.organization_id).filter(Boolean)),
+  );
+  const storeByOrganizationId = new Map<string, StoreRow[]>();
+
+  for (const store of stores) {
+    const current = storeByOrganizationId.get(store.organization_id) ?? [];
+    current.push(store);
+    storeByOrganizationId.set(store.organization_id, current);
+  }
+
+  if (organizationIds.length === 0) {
+    return new Map<string, StoreAccountAccessSnapshot>();
+  }
+
+  const { data: memberships, error: membershipsError } = await supabase
+    .from("memberships")
+    .select("organization_id, user_id, role, created_at")
+    .in("organization_id", organizationIds)
+    .order("created_at", { ascending: true });
+
+  if (membershipsError) {
+    throw membershipsError;
+  }
+
+  const membershipsByOrganizationId = new Map<string, OwnerMembershipRow[]>();
+
+  for (const membership of (memberships ?? []) as OwnerMembershipRow[]) {
+    if (normalizeRole(membership.role) !== "owner") {
+      continue;
+    }
+
+    const current = membershipsByOrganizationId.get(membership.organization_id) ?? [];
+    current.push(membership);
+    membershipsByOrganizationId.set(membership.organization_id, current);
+  }
+
+  const authUsersById = new Map<string, Awaited<ReturnType<typeof getAuthAdminUserById>>>();
+  const ownerUserIds = Array.from(
+    new Set(
+      Array.from(membershipsByOrganizationId.values())
+        .flat()
+        .map((membership) => membership.user_id)
+        .filter(Boolean),
+    ),
+  );
+
+  await Promise.all(
+    ownerUserIds.map(async (userId) => {
+      const authUser = await getAuthAdminUserById(supabase, userId);
+      authUsersById.set(userId, authUser);
+    }),
+  );
+
+  const snapshots = new Map<string, StoreAccountAccessSnapshot>();
+
+  for (const [organizationId, orgStores] of storeByOrganizationId.entries()) {
+    const ownerMemberships = membershipsByOrganizationId.get(organizationId) ?? [];
+
+    if (ownerMemberships.length !== 1) {
+      for (const store of orgStores) {
+        snapshots.set(store.id, {
+          responsibleName: null,
+          emailMasked: "E-mail indisponivel",
+          userId: null,
+          status: ownerMemberships.length === 0 ? "missing" : "ambiguous",
+          statusLabel:
+            ownerMemberships.length === 0
+              ? "Conta de loja nao encontrada"
+              : "Conta de loja ambigua",
+          canResend: false,
+          lastInviteSentAt: null,
+          firstAccessCompletedAt: null,
+          cooldownRemainingMs: 0,
+        });
+      }
+      continue;
+    }
+
+    const targetMembership = ownerMemberships[0];
+    const authUser = authUsersById.get(targetMembership.user_id);
+
+    if (!authUser) {
+      for (const store of orgStores) {
+        snapshots.set(store.id, {
+          responsibleName: null,
+          emailMasked: "E-mail indisponivel",
+          userId: targetMembership.user_id,
+          status: "missing",
+          statusLabel: "Conta de loja nao encontrada",
+          canResend: false,
+          lastInviteSentAt: null,
+          firstAccessCompletedAt: null,
+          cooldownRemainingMs: 0,
+        });
+      }
+      continue;
+    }
+
+    const summary = getProvisioningAccountAccessSummary(authUser);
+    const responsibleName = String(authUser.user_metadata?.responsible_name || "").trim() || null;
+
+    for (const store of orgStores) {
+      snapshots.set(store.id, {
+        responsibleName,
+        emailMasked: maskEmail(authUser.email),
+        userId: authUser.id,
+        status: summary.status,
+        statusLabel: summary.label,
+        canResend: summary.canResend,
+        lastInviteSentAt: summary.sentAt,
+        firstAccessCompletedAt: summary.completedAt,
+        cooldownRemainingMs: getFirstAccessInviteCooldownRemainingMs(authUser.app_metadata),
+      });
+    }
+  }
+
+  return snapshots;
+}
+
 export async function GET() {
   try {
-    const user = await getAuthenticatedUser();
+    const access = await resolveZionAdminApiAccess();
 
-    if (!user) {
-      return NextResponse.json(
-        {
-          error: "Não autenticado.",
-        },
-        { status: 401 },
-      );
+    if (!access.ok) {
+      return createZionAdminApiDeniedResponse(access);
     }
 
     const serviceSupabase = getServiceSupabaseClient();
-
-    const { data: admin, error: adminError } = await serviceSupabase
-      .from("zion_internal_admins")
-      .select("id, role, is_active")
-      .eq("user_id", user.id)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (adminError || !admin) {
-      return NextResponse.json(
-        {
-          error: "Acesso interno não autorizado.",
-        },
-        { status: 403 },
-      );
-    }
 
     const [
       organizationsCount,
@@ -1235,21 +1347,23 @@ export async function GET() {
     const storesError = storesResult.error;
 
     if (organizationsError || storesError) {
-      return NextResponse.json(
+      return createZionAdminApiJsonResponse(
         {
           error: "Falha ao carregar dados internos do ZION.",
-          details: {
-            organizations: organizationsError?.message ?? null,
-            stores: storesError?.message ?? null,
-          },
+          message:
+            "Nao foi possivel carregar os dados globais internos do ZION no momento.",
         },
-        { status: 500 },
+        500,
       );
     }
 
     const organizations = (organizationsResult.data ?? []) as OrganizationRow[];
     const stores = (storesResult.data ?? []) as StoreRow[];
     const periodBoundaries = getPeriodBoundaries();
+    const accountAccessByStoreId = await loadStoreAccountAccessSnapshots(
+      serviceSupabase,
+      stores,
+    );
 
     const organizationMap = new Map<string, OrganizationRow>();
 
@@ -1490,6 +1604,18 @@ export async function GET() {
         costBreakdownLast7Days: roundAiUsageBreakdown(metrics.costBreakdownLast7Days),
         costBreakdownMonth: roundAiUsageBreakdown(metrics.costBreakdownMonth),
         lastAiRunAt: metrics.lastAiRunAt,
+        accountAccess:
+          accountAccessByStoreId.get(store.id) ?? {
+            responsibleName: null,
+            emailMasked: "E-mail indisponivel",
+            userId: null,
+            status: "missing",
+            statusLabel: "Conta de loja nao encontrada",
+            canResend: false,
+            lastInviteSentAt: null,
+            firstAccessCompletedAt: null,
+            cooldownRemainingMs: 0,
+          },
 
         configurationIssues: metrics.configurationIssues,
         pendingAiRuns: metrics.pendingAiRuns,
@@ -1608,9 +1734,9 @@ export async function GET() {
       },
     );
 
-    return NextResponse.json({
+    return createZionAdminApiJsonResponse({
       admin: {
-        role: admin.role,
+        role: "admin",
       },
       totals: {
         organizations: organizationsCount.count,
@@ -1715,14 +1841,13 @@ export async function GET() {
             ? "Existem erros registrados no webhook/entrada do WhatsApp."
             : "Nenhum erro de integração encontrado nas filas monitoradas.",
       },
-    });
-  } catch (error: any) {
-    return NextResponse.json(
+    }, 200);
+  } catch {
+    return createZionAdminApiJsonResponse(
       {
         error: "Erro inesperado ao carregar dashboard interno.",
-        details: error?.message ?? "Erro desconhecido.",
       },
-      { status: 500 },
+      500,
     );
   }
 }

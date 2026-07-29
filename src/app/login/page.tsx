@@ -5,12 +5,25 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type LoginMode = "password" | "code" | "verifyCode" | "forgot" | "signup";
+type LoginMode = "password" | "code" | "verifyCode" | "forgot";
 
-const PANEL_PATH = "/crm";
 const RESET_PASSWORD_PATH = "/auth/reset-password";
 const AUTH_CALLBACK_PATH = "/auth/callback";
 const ACTIVE_STORE_STORAGE_KEY = "zion_active_store_id";
+
+type EnsureSetupResult = {
+  ok: boolean;
+  status: string;
+  message: string;
+  destination: "/crm" | "/onboarding" | "/auth/reset-password" | null;
+  error?: string;
+  details?: string;
+};
+
+type ReadyEnsureSetupResult = EnsureSetupResult & {
+  ok: true;
+  destination: "/crm" | "/onboarding" | "/auth/reset-password";
+};
 
 function getBaseUrl() {
   if (typeof window === "undefined") return "";
@@ -19,17 +32,6 @@ function getBaseUrl() {
 
 function normalizeEmail(value: string) {
   return String(value || "").trim().toLowerCase();
-}
-
-function validateStrongPassword(password: string) {
-  const value = String(password || "").trim();
-
-  return (
-    value.length >= 8 &&
-    /[A-Z]/.test(value) &&
-    /\d/.test(value) &&
-    /[@.!?$%#&*-]/.test(value)
-  );
 }
 
 function clearStoredStoreSelection() {
@@ -92,12 +94,25 @@ function friendlyAuthError(message: string) {
   return message || "Não foi possível concluir essa ação.";
 }
 
+function getUnknownErrorMessage(error: unknown, fallback: string) {
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    return (error as { message: string }).message;
+  }
+
+  return fallback;
+}
+
 async function ensureAccountSetup() {
   const response = await fetch("/api/account/ensure-setup", {
     method: "POST",
   });
 
-  let payload: any = null;
+  let payload: EnsureSetupResult | null = null;
 
   try {
     payload = await response.json();
@@ -113,7 +128,14 @@ async function ensureAccountSetup() {
     );
   }
 
-  return payload;
+  if (!payload?.ok || !payload.destination) {
+    throw new Error(
+      payload?.message ||
+        "Sua conta ainda não está pronta para acessar o sistema. Fale com o time interno do ZION.",
+    );
+  }
+
+  return payload as ReadyEnsureSetupResult;
 }
 
 export default function LoginPage() {
@@ -122,9 +144,7 @@ export default function LoginPage() {
   const [mode, setMode] = useState<LoginMode>("password");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -134,14 +154,20 @@ export default function LoginPage() {
     if (mode === "code") return "Entrar por código";
     if (mode === "verifyCode") return "Digite o código";
     if (mode === "forgot") return "Recuperar senha";
-    if (mode === "signup") return "Criar conta";
     return "Entrar";
   }, [mode]);
 
   useEffect(() => {
-    const authError = String(
-      new URLSearchParams(window.location.search).get("authError") || ""
-    ).trim();
+    const params = new URLSearchParams(window.location.search);
+    const authError = String(params.get("authError") || "").trim();
+    const authSuccess = String(params.get("authSuccess") || "").trim();
+
+    if (authSuccess) {
+      setMessage(authSuccess);
+      setError(null);
+      setMode("password");
+      return;
+    }
 
     if (!authError) {
       return;
@@ -161,9 +187,6 @@ export default function LoginPage() {
     clearFeedback();
     setMode(nextMode);
     setCode("");
-    if (nextMode !== "signup") {
-      setConfirmPassword("");
-    }
   }
 
   async function handlePasswordLogin(event: FormEvent<HTMLFormElement>) {
@@ -188,12 +211,14 @@ export default function LoginPage() {
       if (signInError) throw signInError;
 
       clearStoredStoreSelection();
-      await ensureAccountSetup();
+      const access = await ensureAccountSetup();
 
-      router.push(PANEL_PATH);
+      router.push(access.destination);
       router.refresh();
-    } catch (authError: any) {
-      setError(friendlyAuthError(authError?.message || "Falha no login."));
+    } catch (authError: unknown) {
+      setError(
+        friendlyAuthError(getUnknownErrorMessage(authError, "Falha no login.")),
+      );
     } finally {
       setBusy(false);
     }
@@ -226,8 +251,12 @@ export default function LoginPage() {
 
       setMessage("Enviamos um código para seu e-mail. Digite o código abaixo para entrar.");
       setMode("verifyCode");
-    } catch (authError: any) {
-      setError(friendlyAuthError(authError?.message || "Não foi possível enviar o código."));
+    } catch (authError: unknown) {
+      setError(
+        friendlyAuthError(
+          getUnknownErrorMessage(authError, "Não foi possível enviar o código."),
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -257,12 +286,16 @@ export default function LoginPage() {
       if (verifyError) throw verifyError;
 
       clearStoredStoreSelection();
-      await ensureAccountSetup();
+      const access = await ensureAccountSetup();
 
-      router.push(PANEL_PATH);
+      router.push(access.destination);
       router.refresh();
-    } catch (authError: any) {
-      setError(friendlyAuthError(authError?.message || "Código inválido ou expirado."));
+    } catch (authError: unknown) {
+      setError(
+        friendlyAuthError(
+          getUnknownErrorMessage(authError, "Código inválido ou expirado."),
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -293,62 +326,15 @@ export default function LoginPage() {
       if (resetError) throw resetError;
 
       setMessage("Enviamos o link de recuperação para seu e-mail.");
-    } catch (authError: any) {
-      setError(friendlyAuthError(authError?.message || "Não foi possível enviar a recuperação."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleCreateAccount(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    clearFeedback();
-
-    const safeEmail = normalizeEmail(email);
-
-    if (!safeEmail || !password || !confirmPassword) {
-      setError("Preencha e-mail, senha e confirmação da senha.");
-      return;
-    }
-
-    if (!validateStrongPassword(password)) {
+    } catch (authError: unknown) {
       setError(
-        "A senha precisa ter pelo menos 8 caracteres, uma letra maiúscula, um número e um caractere especial."
+        friendlyAuthError(
+          getUnknownErrorMessage(
+            authError,
+            "Não foi possível enviar a recuperação.",
+          ),
+        ),
       );
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setError("As senhas não conferem.");
-      return;
-    }
-
-    setBusy(true);
-
-    try {
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: safeEmail,
-        password,
-        options: {
-          emailRedirectTo: `${getBaseUrl()}${AUTH_CALLBACK_PATH}?next=${encodeURIComponent(
-            PANEL_PATH,
-          )}`,
-        },
-      });
-
-      if (signUpError) throw signUpError;
-
-      if (signUpData.session) {
-        const { error: signOutError } = await supabase.auth.signOut();
-        if (signOutError) throw signOutError;
-      }
-
-      setMessage("Conta criada. Confirme seu e-mail antes de entrar.");
-      setMode("password");
-      setPassword("");
-      setConfirmPassword("");
-    } catch (authError: any) {
-      setError(friendlyAuthError(authError?.message || "Não foi possível criar a conta."));
     } finally {
       setBusy(false);
     }
@@ -560,136 +546,6 @@ export default function LoginPage() {
           </form>
         ) : null}
 
-        {mode === "signup" ? (
-          <form onSubmit={handleCreateAccount} className="space-y-3">
-            <div>
-              <label className="text-xs font-semibold text-zinc-300">E-mail</label>
-              <input
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 text-sm outline-none transition focus:border-white/30"
-                placeholder="seu@email.com"
-                type="email"
-                autoComplete="email"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-zinc-300">Senha</label>
-              <div className="relative mt-1">
-                <input
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 pr-12 text-sm outline-none transition focus:border-white/30"
-                  placeholder="••••••••"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="new-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((current) => !current)}
-                  className="absolute inset-y-0 right-3 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white"
-                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                  title={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                >
-                  {showPassword ? (
-                    <svg
-                      aria-hidden="true"
-                      viewBox="0 0 24 24"
-                      className="h-5 w-5"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
-                      <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
-                      <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
-                      <path d="M1 1l22 22" />
-                    </svg>
-                  ) : (
-                    <svg
-                      aria-hidden="true"
-                      viewBox="0 0 24 24"
-                      className="h-5 w-5"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
-                      <circle cx="12" cy="12" r="3" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-zinc-300">Confirmar senha</label>
-              <div className="relative mt-1">
-                <input
-                  value={confirmPassword}
-                  onChange={(event) => setConfirmPassword(event.target.value)}
-                  className="w-full rounded-2xl border border-white/10 bg-zinc-950/70 px-4 py-3 pr-12 text-sm outline-none transition focus:border-white/30"
-                  placeholder="••••••••"
-                  type={showConfirmPassword ? "text" : "password"}
-                  autoComplete="new-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPassword((current) => !current)}
-                  className="absolute inset-y-0 right-3 flex items-center justify-center rounded-xl px-2 text-zinc-400 transition hover:text-white"
-                  aria-label={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
-                  title={showConfirmPassword ? "Ocultar senha" : "Mostrar senha"}
-                >
-                  {showConfirmPassword ? (
-                    <svg
-                      aria-hidden="true"
-                      viewBox="0 0 24 24"
-                      className="h-5 w-5"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M17.94 17.94A10.9 10.9 0 0 1 12 20C7 20 2.73 16.89 1 12a12.6 12.6 0 0 1 3.06-4.94" />
-                      <path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c5 0 9.27 3.11 11 8a12.6 12.6 0 0 1-1.5 2.63" />
-                      <path d="M14.12 14.12A3 3 0 0 1 9.88 9.88" />
-                      <path d="M1 1l22 22" />
-                    </svg>
-                  ) : (
-                    <svg
-                      aria-hidden="true"
-                      viewBox="0 0 24 24"
-                      className="h-5 w-5"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
-                      <circle cx="12" cy="12" r="3" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {busy ? "Criando..." : "Criar conta"}
-            </button>
-          </form>
-        ) : null}
-
         <div className="mt-5 grid gap-2">
           {mode !== "forgot" ? (
             <button
@@ -698,16 +554,6 @@ export default function LoginPage() {
               className="w-full rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/10"
             >
               Esqueci a senha
-            </button>
-          ) : null}
-
-          {mode !== "signup" ? (
-            <button
-              type="button"
-              onClick={() => changeMode("signup")}
-              className="w-full rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/10"
-            >
-              Criar conta
             </button>
           ) : null}
 
