@@ -56,6 +56,12 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "/auth/set-initial-password is public",
+    run: () => {
+      expectNext("/auth/set-initial-password", "anonymous");
+    },
+  },
+  {
     name: "/account/access-blocked is public",
     run: () => {
       expectNext("/account/access-blocked", "anonymous");
@@ -145,6 +151,12 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "/ without session goes to /login",
+    run: () => {
+      expectRedirect("/", "anonymous", "/login", true);
+    },
+  },
+  {
     name: "authenticated in /crm continues",
     run: () => {
       expectNext("/crm", "authenticated");
@@ -157,18 +169,18 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "anonymous in /zion-admin goes to /zion-admin/login",
+    name: "anonymous in /zion-admin goes to /login",
     run: () => {
-      expectRedirect("/zion-admin", "anonymous", "/zion-admin/login", true);
+      expectRedirect("/zion-admin", "anonymous", "/login", true);
     },
   },
   {
-    name: "anonymous in zion admin subroute goes to /zion-admin/login",
+    name: "anonymous in zion admin subroute goes to /login",
     run: () => {
       expectRedirect(
         "/zion-admin/overview",
         "anonymous",
-        "/zion-admin/login",
+        "/login",
         true,
       );
     },
@@ -268,13 +280,13 @@ const tests: TestCase[] = [
           "/zion-admin",
           {
             action: "redirect",
-            destination: "/zion-admin/login",
+            destination: "/login",
             preserveRedirectTo: true,
           },
         ),
       );
 
-      assert.equal(url.pathname, "/zion-admin/login");
+      assert.equal(url.pathname, "/login");
       assert.equal(url.searchParams.get("redirectTo"), "/zion-admin");
       assert.equal(Array.from(url.searchParams.keys()).join(","), "redirectTo");
     },
@@ -356,6 +368,7 @@ const tests: TestCase[] = [
     run: async () => {
       let clientCalls = 0;
       const result = await evaluateMiddlewarePathname("/crm", {
+        hasSessionCookie: true,
         createClient: async () => {
           clientCalls += 1;
           throw new Error("client failed");
@@ -377,6 +390,7 @@ const tests: TestCase[] = [
       let clientCalls = 0;
       let getUserCalls = 0;
       const result = await evaluateMiddlewarePathname("/crm", {
+        hasSessionCookie: true,
         createClient: async () => {
           clientCalls += 1;
           return {
@@ -407,6 +421,7 @@ const tests: TestCase[] = [
       let clientCalls = 0;
       let getUserCalls = 0;
       const result = await evaluateMiddlewarePathname("/crm", {
+        hasSessionCookie: true,
         createClient: async () => {
           clientCalls += 1;
           return {
@@ -450,6 +465,45 @@ const tests: TestCase[] = [
 
       assert.equal(clientCalls, 1);
       assert.equal(getUserCalls, 1);
+      assert.equal(result.authState, "anonymous");
+      assert.deepEqual(result.decision, {
+        action: "redirect",
+        destination: "/login",
+        preserveRedirectTo: true,
+      });
+    },
+  },
+  {
+    name: "getUser error without session cookie behaves as anonymous",
+    run: async () => {
+      const result = await evaluateMiddlewarePathname("/", {
+        hasSessionCookie: false,
+        createClient: async () => ({
+          getUser: async () => ({
+            data: { user: null },
+            error: new Error("supabase failed"),
+          }),
+        }),
+      });
+
+      assert.equal(result.authState, "anonymous");
+      assert.deepEqual(result.decision, {
+        action: "redirect",
+        destination: "/login",
+        preserveRedirectTo: true,
+      });
+    },
+  },
+  {
+    name: "client creation failure without session cookie behaves as anonymous",
+    run: async () => {
+      const result = await evaluateMiddlewarePathname("/crm", {
+        hasSessionCookie: false,
+        createClient: async () => {
+          throw new Error("client failed");
+        },
+      });
+
       assert.equal(result.authState, "anonymous");
       assert.deepEqual(result.decision, {
         action: "redirect",

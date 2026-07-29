@@ -19,6 +19,7 @@ type MiddlewareAuthClient = {
 
 type MiddlewareEvalDeps = {
   createClient: () => MiddlewareAuthClient | Promise<MiddlewareAuthClient>;
+  hasSessionCookie?: boolean;
 };
 
 type MiddlewareEvalResult = {
@@ -46,7 +47,9 @@ export async function evaluateMiddlewarePathname(
     const client = await deps.createClient();
     const { data, error } = await client.getUser();
     const authState: MiddlewareAuthState = error
-      ? "unavailable"
+      ? deps.hasSessionCookie
+        ? "unavailable"
+        : "anonymous"
       : data.user
         ? "authenticated"
         : "anonymous";
@@ -56,11 +59,21 @@ export async function evaluateMiddlewarePathname(
       decision: resolveAccountAccessMiddlewarePolicy(pathname, authState),
     };
   } catch {
+    const authState: MiddlewareAuthState = deps.hasSessionCookie
+      ? "unavailable"
+      : "anonymous";
+
     return {
-      authState: "unavailable",
-      decision: resolveAccountAccessMiddlewarePolicy(pathname, "unavailable"),
+      authState,
+      decision: resolveAccountAccessMiddlewarePolicy(pathname, authState),
     };
   }
+}
+
+function hasSupabaseSessionCookie(req: NextRequest): boolean {
+  return req.cookies
+    .getAll()
+    .some(({ name }) => name.includes("sb-") && name.includes("auth-token"));
 }
 
 function applySessionCookies(
@@ -114,6 +127,7 @@ export async function middleware(req: NextRequest) {
   const res = NextResponse.next();
 
   const result = await evaluateMiddlewarePathname(path, {
+    hasSessionCookie: hasSupabaseSessionCookie(req),
     createClient: () => {
       const supabase = createServerClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL!,

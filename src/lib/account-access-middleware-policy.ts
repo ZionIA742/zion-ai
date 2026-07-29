@@ -15,6 +15,7 @@ const PUBLIC_PATHS = new Set([
   "/login",
   "/auth/callback",
   "/auth/reset-password",
+  "/auth/set-initial-password",
   "/account/access-blocked",
   "/account/access-unavailable",
   "/zion-admin/login",
@@ -83,13 +84,6 @@ export function resolveAccountAccessMiddlewarePolicy(
 
   if (authState === "unavailable") {
     return redirect("/account/access-unavailable", false);
-  }
-
-  if (
-    normalizedPath === "/zion-admin" ||
-    normalizedPath.startsWith("/zion-admin/")
-  ) {
-    return redirect("/zion-admin/login", true);
   }
 
   return redirect("/login", true);
