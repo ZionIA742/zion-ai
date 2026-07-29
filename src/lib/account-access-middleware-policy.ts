@@ -86,5 +86,12 @@ export function resolveAccountAccessMiddlewarePolicy(
     return redirect("/account/access-unavailable", false);
   }
 
+  if (
+    normalizedPath === "/zion-admin" ||
+    normalizedPath.startsWith("/zion-admin/")
+  ) {
+    return redirect("/zion-admin/login", true);
+  }
+
   return redirect("/login", true);
 }

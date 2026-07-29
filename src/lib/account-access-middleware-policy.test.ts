@@ -169,18 +169,18 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "anonymous in /zion-admin goes to /login",
+    name: "anonymous in /zion-admin goes to /zion-admin/login",
     run: () => {
-      expectRedirect("/zion-admin", "anonymous", "/login", true);
+      expectRedirect("/zion-admin", "anonymous", "/zion-admin/login", true);
     },
   },
   {
-    name: "anonymous in zion admin subroute goes to /login",
+    name: "anonymous in zion admin subroute goes to /zion-admin/login",
     run: () => {
       expectRedirect(
         "/zion-admin/overview",
         "anonymous",
-        "/login",
+        "/zion-admin/login",
         true,
       );
     },
@@ -280,13 +280,13 @@ const tests: TestCase[] = [
           "/zion-admin",
           {
             action: "redirect",
-            destination: "/login",
+            destination: "/zion-admin/login",
             preserveRedirectTo: true,
           },
         ),
       );
 
-      assert.equal(url.pathname, "/login");
+      assert.equal(url.pathname, "/zion-admin/login");
       assert.equal(url.searchParams.get("redirectTo"), "/zion-admin");
       assert.equal(Array.from(url.searchParams.keys()).join(","), "redirectTo");
     },
