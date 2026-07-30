@@ -10,6 +10,10 @@ type FakeSupabaseClient = {
   auth: {
     signOut: () => Promise<void>;
     exchangeCodeForSession: (code: string) => Promise<{ error: unknown }>;
+    verifyOtp: (args: {
+      token_hash: string;
+      type: "recovery";
+    }) => Promise<{ error: unknown }>;
     getUser: () => Promise<{ data: { user: { id: string } | null }; error: unknown }>;
   };
 };
@@ -62,7 +66,10 @@ async function withCapturedConsole<T>(
 
 async function createCallbackHarness(harnessOptions?: {
   exchangeError?: unknown;
+  verifyOtpError?: unknown;
   callbackUser?: { id: string } | null;
+  initialSessionUser?: { id: string } | null;
+  verifiedRecoveryUser?: { id: string } | null;
   getUserError?: unknown;
   exchangeSupabase?: FakeSupabaseClient;
   authUser?: { app_metadata?: Record<string, unknown> | null };
@@ -71,9 +78,12 @@ async function createCallbackHarness(harnessOptions?: {
   const calls = {
     signOut: 0,
     exchangeCodes: [] as string[],
+    verifyOtpCalls: [] as Array<{ token_hash: string; type: "recovery" }>,
     resolveAttempts: [] as Array<string | null | undefined>,
     readInviteMetadataCalls: 0,
   };
+  let currentSessionUser: { id: string } | null =
+    harnessOptions?.initialSessionUser ?? harnessOptions?.callbackUser ?? { id: "user-1" };
 
   const deps = {
     async createSupabaseClient() {
@@ -82,17 +92,33 @@ async function createCallbackHarness(harnessOptions?: {
           auth: {
             async signOut() {
               calls.signOut += 1;
+              currentSessionUser = null;
             },
             async exchangeCodeForSession(code: string) {
               calls.exchangeCodes.push(code);
+              currentSessionUser = harnessOptions?.callbackUser ?? { id: "user-1" };
               return {
                 error: harnessOptions?.exchangeError ?? null,
+              };
+            },
+            async verifyOtp(args: { token_hash: string; type: "recovery" }) {
+              calls.verifyOtpCalls.push(args);
+
+              if (!harnessOptions?.verifyOtpError) {
+                currentSessionUser =
+                  harnessOptions?.verifiedRecoveryUser ??
+                  harnessOptions?.callbackUser ??
+                  { id: "user-1" };
+              }
+
+              return {
+                error: harnessOptions?.verifyOtpError ?? null,
               };
             },
             async getUser() {
               return {
                 data: {
-                  user: harnessOptions?.callbackUser ?? { id: "user-1" },
+                  user: currentSessionUser,
                 },
                 error: harnessOptions?.getUserError ?? null,
               };
@@ -153,7 +179,9 @@ const tests: TestCase[] = [
     run: async () => {
       await withCapturedConsole(async (capture) => {
         const harness = await createCallbackHarness();
-        const response = await harness.run("https://example.com/auth/callback");
+        const response = await harness.run(
+          "https://example.com/auth/callback?access_token=leaked-token",
+        );
 
         assert.equal(response.status, 307);
         assert.equal(
@@ -162,20 +190,24 @@ const tests: TestCase[] = [
         );
         assert.equal(harness.calls.signOut, 1);
         assert.equal(capture.info.join(" ").includes('"hasCode":false'), true);
+        assert.equal(capture.info.join(" ").includes("leaked-token"), false);
       });
     },
   },
   {
-    name: "successful non first-access callback preserves allowed next path",
+    name: "successful recovery PKCE callback preserves reset-password path",
     run: async () => {
       const secretCode = "SECRET-CODE-123";
       const harness = await createCallbackHarness();
       const response = await harness.run(
-        `https://example.com/auth/callback?code=${encodeURIComponent(secretCode)}&next=${encodeURIComponent("/crm")}`,
+        `https://example.com/auth/callback?code=${encodeURIComponent(secretCode)}&next=${encodeURIComponent("/auth/reset-password")}`,
       );
 
       assert.equal(response.status, 307);
-      assert.equal(response.headers.get("location"), "https://example.com/crm");
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/auth/reset-password",
+      );
       assert.deepEqual(harness.calls.exchangeCodes, [secretCode]);
       assert.deepEqual(harness.calls.resolveAttempts, []);
     },
@@ -193,7 +225,7 @@ const tests: TestCase[] = [
           },
         });
         const response = await harness.run(
-          `https://example.com/auth/callback?code=${encodeURIComponent(secretCode)}`,
+          `https://example.com/auth/callback?code=${encodeURIComponent(secretCode)}&next=${encodeURIComponent("/auth/reset-password")}`,
         );
 
         assert.equal(response.status, 307);
@@ -232,7 +264,7 @@ const tests: TestCase[] = [
       assert.equal(response.status, 307);
       assert.equal(
         response.headers.get("location"),
-        "https://example.com/auth/reset-password",
+        "https://example.com/login?authError=Nao+foi+possivel+concluir+a+autenticacao.+Tente+novamente+a+partir+do+login.",
       );
     },
   },
@@ -247,8 +279,28 @@ const tests: TestCase[] = [
       assert.equal(response.status, 307);
       assert.equal(
         response.headers.get("location"),
-        "https://example.com/auth/reset-password",
+        "https://example.com/login?authError=Nao+foi+possivel+concluir+a+autenticacao.+Tente+novamente+a+partir+do+login.",
       );
+    },
+  },
+  {
+    name: "first-access recovery link without attempt is rejected",
+    run: async () => {
+      const harness = await createCallbackHarness({
+        verifiedRecoveryUser: { id: "user-b" },
+      });
+      const response = await harness.run(
+        "https://example.com/auth/callback?token_hash=recovery_hash_b&type=recovery&next=%2Fauth%2Fset-initial-password",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/login?authError=invalid%3Amissing",
+      );
+      assert.deepEqual(harness.calls.verifyOtpCalls, [
+        { token_hash: "recovery_hash_b", type: "recovery" },
+      ]);
     },
   },
   {
@@ -271,6 +323,156 @@ const tests: TestCase[] = [
         assert.equal(harness.calls.readInviteMetadataCalls > 0, true);
         assert.equal(capture.info.join(" ").includes(secretCode), false);
       });
+    },
+  },
+  {
+    name: "existing session A plus valid token_hash for account B switches to first-access of account B",
+    run: async () => {
+      await withCapturedConsole(async (capture) => {
+        const harness = await createCallbackHarness({
+          initialSessionUser: { id: "user-a" },
+          verifiedRecoveryUser: { id: "user-b" },
+          authUser: {
+            app_metadata: { zion_first_access_invite_id: "fia_b" },
+          },
+        });
+        const response = await harness.run(
+          "https://example.com/auth/callback?token_hash=recovery_hash_b&type=recovery&next=%2Fauth%2Fset-initial-password&attempt=fia_b",
+        );
+
+        assert.equal(response.status, 307);
+        assert.equal(
+          response.headers.get("location"),
+          "https://example.com/auth/set-initial-password?attempt=fia_b",
+        );
+        assert.deepEqual(harness.calls.verifyOtpCalls, [
+          { token_hash: "recovery_hash_b", type: "recovery" },
+        ]);
+        assert.deepEqual(harness.calls.exchangeCodes, []);
+        assert.deepEqual(harness.calls.resolveAttempts, ["fia_b"]);
+        assert.equal(harness.calls.signOut, 1);
+        assert.equal(capture.info.join(" ").includes("recovery_hash_b"), false);
+      });
+    },
+  },
+  {
+    name: "invalid token_hash redirects to login without leaking recovery token",
+    run: async () => {
+      await withCapturedConsole(async (capture) => {
+        const harness = await createCallbackHarness({
+          verifyOtpError: {
+            message: "otp expired",
+            status: 403,
+            code: "otp_expired",
+          },
+        });
+        const response = await harness.run(
+          "https://example.com/auth/callback?token_hash=invalid_hash&type=recovery&next=%2Fauth%2Freset-password&attempt=fia_b",
+        );
+
+        assert.equal(response.status, 307);
+        assert.equal(
+          response.headers.get("location"),
+          "https://example.com/login?authError=O+link+de+recuperacao+expirou+ou+nao+e+mais+valido.+Peca+um+novo+e-mail.",
+        );
+        assert.equal(harness.calls.signOut, 2);
+        const joined = `${capture.info.join(" ")} ${capture.error.join(" ")}`;
+        assert.equal(joined.includes("invalid_hash"), false);
+      });
+    },
+  },
+  {
+    name: "normal recovery via token_hash opens reset-password and does not require attempt",
+    run: async () => {
+      const harness = await createCallbackHarness({
+        initialSessionUser: { id: "user-a" },
+        verifiedRecoveryUser: { id: "user-b" },
+      });
+      const response = await harness.run(
+        "https://example.com/auth/callback?token_hash=recovery_hash_b&type=recovery&next=%2Fauth%2Freset-password",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/auth/reset-password",
+      );
+      assert.deepEqual(harness.calls.verifyOtpCalls, [
+        { token_hash: "recovery_hash_b", type: "recovery" },
+      ]);
+      assert.deepEqual(harness.calls.resolveAttempts, []);
+    },
+  },
+  {
+    name: "attempt from another account is rejected after recovery verification",
+    run: async () => {
+      const harness = await createCallbackHarness({
+        verifiedRecoveryUser: { id: "user-b" },
+        authUser: {
+          app_metadata: { zion_first_access_invite_id: "fia_b" },
+        },
+        resolvedFlow: {
+          flow: "first_access",
+          message: "Defina sua primeira senha para concluir o acesso inicial.",
+          attemptState: "mismatch",
+        },
+      });
+      const response = await harness.run(
+        "https://example.com/auth/callback?token_hash=recovery_hash_b&type=recovery&next=%2Fauth%2Fset-initial-password&attempt=fia_a",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/login?authError=invalid%3Amismatch",
+      );
+      assert.deepEqual(harness.calls.verifyOtpCalls, [
+        { token_hash: "recovery_hash_b", type: "recovery" },
+      ]);
+    },
+  },
+  {
+    name: "substituted first-access link is rejected after recovery verification",
+    run: async () => {
+      const harness = await createCallbackHarness({
+        verifiedRecoveryUser: { id: "user-b" },
+        resolvedFlow: {
+          flow: "first_access",
+          message: "Defina sua primeira senha para concluir o acesso inicial.",
+          attemptState: "mismatch",
+        },
+      });
+      const response = await harness.run(
+        "https://example.com/auth/callback?token_hash=recovery_hash_b&type=recovery&next=%2Fauth%2Fset-initial-password&attempt=fia_old",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/login?authError=invalid%3Amismatch",
+      );
+    },
+  },
+  {
+    name: "used first-access link is rejected after recovery verification",
+    run: async () => {
+      const harness = await createCallbackHarness({
+        verifiedRecoveryUser: { id: "user-b" },
+        resolvedFlow: {
+          flow: "recovery",
+          message: "Digite sua nova senha para concluir a recuperacao.",
+          attemptState: "not_applicable",
+        },
+      });
+      const response = await harness.run(
+        "https://example.com/auth/callback?token_hash=recovery_hash_b&type=recovery&next=%2Fauth%2Fset-initial-password&attempt=fia_old",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/login?authError=O+link+de+recuperacao+expirou+ou+nao+e+mais+valido.+Peca+um+novo+e-mail.",
+      );
     },
   },
   {
@@ -315,6 +517,44 @@ const tests: TestCase[] = [
         assert.equal(joined.includes("fia_secret"), false);
         assert.equal(joined.includes('"hasAttempt":true'), true);
       });
+    },
+  },
+  {
+    name: "logs never leak token_hash or access_token values",
+    run: async () => {
+      await withCapturedConsole(async (capture) => {
+        const harness = await createCallbackHarness({
+          verifyOtpError: {
+            message: "otp expired",
+            status: 403,
+            code: "otp_expired",
+          },
+        });
+        await harness.run(
+          "https://example.com/auth/callback?token_hash=HASH-SECRET&access_token=ACCESS-SECRET&type=recovery&attempt=fia_secret",
+        );
+
+        const joined = `${capture.info.join(" ")} ${capture.error.join(" ")}`;
+        assert.equal(joined.includes("HASH-SECRET"), false);
+        assert.equal(joined.includes("ACCESS-SECRET"), false);
+        assert.equal(joined.includes('"hasTokenHash":true'), true);
+      });
+    },
+  },
+  {
+    name: "pkce first-access callback without attempt is rejected",
+    run: async () => {
+      const harness = await createCallbackHarness();
+      const response = await harness.run(
+        "https://example.com/auth/callback?code=abc&next=%2Fauth%2Fset-initial-password",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/login?authError=invalid%3Amissing",
+      );
+      assert.deepEqual(harness.calls.exchangeCodes, ["abc"]);
     },
   },
 ];
