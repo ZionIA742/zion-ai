@@ -350,29 +350,6 @@ function normalizeCommercialAccess(
   return row.is_blocked ? "blocked" : "allowed";
 }
 
-function logOnboardingContractDiagnostic(value: unknown) {
-  const isArrayValue = Array.isArray(value);
-  const normalizedValue =
-    isArrayValue && value.length === 1 ? value[0] : value;
-  const objectValue =
-    normalizedValue && typeof normalizedValue === "object" ? normalizedValue : null;
-  const statusValue = objectValue
-    ? (objectValue as { status?: unknown }).status
-    : undefined;
-
-  console.info("[account-access-resolver]", {
-    stepCode: "onboarding_contract_diagnostic",
-    returnKind:
-      value == null ? "null" : isArrayValue ? "array" : typeof value === "object" ? "object" : typeof value,
-    elementCount: isArrayValue ? value.length : null,
-    propertyNames: objectValue ? Object.keys(objectValue).sort() : [],
-    statusType:
-      statusValue === null ? "null" : Array.isArray(statusValue) ? "array" : typeof statusValue,
-    statusValue: typeof statusValue === "string" ? statusValue : null,
-    hasSupabaseError: false,
-  });
-}
-
 function normalizeOnboardingRequired(
   value: unknown,
 ): boolean | AccessResolutionFailure {
@@ -406,9 +383,24 @@ function normalizeOnboardingRequired(
     );
   }
 
-  const status = normalizeNonEmptyString(
-    (normalizedValue as { status?: unknown }).status,
+  const onboardingRow = normalizedValue as { status?: unknown };
+  const hasStatusProperty = Object.prototype.hasOwnProperty.call(
+    onboardingRow,
+    "status",
   );
+
+  if (!hasStatusProperty) {
+    return createLookupUnavailableFailure(
+      "malformed_onboarding_contract",
+      "O onboarding nao informou um status valido para resolucao de acesso.",
+    );
+  }
+
+  if (onboardingRow.status === null) {
+    return true;
+  }
+
+  const status = normalizeNonEmptyString(onboardingRow.status);
 
   if (status === null) {
     return createLookupUnavailableFailure(
@@ -983,7 +975,6 @@ export async function resolveAccessForRequest({
       facts.organizationId,
       facts.storeId,
     );
-    logOnboardingContractDiagnostic(onboardingRecord);
     onboardingRequired = normalizeOnboardingRequired(onboardingRecord);
   } catch {
     return createUnavailableResolution(

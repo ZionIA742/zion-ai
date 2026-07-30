@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   resolveAccessForRequest,
   type AccountAccessResolverDeps,
@@ -1001,72 +1003,39 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "onboarding diagnostic log is sanitized",
+    name: "status null object requires onboarding",
     run: async () => {
-      const originalInfo = console.info;
-      const captured: unknown[][] = [];
-
-      console.info = (...args: unknown[]) => {
-        captured.push(args);
-      };
-
-      try {
-        await resolveAccessForRequest({
-          requestedDomain: "store_area",
-          supabase: createRequestSupabase("user-1"),
-          deps: createDeps({
-            fetchOnboardingRecord: async () => ({
-              id: "onb-secret-id",
-              status: "completed",
-              email: "secret@example.com",
-              token_hash: "tok_secret",
-              organization_id: "org-1",
-              store_id: "store-1",
-            }),
-          }),
-        });
-      } finally {
-        console.info = originalInfo;
-      }
-
-      assert.equal(captured.length > 0, true);
-      const diagnosticEntry = captured.find(
-        (entry) =>
-          entry.length === 2 &&
-          entry[0] === "[account-access-resolver]" &&
-          entry[1] &&
-          typeof entry[1] === "object" &&
-          (entry[1] as { stepCode?: unknown }).stepCode ===
-            "onboarding_contract_diagnostic",
-      );
-
-      assert.equal(Boolean(diagnosticEntry), true);
-      const payload = diagnosticEntry?.[1] as Record<string, unknown>;
-
-      assert.deepEqual(payload, {
-        stepCode: "onboarding_contract_diagnostic",
-        returnKind: "object",
-        elementCount: null,
-        propertyNames: [
-          "email",
-          "id",
-          "organization_id",
-          "status",
-          "store_id",
-          "token_hash",
-        ],
-        statusType: "string",
-        statusValue: "completed",
-        hasSupabaseError: false,
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchOnboardingRecord: async () => ({ status: null }),
+        }),
       });
 
-      const serialized = JSON.stringify(payload);
-      assert.equal(serialized.includes("user-1"), false);
-      assert.equal(serialized.includes("org-1"), false);
-      assert.equal(serialized.includes("store-1"), false);
-      assert.equal(serialized.includes("secret@example.com"), false);
-      assert.equal(serialized.includes("tok_secret"), false);
-      assert.equal(serialized.includes("onb-secret-id"), false);
+      assert.equal(result.domain, "store_area");
+      assert.equal(result.status, "store_ready_onboarding_required");
+      assert.equal(result.reasonCode, "onboarding_required");
+      assert.equal(result.apiDecision, "deny_409");
+      assert.equal(result.safeHtmlDestination, "/onboarding");
+    },
+  },
+  {
+    name: "singleton onboarding array with status null requires onboarding",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchOnboardingRecord: async () => [{ status: null }],
+        }),
+      });
+
+      assert.equal(result.domain, "store_area");
+      assert.equal(result.status, "store_ready_onboarding_required");
+      assert.equal(result.reasonCode, "onboarding_required");
+      assert.equal(result.organizationId, "org-1");
+      assert.equal(result.storeId, "store-1");
     },
   },
   {
@@ -1122,6 +1091,23 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "onboarding object without status remains fail closed",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchOnboardingRecord: async () => ({ store_id: "store-1" }),
+        }),
+      });
+
+      assert.equal(result.domain, "unresolved");
+      assert.equal(result.status, "access_resolution_unavailable");
+      assert.equal(result.reasonCode, "malformed_onboarding_contract");
+      assert.equal(result.apiDecision, "deny_503");
+    },
+  },
+  {
     name: "singleton onboarding array with completed status keeps account active",
     run: async () => {
       const result = await resolveAccessForRequest({
@@ -1159,6 +1145,28 @@ const tests: TestCase[] = [
       assert.equal(result.domain, "store_area");
       assert.equal(result.status, "store_ready_active");
       assert.equal(result.apiDecision, "allow");
+    },
+  },
+  {
+    name: "completed onboarding never overrides canonical store resolution",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchOnboardingRecord: async () => ({
+            status: "completed",
+            organization_id: "org-other",
+            store_id: "store-other",
+          }),
+        }),
+      });
+
+      assert.equal(result.domain, "store_area");
+      assert.equal(result.status, "store_ready_active");
+      assert.equal(result.reasonCode, "ready_active");
+      assert.equal(result.organizationId, "org-1");
+      assert.equal(result.storeId, "store-1");
     },
   },
   {
@@ -1213,6 +1221,18 @@ const tests: TestCase[] = [
       assert.equal(result.status, "access_resolution_unavailable");
       assert.equal(result.reasonCode, "malformed_onboarding_contract");
       assert.equal(result.apiDecision, "deny_503");
+    },
+  },
+  {
+    name: "temporary onboarding diagnostic was fully removed",
+    run: async () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/lib/server/account-access-resolver.ts"),
+        "utf8",
+      );
+
+      assert.equal(source.includes("onboarding_contract_diagnostic"), false);
+      assert.equal(source.includes("console.info"), false);
     },
   },
   {
