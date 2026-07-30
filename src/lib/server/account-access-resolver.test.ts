@@ -1018,6 +1018,24 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "singleton onboarding array with in progress status still requires onboarding",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchOnboardingRecord: async () => [{ status: "in_progress" }],
+        }),
+      });
+
+      assert.equal(result.domain, "store_area");
+      assert.equal(result.status, "store_ready_onboarding_required");
+      assert.equal(result.reasonCode, "onboarding_required");
+      assert.equal(result.organizationId, "org-1");
+      assert.equal(result.storeId, "store-1");
+    },
+  },
+  {
     name: "onboarding in progress requires onboarding",
     run: async () => {
       const result = await resolveAccessForRequest({
@@ -1032,6 +1050,30 @@ const tests: TestCase[] = [
       assert.equal(result.status, "store_ready_onboarding_required");
       assert.equal(result.reasonCode, "onboarding_required");
       assert.equal(result.apiDecision, "deny_409");
+    },
+  },
+  {
+    name: "singleton onboarding array with completed status keeps account active",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchOnboardingRecord: async () => [
+            {
+              status: "completed",
+              organization_id: "org-1",
+              store_id: "store-other",
+            },
+          ],
+        }),
+      });
+
+      assert.equal(result.domain, "store_area");
+      assert.equal(result.status, "store_ready_active");
+      assert.equal(result.reasonCode, "ready_active");
+      assert.equal(result.organizationId, "org-1");
+      assert.equal(result.storeId, "store-1");
     },
   },
   {
@@ -1051,6 +1093,24 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "singleton onboarding array with unknown status still returns deny 503",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchOnboardingRecord: async () => [{ status: "mystery" }],
+        }),
+      });
+
+      assert.equal(result.domain, "unresolved");
+      assert.equal(result.status, "access_resolution_unavailable");
+      assert.equal(result.reasonCode, "malformed_onboarding_contract");
+      assert.equal(result.organizationId, null);
+      assert.equal(result.storeId, null);
+    },
+  },
+  {
     name: "unknown onboarding status returns deny 503",
     run: async () => {
       const result = await resolveAccessForRequest({
@@ -1062,6 +1122,26 @@ const tests: TestCase[] = [
       });
 
       assert.equal(result.domain, "unresolved");
+      assert.equal(result.reasonCode, "malformed_onboarding_contract");
+      assert.equal(result.apiDecision, "deny_503");
+    },
+  },
+  {
+    name: "multiple onboarding rows remain fail closed",
+    run: async () => {
+      const result = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchOnboardingRecord: async () => [
+            { status: "completed" },
+            { status: "completed" },
+          ],
+        }),
+      });
+
+      assert.equal(result.domain, "unresolved");
+      assert.equal(result.status, "access_resolution_unavailable");
       assert.equal(result.reasonCode, "malformed_onboarding_contract");
       assert.equal(result.apiDecision, "deny_503");
     },

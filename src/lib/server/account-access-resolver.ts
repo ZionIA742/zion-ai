@@ -353,18 +353,39 @@ function normalizeCommercialAccess(
 function normalizeOnboardingRequired(
   value: unknown,
 ): boolean | AccessResolutionFailure {
-  if (value == null) {
+  const normalizedValue = Array.isArray(value)
+    ? value.length === 0
+      ? null
+      : value.length === 1
+        ? value[0]
+        : createLookupUnavailableFailure(
+            "malformed_onboarding_contract",
+            "O onboarding retornou multiplas linhas para uma loja que deveria ser unica.",
+          )
+    : value;
+
+  if (
+    normalizedValue &&
+    typeof normalizedValue === "object" &&
+    "reasonCode" in normalizedValue
+  ) {
+    return normalizedValue as AccessResolutionFailure;
+  }
+
+  if (normalizedValue == null) {
     return true;
   }
 
-  if (!value || typeof value !== "object") {
+  if (!normalizedValue || typeof normalizedValue !== "object") {
     return createLookupUnavailableFailure(
       "malformed_onboarding_contract",
       "O onboarding retornou um contrato invalido para resolucao de acesso.",
     );
   }
 
-  const status = normalizeNonEmptyString((value as { status?: unknown }).status);
+  const status = normalizeNonEmptyString(
+    (normalizedValue as { status?: unknown }).status,
+  );
 
   if (status === null) {
     return createLookupUnavailableFailure(
