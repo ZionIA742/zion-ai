@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createSupabaseServerClient } from "@/lib/supabaseServer";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,6 +49,7 @@ const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
 type ConversationRow = {
   id: string;
   organization_id: string;
+  store_id: string | null;
   lead_id: string | null;
 };
 
@@ -56,20 +63,47 @@ type ExternalIntegrationRow = {
   id: string;
 };
 
-function createSupabaseAdminClient() {
+type AttachmentKind = "image" | "audio" | "video" | "file";
+type MessageType = "image" | "audio" | "video" | "text";
+
+type ServiceSupabaseClient = ReturnType<typeof createServiceSupabaseClient>;
+
+type SendManualAttachmentDeps = {
+  resolveStoreAccess: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  createServiceSupabaseClient: () => ServiceSupabaseClient;
+  isRealWhatsappConversation: (args: {
+    supabase: ServiceSupabaseClient;
+    organizationId: string;
+    storeId: string;
+    conversationId: string;
+  }) => Promise<boolean>;
+  readFileBytes: (file: File) => Promise<Buffer>;
+};
+
+function createServiceSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseServiceKey) {
-    throw new Error(
-      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente."
-    );
+    throw new Error("service_role_unavailable");
   }
 
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
+    },
+  });
+}
+
+function createJsonResponse(body: unknown, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
     },
   });
 }
@@ -87,6 +121,10 @@ function getAttachmentKindFromMimeType(value: string | null | undefined) {
   if (ALLOWED_DOCUMENT_MIME_TYPES.has(normalized)) return "file" as const;
 
   return null;
+}
+
+function getMessageTypeFromAttachmentKind(attachmentKind: AttachmentKind): MessageType {
+  return attachmentKind === "file" ? "text" : attachmentKind;
 }
 
 function extractFileExtension(fileName: string | null | undefined) {
@@ -170,24 +208,41 @@ function extractInsertMessageId(data: unknown) {
   return null;
 }
 
-function buildDefaultContent(messageType: "image" | "audio" | "video" | "text") {
+function buildDefaultContent(messageType: MessageType) {
   if (messageType === "image") return "A loja enviou uma imagem.";
   if (messageType === "audio") return "A loja enviou um audio.";
   if (messageType === "video") return "A loja enviou um video.";
   return "A loja enviou um arquivo.";
 }
 
-function buildJsonResponse(body: unknown, status = 200) {
-  return NextResponse.json(body, {
-    status,
-    headers: {
-      "Cache-Control": "no-store",
+function createInvalidFormDataResponse() {
+  return createJsonResponse(
+    {
+      ok: false,
+      error: "INVALID_FORM_DATA",
+      message: "Nao foi possivel ler os dados do anexo enviado.",
     },
-  });
+    400,
+  );
 }
 
-async function isRealWhatsappConversation(args: {
-  supabase: ReturnType<typeof createSupabaseAdminClient>;
+function createConversationNotFoundResponse() {
+  return createJsonResponse(
+    {
+      ok: false,
+      error: "CONVERSATION_NOT_FOUND_OR_FORBIDDEN",
+      message: "Conversa nao encontrada para a loja informada.",
+    },
+    404,
+  );
+}
+
+async function defaultReadFileBytes(file: File) {
+  return Buffer.from(await file.arrayBuffer());
+}
+
+async function defaultIsRealWhatsappConversation(args: {
+  supabase: ServiceSupabaseClient;
   organizationId: string;
   storeId: string;
   conversationId: string;
@@ -218,256 +273,308 @@ async function isRealWhatsappConversation(args: {
       .limit(1),
   ]);
 
-  if (recentWhatsappIncoming.error) {
-    throw new Error(
-      `Falha ao verificar origem WhatsApp da conversa: ${recentWhatsappIncoming.error.message}`
-    );
-  }
-
-  if (activeIntegration.error) {
-    throw new Error(
-      `Falha ao verificar integracao WhatsApp ativa: ${activeIntegration.error.message}`
-    );
+  if (recentWhatsappIncoming.error || activeIntegration.error) {
+    throw new Error("whatsapp_scope_validation_failed");
   }
 
   const hasRecentWhatsappIncoming = Boolean(
     Array.isArray(recentWhatsappIncoming.data) &&
       recentWhatsappIncoming.data[0] &&
-      recentWhatsappIncoming.data[0].id
+      recentWhatsappIncoming.data[0].id,
   );
 
   const hasActiveIntegration = Boolean(
     Array.isArray(activeIntegration.data) &&
-      (activeIntegration.data[0] as ExternalIntegrationRow | undefined)?.id
+      (activeIntegration.data[0] as ExternalIntegrationRow | undefined)?.id,
   );
 
   return hasRecentWhatsappIncoming && hasActiveIntegration;
 }
 
-export async function POST(request: Request) {
-  let uploadedStoragePath: string | null = null;
+async function loadScopedConversation(args: {
+  supabase: ServiceSupabaseClient;
+  conversationId: string;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("conversations")
+    .select("id, organization_id, store_id, lead_id")
+    .eq("id", args.conversationId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle<ConversationRow>();
 
-  try {
-    const sessionSupabase = await createSupabaseServerClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await sessionSupabase.auth.getUser();
-
-    if (userError || !user) {
-      return buildJsonResponse(
+  if (error) {
+    return {
+      ok: false as const,
+      response: createJsonResponse(
         {
           ok: false,
-          error: "UNAUTHENTICATED",
-          message: "Usuario nao autenticado.",
+          error: "CONVERSATION_LOOKUP_FAILED",
+          message: "Nao foi possivel validar a conversa informada.",
         },
-        401
-      );
+        500,
+      ),
+    };
+  }
+
+  if (!data) {
+    return {
+      ok: false as const,
+      response: createConversationNotFoundResponse(),
+    };
+  }
+
+  return {
+    ok: true as const,
+    conversation: data,
+  };
+}
+
+async function loadScopedLead(args: {
+  supabase: ServiceSupabaseClient;
+  leadId: string;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("leads")
+    .select("id, organization_id, store_id")
+    .eq("id", args.leadId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle<LeadRow>();
+
+  if (error) {
+    return {
+      ok: false as const,
+      response: createJsonResponse(
+        {
+          ok: false,
+          error: "LEAD_LOOKUP_FAILED",
+          message: "Nao foi possivel validar o lead da conversa informada.",
+        },
+        500,
+      ),
+    };
+  }
+
+  if (!data) {
+    return {
+      ok: false as const,
+      response: createJsonResponse(
+        {
+          ok: false,
+          error: "LEAD_NOT_FOUND_OR_FORBIDDEN",
+          message: "Lead nao encontrado para a conversa informada.",
+        },
+        404,
+      ),
+    };
+  }
+
+  return {
+    ok: true as const,
+    lead: data,
+  };
+}
+
+async function cleanupUploadedFile(args: {
+  supabase: ServiceSupabaseClient;
+  storagePath: string;
+  conversationId: string;
+}) {
+  try {
+    const { error } = await args.supabase.storage
+      .from(STORAGE_BUCKET)
+      .remove([args.storagePath]);
+
+    if (error) {
+      console.error("[send-manual-attachment] cleanup_failed", {
+        operation: "manual_attachment_cleanup",
+        conversationId: args.conversationId,
+      });
+    }
+  } catch {
+    console.error("[send-manual-attachment] cleanup_failed", {
+      operation: "manual_attachment_cleanup",
+      conversationId: args.conversationId,
+    });
+  }
+}
+
+export async function handleSendManualAttachmentPost(
+  request: Request,
+  deps: SendManualAttachmentDeps = {
+    resolveStoreAccess: resolveStoreApiAccess,
+    createServiceSupabaseClient,
+    isRealWhatsappConversation: defaultIsRealWhatsappConversation,
+    readFileBytes: defaultReadFileBytes,
+  },
+) {
+  let uploadCompleted = false;
+  let messagePersisted = false;
+  let storagePath: string | null = null;
+  let serviceSupabase: ServiceSupabaseClient | null = null;
+  let conversationIdForCleanup = "";
+
+  try {
+    const access = await deps.resolveStoreAccess({
+      requirement: "active",
+    });
+
+    if (!access.ok) {
+      return createStoreApiDeniedResponse(access);
     }
 
-    const formData = await request.formData();
+    let formData: FormData;
 
-    const organizationId = String(formData.get("organizationId") || "").trim();
-    const requestedStoreId = String(formData.get("storeId") || "").trim();
+    try {
+      formData = await request.formData();
+    } catch {
+      return createInvalidFormDataResponse();
+    }
+
     const conversationId = String(formData.get("conversationId") || "").trim();
     const rawContent = String(formData.get("content") || "").trim();
     const fileEntry = formData.get("file");
+    conversationIdForCleanup = conversationId;
 
-    if (!organizationId || !requestedStoreId || !conversationId) {
-      return buildJsonResponse(
+    if (!conversationId) {
+      return createJsonResponse(
         {
           ok: false,
           error: "MISSING_FIELDS",
-          message: "Envie organizationId, storeId, conversationId e file.",
+          message: "Envie conversationId e file.",
         },
-        400
+        400,
       );
     }
 
     if (!(fileEntry instanceof File)) {
-      return buildJsonResponse(
+      return createJsonResponse(
         {
           ok: false,
           error: "FILE_REQUIRED",
           message: "Selecione um arquivo valido para envio.",
         },
-        400
+        400,
       );
     }
 
     if (fileEntry.size <= 0) {
-      return buildJsonResponse(
+      return createJsonResponse(
         {
           ok: false,
           error: "EMPTY_FILE",
           message: "O arquivo enviado esta vazio.",
         },
-        400
+        400,
       );
     }
 
     if (fileEntry.size > MAX_FILE_SIZE_BYTES) {
-      return buildJsonResponse(
+      return createJsonResponse(
         {
           ok: false,
           error: "FILE_TOO_LARGE",
           message: "O anexo deve ter no maximo 10 MB.",
         },
-        400
+        400,
       );
     }
 
     const attachmentKind = getAttachmentKindFromMimeType(fileEntry.type);
 
     if (!attachmentKind) {
-      return buildJsonResponse(
+      return createJsonResponse(
         {
           ok: false,
           error: "UNSUPPORTED_FILE_TYPE",
           message: "Tipo de arquivo nao suportado para envio manual.",
         },
-        415
+        415,
       );
     }
 
-    const messageType =
-      attachmentKind === "file" ? ("text" as const) : attachmentKind;
+    const messageType = getMessageTypeFromAttachmentKind(attachmentKind);
     const content = rawContent || buildDefaultContent(messageType);
-    const supabase = createSupabaseAdminClient();
 
-    const { data: conversation, error: conversationError } = await supabase
-      .from("conversations")
-      .select("id, organization_id, lead_id")
-      .eq("id", conversationId)
-      .eq("organization_id", organizationId)
-      .maybeSingle<ConversationRow>();
+    serviceSupabase = deps.createServiceSupabaseClient();
 
-    if (conversationError) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "CONVERSATION_LOOKUP_FAILED",
-          message: conversationError.message,
-        },
-        500
-      );
+    const conversationResult = await loadScopedConversation({
+      supabase: serviceSupabase,
+      conversationId,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
+    });
+
+    if (!conversationResult.ok) {
+      return conversationResult.response;
     }
 
-    if (!conversation) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "CONVERSATION_NOT_FOUND_OR_FORBIDDEN",
-          message: "Conversa nao encontrada para a organizacao informada.",
-        },
-        404
-      );
-    }
-
-    const normalizedConversation = conversation as ConversationRow;
-
-    if (!normalizedConversation.lead_id) {
-      return buildJsonResponse(
+    if (!conversationResult.conversation.lead_id) {
+      return createJsonResponse(
         {
           ok: false,
           error: "CONVERSATION_WITHOUT_LEAD",
           message: "A conversa nao possui lead vinculada.",
         },
-        400
+        400,
       );
     }
 
-    const { data: lead, error: leadError } = await supabase
-      .from("leads")
-      .select("id, organization_id, store_id")
-      .eq("id", normalizedConversation.lead_id)
-      .eq("organization_id", organizationId)
-      .maybeSingle<LeadRow>();
+    const leadResult = await loadScopedLead({
+      supabase: serviceSupabase,
+      leadId: conversationResult.conversation.lead_id,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
+    });
 
-    if (leadError) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LEAD_LOOKUP_FAILED",
-          message: leadError.message,
-        },
-        500
-      );
+    if (!leadResult.ok) {
+      return leadResult.response;
     }
 
-    if (!lead) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LEAD_NOT_FOUND_OR_FORBIDDEN",
-          message: "Lead nao encontrado para a conversa informada.",
-        },
-        404
-      );
-    }
-
-    const normalizedLead = lead as LeadRow;
-    const resolvedStoreId = String(normalizedLead.store_id || "").trim();
-
-    if (!resolvedStoreId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LEAD_STORE_ID_MISSING",
-          message: "store_id nao encontrado para este lead.",
-        },
-        400
-      );
-    }
-
-    if (requestedStoreId !== resolvedStoreId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "STORE_ID_MISMATCH",
-          message: "O storeId informado nao corresponde ao store_id real da lead.",
-        },
-        400
-      );
-    }
+    const fileBytes = await deps.readFileBytes(fileEntry);
+    storagePath = buildStoragePath({
+      organizationId: access.organizationId,
+      storeId: access.storeId,
+      conversationId,
+      fileName: fileEntry.name,
+    });
 
     const isWhatsappReal =
       attachmentKind === "image"
-        ? await isRealWhatsappConversation({
-            supabase,
-            organizationId,
-            storeId: resolvedStoreId,
+        ? await deps.isRealWhatsappConversation({
+            supabase: serviceSupabase,
+            organizationId: access.organizationId,
+            storeId: access.storeId,
             conversationId,
           })
         : false;
 
-    const storagePath = buildStoragePath({
-      organizationId,
-      storeId: resolvedStoreId,
-      conversationId,
-      fileName: fileEntry.name,
-    });
     const mediaUrl = attachmentKind === "file" ? null : storagePath;
 
-    uploadedStoragePath = storagePath;
-
-    const { error: uploadError } = await supabase.storage
+    const uploadResult = await serviceSupabase.storage
       .from(STORAGE_BUCKET)
-      .upload(storagePath, fileEntry, {
+      .upload(storagePath, fileBytes, {
         upsert: false,
         contentType: fileEntry.type || undefined,
       });
 
-    if (uploadError) {
-      return buildJsonResponse(
+    if (uploadResult.error) {
+      return createJsonResponse(
         {
           ok: false,
           error: "MEDIA_UPLOAD_FAILED",
-          message: uploadError.message,
+          message: "Nao foi possivel enviar o anexo agora.",
         },
-        500
+        500,
       );
     }
+
+    uploadCompleted = true;
 
     const metadata = {
       ...(isWhatsappReal
@@ -491,14 +598,20 @@ export async function POST(request: Request) {
       can_be_sent_to_customer: true,
       requires_human_review: false,
       sent_by: "panel_user",
-      sent_by_user_id: user.id,
+      sent_by_user_id: access.sessionUserId,
       pillar: "pilar_10_multimodal",
       send_external: isWhatsappReal,
     };
 
-    const { data: insertData, error: insertError } = await supabase.rpc(
-      "insert_message",
-      {
+    let insertResult:
+      | {
+          data: unknown;
+          error: { message?: string | null } | null;
+        }
+      | undefined;
+
+    try {
+      insertResult = await serviceSupabase.rpc("insert_message", {
         p_conversation_id: conversationId,
         p_sender: "human",
         p_direction: "outgoing",
@@ -507,82 +620,73 @@ export async function POST(request: Request) {
         p_external_message_id: null,
         p_media_url: mediaUrl,
         p_metadata: metadata,
-      }
-    );
-
-    if (insertError) {
-      console.error("[send-manual-attachment] insert_message failed", {
-        code: insertError.code,
-        message: insertError.message,
-        details: insertError.details,
-        hint: insertError.hint,
-        conversationId,
-        organizationId,
-        requestedStoreId,
-        sender: "human",
-        direction: "outgoing",
-        messageType,
-        metadataKeys: Object.keys(metadata),
       });
-
-      const { error: cleanupError } = await supabase.storage
-        .from(STORAGE_BUCKET)
-        .remove([storagePath]);
-
-      if (cleanupError) {
-        console.error(
-          "[send-manual-attachment] cleanup after insert_message failed:",
-          {
-            storagePath,
-            message: cleanupError.message,
-          }
-        );
+    } catch {
+      if (uploadCompleted && !messagePersisted && storagePath) {
+        await cleanupUploadedFile({
+          supabase: serviceSupabase,
+          storagePath,
+          conversationId,
+        });
       }
 
-      return buildJsonResponse(
+      return createJsonResponse(
         {
           ok: false,
           error: "INSERT_MANUAL_ATTACHMENT_FAILED",
           message: "O anexo foi enviado, mas nao foi possivel registrar a mensagem.",
         },
-        500
+        500,
       );
     }
 
-    const messageId = extractInsertMessageId(insertData);
+    if (insertResult.error) {
+      if (uploadCompleted && !messagePersisted && storagePath) {
+        await cleanupUploadedFile({
+          supabase: serviceSupabase,
+          storagePath,
+          conversationId,
+        });
+      }
 
-    return buildJsonResponse({
+      return createJsonResponse(
+        {
+          ok: false,
+          error: "INSERT_MANUAL_ATTACHMENT_FAILED",
+          message: "O anexo foi enviado, mas nao foi possivel registrar a mensagem.",
+        },
+        500,
+      );
+    }
+
+    messagePersisted = true;
+
+    return createJsonResponse({
       ok: true,
-      messageId,
+      messageId: extractInsertMessageId(insertResult.data),
       messageType,
       attachmentKind,
     });
-  } catch (error) {
-    if (uploadedStoragePath) {
-      try {
-        const supabase = createSupabaseAdminClient();
-        await supabase.storage.from(STORAGE_BUCKET).remove([uploadedStoragePath]);
-      } catch (cleanupError) {
-        console.error("[send-manual-attachment] cleanup after unexpected error failed:", {
-          storagePath: uploadedStoragePath,
-          error:
-            cleanupError instanceof Error
-              ? cleanupError.message
-              : String(cleanupError || ""),
-        });
-      }
+  } catch {
+    if (uploadCompleted && !messagePersisted && storagePath && serviceSupabase) {
+      await cleanupUploadedFile({
+        supabase: serviceSupabase,
+        storagePath,
+        conversationId: conversationIdForCleanup,
+      });
     }
 
-    const message =
-      error instanceof Error ? error.message : "Erro interno ao enviar anexo manual.";
-
-    return buildJsonResponse(
+    return createJsonResponse(
       {
         ok: false,
         error: "SEND_MANUAL_ATTACHMENT_ROUTE_FAILED",
-        message,
+        message: "Erro interno ao enviar anexo manual.",
       },
-      500
+      500,
     );
   }
+}
+
+export async function POST(request: Request) {
+  return handleSendManualAttachmentPost(request);
 }

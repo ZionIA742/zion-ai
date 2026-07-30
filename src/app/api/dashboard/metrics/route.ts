@@ -6,6 +6,8 @@ import {
   getCatalogPriceSemanticsFromNumber,
   getCatalogStockSemantics,
 } from "@/lib/catalog/presentation";
+import { resolveStoreApiAccess } from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +24,7 @@ type LeadRow = {
 type ConversationRow = {
   id: string;
   lead_id: string;
+  store_id: string | null;
   status: string;
   is_human_active: boolean;
   last_message_at: string | null;
@@ -324,54 +327,41 @@ function mapPoolForDashboard(pool: PoolRow) {
   };
 }
 
-export async function GET(request: Request) {
-  try {
-    const url = new URL(request.url);
+export type DashboardMetricsRouteDeps = {
+  resolveAccess: typeof resolveStoreApiAccess;
+  createPrivilegedClient: () => ReturnType<typeof createClient>;
+};
 
-    const organizationId = String(
-      url.searchParams.get("organizationId") || ""
-    ).trim();
+function createPrivilegedDashboardClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    const storeId = String(url.searchParams.get("storeId") || "").trim();
+  if (!supabaseUrl || !supabaseServiceRoleKey) {
+    throw new Error("SUPABASE_ENV_MISSING");
+  }
 
-    if (!organizationId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "MISSING_ORGANIZATION_ID",
-          message: "organizationId não informado.",
-        },
-        400
-      );
+  return createClient(supabaseUrl, supabaseServiceRoleKey);
+}
+
+export function createDashboardMetricsGetHandler(
+  deps: Partial<DashboardMetricsRouteDeps> = {}
+) {
+  const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const createPrivilegedClient =
+    deps.createPrivilegedClient ?? createPrivilegedDashboardClient;
+
+  return async function GET(_request: Request) {
+    const access = await resolveAccess({ requirement: "active" });
+
+    if (!access.ok) {
+      return createStoreApiDeniedResponse(access);
     }
 
-    if (!storeId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "MISSING_STORE_ID",
-          message: "storeId não informado.",
-        },
-        400
-      );
-    }
+    const organizationId = access.organizationId;
+    const storeId = access.storeId;
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!supabaseUrl || !supabaseServiceRoleKey) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "SUPABASE_ENV_MISSING",
-          message:
-            "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variáveis de ambiente.",
-        },
-        500
-      );
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
+    try {
+      const supabase = createPrivilegedClient();
 
     const now = new Date();
     const todayStart = startOfLocalDay(now);
@@ -405,9 +395,10 @@ export async function GET(request: Request) {
       supabase
         .from("conversations")
         .select(
-          "id,lead_id,status,is_human_active,last_message_at,last_message_preview,last_message_direction,last_message_sender,created_at"
+          "id,lead_id,store_id,status,is_human_active,last_message_at,last_message_preview,last_message_direction,last_message_sender,created_at"
         )
         .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
         .order("last_message_at", { ascending: false, nullsFirst: false })
         .limit(10000),
 
@@ -516,7 +507,7 @@ export async function GET(request: Request) {
         {
           ok: false,
           error: "LOAD_DASHBOARD_METRICS_FAILED",
-          message: queryError.message,
+          message: "Nao foi possivel carregar as metricas do dashboard no momento.",
         },
         500
       );
@@ -941,14 +932,17 @@ export async function GET(request: Request) {
         operationalAlerts,
       },
     });
-  } catch (error: any) {
-    return buildJsonResponse(
-      {
-        ok: false,
-        error: "DASHBOARD_METRICS_ROUTE_FAILED",
-        message: error?.message || "Erro interno ao carregar métricas do dashboard.",
-      },
-      500
-    );
-  }
+    } catch (_error: any) {
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "DASHBOARD_METRICS_ROUTE_FAILED",
+          message: "Nao foi possivel carregar as metricas do dashboard no momento.",
+        },
+        500
+      );
+    }
+  };
 }
+
+export const GET = createDashboardMetricsGetHandler();

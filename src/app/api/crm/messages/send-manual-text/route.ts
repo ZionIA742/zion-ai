@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createSupabaseServerClient } from "@/lib/supabaseServer";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +21,7 @@ type RequestBody = {
 type ConversationRow = {
   id: string;
   organization_id: string;
+  store_id: string | null;
   lead_id: string | null;
 };
 
@@ -28,14 +35,28 @@ type ExternalIntegrationRow = {
   id: string;
 };
 
-function createSupabaseAdminClient() {
+type ServiceSupabaseClient = ReturnType<typeof createServiceSupabaseClient>;
+
+type SendManualTextDeps = {
+  resolveStoreAccess: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  createServiceSupabaseClient: () => ServiceSupabaseClient;
+  isRealWhatsappConversation: (args: {
+    supabase: ServiceSupabaseClient;
+    organizationId: string;
+    storeId: string;
+    conversationId: string;
+  }) => Promise<boolean>;
+};
+
+function createServiceSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseServiceKey) {
-    throw new Error(
-      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente."
-    );
+    throw new Error("service_role_unavailable");
   }
 
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -46,7 +67,7 @@ function createSupabaseAdminClient() {
   });
 }
 
-function buildJsonResponse(body: unknown, status = 200) {
+function createJsonResponse(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
     headers: {
@@ -81,8 +102,8 @@ function extractMessageId(data: unknown) {
   return null;
 }
 
-async function isRealWhatsappConversation(args: {
-  supabase: ReturnType<typeof createSupabaseAdminClient>;
+async function defaultIsRealWhatsappConversation(args: {
+  supabase: ServiceSupabaseClient;
   organizationId: string;
   storeId: string;
   conversationId: string;
@@ -113,169 +134,191 @@ async function isRealWhatsappConversation(args: {
       .limit(1),
   ]);
 
-  if (recentWhatsappIncoming.error) {
-    throw new Error(
-      `Falha ao verificar origem WhatsApp da conversa: ${recentWhatsappIncoming.error.message}`
-    );
-  }
-
-  if (activeIntegration.error) {
-    throw new Error(
-      `Falha ao verificar integracao WhatsApp ativa: ${activeIntegration.error.message}`
-    );
+  if (recentWhatsappIncoming.error || activeIntegration.error) {
+    throw new Error("whatsapp_scope_validation_failed");
   }
 
   const hasRecentWhatsappIncoming = Boolean(
     Array.isArray(recentWhatsappIncoming.data) &&
       recentWhatsappIncoming.data[0] &&
-      recentWhatsappIncoming.data[0].id
+      recentWhatsappIncoming.data[0].id,
   );
 
   const hasActiveIntegration = Boolean(
     Array.isArray(activeIntegration.data) &&
-      (activeIntegration.data[0] as ExternalIntegrationRow | undefined)?.id
+      (activeIntegration.data[0] as ExternalIntegrationRow | undefined)?.id,
   );
 
   return hasRecentWhatsappIncoming && hasActiveIntegration;
 }
 
-export async function POST(request: Request) {
-  try {
-    const sessionSupabase = await createSupabaseServerClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await sessionSupabase.auth.getUser();
+async function loadScopedConversation(args: {
+  supabase: ServiceSupabaseClient;
+  conversationId: string;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("conversations")
+    .select("id, organization_id, store_id, lead_id")
+    .eq("id", args.conversationId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle<ConversationRow>();
 
-    if (userError || !user) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "UNAUTHENTICATED",
-          message: "Usuario nao autenticado.",
-        },
-        401
-      );
-    }
-
-    const body = (await request.json()) as RequestBody;
-    const organizationId = String(body.organizationId || "").trim();
-    const requestedStoreId = String(body.storeId || "").trim();
-    const conversationId = String(body.conversationId || "").trim();
-    const text = String(body.text || "").trim();
-
-    if (!organizationId || !requestedStoreId || !conversationId || !text) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "MISSING_FIELDS",
-          message: "Envie organizationId, storeId, conversationId e text.",
-        },
-        400
-      );
-    }
-
-    const adminSupabase = createSupabaseAdminClient();
-
-    const { data: conversation, error: conversationError } = await adminSupabase
-      .from("conversations")
-      .select("id, organization_id, lead_id")
-      .eq("id", conversationId)
-      .eq("organization_id", organizationId)
-      .maybeSingle<ConversationRow>();
-
-    if (conversationError) {
-      return buildJsonResponse(
+  if (error) {
+    return {
+      ok: false as const,
+      response: createJsonResponse(
         {
           ok: false,
           error: "CONVERSATION_LOOKUP_FAILED",
-          message: conversationError.message,
+          message: "Nao foi possivel validar a conversa informada.",
         },
-        500
-      );
-    }
+        500,
+      ),
+    };
+  }
 
-    if (!conversation) {
-      return buildJsonResponse(
+  if (!data) {
+    return {
+      ok: false as const,
+      response: createJsonResponse(
         {
           ok: false,
           error: "CONVERSATION_NOT_FOUND_OR_FORBIDDEN",
-          message: "Conversa nao encontrada para a organizacao informada.",
+          message: "Conversa nao encontrada para a loja informada.",
         },
-        404
-      );
-    }
+        404,
+      ),
+    };
+  }
 
-    const normalizedConversation = conversation as ConversationRow;
+  return {
+    ok: true as const,
+    conversation: data,
+  };
+}
 
-    if (!normalizedConversation.lead_id) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "CONVERSATION_WITHOUT_LEAD",
-          message: "A conversa nao possui lead vinculada.",
-        },
-        400
-      );
-    }
+async function loadScopedLead(args: {
+  supabase: ServiceSupabaseClient;
+  leadId: string;
+  organizationId: string;
+  storeId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("leads")
+    .select("id, organization_id, store_id")
+    .eq("id", args.leadId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle<LeadRow>();
 
-    const { data: lead, error: leadError } = await adminSupabase
-      .from("leads")
-      .select("id, organization_id, store_id")
-      .eq("id", normalizedConversation.lead_id)
-      .eq("organization_id", organizationId)
-      .maybeSingle<LeadRow>();
-
-    if (leadError) {
-      return buildJsonResponse(
+  if (error) {
+    return {
+      ok: false as const,
+      response: createJsonResponse(
         {
           ok: false,
           error: "LEAD_LOOKUP_FAILED",
-          message: leadError.message,
+          message: "Nao foi possivel validar o lead da conversa informada.",
         },
-        500
-      );
-    }
+        500,
+      ),
+    };
+  }
 
-    if (!lead) {
-      return buildJsonResponse(
+  if (!data) {
+    return {
+      ok: false as const,
+      response: createJsonResponse(
         {
           ok: false,
           error: "LEAD_NOT_FOUND_OR_FORBIDDEN",
           message: "Lead nao encontrado para a conversa informada.",
         },
-        404
-      );
+        404,
+      ),
+    };
+  }
+
+  return {
+    ok: true as const,
+    lead: data,
+  };
+}
+
+export async function handleSendManualTextPost(
+  request: Request,
+  deps: SendManualTextDeps = {
+    resolveStoreAccess: resolveStoreApiAccess,
+    createServiceSupabaseClient,
+    isRealWhatsappConversation: defaultIsRealWhatsappConversation,
+  },
+) {
+  try {
+    const access = await deps.resolveStoreAccess({
+      requirement: "active",
+    });
+
+    if (!access.ok) {
+      return createStoreApiDeniedResponse(access);
     }
 
-    const resolvedStoreId = String((lead as LeadRow).store_id || "").trim();
+    const body = (await request.json()) as RequestBody;
+    const conversationId = String(body.conversationId || "").trim();
+    const text = String(body.text || "").trim();
 
-    if (!resolvedStoreId) {
-      return buildJsonResponse(
+    if (!conversationId || !text) {
+      return createJsonResponse(
         {
           ok: false,
-          error: "LEAD_STORE_ID_MISSING",
-          message: "store_id nao encontrado para este lead.",
+          error: "MISSING_FIELDS",
+          message: "Envie conversationId e text.",
         },
-        400
+        400,
       );
     }
 
-    if (requestedStoreId !== resolvedStoreId) {
-      return buildJsonResponse(
+    const serviceSupabase = deps.createServiceSupabaseClient();
+
+    const conversationResult = await loadScopedConversation({
+      supabase: serviceSupabase,
+      conversationId,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
+    });
+
+    if (!conversationResult.ok) {
+      return conversationResult.response;
+    }
+
+    if (!conversationResult.conversation.lead_id) {
+      return createJsonResponse(
         {
           ok: false,
-          error: "STORE_ID_MISMATCH",
-          message: "O storeId informado nao corresponde ao store_id real da lead.",
+          error: "CONVERSATION_WITHOUT_LEAD",
+          message: "A conversa nao possui lead vinculada.",
         },
-        400
+        400,
       );
     }
 
-    const isWhatsappReal = await isRealWhatsappConversation({
-      supabase: adminSupabase,
-      organizationId,
-      storeId: resolvedStoreId,
+    const leadResult = await loadScopedLead({
+      supabase: serviceSupabase,
+      leadId: conversationResult.conversation.lead_id,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
+    });
+
+    if (!leadResult.ok) {
+      return leadResult.response;
+    }
+
+    const isWhatsappReal = await deps.isRealWhatsappConversation({
+      supabase: serviceSupabase,
+      organizationId: access.organizationId,
+      storeId: access.storeId,
       conversationId,
     });
 
@@ -289,7 +332,7 @@ export async function POST(request: Request) {
         whatsapp_detected_from_conversation: true,
       };
 
-      const { data, error } = await adminSupabase.rpc("insert_message", {
+      const { data, error } = await serviceSupabase.rpc("insert_message", {
         p_conversation_id: conversationId,
         p_sender: "human",
         p_direction: "outgoing",
@@ -301,17 +344,17 @@ export async function POST(request: Request) {
       });
 
       if (error) {
-        return buildJsonResponse(
+        return createJsonResponse(
           {
             ok: false,
             error: "INSERT_MANUAL_TEXT_FAILED",
-            message: error.message,
+            message: "Nao foi possivel registrar a mensagem manual agora.",
           },
-          500
+          500,
         );
       }
 
-      return buildJsonResponse({
+      return createJsonResponse({
         ok: true,
         messageId: extractMessageId(data),
         route: "manual_text_whatsapp",
@@ -320,20 +363,20 @@ export async function POST(request: Request) {
       });
     }
 
-    const { data, error } = await sessionSupabase.rpc("panel_send_message_scoped", {
-      p_organization_id: organizationId,
+    const { data, error } = await access.supabase.rpc("panel_send_message_scoped", {
+      p_organization_id: access.organizationId,
       p_conversation_id: conversationId,
       p_text: text,
     });
 
     if (error) {
-      return buildJsonResponse(
+      return createJsonResponse(
         {
           ok: false,
           error: "PANEL_SEND_MESSAGE_SCOPED_FAILED",
-          message: error.message,
+          message: "Nao foi possivel enviar a mensagem manual agora.",
         },
-        500
+        500,
       );
     }
 
@@ -345,24 +388,25 @@ export async function POST(request: Request) {
           : null
         : null;
 
-    return buildJsonResponse({
+    return createJsonResponse({
       ok: true,
       messageId,
       route: "manual_text_panel",
       externalEligible: false,
       metadata,
     });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Erro interno ao enviar texto manual.";
-
-    return buildJsonResponse(
+  } catch {
+    return createJsonResponse(
       {
         ok: false,
         error: "SEND_MANUAL_TEXT_ROUTE_FAILED",
-        message,
+        message: "Erro interno ao enviar texto manual.",
       },
-      500
+      500,
     );
   }
+}
+
+export async function POST(request: Request) {
+  return handleSendManualTextPost(request);
 }
