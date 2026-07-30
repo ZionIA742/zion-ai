@@ -27,6 +27,10 @@ type MiddlewareEvalResult = {
   decision: MiddlewarePolicyDecision;
 };
 
+function shouldBypassAuthLookup(pathname: string): boolean {
+  return pathname.trim() === "/";
+}
+
 export async function evaluateMiddlewarePathname(
   pathname: string,
   deps: MiddlewareEvalDeps,
@@ -37,6 +41,13 @@ export async function evaluateMiddlewarePathname(
   );
 
   if (publicDecision.action === "next") {
+    return {
+      authState: "anonymous",
+      decision: publicDecision,
+    };
+  }
+
+  if (shouldBypassAuthLookup(pathname)) {
     return {
       authState: "anonymous",
       decision: publicDecision,
@@ -122,6 +133,12 @@ export async function middleware(req: NextRequest) {
 
   if (initialDecision.action === "next") {
     return NextResponse.next();
+  }
+
+  if (shouldBypassAuthLookup(path)) {
+    return NextResponse.redirect(
+      buildRedirectUrl(req.url, req.nextUrl.pathname, initialDecision),
+    );
   }
 
   const res = NextResponse.next();

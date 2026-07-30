@@ -9,7 +9,7 @@ import {
 import {
   buildRedirectUrl,
   evaluateMiddlewarePathname,
-} from "../../middleware";
+} from "../../middleware.ts";
 
 type TestCase = {
   name: string;
@@ -154,6 +154,58 @@ const tests: TestCase[] = [
     name: "/ without session goes to /login",
     run: () => {
       expectRedirect("/", "anonymous", "/login", true);
+    },
+  },
+  {
+    name: "/ bypasses auth lookup even with old cookie",
+    run: async () => {
+      let clientCalls = 0;
+      const result = await evaluateMiddlewarePathname("/", {
+        hasSessionCookie: true,
+        createClient: async () => {
+          clientCalls += 1;
+          return {
+            getUser: async () => ({
+              data: { user: { id: "user-1" } },
+              error: null,
+            }),
+          };
+        },
+      });
+
+      assert.equal(clientCalls, 0);
+      assert.equal(result.authState, "anonymous");
+      assert.deepEqual(result.decision, {
+        action: "redirect",
+        destination: "/login",
+        preserveRedirectTo: true,
+      });
+    },
+  },
+  {
+    name: "/ bypasses auth lookup even with valid session response",
+    run: async () => {
+      let clientCalls = 0;
+      const result = await evaluateMiddlewarePathname("/", {
+        hasSessionCookie: false,
+        createClient: async () => {
+          clientCalls += 1;
+          return {
+            getUser: async () => ({
+              data: { user: { id: "user-1" } },
+              error: null,
+            }),
+          };
+        },
+      });
+
+      assert.equal(clientCalls, 0);
+      assert.equal(result.authState, "anonymous");
+      assert.deepEqual(result.decision, {
+        action: "redirect",
+        destination: "/login",
+        preserveRedirectTo: true,
+      });
     },
   },
   {
@@ -531,6 +583,18 @@ const tests: TestCase[] = [
         }).length;
 
       assert.equal(createServerClientCalls, 1);
+    },
+  },
+  {
+    name: "root page source redirects directly to /login",
+    run: () => {
+      const source = readFileSync(
+        join(process.cwd(), "src/app/page.tsx"),
+        "utf8",
+      );
+
+      assert.equal(source.includes('redirect("/login")'), true);
+      assert.equal(source.includes('redirect("/dashboard")'), false);
     },
   },
 ];
