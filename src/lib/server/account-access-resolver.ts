@@ -350,6 +350,29 @@ function normalizeCommercialAccess(
   return row.is_blocked ? "blocked" : "allowed";
 }
 
+function logOnboardingContractDiagnostic(value: unknown) {
+  const isArrayValue = Array.isArray(value);
+  const normalizedValue =
+    isArrayValue && value.length === 1 ? value[0] : value;
+  const objectValue =
+    normalizedValue && typeof normalizedValue === "object" ? normalizedValue : null;
+  const statusValue = objectValue
+    ? (objectValue as { status?: unknown }).status
+    : undefined;
+
+  console.info("[account-access-resolver]", {
+    stepCode: "onboarding_contract_diagnostic",
+    returnKind:
+      value == null ? "null" : isArrayValue ? "array" : typeof value === "object" ? "object" : typeof value,
+    elementCount: isArrayValue ? value.length : null,
+    propertyNames: objectValue ? Object.keys(objectValue).sort() : [],
+    statusType:
+      statusValue === null ? "null" : Array.isArray(statusValue) ? "array" : typeof statusValue,
+    statusValue: typeof statusValue === "string" ? statusValue : null,
+    hasSupabaseError: false,
+  });
+}
+
 function normalizeOnboardingRequired(
   value: unknown,
 ): boolean | AccessResolutionFailure {
@@ -955,13 +978,13 @@ export async function resolveAccessForRequest({
 
   let onboardingRequired: boolean | AccessResolutionFailure;
   try {
-    onboardingRequired = normalizeOnboardingRequired(
-      await deps.fetchOnboardingRecord(
-        serviceSupabase,
-        facts.organizationId,
-        facts.storeId,
-      ),
+    const onboardingRecord = await deps.fetchOnboardingRecord(
+      serviceSupabase,
+      facts.organizationId,
+      facts.storeId,
     );
+    logOnboardingContractDiagnostic(onboardingRecord);
+    onboardingRequired = normalizeOnboardingRequired(onboardingRecord);
   } catch {
     return createUnavailableResolution(
       requestedDomain,
