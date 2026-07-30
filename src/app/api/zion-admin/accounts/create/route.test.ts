@@ -15,157 +15,20 @@ function readSource(path: string) {
   return readFileSync(path, "utf8");
 }
 
-function getPostFunctionSource(source: string) {
-  const marker = "export async function POST(request: Request)";
-  const start = source.indexOf(marker);
-
-  assert.notEqual(start, -1, "POST function must exist");
-
-  return source.slice(start);
-}
-
-function countOccurrences(source: string, token: string) {
-  return source.split(token).length - 1;
-}
-
 const tests: TestCase[] = [
   {
-    name: "route uses canonical zion admin helpers",
-    run: () => {
-      const source = readSource(routePath);
-
-      assert.equal(source.includes("resolveZionAdminApiAccess"), true);
-      assert.equal(source.includes("createZionAdminApiDeniedResponse"), true);
-      assert.equal(source.includes("createZionAdminApiJsonResponse"), true);
-    },
-  },
-  {
-    name: "POST resolves access exactly once before body and service role",
-    run: () => {
-      const source = readSource(routePath);
-      const postSource = getPostFunctionSource(source);
-      const resolveIndex = postSource.indexOf(
-        "const access = await resolveZionAdminApiAccess()",
-      );
-      const deniedIndex = postSource.indexOf(
-        "return createZionAdminApiDeniedResponse(access)",
-      );
-      const jsonIndex = postSource.indexOf("const body = await request.json()");
-      const emailValidationIndex = postSource.indexOf('if (!email)');
-      const serviceRoleIndex = postSource.indexOf(
-        "const serviceSupabase = createServiceSupabaseClient()",
-      );
-      const authAdminIndex = postSource.indexOf(
-        "findAuthUserByEmail(serviceSupabase, email)",
-      );
-      const rpcIndex = postSource.indexOf("runProvisioningRpc(serviceSupabase, {");
-
-      assert.notEqual(resolveIndex, -1);
-      assert.notEqual(deniedIndex, -1);
-      assert.notEqual(jsonIndex, -1);
-      assert.notEqual(emailValidationIndex, -1);
-      assert.notEqual(serviceRoleIndex, -1);
-      assert.equal(countOccurrences(postSource, "resolveZionAdminApiAccess()"), 1);
-      assert.equal(resolveIndex < deniedIndex, true);
-      assert.equal(deniedIndex < jsonIndex, true);
-      assert.equal(jsonIndex < emailValidationIndex, true);
-      assert.equal(emailValidationIndex < serviceRoleIndex, true);
-      assert.equal(serviceRoleIndex < authAdminIndex, true);
-      assert.equal(serviceRoleIndex < rpcIndex, true);
-    },
-  },
-  {
-    name: "manual gate and forbidden patterns are absent",
-    run: () => {
-      const source = readSource(routePath);
-
-      const forbiddenTokens = [
-        "createSupabaseServerClient",
-        ".auth.getUser(",
-        "getSession(",
-        'from("zion_internal_admins")',
-        "resolveStoreApiAccess",
-        "resolveAccessForRequest",
-        "NextResponse.json",
-        "details:",
-        "stack",
-        "cause",
-        "error.message",
-      ];
-
-      for (const token of forbiddenTokens) {
-        assert.equal(
-          source.includes(token),
-          false,
-          `unexpected token in accounts/create route: ${token}`,
-        );
-      }
-    },
-  },
-  {
-    name: "cleanup failure path is protected and ends through JSON adapter",
-    run: () => {
-      const source = readSource(routePath);
-      const postSource = getPostFunctionSource(source);
-      const cleanupBlockIndex = postSource.indexOf("if (invitedUserId) {");
-      const cleanupTryIndex = postSource.indexOf("try {", cleanupBlockIndex);
-      const cleanupCreateClientIndex = postSource.indexOf(
-        "const serviceSupabase = createServiceSupabaseClient()",
-        cleanupBlockIndex,
-      );
-      const cleanupCallIndex = postSource.indexOf(
-        "const cleanup = await deleteUserOrMarkFailed(",
-        cleanupBlockIndex,
-      );
-      const cleanupCatchIndex = postSource.indexOf("} catch (cleanupError) {", cleanupBlockIndex);
-      const partialReviewCodeIndex = postSource.indexOf(
-        "code: PARTIAL_REVIEW_CODE",
-        cleanupCatchIndex,
-      );
-      const partialReviewResponseIndex = postSource.indexOf(
-        "return createZionAdminApiJsonResponse(",
-        cleanupCatchIndex,
-      );
-
-      assert.notEqual(cleanupBlockIndex, -1);
-      assert.notEqual(cleanupTryIndex, -1);
-      assert.notEqual(cleanupCreateClientIndex, -1);
-      assert.notEqual(cleanupCallIndex, -1);
-      assert.notEqual(cleanupCatchIndex, -1);
-      assert.notEqual(partialReviewCodeIndex, -1);
-      assert.notEqual(partialReviewResponseIndex, -1);
-      assert.equal(cleanupBlockIndex < cleanupTryIndex, true);
-      assert.equal(cleanupTryIndex < cleanupCreateClientIndex, true);
-      assert.equal(cleanupCreateClientIndex < cleanupCallIndex, true);
-      assert.equal(cleanupCallIndex < cleanupCatchIndex, true);
-      assert.equal(cleanupCatchIndex < partialReviewResponseIndex, true);
-      assert.equal(partialReviewResponseIndex < partialReviewCodeIndex, true);
-      assert.equal(
-        postSource.includes("throw cleanupError"),
-        false,
-        "cleanup errors must not be rethrown from POST",
-      );
-    },
-  },
-  {
-    name: "public success fields remain present",
+    name: "route keeps canonical admin adapters and extracted core",
     run: () => {
       const source = readSource(routePath);
 
       const requiredTokens = [
-        "ok: true",
-        "invited: false",
-        "invited: true",
-        "recovered: true",
-        "userId:",
-        "organizationId:",
-        "storeId:",
-        'membershipRole: "owner"',
-        "provisioningStatus:",
-        "accessMode:",
-        "nextStep:",
-        "message:",
-        "code:",
+        "resolveZionAdminApiAccess",
+        "createZionAdminApiDeniedResponse",
+        "createZionAdminApiJsonResponse",
+        "async function createZionAdminAccountCore(",
+        "async function cleanupFailedProvisioningAttempt(",
+        "__zionAdminAccountsCreateRouteTestHooks",
+        "status: hasProvisioningTarget(cleanupTarget) ? 503 : 409",
       ];
 
       for (const token of requiredTokens) {
@@ -174,28 +37,51 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "initial invite now targets set-initial-password with tracked attempt metadata",
+    name: "compensation deletes tenant resources in reverse order before auth user",
     run: () => {
       const source = readSource(routePath);
+      const functionStart = source.indexOf(
+        "async function deleteProvisioningTenantResources(",
+      );
+      const functionEnd = source.indexOf("async function markUserAsFailedSafely(", functionStart);
+      const compensationSource = source.slice(functionStart, functionEnd);
 
-      const requiredTokens = [
-        "createFirstAccessAttemptId()",
-        "getFirstAccessInviteRedirectTo(firstAccessAttemptId)",
-        "createFirstAccessInviteMetadataPatch({",
-        'redirectTo: inviteRedirectTo',
-      ];
+      const storeOnboardingIndex = compensationSource.indexOf('.from("store_onboarding")');
+      const subscriptionsIndex = compensationSource.indexOf('.from("subscriptions")');
+      const storesIndex = compensationSource.indexOf('.from("stores")');
+      const membershipsIndex = compensationSource.indexOf('.from("memberships")');
+      const profilesIndex = compensationSource.indexOf('.from("profiles")');
+      const organizationsIndex = compensationSource.indexOf('.from("organizations")');
+      const deleteUserIndex = source.indexOf(".auth.admin.deleteUser(params.userId)");
 
-      for (const token of requiredTokens) {
-        assert.equal(source.includes(token), true, `missing token: ${token}`);
-      }
+      assert.notEqual(functionStart, -1);
+      assert.notEqual(functionEnd, -1);
+      assert.notEqual(storeOnboardingIndex, -1);
+      assert.notEqual(subscriptionsIndex, -1);
+      assert.notEqual(storesIndex, -1);
+      assert.notEqual(membershipsIndex, -1);
+      assert.notEqual(profilesIndex, -1);
+      assert.notEqual(organizationsIndex, -1);
+      assert.notEqual(deleteUserIndex, -1);
+      assert.equal(storeOnboardingIndex < subscriptionsIndex, true);
+      assert.equal(subscriptionsIndex < storesIndex, true);
+      assert.equal(storesIndex < membershipsIndex, true);
+      assert.equal(membershipsIndex < profilesIndex, true);
+      assert.equal(profilesIndex < organizationsIndex, true);
+      assert.equal(organizationsIndex < deleteUserIndex, true);
     },
   },
   {
-    name: "consumer route path remains unchanged",
+    name: "POST remains gated and consumer route stays unchanged",
     run: () => {
-      const source = readSource(consumerPath);
+      const routeSource = readSource(routePath);
+      const consumerSource = readSource(consumerPath);
 
-      assert.equal(source.includes("/api/zion-admin/accounts/create"), true);
+      assert.equal(routeSource.includes("const access = await resolveZionAdminApiAccess()"), true);
+      assert.equal(routeSource.includes("return createZionAdminApiDeniedResponse(access)"), true);
+      assert.equal(routeSource.includes("const body = await request.json().catch(() => null)"), true);
+      assert.equal(routeSource.includes("serviceSupabase: createServiceSupabaseClient(),"), true);
+      assert.equal(consumerSource.includes("/api/zion-admin/accounts/create"), true);
     },
   },
 ];

@@ -51,6 +51,32 @@ type AuthUserLike = {
   app_metadata?: Record<string, unknown> | null;
 };
 
+type ZionAdminAccessContext = {
+  ok: true;
+  sessionUserId: string;
+};
+
+type JsonResponseShape = {
+  body: Record<string, unknown>;
+  status: number;
+};
+
+type ProvisioningCleanupTarget = {
+  profileUserId: string | null;
+  organizationId: string | null;
+  membershipId: string | null;
+  storeId: string | null;
+};
+
+type CleanupAttemptParams = {
+  userId: string;
+  currentMetadata: Record<string, unknown> | null | undefined;
+  removeAuthUser: boolean;
+  markUserFailedOnCleanupFailure: boolean;
+  restoreMetadata?: Record<string, unknown> | null | undefined;
+  tenantTarget?: ProvisioningCleanupTarget | null;
+};
+
 type ExistingProvisioningState = {
   profileExists: boolean;
   membershipRows: ExistingMembershipRow[];
@@ -79,7 +105,7 @@ type ExistingUserDecision =
 
 const PILOT_ACCESS_CODE = "pilot_full_access";
 const PARTIAL_REVIEW_CODE = "PROVISIONING_PARTIAL_REQUIRES_REVIEW";
-const METADATA_REVIEW_CODE = "PROVISIONING_METADATA_REQUIRES_REVIEW";
+const COMPENSATION_FAILED_CODE = "PROVISIONING_COMPENSATION_FAILED";
 
 function normalizeEmail(value: unknown) {
   return String(value || "").trim().toLowerCase();
@@ -414,113 +440,305 @@ async function updateProvisioningMetadata(
   }
 }
 
-async function deleteUserOrMarkFailed(
+function hasProvisioningTarget(
+  target: ProvisioningCleanupTarget | null | undefined,
+): target is {
+  profileUserId: string;
+  organizationId: string;
+  membershipId: string;
+  storeId: string;
+} {
+  return Boolean(
+    target?.profileUserId &&
+      target.organizationId &&
+      target.membershipId &&
+      target.storeId,
+  );
+}
+
+async function deleteProvisioningTenantResources(
+  serviceSupabase: ReturnType<typeof createServiceSupabaseClient>,
+  target: {
+    profileUserId: string;
+    organizationId: string;
+    membershipId: string;
+    storeId: string;
+  },
+) {
+  const { error: onboardingError } = await serviceSupabase
+    .from("store_onboarding")
+    .delete()
+    .eq("organization_id", target.organizationId)
+    .eq("store_id", target.storeId);
+
+  if (onboardingError) {
+    throw onboardingError;
+  }
+
+  const { error: subscriptionError } = await serviceSupabase
+    .from("subscriptions")
+    .delete()
+    .eq("organization_id", target.organizationId);
+
+  if (subscriptionError) {
+    throw subscriptionError;
+  }
+
+  const { error: storeError } = await serviceSupabase
+    .from("stores")
+    .delete()
+    .eq("id", target.storeId)
+    .eq("organization_id", target.organizationId);
+
+  if (storeError) {
+    throw storeError;
+  }
+
+  const { error: membershipError } = await serviceSupabase
+    .from("memberships")
+    .delete()
+    .eq("id", target.membershipId)
+    .eq("organization_id", target.organizationId)
+    .eq("user_id", target.profileUserId);
+
+  if (membershipError) {
+    throw membershipError;
+  }
+
+  const { error: profileError } = await serviceSupabase
+    .from("profiles")
+    .delete()
+    .eq("user_id", target.profileUserId);
+
+  if (profileError) {
+    throw profileError;
+  }
+
+  const { error: organizationError } = await serviceSupabase
+    .from("organizations")
+    .delete()
+    .eq("id", target.organizationId);
+
+  if (organizationError) {
+    throw organizationError;
+  }
+}
+
+async function markUserAsFailedSafely(
   serviceSupabase: ReturnType<typeof createServiceSupabaseClient>,
   userId: string,
   currentMetadata: Record<string, unknown> | null | undefined,
 ) {
-  let deleteError:
-    | {
-        message?: string | null;
-        code?: string | null;
-        status?: number | null;
-      }
-    | null = null;
-
-  try {
-    const deleteResult = await serviceSupabase.auth.admin.deleteUser(userId);
-    deleteError = deleteResult.error;
-  } catch (error) {
-    const diagnostics = getErrorDetails(error);
-
-    console.error("[zion-admin/accounts/create] cleanup deleteUser threw:", {
-      userId,
-      message: diagnostics.message,
-      code: diagnostics.code,
-      status: diagnostics.status,
-    });
-
-    deleteError = {
-      message: diagnostics.message,
-      code: diagnostics.code,
-      status: diagnostics.status,
-    };
-  }
-
-  if (!deleteError) {
-    return {
-      deleted: true,
-    };
-  }
-
-  console.error("[zion-admin/accounts/create] cleanup deleteUser error:", {
-    userId,
-    message: deleteError.message,
-    code: deleteError.code ?? null,
-    status: deleteError.status ?? null,
-  });
-
   try {
     await updateProvisioningMetadata(serviceSupabase, userId, currentMetadata, "failed");
+    return true;
   } catch (metadataError) {
     const diagnostics = getErrorDetails(metadataError);
 
     console.error("[zion-admin/accounts/create] failed to mark partial provisioning:", {
-      userId,
       ...diagnostics,
     });
+
+    return false;
+  }
+}
+
+async function restoreUserMetadataSafely(
+  serviceSupabase: ReturnType<typeof createServiceSupabaseClient>,
+  userId: string,
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const { error } = await serviceSupabase.auth.admin.updateUserById(userId, {
+    app_metadata: metadata ? { ...metadata } : {},
+  });
+
+  if (error) {
+    throw error;
+  }
+}
+
+async function cleanupFailedProvisioningAttempt(
+  serviceSupabase: ReturnType<typeof createServiceSupabaseClient>,
+  params: CleanupAttemptParams,
+) {
+  const cleanupTarget = hasProvisioningTarget(params.tenantTarget)
+    ? params.tenantTarget
+    : null;
+  let metadataRestored = params.restoreMetadata ? false : true;
+  let tenantDeleted = cleanupTarget === null;
+  let authUserDeleted = false;
+
+  if (params.restoreMetadata) {
+    try {
+      await restoreUserMetadataSafely(
+        serviceSupabase,
+        params.userId,
+        params.restoreMetadata,
+      );
+      metadataRestored = true;
+    } catch (error) {
+      const diagnostics = getErrorDetails(error);
+
+      console.error("[zion-admin/accounts/create] failed to restore original metadata:", {
+        message: diagnostics.message,
+        code: diagnostics.code,
+        status: diagnostics.status,
+      });
+
+      return {
+        cleaned: false,
+        metadataRestored: false,
+        tenantDeleted: false,
+        authUserDeleted: false,
+      };
+    }
+  }
+
+  if (cleanupTarget) {
+    try {
+      await deleteProvisioningTenantResources(serviceSupabase, cleanupTarget);
+      tenantDeleted = true;
+    } catch (error) {
+      const diagnostics = getErrorDetails(error);
+
+      console.error("[zion-admin/accounts/create] tenant compensation failed:", {
+        message: diagnostics.message,
+        code: diagnostics.code,
+        status: diagnostics.status,
+      });
+
+      if (params.markUserFailedOnCleanupFailure) {
+        await markUserAsFailedSafely(serviceSupabase, params.userId, params.currentMetadata);
+      }
+
+      return {
+        cleaned: false,
+        metadataRestored,
+        tenantDeleted,
+        authUserDeleted: false,
+      };
+    }
+  }
+
+  if (params.removeAuthUser) {
+    try {
+      const deleteResult = await serviceSupabase.auth.admin.deleteUser(params.userId);
+
+      if (deleteResult.error) {
+        const diagnostics = getErrorDetails(deleteResult.error);
+
+        console.error("[zion-admin/accounts/create] cleanup deleteUser error:", {
+          message: diagnostics.message,
+          code: diagnostics.code,
+          status: diagnostics.status,
+        });
+
+        if (params.markUserFailedOnCleanupFailure) {
+          await markUserAsFailedSafely(serviceSupabase, params.userId, params.currentMetadata);
+        }
+
+        return {
+          cleaned: false,
+          metadataRestored,
+          tenantDeleted,
+          authUserDeleted: false,
+        };
+      }
+
+      authUserDeleted = true;
+    } catch (error) {
+      const diagnostics = getErrorDetails(error);
+
+      console.error("[zion-admin/accounts/create] cleanup deleteUser threw:", {
+        message: diagnostics.message,
+        code: diagnostics.code,
+        status: diagnostics.status,
+      });
+
+      if (params.markUserFailedOnCleanupFailure) {
+        await markUserAsFailedSafely(serviceSupabase, params.userId, params.currentMetadata);
+      }
+
+      return {
+        cleaned: false,
+        metadataRestored,
+        tenantDeleted,
+        authUserDeleted: false,
+      };
+    }
+  } else if (params.markUserFailedOnCleanupFailure && !params.restoreMetadata) {
+    const failedMarked = await markUserAsFailedSafely(
+      serviceSupabase,
+      params.userId,
+      params.currentMetadata,
+    );
+
+    if (!failedMarked) {
+      return {
+        cleaned: false,
+        metadataRestored,
+        tenantDeleted,
+        authUserDeleted: false,
+      };
+    }
   }
 
   return {
-    deleted: false,
+    cleaned: true,
+    metadataRestored,
+    tenantDeleted,
+    authUserDeleted,
   };
 }
 
-export async function POST(request: Request) {
+async function createZionAdminAccountCore(params: {
+  access: ZionAdminAccessContext;
+  body: unknown;
+  serviceSupabase: ReturnType<typeof createServiceSupabaseClient>;
+}) {
   let invitedUserId: string | null = null;
   let invitedUserAppMetadata: Record<string, unknown> | null | undefined = null;
   let effectiveProcessedUserId: string | null = null;
-  let provisioningSucceeded = false;
-  let metadataReviewRequired = false;
+  let shouldDeleteAuthUserOnCleanup = false;
+  let cleanupTarget: ProvisioningCleanupTarget | null = null;
+  let originalExistingUserMetadata: Record<string, unknown> | null | undefined = null;
 
   try {
-    const access = await resolveZionAdminApiAccess();
-
-    if (!access.ok) {
-      return createZionAdminApiDeniedResponse(access);
-    }
-
-    const body = await request.json().catch(() => null);
-    const email = normalizeEmail(body?.email);
-    const storeName = normalizeText(body?.storeName);
-    const responsibleName = normalizeText(body?.responsibleName);
+    const email = normalizeEmail((params.body as { email?: unknown } | null)?.email);
+    const storeName = normalizeText((params.body as { storeName?: unknown } | null)?.storeName);
+    const responsibleName = normalizeText(
+      (params.body as { responsibleName?: unknown } | null)?.responsibleName,
+    );
 
     if (!email) {
-      return createZionAdminApiJsonResponse(
-        { error: "E-mail e obrigatorio." },
-        400,
-      );
+      return {
+        body: { error: "E-mail e obrigatorio." },
+        status: 400,
+      } satisfies JsonResponseShape;
     }
 
     if (!isValidEmail(email)) {
-      return createZionAdminApiJsonResponse({ error: "E-mail invalido." }, 400);
+      return {
+        body: { error: "E-mail invalido." },
+        status: 400,
+      } satisfies JsonResponseShape;
     }
 
     if (!storeName) {
-      return createZionAdminApiJsonResponse(
-        { error: "Nome da loja e obrigatorio." },
-        400,
-      );
+      return {
+        body: { error: "Nome da loja e obrigatorio." },
+        status: 400,
+      } satisfies JsonResponseShape;
     }
 
     if (!responsibleName) {
-      return createZionAdminApiJsonResponse(
-        { error: "Nome do responsavel e obrigatorio." },
-        400,
-      );
+      return {
+        body: { error: "Nome do responsavel e obrigatorio." },
+        status: 400,
+      } satisfies JsonResponseShape;
     }
 
-    const serviceSupabase = createServiceSupabaseClient();
+    const serviceSupabase = params.serviceSupabase;
 
     const existingUser = await findAuthUserByEmail(serviceSupabase, email);
 
@@ -533,7 +751,6 @@ export async function POST(request: Request) {
 
       if (decision.kind === "repair_provisioned_metadata") {
         effectiveProcessedUserId = existingUser.id;
-        metadataReviewRequired = true;
 
         await updateProvisioningMetadata(
           serviceSupabase,
@@ -542,8 +759,8 @@ export async function POST(request: Request) {
           "provisioned",
         );
 
-        return createZionAdminApiJsonResponse(
-          {
+        return {
+          body: {
             ok: true,
             invited: false,
             recovered: true,
@@ -554,17 +771,19 @@ export async function POST(request: Request) {
             message:
               "A estrutura da conta ja existia e os metadados administrativos de primeiro acesso foram corrigidos.",
           },
-          200,
-        );
+          status: 200,
+        } satisfies JsonResponseShape;
       }
 
       if (decision.kind === "recover_failed") {
         effectiveProcessedUserId = existingUser.id;
+        originalExistingUserMetadata =
+          (existingUser.app_metadata as Record<string, unknown> | null | undefined) ?? null;
 
         await updateProvisioningMetadata(
           serviceSupabase,
           existingUser.id,
-          existingUser.app_metadata,
+          originalExistingUserMetadata,
           "pending",
         );
 
@@ -574,18 +793,22 @@ export async function POST(request: Request) {
           storeName,
         });
 
-        provisioningSucceeded = true;
-        metadataReviewRequired = true;
+        cleanupTarget = {
+          profileUserId: provisioningRow.profile_user_id,
+          organizationId: provisioningRow.organization_id,
+          membershipId: provisioningRow.membership_id,
+          storeId: provisioningRow.store_id,
+        };
 
         await updateProvisioningMetadata(
           serviceSupabase,
           existingUser.id,
-          existingUser.app_metadata,
+          originalExistingUserMetadata,
           "provisioned",
         );
 
-        return createZionAdminApiJsonResponse(
-          {
+        return {
+          body: {
             ok: true,
             invited: false,
             recovered: true,
@@ -599,17 +822,17 @@ export async function POST(request: Request) {
             message:
               "O provisionamento da conta foi recuperado. Se o convite original tiver expirado, o reenvio deve ser feito em um fluxo administrativo separado.",
           },
-          200,
-        );
+          status: 200,
+        } satisfies JsonResponseShape;
       }
 
-      return createZionAdminApiJsonResponse(
-        {
+      return {
+        body: {
           error: decision.error,
           code: decision.code,
         },
-        decision.status,
-      );
+        status: decision.status,
+      } satisfies JsonResponseShape;
     }
 
     const firstAccessAttemptId = createFirstAccessAttemptId();
@@ -618,7 +841,7 @@ export async function POST(request: Request) {
     const inviteMetadataPatch = createFirstAccessInviteMetadataPatch({
       attemptId: firstAccessAttemptId,
       sentAt: inviteSentAt,
-      sentBy: access.sessionUserId,
+      sentBy: params.access.sessionUserId,
       status: "pending",
     });
     const { data: invitedUserResponse, error: inviteError } =
@@ -639,14 +862,15 @@ export async function POST(request: Request) {
         status: inviteDiagnostics.status,
       });
 
-      return createZionAdminApiJsonResponse(
-        { error: "Falha ao enviar o convite da nova conta." },
-        500,
-      );
+      return {
+        body: { error: "Falha ao enviar o convite da nova conta." },
+        status: 500,
+      } satisfies JsonResponseShape;
     }
 
     invitedUserId = invitedUserResponse.user.id;
     effectiveProcessedUserId = invitedUserId;
+    shouldDeleteAuthUserOnCleanup = true;
     invitedUserAppMetadata =
       (invitedUserResponse.user.app_metadata as Record<string, unknown> | null | undefined) ??
       null;
@@ -665,8 +889,12 @@ export async function POST(request: Request) {
       storeName,
     });
 
-    provisioningSucceeded = true;
-    metadataReviewRequired = true;
+    cleanupTarget = {
+      profileUserId: provisioningRow.profile_user_id,
+      organizationId: provisioningRow.organization_id,
+      membershipId: provisioningRow.membership_id,
+      storeId: provisioningRow.store_id,
+    };
 
     await updateProvisioningMetadata(
       serviceSupabase,
@@ -676,13 +904,13 @@ export async function POST(request: Request) {
       createFirstAccessInviteMetadataPatch({
         attemptId: firstAccessAttemptId,
         sentAt: inviteSentAt,
-        sentBy: access.sessionUserId,
+        sentBy: params.access.sessionUserId,
         status: "provisioned",
       }),
     );
 
-    return createZionAdminApiJsonResponse(
-      {
+    return {
+      body: {
         ok: true,
         invited: true,
         userId: invitedUserId,
@@ -695,79 +923,65 @@ export async function POST(request: Request) {
         message:
           "Convite enviado. O cliente criara a propria senha e o primeiro acesso seguira para o onboarding.",
       },
-      200,
-    );
+      status: 200,
+    } satisfies JsonResponseShape;
   } catch (error: unknown) {
     const diagnostics = getErrorDetails(error);
 
-    if (metadataReviewRequired && provisioningSucceeded && effectiveProcessedUserId) {
-      console.error("[zion-admin/accounts/create] metadata requires review after tenant provisioning:", {
-        userId: effectiveProcessedUserId,
-        message: diagnostics.message,
-        code: diagnostics.code,
-        status: diagnostics.status,
-      });
-
-      return createZionAdminApiJsonResponse(
-        {
-          error:
-            "O tenant foi criado, mas a marcacao administrativa final do primeiro acesso falhou e exige revisao interna.",
-          code: METADATA_REVIEW_CODE,
-        },
-        409,
-      );
-    }
-
-    if (invitedUserId) {
+    if (effectiveProcessedUserId) {
       try {
-        const serviceSupabase = createServiceSupabaseClient();
-        const cleanup = await deleteUserOrMarkFailed(
-          serviceSupabase,
-          invitedUserId,
-          invitedUserAppMetadata,
-        );
+        const cleanup = await cleanupFailedProvisioningAttempt(params.serviceSupabase, {
+          userId: effectiveProcessedUserId,
+          currentMetadata: invitedUserAppMetadata,
+          removeAuthUser: shouldDeleteAuthUserOnCleanup,
+          markUserFailedOnCleanupFailure: true,
+          restoreMetadata: shouldDeleteAuthUserOnCleanup
+            ? null
+            : originalExistingUserMetadata,
+          tenantTarget: cleanupTarget,
+        });
 
-        if (!cleanup.deleted) {
+        if (!cleanup.cleaned) {
           console.error("[zion-admin/accounts/create] partial provisioning requires review:", {
-            invitedUserId,
             message: diagnostics.message,
             code: diagnostics.code,
             status: diagnostics.status,
           });
 
-          return createZionAdminApiJsonResponse(
-            {
+          return {
+            body: {
               error:
-                "Falha administrativa: o provisionamento ficou parcial e exige revisao interna antes de qualquer nova tentativa.",
-              code: PARTIAL_REVIEW_CODE,
+              "Falha administrativa: o provisionamento ficou parcial e exige revisao interna antes de qualquer nova tentativa.",
+              code: hasProvisioningTarget(cleanupTarget)
+                ? COMPENSATION_FAILED_CODE
+                : PARTIAL_REVIEW_CODE,
             },
-            409,
-          );
+            status: hasProvisioningTarget(cleanupTarget) ? 503 : 409,
+          } satisfies JsonResponseShape;
         }
       } catch (cleanupError) {
         const cleanupDiagnostics = getErrorDetails(cleanupError);
 
         console.error("[zion-admin/accounts/create] cleanup threw and requires review:", {
-          invitedUserId,
           message: cleanupDiagnostics.message,
           code: cleanupDiagnostics.code,
           status: cleanupDiagnostics.status,
         });
 
-        return createZionAdminApiJsonResponse(
-          {
+        return {
+          body: {
             error:
               "Falha administrativa: o provisionamento ficou parcial e exige revisao interna antes de qualquer nova tentativa.",
-            code: PARTIAL_REVIEW_CODE,
+            code: hasProvisioningTarget(cleanupTarget)
+              ? COMPENSATION_FAILED_CODE
+              : PARTIAL_REVIEW_CODE,
           },
-          409,
-        );
+          status: hasProvisioningTarget(cleanupTarget) ? 503 : 409,
+        } satisfies JsonResponseShape;
       }
     }
 
     console.error("[zion-admin/accounts/create] error:", {
-      effectiveProcessedUserId,
-      invitedUserId,
       message: diagnostics.message,
       code: diagnostics.code,
       status: diagnostics.status,
@@ -780,11 +994,37 @@ export async function POST(request: Request) {
       diagnostics.publicMessage ||
       "Falha tecnica interna ao criar e provisionar a conta.";
 
-    return createZionAdminApiJsonResponse(
-      {
+    return {
+      body: {
         error: publicMessage,
       },
       status,
-    );
+    } satisfies JsonResponseShape;
   }
+}
+
+const testHooks = {
+  createZionAdminAccountCore,
+  cleanupFailedProvisioningAttempt,
+};
+
+Object.assign(globalThis as Record<string, unknown>, {
+  __zionAdminAccountsCreateRouteTestHooks: testHooks,
+});
+
+export async function POST(request: Request) {
+  const access = await resolveZionAdminApiAccess();
+
+  if (!access.ok) {
+    return createZionAdminApiDeniedResponse(access);
+  }
+
+  const body = await request.json().catch(() => null);
+  const result = await createZionAdminAccountCore({
+    access,
+    body,
+    serviceSupabase: createServiceSupabaseClient(),
+  });
+
+  return createZionAdminApiJsonResponse(result.body, result.status);
 }

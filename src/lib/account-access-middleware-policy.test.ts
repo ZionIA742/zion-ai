@@ -9,7 +9,7 @@ import {
 import {
   buildRedirectUrl,
   evaluateMiddlewarePathname,
-} from "../../middleware.ts";
+} from "../../middleware";
 
 type TestCase = {
   name: string;
