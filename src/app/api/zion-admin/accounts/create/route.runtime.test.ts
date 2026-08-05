@@ -370,12 +370,6 @@ function createHarnessServiceSupabase(state: HarnessState) {
             id: `subscription_${state.calls.provisioningRpc}`,
             organization_id: organizationId,
           });
-          state.tables.store_onboarding.push({
-            id: `onboarding_${state.calls.provisioningRpc}`,
-            organization_id: organizationId,
-            store_id: storeId,
-            status: null,
-          });
 
           return {
             data: {
@@ -449,7 +443,7 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "metadata failure after atomic tenant provisioning compensates full tenant and allows clean retry",
+    name: "metadata failure after atomic tenant provisioning keeps onboarding not_started and allows clean retry",
     run: async () => {
       const state = createEmptyState();
       state.failures.updateUserByIdAtCalls = [2];
@@ -489,7 +483,11 @@ const tests: TestCase[] = [
       assert.equal(state.tables.organizations.length, 1);
       assert.equal(state.tables.stores.length, 1);
       assert.equal(state.tables.subscriptions.length, 1);
-      assert.equal(state.tables.store_onboarding.length, 1);
+      assert.equal(
+        state.tables.store_onboarding.length,
+        0,
+        "successful provisioning must leave store_onboarding empty until the first onboarding save starts it",
+      );
     },
   },
   {

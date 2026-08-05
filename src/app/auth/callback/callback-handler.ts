@@ -16,6 +16,9 @@ const RECOVERY_LINK_ERROR_MESSAGE =
 const CALLBACK_ERROR_MESSAGE =
   "Nao foi possivel concluir a autenticacao. Tente novamente a partir do login.";
 const FIRST_ACCESS_PATH = "/auth/set-initial-password";
+const SUPPORTED_TOKEN_HASH_TYPES = ["recovery", "invite"] as const;
+
+type SupportedTokenHashType = (typeof SUPPORTED_TOKEN_HASH_TYPES)[number];
 
 export type CallbackHandlerDeps = {
   createSupabaseClient: typeof createSupabaseServerClient;
@@ -121,6 +124,12 @@ async function resolveAuthenticatedFirstAccessRedirect(args: {
   return createRedirectResponse(redirectUrl);
 }
 
+function getSupportedTokenHashType(
+  value: string | null,
+): SupportedTokenHashType | null {
+  return SUPPORTED_TOKEN_HASH_TYPES.find((candidate) => candidate === value) ?? null;
+}
+
 export async function handleAuthCallback(
   request: Request,
   deps: CallbackHandlerDeps,
@@ -128,7 +137,7 @@ export async function handleAuthCallback(
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
   const tokenHash = requestUrl.searchParams.get("token_hash");
-  const otpType = requestUrl.searchParams.get("type");
+  const otpType = getSupportedTokenHashType(requestUrl.searchParams.get("type"));
   const nextPath = getSafeNextPath(requestUrl.searchParams.get("next"));
   const attemptId = requestUrl.searchParams.get("attempt");
   const callbackError =
@@ -140,7 +149,7 @@ export async function handleAuthCallback(
     pathname: requestUrl.pathname,
     hasCode: Boolean(code),
     hasTokenHash: Boolean(tokenHash),
-    otpType: otpType === "recovery" ? "recovery" : null,
+    otpType,
     nextPath,
     hasAttempt: Boolean(attemptId),
   });
@@ -153,7 +162,7 @@ export async function handleAuthCallback(
     );
   }
 
-  if (tokenHash && otpType === "recovery") {
+  if (tokenHash) {
     if (!nextPath) {
       return redirectToLoginWithClearedSession(
         deps,
@@ -162,12 +171,36 @@ export async function handleAuthCallback(
       );
     }
 
+    if (!otpType) {
+      return redirectToLoginWithClearedSession(
+        deps,
+        request,
+        CALLBACK_ERROR_MESSAGE,
+      );
+    }
+
+    if (otpType === "invite" && nextPath !== FIRST_ACCESS_PATH) {
+      return redirectToLoginWithClearedSession(
+        deps,
+        request,
+        CALLBACK_ERROR_MESSAGE,
+      );
+    }
+
+    if (otpType === "invite" && !attemptId) {
+      return redirectToLoginWithClearedSession(
+        deps,
+        request,
+        deps.getInvalidFirstAccessAttemptMessage("missing"),
+      );
+    }
+
     const supabase = await deps.createSupabaseClient();
     await supabase.auth.signOut();
 
     const { error } = await supabase.auth.verifyOtp({
       token_hash: tokenHash,
-      type: "recovery",
+      type: otpType,
     });
 
     if (error) {
@@ -177,7 +210,8 @@ export async function handleAuthCallback(
         code?: string | null;
       } | null;
 
-      console.error("[auth/callback] verifyOtp recovery error", {
+      console.error("[auth/callback] verifyOtp error", {
+        otpType,
         hasAttempt: Boolean(attemptId),
         message: verifyError?.message ?? null,
         status: verifyError?.status ?? null,

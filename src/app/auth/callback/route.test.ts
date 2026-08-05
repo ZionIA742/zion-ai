@@ -12,7 +12,7 @@ type FakeSupabaseClient = {
     exchangeCodeForSession: (code: string) => Promise<{ error: unknown }>;
     verifyOtp: (args: {
       token_hash: string;
-      type: "recovery";
+      type: "recovery" | "invite";
     }) => Promise<{ error: unknown }>;
     getUser: () => Promise<{ data: { user: { id: string } | null }; error: unknown }>;
   };
@@ -78,7 +78,7 @@ async function createCallbackHarness(harnessOptions?: {
   const calls = {
     signOut: 0,
     exchangeCodes: [] as string[],
-    verifyOtpCalls: [] as Array<{ token_hash: string; type: "recovery" }>,
+    verifyOtpCalls: [] as Array<{ token_hash: string; type: "recovery" | "invite" }>,
     resolveAttempts: [] as Array<string | null | undefined>,
     readInviteMetadataCalls: 0,
   };
@@ -101,7 +101,10 @@ async function createCallbackHarness(harnessOptions?: {
                 error: harnessOptions?.exchangeError ?? null,
               };
             },
-            async verifyOtp(args: { token_hash: string; type: "recovery" }) {
+            async verifyOtp(args: {
+              token_hash: string;
+              type: "recovery" | "invite";
+            }) {
               calls.verifyOtpCalls.push(args);
 
               if (!harnessOptions?.verifyOtpError) {
@@ -401,6 +404,118 @@ const tests: TestCase[] = [
         { token_hash: "recovery_hash_b", type: "recovery" },
       ]);
       assert.deepEqual(harness.calls.resolveAttempts, []);
+    },
+  },
+  {
+    name: "invite token_hash with valid next and attempt redirects to first-access without leaking token",
+    run: async () => {
+      await withCapturedConsole(async (capture) => {
+        const harness = await createCallbackHarness({
+          verifiedRecoveryUser: { id: "user-invite" },
+          authUser: {
+            app_metadata: { zion_first_access_invite_id: "attempt_invite_1" },
+          },
+        });
+        const response = await harness.run(
+          "https://example.com/auth/callback?token_hash=invite_hash_123&type=invite&next=%2Fauth%2Fset-initial-password&attempt=attempt_invite_1",
+        );
+
+        assert.equal(response.status, 307);
+        assert.equal(
+          response.headers.get("location"),
+          "https://example.com/auth/set-initial-password?attempt=attempt_invite_1",
+        );
+        assert.deepEqual(harness.calls.verifyOtpCalls, [
+          { token_hash: "invite_hash_123", type: "invite" },
+        ]);
+        assert.deepEqual(harness.calls.resolveAttempts, ["attempt_invite_1"]);
+        assert.equal(
+          response.headers.get("location")?.includes("invite_hash_123"),
+          false,
+        );
+        const joined = `${capture.info.join(" ")} ${capture.error.join(" ")}`;
+        assert.equal(joined.includes("invite_hash_123"), false);
+      });
+    },
+  },
+  {
+    name: "invite token_hash without attempt fails closed and clears session",
+    run: async () => {
+      const harness = await createCallbackHarness();
+      const response = await harness.run(
+        "https://example.com/auth/callback?token_hash=invite_hash_123&type=invite&next=%2Fauth%2Fset-initial-password",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/login?authError=invalid%3Amissing",
+      );
+      assert.deepEqual(harness.calls.verifyOtpCalls, []);
+      assert.equal(harness.calls.signOut, 1);
+    },
+  },
+  {
+    name: "invite token_hash with next outside first-access fails closed and clears session",
+    run: async () => {
+      const harness = await createCallbackHarness();
+      const response = await harness.run(
+        "https://example.com/auth/callback?token_hash=invite_hash_123&type=invite&next=%2Fauth%2Freset-password&attempt=attempt_invite_1",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/login?authError=Nao+foi+possivel+concluir+a+autenticacao.+Tente+novamente+a+partir+do+login.",
+      );
+      assert.deepEqual(harness.calls.verifyOtpCalls, []);
+      assert.equal(harness.calls.signOut, 1);
+    },
+  },
+  {
+    name: "invite token_hash verifyOtp failure fails closed and clears session",
+    run: async () => {
+      await withCapturedConsole(async (capture) => {
+        const harness = await createCallbackHarness({
+          verifyOtpError: {
+            message: "invite expired",
+            status: 403,
+            code: "otp_expired",
+          },
+        });
+        const response = await harness.run(
+          "https://example.com/auth/callback?token_hash=invite_hash_123&type=invite&next=%2Fauth%2Fset-initial-password&attempt=attempt_invite_1",
+        );
+
+        assert.equal(response.status, 307);
+        assert.equal(
+          response.headers.get("location"),
+          "https://example.com/login?authError=O+link+de+recuperacao+expirou+ou+nao+e+mais+valido.+Peca+um+novo+e-mail.",
+        );
+        assert.deepEqual(harness.calls.verifyOtpCalls, [
+          { token_hash: "invite_hash_123", type: "invite" },
+        ]);
+        assert.equal(harness.calls.signOut, 2);
+        const joined = `${capture.info.join(" ")} ${capture.error.join(" ")}`;
+        assert.equal(joined.includes("invite_hash_123"), false);
+      });
+    },
+  },
+  {
+    name: "token_hash with unsupported type fails closed and clears session",
+    run: async () => {
+      const harness = await createCallbackHarness();
+      const response = await harness.run(
+        "https://example.com/auth/callback?token_hash=unknown_hash_123&type=magic_link&next=%2Fauth%2Freset-password",
+      );
+
+      assert.equal(response.status, 307);
+      assert.equal(
+        response.headers.get("location"),
+        "https://example.com/login?authError=Nao+foi+possivel+concluir+a+autenticacao.+Tente+novamente+a+partir+do+login.",
+      );
+      assert.deepEqual(harness.calls.verifyOtpCalls, []);
+      assert.equal(harness.calls.signOut, 1);
     },
   },
   {
