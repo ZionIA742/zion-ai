@@ -401,12 +401,12 @@ begin
     (v.lead_none, v.org_a, v.store_a, 'Lead None', '+55000000011', 'orcamento', v_base + interval '1 minute', v_base + interval '1 minute'),
     (v.lead_active, v.org_a, v.store_a, 'Lead Active', '+55000000012', 'orcamento', v_base + interval '2 minute', v_base + interval '2 minute'),
     (v.lead_resolved, v.org_a, v.store_a, 'Lead Resolved', '+55000000013', 'negociacao', v_base + interval '3 minute', v_base + interval '3 minute'),
-    (v.lead_cancelled, v.org_a, v.store_a, 'Lead Cancelled', '+55000000014', 'visita_tecnica', v_base + interval '4 minute', v_base + interval '4 minute'),
+    (v.lead_cancelled, v.org_a, v.store_a, 'Lead Cancelled', '+55000000014', 'agendar_visita', v_base + interval '4 minute', v_base + interval '4 minute'),
     (v.lead_exhausted, v.org_a, v.store_a, 'Lead Exhausted', '+55000000015', 'qualificacao', v_base + interval '5 minute', v_base + interval '5 minute'),
     (v.lead_opted_out, v.org_a, v.store_a, 'Lead Opted Out', '+55000000016', 'orcamento', v_base + interval '6 minute', v_base + interval '6 minute'),
     (v.lead_history, v.org_a, v.store_a, 'Lead History', '+55000000017', 'orcamento', v_base + interval '7 minute', v_base + interval '7 minute'),
     (v.lead_lost, v.org_a, v.store_a, 'Lead Lost', '+55000000018', 'orcamento', v_base + interval '8 minute', v_base + interval '8 minute'),
-    (v.lead_completed, v.org_a, v.store_a, 'Lead Completed', '+55000000019', 'pos_venda', v_base + interval '9 minute', v_base + interval '9 minute'),
+    (v.lead_completed, v.org_a, v.store_a, 'Lead Completed', '+55000000019', 'pos_venda_nps', v_base + interval '9 minute', v_base + interval '9 minute'),
     (v.lead_store_a2, v.org_a, v.store_a2, 'Lead Other Store', '+55000000020', 'orcamento', v_base + interval '10 minute', v_base + interval '10 minute'),
     (v.lead_org_b, v.org_b, v.store_b, 'Lead Other Org', '+55000000021', 'orcamento', v_base + interval '11 minute', v_base + interval '11 minute');
 
