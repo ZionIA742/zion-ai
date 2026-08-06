@@ -1,6 +1,8 @@
 import { createRequire } from "node:module";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import { resolveStoreApiAccess } from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,6 +48,16 @@ class VisualCatalogInvalidJsonError extends Error {
     super(message);
     this.name = "VisualCatalogInvalidJsonError";
   }
+}
+
+function jsonNoStore(body: unknown, init?: ResponseInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("Cache-Control", "no-store");
+
+  return NextResponse.json(body, {
+    ...init,
+    headers,
+  });
 }
 
 function clampPageStart(value: FormDataEntryValue | null) {
@@ -262,11 +274,11 @@ function parseVisualCatalogJson(text: string | null | undefined) {
 
   try {
     return JSON.parse(rawText);
-  } catch (error) {
-    console.error("[ZION][visual-catalog-import] invalid vision JSON", {
-      message: error instanceof Error ? error.message : String(error),
-      preview: rawText.slice(0, 500),
-      length: rawText.length,
+  } catch {
+    console.error("[ZION][visual-catalog-import]", {
+      event: "invalid_vision_json",
+      route: "onboarding/visual-catalog-import",
+      stage: "parse_response",
     });
     throw new VisualCatalogInvalidJsonError();
   }
@@ -381,12 +393,19 @@ async function analyzeVisualCatalogPage(params: {
 }
 
 export async function POST(request: Request) {
+  const access = await resolveStoreApiAccess({
+    requirement: "active_or_onboarding",
+  });
+  if (!access.ok) {
+    return createStoreApiDeniedResponse(access);
+  }
+
   try {
     const formData = await request.formData();
     const uploadedEntry = formData.get("file") || formData.getAll("files")[0];
 
     if (!(uploadedEntry instanceof File)) {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           ok: false,
           error: "VISUAL_CATALOG_IMPORT_FILE_REQUIRED",
@@ -398,7 +417,7 @@ export async function POST(request: Request) {
 
     const extension = uploadedEntry.name.split(".").pop()?.toLowerCase() || "";
     if (extension !== "pdf") {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           ok: false,
           error: "VISUAL_CATALOG_IMPORT_PDF_ONLY",
@@ -463,7 +482,7 @@ export async function POST(request: Request) {
             })
           : [];
 
-      return NextResponse.json({
+      return jsonNoStore({
         ok: true,
         pageStart,
         pageLimit,
@@ -483,11 +502,11 @@ export async function POST(request: Request) {
       await parser.destroy?.();
     }
   } catch (error: any) {
-    return NextResponse.json(
+    return jsonNoStore(
       {
         ok: false,
         error: "VISUAL_CATALOG_IMPORT_FAILED",
-        message: error?.message || "Erro ao criar base visual do catalogo.",
+        message: "Erro ao criar base visual do catalogo.",
       },
       { status: 500 }
     );
@@ -495,7 +514,14 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
-  return NextResponse.json({
+  const access = await resolveStoreApiAccess({
+    requirement: "active_or_onboarding",
+  });
+  if (!access.ok) {
+    return createStoreApiDeniedResponse(access);
+  }
+
+  return jsonNoStore({
     ok: true,
     route: "onboarding/visual-catalog-import",
     method: "POST",

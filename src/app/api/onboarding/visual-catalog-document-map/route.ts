@@ -1,6 +1,8 @@
 import { createRequire } from "node:module";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import { resolveStoreApiAccess } from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,6 +11,17 @@ const nodeRequire = createRequire(`${process.cwd()}/package.json`);
 const MAX_DOCUMENT_MAP_PAGES = 20;
 const PDF_RENDER_SCALE = 0.45;
 const VISUAL_CATALOG_MODEL = process.env.ZION_VISUAL_CATALOG_MODEL || "gpt-4.1-mini";
+const VISUAL_DOCUMENT_MAP_PAGE_FAILED_REASON = "Pagina nao pode ser classificada visualmente nesta tentativa.";
+
+function jsonNoStore(body: unknown, init?: ResponseInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("Cache-Control", "no-store");
+
+  return NextResponse.json(body, {
+    ...init,
+    headers,
+  });
+}
 
 type VisualDocumentPageType =
   | "cover"
@@ -113,11 +126,11 @@ function parseMapJson(text: string | null | undefined) {
 
   try {
     return { value: JSON.parse(rawText), invalidJson: false };
-  } catch (error) {
-    console.error("[ZION][visual-catalog-document-map] invalid vision JSON", {
-      message: error instanceof Error ? error.message : String(error),
-      preview: rawText.slice(0, 500),
-      length: rawText.length,
+  } catch {
+    console.error("[ZION][visual-catalog-document-map]", {
+      event: "invalid_vision_json",
+      route: "onboarding/visual-catalog-document-map",
+      stage: "parse_response",
     });
     return { value: null, invalidJson: true };
   }
@@ -239,12 +252,19 @@ function selectRecommendedPages(pages: VisualDocumentPageMap[]) {
 }
 
 export async function POST(request: Request) {
+  const access = await resolveStoreApiAccess({
+    requirement: "active_or_onboarding",
+  });
+  if (!access.ok) {
+    return createStoreApiDeniedResponse(access);
+  }
+
   try {
     const formData = await request.formData();
     const uploadedEntry = formData.get("file") || formData.getAll("files")[0];
 
     if (!(uploadedEntry instanceof File)) {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           ok: false,
           error: "VISUAL_DOCUMENT_MAP_FILE_REQUIRED",
@@ -256,7 +276,7 @@ export async function POST(request: Request) {
 
     const extension = uploadedEntry.name.split(".").pop()?.toLowerCase() || "";
     if (extension !== "pdf") {
-      return NextResponse.json(
+      return jsonNoStore(
         {
           ok: false,
           error: "VISUAL_DOCUMENT_MAP_PDF_ONLY",
@@ -313,7 +333,6 @@ export async function POST(request: Request) {
           }
           pages.push(pageMap);
         } catch (error) {
-          const message = error instanceof Error ? error.message : "Falha ao classificar uma pagina.";
           pages.push({
             pageNumber,
             pageType: "unknown",
@@ -324,12 +343,12 @@ export async function POST(request: Request) {
             hasManySmallItems: false,
             confidence: 0,
             recommendedForDetailedScan: false,
-            reason: message,
+            reason: VISUAL_DOCUMENT_MAP_PAGE_FAILED_REASON,
           });
         }
       }
 
-      return NextResponse.json({
+      return jsonNoStore({
         ok: true,
         fileKey,
         totalPages: Number(screenshot.total || 0) || null,
@@ -343,11 +362,11 @@ export async function POST(request: Request) {
       await parser.destroy?.();
     }
   } catch (error: any) {
-    return NextResponse.json(
+    return jsonNoStore(
       {
         ok: false,
         error: "VISUAL_DOCUMENT_MAP_FAILED",
-        message: error?.message || "Erro ao mapear o catalogo visual.",
+        message: "Erro ao mapear o catalogo visual.",
       },
       { status: 500 }
     );
@@ -355,7 +374,14 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
-  return NextResponse.json({
+  const access = await resolveStoreApiAccess({
+    requirement: "active_or_onboarding",
+  });
+  if (!access.ok) {
+    return createStoreApiDeniedResponse(access);
+  }
+
+  return jsonNoStore({
     ok: true,
     route: "onboarding/visual-catalog-document-map",
     method: "POST",
