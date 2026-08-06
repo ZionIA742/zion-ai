@@ -2,93 +2,67 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { supabase as supabaseClient } from "@/lib/supabaseBrowser";
-import { COLUNAS, nivelBaseDaColuna } from "@/config/crm";
+import {
+  CANONICAL_CRM_STAGES,
+  type CanonicalCrmStageArea,
+  type CanonicalCrmStageDefinition,
+  type CanonicalCrmStageId,
+  getCanonicalCrmStage,
+} from "@/config/crm";
 import { useStoreContext } from "@/components/StoreProvider";
+import { supabase as supabaseClient } from "@/lib/supabaseBrowser";
 
-type CrmCardRow = {
-  lead_id: string;
+type CrmOpportunityCardRow = {
+  commercial_opportunity_id: string;
+  organization_id: string;
+  store_id: string | null;
+  customer_id: string | null;
+  lead_id: string | null;
   conversation_id: string | null;
   name: string | null;
   phone: string | null;
-  effective_state: string | null;
-  lead_state: string | null;
-  conversation_status: string | null;
+  opportunity_stage: string | null;
   is_human_active: boolean | null;
+  is_follow_up_active?: boolean | null;
+  stage_changed_at: string | null;
   created_at: string | null;
+  updated_at: string | null;
 };
 
 type UiCardRow = {
-  leadId: string;
+  commercialOpportunityId: string;
+  leadId: string | null;
   conversationId: string | null;
   name: string | null;
   phone: string | null;
-  state: string;
-  rawState: string;
-  leadState: string | null;
-  conversationStatus: string | null;
-  visualState: string;
+  opportunityStage: string | null;
+  canonicalStage: CanonicalCrmStageDefinition | null;
+  stageChangedAt: string | null;
   createdAt: string | null;
+  updatedAt: string | null;
   isHumanActive: boolean;
+  isFollowUpActive: boolean;
 };
 
-type CommercialHandoffTaskRow = {
-  related_lead_id: string | null;
-  related_conversation_id: string | null;
-  task_type: string | null;
-  status: string | null;
-};
-
-type CommercialHandoffIndicator = {
-  hasVisitRequest: boolean;
-  hasQuoteRequest: boolean;
+type BoardSection = {
+  id: string;
+  title: string;
+  description: string;
+  area: CanonicalCrmStageArea | "attention";
+  stages: CanonicalCrmStageDefinition[];
 };
 
 type Nivel = "ok" | "pendente" | "critico";
 
-const OPEN_COMMERCIAL_HANDOFF_STATUSES = [
-  "open",
-  "waiting_user_choice",
-  "waiting_customer_response",
-  "ready_to_execute",
-  "in_progress",
-];
-
-const VISIBLE_COLUMN_IDS = new Set([
-  "novo_lead",
-  "qualificacao",
-  "orcamento",
-  "negociacao",
-  "fechamento_pagamento",
-  "agendar_instalacao",
-  "pos_venda_nps",
-  "perdido",
-]);
-
-const ALLOWED_TRANSITIONS: Record<string, string[]> = {
-  agendar_instalacao: ["pos_venda_nps"],
-  agendar_visita: ["pos_venda_nps"],
-  aguardando_aprovacao: ["humano_assumiu"],
-  fechamento_pagamento: ["humano_assumiu", "pagamento_pendente_confirmacao"],
-  humano_assumiu: ["negociacao", "orcamento", "qualificacao"],
-  negociacao: ["fechamento_pagamento", "humano_assumiu", "perdido"],
-  novo_lead: ["humano_assumiu", "qualificacao"],
-  orcamento: ["aguardando_aprovacao", "humano_assumiu", "negociacao"],
-  pagamento_confirmado: ["agendar_instalacao", "agendar_visita"],
-  pagamento_pendente_confirmacao: ["pagamento_confirmado"],
-  pos_venda_nps: ["humano_assumiu"],
-  qualificacao: ["aguardando_aprovacao", "humano_assumiu", "orcamento"],
-};
+const ATTENTION_BUCKET_ID = "__attention__";
+const FOLLOW_UP_BUCKET_ID = "__follow_up__";
+const MOVEMENT_LOCK_MESSAGE =
+  "Movimentacao temporariamente indisponivel enquanto o board migra para oportunidades.";
+const DETAIL_LOCK_MESSAGE =
+  "Detalhe por oportunidade em atualizacao. Abra a Inbox para seguir o atendimento.";
 
 function cx(...cls: Array<string | false | null | undefined>) {
   return cls.filter(Boolean).join(" ");
-}
-
-function safeNivel(raw: unknown): Nivel {
-  const n = String(raw || "").toLowerCase();
-  if (n.includes("critic") || n.includes("vermel") || n.includes("red")) return "critico";
-  if (n.includes("pend") || n.includes("amarel") || n.includes("yellow")) return "pendente";
-  return "ok";
 }
 
 function nivelToUI(nivel: Nivel) {
@@ -97,7 +71,7 @@ function nivelToUI(nivel: Nivel) {
       dot: "bg-red-500",
       bar: "bg-red-500",
       chip: "bg-red-50 text-red-700 ring-1 ring-red-600/25",
-      label: "CRÍTICO",
+      label: "CRITICO",
     };
   }
 
@@ -118,120 +92,63 @@ function nivelToUI(nivel: Nivel) {
   };
 }
 
-function canMoveTo(fromState: string, toState: string | null) {
-  if (!toState) return false;
-  return (ALLOWED_TRANSITIONS[fromState] || []).includes(toState);
+function getStageUi(stage: CanonicalCrmStageDefinition | null) {
+  if (stage) {
+    return nivelToUI(stage.nivel);
+  }
+
+  return {
+    dot: "bg-slate-500",
+    bar: "bg-slate-500",
+    chip: "bg-slate-100 text-slate-700 ring-1 ring-slate-300",
+    label: "REVISAO",
+  };
 }
 
-function normalizeState(value: string | null | undefined) {
-  return String(value || "").trim().toLowerCase();
+function getCardDate(card: UiCardRow) {
+  return card.stageChangedAt || card.updatedAt || card.createdAt || null;
 }
 
-function isVisibleBoardState(value: string | null | undefined) {
-  return VISIBLE_COLUMN_IDS.has(normalizeState(value));
+function sortCards(cards: UiCardRow[]) {
+  return [...cards].sort((a, b) => {
+    const da = getCardDate(a) ? new Date(getCardDate(a)!).getTime() : 0;
+    const db = getCardDate(b) ? new Date(getCardDate(b)!).getTime() : 0;
+    return db - da;
+  });
 }
 
-function getVisualStateForCard(args: {
-  rawState: string | null | undefined;
-  leadState: string | null | undefined;
-  conversationStatus: string | null | undefined;
-}) {
-  const rawState = normalizeState(args.rawState);
-  const leadState = normalizeState(args.leadState);
-  const conversationStatus = normalizeState(args.conversationStatus);
-
-  if (rawState === "pagamento_pendente_confirmacao") return "fechamento_pagamento";
-  if (rawState === "agendar_visita") return "qualificacao";
-  if (rawState === "pagamento_confirmado") return "agendar_instalacao";
-  if (rawState === "aguardando_aprovacao") return "orcamento";
-
-  if (rawState === "humano_assumiu") {
-    if (isVisibleBoardState(leadState) && leadState !== "humano_assumiu") {
-      return leadState;
-    }
-
-    if (isVisibleBoardState(conversationStatus) && conversationStatus !== "humano_assumiu") {
-      return conversationStatus;
-    }
-
-    return "qualificacao";
-  }
-
-  if (isVisibleBoardState(rawState)) return rawState;
-  if (isVisibleBoardState(leadState)) return leadState;
-  return "qualificacao";
+function formatCardDate(card: UiCardRow) {
+  const value = getCardDate(card);
+  if (!value) return "Sem data";
+  return new Date(value).toLocaleDateString("pt-BR");
 }
 
-function getOperationalBadgesForCard(card: UiCardRow) {
-  const badges: string[] = [];
-  const rawState = normalizeState(card.rawState);
-  const conversationStatus = normalizeState(card.conversationStatus);
-
-  if (
-    card.isHumanActive ||
-    rawState === "humano_assumiu" ||
-    conversationStatus === "humano_assumiu"
-  ) {
-    badges.push("Humano no controle");
-  }
-
-  if (rawState === "pagamento_pendente_confirmacao") {
-    badges.push("Pagamento pendente");
-  }
-
-  if (rawState === "agendar_visita") {
-    badges.push("Etapa interna: agendar visita");
-  }
-
-  if (rawState === "aguardando_aprovacao") {
-    badges.push("Aguardando aprovacao");
-  }
-
-  if (rawState === "pagamento_confirmado") {
-    badges.push("Pagamento confirmado");
-  }
-
-  return badges;
+function cardTitle(card: UiCardRow) {
+  return String(card.name || "Oportunidade sem nome").trim();
 }
 
-function resolveTransitionTarget(card: UiCardRow, toVisualColumnId: string | null) {
-  if (!toVisualColumnId) return null;
-
-  if (canMoveTo(card.rawState, toVisualColumnId)) {
-    return toVisualColumnId;
-  }
-
-  if (
-    toVisualColumnId === "agendar_instalacao" &&
-    card.rawState === "fechamento_pagamento" &&
-    canMoveTo(card.rawState, "pagamento_pendente_confirmacao")
-  ) {
-    return "pagamento_pendente_confirmacao";
-  }
-
-  if (
-    toVisualColumnId === "agendar_instalacao" &&
-    card.rawState === "pagamento_pendente_confirmacao" &&
-    canMoveTo(card.rawState, "pagamento_confirmado")
-  ) {
-    return "pagamento_confirmado";
-  }
-
-  return null;
+function cardPhone(card: UiCardRow) {
+  return String(card.phone || "").trim();
 }
 
-function getCommercialHandoffBadgeLabel(indicator: CommercialHandoffIndicator | null | undefined) {
-  if (!indicator) return null;
-  if (indicator.hasVisitRequest && indicator.hasQuoteRequest) {
-    return "Visita e orçamento pendentes";
-  }
-  if (indicator.hasVisitRequest) {
-    return "Pedido de visita pendente";
-  }
-  if (indicator.hasQuoteRequest) {
-    return "Orçamento pendente";
-  }
-  return null;
+function getAttentionReason() {
+  return "Não foi possível identificar corretamente a etapa desta oportunidade.";
+}
+
+function isCanonicalStageId(value: string): value is CanonicalCrmStageId {
+  return CANONICAL_CRM_STAGES.some((stage) => stage.id === value);
+}
+
+function getSearchIndex(card: UiCardRow) {
+  return [
+    cardTitle(card),
+    cardPhone(card),
+    card.opportunityStage || "",
+    card.conversationId || "",
+    card.leadId || "",
+  ]
+    .join(" ")
+    .toLowerCase();
 }
 
 export default function CrmPage() {
@@ -239,74 +156,39 @@ export default function CrmPage() {
 
   const [loading, setLoading] = useState(true);
   const [cards, setCards] = useState<UiCardRow[]>([]);
-  const [commercialHandoffByCardKey, setCommercialHandoffByCardKey] = useState<
-    Record<string, CommercialHandoffIndicator>
-  >({});
-  const [movingId, setMovingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
-  const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
+  const [selectedBucketId, setSelectedBucketId] = useState<string | null>(null);
+
   const canAutoRefresh = useMemo(() => {
     return !storeLoading && !!organizationId;
   }, [storeLoading, organizationId]);
 
-  const columns = useMemo(() => {
-    return (COLUNAS as any[]).map((c) => {
-      const id = String(c.id);
-      const title = String(c.title ?? c.titulo ?? c.label ?? c.nome ?? id);
-      const nivelRaw = nivelBaseDaColuna(id as any);
-      const nivel = safeNivel(nivelRaw);
-      const ui = nivelToUI(nivel);
-
-      return { ...c, id, title, nivel, ui };
-    });
+  const boardSections = useMemo<BoardSection[]>(() => {
+    return [
+      {
+        id: "pipeline",
+        title: "Pipeline comercial",
+        description: "Etapas ativas do board por oportunidade.",
+        area: "pipeline",
+        stages: CANONICAL_CRM_STAGES.filter((stage) => stage.area === "pipeline"),
+      },
+      {
+        id: "lost",
+        title: "Encerradas como perda",
+        description: "Oportunidades encerradas em perda.",
+        area: "lost",
+        stages: CANONICAL_CRM_STAGES.filter((stage) => stage.area === "lost"),
+      },
+      {
+        id: "completed",
+        title: "Concluidas",
+        description: "Oportunidades que nao exigem mais acoes comerciais.",
+        area: "completed",
+        stages: CANONICAL_CRM_STAGES.filter((stage) => stage.area === "completed"),
+      },
+    ];
   }, []);
-
-  const cardsByColumn = useMemo(() => {
-    const map = new Map<string, UiCardRow[]>();
-
-    for (const col of columns) {
-      map.set(col.id, []);
-    }
-
-    for (const card of cards) {
-      const colId = String(card.visualState || "novo_lead");
-      if (!map.has(colId)) map.set(colId, []);
-      map.get(colId)!.push(card);
-    }
-
-    for (const [k, arr] of map.entries()) {
-      arr.sort((a, b) => {
-        const da = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const db = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return db - da;
-      });
-      map.set(k, arr);
-    }
-
-    return map;
-  }, [cards, columns]);
-
-  const selectedColumn = useMemo(() => {
-    if (!selectedColumnId) return null;
-    return columns.find((col) => String(col.id) === selectedColumnId) || null;
-  }, [columns, selectedColumnId]);
-
-  const selectedColumnCards = useMemo(() => {
-    if (!selectedColumnId) return [];
-    return cardsByColumn.get(selectedColumnId) || [];
-  }, [cardsByColumn, selectedColumnId]);
-
-  const searchResults = useMemo(() => {
-    const query = searchText.trim().toLowerCase();
-    if (!query) return [];
-
-    return cards.filter((card) => {
-      const name = String(card.name || "").toLowerCase();
-      const phone = String(card.phone || "").toLowerCase();
-      return name.includes(query) || phone.includes(query);
-    });
-  }, [cards, searchText]);
 
   const fetchPageData = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -314,7 +196,6 @@ export default function CrmPage() {
 
       if (!organizationId) {
         setCards([]);
-        setCommercialHandoffByCardKey({});
         setLoading(false);
         return;
       }
@@ -325,104 +206,43 @@ export default function CrmPage() {
       }
 
       try {
-      const { data, error } = await supabaseClient.rpc(
-        "panel_list_crm_cards_scoped",
-        {
-          p_organization_id: organizationId,
-          p_store_id: activeStoreId ?? null,
-          p_limit: 500,
-          p_offset: 0,
-        }
-      );
-
-      if (error) throw error;
-
-      const nextCards: UiCardRow[] = ((data || []) as CrmCardRow[]).map((row) => ({
-        leadId: row.lead_id,
-        conversationId: row.conversation_id || null,
-        name: row.name || null,
-        phone: row.phone || null,
-        state: String(row.effective_state || "novo_lead"),
-        rawState: String(row.effective_state || "novo_lead"),
-        leadState: row.lead_state || null,
-        conversationStatus: row.conversation_status || null,
-        visualState: getVisualStateForCard({
-          rawState: row.effective_state,
-          leadState: row.lead_state,
-          conversationStatus: row.conversation_status,
-        }),
-        createdAt: row.created_at || null,
-        isHumanActive: row.is_human_active === true,
-      }));
-
-      setCards(nextCards);
-
-      const leadIds = [...new Set(nextCards.map((card) => card.leadId).filter(Boolean))];
-      const conversationIds = [
-        ...new Set(nextCards.map((card) => card.conversationId).filter(Boolean)),
-      ] as string[];
-
-      if (leadIds.length === 0 && conversationIds.length === 0) {
-        setCommercialHandoffByCardKey({});
-      } else {
-        let query = supabaseClient
-          .from("store_assistant_operational_tasks")
-          .select("related_lead_id, related_conversation_id, task_type, status")
-          .eq("organization_id", organizationId)
-          .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
-          .in("status", OPEN_COMMERCIAL_HANDOFF_STATUSES);
-
-        if (activeStoreId) {
-          query = query.eq("store_id", activeStoreId);
-        }
-
-        if (leadIds.length > 0) {
-          query = query.in("related_lead_id", leadIds);
-        } else if (conversationIds.length > 0) {
-          query = query.in("related_conversation_id", conversationIds);
-        }
-
-        const { data: handoffTasks, error: handoffError } = await query;
-
-        if (handoffError) {
-          console.warn("[CrmPage] erro ao carregar handoffs comerciais:", handoffError);
-          setCommercialHandoffByCardKey({});
-        } else {
-          const nextIndicators: Record<string, CommercialHandoffIndicator> = {};
-
-          for (const task of (handoffTasks || []) as CommercialHandoffTaskRow[]) {
-            const leadId = String(task.related_lead_id || "").trim();
-            const conversationId = String(task.related_conversation_id || "").trim();
-            const keys = [
-              leadId ? `lead:${leadId}` : null,
-              conversationId ? `conversation:${conversationId}` : null,
-            ].filter(Boolean) as string[];
-
-            for (const key of keys) {
-              if (!nextIndicators[key]) {
-                nextIndicators[key] = {
-                  hasVisitRequest: false,
-                  hasQuoteRequest: false,
-                };
-              }
-
-              if (task.task_type === "commercial_visit_request") {
-                nextIndicators[key].hasVisitRequest = true;
-              }
-
-              if (task.task_type === "commercial_quote_request") {
-                nextIndicators[key].hasQuoteRequest = true;
-              }
-            }
+        const { data, error } = await supabaseClient.rpc(
+          "panel_list_crm_opportunity_cards_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStoreId ?? null,
+            p_limit: 500,
+            p_offset: 0,
           }
+        );
 
-          setCommercialHandoffByCardKey(nextIndicators);
+        if (error) {
+          throw error;
         }
-      }
-      } catch (error: any) {
-        setErrorMsg(error?.message ?? "Erro ao carregar CRM.");
+
+        const nextCards: UiCardRow[] = ((data || []) as CrmOpportunityCardRow[]).map((row) => ({
+          commercialOpportunityId: row.commercial_opportunity_id,
+          leadId: row.lead_id || null,
+          conversationId: row.conversation_id || null,
+          name: row.name || null,
+          phone: row.phone || null,
+          opportunityStage: row.opportunity_stage || null,
+          canonicalStage: getCanonicalCrmStage(row.opportunity_stage),
+          stageChangedAt: row.stage_changed_at || null,
+          createdAt: row.created_at || null,
+          updatedAt: row.updated_at || null,
+          isHumanActive: row.is_human_active === true,
+          isFollowUpActive: row.is_follow_up_active === true,
+        }));
+
+        setCards(nextCards);
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Falha ao carregar o board canônico de oportunidades.";
+        setErrorMsg(message || "Falha ao carregar o board canônico de oportunidades.");
         setCards([]);
-        setCommercialHandoffByCardKey({});
       } finally {
         if (!silent) {
           setLoading(false);
@@ -431,47 +251,6 @@ export default function CrmPage() {
     },
     [organizationId, activeStoreId]
   );
-
-  async function updateConversationState(card: UiCardRow, toColumnId: string) {
-    if (!organizationId) {
-      setErrorMsg("Organização não carregada.");
-      return;
-    }
-
-    if (!card.conversationId) {
-      setErrorMsg(
-        "Este lead ainda não possui conversa. O CRM não deve mover estágio sem conversa real."
-      );
-      return;
-    }
-
-    if (!canMoveTo(card.rawState, toColumnId)) {
-      setErrorMsg(`Transição inválida de ${card.rawState} para ${toColumnId}.`);
-      return;
-    }
-
-    setErrorMsg(null);
-    setMovingId(card.leadId);
-
-    const { error } = await supabaseClient.rpc(
-      "panel_transition_conversation_state_scoped",
-      {
-        p_organization_id: organizationId,
-        p_conversation_id: card.conversationId,
-        p_to_state: toColumnId,
-        p_reason: "manual_move_from_crm",
-      }
-    );
-
-    if (error) {
-      setErrorMsg(error.message);
-      setMovingId(null);
-      return;
-    }
-
-    setMovingId(null);
-    await fetchPageData();
-  }
 
   useEffect(() => {
     if (canAutoRefresh) {
@@ -520,44 +299,95 @@ export default function CrmPage() {
     };
   }, [canAutoRefresh, fetchPageData]);
 
-  function leadTitle(card: UiCardRow) {
-    return String(card.name || "Lead sem nome").trim();
-  }
+  const stageCardsById = useMemo(() => {
+    const map = new Map<CanonicalCrmStageId, UiCardRow[]>();
 
-  function leadPhone(card: UiCardRow) {
-    return String(card.phone || "").trim();
-  }
+    for (const stage of CANONICAL_CRM_STAGES) {
+      map.set(stage.id, []);
+    }
 
-  function getColumnForCard(card: UiCardRow) {
-    return columns.find((col) => String(col.id) === String(card.visualState)) || null;
-  }
+    for (const card of cards) {
+      if (!card.canonicalStage) continue;
+      map.get(card.canonicalStage.id)?.push(card);
+    }
 
-  function renderLeadCard(card: UiCardRow, options?: { compact?: boolean; showStage?: boolean }) {
+    for (const [stageId, stageCards] of map.entries()) {
+      map.set(stageId, sortCards(stageCards));
+    }
+
+    return map;
+  }, [cards]);
+
+  const attentionCards = useMemo(() => {
+    return sortCards(cards.filter((card) => !card.canonicalStage));
+  }, [cards]);
+
+  const followUpCards = useMemo(() => {
+    return sortCards(cards.filter((card) => card.isFollowUpActive));
+  }, [cards]);
+
+  const searchResults = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) return [];
+
+    return sortCards(cards.filter((card) => getSearchIndex(card).includes(query)));
+  }, [cards, searchText]);
+
+  const selectedStage = useMemo(() => {
+    if (
+      !selectedBucketId ||
+      selectedBucketId === ATTENTION_BUCKET_ID ||
+      selectedBucketId === FOLLOW_UP_BUCKET_ID
+    ) {
+      return null;
+    }
+
+    return CANONICAL_CRM_STAGES.find((stage) => stage.id === selectedBucketId) || null;
+  }, [selectedBucketId]);
+
+  const selectedBucketCards = useMemo(() => {
+    if (!selectedBucketId) return [];
+    if (selectedBucketId === ATTENTION_BUCKET_ID) return attentionCards;
+    if (selectedBucketId === FOLLOW_UP_BUCKET_ID) return followUpCards;
+    if (!isCanonicalStageId(selectedBucketId)) return [];
+    return stageCardsById.get(selectedBucketId) || [];
+  }, [attentionCards, followUpCards, selectedBucketId, stageCardsById]);
+
+  const selectedBucketTitle = useMemo(() => {
+    if (selectedBucketId === FOLLOW_UP_BUCKET_ID) {
+      return "Follow-up";
+    }
+
+    return selectedStage ? selectedStage.title : "AÃ§Ã£o necessÃ¡ria";
+  }, [selectedBucketId, selectedStage]);
+
+  const selectedBucketDescription = useMemo(() => {
+    if (selectedBucketId === FOLLOW_UP_BUCKET_ID) {
+      return "Oportunidades com follow-up ativo sem alterar a etapa comercial.";
+    }
+
+    return selectedStage
+      ? "Oportunidades desta etapa."
+      : "NÃ£o foi possÃ­vel identificar corretamente a etapa destas oportunidades.";
+  }, [selectedBucketId, selectedStage]);
+
+  const selectedBucketDotClass = useMemo(() => {
+    if (selectedBucketId === FOLLOW_UP_BUCKET_ID) {
+      return "bg-violet-500";
+    }
+
+    return selectedStage ? getStageUi(selectedStage).dot : "bg-red-500";
+  }, [selectedBucketId, selectedStage]);
+
+  function renderCard(card: UiCardRow, options?: { compact?: boolean; showStage?: boolean }) {
     const compact = options?.compact === true;
     const showStage = options?.showStage === true;
-    const current = String(card.visualState || "novo_lead");
-    const currentIndex = columns.findIndex((c) => String(c.id) === current);
-    const cidx = currentIndex >= 0 ? currentIndex : 0;
-    const previousColumnId = cidx > 0 ? String(columns[cidx - 1].id) : null;
-    const nextColumnId = cidx < columns.length - 1 ? String(columns[cidx + 1].id) : null;
-    const previousTargetState = resolveTransitionTarget(card, previousColumnId);
-    const nextTargetState = resolveTransitionTarget(card, nextColumnId);
-    const canGoBack = Boolean(previousTargetState);
-    const canGoNext = Boolean(nextTargetState);
-    const cardColumn = getColumnForCard(card);
-    const ui = cardColumn?.ui || nivelToUI("ok");
-    const operationalBadges = getOperationalBadgesForCard(card);
-    const handoffLabel =
-      getCommercialHandoffBadgeLabel(
-        commercialHandoffByCardKey[
-          card.conversationId ? `conversation:${card.conversationId}` : `lead:${card.leadId}`
-        ]
-      ) ||
-      getCommercialHandoffBadgeLabel(commercialHandoffByCardKey[`lead:${card.leadId}`]);
+    const stage = card.canonicalStage;
+    const ui = getStageUi(stage);
 
     return (
       <div
-        key={card.leadId}
+        key={card.commercialOpportunityId}
         className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-black/5"
       >
         <div className={cx("h-1 w-full", ui.bar)} />
@@ -566,12 +396,12 @@ export default function CrmPage() {
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-gray-900">
-                {leadTitle(card)}
+                {cardTitle(card)}
               </div>
 
-              {leadPhone(card) ? (
+              {cardPhone(card) ? (
                 <div className="mt-0.5 truncate text-xs text-gray-600">
-                  {leadPhone(card)}
+                  {cardPhone(card)}
                 </div>
               ) : (
                 <div className="mt-0.5 text-xs text-gray-400">Sem telefone</div>
@@ -579,86 +409,84 @@ export default function CrmPage() {
             </div>
 
             <span className="shrink-0 rounded-full bg-gray-50 px-2 py-1 text-[10px] font-semibold text-gray-700 ring-1 ring-black/10">
-              {new Date(card.createdAt || Date.now()).toLocaleDateString("pt-BR")}
+              {formatCardDate(card)}
             </span>
           </div>
 
-          {showStage && cardColumn ? (
+          {showStage ? (
             <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-full bg-gray-50 px-2 py-1 text-[10px] font-semibold text-gray-600 ring-1 ring-black/10">
-              <span className={cx("h-1.5 w-1.5 rounded-full", cardColumn.ui.dot)} />
-              <span className="truncate">{cardColumn.title}</span>
+              <span className={cx("h-1.5 w-1.5 rounded-full", ui.dot)} />
+              <span className="truncate">{stage ? stage.title : "Ação necessária"}</span>
             </div>
           ) : null}
 
           <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-gray-500">
             <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-black/10">
-              conversa: {card.conversationId ? "sim" : "não"}
+              conversa: {card.conversationId ? "sim" : "nao"}
             </span>
-            <span className="rounded-full bg-gray-50 px-2 py-1 ring-1 ring-black/10">
-              modo: {card.isHumanActive ? "humano" : "IA"}
-            </span>
-            {operationalBadges.map((badge) => (
-              <span
-                key={badge}
-                className="rounded-full bg-sky-50 px-2 py-1 text-sky-800 ring-1 ring-sky-200"
-              >
-                {badge}
+            {card.isFollowUpActive ? (
+              <span className="rounded-full bg-violet-50 px-2 py-1 text-violet-800 ring-1 ring-violet-200">
+                Em Follow-up
               </span>
-            ))}
-            {handoffLabel ? (
-              <span className="rounded-full bg-orange-50 px-2 py-1 text-orange-800 ring-1 ring-orange-200">
-                {handoffLabel}
+            ) : null}
+            {card.isHumanActive ? (
+              <span className="rounded-full bg-sky-50 px-2 py-1 text-sky-800 ring-1 ring-sky-200">
+                Humano assumiu
+              </span>
+            ) : null}
+            {!card.leadId ? (
+              <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-800 ring-1 ring-amber-200">
+                Sem lead vinculado
+              </span>
+            ) : null}
+            {!card.conversationId ? (
+              <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-800 ring-1 ring-amber-200">
+                Sem conversa vinculada
+              </span>
+            ) : null}
+            {!stage ? (
+              <span className="rounded-full bg-red-50 px-2 py-1 text-red-800 ring-1 ring-red-200">
+                Ação necessária
               </span>
             ) : null}
           </div>
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
             <Link
-              href={`/crm/lead/${card.leadId}`}
-              className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+              href={`/crm/opportunity/${encodeURIComponent(card.commercialOpportunityId)}`}
+              className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
             >
-              Abrir conversa
+              Abrir oportunidade
             </Link>
 
             <div className="flex flex-wrap items-center gap-1.5">
               <button
-                disabled={!canGoBack || movingId === card.leadId}
-                onClick={() =>
-                  previousTargetState &&
-                  canGoBack &&
-                  updateConversationState(card, previousTargetState)
-                }
-                className={cx(
-                  "rounded-lg px-3 py-2 text-xs font-semibold shadow-sm ring-1 ring-black/10",
-                  !canGoBack || movingId === card.leadId
-                    ? "cursor-not-allowed bg-white/60 text-gray-400"
-                    : "bg-white text-gray-800 hover:bg-gray-50"
-                )}
+                type="button"
+                disabled
+                title={MOVEMENT_LOCK_MESSAGE}
+                className="cursor-not-allowed rounded-lg bg-white/60 px-3 py-2 text-xs font-semibold text-gray-400 shadow-sm ring-1 ring-black/10"
               >
                 ← Voltar
               </button>
 
               <button
-                disabled={!canGoNext || movingId === card.leadId}
-                onClick={() =>
-                  nextTargetState &&
-                  canGoNext &&
-                  updateConversationState(card, nextTargetState)
-                }
-                className={cx(
-                  "rounded-lg px-3 py-2 text-xs font-semibold shadow-sm ring-1 ring-black/10",
-                  !canGoNext || movingId === card.leadId
-                    ? "cursor-not-allowed bg-white/60 text-gray-400"
-                    : "bg-black text-white hover:opacity-90"
-                )}
+                type="button"
+                disabled
+                title={MOVEMENT_LOCK_MESSAGE}
+                className="cursor-not-allowed rounded-lg bg-white/60 px-3 py-2 text-xs font-semibold text-gray-400 shadow-sm ring-1 ring-black/10"
               >
-                Avançar →
+                Avancar →
               </button>
             </div>
           </div>
 
-          {movingId === card.leadId ? (
-            <div className="mt-2 text-xs text-gray-500">Atualizando...</div>
+          <div className="mt-2 text-xs text-gray-500">
+            {!stage ? getAttentionReason() : MOVEMENT_LOCK_MESSAGE}
+          </div>
+          {!stage ? (
+            <div className="mt-1 text-xs text-gray-500">
+              As movimentações estão bloqueadas até a correção.
+            </div>
           ) : null}
         </div>
       </div>
@@ -676,7 +504,7 @@ export default function CrmPage() {
                 id="crm-search"
                 value={searchText}
                 onChange={(event) => setSearchText(event.target.value)}
-                placeholder="Buscar lead por nome ou telefone"
+                placeholder="Buscar oportunidade por nome, telefone ou identificadores"
                 className="min-w-0 flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
               />
               {searchText.trim() ? (
@@ -699,6 +527,7 @@ export default function CrmPage() {
               </Link>
 
               <button
+                type="button"
                 onClick={() => void fetchPageData()}
                 className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
               >
@@ -718,13 +547,15 @@ export default function CrmPage() {
 
           {loading ? (
             <div className="rounded-2xl bg-white p-5 text-sm shadow-sm ring-1 ring-black/5">
-              Carregando leads...
+              Carregando oportunidades...
             </div>
           ) : searchText.trim() ? (
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
               <div className="flex shrink-0 items-center justify-between border-b border-black/5 px-4 py-2">
                 <div>
-                  <div className="text-sm font-semibold text-gray-900">Resultados da busca</div>
+                  <div className="text-sm font-semibold text-gray-900">
+                    Resultados da busca
+                  </div>
                   <div className="mt-0.5 text-xs text-gray-500">
                     {searchResults.length} resultado(s) encontrado(s)
                   </div>
@@ -734,84 +565,218 @@ export default function CrmPage() {
               <div className="min-h-0 flex-1 overflow-y-auto p-3">
                 {searchResults.length === 0 ? (
                   <div className="rounded-xl bg-gray-50 p-4 text-sm text-gray-600 ring-1 ring-black/5">
-                    Nenhum lead encontrado com essa busca.
+                    Nenhuma oportunidade encontrada com essa busca.
                   </div>
                 ) : (
                   <div className="grid gap-3 lg:grid-cols-2">
-                    {searchResults.map((card) => renderLeadCard(card, { compact: true, showStage: true }))}
+                    {searchResults.map((card) =>
+                      renderCard(card, { compact: true, showStage: true })
+                    )}
                   </div>
                 )}
               </div>
             </div>
           ) : (
-            <div className="min-h-0 flex-1 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-              <div className="flex h-full min-h-0 flex-col overflow-hidden">
-                <div className="shrink-0 border-b border-black/5 px-4 py-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-semibold text-gray-900">Processos do CRM</div>
+            <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl bg-white p-3 shadow-sm ring-1 ring-black/5">
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-black/5 bg-gray-50 px-4 py-3">
+                  <div className="text-sm font-semibold text-gray-900">
+                    Board comercial por oportunidade
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500">
+                    {cards.length} oportunidade(s) carregada(s).
+                  </div>
+                </div>
+
+                {boardSections
+                  .filter((section) => section.area === "pipeline")
+                  .map((section) => (
+                  <section key={section.id} className="space-y-2">
+                    <div className="px-1">
+                      <div className="text-sm font-semibold text-gray-900">
+                        {section.title}
+                      </div>
                       <div className="mt-0.5 text-xs text-gray-500">
-                        Clique em uma linha para ver os leads daquela etapa.
+                        {section.description}
                       </div>
                     </div>
 
-                    <div className="text-xs font-semibold text-gray-500">
-                      {cards.length} lead(s)
+                    <div className="grid gap-1">
+                      {section.stages.map((stage) => {
+                        const items = stageCardsById.get(stage.id) || [];
+                        const ui = getStageUi(stage);
+
+                        return (
+                          <button
+                            key={stage.id}
+                            type="button"
+                            onClick={() => setSelectedBucketId(stage.id)}
+                            className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-2 text-left ring-1 ring-black/5 transition hover:bg-white hover:shadow-sm"
+                          >
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span
+                                className={cx("h-2.5 w-2.5 shrink-0 rounded-full", ui.dot)}
+                              />
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-semibold text-gray-900">
+                                  {stage.title}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex shrink-0 items-center gap-2">
+                              <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                                {items.length}
+                              </span>
+                              <span
+                                className={cx(
+                                  "rounded-full px-2.5 py-0.5 text-[10px] font-semibold",
+                                  ui.chip
+                                )}
+                              >
+                                {ui.label}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+
+                <section className="space-y-2">
+                  <div className="px-1">
+                    <div className="text-sm font-semibold text-gray-900">Follow-up</div>
+                    <div className="mt-0.5 text-xs text-gray-500">
+                      Oportunidades com follow-up ativo sem sair da etapa comercial atual.
                     </div>
                   </div>
-                </div>
 
-                <div className="min-h-0 flex-1 overflow-hidden p-3">
-                  <div className="grid min-h-0 gap-1">
-                    {columns.map((col) => {
-                      const items = cardsByColumn.get(col.id) || [];
-                      const ui = col.ui || nivelToUI(col.nivel);
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBucketId(FOLLOW_UP_BUCKET_ID)}
+                    className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-violet-50 px-4 py-2 text-left ring-1 ring-violet-200 transition hover:bg-white hover:shadow-sm"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-violet-500" />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-gray-900">
+                          Follow-up
+                        </div>
+                      </div>
+                    </div>
 
-                      return (
-                        <button
-                          key={col.id}
-                          type="button"
-                          onClick={() => setSelectedColumnId(col.id)}
-                          className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-2 text-left ring-1 ring-black/5 transition hover:bg-white hover:shadow-sm"
-                        >
-                          <div className="flex min-w-0 items-center gap-3">
-                            <span className={cx("h-2.5 w-2.5 shrink-0 rounded-full", ui.dot)} />
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold text-gray-900">
-                                {col.title}
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                        {followUpCards.length}
+                      </span>
+                      <span className="rounded-full bg-violet-100 px-2.5 py-0.5 text-[10px] font-semibold text-violet-800 ring-1 ring-violet-200">
+                        ATIVO
+                      </span>
+                    </div>
+                  </button>
+                </section>
+
+                {boardSections
+                  .filter((section) => section.area !== "pipeline")
+                  .map((section) => (
+                    <section key={section.id} className="space-y-2">
+                      <div className="px-1">
+                        <div className="text-sm font-semibold text-gray-900">
+                          {section.title}
+                        </div>
+                        <div className="mt-0.5 text-xs text-gray-500">
+                          {section.description}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-1">
+                        {section.stages.map((stage) => {
+                          const items = stageCardsById.get(stage.id) || [];
+                          const ui = getStageUi(stage);
+
+                          return (
+                            <button
+                              key={stage.id}
+                              type="button"
+                              onClick={() => setSelectedBucketId(stage.id)}
+                              className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-gray-50 px-4 py-2 text-left ring-1 ring-black/5 transition hover:bg-white hover:shadow-sm"
+                            >
+                              <div className="flex min-w-0 items-center gap-3">
+                                <span
+                                  className={cx("h-2.5 w-2.5 shrink-0 rounded-full", ui.dot)}
+                                />
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-semibold text-gray-900">
+                                    {stage.title}
+                                  </div>
+                                </div>
                               </div>
 
-                            </div>
-                          </div>
+                              <div className="flex shrink-0 items-center gap-2">
+                                <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                                  {items.length}
+                                </span>
+                                <span
+                                  className={cx(
+                                    "rounded-full px-2.5 py-0.5 text-[10px] font-semibold",
+                                    ui.chip
+                                  )}
+                                >
+                                  {ui.label}
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
 
-                          <div className="flex shrink-0 items-center gap-2">
-                            <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                              {items.length}
-                            </span>
-                            <span
-                              className={cx(
-                                "rounded-full px-2.5 py-0.5 text-[10px] font-semibold",
-                                ui.chip
-                              )}
-                            >
-                              {ui.label}
-                            </span>
-                          </div>
-                        </button>
-                      );
-                    })}
+                <section className="space-y-2">
+                  <div className="px-1">
+                    <div className="text-sm font-semibold text-gray-900">
+                      Ação necessária
+                    </div>
+                    <div className="mt-0.5 text-xs text-gray-500">
+                      Oportunidades com etapa não identificada corretamente.
+                    </div>
                   </div>
-                </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedBucketId(ATTENTION_BUCKET_ID)}
+                    className="group flex min-h-[38px] items-center justify-between gap-3 rounded-xl bg-red-50 px-4 py-2 text-left ring-1 ring-red-200 transition hover:bg-white hover:shadow-sm"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-500" />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-gray-900">
+                          Ação necessária
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
+                        {attentionCards.length}
+                      </span>
+                      <span className="rounded-full bg-red-100 px-2.5 py-0.5 text-[10px] font-semibold text-red-700 ring-1 ring-red-200">
+                        REVISAO
+                      </span>
+                    </div>
+                  </button>
+                </section>
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {selectedColumn ? (
+      {selectedBucketId ? (
         <div
           className="fixed inset-0 z-50 flex justify-end bg-black/30"
-          onClick={() => setSelectedColumnId(null)}
+          onClick={() => setSelectedBucketId(null)}
         >
           <div
             className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
@@ -822,23 +787,23 @@ export default function CrmPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span
-                      className={cx("h-2.5 w-2.5 shrink-0 rounded-full", selectedColumn.ui.dot)}
+                      className={cx("h-2.5 w-2.5 shrink-0 rounded-full", selectedBucketDotClass)}
                     />
                     <h2 className="truncate text-lg font-bold text-gray-900">
-                      {selectedColumn.title}
+                      {selectedBucketTitle}
                     </h2>
                     <span className="rounded-full bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700 ring-1 ring-black/5">
-                      {selectedColumnCards.length}
+                      {selectedBucketCards.length}
                     </span>
                   </div>
                   <div className="mt-1 text-xs text-gray-500">
-                    Leads desta etapa do CRM
+                    {selectedBucketDescription}
                   </div>
                 </div>
 
                 <button
                   type="button"
-                  onClick={() => setSelectedColumnId(null)}
+                  onClick={() => setSelectedBucketId(null)}
                   className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                 >
                   Fechar
@@ -847,13 +812,17 @@ export default function CrmPage() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto bg-gray-100 p-4">
-              {selectedColumnCards.length === 0 ? (
+              {selectedBucketCards.length === 0 ? (
                 <div className="rounded-2xl bg-white p-4 text-sm text-gray-600 shadow-sm ring-1 ring-black/5">
-                  Sem leads aqui ainda.
+                  Sem oportunidades aqui ainda.
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {selectedColumnCards.map((card) => renderLeadCard(card))}
+                  {selectedBucketCards.map((card) =>
+                    renderCard(card, {
+                      showStage: selectedBucketId === FOLLOW_UP_BUCKET_ID,
+                    })
+                  )}
                 </div>
               )}
             </div>
