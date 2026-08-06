@@ -231,6 +231,38 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "blocked profile returns 403",
+    run: async () => {
+      await assertStatusMapping(
+        createResolution({
+          status: "account_blocked",
+          apiDecision: "deny_403",
+          reasonCode: "account_blocked",
+          message: "Profile bloqueado.",
+        }),
+        403,
+        false,
+        null,
+      );
+    },
+  },
+  {
+    name: "inactive membership returns 403",
+    run: async () => {
+      await assertStatusMapping(
+        createResolution({
+          status: "inactive_membership",
+          apiDecision: "deny_403",
+          reasonCode: "inactive_membership",
+          message: "Membership inativa.",
+        }),
+        403,
+        false,
+        null,
+      );
+    },
+  },
+  {
     name: "commercial block returns 403",
     run: async () => {
       await assertStatusMapping(

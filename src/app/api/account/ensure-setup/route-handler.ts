@@ -70,6 +70,8 @@ function getHttpStatus(resolution: AccessResolution) {
       return 200;
     case "anonymous":
       return 401;
+    case "account_blocked":
+    case "inactive_membership":
     case "cross_domain_forbidden":
     case "store_commercial_blocked":
       return 403;

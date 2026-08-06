@@ -40,7 +40,13 @@ type RequestScopedSupabaseClient = {
 
 type MembershipRow = {
   organization_id?: unknown;
+  is_active?: unknown;
   created_at?: unknown;
+};
+
+type ProfileRow = {
+  user_id?: unknown;
+  is_blocked?: unknown;
 };
 
 type StoreRow = {
@@ -60,9 +66,15 @@ type RequestUserResult =
     };
 
 type MembershipFacts = {
+  hasAnyMemberships: boolean;
   membershipCount: number;
   distinctOrganizationCount: number;
   organizationId: string | null;
+};
+
+type ProfileFacts = {
+  hasProfile: boolean;
+  isBlocked: boolean;
 };
 
 type StoreFacts = {
@@ -97,7 +109,7 @@ export type AccountAccessResolverDeps = {
   lookupProfileExists: (
     serviceSupabase: ResolverServiceClient,
     userId: string,
-  ) => Promise<boolean>;
+  ) => Promise<unknown>;
   listMemberships: (
     serviceSupabase: ResolverServiceClient,
     userId: string,
@@ -148,6 +160,8 @@ function createFacts(
     firstAccessRequired: false,
     passwordLoginRequired: false,
     hasProfile: false,
+    isProfileBlocked: false,
+    hasAnyMemberships: false,
     membershipCount: 0,
     distinctOrganizationCount: 0,
     organizationExists: false,
@@ -232,31 +246,79 @@ function normalizeMembershipFacts(
     const organizationId = normalizeNonEmptyString(
       (row as MembershipRow).organization_id,
     );
+    const rawIsActive = (row as MembershipRow).is_active;
+    const isActive = rawIsActive === undefined ? true : rawIsActive;
 
-    if (!organizationId) {
+    if (!organizationId || typeof isActive !== "boolean") {
       return createLookupUnavailableFailure(
         "malformed_memberships_contract",
-        "Memberships retornaram organization_id invalido para resolucao de acesso.",
+        "Memberships retornaram colunas invalidas para resolucao de acesso.",
       );
     }
 
-    organizationIds.push(organizationId);
-  }
-
-  if (organizationIds.length !== rows.length) {
-    return createLookupUnavailableFailure(
-      "malformed_memberships_contract",
-      "Memberships retornaram quantidade inconsistente de organization_id validos.",
-    );
+    if (isActive) {
+      organizationIds.push(organizationId);
+    }
   }
 
   const distinctOrganizationIds = Array.from(new Set(organizationIds));
 
   return {
-    membershipCount: rows.length,
+    hasAnyMemberships: rows.length > 0,
+    membershipCount: organizationIds.length,
     distinctOrganizationCount: distinctOrganizationIds.length,
     organizationId:
       distinctOrganizationIds.length === 1 ? distinctOrganizationIds[0] : null,
+  };
+}
+
+function normalizeProfileFacts(
+  value: unknown,
+): ProfileFacts | AccessResolutionFailure {
+  if (typeof value === "boolean") {
+    return {
+      hasProfile: value,
+      isBlocked: false,
+    };
+  }
+
+  if (!value || typeof value !== "object") {
+    return createLookupUnavailableFailure(
+      "profile_lookup_unavailable",
+      "A consulta de profile retornou um contrato invalido.",
+    );
+  }
+
+  const row = value as {
+    hasProfile?: unknown;
+    exists?: unknown;
+    isBlocked?: unknown;
+    is_blocked?: unknown;
+  };
+
+  const hasProfile =
+    typeof row.hasProfile === "boolean"
+      ? row.hasProfile
+      : typeof row.exists === "boolean"
+        ? row.exists
+        : null;
+  const isBlocked =
+    typeof row.isBlocked === "boolean"
+      ? row.isBlocked
+      : typeof row.is_blocked === "boolean"
+        ? row.is_blocked
+        : null;
+
+  if (hasProfile === null || isBlocked === null) {
+    return createLookupUnavailableFailure(
+      "profile_lookup_unavailable",
+      "A consulta de profile retornou um contrato invalido.",
+    );
+  }
+
+  return {
+    hasProfile,
+    isBlocked,
   };
 }
 
@@ -522,7 +584,7 @@ function buildDefaultDeps(): AccountAccessResolverDeps {
             select: (columns: string) => {
               eq: (column: string, value: string) => {
                 maybeSingle: () => Promise<{
-                  data: { user_id?: string | null } | null;
+                  data: ProfileRow | null;
                   error: unknown;
                 }>;
               };
@@ -531,7 +593,7 @@ function buildDefaultDeps(): AccountAccessResolverDeps {
         }
       )
         .from("profiles")
-        .select("user_id")
+        .select("user_id, is_blocked")
         .eq("user_id", userId)
         .maybeSingle();
 
@@ -539,7 +601,22 @@ function buildDefaultDeps(): AccountAccessResolverDeps {
         throw error;
       }
 
-      return Boolean(normalizeNonEmptyString(data?.user_id));
+      if (!data) {
+        return {
+          hasProfile: false,
+          isBlocked: false,
+        } satisfies ProfileFacts;
+      }
+
+      const normalizedUserId = normalizeNonEmptyString(data.user_id);
+      if (!normalizedUserId || typeof data.is_blocked !== "boolean") {
+        throw new Error("invalid profile contract");
+      }
+
+      return {
+        hasProfile: true,
+        isBlocked: data.is_blocked,
+      } satisfies ProfileFacts;
     },
     listMemberships: async (serviceSupabase, userId) => {
       const { data, error } = await (
@@ -560,7 +637,7 @@ function buildDefaultDeps(): AccountAccessResolverDeps {
         }
       )
         .from("memberships")
-        .select("organization_id, created_at")
+        .select("organization_id, is_active, created_at")
         .eq("user_id", userId)
         .order("created_at", { ascending: true });
 
@@ -766,6 +843,33 @@ export async function resolveAccessForRequest({
     requestedDomain === "zion_admin" ||
     (requestedDomain === "public" && facts.isActiveZionAdmin)
   ) {
+    let zionProfileFacts: ProfileFacts | AccessResolutionFailure;
+    try {
+      zionProfileFacts = normalizeProfileFacts(
+        await deps.lookupProfileExists(serviceSupabase, sessionUserId),
+      );
+    } catch {
+      return createUnavailableResolution(
+        requestedDomain,
+        createLookupUnavailableFailure(
+          "profile_lookup_unavailable",
+          "Nao foi possivel consultar o profile operacional da conta autenticada.",
+        ),
+        sessionUserId,
+      );
+    }
+
+    if ("reasonCode" in zionProfileFacts) {
+      return createUnavailableResolution(
+        requestedDomain,
+        zionProfileFacts,
+        sessionUserId,
+      );
+    }
+
+    facts.hasProfile = zionProfileFacts.hasProfile;
+    facts.isProfileBlocked = zionProfileFacts.isBlocked;
+
     return resolveAccessState(facts);
   }
 
@@ -804,9 +908,11 @@ export async function resolveAccessForRequest({
   );
   facts.passwordLoginRequired = passwordLoginRequirement.state === "login_required";
 
-  let hasProfile: boolean;
+  let profileFacts: ProfileFacts | AccessResolutionFailure;
   try {
-    hasProfile = await deps.lookupProfileExists(serviceSupabase, sessionUserId);
+    profileFacts = normalizeProfileFacts(
+      await deps.lookupProfileExists(serviceSupabase, sessionUserId),
+    );
   } catch {
     return createUnavailableResolution(
       requestedDomain,
@@ -818,18 +924,20 @@ export async function resolveAccessForRequest({
     );
   }
 
-  if (typeof hasProfile !== "boolean") {
+  if ("reasonCode" in profileFacts) {
     return createUnavailableResolution(
       requestedDomain,
-      createLookupUnavailableFailure(
-        "profile_lookup_unavailable",
-        "A consulta de profile retornou um contrato invalido.",
-      ),
+      profileFacts,
       sessionUserId,
     );
   }
 
-  facts.hasProfile = hasProfile;
+  facts.hasProfile = profileFacts.hasProfile;
+  facts.isProfileBlocked = profileFacts.isBlocked;
+
+  if (facts.hasProfile && facts.isProfileBlocked) {
+    return resolveAccessState(facts);
+  }
 
   if (!facts.hasProfile) {
     return resolveAccessState(facts);
@@ -859,6 +967,7 @@ export async function resolveAccessForRequest({
     );
   }
 
+  facts.hasAnyMemberships = membershipFacts.hasAnyMemberships;
   facts.membershipCount = membershipFacts.membershipCount;
   facts.distinctOrganizationCount =
     membershipFacts.distinctOrganizationCount;

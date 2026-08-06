@@ -118,7 +118,9 @@ function mapDeniedHttpStatus(
   status: AccessResolution["status"],
 ): ZionAdminDeniedHttpStatus {
   if (status === "anonymous") return 401;
-  if (status === "cross_domain_forbidden") return 403;
+  if (status === "cross_domain_forbidden" || status === "account_blocked") {
+    return 403;
+  }
   if (status === "access_resolution_unavailable") return 503;
   return 409;
 }
@@ -137,6 +139,16 @@ function buildDeniedPayload(
   }
 
   if (resolution.status === "cross_domain_forbidden") {
+    return {
+      ok: false,
+      error: "ZION_ADMIN_API_FORBIDDEN",
+      message: "Sua conta nao pode acessar esta API interna do ZION.",
+      status: resolution.status,
+      reasonCode: resolution.reasonCode,
+    };
+  }
+
+  if (resolution.status === "account_blocked") {
     return {
       ok: false,
       error: "ZION_ADMIN_API_FORBIDDEN",

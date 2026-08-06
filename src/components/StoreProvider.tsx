@@ -1,6 +1,7 @@
 "use client";
 
 import React, {
+  useCallback,
   createContext,
   useContext,
   useEffect,
@@ -8,6 +9,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { resolveAccessSelection } from "@/lib/account-access";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type StoreRow = {
@@ -85,7 +87,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -132,13 +134,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         )
       );
 
-      let orgId = membershipRows[0]?.organization_id ?? null;
-
-      if (!orgId) {
-        throw new Error("Usuario sem organizacao vinculada.");
-      }
-
       let normalizedStores: StoreRow[] = [];
+      let orgId: string | null = null;
 
       if (organizationIds.length > 0) {
         const { data: allStoreRows, error: storesErr } = await supabase
@@ -160,13 +157,30 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           storesByOrganization.set(store.organization_id, bucket);
         }
 
-        const preferredMembership =
-          membershipRows.find((membership) => {
-            return (storesByOrganization.get(membership.organization_id)?.length ?? 0) > 0;
-          }) ?? membershipRows[0];
+        const selection = resolveAccessSelection(
+          membershipRows,
+          (allStoreRows ?? []) as StoreRow[],
+        );
 
-        orgId = preferredMembership?.organization_id ?? orgId;
+        if (!selection.ok) {
+          throw new Error(selection.message);
+        }
+
+        orgId = selection.organizationId;
         normalizedStores = storesByOrganization.get(orgId) ?? [];
+      } else {
+        const selection = resolveAccessSelection(membershipRows, []);
+
+        if (!selection.ok) {
+          throw new Error(selection.message);
+        }
+
+        orgId = selection.organizationId;
+        normalizedStores = selection.stores as StoreRow[];
+      }
+
+      if (!orgId) {
+        throw new Error("Usuario sem organizacao vinculada.");
       }
 
       if (!mountedRef.current) return;
@@ -200,11 +214,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           clearStoredStoreSelection(user.id);
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (!mountedRef.current) return;
 
+      const message =
+        err &&
+        typeof err === "object" &&
+        "message" in err &&
+        typeof (err as { message?: unknown }).message === "string"
+          ? (err as { message: string }).message
+          : "Erro ao carregar lojas.";
+
       console.error("[StoreProvider] unexpected error:", err);
-      setError(err?.message ?? "Erro ao carregar lojas.");
+      setError(message);
       currentUserIdRef.current = null;
       setOrganizationId(null);
       setStores([]);
@@ -213,11 +235,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (!mountedRef.current) return;
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
 
   useEffect(() => {
     const {
@@ -249,9 +271,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
-  }, []);
+  }, [load]);
 
-  const setActiveStoreId = (storeId: string) => {
+  const setActiveStoreId = useCallback((storeId: string) => {
     if (!isValidStoreId(storeId, stores)) {
       console.warn("[StoreProvider] tentativa de selecionar store invalida:", {
         storeId,
@@ -269,7 +291,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         window.localStorage.removeItem(ACTIVE_STORE_STORAGE_KEY);
       }
     }
-  };
+  }, [stores]);
 
   const activeStore = useMemo(() => {
     if (!activeStoreId) return null;
@@ -287,7 +309,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setActiveStoreId,
       refreshStores: load,
     }),
-    [loading, error, organizationId, stores, activeStoreId, activeStore]
+    [loading, error, organizationId, stores, activeStoreId, activeStore, setActiveStoreId, load]
   );
 
   return (
