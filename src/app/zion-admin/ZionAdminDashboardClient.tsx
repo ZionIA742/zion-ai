@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseBrowser";
 
@@ -124,6 +124,25 @@ type TokenUsageBreakdown = {
   unclassifiedTokens?: number | string | null;
 };
 
+type StoreAccountAccess = {
+  responsibleName: string | null;
+  emailMasked: string;
+  userId: string | null;
+  status:
+    | "first_access_pending"
+    | "first_access_completed"
+    | "provisioning_pending"
+    | "provisioning_failed"
+    | "invalid_account"
+    | "ambiguous"
+    | "missing";
+  statusLabel: string;
+  canResend: boolean;
+  lastInviteSentAt: string | null;
+  firstAccessCompletedAt: string | null;
+  cooldownRemainingMs: number;
+};
+
 export type ZionAdminStore = {
   id: string;
   name: string;
@@ -175,6 +194,7 @@ export type ZionAdminStore = {
   recentAiErrors?: AiRunEvent[];
   recentAiSuccesses?: AiRunEvent[];
   pendingIssueDetails?: PendingIssueDetail[];
+  accountAccess?: StoreAccountAccess | null;
 };
 
 type Props = {
@@ -182,6 +202,18 @@ type Props = {
   initialData: ZionAdminOverview | null;
   initialError: string | null;
 };
+
+type AdminAccountProvisioning = {
+  membershipRole: "owner";
+};
+
+const DEFAULT_ADMIN_ACCOUNT_PROVISIONING: AdminAccountProvisioning = {
+  membershipRole: "owner",
+};
+
+function normalizeEmail(value: string) {
+  return String(value || "").trim().toLowerCase();
+}
 
 function safeNumber(value: number | string | null | undefined): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -992,6 +1024,158 @@ function DetailModal({
   );
 }
 
+function getAccountAccessStatusHelp(access: StoreAccountAccess | null | undefined) {
+  if (!access) return "Conta de loja indisponivel.";
+  if (access.status === "first_access_pending") {
+    return "Aguardando definicao da primeira senha.";
+  }
+  if (access.status === "first_access_completed") {
+    return "Acesso configurado.";
+  }
+  if (access.status === "provisioning_pending") {
+    return "Provisionamento estrutural ainda pendente.";
+  }
+  if (access.status === "provisioning_failed") {
+    return "Provisionamento exige revisao interna.";
+  }
+  if (access.status === "invalid_account") {
+    return "Marcadores administrativos invalidos.";
+  }
+  if (access.status === "ambiguous") {
+    return "Existe mais de uma conta owner candidata para esta loja.";
+  }
+  return "Conta de loja nao encontrada.";
+}
+
+function AdminCreateAccountModal({
+  onClose,
+  onSubmit,
+  busy,
+  error,
+  success,
+}: {
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  busy: boolean;
+  error: string | null;
+  success:
+    | {
+        email: string;
+        membershipRole: string;
+      }
+    | null;
+}) {
+  const [email, setEmail] = useState("");
+  const [storeName, setStoreName] = useState("");
+  const [responsibleName, setResponsibleName] = useState("");
+
+  return (
+    <DetailModal
+      title="Criar nova conta"
+      description="Envia o convite inicial da conta da loja e conclui o provisionamento estrutural do primeiro acesso."
+      onClose={onClose}
+    >
+      {success ? (
+        <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+          Convite enviado para <span className="font-semibold">{success.email}</span>. A conta nasceu com papel{" "}
+          <span className="font-semibold">{success.membershipRole}</span> e seguirá para o onboarding no primeiro acesso.
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
+          {error}
+        </div>
+      ) : null}
+
+      <form
+        onSubmit={(event) => {
+          const form = event.currentTarget;
+          form.dataset.email = email;
+          form.dataset.storeName = storeName;
+          form.dataset.responsibleName = responsibleName;
+          void onSubmit(event);
+        }}
+        className="space-y-4"
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+              E-mail
+            </label>
+            <input
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              type="email"
+              autoComplete="email"
+              placeholder="cliente@loja.com"
+              className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/50 px-4 py-3 text-sm text-zinc-50 outline-none transition focus:border-white/30"
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+              Nome da Loja
+            </label>
+            <input
+              value={storeName}
+              onChange={(event) => setStoreName(event.target.value)}
+              placeholder="Loja do cliente"
+              className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/50 px-4 py-3 text-sm text-zinc-50 outline-none transition focus:border-white/30"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+              Nome do Responsável
+            </label>
+            <input
+              value={responsibleName}
+              onChange={(event) => setResponsibleName(event.target.value)}
+              placeholder="Pessoa principal"
+              className="mt-1 w-full rounded-2xl border border-white/10 bg-zinc-950/50 px-4 py-3 text-sm text-zinc-50 outline-none transition focus:border-white/30"
+            />
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-zinc-950/40 p-4">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            Como funciona
+          </div>
+          <div className="mt-2 text-sm text-zinc-200">
+            O cliente receberá um convite por e-mail e criará a própria senha.
+          </div>
+          <div className="mt-1 text-xs leading-5 text-zinc-500">
+            O primeiro acesso vai direto para o onboarding da loja. O CRM só será liberado depois que o vínculo inicial estiver válido e o onboarding for concluído.
+          </div>
+          <div className="mt-2 text-xs leading-5 text-zinc-500">
+            Durante o piloto, a conta nasce com papel {DEFAULT_ADMIN_ACCOUNT_PROVISIONING.membershipRole} e acesso integral centralizado no backend, sem senha definida pelo administrador.
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-200 transition hover:bg-white/10"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "Criando conta..." : "Criar conta"}
+          </button>
+        </div>
+      </form>
+    </DetailModal>
+  );
+}
+
 
 function DrawerShell({
   title,
@@ -1051,9 +1235,17 @@ function DrawerShell({
 function StoreDetailsDrawer({
   store,
   onClose,
+  onResendFirstAccess,
+  resendState,
 }: {
   store: ZionAdminStore | null;
   onClose: () => void;
+  onResendFirstAccess: (store: ZionAdminStore) => Promise<void>;
+  resendState: {
+    busyStoreId: string | null;
+    error: string | null;
+    success: string | null;
+  };
 }) {
   if (!store) return null;
 
@@ -1062,6 +1254,11 @@ function StoreDetailsDrawer({
   const aiRuns = numberValue(store.totalAiRuns);
   const successfulRuns = numberValue(store.successfulAiRuns);
   const failedRuns = numberValue(store.failedAiRuns);
+  const accountAccess = store.accountAccess ?? null;
+  const resendDisabled =
+    !accountAccess?.canResend ||
+    (accountAccess?.cooldownRemainingMs ?? 0) > 0 ||
+    resendState.busyStoreId === store.id;
 
   return (
     <DrawerShell
@@ -1079,6 +1276,70 @@ function StoreDetailsDrawer({
       </div>
 
       <div className="space-y-4">
+        <section>
+          <h3 className="text-sm font-semibold text-zinc-200">Acesso da conta</h3>
+          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <DetailItem
+                label="Responsavel"
+                value={accountAccess?.responsibleName || "Nao informado"}
+              />
+              <DetailItem
+                label="E-mail"
+                value={accountAccess?.emailMasked || "E-mail indisponivel"}
+              />
+              <DetailItem
+                label="Status"
+                value={accountAccess?.statusLabel || "Conta indisponivel"}
+                help={getAccountAccessStatusHelp(accountAccess)}
+              />
+              <DetailItem
+                label="Ultimo envio"
+                value={formatDateTime(accountAccess?.lastInviteSentAt)}
+              />
+            </div>
+
+            {accountAccess?.firstAccessCompletedAt ? (
+              <div className="mt-3 text-xs text-zinc-400">
+                Conclusao: {formatDateTime(accountAccess.firstAccessCompletedAt)}
+              </div>
+            ) : null}
+
+            {resendState.error ? (
+              <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                {resendState.error}
+              </div>
+            ) : null}
+
+            {resendState.success ? (
+              <div className="mt-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                {resendState.success}
+              </div>
+            ) : null}
+
+            {accountAccess?.canResend ? (
+              <button
+                type="button"
+                disabled={resendDisabled}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Reenviar um novo link para ${accountAccess.emailMasked}? O link anterior sera substituido.`,
+                    )
+                  ) {
+                    void onResendFirstAccess(store);
+                  }
+                }}
+                className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {resendState.busyStoreId === store.id
+                  ? "Reenviando..."
+                  : "Reenviar link para criar senha"}
+              </button>
+            ) : null}
+          </div>
+        </section>
+
         <section>
           <h3 className="text-sm font-semibold text-zinc-200">Uso da loja</h3>
           <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
@@ -1226,7 +1487,7 @@ function StoreDetailsDrawer({
   );
 }
 
-function OverviewDetailsDrawer({
+export function OverviewDetailsDrawer({
   type,
   data,
   stores,
@@ -2611,6 +2872,16 @@ export default function ZionAdminDashboardClient({
   const [activeSearch, setActiveSearch] = useState("");
   const [inactiveSearch, setInactiveSearch] = useState("");
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isCreateAccountOpen, setIsCreateAccountOpen] = useState(false);
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+  const [createAccountError, setCreateAccountError] = useState<string | null>(null);
+  const [createAccountSuccess, setCreateAccountSuccess] = useState<{
+    email: string;
+    membershipRole: string;
+  } | null>(null);
+  const [resendBusyStoreId, setResendBusyStoreId] = useState<string | null>(null);
+  const [resendError, setResendError] = useState<string | null>(null);
+  const [resendSuccess, setResendSuccess] = useState<string | null>(null);
 
   const data = initialData;
   const stores = data?.stores ?? [];
@@ -2623,6 +2894,10 @@ export default function ZionAdminDashboardClient({
   const totalAiRuns = numberValue(data?.totals.aiRuns);
   const successfulAiRuns = numberValue(data?.totals.successfulAiRuns);
   const failedAiRuns = numberValue(data?.totals.failedAiRuns);
+  const canManageAccounts = useMemo(() => {
+    const normalized = String(adminRole || "").trim().toLowerCase();
+    return normalized === "owner" || normalized === "admin" || normalized === "super_admin";
+  }, [adminRole]);
 
   async function handleSignOut() {
     if (isSigningOut) return;
@@ -2647,6 +2922,119 @@ export default function ZionAdminDashboardClient({
     }
   }
 
+  async function handleCreateAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreateAccountError(null);
+    setCreateAccountSuccess(null);
+
+    const form = event.currentTarget;
+    const email = normalizeEmail(form.dataset.email || "");
+    const storeName = String(form.dataset.storeName || "").trim();
+    const responsibleName = String(form.dataset.responsibleName || "").trim();
+
+    if (!email) {
+      setCreateAccountError("Preencha o e-mail da nova conta.");
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setCreateAccountError("Digite um e-mail válido.");
+      return;
+    }
+
+    if (!storeName) {
+      setCreateAccountError("Preencha o nome da loja.");
+      return;
+    }
+
+    if (!responsibleName) {
+      setCreateAccountError("Preencha o nome do responsável.");
+      return;
+    }
+
+    setIsCreatingAccount(true);
+
+    try {
+      const response = await fetch("/api/zion-admin/accounts/create", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          storeName,
+          responsibleName,
+        }),
+      });
+
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(payload?.error || "Não foi possível criar a conta.");
+      }
+
+      setCreateAccountSuccess({
+        email,
+        membershipRole: String(payload?.membershipRole || DEFAULT_ADMIN_ACCOUNT_PROVISIONING.membershipRole),
+      });
+
+      router.refresh();
+    } catch (error: unknown) {
+      const message =
+        error &&
+        typeof error === "object" &&
+        "message" in error &&
+        typeof (error as { message?: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : "Não foi possível criar a conta.";
+
+      setCreateAccountError(message);
+    } finally {
+      setIsCreatingAccount(false);
+    }
+  }
+
+  async function handleResendFirstAccess(store: ZionAdminStore) {
+    if (!store.id) {
+      return;
+    }
+
+    setResendBusyStoreId(store.id);
+    setResendError(null);
+    setResendSuccess(null);
+
+    try {
+      const response = await fetch("/api/zion-admin/accounts/resend-first-access", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          storeId: store.id,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(payload?.error || "Nao foi possivel reenviar o link.");
+      }
+
+      setResendSuccess("Novo link enviado com sucesso.");
+      router.refresh();
+    } catch (error: unknown) {
+      setResendError(
+        error &&
+          typeof error === "object" &&
+          "message" in error &&
+          typeof (error as { message?: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : "Nao foi possivel reenviar o link.",
+      );
+    } finally {
+      setResendBusyStoreId(null);
+    }
+  }
+
   return (
     <main className="min-h-screen overflow-x-hidden bg-zinc-950 px-4 py-5 text-zinc-50 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-3">
@@ -2661,6 +3049,19 @@ export default function ZionAdminDashboardClient({
           </div>
 
           <div className="flex items-center gap-2 self-start md:self-auto">
+            {canManageAccounts ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setCreateAccountError(null);
+                  setCreateAccountSuccess(null);
+                  setIsCreateAccountOpen(true);
+                }}
+                className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-500/15"
+              >
+                Nova conta
+              </button>
+            ) : null}
             <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300">
               Acesso:{" "}
               <span className="font-semibold text-zinc-50">{adminRole}</span>
@@ -2765,7 +3166,23 @@ export default function ZionAdminDashboardClient({
       <StoreDetailsDrawer
         store={selectedStore}
         onClose={() => setSelectedStore(null)}
+        onResendFirstAccess={handleResendFirstAccess}
+        resendState={{
+          busyStoreId: resendBusyStoreId,
+          error: resendError,
+          success: resendSuccess,
+        }}
       />
+
+      {isCreateAccountOpen ? (
+        <AdminCreateAccountModal
+          onClose={() => setIsCreateAccountOpen(false)}
+          onSubmit={handleCreateAccount}
+          busy={isCreatingAccount}
+          error={createAccountError}
+          success={createAccountSuccess}
+        />
+      ) : null}
     </main>
   );
 }
