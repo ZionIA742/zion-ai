@@ -110,7 +110,7 @@ export default async function ZionAdminDashboardPage() {
     .maybeSingle();
 
   if (adminError || !admin) {
-    redirect("/dashboard");
+    redirect("/zion-admin/login");
   }
 
   const overview = await getZionAdminOverview();
