@@ -1,8 +1,6 @@
 
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import OpenAI from "openai";
-import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import type {
   AppointmentRow,
@@ -59,6 +57,13 @@ import {
 } from "@/lib/server/assistant/customer-reschedule-workflow";
 import { handleAssistantDocumentEditRequest } from "@/lib/server/assistant/document-edit-intent";
 import { handleAssistantContractGenerationRequest } from "@/lib/server/assistant/contract-generation-intent";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 
@@ -121,135 +126,13 @@ function truncateForAiRunLog(value: unknown, maxLength = 1200): string | null {
   return !text ? null : text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
 }
 
-type AssistantRouteScopeValidationResult =
-  | {
-      ok: true;
-      organizationId: string;
-      storeId: string;
-      userId: string;
-    }
-  | {
-      ok: false;
-      status: number;
-      error: string;
-      message: string;
-    };
-
-async function createAuthenticatedRouteSupabaseClient() {
-  const cookieStore = await cookies();
-
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) => {
-              cookieStore.set(name, value, options);
-            });
-          } catch {
-            // Route handlers can usually write cookies. If this ever runs in
-            // a read-only context, auth.getUser still works with getAll().
-          }
-        },
-      },
-    },
-  );
-}
-
-async function validateAssistantRouteScope(params: {
-  organizationId?: string;
-  storeId?: string;
-}): Promise<AssistantRouteScopeValidationResult> {
-  const organizationId = String(params.organizationId || "").trim();
-  const storeId = String(params.storeId || "").trim();
-
-  if (!organizationId || !storeId) {
-    return {
-      ok: false,
-      status: 400,
-      error: "MISSING_FIELDS",
-      message: "Envie organizationId e storeId.",
-    };
-  }
-
-  const supabase = await createAuthenticatedRouteSupabaseClient();
-
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user?.id) {
-    return {
-      ok: false,
-      status: 401,
-      error: "UNAUTHENTICATED",
-      message: "Faça login para usar a assistente.",
-    };
-  }
-
-  const { data: membership, error: membershipError } = await supabase
-    .from("memberships")
-    .select("organization_id, user_id, role")
-    .eq("organization_id", organizationId)
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (membershipError) {
-    return {
-      ok: false,
-      status: 500,
-      error: "MEMBERSHIP_CHECK_FAILED",
-      message: "Não foi possível validar o acesso do usuário à organização.",
-    };
-  }
-
-  if (!membership) {
-    return {
-      ok: false,
-      status: 403,
-      error: "ORGANIZATION_ACCESS_DENIED",
-      message: "Você não tem acesso a esta organização.",
-    };
-  }
-
-  const { data: store, error: storeError } = await supabase
-    .from("stores")
-    .select("id, organization_id")
-    .eq("id", storeId)
-    .eq("organization_id", organizationId)
-    .maybeSingle();
-
-  if (storeError) {
-    return {
-      ok: false,
-      status: 500,
-      error: "STORE_SCOPE_CHECK_FAILED",
-      message: "Não foi possível validar o acesso do usuário à loja.",
-    };
-  }
-
-  if (!store) {
-    return {
-      ok: false,
-      status: 403,
-      error: "STORE_ACCESS_DENIED",
-      message: "Você não tem acesso a esta loja.",
-    };
-  }
-
-  return {
-    ok: true,
-    organizationId,
-    storeId,
-    userId: user.id,
-  };
-}
+type AssistantReplyRouteDeps = {
+  resolveAccess: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  generateReply: typeof generateAssistantReply;
+};
 
 function aiRunNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -8855,48 +8738,59 @@ async function resolveBlockDayReply(args: {
     : `Ainda não consegui bloquear ${blockLabel}.`;
 }
 
-export async function POST(request: Request) {
-  try {
-    const body = (await request.json()) as {
-      organizationId?: string;
-      storeId?: string;
-    };
+export function createAssistantReplyPostHandler(
+  deps: Partial<AssistantReplyRouteDeps> = {},
+) {
+  const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const generateReply = deps.generateReply ?? generateAssistantReply;
 
-    const scope = await validateAssistantRouteScope({
-      organizationId: body.organizationId,
-      storeId: body.storeId,
-    });
+  return async function POST(request: Request) {
+    try {
+      const body = (await request.json()) as {
+        organizationId?: string;
+        storeId?: string;
+      };
 
-    if (!scope.ok) {
+      const access = await resolveAccess({
+        requirement: "active",
+      });
+
+      if (!access.ok) {
+        return createStoreApiDeniedResponse(access);
+      }
+
+      const authorizedContext = {
+        sessionUserId: access.sessionUserId,
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+      };
+
+      void body.organizationId;
+      void body.storeId;
+      void authorizedContext.sessionUserId;
+
+      const result = await generateReply({
+        request,
+        organizationId: authorizedContext.organizationId,
+        storeId: authorizedContext.storeId,
+      });
+
+      if (!result.ok) {
+        return NextResponse.json(result, { status: 400 });
+      }
+
+      return NextResponse.json(result);
+    } catch (error: any) {
       return NextResponse.json(
         {
           ok: false,
-          error: scope.error,
-          message: scope.message,
+          error: "ASSISTANT_REPLY_ROUTE_FAILED",
+          message: error?.message || "Erro interno na rota da assistente.",
         },
-        { status: scope.status }
+        { status: 500 }
       );
     }
-
-    const result = await generateAssistantReply({
-      request,
-      organizationId: scope.organizationId,
-      storeId: scope.storeId,
-    });
-
-    if (!result.ok) {
-      return NextResponse.json(result, { status: 400 });
-    }
-
-    return NextResponse.json(result);
-  } catch (error: any) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "ASSISTANT_REPLY_ROUTE_FAILED",
-        message: error?.message || "Erro interno na rota da assistente.",
-      },
-      { status: 500 }
-    );
-  }
+  };
 }
+
+export const POST = createAssistantReplyPostHandler();
