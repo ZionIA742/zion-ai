@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createSupabaseServerClient } from "@/lib/supabaseServer";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+  type StoreApiAccessDenied,
+  type StoreApiAccessGranted,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,16 +37,15 @@ type LeadRow = {
   store_id: string | null;
 };
 
-type MembershipRow = {
-  organization_id: string;
-};
-
-type StoreRow = {
-  id: string;
-  organization_id: string;
-};
-
 type AttachmentKind = "image" | "audio" | "video" | "file";
+
+type SignedMediaRouteDeps = {
+  resolveAccess: (params: {
+    requirement: "active";
+    deps?: Partial<ResolveStoreApiAccessDeps>;
+  }) => Promise<StoreApiAccessGranted | StoreApiAccessDenied>;
+  createPrivilegedClient: () => ReturnType<typeof createClient>;
+};
 
 function createSupabaseAdminClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -48,7 +53,7 @@ function createSupabaseAdminClient() {
 
   if (!supabaseUrl || !supabaseServiceKey) {
     throw new Error(
-      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente."
+      "Verifique NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente.",
     );
   }
 
@@ -94,7 +99,7 @@ function normalizeAttachmentKind(value: unknown): AttachmentKind | null {
 
 function resolveAttachmentKind(
   messageType: string,
-  metadata: Record<string, unknown> | null
+  metadata: Record<string, unknown> | null,
 ) {
   const metadataAttachmentKind = normalizeAttachmentKind(metadata?.attachment_kind);
   if (metadataAttachmentKind) {
@@ -108,326 +113,289 @@ function resolveAttachmentKind(
   return null;
 }
 
-export async function GET(
-  _request: Request,
-  context: { params: Promise<{ messageId: string }> }
+export function createSignedMediaUrlGetHandler(
+  deps: Partial<SignedMediaRouteDeps> = {},
 ) {
-  try {
-    const { messageId: rawMessageId } = await context.params;
-    const messageId = String(rawMessageId || "").trim();
+  const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const createPrivilegedClient =
+    deps.createPrivilegedClient ?? createSupabaseAdminClient;
 
-    if (!messageId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "MISSING_MESSAGE_ID",
-          message: "Message ID nao informado na rota.",
-        },
-        400
-      );
-    }
+  return async function GET(
+    _request: Request,
+    context: { params: Promise<{ messageId: string }> },
+  ) {
+    try {
+      const { messageId: rawMessageId } = await context.params;
+      const messageId = String(rawMessageId || "").trim();
 
-    const sessionSupabase = await createSupabaseServerClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await sessionSupabase.auth.getUser();
-
-    if (userError || !user) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "UNAUTHENTICATED",
-          message: "Usuario nao autenticado.",
-        },
-        401
-      );
-    }
-
-    const supabase = createSupabaseAdminClient();
-
-    const { data: message, error: messageError } = await supabase
-      .from("messages")
-      .select(
-        "id, organization_id, store_id, conversation_id, lead_id, message_type, media_url, metadata"
-      )
-      .eq("id", messageId)
-      .maybeSingle<MessageRow>();
-
-    if (messageError) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LOAD_MESSAGE_FAILED",
-          message: messageError.message,
-        },
-        500
-      );
-    }
-
-    if (!message) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "MESSAGE_NOT_FOUND",
-          message: "Mensagem nao encontrada.",
-        },
-        404
-      );
-    }
-
-    const metadata = isObjectRecord(message.metadata) ? message.metadata : null;
-    const mediaPurpose = String(metadata?.media_purpose || "").trim().toLowerCase();
-    const storageBucket = String(metadata?.storage_bucket || "").trim();
-    const metadataStoragePath = String(metadata?.storage_path || "").trim();
-    const mediaUrl = String(message.media_url || "").trim();
-    const messageType = normalizeMessageType(message.message_type);
-    const attachmentKind = resolveAttachmentKind(messageType, metadata);
-    const mimeType = String(metadata?.mime_type || "").trim() || null;
-    const fileName = String(metadata?.original_file_name || "").trim() || null;
-    const storagePath =
-      metadataStoragePath ||
-      (storageBucket === STORAGE_BUCKET && mediaUrl && !/^https?:\/\//i.test(mediaUrl)
-        ? mediaUrl
-        : "");
-    const isLegacyCustomerLocationPhoto =
-      messageType === "image" && mediaPurpose === "customer_location_photo";
-    const isSupportedPrivateAttachment =
-      attachmentKind === "image" ||
-      attachmentKind === "audio" ||
-      attachmentKind === "video" ||
-      attachmentKind === "file" ||
-      messageType === "image" ||
-      messageType === "audio" ||
-      messageType === "video";
-
-    if (
-      storageBucket !== STORAGE_BUCKET ||
-      !storagePath ||
-      (!isLegacyCustomerLocationPhoto && !isSupportedPrivateAttachment)
-    ) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "INVALID_MEDIA_MESSAGE",
-          message:
-            "A mensagem informada nao possui um anexo privado valido para visualizacao segura.",
-        },
-        422
-      );
-    }
-
-    const conversationId = String(message.conversation_id || "").trim();
-
-    if (!conversationId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "MESSAGE_RELATION_INCONSISTENT",
-          message: "A mensagem nao possui conversa valida vinculada.",
-        },
-        403
-      );
-    }
-
-    const { data: conversation, error: conversationError } = await supabase
-      .from("conversations")
-      .select("id, organization_id, lead_id")
-      .eq("id", conversationId)
-      .maybeSingle<ConversationRow>();
-
-    if (conversationError) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LOAD_CONVERSATION_FAILED",
-          message: conversationError.message,
-        },
-        500
-      );
-    }
-
-    if (!conversation) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "CONVERSATION_NOT_FOUND",
-          message: "Conversa vinculada a mensagem nao encontrada.",
-        },
-        403
-      );
-    }
-
-    const leadId = String(message.lead_id || conversation.lead_id || "").trim();
-
-    if (!leadId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LEAD_RELATION_INCONSISTENT",
-          message: "Nao foi possivel identificar o lead vinculado a mensagem.",
-        },
-        403
-      );
-    }
-
-    const { data: lead, error: leadError } = await supabase
-      .from("leads")
-      .select("id, organization_id, store_id")
-      .eq("id", leadId)
-      .maybeSingle<LeadRow>();
-
-    if (leadError) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LOAD_LEAD_FAILED",
-          message: leadError.message,
-        },
-        500
-      );
-    }
-
-    if (!lead) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LEAD_NOT_FOUND",
-          message: "Lead vinculado a mensagem nao encontrado.",
-        },
-        403
-      );
-    }
-
-    const conversationOrganizationId = String(conversation.organization_id || "").trim();
-    const messageOrganizationId = String(message.organization_id || "").trim();
-    const leadOrganizationId = String(lead.organization_id || "").trim();
-    const messageStoreId = String(message.store_id || "").trim();
-    const leadStoreId = String(lead.store_id || "").trim();
-
-    if (
-      !conversationOrganizationId ||
-      !messageOrganizationId ||
-      !leadOrganizationId ||
-      messageOrganizationId !== conversationOrganizationId ||
-      leadOrganizationId !== conversationOrganizationId
-    ) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "RELATION_SCOPE_INCONSISTENT",
-          message: "Os vinculos internos da mensagem estao inconsistentes para visualizacao segura.",
-        },
-        403
-      );
-    }
-
-    if (leadStoreId && messageStoreId && leadStoreId !== messageStoreId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "STORE_SCOPE_INCONSISTENT",
-          message: "Os vinculos de loja da mensagem estao inconsistentes para visualizacao segura.",
-        },
-        403
-      );
-    }
-
-    const { data: membership, error: membershipError } = await sessionSupabase
-      .from("memberships")
-      .select("organization_id")
-      .eq("user_id", user.id)
-      .eq("organization_id", leadOrganizationId)
-      .maybeSingle<MembershipRow>();
-
-    if (membershipError) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "LOAD_MEMBERSHIP_FAILED",
-          message: membershipError.message,
-        },
-        500
-      );
-    }
-
-    if (!membership) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          error: "FORBIDDEN_ORGANIZATION",
-          message: "Voce nao pode acessar anexos desta organizacao.",
-        },
-        403
-      );
-    }
-
-    const scopedStoreId = leadStoreId || messageStoreId;
-
-    if (scopedStoreId) {
-      const { data: store, error: storeError } = await sessionSupabase
-        .from("stores")
-        .select("id, organization_id")
-        .eq("id", scopedStoreId)
-        .eq("organization_id", leadOrganizationId)
-        .maybeSingle<StoreRow>();
-
-      if (storeError) {
+      if (!messageId) {
         return buildJsonResponse(
           {
             ok: false,
-            error: "LOAD_STORE_FAILED",
-            message: storeError.message,
+            error: "MISSING_MESSAGE_ID",
+            message: "Message ID nao informado na rota.",
           },
-          500
+          400,
         );
       }
 
-      if (!store) {
+      const access = await resolveAccess({
+        requirement: "active",
+      });
+
+      if (!access.ok) {
+        return createStoreApiDeniedResponse(access);
+      }
+
+      const organizationId = access.organizationId;
+      const storeId = access.storeId;
+      const supabase = createPrivilegedClient();
+
+      const { data: message, error: messageError } = await supabase
+        .from("messages")
+        .select(
+          "id, organization_id, store_id, conversation_id, lead_id, message_type, media_url, metadata",
+        )
+        .eq("id", messageId)
+        .eq("organization_id", organizationId)
+        .maybeSingle<MessageRow>();
+
+      if (messageError) {
         return buildJsonResponse(
           {
             ok: false,
-            error: "FORBIDDEN_STORE",
-            message: "A loja vinculada ao anexo nao pertence a esta organizacao.",
+            error: "LOAD_MESSAGE_FAILED",
+            message: messageError.message,
           },
-          403
+          500,
         );
       }
-    }
 
-    const { data: signedData, error: signedError } = await supabase.storage
-      .from(STORAGE_BUCKET)
-      .createSignedUrl(storagePath, SIGNED_URL_EXPIRATION_SECONDS);
+      if (!message) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "MESSAGE_NOT_FOUND",
+            message: "Mensagem nao encontrada.",
+          },
+          404,
+        );
+      }
 
-    if (signedError || !signedData?.signedUrl) {
+      const metadata = isObjectRecord(message.metadata) ? message.metadata : null;
+      const mediaPurpose = String(metadata?.media_purpose || "").trim().toLowerCase();
+      const storageBucket = String(metadata?.storage_bucket || "").trim();
+      const metadataStoragePath = String(metadata?.storage_path || "").trim();
+      const mediaUrl = String(message.media_url || "").trim();
+      const messageType = normalizeMessageType(message.message_type);
+      const attachmentKind = resolveAttachmentKind(messageType, metadata);
+      const mimeType = String(metadata?.mime_type || "").trim() || null;
+      const fileName = String(metadata?.original_file_name || "").trim() || null;
+      const storagePath =
+        metadataStoragePath ||
+        (storageBucket === STORAGE_BUCKET && mediaUrl && !/^https?:\/\//i.test(mediaUrl)
+          ? mediaUrl
+          : "");
+      const isLegacyCustomerLocationPhoto =
+        messageType === "image" && mediaPurpose === "customer_location_photo";
+      const isSupportedPrivateAttachment =
+        attachmentKind === "image" ||
+        attachmentKind === "audio" ||
+        attachmentKind === "video" ||
+        attachmentKind === "file" ||
+        messageType === "image" ||
+        messageType === "audio" ||
+        messageType === "video";
+
+      if (
+        storageBucket !== STORAGE_BUCKET ||
+        !storagePath ||
+        (!isLegacyCustomerLocationPhoto && !isSupportedPrivateAttachment)
+      ) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "INVALID_MEDIA_MESSAGE",
+            message:
+              "A mensagem informada nao possui um anexo privado valido para visualizacao segura.",
+          },
+          422,
+        );
+      }
+
+      const conversationId = String(message.conversation_id || "").trim();
+
+      if (!conversationId) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "MESSAGE_RELATION_INCONSISTENT",
+            message: "A mensagem nao possui conversa valida vinculada.",
+          },
+          403,
+        );
+      }
+
+      const { data: conversation, error: conversationError } = await supabase
+        .from("conversations")
+        .select("id, organization_id, lead_id")
+        .eq("id", conversationId)
+        .eq("organization_id", organizationId)
+        .maybeSingle<ConversationRow>();
+
+      if (conversationError) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "LOAD_CONVERSATION_FAILED",
+            message: conversationError.message,
+          },
+          500,
+        );
+      }
+
+      if (!conversation) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "CONVERSATION_NOT_FOUND",
+            message: "Conversa vinculada a mensagem nao encontrada.",
+          },
+          403,
+        );
+      }
+
+      const leadId = String(message.lead_id || conversation.lead_id || "").trim();
+
+      if (!leadId) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "LEAD_RELATION_INCONSISTENT",
+            message: "Nao foi possivel identificar o lead vinculado a mensagem.",
+          },
+          403,
+        );
+      }
+
+      const { data: lead, error: leadError } = await supabase
+        .from("leads")
+        .select("id, organization_id, store_id")
+        .eq("id", leadId)
+        .eq("organization_id", organizationId)
+        .eq("store_id", storeId)
+        .maybeSingle<LeadRow>();
+
+      if (leadError) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "LOAD_LEAD_FAILED",
+            message: leadError.message,
+          },
+          500,
+        );
+      }
+
+      if (!lead) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "LEAD_NOT_FOUND",
+            message: "Lead vinculado a mensagem nao encontrado.",
+          },
+          403,
+        );
+      }
+
+      const conversationOrganizationId = String(conversation.organization_id || "").trim();
+      const messageOrganizationId = String(message.organization_id || "").trim();
+      const leadOrganizationId = String(lead.organization_id || "").trim();
+      const messageStoreId = String(message.store_id || "").trim();
+      const leadStoreId = String(lead.store_id || "").trim();
+
+      if (
+        !conversationOrganizationId ||
+        !messageOrganizationId ||
+        !leadOrganizationId ||
+        messageOrganizationId !== organizationId ||
+        conversationOrganizationId !== organizationId ||
+        leadOrganizationId !== organizationId
+      ) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "RELATION_SCOPE_INCONSISTENT",
+            message: "Os vinculos internos da mensagem estao inconsistentes para visualizacao segura.",
+          },
+          403,
+        );
+      }
+
+      if (
+        (messageStoreId && messageStoreId !== storeId) ||
+        !leadStoreId ||
+        leadStoreId !== storeId
+      ) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "STORE_SCOPE_INCONSISTENT",
+            message: "Os vinculos de loja da mensagem estao inconsistentes para visualizacao segura.",
+          },
+          403,
+        );
+      }
+
+      const expectedPathPrefix = `${organizationId}/${storeId}/`;
+      if (!storagePath.startsWith(expectedPathPrefix)) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "STORE_SCOPE_INCONSISTENT",
+            message: "Os vinculos de loja da mensagem estao inconsistentes para visualizacao segura.",
+          },
+          403,
+        );
+      }
+
+      const { data: signedData, error: signedError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .createSignedUrl(storagePath, SIGNED_URL_EXPIRATION_SECONDS);
+
+      if (signedError || !signedData?.signedUrl) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            error: "SIGNED_URL_GENERATION_FAILED",
+            message:
+              signedError?.message ||
+              "Nao foi possivel gerar o link temporario deste anexo.",
+          },
+          500,
+        );
+      }
+
+      return buildJsonResponse({
+        ok: true,
+        signedUrl: signedData.signedUrl,
+        mimeType,
+        attachmentKind,
+        fileName,
+        expiresInSeconds: SIGNED_URL_EXPIRATION_SECONDS,
+      });
+    } catch (error: any) {
       return buildJsonResponse(
         {
           ok: false,
-          error: "SIGNED_URL_GENERATION_FAILED",
+          error: "UNEXPECTED_ERROR",
           message:
-            signedError?.message ||
-            "Nao foi possivel gerar o link temporario deste anexo.",
+            error?.message || "Erro inesperado ao gerar a visualizacao segura do anexo.",
         },
-        500
+        500,
       );
     }
-
-    return buildJsonResponse({
-      ok: true,
-      signedUrl: signedData.signedUrl,
-      mimeType,
-      attachmentKind,
-      fileName,
-      expiresInSeconds: SIGNED_URL_EXPIRATION_SECONDS,
-    });
-  } catch (error: any) {
-    return buildJsonResponse(
-      {
-        ok: false,
-        error: "UNEXPECTED_ERROR",
-        message: error?.message || "Erro inesperado ao gerar a visualizacao segura do anexo.",
-      },
-      500
-    );
-  }
+  };
 }
+
+export const GET = createSignedMediaUrlGetHandler();
