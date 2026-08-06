@@ -11,6 +11,7 @@ import {
 } from "@/config/crm";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase as supabaseClient } from "@/lib/supabaseBrowser";
+import { buildCrmLeadConversationHref } from "@/lib/server/crm/lead-conversation-opportunity-context";
 
 type CrmOpportunityCardRow = {
   commercial_opportunity_id: string;
@@ -452,12 +453,28 @@ export default function CrmPage() {
           </div>
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-            <Link
-              href={`/crm/opportunity/${encodeURIComponent(card.commercialOpportunityId)}`}
-              className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
-            >
-              Abrir oportunidade
-            </Link>
+            {buildCrmLeadConversationHref({
+              leadId: card.leadId,
+              conversationId: card.conversationId,
+              opportunityId: card.commercialOpportunityId,
+            }) ? (
+              <Link
+                href={
+                  buildCrmLeadConversationHref({
+                    leadId: card.leadId,
+                    conversationId: card.conversationId,
+                    opportunityId: card.commercialOpportunityId,
+                  })!
+                }
+                className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
+              >
+                Abrir oportunidade
+              </Link>
+            ) : (
+              <span className="rounded-lg bg-gray-100 px-3 py-2 text-xs font-semibold text-gray-500 ring-1 ring-gray-200">
+                Lead indisponivel
+              </span>
+            )}
 
             <div className="flex flex-wrap items-center gap-1.5">
               <button

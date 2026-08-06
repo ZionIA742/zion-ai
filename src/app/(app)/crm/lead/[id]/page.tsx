@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { KeyboardEvent, useEffect, useRef, useState, type ChangeEvent } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
+import { getCanonicalCrmStage } from "@/config/crm";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type Lead = {
@@ -96,8 +97,23 @@ type LeadDetailsResponse = {
   messages?: MessageRow[];
   commercialTasks?: CommercialTask[];
   appointments?: Appointment[];
+  opportunities?: OpportunitySummary[];
+  selectedOpportunityId?: string | null;
+  requiresOpportunitySelection?: boolean;
   error?: string;
   message?: string;
+};
+
+type OpportunitySummary = {
+  id: string;
+  organizationId: string;
+  storeId: string;
+  leadId: string;
+  conversationId: string | null;
+  stage: string | null;
+  stageChangedAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
 };
 
 type SimulateCustomerResponse = {
@@ -336,7 +352,13 @@ type QuoteDraftPayload = {
   quoteItems: QuoteFormItem[];
 };
 
-type DetailTab = "summary" | "appointments" | "context" | "tasks" | "pdfs";
+type DetailTab =
+  | "summary"
+  | "opportunity"
+  | "appointments"
+  | "context"
+  | "tasks"
+  | "pdfs";
 type GeneratedPdfTab = "quotes" | "contracts";
 const VALID_DETAIL_TABS: DetailTab[] = ["summary", "appointments", "context", "tasks", "pdfs"];
 
@@ -812,6 +834,15 @@ function formatLeadStage(value: string | null | undefined) {
   return labels[normalized] || formatFriendlyLabel(value);
 }
 
+function formatOpportunityStage(value: string | null | undefined) {
+  const canonicalStage = getCanonicalCrmStage(value);
+  if (canonicalStage) {
+    return canonicalStage.title;
+  }
+
+  return formatLeadStage(value);
+}
+
 function formatConversationStatus(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
 
@@ -943,7 +974,12 @@ function EmptyState({ text }: { text: string }) {
 
 export default function LeadPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const leadId = params.id as string;
+  const requestedConversationId =
+    String(searchParams.get("conversationId") || "").trim() || null;
+  const requestedOpportunityId =
+    String(searchParams.get("opportunityId") || "").trim() || null;
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const customerAttachmentInputRef = useRef<HTMLInputElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -963,6 +999,9 @@ export default function LeadPage() {
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [commercialTasks, setCommercialTasks] = useState<CommercialTask[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [opportunities, setOpportunities] = useState<OpportunitySummary[]>([]);
+  const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
+  const [requiresOpportunitySelection, setRequiresOpportunitySelection] = useState(false);
   const [newMessage, setNewMessage] = useState("");
   const [simulatedCustomerMessage, setSimulatedCustomerMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1039,6 +1078,14 @@ export default function LeadPage() {
   const hasConversation = Boolean(conversation);
   const isHumanActive = conversation?.is_human_active === true;
   const latestCommercialTask = getLatestCommercialTask(commercialTasks);
+  const selectedOpportunity =
+    opportunities.find((opportunity) => opportunity.id === selectedOpportunityId) || null;
+  const activeOpportunities = opportunities.filter(
+    (opportunity) => getCanonicalCrmStage(opportunity.stage)?.area === "pipeline"
+  );
+  const selectedOpportunityStageLabel = selectedOpportunity
+    ? formatOpportunityStage(selectedOpportunity.stage)
+    : "Nenhuma oportunidade selecionada";
   const contractsByQuoteId = generatedContracts.reduce<Record<string, GeneratedContractSummary>>(
     (acc, contract) => {
       const quoteId = String(contract.quote_id || "").trim();
@@ -1271,6 +1318,16 @@ export default function LeadPage() {
   }
 
   function openCreateQuoteModal() {
+    if (requiresOpportunitySelection && !selectedOpportunity) {
+      setQuoteFormError(
+        "Selecione primeiro a oportunidade comercial para criar o orcamento desta conversa."
+      );
+      setStatusText(
+        "Existem multiplas oportunidades ativas nesta conversa. Escolha a oportunidade comercial antes de seguir."
+      );
+      return;
+    }
+
     resetQuoteForm();
     setQuoteFormError(null);
     setQuoteFormSuccess(null);
@@ -1349,6 +1406,7 @@ export default function LeadPage() {
       storeId: lead.store_id,
       conversationId: conversation?.id || null,
       leadId: lead.id,
+      commercialOpportunityId: selectedOpportunity?.id || null,
       title: quoteTitle.trim(),
       customer_name: lead.name || null,
       customer_phone: lead.phone || null,
@@ -1554,7 +1612,20 @@ export default function LeadPage() {
     setStatusText(null);
 
     try {
-      const response = await fetch(`/api/crm/lead-details/${leadId}`, {
+      const apiUrl = new URL(
+        `/api/crm/lead-details/${encodeURIComponent(leadId)}`,
+        window.location.origin
+      );
+
+      if (requestedConversationId) {
+        apiUrl.searchParams.set("conversationId", requestedConversationId);
+      }
+
+      if (requestedOpportunityId) {
+        apiUrl.searchParams.set("opportunityId", requestedOpportunityId);
+      }
+
+      const response = await fetch(apiUrl.toString(), {
         method: "GET",
         cache: "no-store",
       });
@@ -1581,6 +1652,11 @@ export default function LeadPage() {
         Array.isArray(result.commercialTasks) ? result.commercialTasks : []
       );
       setAppointments(Array.isArray(result.appointments) ? result.appointments : []);
+      setOpportunities(Array.isArray(result.opportunities) ? result.opportunities : []);
+      setSelectedOpportunityId(
+        String(result.selectedOpportunityId || "").trim() || null
+      );
+      setRequiresOpportunitySelection(result.requiresOpportunitySelection === true);
 
       if (silent) {
         setRefreshing(false);
@@ -3155,7 +3231,7 @@ export default function LeadPage() {
 
   useEffect(() => {
     void fetchLeadConversationAndMessages();
-  }, [leadId]);
+  }, [leadId, requestedConversationId, requestedOpportunityId]);
 
   useEffect(() => {
     setGeneratedQuotes([]);
@@ -3396,6 +3472,12 @@ export default function LeadPage() {
       help: "Ultima mensagem e proximo passo",
     },
     {
+      id: "opportunity",
+      label: "Dados da oportunidade",
+      value: selectedOpportunity ? selectedOpportunityStageLabel : "Selecionar",
+      help: "Contexto comercial selecionado",
+    },
+    {
       id: "appointments",
       label: "Agenda e compromissos",
       value: `${appointments.length}`,
@@ -3472,6 +3554,14 @@ export default function LeadPage() {
               <div className="flex flex-col items-end gap-2">
                 <div className="flex flex-wrap justify-end gap-2">
                   <button
+                    type="button"
+                    onClick={() => setActiveDetailsTab("opportunity")}
+                    className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50"
+                  >
+                    Dados da oportunidade
+                  </button>
+
+                  <button
                     onClick={() => void takeOverConversation()}
                     disabled={!canTakeOver}
                     className="rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
@@ -3498,7 +3588,12 @@ export default function LeadPage() {
                   <button
                     type="button"
                     onClick={openCreateQuoteModal}
-                    disabled={working || refreshing || simulatingCustomer}
+                    disabled={
+                      working ||
+                      refreshing ||
+                      simulatingCustomer ||
+                      (requiresOpportunitySelection && !selectedOpportunity)
+                    }
                     className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Criar orçamento
@@ -3517,6 +3612,71 @@ export default function LeadPage() {
             {!conversation ? (
               <div className="mt-4 rounded-2xl bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-600/20">
                 Este lead ainda nao possui conversa. Os controles ficam bloqueados ate existir uma conversa.
+              </div>
+            ) : null}
+
+            <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              <InfoCard
+                label="Oportunidade atual"
+                value={
+                  selectedOpportunity
+                    ? "Contexto comercial selecionado"
+                    : requiresOpportunitySelection
+                      ? "Selecao obrigatoria"
+                      : "Nenhuma selecionada"
+                }
+                help={
+                  selectedOpportunity
+                    ? "Contexto comercial usado nas acoes desta tela."
+                    : requiresOpportunitySelection
+                      ? "Existem multiplas oportunidades ativas para este lead."
+                      : "Abra pelo board ou selecione nos detalhes da oportunidade."
+                }
+              />
+              <InfoCard
+                label="Etapa atual"
+                value={selectedOpportunityStageLabel}
+                help="A conversa permanece completa; apenas o contexto comercial muda."
+              />
+              <InfoCard
+                label="Oportunidades ativas"
+                value={`${activeOpportunities.length}`}
+                help={
+                  activeOpportunities.length === 1
+                    ? "oportunidade ativa"
+                    : "oportunidades ativas"
+                }
+              />
+            </div>
+
+            {requiresOpportunitySelection ? (
+              <div className="mt-4 rounded-2xl bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-amber-600/20">
+                <div className="font-semibold">
+                  Selecione a oportunidade comercial desta conversa.
+                </div>
+                <div className="mt-1">
+                  Nenhuma oportunidade foi escolhida automaticamente porque existem
+                  multiplas oportunidades ativas.
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {activeOpportunities.map((opportunity) => {
+                    const isSelected = selectedOpportunity?.id === opportunity.id;
+                    return (
+                      <button
+                        key={opportunity.id}
+                        type="button"
+                        onClick={() => setSelectedOpportunityId(opportunity.id)}
+                        className={`rounded-xl px-3 py-2 text-xs font-semibold shadow-sm ${
+                          isSelected
+                            ? "bg-amber-900 text-white"
+                            : "bg-white text-amber-900 ring-1 ring-amber-300 hover:bg-amber-100"
+                        }`}
+                      >
+                        {formatOpportunityStage(opportunity.stage)}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             ) : null}
           </div>
@@ -3623,6 +3783,115 @@ export default function LeadPage() {
                             "Ainda sem resumo comercial registrado."}
                         </div>
                       </div>
+                    </div>
+                  ) : null}
+
+                  {activeDetailsTab === "opportunity" ? (
+                    <div className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <InfoCard
+                          label="Oportunidade atual"
+                          value={
+                            selectedOpportunity
+                              ? "Contexto comercial selecionado"
+                              : requiresOpportunitySelection
+                                ? "Selecione uma oportunidade"
+                                : "Nenhuma oportunidade selecionada"
+                          }
+                        />
+                        <InfoCard
+                          label="Etapa atual"
+                          value={selectedOpportunityStageLabel}
+                        />
+                        <InfoCard
+                          label="Cliente"
+                          value={lead.name || "Sem nome"}
+                        />
+                        <InfoCard
+                          label="Telefone"
+                          value={lead.phone || "Sem telefone"}
+                        />
+                        <InfoCard
+                          label="Interesse ou contexto"
+                          value={
+                            latestCommercialTask?.task_payload?.conversation_summary ||
+                            latestCommercialTask?.task_payload?.next_step ||
+                            "Sem contexto comercial registrado"
+                          }
+                        />
+                        <InfoCard
+                          label="Visita e negociacao"
+                          value={
+                            appointments.length > 0
+                              ? `${appointments.length} compromisso(s) ligado(s) a este lead`
+                              : "Sem compromisso registrado"
+                          }
+                        />
+                        <InfoCard
+                          label="Orcamento e contrato"
+                          value={`${generatedQuotes.length} orcamento(s) e ${generatedContracts.length} contrato(s)`}
+                        />
+                        <InfoCard
+                          label="Avisos seguros"
+                          value={
+                            requiresOpportunitySelection
+                              ? "Selecao obrigatoria antes das acoes comerciais."
+                              : "Sem aviso adicional."
+                          }
+                        />
+                      </div>
+
+                      {opportunities.length > 0 ? (
+                        <div>
+                          <div className="text-sm font-semibold text-gray-900">
+                            Oportunidades deste lead
+                          </div>
+                          <div className="mt-3 space-y-3">
+                            {opportunities.map((opportunity) => {
+                              const isSelected = selectedOpportunity?.id === opportunity.id;
+                              return (
+                                <div
+                                  key={opportunity.id}
+                                  className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div>
+                                      <div className="text-sm font-semibold text-gray-900">
+                                        {formatOpportunityStage(opportunity.stage)}
+                                      </div>
+                                      <div className="mt-1 text-xs text-gray-500">
+                                        Atualizada em{" "}
+                                        {formatDateTime(
+                                          opportunity.updatedAt ||
+                                            opportunity.stageChangedAt ||
+                                            opportunity.createdAt
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedOpportunityId(opportunity.id);
+                                        setRequiresOpportunitySelection(false);
+                                      }}
+                                      className={`rounded-xl px-3 py-2 text-xs font-semibold shadow-sm ${
+                                        isSelected
+                                          ? "bg-black text-white"
+                                          : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                                      }`}
+                                    >
+                                      {isSelected ? "Selecionada" : "Selecionar"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : (
+                        <EmptyState text="Nenhuma oportunidade comercial foi encontrada para este lead." />
+                      )}
                     </div>
                   ) : null}
 

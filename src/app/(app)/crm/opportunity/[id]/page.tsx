@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { getCanonicalCrmStage } from "@/config/crm";
+import { buildCrmLeadConversationHref } from "@/lib/server/crm/lead-conversation-opportunity-context";
 import {
   resolveAuthorizedOpportunityDetail,
   type AuthorizedOpportunityDetailData,
@@ -197,6 +198,16 @@ export default async function OpportunityDetailPage({
   }
 
   const data = result.data;
+  const redirectHref = buildCrmLeadConversationHref({
+    leadId: data.originLead?.id || null,
+    conversationId: data.primaryConversation?.id || null,
+    opportunityId: data.opportunity.id,
+  });
+
+  if (redirectHref) {
+    redirect(redirectHref);
+  }
+
   const stageLabel = getStageLabel(data);
   const customer = getCustomerSummary(data);
   const customerInconsistency = hasCustomerInconsistency(data);

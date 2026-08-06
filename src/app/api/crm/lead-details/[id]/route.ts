@@ -2,6 +2,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
+import {
+  resolveLeadConversationOpportunityContext,
+  type LeadConversationContextRow,
+  type LeadOpportunityContextRow,
+} from "@/lib/server/crm/lead-conversation-opportunity-context";
 
 export const runtime = "nodejs";
 
@@ -102,11 +107,27 @@ type AppointmentRow = {
   updated_at: string | null;
 };
 
+type OpportunityRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  origin_lead_id: string | null;
+  primary_conversation_id: string | null;
+  stage: string | null;
+  stage_changed_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
     const leadId = String(parts[parts.length - 1] || "").trim();
+    const requestedConversationId =
+      String(url.searchParams.get("conversationId") || "").trim() || null;
+    const requestedOpportunityId =
+      String(url.searchParams.get("opportunityId") || "").trim() || null;
 
     if (!leadId) {
       return NextResponse.json(
@@ -290,8 +311,7 @@ export async function GET(request: Request) {
       )
       .eq("organization_id", leadData.organization_id)
       .eq("lead_id", leadId)
-      .order("created_at", { ascending: false })
-      .limit(1);
+      .order("created_at", { ascending: false });
 
     if (conversationsError) {
       return NextResponse.json(
@@ -304,9 +324,84 @@ export async function GET(request: Request) {
       );
     }
 
+    const allConversations = ((conversationsData || []) as ConversationRow[]).map(
+      (row) =>
+        ({
+          id: row.id,
+          organizationId: row.organization_id,
+          leadId: row.lead_id,
+          createdAt: row.created_at,
+        }) satisfies LeadConversationContextRow
+    );
+
+    const { data: opportunitiesData, error: opportunitiesError } = await supabase
+      .from("commercial_opportunities")
+      .select(
+        "id, organization_id, store_id, origin_lead_id, primary_conversation_id, stage, stage_changed_at, created_at, updated_at"
+      )
+      .eq("organization_id", leadData.organization_id)
+      .eq("store_id", leadStoreId)
+      .eq("origin_lead_id", leadId)
+      .order("updated_at", { ascending: false });
+
+    if (opportunitiesError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "LOAD_OPPORTUNITIES_FAILED",
+          message: opportunitiesError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    const allOpportunities = ((opportunitiesData || []) as OpportunityRow[]).map(
+      (row) =>
+        ({
+          id: row.id,
+          organizationId: row.organization_id,
+          storeId: row.store_id,
+          leadId: row.origin_lead_id || "",
+          conversationId: row.primary_conversation_id || null,
+          stage: row.stage,
+          stageChangedAt: row.stage_changed_at,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }) satisfies LeadOpportunityContextRow
+    );
+
+    const contextResult = resolveLeadConversationOpportunityContext({
+      organizationId: leadData.organization_id,
+      storeId: leadStoreId || null,
+      leadId,
+      requestedConversationId,
+      requestedOpportunityId,
+      conversations: allConversations,
+      opportunities: allOpportunities,
+    });
+
+    if (!contextResult.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            contextResult.error === "conversation_scope_rejected"
+              ? "FORBIDDEN_CONVERSATION"
+              : "FORBIDDEN_OPPORTUNITY",
+          message:
+            contextResult.error === "conversation_scope_rejected"
+              ? "A conversa solicitada nao pertence ao lead aberto."
+              : "A oportunidade solicitada nao pertence ao lead aberto.",
+        },
+        { status: 403 }
+      );
+    }
+
+    const conversationId = contextResult.conversation?.id || null;
     const conversation =
-      conversationsData && conversationsData.length > 0
-        ? (conversationsData[0] as ConversationRow)
+      conversationId !== null
+        ? ((conversationsData || []) as ConversationRow[]).find((row) => row.id === conversationId) ||
+          null
         : null;
 
     let messages: MessageRow[] = [];
@@ -432,13 +527,19 @@ export async function GET(request: Request) {
       messages,
       commercialTasks,
       appointments,
+      opportunities: contextResult.opportunities,
+      selectedOpportunityId: contextResult.selectedOpportunity?.id || null,
+      requiresOpportunitySelection: contextResult.requiresOpportunitySelection,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
       {
         ok: false,
         error: "LEAD_DETAILS_ROUTE_FAILED",
-        message: error?.message || "Erro interno ao carregar dados do lead.",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Erro interno ao carregar dados do lead.",
       },
       { status: 500 }
     );
