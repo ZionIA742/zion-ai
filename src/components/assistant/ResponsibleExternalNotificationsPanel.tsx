@@ -45,6 +45,7 @@ type Props = {
   organizationId: string | null;
   storeId: string | null;
   enabled?: boolean;
+  onTotalChange?: (total: number) => void;
 };
 
 const DEFAULT_LIMIT = 10;
@@ -79,9 +80,13 @@ function normalizeText(value: string | null | undefined) {
   return String(value || "").trim().toLowerCase();
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : null;
+}
+
 function getStatusLabel(status: string | null | undefined) {
   const normalized = normalizeText(status);
-  if (normalized === "materialized") return "Materializado";
+  if (normalized === "materialized") return "Preparado";
   if (normalized === "ready_to_send") return "Pronto para envio manual";
   if (normalized === "processing") return "Processando";
   if (normalized === "sent") return "Enviado";
@@ -168,13 +173,12 @@ export default function ResponsibleExternalNotificationsPanel({
   organizationId,
   storeId,
   enabled = true,
+  onTotalChange,
 }: Props) {
   const [items, setItems] = useState<ResponsibleExternalNotificationItem[]>([]);
-  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(true);
   const [actionLoadingKeys, setActionLoadingKeys] = useState<Record<string, boolean>>({});
 
   const canLoad = enabled && !!organizationId && !!storeId;
@@ -219,31 +223,26 @@ export default function ResponsibleExternalNotificationsPanel({
           result.message || result.error || "Nao foi possivel carregar a fila externa do responsavel."
         );
         setItems([]);
-        setTotal(0);
+        onTotalChange?.(0);
         return;
       }
 
       setItems(Array.isArray(result.items) ? result.items : []);
-      setTotal(Number(result.total || 0));
-    } catch (error: any) {
+      const nextTotal = Number(result.total || 0);
+      onTotalChange?.(nextTotal);
+    } catch (error: unknown) {
       setErrorText(
-        error?.message || "Erro inesperado ao carregar a fila externa do responsavel."
+        getErrorMessage(error) || "Erro inesperado ao carregar a fila externa do responsavel."
       );
       setItems([]);
-      setTotal(0);
+      onTotalChange?.(0);
     } finally {
       setLoading(false);
     }
-  }, [canLoad, organizationId, storeId]);
+  }, [canLoad, onTotalChange, organizationId, storeId]);
 
   useEffect(() => {
-    if (!canLoad) {
-      setItems([]);
-      setTotal(0);
-      setErrorText(null);
-      return;
-    }
-
+    if (!canLoad) return;
     void loadItems();
   }, [canLoad, loadItems]);
 
@@ -322,8 +321,8 @@ export default function ResponsibleExternalNotificationsPanel({
       );
 
       await loadItems();
-    } catch (error: any) {
-      setErrorText(error?.message || "Nao foi possivel atualizar esse aviso agora.");
+    } catch (error: unknown) {
+      setErrorText(getErrorMessage(error) || "Nao foi possivel atualizar esse aviso agora.");
     } finally {
       setActionLoading(actionKey, false);
     }
@@ -342,43 +341,26 @@ export default function ResponsibleExternalNotificationsPanel({
       <div className="rounded-2xl border border-black/10 bg-white p-3 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm font-bold text-gray-900">
-              Fila externa do responsável
-            </div>
-            <div className="mt-1 max-w-3xl text-[12px] leading-5 text-gray-600">
-              Este painel permite preparar, cancelar e enviar avisos unitários ao
-              responsável. O envio real exige confirmação. Não existe envio automático
-              nem em lote.
+            <div className="max-w-3xl text-[12px] leading-5 text-gray-600">
+              Prepare, cancele e envie avisos unitários ao responsável. O envio real exige
+              confirmação e nunca acontece automaticamente ou em lote.
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void loadItems()}
-              disabled={!canLoad || loading}
-              className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {loading ? "Atualizando..." : "Atualizar"}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCollapsed((current) => !current)}
-              className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
-            >
-              {collapsed ? "Mostrar fila" : "Ocultar fila"}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => void loadItems()}
+            disabled={!canLoad || loading}
+            className="shrink-0 rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading ? "Atualizando..." : "Atualizar"}
+          </button>
         </div>
 
         <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] text-gray-600">
-          <span className="rounded-full bg-gray-50 px-2.5 py-1 ring-1 ring-black/10">
-            Itens: {total}
-          </span>
           {summary.materialized ? (
             <span className="rounded-full bg-gray-50 px-2.5 py-1 ring-1 ring-black/10">
-              Materializados: {summary.materialized}
+              Preparados: {summary.materialized}
             </span>
           ) : null}
           {summary.ready_to_send ? (
@@ -410,14 +392,13 @@ export default function ResponsibleExternalNotificationsPanel({
           </div>
         ) : null}
 
-        {!collapsed ? (
-          <div className="mt-3">
+        <div className="mt-3">
             {items.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-black/10 bg-[#fafafa] px-4 py-4 text-[12px] text-gray-500">
                 Nenhum aviso externo encontrado para a loja ativa.
               </div>
             ) : (
-              <div className="max-h-[420px] overflow-y-auto overflow-x-hidden pr-1">
+              <div className="overflow-x-hidden">
                 <div className="space-y-2">
                   {items.map((item) => {
                     const normalizedStatus = normalizeText(item.status);
@@ -611,8 +592,7 @@ export default function ResponsibleExternalNotificationsPanel({
                 </div>
               </div>
             )}
-          </div>
-        ) : null}
+        </div>
       </div>
     </div>
   );

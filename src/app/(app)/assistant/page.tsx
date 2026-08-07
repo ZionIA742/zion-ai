@@ -238,11 +238,6 @@ function toDayKey(value: string | null) {
   return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
 }
 
-function shortId(value: string | null | undefined) {
-  if (!value) return "-";
-  return value.slice(0, 8);
-}
-
 function formatMessageType(value: string | null | undefined) {
   const normalized = String(value || "").toLowerCase();
   if (normalized === "report_morning") return "Relatório da manhã";
@@ -314,6 +309,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  if (isRecord(error)) {
+    const message = getSafeString(error.message);
+    if (message) return message;
+  }
+
+  return fallback;
+}
+
 function getAssistantDocumentReviewMetadata(
   metadata: Record<string, unknown> | null | undefined
 ): AssistantDocumentReviewMetadata | null {
@@ -340,20 +348,6 @@ function getAssistantCustomerContextReportMetadata(
 
 function getDocumentTypeLabel(value: string | null | undefined) {
   return normalizeText(value) === "contract" ? "Contrato" : "Orcamento";
-}
-
-function formatDocumentStatus(value: string | null | undefined) {
-  const normalized = normalizeText(value);
-  if (!normalized) return "Nao informado";
-  if (normalized === "pending_review") return "Pendente de revisao";
-  if (normalized === "approved") return "Aprovado";
-  if (normalized === "sent" || normalized === "sent_to_customer") return "Enviado";
-  if (normalized === "draft") return "Rascunho";
-  if (normalized === "completed") return "Concluido";
-  if (normalized === "cancelled") return "Cancelado";
-  if (normalized === "expired") return "Expirado";
-  if (normalized === "failed") return "Falhou";
-  return value ? String(value) : "Nao informado";
 }
 
 function getDocumentActionMetadata(
@@ -724,6 +718,8 @@ export default function AssistantPage() {
   const [recordingErrorText, setRecordingErrorText] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [externalQueueOpen, setExternalQueueOpen] = useState(false);
+  const [externalQueueTotal, setExternalQueueTotal] = useState(0);
   const [documentActionLoadingKeys, setDocumentActionLoadingKeys] = useState<Record<string, boolean>>({});
   const [documentActionFeedback, setDocumentActionFeedback] = useState<
     Record<string, { tone: DocumentFeedbackTone; text: string }>
@@ -1019,8 +1015,10 @@ export default function AssistantPage() {
 
       recorder.start();
       setRecording(true);
-    } catch (error: any) {
-      setRecordingErrorText(error?.message || "Não foi possível iniciar a gravação de áudio.");
+    } catch (error: unknown) {
+      setRecordingErrorText(
+        getErrorMessage(error, "Não foi possível iniciar a gravação de áudio.")
+      );
       setRecording(false);
     }
   }
@@ -1101,8 +1099,10 @@ export default function AssistantPage() {
       forceScrollToBottomRef.current = true;
       await loadAssistant({ silent: true });
       scrollChatToBottom("smooth");
-    } catch (error: any) {
-      setErrorText(error?.message || "Erro inesperado ao gerar resposta da assistente.");
+    } catch (error: unknown) {
+      setErrorText(
+        getErrorMessage(error, "Erro inesperado ao gerar resposta da assistente.")
+      );
       setSending(false);
       forceScrollToBottomRef.current = true;
       await loadAssistant({ silent: true });
@@ -1416,13 +1416,15 @@ export default function AssistantPage() {
         }));
         await loadAssistant({ silent: true });
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       setDocumentActionFeedback((current) => ({
         ...current,
         [message.id]: {
           tone: "error",
-          text:
-            error?.message || "Erro inesperado ao executar a acao do documento.",
+          text: getErrorMessage(
+            error,
+            "Erro inesperado ao executar a acao do documento."
+          ),
         },
       }));
     } finally {
@@ -1513,14 +1515,15 @@ export default function AssistantPage() {
       }));
 
       await loadAssistant({ silent: true });
-    } catch (error: any) {
+    } catch (error: unknown) {
       setContractWorkflowActionFeedback((current) => ({
         ...current,
         [message.id]: {
           tone: "error",
-          text:
-            error?.message ||
-            "Não consegui gerar o contrato agora. Tente novamente em instantes.",
+          text: getErrorMessage(
+            error,
+            "Não consegui gerar o contrato agora. Tente novamente em instantes."
+          ),
         },
       }));
     } finally {
@@ -1534,7 +1537,7 @@ export default function AssistantPage() {
 
   return (
     <div className="h-[calc(100dvh-132px)] overflow-hidden bg-gray-100 text-sm text-gray-900">
-      <div className="mx-auto flex h-full min-h-0 max-w-[1120px] flex-col px-2 py-2 md:px-4">
+      <div className="mx-auto flex h-full min-h-0 max-w-[1280px] flex-col px-2 py-2 md:px-3">
         {errorText ? (
           <div className="mb-2 shrink-0 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800 ring-1 ring-red-200">
             {errorText}
@@ -1548,20 +1551,20 @@ export default function AssistantPage() {
         ) : null}
 
         <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/10">
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-black/10 bg-white px-3 py-2">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gray-900 text-[11px] font-bold text-white">
+          <div className="flex shrink-0 items-center justify-between gap-4 border-b border-black/10 bg-white px-4 py-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-900 text-xs font-bold text-white shadow-sm">
                 IA
               </div>
               <div className="min-w-0">
-                <div className="truncate text-sm font-bold text-gray-900">Assistente da loja</div>
-                <div className="truncate text-[11px] text-gray-500">
+                <div className="truncate text-base font-bold text-gray-900">Assistente da loja</div>
+                <div className="mt-0.5 truncate text-[12px] text-gray-500">
                   {refreshing
-                    ? "Atualizando..."
+                    ? "Atualizando conversa..."
                     : `${summary?.total_messages ?? messages.length} mensagens • ${
                         activePendingActionsCount > 0
                           ? `${activePendingActionsCount} pendências`
-                          : "Nada pendente no momento"
+                          : "Nada pendente"
                       }${
                         unreadNotificationsCount > 0
                           ? ` • ${unreadNotificationsCount} novas`
@@ -1571,17 +1574,18 @@ export default function AssistantPage() {
               </div>
             </div>
 
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setSearchOpen((current) => !current);
                   if (searchOpen) setSearchText("");
                 }}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-gray-700 ring-1 ring-black/10 transition hover:bg-gray-50"
                 aria-label="Buscar na conversa"
+                title="Buscar na conversa"
               >
-                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="11" cy="11" r="7" />
                   <path d="m20 20-3.5-3.5" />
                 </svg>
@@ -1590,25 +1594,78 @@ export default function AssistantPage() {
               <button
                 onClick={() => void loadAssistant()}
                 disabled={loading || storeLoading || !organizationId || !activeStoreId}
-                className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-full bg-white px-3.5 py-2 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Recarregar
               </button>
             </div>
           </div>
 
-          <ResponsibleExternalNotificationsPanel
-            organizationId={organizationId}
-            storeId={activeStoreId}
-            enabled={canLoad}
-          />
+          <div
+            className={[
+              "border-b border-black/10 bg-[#fbfbfb] px-3 py-2 md:px-4",
+              externalQueueOpen ? "flex min-h-0 flex-1 flex-col" : "shrink-0",
+            ].join(" ")}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate text-[12px] font-semibold text-gray-900">
+                  Revisões e envios
+                </div>
+              </div>
 
-          <div className="relative flex min-h-0 flex-1 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setExternalQueueOpen((current) => !current)}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-gray-800 ring-1 ring-black/10 transition hover:bg-gray-50"
+                aria-expanded={externalQueueOpen}
+              >
+                {externalQueueOpen
+                  ? `Ocultar fila (${externalQueueTotal})`
+                  : `Ver fila (${externalQueueTotal})`}
+                <svg
+                  viewBox="0 0 24 24"
+                  className={[
+                    "h-3.5 w-3.5 transition-transform",
+                    externalQueueOpen ? "rotate-180" : "",
+                  ].join(" ")}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </button>
+            </div>
+
+            <div
+              className={
+                externalQueueOpen
+                  ? "mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-2xl pr-1 [scrollbar-gutter:stable]"
+                  : "hidden"
+              }
+            >
+              <ResponsibleExternalNotificationsPanel
+                organizationId={organizationId}
+                storeId={activeStoreId}
+                enabled={canLoad}
+                onTotalChange={setExternalQueueTotal}
+              />
+            </div>
+          </div>
+
+          <div
+            className={
+              externalQueueOpen
+                ? "hidden"
+                : "relative flex min-h-0 flex-1 overflow-hidden"
+            }
+          >
             <div
               ref={chatScrollRef}
               onScroll={handleChatScroll}
-              className={`min-h-0 flex-1 overflow-y-auto px-2.5 py-3 md:px-4 ${searchOpen ? "md:pr-[380px]" : ""}`}
-              style={{ background: "#f7f7f7" }}
+              className={`min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 ${searchOpen ? "md:pr-[400px]" : ""}`}
+              style={{ background: "#f6f6f6" }}
             >
               {groupedMessages.length > 0 ? (
                 <div className="mb-3 flex flex-col items-center gap-2">
@@ -1652,7 +1709,7 @@ export default function AssistantPage() {
                       </div>
                     </div>
 
-                    <div className="space-y-2">
+                    <div className="space-y-2.5">
                       {group.items.map((message) => (
                         <div
                           key={message.id}
@@ -1661,14 +1718,14 @@ export default function AssistantPage() {
                           }}
                           className={`flex transition-shadow duration-200 ${bubbleWrapperClass(message)}`}
                         >
-                          <div className={`max-w-[88%] px-3 py-2 shadow-sm md:max-w-[72%] ${bubbleClass(message)}`}>
+                          <div className={`max-w-[92%] px-3.5 py-2.5 shadow-sm md:max-w-[78%] ${bubbleClass(message)}`}>
                             <div className="mb-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-gray-500">
                               <span className="font-semibold text-gray-700">{senderLabel(message)}</span>
                               <span>•</span>
                               <span>{formatMessageType(message.message_type)}</span>
                             </div>
 
-                            <div className="whitespace-pre-wrap break-words text-[13px] leading-5 text-gray-900">
+                            <div className="whitespace-pre-wrap break-words text-[14px] leading-6 text-gray-900">
                               {message.content}
                             </div>
 
@@ -1830,7 +1887,7 @@ export default function AssistantPage() {
                                   ) : null}
 
                                   <div className="mt-2 text-[11px] text-gray-500">
-                                    Apenas "Gerar contrato" executa ação neste bloco.
+                                    Apenas &quot;Gerar contrato&quot; executa ação neste bloco.
                                   </div>
                                 </div>
                               );
@@ -2263,7 +2320,7 @@ export default function AssistantPage() {
             </div>
 
             {searchOpen ? (
-              <aside className="absolute inset-y-0 right-0 z-10 flex w-full max-w-[360px] flex-col border-l border-black/10 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
+              <aside className="absolute inset-y-0 right-0 z-10 flex w-full max-w-[380px] flex-col border-l border-black/10 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)]">
                 <div className="flex items-center gap-3 border-b border-black/10 px-4 py-3">
                   <button
                     type="button"
@@ -2329,7 +2386,7 @@ export default function AssistantPage() {
                             {group.dayLabel}
                           </div>
 
-                          <div className="space-y-2">
+                          <div className="space-y-2.5">
                             {group.items.map((message) => (
                               <button
                                 key={message.id}
@@ -2357,7 +2414,7 @@ export default function AssistantPage() {
             ) : null}
           </div>
 
-          <div className="shrink-0 border-t border-black/10 bg-white px-2.5 py-2 md:px-3">
+          <div className="shrink-0 border-t border-black/10 bg-white px-3 py-2.5 md:px-4">
             <input
               ref={fileInputRef}
               type="file"
@@ -2394,7 +2451,7 @@ export default function AssistantPage() {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
+                className="mb-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
                 aria-label="Anexar arquivo"
                 title="Anexar imagem, vídeo, áudio, PDF ou documento"
               >
@@ -2414,14 +2471,14 @@ export default function AssistantPage() {
                 }}
                 placeholder="Mensagem"
                 rows={1}
-                className="max-h-24 min-h-[40px] flex-1 resize-none rounded-3xl border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm leading-5 text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-300 focus:bg-white"
+                className="max-h-28 min-h-[44px] flex-1 resize-none rounded-3xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm leading-5 text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-300 focus:bg-white"
               />
 
               <button
                 type="button"
                 onClick={() => (recording ? stopAudioRecording() : void startAudioRecording())}
                 className={[
-                  "mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full ring-1 ring-black/10 hover:bg-gray-50",
+                  "mb-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full ring-1 ring-black/10 hover:bg-gray-50",
                   recording ? "bg-red-50 text-red-700" : "bg-white text-gray-700",
                 ].join(" ")}
                 aria-label={recording ? "Parar gravação" : "Gravar áudio"}
@@ -2443,7 +2500,7 @@ export default function AssistantPage() {
               <button
                 onClick={() => void sendMessageToAssistant()}
                 disabled={sending || (!newMessage.trim() && !pendingAttachment)}
-                className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-black text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="mb-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-black text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label="Enviar mensagem"
                 title="Enviar"
               >
