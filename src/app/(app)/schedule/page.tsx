@@ -92,7 +92,21 @@ type BlockForm = {
   notes: string;
 };
 
+type CalendarView = "day" | "week" | "month";
+
 const WEEKDAY_LABELS = ["dom.", "seg.", "ter.", "qua.", "qui.", "sex.", "sáb."];
+const TIMELINE_HOUR_HEIGHT = 72;
+const TIMELINE_HOURS = Array.from({ length: 24 }, (_, index) => index);
+
+const SCHEDULE_TYPE_LEGEND = [
+  { value: "technical_visit", label: "Visita técnica", dotClass: "bg-blue-600" },
+  { value: "installation", label: "Instalação", dotClass: "bg-green-600" },
+  { value: "follow_up", label: "Retorno", dotClass: "bg-yellow-400" },
+  { value: "meeting", label: "Reunião", dotClass: "bg-cyan-500" },
+  { value: "measurement", label: "Medição", dotClass: "bg-[#8B5A2B]" },
+  { value: "maintenance", label: "Manutenção", dotClass: "bg-orange-500" },
+  { value: "block", label: "Bloqueio", dotClass: "bg-slate-600" },
+] as const;
 
 function formatDateTime(value: string | null) {
   if (!value) return "-";
@@ -101,16 +115,14 @@ function formatDateTime(value: string | null) {
   return date.toLocaleString("pt-BR");
 }
 
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 function formatMonthYear(date: Date) {
   return date.toLocaleDateString("pt-BR", {
     month: "long",
     year: "numeric",
-  });
-}
-
-function formatDayNumber(date: Date) {
-  return date.toLocaleDateString("pt-BR", {
-    day: "2-digit",
   });
 }
 
@@ -209,11 +221,11 @@ function getStatusBadgeClass(status: string) {
   const normalized = String(status || "").toLowerCase();
 
   if (normalized === "scheduled") {
-    return "bg-blue-50 text-blue-700 ring-blue-200";
+    return "bg-sky-50 text-sky-700 ring-sky-200";
   }
 
   if (normalized === "rescheduled") {
-    return "bg-amber-50 text-amber-700 ring-amber-200";
+    return "bg-amber-50 text-amber-800 ring-amber-300";
   }
 
   if (normalized === "completed") {
@@ -221,58 +233,78 @@ function getStatusBadgeClass(status: string) {
   }
 
   if (normalized === "cancelled") {
-    return "bg-red-50 text-red-700 ring-red-200";
+    return "bg-slate-100 text-slate-600 ring-slate-300";
   }
 
   if (normalized === "blocked") {
-    return "bg-gray-100 text-gray-700 ring-gray-300";
+    return "bg-slate-100 text-slate-700 ring-slate-300";
   }
 
   return "bg-gray-50 text-gray-700 ring-gray-200";
+}
+
+function getItemTypeClass(item: ScheduleItem) {
+  if (item.itemKind === "block") {
+    return "bg-slate-600 text-white border-slate-700";
+  }
+
+  const normalizedType = String(item.itemType || "").toLowerCase();
+
+  if (normalizedType === "technical_visit") {
+    return "bg-blue-600 text-white border-blue-700";
+  }
+
+  if (normalizedType === "installation") {
+    return "bg-green-600 text-white border-green-700";
+  }
+
+  if (normalizedType === "follow_up") {
+    return "bg-yellow-400 text-slate-950 border-yellow-500";
+  }
+
+  if (normalizedType === "meeting") {
+    return "bg-cyan-500 text-slate-950 border-cyan-600";
+  }
+
+  if (normalizedType === "measurement") {
+    return "bg-[#8B5A2B] text-white border-[#6F451F]";
+  }
+
+  if (normalizedType === "maintenance") {
+    return "bg-orange-500 text-white border-orange-600";
+  }
+
+  return "bg-slate-500 text-white border-slate-600";
 }
 
 function getItemChipClass(item: ScheduleItem) {
-  if (item.itemKind === "block") {
-    return "bg-gray-100 text-gray-800 ring-gray-300";
+  const normalizedStatus = String(item.status || "").toLowerCase();
+
+  if (normalizedStatus === "cancelled") {
+    return "border-slate-300 bg-slate-100 text-slate-500 opacity-70 line-through";
   }
 
-  const normalized = String(item.status || "").toLowerCase();
+  const baseClass = getItemTypeClass(item);
 
-  if (normalized === "scheduled") {
-    return "bg-blue-50 text-blue-700 ring-blue-200";
+  if (normalizedStatus === "rescheduled") {
+    return `${baseClass} ring-2 ring-amber-300`;
   }
 
-  if (normalized === "rescheduled") {
-    return "bg-amber-50 text-amber-700 ring-amber-200";
+  if (normalizedStatus === "completed") {
+    return `${baseClass} opacity-80`;
   }
 
-  if (normalized === "completed") {
-    return "bg-emerald-50 text-emerald-700 ring-emerald-200";
-  }
-
-  if (normalized === "cancelled") {
-    return "bg-red-50 text-red-700 ring-red-200";
-  }
-
-  return "bg-gray-50 text-gray-700 ring-gray-200";
+  return baseClass;
 }
 
-function getHighlightedStatusLabel(value: string) {
-  const normalized = String(value || "").toLowerCase();
+function getItemStatusPrefix(item: ScheduleItem) {
+  const normalizedStatus = String(item.status || "").toLowerCase();
 
-  if (normalized === "rescheduled") return "Remarcado";
-  if (normalized === "completed") return "Concluído";
+  if (normalizedStatus === "completed") return "✓ ";
+  if (normalizedStatus === "rescheduled") return "↻ ";
+  if (normalizedStatus === "cancelled") return "× ";
 
-  return null;
-}
-
-function getHighlightedStatusTextClass(value: string) {
-  const normalized = String(value || "").toLowerCase();
-
-  if (normalized === "rescheduled") return "text-amber-700";
-  if (normalized === "completed") return "text-emerald-700";
-
-  return "text-gray-500";
+  return "";
 }
 
 function startOfMonth(date: Date) {
@@ -452,10 +484,130 @@ function createDefaultBlockForm(selectedDateKey: string): BlockForm {
   };
 }
 
-function isSameMonth(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+function startOfLocalDay(date: Date) {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  return result;
 }
 
+function endOfLocalDay(date: Date) {
+  const result = new Date(date);
+  result.setHours(23, 59, 59, 999);
+  return result;
+}
+
+function addCalendarDays(date: Date, amount: number) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + amount);
+  return result;
+}
+
+function startOfWeek(date: Date) {
+  const result = startOfLocalDay(date);
+  result.setDate(result.getDate() - result.getDay());
+  return result;
+}
+
+function endOfWeek(date: Date) {
+  return endOfLocalDay(addCalendarDays(startOfWeek(date), 6));
+}
+
+function buildWeekDays(date: Date) {
+  const start = startOfWeek(date);
+  return Array.from({ length: 7 }, (_, index) => addCalendarDays(start, index));
+}
+
+function formatPeriodLabel(date: Date, view: CalendarView) {
+  if (view === "day") {
+    return date.toLocaleDateString("pt-BR", {
+      day: "2-digit",
+      month: "long",
+      year: "numeric",
+    });
+  }
+
+  if (view === "week") {
+    const start = startOfWeek(date);
+    const end = addCalendarDays(start, 6);
+    const sameMonth =
+      start.getFullYear() === end.getFullYear() &&
+      start.getMonth() === end.getMonth();
+
+    if (sameMonth) {
+      return `${start.getDate().toString().padStart(2, "0")}–${end
+        .getDate()
+        .toString()
+        .padStart(2, "0")} de ${start.toLocaleDateString("pt-BR", {
+        month: "long",
+        year: "numeric",
+      })}`;
+    }
+
+    return `${start.toLocaleDateString("pt-BR", {
+      day: "2-digit",
+      month: "short",
+    })} – ${end.toLocaleDateString("pt-BR", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    })}`;
+  }
+
+  return formatMonthYear(date);
+}
+
+function formatWeekHeader(date: Date) {
+  return {
+    weekday: date.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", ""),
+    day: date.toLocaleDateString("pt-BR", { day: "2-digit" }),
+  };
+}
+
+function formatClock(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--";
+  return date.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getTimelinePosition(item: ScheduleItem, day: Date) {
+  const itemStart = new Date(item.startAt);
+  const itemEnd = new Date(item.endAt);
+
+  if (Number.isNaN(itemStart.getTime()) || Number.isNaN(itemEnd.getTime())) {
+    return null;
+  }
+
+  const dayStart = startOfLocalDay(day);
+  const dayEnd = endOfLocalDay(day);
+
+  if (itemEnd < dayStart || itemStart > dayEnd) {
+    return null;
+  }
+
+  const effectiveStart = itemStart < dayStart ? dayStart : itemStart;
+  const effectiveEnd = itemEnd > dayEnd ? dayEnd : itemEnd;
+
+  const startMinutes =
+    effectiveStart.getHours() * 60 +
+    effectiveStart.getMinutes() +
+    effectiveStart.getSeconds() / 60;
+  const endMinutes =
+    effectiveEnd.getHours() * 60 +
+    effectiveEnd.getMinutes() +
+    effectiveEnd.getSeconds() / 60;
+
+  const top = (startMinutes / 60) * TIMELINE_HOUR_HEIGHT;
+  const rawHeight = ((Math.max(endMinutes, startMinutes + 15) - startMinutes) / 60) *
+    TIMELINE_HOUR_HEIGHT;
+
+  return {
+    top,
+    height: Math.max(24, rawHeight),
+  };
+}
 
 const TIME_OPTIONS = Array.from({ length: 48 }, (_, index) => {
   const hours = `${Math.floor(index / 2)}`.padStart(2, "0");
@@ -505,19 +657,6 @@ function combineDateAndTime(datePart: string, timePart: string) {
   return `${datePart}T${safeTime}`;
 }
 
-function shiftMonthKey(dateKey: string, monthOffset: number) {
-  const base = dateKey
-    ? new Date(`${dateKey}T12:00:00`)
-    : new Date();
-
-  if (Number.isNaN(base.getTime())) {
-    const fallback = new Date();
-    return toDateKey(new Date(fallback.getFullYear(), fallback.getMonth() + monthOffset, 1));
-  }
-
-  return toDateKey(new Date(base.getFullYear(), base.getMonth() + monthOffset, 1));
-}
-
 type DateTimePickerFieldProps = {
   label: string;
   dateValue: string;
@@ -548,12 +687,16 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [calendarOpen]);
 
-  useEffect(() => {
-    if (!dateValue) return;
-    const nextDate = new Date(`${dateValue}T12:00:00`);
-    if (Number.isNaN(nextDate.getTime())) return;
-    setCalendarMonth(startOfMonth(nextDate));
-  }, [dateValue]);
+  function toggleCalendar() {
+    if (!calendarOpen && dateValue) {
+      const nextDate = new Date(`${dateValue}T12:00:00`);
+      if (!Number.isNaN(nextDate.getTime())) {
+        setCalendarMonth(startOfMonth(nextDate));
+      }
+    }
+
+    setCalendarOpen((prev) => !prev);
+  }
 
   const calendarMonthDays = useMemo(() => buildCalendarDays(calendarMonth), [calendarMonth]);
 
@@ -567,7 +710,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
         <div ref={containerRef} className="relative">
           <button
             type="button"
-            onClick={() => setCalendarOpen((prev) => !prev)}
+            onClick={toggleCalendar}
             className="flex w-full items-center justify-between rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-left text-xs text-gray-900 outline-none transition hover:bg-gray-50 focus:border-black"
           >
             <span className={dateValue ? "text-gray-900" : "text-gray-400"}>{selectedDateLabel}</span>
@@ -676,13 +819,13 @@ export default function SchedulePage() {
     activeStoreId,
   } = useStoreContext();
 
-  const [viewMonth, setViewMonth] = useState<Date>(() => startOfMonth(new Date()));
+  const [calendarView, setCalendarView] = useState<CalendarView>("week");
+  const [viewDate, setViewDate] = useState<Date>(() => new Date());
   const [items, setItems] = useState<ScheduleItem[]>([]);
   const [selectedDateKey, setSelectedDateKey] = useState<string>(() =>
     toDateKey(new Date())
   );
   const [selectedItem, setSelectedItem] = useState<ScheduleItem | null>(null);
-  const [rightPanelTab, setRightPanelTab] = useState<"day" | "help">("day");
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -722,7 +865,7 @@ export default function SchedulePage() {
       lastMessageAt: null,
     });
 
-  const lastKnownRealMonthRef = useRef<Date>(startOfMonth(new Date()));
+  const lastKnownTodayKeyRef = useRef<string>(toDateKey(new Date()));
   const selectedItemRef = useRef<ScheduleItem | null>(null);
   const editModeRef = useRef(false);
   const loadRequestIdRef = useRef(0);
@@ -743,9 +886,46 @@ export default function SchedulePage() {
     return !storeLoading && !!organizationId && !!activeStoreId;
   }, [storeLoading, organizationId, activeStoreId]);
 
-  const monthStart = useMemo(() => startOfMonth(viewMonth), [viewMonth]);
-  const monthEnd = useMemo(() => endOfMonth(viewMonth), [viewMonth]);
-  const calendarDays = useMemo(() => buildCalendarDays(viewMonth), [viewMonth]);
+  const calendarDays = useMemo(() => buildCalendarDays(viewDate), [viewDate]);
+  const weekDays = useMemo(() => buildWeekDays(viewDate), [viewDate]);
+
+  const visibleDays = useMemo(() => {
+    if (calendarView === "day") {
+      return [startOfLocalDay(viewDate)];
+    }
+
+    if (calendarView === "week") {
+      return weekDays;
+    }
+
+    return calendarDays;
+  }, [calendarView, viewDate, weekDays, calendarDays]);
+
+  const rangeStart = useMemo(() => {
+    if (calendarView === "day") {
+      return startOfLocalDay(viewDate);
+    }
+
+    if (calendarView === "week") {
+      return startOfWeek(viewDate);
+    }
+
+    return startOfLocalDay(calendarDays[0] || startOfMonth(viewDate));
+  }, [calendarView, viewDate, calendarDays]);
+
+  const rangeEnd = useMemo(() => {
+    if (calendarView === "day") {
+      return endOfLocalDay(viewDate);
+    }
+
+    if (calendarView === "week") {
+      return endOfWeek(viewDate);
+    }
+
+    return endOfLocalDay(
+      calendarDays[calendarDays.length - 1] || endOfMonth(viewDate)
+    );
+  }, [calendarView, viewDate, calendarDays]);
 
   const loadSchedule = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -769,8 +949,8 @@ export default function SchedulePage() {
         const params = new URLSearchParams({
           organizationId,
           storeId: activeStoreId,
-          start: monthStart.toISOString(),
-          end: monthEnd.toISOString(),
+          start: rangeStart.toISOString(),
+          end: rangeEnd.toISOString(),
         });
 
         const response = await fetch(`/api/schedule?${params.toString()}`, {
@@ -830,13 +1010,13 @@ export default function SchedulePage() {
         } else {
           setLoading(false);
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         if (currentRequestId !== loadRequestIdRef.current) {
           return;
         }
 
         setItems([]);
-        setErrorText(error?.message || "Erro inesperado ao carregar agenda.");
+        setErrorText(getErrorMessage(error, "Erro inesperado ao carregar agenda."));
 
         if (silent) {
           setRefreshing(false);
@@ -845,7 +1025,7 @@ export default function SchedulePage() {
         }
       }
     },
-    [canLoadSchedule, organizationId, activeStoreId, monthStart, monthEnd]
+    [canLoadSchedule, organizationId, activeStoreId, rangeStart, rangeEnd]
   );
 
   useEffect(() => {
@@ -979,36 +1159,34 @@ export default function SchedulePage() {
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      const nowMonth = startOfMonth(new Date());
-      const lastKnownMonth = lastKnownRealMonthRef.current;
-      const realMonthChanged = !isSameMonth(nowMonth, lastKnownMonth);
+      const nextTodayKey = toDateKey(new Date());
+      const previousTodayKey = lastKnownTodayKeyRef.current;
 
-      if (realMonthChanged) {
-        const userWasOnCurrentMonth = isSameMonth(viewMonth, lastKnownMonth);
-
-        lastKnownRealMonthRef.current = nowMonth;
-
-        if (userWasOnCurrentMonth) {
-          setViewMonth(nowMonth);
-          setSelectedDateKey(toDateKey(new Date()));
+      if (nextTodayKey !== previousTodayKey) {
+        if (selectedDateKey === previousTodayKey) {
+          const now = new Date();
+          setSelectedDateKey(nextTodayKey);
+          setViewDate(now);
         }
+
+        lastKnownTodayKeyRef.current = nextTodayKey;
       }
     }, 60000);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [viewMonth]);
+  }, [selectedDateKey]);
 
   const itemsByDate = useMemo(() => {
     const map: Record<string, ScheduleItem[]> = {};
 
-    calendarDays.forEach((day) => {
+    visibleDays.forEach((day) => {
       map[toDateKey(day)] = [];
     });
 
     items.forEach((item) => {
-      calendarDays.forEach((day) => {
+      visibleDays.forEach((day) => {
         if (itemSpansDate(item, day)) {
           const key = toDateKey(day);
           map[key] = map[key] || [];
@@ -1026,11 +1204,7 @@ export default function SchedulePage() {
     });
 
     return map;
-  }, [calendarDays, items]);
-
-  const selectedDateItems = useMemo(() => {
-    return itemsByDate[selectedDateKey] || [];
-  }, [itemsByDate, selectedDateKey]);
+  }, [visibleDays, items]);
 
   const selectedLeadOption = useMemo(() => {
     return leadOptions.find((lead) => lead.leadId === appointmentCreateForm.leadId) || null;
@@ -1053,42 +1227,50 @@ export default function SchedulePage() {
     return leadOptions.find((lead) => lead.leadId === selectedItem.leadId) || null;
   }, [leadOptions, selectedItem?.leadId]);
 
-  const counts = useMemo(() => {
-    const appointments = items.filter((item) => item.itemKind === "appointment").length;
-    const blocks = items.filter((item) => item.itemKind === "block").length;
-
-    return {
-      total: items.length,
-      appointments,
-      blocks,
-    };
-  }, [items]);
-
-  const selectedDateLabel = useMemo(() => {
-    const [year, month, day] = selectedDateKey.split("-");
-    const date = new Date(Number(year), Number(month) - 1, Number(day), 12, 0, 0);
-
-    if (Number.isNaN(date.getTime())) return selectedDateKey;
-
-    return date.toLocaleDateString("pt-BR", {
-      weekday: "long",
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
-  }, [selectedDateKey]);
-
-  function goToPreviousMonth() {
-    setViewMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
-  }
-
-  function goToNextMonth() {
-    setViewMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
-  }
-
-  function goToCurrentMonth() {
+  function changeCalendarView(nextView: CalendarView) {
     const now = new Date();
-    setViewMonth(startOfMonth(now));
+    setCalendarView(nextView);
+    setViewDate(now);
+    setSelectedDateKey(toDateKey(now));
+  }
+
+  function goToPreviousPeriod() {
+    setViewDate((prev) => {
+      let nextDate = new Date(prev);
+
+      if (calendarView === "day") {
+        nextDate = addCalendarDays(prev, -1);
+      } else if (calendarView === "week") {
+        nextDate = addCalendarDays(prev, -7);
+      } else {
+        nextDate = new Date(prev.getFullYear(), prev.getMonth() - 1, 1);
+      }
+
+      setSelectedDateKey(toDateKey(nextDate));
+      return nextDate;
+    });
+  }
+
+  function goToNextPeriod() {
+    setViewDate((prev) => {
+      let nextDate = new Date(prev);
+
+      if (calendarView === "day") {
+        nextDate = addCalendarDays(prev, 1);
+      } else if (calendarView === "week") {
+        nextDate = addCalendarDays(prev, 7);
+      } else {
+        nextDate = new Date(prev.getFullYear(), prev.getMonth() + 1, 1);
+      }
+
+      setSelectedDateKey(toDateKey(nextDate));
+      return nextDate;
+    });
+  }
+
+  function goToToday() {
+    const now = new Date();
+    setViewDate(now);
     setSelectedDateKey(toDateKey(now));
   }
 
@@ -1286,10 +1468,10 @@ export default function SchedulePage() {
             conversationId: "",
           };
         });
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error("[SchedulePage] create appointment conversation sync error:", error);
         setAppointmentCreateErrorText(
-          error?.message || "Não consegui puxar a conversa mais recente desse lead."
+          getErrorMessage(error, "Não consegui puxar a conversa mais recente desse lead.")
         );
         setCreateLeadConversationState({
           leadId,
@@ -1527,8 +1709,8 @@ export default function SchedulePage() {
 
       await loadSchedule({ silent: true });
       setSavingEdit(false);
-    } catch (error: any) {
-      setSaveErrorText(error?.message || "Erro inesperado ao salvar compromisso.");
+    } catch (error: unknown) {
+      setSaveErrorText(getErrorMessage(error, "Erro inesperado ao salvar compromisso."));
       setSavingEdit(false);
     }
   }
@@ -1614,8 +1796,8 @@ export default function SchedulePage() {
 
       await loadSchedule({ silent: true });
       setSavingEdit(false);
-    } catch (error: any) {
-      setSaveErrorText(error?.message || "Erro inesperado ao salvar bloqueio.");
+    } catch (error: unknown) {
+      setSaveErrorText(getErrorMessage(error, "Erro inesperado ao salvar bloqueio."));
       setSavingEdit(false);
     }
   }
@@ -1686,9 +1868,9 @@ export default function SchedulePage() {
 
       await loadSchedule({ silent: true });
       setSavingEdit(false);
-    } catch (error: any) {
+    } catch (error: unknown) {
       setSaveErrorText(
-        error?.message || "Erro inesperado ao cancelar compromisso."
+        getErrorMessage(error, "Erro inesperado ao cancelar compromisso.")
       );
       setSavingEdit(false);
     }
@@ -1734,8 +1916,8 @@ export default function SchedulePage() {
 
       await loadSchedule({ silent: true });
       setSavingEdit(false);
-    } catch (error: any) {
-      setSaveErrorText(error?.message || "Erro inesperado ao excluir bloqueio.");
+    } catch (error: unknown) {
+      setSaveErrorText(getErrorMessage(error, "Erro inesperado ao excluir bloqueio."));
       setSavingEdit(false);
     }
   }
@@ -1786,8 +1968,8 @@ export default function SchedulePage() {
       closeCreateBlockPanel();
       await loadSchedule({ silent: true });
       setSavingBlock(false);
-    } catch (error: any) {
-      setBlockErrorText(error?.message || "Erro inesperado ao criar bloqueio.");
+    } catch (error: unknown) {
+      setBlockErrorText(getErrorMessage(error, "Erro inesperado ao criar bloqueio."));
       setSavingBlock(false);
     }
   }
@@ -1866,9 +2048,9 @@ export default function SchedulePage() {
       closeCreateAppointmentPanel();
       await loadSchedule({ silent: true });
       setSavingAppointmentCreate(false);
-    } catch (error: any) {
+    } catch (error: unknown) {
       setAppointmentCreateErrorText(
-        error?.message || "Erro inesperado ao criar compromisso."
+        getErrorMessage(error, "Erro inesperado ao criar compromisso.")
       );
       setSavingAppointmentCreate(false);
     }
@@ -1876,328 +2058,448 @@ export default function SchedulePage() {
 
   return (
     <div className="h-[calc(100vh-151px)] overflow-hidden bg-gray-100 text-sm">
-      <div className="mx-auto flex h-full min-h-0 max-w-[1320px] flex-col overflow-hidden px-3 py-1.5 lg:px-4 lg:py-1.5">
-        <div className="-mt-1 mb-2 flex shrink-0 justify-end gap-1.5">
-          <div className="flex flex-wrap items-center justify-end gap-1.5">
-            <button
-              onClick={openCreateAppointmentPanel}
-              disabled={storeLoading || !organizationId || !activeStoreId}
-              className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Novo compromisso
-            </button>
+      <div className="mx-auto flex h-full min-h-0 max-w-[1600px] flex-col overflow-hidden px-2 py-1.5 lg:px-3">
+        <div className="mb-2 shrink-0 rounded-xl bg-white shadow-sm ring-1 ring-black/5">
+          <div className="overflow-hidden border-b border-black/5 px-4 py-3">
+            <div className="flex w-full min-w-0 items-center gap-1.5 whitespace-nowrap">
+              <button
+                onClick={openCreateAppointmentPanel}
+                disabled={storeLoading || !organizationId || !activeStoreId}
+                className="rounded-lg bg-sky-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                + Novo compromisso
+              </button>
 
-            <button
-              onClick={openCreateBlockPanel}
-              disabled={storeLoading || !organizationId || !activeStoreId}
-              className="rounded-lg bg-black px-2.5 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Novo bloqueio
-            </button>
+              <button
+                onClick={openCreateBlockPanel}
+                disabled={storeLoading || !organizationId || !activeStoreId}
+                className="rounded-lg bg-slate-800 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Novo bloqueio
+              </button>
 
-            {refreshing ? (
-              <div className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600 ring-1 ring-black/10">
-                Atualizando...
+              <div className="mx-1 hidden h-5 w-px bg-black/10 sm:block" />
+
+              <button
+                type="button"
+                onClick={goToToday}
+                className="rounded-lg bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
+              >
+                Hoje
+              </button>
+
+              <button
+                type="button"
+                onClick={goToPreviousPeriod}
+                aria-label="Período anterior"
+                title="Período anterior"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-lg font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
+              >
+                ‹
+              </button>
+
+              <button
+                type="button"
+                onClick={goToNextPeriod}
+                aria-label="Próximo período"
+                title="Próximo período"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-lg font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-50"
+              >
+                ›
+              </button>
+
+              <div className="ml-1 mr-2 min-w-[180px] text-base font-bold text-gray-900">
+                {formatPeriodLabel(viewDate, calendarView)}
               </div>
-            ) : null}
 
-            <button
-              onClick={() => void loadSchedule()}
-              disabled={loading || storeLoading || !organizationId || !activeStoreId}
-              className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Recarregar
-            </button>
-          </div>
-        </div>
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                <div className="flex shrink-0 rounded-lg bg-gray-100 p-0.5 ring-1 ring-black/5">
+                  {(["day", "week", "month"] as CalendarView[]).map((view) => {
+                    const label =
+                      view === "day" ? "Dia" : view === "week" ? "Semana" : "Mês";
 
-        {errorText ? (
-          <div className="mb-4 rounded-xl bg-red-50 p-4 text-red-800 ring-1 ring-red-200">
-            {errorText}
-          </div>
-        ) : null}
+                    return (
+                      <button
+                        key={view}
+                        type="button"
+                        onClick={() => changeCalendarView(view)}
+                        className={[
+                          "rounded-md px-3.5 py-2 text-xs font-semibold transition",
+                          calendarView === view
+                            ? "bg-white text-gray-950 shadow-sm ring-1 ring-black/10"
+                            : "text-gray-600 hover:text-gray-950",
+                        ].join(" ")}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
 
-        <div className="grid min-h-0 flex-1 gap-2 overflow-hidden xl:grid-cols-[minmax(0,1fr)_288px]">
-          <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl bg-white p-2 shadow-sm ring-1 ring-black/5">
-            <div className="mb-1.5 flex shrink-0 flex-col gap-1.5 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h2 className="text-[15px] font-bold capitalize text-gray-900">
-                  {formatMonthYear(viewMonth)}
-                </h2>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  onClick={goToPreviousMonth}
-                  className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
-                >
-                  Mês anterior
-                </button>
+                {refreshing ? (
+                  <div className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600 ring-1 ring-black/10">
+                    Atualizando...
+                  </div>
+                ) : null}
 
                 <button
-                  onClick={goToCurrentMonth}
-                  className="rounded-lg bg-black px-2.5 py-1.5 text-[11px] font-semibold text-white hover:opacity-90"
+                  onClick={() => void loadSchedule()}
+                  disabled={loading || storeLoading || !organizationId || !activeStoreId}
+                  className="rounded-lg bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Hoje
-                </button>
-
-                <button
-                  onClick={goToNextMonth}
-                  className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] font-semibold text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
-                >
-                  Próximo mês
+                  Recarregar
                 </button>
               </div>
             </div>
+          </div>
 
-            <div className="mb-1 grid shrink-0 grid-cols-7 gap-1">
-              {WEEKDAY_LABELS.map((label) => (
-                <div
-                  key={label}
-                  className="rounded-md bg-gray-50 px-1 py-0.5 text-center text-[9px] font-semibold uppercase tracking-wide text-gray-500"
-                >
-                  {label}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              {SCHEDULE_TYPE_LEGEND.map((entry) => (
+                <div key={entry.value} className="flex items-center gap-1.5 text-[11px] font-medium text-gray-700">
+                  <span className={`h-3 w-3 rounded-sm ${entry.dotClass}`} />
+                  {entry.label}
                 </div>
               ))}
             </div>
 
-            <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 gap-1 overflow-hidden">
-              {calendarDays.map((date) => {
-                const dayKey = toDateKey(date);
-                const dayItems = itemsByDate[dayKey] || [];
-                const isCurrentMonth = date.getMonth() === viewMonth.getMonth();
-                const isToday = dayKey === toDateKey(new Date());
-                const isSelected = dayKey === selectedDateKey;
-
-                return (
-                  <button
-                    key={dayKey}
-                    type="button"
-                    onClick={() => setSelectedDateKey(dayKey)}
-                    className={[
-                      "h-full min-h-0 overflow-hidden rounded-lg border p-1 text-left transition",
-                      isSelected
-                        ? "border-black bg-black/[0.03] ring-2 ring-black/10"
-                        : "border-black/10 bg-white hover:bg-gray-50",
-                      !isCurrentMonth ? "opacity-45" : "",
-                    ].join(" ")}
-                  >
-                    <div className="mb-0.5 flex items-center justify-between">
-                      <span
-                        className={[
-                          "inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold",
-                          isToday
-                            ? "bg-black text-white"
-                            : "bg-transparent text-gray-900",
-                        ].join(" ")}
-                      >
-                        {formatDayNumber(date)}
-                      </span>
-
-                      <span className="text-[8px] text-gray-400">
-                        {dayItems.length > 0 ? `${dayItems.length} item(ns)` : ""}
-                      </span>
-                    </div>
-
-                    <div className="space-y-0.5">
-                      {dayItems.slice(0, 1).map((item) => (
-                        <div
-                          key={`${dayKey}-${item.itemId}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openItemDetails(item);
-                          }}
-                          className={`cursor-pointer rounded-none border-l-2 border-current px-1 py-0 text-[8.5px] font-semibold leading-tight ring-0 ${getItemChipClass(
-                            item
-                          )}`}
-                        >
-                          <div className="truncate">
-                            <span>{item.itemKind === "block" ? "Bloqueio" : "Compromisso"}</span>
-                            <span className="font-medium"> · {item.title || "-"}</span>
-                          </div>
-                        </div>
-                      ))}
-
-                      {dayItems.length > 1 ? (
-                        <div className="text-[8.5px] font-semibold text-gray-500">
-                          +{dayItems.length - 1} item(ns)
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
-                );
-              })}
+            <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 border-l border-black/10 pl-4 text-[11px] text-gray-600">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                Status
+              </span>
+              <span>
+                <span className="font-bold text-emerald-600">✓</span> Concluído
+              </span>
+              <span>
+                <span className="font-bold text-amber-600">↻</span> Remarcado
+              </span>
+              <span className="font-medium text-slate-600">
+                <span className="font-bold">⊘</span> Cancelado
+              </span>
+              <span className="font-semibold text-red-600">● Crítico/erro</span>
             </div>
           </div>
+        </div>
 
-          <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden">
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setRightPanelTab("day")}
-                  className={[
-                    "rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition",
-                    rightPanelTab === "day"
-                      ? "bg-black text-white"
-                      : "bg-gray-100 text-gray-700 hover:bg-gray-200",
-                  ].join(" ")}
-                >
-                  Itens do dia
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRightPanelTab("help")}
-                  className={[
-                    "rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition",
-                    rightPanelTab === "help"
-                      ? "bg-black text-white"
-                      : "bg-gray-100 text-gray-700 hover:bg-gray-200",
-                  ].join(" ")}
-                >
-                  Como funciona
-                </button>
+        {errorText ? (
+          <div className="mb-2 shrink-0 rounded-xl bg-red-50 p-3 text-red-800 ring-1 ring-red-200">
+            {errorText}
+          </div>
+        ) : null}
+
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-black/5">
+            {loading || storeLoading ? (
+              <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-gray-500">
+                Carregando agenda...
               </div>
+            ) : calendarView === "month" ? (
+              <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+                <div className="sticky top-0 z-20 grid grid-cols-7 border-b border-black/10 bg-white">
+                  {[
+                    "Domingo",
+                    "Segunda-feira",
+                    "Terça-feira",
+                    "Quarta-feira",
+                    "Quinta-feira",
+                    "Sexta-feira",
+                    "Sábado",
+                  ].map((label) => (
+                    <div
+                      key={label}
+                      className="border-r border-black/10 px-3 py-2.5 text-[11px] font-semibold text-gray-600 last:border-r-0"
+                    >
+                      {label}
+                    </div>
+                  ))}
+                </div>
 
-              {rightPanelTab === "day" ? (
-                <div className="flex min-h-0 flex-1 flex-col">
-                  <p className="mt-2 shrink-0 text-[11px] capitalize text-gray-500">
-                    {selectedDateLabel}
-                  </p>
+                <div className="grid min-h-[780px] flex-1 grid-cols-7 grid-rows-6 border-l border-black/10">
+                  {calendarDays.map((date) => {
+                    const dayKey = toDateKey(date);
+                    const dayItems = itemsByDate[dayKey] || [];
+                    const isCurrentMonth =
+                      date.getMonth() === viewDate.getMonth() &&
+                      date.getFullYear() === viewDate.getFullYear();
+                    const isToday = dayKey === toDateKey(new Date());
+                    const isSelected = dayKey === selectedDateKey;
 
-                  <div className="mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                    {loading || storeLoading ? (
-                      <div className="rounded-xl bg-gray-50 p-2.5 text-xs text-gray-500">
-                        Carregando itens do dia...
+                    return (
+                      <div
+                        key={dayKey}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedDateKey(dayKey)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setSelectedDateKey(dayKey);
+                          }
+                        }}
+                        className={[
+                          "min-h-[126px] cursor-pointer border-b border-r border-black/10 bg-white p-2 text-left transition hover:bg-slate-50/60",
+                          !isCurrentMonth ? "bg-gray-50/60 text-gray-400" : "",
+                          isSelected ? "ring-2 ring-inset ring-sky-500/40" : "",
+                        ].join(" ")}
+                      >
+                        <div className="mb-1 flex items-center justify-between">
+                          <span
+                            className={[
+                              "inline-flex h-7 min-w-7 items-center justify-center rounded-full px-1.5 text-xs font-semibold",
+                              isToday
+                                ? "bg-sky-600 text-white"
+                                : isCurrentMonth
+                                ? "text-gray-900"
+                                : "text-gray-400",
+                            ].join(" ")}
+                          >
+                            {date.getDate()}
+                          </span>
+                          {dayItems.length > 0 ? (
+                            <span className="text-[9px] text-gray-400">
+                              {dayItems.length}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        <div className="space-y-1">
+                          {dayItems.slice(0, 4).map((item) => (
+                            <button
+                              key={`${dayKey}-${item.itemId}`}
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setSelectedDateKey(dayKey);
+                                openItemDetails(item);
+                              }}
+                              className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-[10px] font-semibold leading-tight shadow-sm ${getItemChipClass(
+                                item
+                              )}`}
+                              title={`${formatItemType(item.itemType)} · ${item.title} · ${formatClock(
+                                item.startAt
+                              )}`}
+                            >
+                              {getItemStatusPrefix(item)}
+                              {formatClock(item.startAt)} {item.title || "-"}
+                            </button>
+                          ))}
+
+                          {dayItems.length > 4 ? (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setSelectedDateKey(dayKey);
+                                setViewDate(date);
+                                setCalendarView("day");
+                              }}
+                              className="px-1 text-[9px] font-semibold text-sky-700 hover:underline"
+                            >
+                              +{dayItems.length - 4} mais
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
-                    ) : selectedDateItems.length === 0 ? (
-                      <div className="rounded-xl bg-gray-50 p-2.5 text-xs text-gray-500">
-                        Nenhum item nesse dia.
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+                  <div className="w-full min-w-0">
+                    <div
+                      className="sticky top-0 z-30 grid border-b border-black/10 bg-white shadow-[0_1px_0_rgba(0,0,0,0.03)]"
+                      style={{
+                        gridTemplateColumns: `72px repeat(${visibleDays.length}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      <div className="border-r border-black/10 bg-white" />
+                      {visibleDays.map((date) => {
+                        const dayKey = toDateKey(date);
+                        const header = formatWeekHeader(date);
+                        const isToday = dayKey === toDateKey(new Date());
+                        const isSelected = dayKey === selectedDateKey;
+
+                        return (
+                          <button
+                            key={`header-${dayKey}`}
+                            type="button"
+                            onClick={() => setSelectedDateKey(dayKey)}
+                            className={[
+                              "border-r border-black/10 px-3 py-3 text-left transition last:border-r-0 hover:bg-gray-50",
+                              isSelected ? "bg-sky-50/70" : "bg-white",
+                            ].join(" ")}
+                          >
+                            <div
+                              className={[
+                                "text-[11px] font-semibold capitalize",
+                                isToday ? "text-sky-700" : "text-gray-500",
+                              ].join(" ")}
+                            >
+                              {header.weekday}
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-2">
+                              <span
+                                className={[
+                                  "inline-flex h-9 min-w-9 items-center justify-center rounded-full px-1.5 text-xl font-medium",
+                                  isToday
+                                    ? "bg-sky-600 text-white"
+                                    : "text-gray-900",
+                                ].join(" ")}
+                              >
+                                {header.day}
+                              </span>
+                              {calendarView === "day" ? (
+                                <span className="text-xs capitalize text-gray-500">
+                                  {date.toLocaleDateString("pt-BR", {
+                                    month: "long",
+                                    year: "numeric",
+                                  })}
+                                </span>
+                              ) : null}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div
+                      className="grid"
+                      style={{
+                        gridTemplateColumns: `72px repeat(${visibleDays.length}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      <div
+                        className="relative border-r border-black/10 bg-white"
+                        style={{ height: `${24 * TIMELINE_HOUR_HEIGHT}px` }}
+                      >
+                        {TIMELINE_HOURS.map((hour) => (
+                          <div
+                            key={`hour-label-${hour}`}
+                            className={[
+                              "absolute left-0 right-0 pr-3 text-right text-[11px] font-medium text-gray-500",
+                              hour === 0 ? "translate-y-0" : "-translate-y-1/2",
+                            ].join(" ")}
+                            style={{
+                              top: `${hour === 0 ? 8 : hour * TIMELINE_HOUR_HEIGHT}px`,
+                            }}
+                          >
+                            {`${hour.toString().padStart(2, "0")}:00`}
+                          </div>
+                        ))}
                       </div>
-                    ) : (
-                      selectedDateItems.map((item) => {
-                        const mapsUrl =
-                          item.itemKind === "appointment"
-                            ? buildGoogleMapsDirectionsUrl(item.addressText)
-                            : null;
+
+                      {visibleDays.map((date) => {
+                        const dayKey = toDateKey(date);
+                        const dayItems = itemsByDate[dayKey] || [];
+                        const isToday = dayKey === toDateKey(new Date());
+                        const isSelected = dayKey === selectedDateKey;
+                        const now = new Date();
+                        const nowTop =
+                          ((now.getHours() * 60 + now.getMinutes()) / 60) *
+                          TIMELINE_HOUR_HEIGHT;
 
                         return (
                           <div
-                            key={item.itemId}
+                            key={`timeline-${dayKey}`}
                             role="button"
                             tabIndex={0}
-                            onClick={() => openItemDetails(item)}
+                            onClick={() => setSelectedDateKey(dayKey)}
                             onKeyDown={(event) => {
                               if (event.key === "Enter" || event.key === " ") {
                                 event.preventDefault();
-                                openItemDetails(item);
+                                setSelectedDateKey(dayKey);
                               }
                             }}
-                            className="w-full cursor-pointer rounded-xl border border-black/10 bg-white p-2.5 text-left transition hover:bg-gray-50"
+                            className={[
+                              "relative border-r border-black/10 last:border-r-0",
+                              isSelected ? "bg-sky-50/20" : "bg-white",
+                            ].join(" ")}
+                            style={{ height: `${24 * TIMELINE_HOUR_HEIGHT}px` }}
                           >
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <div className="text-xs font-bold text-gray-900">
-                                  {item.title}
-                                </div>
-                                <div className="mt-0.5 text-[10px] text-gray-500">
-                                  {formatItemKind(item.itemKind)} • {" "}
-                                  {formatItemType(item.itemType)}
-                                </div>
-                                {item.itemKind === "appointment" && getHighlightedStatusLabel(item.status) ? (
-                                  <div
-                                    className={`mt-1 text-[11px] font-bold uppercase tracking-wide ${getHighlightedStatusTextClass(
-                                      item.status
-                                    )}`}
-                                  >
-                                    {getHighlightedStatusLabel(item.status)}
-                                  </div>
-                                ) : null}
-                              </div>
+                            {TIMELINE_HOURS.map((hour) => (
+                              <div
+                                key={`${dayKey}-line-${hour}`}
+                                className="pointer-events-none absolute left-0 right-0 border-t border-gray-200"
+                                style={{ top: `${hour * TIMELINE_HOUR_HEIGHT}px` }}
+                              />
+                            ))}
 
-                              <span
-                                className={`rounded-full px-2 py-1 text-[10px] font-semibold ring-1 ${getStatusBadgeClass(
-                                  item.status
-                                )}`}
+                            {Array.from({ length: 24 }, (_, hour) => (
+                              <div
+                                key={`${dayKey}-half-${hour}`}
+                                className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-gray-100"
+                                style={{
+                                  top: `${
+                                    hour * TIMELINE_HOUR_HEIGHT +
+                                    TIMELINE_HOUR_HEIGHT / 2
+                                  }px`,
+                                }}
+                              />
+                            ))}
+
+                            {isToday ? (
+                              <div
+                                className="pointer-events-none absolute left-0 right-0 z-20 border-t-2 border-sky-500"
+                                style={{ top: `${nowTop}px` }}
                               >
-                                {formatStatus(item.status)}
-                              </span>
-                            </div>
+                                <span className="absolute -left-1.5 -top-1.5 h-3 w-3 rounded-full bg-sky-500" />
+                              </div>
+                            ) : null}
 
-                            <div className="mt-1.5 text-[11px] text-gray-600">
-                              {formatDateTime(item.startAt)} até {formatDateTime(item.endAt)}
-                            </div>
+                            {dayItems.map((item, index) => {
+                              const position = getTimelinePosition(item, date);
+                              if (!position) return null;
 
-                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                              {item.customerName ? (
-                                <div className="text-[10px] text-gray-500">
-                                  Cliente: {item.customerName}
-                                </div>
-                              ) : null}
-
-                              {item.itemKind === "appointment" ? (
-                                mapsUrl ? (
-                                  <a
-                                    href={mapsUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    onClick={(event) => event.stopPropagation()}
-                                    className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-200"
-                                  >
-                                    Rota
-                                  </a>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled
-                                    title="Adicione um endereço ao compromisso para abrir a rota no Maps."
-                                    onClick={(event) => event.stopPropagation()}
-                                    className="cursor-not-allowed rounded-full bg-gray-50 px-2 py-0.5 text-[10px] font-semibold text-gray-400 ring-1 ring-black/5"
-                                  >
-                                    Rota
-                                  </button>
-                                )
-                              ) : null}
-                            </div>
+                              return (
+                                <button
+                                  key={`${dayKey}-${item.itemId}`}
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setSelectedDateKey(dayKey);
+                                    openItemDetails(item);
+                                  }}
+                                  className={`absolute overflow-hidden rounded-md border px-2 py-1.5 text-left text-[11px] font-semibold leading-tight shadow-sm transition hover:brightness-95 ${getItemChipClass(
+                                    item
+                                  )}`}
+                                  style={{
+                                    top: `${position.top}px`,
+                                    height: `${position.height}px`,
+                                    left: `${4 + Math.min(index, 3) * 3}px`,
+                                    right: "4px",
+                                    zIndex: 10 + Math.min(index, 20),
+                                  }}
+                                  title={`${formatItemType(item.itemType)} · ${item.title} · ${formatClock(
+                                    item.startAt
+                                  )}–${formatClock(item.endAt)}`}
+                                >
+                                  <div className="truncate">
+                                    {getItemStatusPrefix(item)}
+                                    {item.title || formatItemType(item.itemType)}
+                                  </div>
+                                  {position.height >= 36 ? (
+                                    <div className="truncate text-[9px] font-medium opacity-90">
+                                      {formatClock(item.startAt)}–{formatClock(item.endAt)}
+                                      {calendarView === "day" && item.customerName
+                                        ? ` · ${item.customerName}`
+                                        : ""}
+                                    </div>
+                                  ) : null}
+                                </button>
+                              );
+                            })}
                           </div>
                         );
-                      })
-                    )}
+                      })}
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div className="mt-2 space-y-1.5">
-                  <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
-                    Vários compromissos no mesmo dia são permitidos. No mesmo horário, vale a capacidade configurada pela loja.
-                  </div>
-                  <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
-                    Bloqueios impedem novos agendamentos e não podem ser criados por cima de compromisso ativo.
-                  </div>
-                  <div className="rounded-xl bg-gray-50 p-2.5 text-[11px] leading-4 text-gray-700">
-                    Para mudar a regra da agenda, vá em Configurações → Operação.
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="shrink-0 rounded-2xl bg-white p-2.5 shadow-sm ring-1 ring-black/5">
-              <div className="text-[11px] font-semibold text-gray-500">Resumo</div>
-              <div className="mt-2 divide-y divide-black/5">
-                <div className="flex items-center justify-between py-1.5">
-                  <span className="text-[10px] text-gray-500">Total de itens</span>
-                  <span className="text-sm font-bold text-gray-900">{counts.total}</span>
-                </div>
-                <div className="flex items-center justify-between py-1.5">
-                  <span className="text-[10px] text-gray-500">Compromissos</span>
-                  <span className="text-sm font-bold text-gray-900">{counts.appointments}</span>
-                </div>
-                <div className="flex items-center justify-between py-1.5">
-                  <span className="text-[10px] text-gray-500">Bloqueios</span>
-                  <span className="text-sm font-bold text-gray-900">{counts.blocks}</span>
                 </div>
               </div>
-            </div>
+            )}
           </div>
+
         </div>
 
         {selectedItem ? (
