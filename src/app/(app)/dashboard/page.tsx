@@ -2098,10 +2098,15 @@ export default function DashboardPage() {
       setIsLoading(true);
       setErrorMessage(null);
 
-      const response = await fetch("/api/dashboard/metrics", {
-        method: "GET",
-        cache: "no-store",
-      });
+      const response = await fetch(
+  `/api/dashboard/metrics?organizationId=${encodeURIComponent(
+    organizationId
+  )}&storeId=${encodeURIComponent(activeStoreId)}`,
+  {
+    method: "GET",
+    cache: "no-store",
+  }
+);
 
       const data = await response.json();
 
