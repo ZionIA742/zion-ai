@@ -1,7 +1,7 @@
 // src/app/(app)/dashboard/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useStoreContext } from "@/components/StoreProvider";
 import { getCatalogPriceSemantics, getCatalogStockSemantics } from "@/lib/catalog/presentation";
 
@@ -10,6 +10,8 @@ type DashboardMetrics = {
   organizationId: string;
   storeId: string;
   generatedAt: string;
+  storeSystemStartedAt?: string | null;
+  storeCreatedAt?: string | null;
   summary: {
     leads: {
       total: number;
@@ -17,6 +19,7 @@ type DashboardMetrics = {
       last7Days: number;
       month: number;
       byState: Record<string, number>;
+      bySource?: Record<string, number>;
     };
     conversations: {
       total: number;
@@ -207,19 +210,14 @@ type DashboardMetrics = {
   };
 };
 
-type DashboardTab =
-  | "geral"
-  | "ia"
-  | "agenda"
-  | "estoque"
-  | "historico";
+type DashboardTab = "vendas" | "leads" | "ia" | "agenda" | "estoque";
 
 const tabs: Array<{ id: DashboardTab; label: string; icon: string }> = [
-  { id: "geral", label: "Geral", icon: "⌂" },
+  { id: "vendas", label: "Vendas", icon: "R$" },
+  { id: "leads", label: "Leads", icon: "◎" },
   { id: "ia", label: "IA", icon: "◉" },
   { id: "agenda", label: "Agenda", icon: "◷" },
   { id: "estoque", label: "Estoque", icon: "▤" },
-  { id: "historico", label: "Histórico", icon: "▥" },
 ];
 
 function formatNumber(value: number | null | undefined) {
@@ -372,76 +370,14 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  helper,
-  size = "normal",
-}: {
-  label: string;
-  value: string | number;
-  helper?: string;
-  size?: "normal" | "large";
-}) {
-  return (
-    <div className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-      <p className="break-words text-xs font-medium uppercase tracking-[0.16em] text-zinc-500">
-        {label}
-      </p>
-      <p
-        className={
-          size === "large"
-            ? "mt-3 break-words text-4xl font-semibold tracking-tight text-zinc-950"
-            : "mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950"
-        }
-      >
-        {value}
-      </p>
-      {helper ? (
-        <p className="mt-2 break-words text-sm leading-relaxed text-zinc-500">
-          {helper}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function SectionCard({
-  title,
-  description,
-  children,
-  className = "",
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <section
-      className={`min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm ${className}`}
-    >
-      <div className="mb-4 min-w-0">
-        <h2 className="break-words text-base font-semibold text-zinc-950">
-          {title}
-        </h2>
-        {description ? (
-          <p className="mt-1 break-words text-sm leading-relaxed text-zinc-500">
-            {description}
-          </p>
-        ) : null}
-      </div>
-      {children}
-    </section>
-  );
-}
-
 function HorizontalBars({
   items,
   maxItems = 7,
+  barClassName = "bg-zinc-950",
 }: {
   items: Record<string, number>;
   maxItems?: number;
+  barClassName?: string;
 }) {
   const entries = Object.entries(items || {})
     .sort((a, b) => b[1] - a[1])
@@ -467,7 +403,7 @@ function HorizontalBars({
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-zinc-100">
             <div
-              className="h-full rounded-full bg-zinc-950"
+              className={`h-full rounded-full ${barClassName}`}
               style={{ width: `${Math.max(4, (value / max) * 100)}%` }}
             />
           </div>
@@ -494,22 +430,22 @@ function SplitProgress({
   return (
     <div className="min-w-0">
       <div className="flex h-4 overflow-hidden rounded-full border border-zinc-200 bg-zinc-100">
-        <div className="bg-zinc-950" style={{ width: `${aiWidth}%` }} />
-        <div className="bg-zinc-500" style={{ width: `${humanWidth}%` }} />
-        <div className="bg-zinc-300" style={{ width: `${customerWidth}%` }} />
+        <div className="bg-blue-600" style={{ width: `${aiWidth}%` }} />
+        <div className="bg-cyan-500" style={{ width: `${humanWidth}%` }} />
+        <div className="bg-emerald-300" style={{ width: `${customerWidth}%` }} />
       </div>
 
       <div className="mt-3 grid gap-2 text-xs text-zinc-600 sm:grid-cols-3">
         <div className="break-words">
-          <span className="mr-1 inline-block h-2 w-2 rounded-full bg-zinc-950" />
+          <span className="mr-1 inline-block h-2 w-2 rounded-full bg-blue-600" />
           IA: {formatNumber(ai)}
         </div>
         <div className="break-words">
-          <span className="mr-1 inline-block h-2 w-2 rounded-full bg-zinc-500" />
+          <span className="mr-1 inline-block h-2 w-2 rounded-full bg-cyan-500" />
           Loja: {formatNumber(human)}
         </div>
         <div className="break-words">
-          <span className="mr-1 inline-block h-2 w-2 rounded-full bg-zinc-300" />
+          <span className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-300" />
           Clientes: {formatNumber(customer)}
         </div>
       </div>
@@ -642,25 +578,6 @@ function CatalogItemsList({
   );
 }
 
-function InsightCard({
-  title,
-  text,
-}: {
-  title: string;
-  text: string;
-}) {
-  return (
-    <div className="min-w-0 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-      <h3 className="break-words text-sm font-semibold text-zinc-950">
-        {title}
-      </h3>
-      <p className="mt-2 break-words text-sm leading-relaxed text-zinc-600">
-        {text}
-      </p>
-    </div>
-  );
-}
-
 
 
 function DashboardPanel({
@@ -700,25 +617,86 @@ function PanelTitle({
   );
 }
 
+type DashboardMetricAccent =
+  | "neutral"
+  | "blue"
+  | "cyan"
+  | "green"
+  | "amber"
+  | "orange"
+  | "red";
+
+const dashboardMetricAccentClasses: Record<
+  DashboardMetricAccent,
+  { border: string; top: string; value: string; hover: string }
+> = {
+  neutral: {
+    border: "border-zinc-300",
+    top: "border-t-zinc-700",
+    value: "text-zinc-950",
+    hover: "hover:border-zinc-950",
+  },
+  blue: {
+    border: "border-blue-200",
+    top: "border-t-blue-600",
+    value: "text-blue-700",
+    hover: "hover:border-blue-500",
+  },
+  cyan: {
+    border: "border-cyan-200",
+    top: "border-t-cyan-600",
+    value: "text-cyan-700",
+    hover: "hover:border-cyan-500",
+  },
+  green: {
+    border: "border-emerald-200",
+    top: "border-t-emerald-600",
+    value: "text-emerald-700",
+    hover: "hover:border-emerald-500",
+  },
+  amber: {
+    border: "border-amber-200",
+    top: "border-t-amber-500",
+    value: "text-amber-700",
+    hover: "hover:border-amber-500",
+  },
+  orange: {
+    border: "border-orange-200",
+    top: "border-t-orange-500",
+    value: "text-orange-700",
+    hover: "hover:border-orange-500",
+  },
+  red: {
+    border: "border-red-200",
+    top: "border-t-red-500",
+    value: "text-red-700",
+    hover: "hover:border-red-500",
+  },
+};
+
 function ExecutiveNumberCard({
   title,
   value,
   helper,
   className = "",
+  accent = "neutral",
 }: {
   title: string;
   value: string | number;
   helper?: string;
   className?: string;
+  accent?: DashboardMetricAccent;
 }) {
+  const classes = dashboardMetricAccentClasses[accent];
+
   return (
     <div
-      className={`min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm ${className}`}
+      className={`min-w-0 rounded-[6px] border border-t-4 bg-white p-2.5 text-center shadow-sm ${classes.border} ${classes.top} ${className}`}
     >
       <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
         {title}
       </p>
-      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+      <p className={`mt-1 break-words text-xl font-semibold tracking-tight ${classes.value}`}>
         {value}
       </p>
       {helper ? (
@@ -730,14 +708,48 @@ function ExecutiveNumberCard({
   );
 }
 
+function ClickableExecutiveNumberCard({
+  title,
+  value,
+  helper,
+  onClick,
+  accent = "neutral",
+}: {
+  title: string;
+  value: string | number;
+  helper?: string;
+  onClick: () => void;
+  accent?: DashboardMetricAccent;
+}) {
+  const classes = dashboardMetricAccentClasses[accent];
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`min-w-0 rounded-[6px] border border-t-4 bg-white p-2.5 text-center shadow-sm transition hover:shadow ${classes.border} ${classes.top} ${classes.hover}`}
+    >
+      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
+        {title}
+      </p>
+      <p className={`mt-1 break-words text-xl font-semibold tracking-tight ${classes.value}`}>
+        {value}
+      </p>
+      {helper ? (
+        <p className="mt-1 break-words text-[11px] leading-relaxed text-zinc-500">
+          {helper}
+        </p>
+      ) : null}
+    </button>
+  );
+}
+
 function GoalGauge({
   percent,
-  label,
-  helper,
+  onClick,
 }: {
   percent: number;
-  label: string;
-  helper?: string;
+  onClick: () => void;
 }) {
   const configuredGoalCents = 0;
   const currentRevenueCents = 0;
@@ -751,20 +763,24 @@ function GoalGauge({
   const filledLength = (arcPercent / 100) * arcLength;
 
   return (
-    <DashboardPanel className="min-h-0">
+    <button
+      type="button"
+      onClick={onClick}
+      className="min-h-0 min-w-0 rounded-[4px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950 hover:shadow"
+    >
       <div className="text-center">
         <h3 className="text-base font-medium text-zinc-950">Meta do mês</h3>
       </div>
 
-      <div className="mt-3 flex flex-col items-center">
-        <div className="relative h-[140px] w-[300px] max-w-full">
+      <div className="mt-2 flex flex-col items-center">
+        <div className="relative h-[164px] w-[310px] max-w-full">
           <svg
-            viewBox="0 0 300 150"
+            viewBox="0 0 310 165"
             className="h-full w-full overflow-visible"
             aria-label="Progresso da meta do mês"
           >
             <path
-              d="M 35 125 A 115 115 0 0 1 265 125"
+              d="M 38 126 A 117 117 0 0 1 272 126"
               fill="none"
               stroke="#e4e4e7"
               strokeWidth="22"
@@ -772,33 +788,31 @@ function GoalGauge({
             />
             {arcPercent > 0 ? (
               <path
-                d="M 35 125 A 115 115 0 0 1 265 125"
+                d="M 38 126 A 117 117 0 0 1 272 126"
                 fill="none"
                 stroke="#16a34a"
                 strokeWidth="22"
-                strokeLinecap="butt"
+                strokeLinecap="round"
                 strokeDasharray={`${filledLength} ${arcLength}`}
               />
             ) : null}
           </svg>
 
-          <div className="absolute inset-x-0 top-[82px] flex justify-center text-center">
-            <span className="block min-w-[34px] text-center text-lg font-semibold leading-none text-zinc-950">
+          <div className="absolute left-1/2 top-[82px] -translate-x-1/2 -translate-y-1/2">
+            <span className="inline-flex min-w-[62px] items-center justify-center rounded-full border border-zinc-200 bg-white px-3 py-2 text-lg font-semibold leading-none text-zinc-950 shadow-sm">
               {hasGoal ? formatPercent(displayPercent) : "0%"}
             </span>
           </div>
 
-          <div className="absolute inset-x-[20px] bottom-[6px] flex items-center justify-between">
-            <span className="block text-xs font-medium leading-none text-zinc-700">
-              0%
-            </span>
-            <span className="block text-xs font-medium leading-none text-zinc-700">
-              100%
-            </span>
-          </div>
+          <span className="absolute bottom-[6px] left-[24px] inline-flex min-w-[44px] -translate-x-1/2 items-center justify-center rounded-full bg-zinc-100 px-2 py-1 text-[11px] font-semibold leading-none text-zinc-700">
+            0%
+          </span>
+          <span className="absolute bottom-[6px] right-[24px] inline-flex min-w-[44px] translate-x-1/2 items-center justify-center rounded-full bg-zinc-100 px-2 py-1 text-[11px] font-semibold leading-none text-zinc-700">
+            100%
+          </span>
         </div>
 
-        <div className="-mt-1 w-full max-w-[260px] text-center">
+        <div className="-mt-1 w-full max-w-[270px] text-center">
           <p className="break-words text-base font-medium leading-snug text-zinc-950">
             Meta: {hasGoal ? formatCurrencyFromCents(configuredGoalCents) : "Não definida"}
           </p>
@@ -807,106 +821,809 @@ function GoalGauge({
           </p>
         </div>
       </div>
-    </DashboardPanel>
+    </button>
   );
 }
 
-function CompactRanking({
-  title,
-  columns,
-  rows,
-  emptyText,
+function CommercialReadingPanel({
+  salesAvailable,
+  leadsMonth,
+  pendingFollowups,
+  futureAppointments,
+  onClick,
 }: {
-  title: string;
-  columns: string[];
-  rows: Array<Array<React.ReactNode>>;
-  emptyText: string;
+  salesAvailable: boolean;
+  leadsMonth: number;
+  pendingFollowups: number;
+  futureAppointments: number;
+  onClick: () => void;
 }) {
-  return (
-    <DashboardPanel>
-      <PanelTitle title={title} />
-      {rows.length ? (
-        <div className="space-y-2">
-          <div
-            className="grid gap-2 rounded-[4px] bg-zinc-50 px-3 py-2 text-xs font-medium uppercase tracking-[0.08em] text-zinc-500"
-            style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
-          >
-            {columns.map((column) => (
-              <span key={column} className="break-words">
-                {column}
-              </span>
-            ))}
-          </div>
-          {rows.map((row, index) => (
-            <div
-              key={index}
-              className="grid gap-2 border-b border-zinc-100 px-3 py-2 text-sm last:border-b-0"
-              style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
-            >
-              {row.map((cell, cellIndex) => (
-                <div key={cellIndex} className="min-w-0 break-words">
-                  {cell}
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-[6px] border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm leading-relaxed text-zinc-500">
-          {emptyText}
-        </div>
-      )}
-    </DashboardPanel>
-  );
-}
+  const primaryInsight = pendingFollowups
+    ? {
+        eyebrow: "Prioridade agora",
+        title: `${formatNumber(pendingFollowups)} follow-up(s) precisam de atenção`,
+        text: "Os acompanhamentos pendentes são o ponto comercial mais imediato para trabalhar agora.",
+        accent: "border-amber-500",
+        eyebrowColor: "text-amber-700",
+      }
+    : futureAppointments
+      ? {
+          eyebrow: "Movimento comercial",
+          title: `${formatNumber(futureAppointments)} compromisso(s) futuro(s) registrado(s)`,
+          text: "Os próximos compromissos são o movimento comercial mais concreto disponível neste momento.",
+          accent: "border-emerald-600",
+          eyebrowColor: "text-emerald-700",
+        }
+      : leadsMonth
+        ? {
+            eyebrow: "Demanda",
+            title: `${formatNumber(leadsMonth)} lead(s) entraram neste mês`,
+            text: "Há demanda registrada para trabalhar e acompanhar a evolução no funil.",
+            accent: "border-cyan-600",
+            eyebrowColor: "text-cyan-700",
+          }
+        : {
+            eyebrow: "Cenário atual",
+            title: "Sem movimento comercial novo no período",
+            text: "Ainda não há novos leads, compromissos futuros ou acompanhamentos que indiquem uma prioridade mais específica.",
+            accent: "border-slate-500",
+            eyebrowColor: "text-slate-600",
+          };
 
-function WeeklySalesChart({
-  title,
-  emptyText,
-}: {
-  title: string;
-  emptyText: string;
-}) {
-  const weeks = [
-    { label: "Semana 1", value: 0 },
-    { label: "Semana 2", value: 0 },
-    { label: "Semana 3", value: 0 },
-    { label: "Semana 4", value: 0 },
+  const compactInsights = [
+    {
+      label: "Demanda",
+      value: leadsMonth
+        ? `${formatNumber(leadsMonth)} lead(s) no mês`
+        : "Sem novos leads",
+      dot: "bg-cyan-600",
+    },
+    {
+      label: "Resultado",
+      value: salesAvailable ? "Base de vendas localizada" : "Vendas ainda sem base",
+      dot: "bg-blue-600",
+    },
+    {
+      label: "Próximo passo",
+      value: pendingFollowups
+        ? "Priorizar acompanhamentos"
+        : futureAppointments
+          ? "Acompanhar compromissos"
+          : leadsMonth
+            ? "Avançar leads do funil"
+            : "Aguardar nova demanda",
+      dot: "bg-emerald-600",
+    },
   ];
-  const max = getMaxValue(weeks.map((week) => week.value));
 
   return (
-    <DashboardPanel className="min-h-[210px]">
-      <PanelTitle title={title} helper="Vendas e quantidade por semana." />
-      <div className="flex h-32 items-end gap-4 border-b border-l border-zinc-200 px-4">
-        {weeks.map((week) => (
-          <div key={week.label} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-2">
-            <div
-              className="w-full rounded-t-[4px] bg-zinc-900"
-              style={{ height: `${Math.max(8, (week.value / max) * 100)}px` }}
-            />
-            <span className="break-words text-center text-[11px] text-zinc-500">
-              {week.label}
-            </span>
+    <button
+      type="button"
+      onClick={onClick}
+      className="block w-full min-w-0 rounded-[4px] border border-zinc-300 bg-white p-4 text-left shadow-sm transition hover:border-zinc-950 hover:shadow"
+    >
+      <div className="flex min-w-0 items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold uppercase tracking-[0.08em] text-zinc-950">
+            Leitura comercial
+          </h3>
+          <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+            Resumo do que merece atenção comercial agora.
+          </p>
+        </div>
+        <span className="shrink-0 text-xs font-semibold text-zinc-600">
+          Ver análise ›
+        </span>
+      </div>
+
+      <div className={`mt-4 border-l-4 ${primaryInsight.accent} pl-4`}>
+        <p
+          className={`text-[10px] font-semibold uppercase tracking-[0.13em] ${primaryInsight.eyebrowColor}`}
+        >
+          {primaryInsight.eyebrow}
+        </p>
+        <p className="mt-1 break-words text-lg font-semibold tracking-tight text-zinc-950">
+          {primaryInsight.title}
+        </p>
+        <p className="mt-1 max-w-4xl break-words text-sm leading-relaxed text-zinc-600">
+          {primaryInsight.text}
+        </p>
+      </div>
+
+      <div className="mt-5 grid min-w-0 border-t border-zinc-200 pt-4 sm:grid-cols-3">
+        {compactInsights.map((item, index) => (
+          <div
+            key={item.label}
+            className={`min-w-0 py-2 sm:py-0 ${
+              index > 0 ? "sm:border-l sm:border-zinc-200 sm:pl-4" : ""
+            } ${index < compactInsights.length - 1 ? "sm:pr-4" : ""}`}
+          >
+            <div className="flex items-center gap-2">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${item.dot}`} />
+              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                {item.label}
+              </span>
+            </div>
+            <p className="mt-2 break-words text-sm font-semibold text-zinc-950">
+              {item.value}
+            </p>
           </div>
         ))}
       </div>
-      <p className="mt-3 rounded-[6px] border border-dashed border-zinc-300 bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-500">
-        {emptyText}
+    </button>
+  );
+}
+
+function CommercialReadingDetail({
+  salesAvailable,
+  salesStatusText,
+  leadsMonth,
+  pendingFollowups,
+  futureAppointments,
+}: {
+  salesAvailable: boolean;
+  salesStatusText: string;
+  leadsMonth: number;
+  pendingFollowups: number;
+  futureAppointments: number;
+}) {
+  const nextStep = pendingFollowups
+    ? `Priorizar os ${formatNumber(pendingFollowups)} acompanhamento(s) pendente(s).`
+    : futureAppointments
+      ? `Acompanhar os ${formatNumber(futureAppointments)} compromisso(s) futuro(s) já registrados.`
+      : leadsMonth
+        ? "Trabalhar os leads que já entraram no funil e acompanhar a evolução deles."
+        : "Aguardar nova demanda mantendo a operação pronta para responder rapidamente.";
+
+  const items = [
+    {
+      label: "Resultado",
+      value: salesAvailable ? "Leitura parcial" : "Ainda indisponível",
+      text: salesAvailable
+        ? "A origem de vendas foi localizada, mas os totais necessários para comparar resultado e tendência ainda não estão disponíveis."
+        : salesStatusText,
+      dot: "bg-blue-600",
+    },
+    {
+      label: "Demanda",
+      value: `${formatNumber(leadsMonth)} lead(s) no mês`,
+      text: leadsMonth
+        ? "Há entrada de demanda registrada neste mês. A conversão poderá ser cruzada com vendas quando os totais comerciais estiverem disponíveis."
+        : "Nenhum lead novo foi registrado no mês atual.",
+      dot: "bg-cyan-600",
+    },
+    {
+      label: "Atenção",
+      value: pendingFollowups ? `${formatNumber(pendingFollowups)} pendente(s)` : "Em dia",
+      text: pendingFollowups
+        ? "Existem acompanhamentos pendentes que podem influenciar o avanço das oportunidades."
+        : "Não há follow-ups pendentes neste momento.",
+      dot: "bg-amber-500",
+    },
+    {
+      label: "Próximo passo",
+      value: nextStep,
+      text: "A recomendação é derivada apenas dos sinais operacionais que o dashboard já consegue comprovar.",
+      dot: "bg-emerald-600",
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <DashboardPanel>
+        <PanelTitle
+          title="Leitura do momento"
+          helper="Interpretação dos sinais comerciais que o dashboard já consegue comprovar."
+        />
+
+        <div className="divide-y divide-zinc-100">
+          {items.map((item) => (
+            <div
+              key={item.label}
+              className="grid min-w-0 gap-2 py-3 sm:grid-cols-[150px_minmax(0,1fr)]"
+            >
+              <div className="flex items-center gap-2">
+                <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${item.dot}`} />
+                <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500">
+                  {item.label}
+                </span>
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-zinc-950">{item.value}</p>
+                <p className="mt-1 text-xs leading-relaxed text-zinc-600">{item.text}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </DashboardPanel>
+
+      <DashboardPanel>
+        <PanelTitle
+          title="O que esta leitura vai comparar"
+          helper="Assim que os dados reais de vendas estiverem completos."
+        />
+        <div className="grid gap-2 sm:grid-cols-2">
+          {[
+            "Meta x ritmo esperado do mês",
+            "Vendas atuais x período anterior",
+            "Conversão de leads",
+            "Evolução do ticket médio",
+            "Produto ou categoria que mais contribui",
+            "Região que mais contribui para o resultado",
+          ].map((item) => (
+            <div
+              key={item}
+              className="border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700"
+            >
+              {item}
+            </div>
+          ))}
+        </div>
+      </DashboardPanel>
+    </div>
+  );
+}
+
+type SalesPeriodView = "year" | "month" | "week" | "day";
+
+type SalesAccent = "blue" | "green" | "cyan" | "amber" | "orange" | "slate";
+
+const salesPeriodViews: Array<{ id: SalesPeriodView; label: string }> = [
+  { id: "year", label: "Ano" },
+  { id: "month", label: "Mês" },
+  { id: "week", label: "Semana" },
+  { id: "day", label: "Dia" },
+];
+
+const salesAccentClasses: Record<
+  SalesAccent,
+  { border: string; bar: string; badge: string; value: string }
+> = {
+  blue: {
+    border: "border-blue-200",
+    bar: "bg-blue-600",
+    badge: "bg-blue-50 text-blue-700",
+    value: "text-blue-700",
+  },
+  green: {
+    border: "border-emerald-200",
+    bar: "bg-emerald-600",
+    badge: "bg-emerald-50 text-emerald-700",
+    value: "text-emerald-700",
+  },
+  cyan: {
+    border: "border-cyan-200",
+    bar: "bg-cyan-600",
+    badge: "bg-cyan-50 text-cyan-700",
+    value: "text-cyan-700",
+  },
+  amber: {
+    border: "border-amber-200",
+    bar: "bg-amber-500",
+    badge: "bg-amber-50 text-amber-700",
+    value: "text-amber-700",
+  },
+  orange: {
+    border: "border-orange-200",
+    bar: "bg-orange-500",
+    badge: "bg-orange-50 text-orange-700",
+    value: "text-orange-700",
+  },
+  slate: {
+    border: "border-slate-300",
+    bar: "bg-slate-700",
+    badge: "bg-slate-100 text-slate-700",
+    value: "text-slate-800",
+  },
+};
+
+function SalesMetricTile({
+  title,
+  value,
+  helper,
+  accent = "slate",
+  onClick,
+}: {
+  title: string;
+  value: string;
+  helper?: string;
+  accent?: SalesAccent;
+  onClick: () => void;
+}) {
+  const classes = salesAccentClasses[accent];
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative min-w-0 overflow-hidden rounded-[4px] border bg-white p-3 text-left shadow-sm transition hover:border-zinc-950 hover:shadow ${classes.border}`}
+    >
+      <span className={`absolute inset-x-0 top-0 h-1 ${classes.bar}`} />
+      <p className="pt-1 text-[11px] font-semibold uppercase tracking-[0.11em] text-zinc-500">
+        {title}
       </p>
+      <p className={`mt-2 break-words text-xl font-semibold tracking-tight ${classes.value}`}>
+        {value}
+      </p>
+      {helper ? (
+        <p className="mt-1 break-words text-[11px] leading-relaxed text-zinc-500">
+          {helper}
+        </p>
+      ) : null}
+    </button>
+  );
+}
+
+function startOfSalesWeek(value: Date) {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  const weekday = date.getDay();
+  const offset = weekday === 0 ? -6 : 1 - weekday;
+  date.setDate(date.getDate() + offset);
+  return date;
+}
+
+function addSalesDays(value: Date, amount: number) {
+  const date = new Date(value);
+  date.setDate(date.getDate() + amount);
+  return date;
+}
+
+function capitalizeSalesLabel(value: string) {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
+
+function formatSalesDay(value: Date) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    weekday: "short",
+  })
+    .format(value)
+    .replace(".", "");
+}
+
+function formatSalesDayNumber(value: Date) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+  }).format(value);
+}
+
+function formatSalesMonthShort(value: Date) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    month: "short",
+  })
+    .format(value)
+    .replace(".", "");
+}
+
+function formatSalesPeriodTitle(view: SalesPeriodView, anchorDate: Date) {
+  if (view === "year") {
+    return "Anos disponíveis";
+  }
+
+  if (view === "month") {
+    return `Meses de ${anchorDate.getFullYear()}`;
+  }
+
+  if (view === "week") {
+    const start = startOfSalesWeek(anchorDate);
+    const end = addSalesDays(start, 6);
+    const startText = new Intl.DateTimeFormat("pt-BR", {
+      day: "2-digit",
+      month: "short",
+    }).format(start);
+    const endText = new Intl.DateTimeFormat("pt-BR", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }).format(end);
+
+    return `Semana de ${startText} — ${endText}`;
+  }
+
+  return capitalizeSalesLabel(
+    new Intl.DateTimeFormat("pt-BR", {
+      weekday: "long",
+      day: "2-digit",
+      month: "long",
+      year: "numeric",
+    }).format(anchorDate)
+  );
+}
+
+function shiftSalesPeriod(anchorDate: Date, view: SalesPeriodView, direction: -1 | 1) {
+  const next = new Date(anchorDate);
+
+  if (view === "month") {
+    next.setFullYear(next.getFullYear() + direction);
+  } else if (view === "week") {
+    next.setDate(next.getDate() + direction * 7);
+  } else if (view === "day") {
+    next.setDate(next.getDate() + direction);
+  }
+
+  return next;
+}
+
+function SalesCalendarPlaceholder({
+  label = "Sem dados",
+  helper = "Aguardando base real de vendas",
+}: {
+  label?: string;
+  helper?: string;
+}) {
+  return (
+    <div className="mt-3 border-t border-zinc-200 pt-3">
+      <p className="text-sm font-semibold text-zinc-800">{label}</p>
+      <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{helper}</p>
+    </div>
+  );
+}
+
+function SalesPeriodExplorer({
+  view,
+  anchorDate,
+  onViewChange,
+  onAnchorDateChange,
+  salesAvailable,
+  statusText,
+  systemStartYear,
+}: {
+  view: SalesPeriodView;
+  anchorDate: Date;
+  onViewChange: (view: SalesPeriodView) => void;
+  onAnchorDateChange: (date: Date) => void;
+  salesAvailable: boolean;
+  statusText: string;
+  systemStartYear: number;
+}) {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const safeStartYear = Math.min(Math.max(2000, systemStartYear), currentYear);
+  const weekStart = startOfSalesWeek(anchorDate);
+  const weekDays = Array.from({ length: 7 }, (_, index) => addSalesDays(weekStart, index));
+  const yearMonths = Array.from({ length: 12 }, (_, index) =>
+    new Date(anchorDate.getFullYear(), index, 1)
+  );
+  const yearOptions = Array.from(
+    { length: currentYear - safeStartYear + 1 },
+    (_, index) => new Date(safeStartYear + index, 0, 1)
+  );
+
+  const emptyHelper = salesAvailable
+    ? "A origem de vendas foi localizada, mas os totais ainda não vieram nesta resposta."
+    : "Aguardando uma origem confiável de vendas, pedidos ou faturamento.";
+
+  function goToday() {
+    onAnchorDateChange(new Date());
+    onViewChange("day");
+  }
+
+  return (
+    <DashboardPanel className="rounded-[4px] border-zinc-400 p-0 shadow-sm">
+      <div className="border-b border-zinc-300 bg-zinc-950 px-4 py-3 text-white">
+        <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+              Histórico de vendas
+            </p>
+            <h3 className="mt-1 break-words text-lg font-semibold">
+              {formatSalesPeriodTitle(view, anchorDate)}
+            </h3>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex overflow-hidden rounded-[4px] border border-zinc-700 bg-zinc-900">
+              {view !== "year" ? (
+                <button
+                  type="button"
+                  onClick={() => onAnchorDateChange(shiftSalesPeriod(anchorDate, view, -1))}
+                  className="border-r border-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800"
+                  aria-label="Período anterior"
+                >
+                  ‹
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={goToday}
+                className="px-3 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800"
+              >
+                Hoje
+              </button>
+              {view !== "year" ? (
+                <button
+                  type="button"
+                  onClick={() => onAnchorDateChange(shiftSalesPeriod(anchorDate, view, 1))}
+                  className="border-l border-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-800"
+                  aria-label="Próximo período"
+                >
+                  ›
+                </button>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap gap-1 rounded-[4px] border border-zinc-700 bg-zinc-900 p-1">
+              {salesPeriodViews.map((item) => {
+                const isActive = item.id === view;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => onViewChange(item.id)}
+                    className={`rounded-[3px] px-3 py-1.5 text-xs font-semibold transition ${
+                      isActive
+                        ? "bg-white text-zinc-950"
+                        : "text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-zinc-100 p-3">
+        {view === "year" ? (
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {yearOptions.map((yearDate) => {
+              const isCurrentYear = yearDate.getFullYear() === currentYear;
+
+              return (
+                <button
+                  key={yearDate.getFullYear()}
+                  type="button"
+                  onClick={() => {
+                    onAnchorDateChange(
+                      new Date(yearDate.getFullYear(), anchorDate.getMonth(), 1)
+                    );
+                    onViewChange("month");
+                  }}
+                  className={`min-h-[116px] min-w-0 rounded-[4px] border bg-white p-3 text-left shadow-sm transition hover:border-blue-500 hover:shadow ${
+                    isCurrentYear ? "border-blue-500 ring-1 ring-blue-100" : "border-zinc-300"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xl font-semibold text-zinc-950">
+                      {yearDate.getFullYear()}
+                    </span>
+                    <span className="rounded-[3px] bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-700">
+                      {isCurrentYear ? "Atual" : "Ver meses"}
+                    </span>
+                  </div>
+                  <SalesCalendarPlaceholder helper={emptyHelper} />
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {view === "month" ? (
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {yearMonths.map((month) => {
+              const isCurrentMonth =
+                month.getFullYear() === now.getFullYear() &&
+                month.getMonth() === now.getMonth();
+
+              return (
+                <button
+                  key={month.toISOString()}
+                  type="button"
+                  onClick={() => {
+                    const targetDate = isCurrentMonth
+                      ? new Date()
+                      : new Date(month.getFullYear(), month.getMonth(), 1);
+                    onAnchorDateChange(targetDate);
+                    onViewChange("week");
+                  }}
+                  className={`min-h-[126px] min-w-0 rounded-[4px] border bg-white p-3 text-left shadow-sm transition hover:border-cyan-500 hover:shadow ${
+                    isCurrentMonth ? "border-cyan-500 ring-1 ring-cyan-100" : "border-zinc-300"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-zinc-950">
+                      {capitalizeSalesLabel(
+                        new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(month)
+                      )}
+                    </span>
+                    {isCurrentMonth ? (
+                      <span className="rounded-[3px] bg-cyan-600 px-2 py-1 text-[10px] font-semibold text-white">
+                        Atual
+                      </span>
+                    ) : (
+                      <span className="rounded-[3px] bg-cyan-50 px-2 py-1 text-[10px] font-semibold text-cyan-700">
+                        Ver semana
+                      </span>
+                    )}
+                  </div>
+                  <SalesCalendarPlaceholder helper={emptyHelper} />
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {view === "week" ? (
+          <div className="space-y-3">
+            <div className="overflow-x-auto pb-1">
+              <div className="grid min-w-[770px] grid-cols-7 gap-2">
+                {weekDays.map((day) => {
+                  const isToday = isSameLocalDate(day.toISOString());
+                  const isSelected = isSameLocalDate(
+                    day.toISOString(),
+                    anchorDate
+                  );
+
+                  return (
+                    <button
+                      key={day.toISOString()}
+                      type="button"
+                      onClick={() => onAnchorDateChange(day)}
+                      className={`relative min-h-[112px] min-w-0 rounded-[6px] border bg-white px-3 py-3 text-left shadow-sm transition hover:border-cyan-500 hover:shadow ${
+                        isSelected
+                          ? "border-cyan-500 ring-2 ring-cyan-100"
+                          : "border-zinc-300"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                            {formatSalesDay(day)}
+                          </p>
+                          <p className="mt-1 text-2xl font-semibold text-zinc-950">
+                            {formatSalesDayNumber(day)}
+                          </p>
+                        </div>
+                        {isToday ? (
+                          <span className="rounded-full bg-cyan-600 px-2 py-1 text-[9px] font-semibold text-white">
+                            Hoje
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-3 border-t border-zinc-200 pt-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-emerald-700">
+                          Vendas
+                        </p>
+                        <p className="mt-1 text-sm font-semibold text-zinc-950">
+                          Sem dados
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-[6px] border border-zinc-300 bg-white p-4 shadow-sm">
+              <div className="flex min-w-0 flex-col gap-3 border-b border-zinc-200 pb-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-cyan-700">
+                    Dia selecionado
+                  </p>
+                  <h4 className="mt-1 text-base font-semibold text-zinc-950">
+                    {capitalizeSalesLabel(
+                      new Intl.DateTimeFormat("pt-BR", {
+                        weekday: "long",
+                        day: "2-digit",
+                        month: "long",
+                      }).format(anchorDate)
+                    )}
+                  </h4>
+                  <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+                    Selecione outro dia acima para comparar a semana sem sair desta visão.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onViewChange("day")}
+                  className="shrink-0 rounded-[4px] border border-zinc-300 bg-zinc-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-zinc-800"
+                >
+                  Abrir dia
+                </button>
+              </div>
+
+              <div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="border-l-4 border-emerald-500 bg-emerald-50 px-3 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-emerald-700">
+                    Vendas
+                  </p>
+                  <p className="mt-1 text-base font-semibold text-zinc-950">Sem dados</p>
+                </div>
+                <div className="border-l-4 border-blue-500 bg-blue-50 px-3 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-blue-700">
+                    Faturamento
+                  </p>
+                  <p className="mt-1 text-base font-semibold text-zinc-950">Sem dados</p>
+                </div>
+                <div className="border-l-4 border-amber-500 bg-amber-50 px-3 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-amber-700">
+                    Ticket médio
+                  </p>
+                  <p className="mt-1 text-base font-semibold text-zinc-950">Sem dados</p>
+                </div>
+                <div className="border-l-4 border-slate-500 bg-slate-50 px-3 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-700">
+                    Conversão
+                  </p>
+                  <p className="mt-1 text-base font-semibold text-zinc-950">Sem dados</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {view === "day" ? (
+          <div className="space-y-3">
+            <div className="grid min-w-0 gap-2 sm:grid-cols-3">
+              <div className="border-l-4 border-emerald-500 bg-emerald-50 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.11em] text-emerald-700">
+                  Vendas do dia
+                </p>
+                <p className="mt-2 text-xl font-semibold text-zinc-950">Sem dados</p>
+              </div>
+              <div className="border-l-4 border-blue-500 bg-blue-50 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.11em] text-blue-700">
+                  Faturamento
+                </p>
+                <p className="mt-2 text-xl font-semibold text-zinc-950">Sem dados</p>
+              </div>
+              <div className="border-l-4 border-amber-500 bg-amber-50 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.11em] text-amber-700">
+                  Ticket médio
+                </p>
+                <p className="mt-2 text-xl font-semibold text-zinc-950">Sem dados</p>
+              </div>
+            </div>
+
+            <div className="rounded-[4px] border border-zinc-300 bg-white p-4 shadow-sm">
+              <div className="flex min-w-0 items-center justify-between gap-3 border-b border-zinc-200 pb-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-blue-700">
+                    Vendas de {formatSalesDayNumber(anchorDate)} {formatSalesMonthShort(anchorDate)}
+                  </p>
+                  <p className="mt-1 text-sm text-zinc-600">
+                    Cada venda aparecerá individualmente aqui, com cliente, itens, valor, forma de pagamento e status.
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-[3px] bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-600">
+                  0 registros
+                </span>
+              </div>
+              <div className="mt-3 border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm leading-relaxed text-zinc-500">
+                {statusText}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mt-3 border-t border-zinc-300 pt-3">
+          <p className="text-xs leading-relaxed text-zinc-500">
+            Nenhum valor de venda é estimado. A navegação temporal está pronta e será preenchida apenas com dados reais da operação.
+          </p>
+        </div>
+      </div>
     </DashboardPanel>
   );
 }
 
-type DetailItem = {
-  id: string;
-  label: string;
-  value: string;
-  helper: string;
-  detailTitle: string;
-  detailText: string;
-  howToResolve?: string;
-};
+type LeadDetailDrawer = "today" | "last7" | "month" | "total";
+
+type SalesDetailDrawer =
+  | "goal"
+  | "revenueMonth"
+  | "salesToday"
+  | "salesWeek"
+  | "salesMonth"
+  | "ticketAverage"
+  | "conversion"
+  | "region"
+  | "products"
+  | "payments"
+  | "commercialReading";
 
 type PaymentSlice = {
   label: string;
@@ -935,7 +1652,7 @@ function PaymentDonut({
         .join(", ")
     : "#f4f4f5 0% 100%";
 
-  const visibleSlices = total ? slices.filter((slice) => slice.percent > 0) : slices;
+  const visibleSlices = total ? slices.filter((slice) => slice.percent > 0) : [];
 
   return (
     <div className="grid min-w-0 gap-3 sm:grid-cols-[88px_minmax(0,1fr)] sm:items-center">
@@ -979,190 +1696,124 @@ function PaymentDonut({
   );
 }
 
-function PaymentCirclePanel({
-  slices,
-  emptyText,
-}: {
-  slices: PaymentSlice[];
-  emptyText: string;
-}) {
-  return (
-    <DashboardPanel className="min-h-[190px]">
-      <PanelTitle title="Formas de pagamento" />
-      <PaymentDonut slices={slices} emptyText={emptyText} />
-    </DashboardPanel>
-  );
-}
+const leadSourcePalette = [
+  "#2563eb",
+  "#059669",
+  "#0891b2",
+  "#d97706",
+  "#ea580c",
+  "#475569",
+  "#dc2626",
+  "#0f766e",
+];
 
-function SmallDonutPlaceholder({
-  title,
-  helper,
+function LeadSourceDonut({
+  sources,
   emptyText,
 }: {
-  title: string;
-  helper: string;
+  sources: Record<string, number>;
   emptyText: string;
 }) {
+  const entries = Object.entries(sources || {})
+    .filter(([, value]) => Number(value) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
+  const total = entries.reduce((sum, [, value]) => sum + Number(value || 0), 0);
+
+  const segments = entries.map(([label, value], index) => {
+    const percent = total > 0 ? (Number(value) / total) * 100 : 0;
+    const start = entries
+      .slice(0, index)
+      .reduce(
+        (sum, [, previousValue]) =>
+          sum + (total > 0 ? (Number(previousValue) / total) * 100 : 0),
+        0
+      );
+    const end = start + percent;
+
+    return {
+      label,
+      value: Number(value),
+      percent,
+      color: leadSourcePalette[index % leadSourcePalette.length],
+      start,
+      end,
+    };
+  });
+
+  const gradient = segments.length
+    ? segments
+        .map((segment) => `${segment.color} ${segment.start}% ${segment.end}%`)
+        .join(", ")
+    : "#e4e4e7 0% 100%";
+
   return (
-    <DashboardPanel className="min-h-0">
-      <PanelTitle title={title} helper={helper} />
-      <div className="grid min-w-0 gap-4 sm:grid-cols-[128px_minmax(0,1fr)] sm:items-center">
-        <div className="mx-auto h-28 w-28 rounded-full border border-zinc-300 bg-[conic-gradient(#111827_0deg_0deg,#f4f4f5_0deg_360deg)] p-6">
-          <div className="flex h-full w-full items-center justify-center rounded-full border border-zinc-200 bg-white text-center text-xs font-medium text-zinc-500">
-            Sem dados
+    <DashboardPanel className="min-h-0 border-cyan-200">
+      <PanelTitle
+        title="De onde os leads vêm"
+        helper="Participação de cada origem no total de leads com origem identificada."
+      />
+
+      <div className="grid min-w-0 gap-5 sm:grid-cols-[178px_minmax(0,1fr)] sm:items-center">
+        <div className="mx-auto flex w-full items-center justify-center">
+          <div
+            className="relative h-[148px] w-[148px] shrink-0 rounded-full border border-zinc-300 shadow-sm"
+            style={{ background: `conic-gradient(${gradient})` }}
+            aria-label="Distribuição percentual da origem dos leads"
+          >
+            <div className="absolute inset-[31px] flex items-center justify-center overflow-hidden rounded-full border border-zinc-200 bg-white text-center shadow-inner">
+              <div className="flex w-[78px] flex-col items-center justify-center px-1">
+                <span className="block text-xl font-semibold leading-none text-zinc-950">
+                  {segments.length ? "100%" : "—"}
+                </span>
+                <span className="mt-2 block whitespace-nowrap text-[9px] font-semibold uppercase tracking-[0.08em] text-zinc-500">
+                  {segments.length ? "dos leads" : "sem dados"}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
-        <p className="rounded-[6px] border border-dashed border-zinc-300 bg-zinc-50 p-2 text-xs leading-relaxed text-zinc-500">
-          {emptyText}
-        </p>
+
+        {segments.length ? (
+          <div className="space-y-2">
+            {segments.map((segment) => (
+              <div
+                key={segment.label}
+                className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-zinc-100 pb-2 last:border-b-0"
+              >
+                <span
+                  className="h-3 w-3 shrink-0 rounded-[2px]"
+                  style={{ backgroundColor: segment.color }}
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-zinc-800">
+                    {formatLabel(segment.label)}
+                  </p>
+                  <p className="text-[10px] text-zinc-500">
+                    {formatNumber(segment.value)} lead(s)
+                  </p>
+                </div>
+                <span className="shrink-0 text-sm font-semibold text-zinc-950">
+                  {new Intl.NumberFormat("pt-BR", {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 1,
+                  }).format(segment.percent)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-[6px] border border-dashed border-zinc-300 bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-500">
+            {emptyText}
+          </p>
+        )}
       </div>
     </DashboardPanel>
   );
 }
 
-function PendingDashboardPanel({
-  items,
-  selectedId,
-  onSelect,
-}: {
-  items: DetailItem[];
-  selectedId: string;
-  onSelect: (id: string) => void;
-}) {
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const selected = items.find((item) => item.id === selectedId) || items[0];
-
-  function openIssue(id: string) {
-    onSelect(id);
-    setIsDrawerOpen(true);
-  }
-
-  return (
-    <>
-      <DashboardPanel>
-        <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="break-words text-sm font-semibold uppercase tracking-[0.08em] text-zinc-950">
-              Pendências da operação
-            </h3>
-            <p className="mt-1 break-words text-xs leading-relaxed text-zinc-500">
-              Clique em uma linha para ver os detalhes e como resolver.
-            </p>
-          </div>
-          <span className="shrink-0 rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs font-semibold text-zinc-950">
-            {formatNumber(items.length)} item(s)
-          </span>
-        </div>
-
-        <div className="space-y-1.5">
-          {items.map((item) => {
-            const severity = item.value.toLowerCase();
-            const dotClass =
-              severity.includes("crítico") || severity.includes("pendente")
-                ? "bg-red-500"
-                : severity.includes("atenção")
-                  ? "bg-orange-500"
-                  : "bg-emerald-500";
-
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => openIssue(item.id)}
-                className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-full border border-zinc-200 bg-zinc-50 px-4 py-2 text-left transition hover:border-zinc-950 hover:bg-white"
-              >
-                <span className={`h-2.5 w-2.5 rounded-full ${dotClass}`} />
-                <span className="min-w-0 truncate text-sm font-semibold text-zinc-950">
-                  {item.label}
-                </span>
-                <span className="rounded-full border border-zinc-200 bg-white px-3 py-0.5 text-xs font-semibold text-zinc-950">
-                  {item.value}
-                </span>
-                <span className="text-sm font-semibold text-zinc-500">›</span>
-              </button>
-            );
-          })}
-        </div>
-      </DashboardPanel>
-
-      {isDrawerOpen ? (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          <button
-            type="button"
-            aria-label="Fechar detalhes da pendência"
-            onClick={() => setIsDrawerOpen(false)}
-            className="absolute inset-0 bg-black/35"
-          />
-
-          <aside className="relative z-10 flex h-full w-full max-w-[560px] flex-col overflow-hidden bg-white shadow-2xl">
-            <div className="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
-              <div className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
-                  <h3 className="break-words text-lg font-semibold text-zinc-950">
-                    {selected.label}
-                  </h3>
-                  <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-xs font-semibold text-zinc-700">
-                    {selected.value}
-                  </span>
-                </div>
-                <p className="mt-2 break-words text-sm text-zinc-500">
-                  Detalhes da pendência
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setIsDrawerOpen(false)}
-                className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-950 transition hover:border-zinc-950"
-              >
-                Fechar
-              </button>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
-                  O que está errado
-                </p>
-                <h4 className="mt-2 break-words text-xl font-semibold text-zinc-950">
-                  {selected.detailTitle}
-                </h4>
-                <p className="mt-3 break-words text-sm leading-relaxed text-zinc-700">
-                  {selected.detailText}
-                </p>
-              </div>
-
-              {selected.howToResolve ? (
-                <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
-                    Como resolver
-                  </p>
-                  <p className="mt-3 break-words text-sm leading-relaxed text-zinc-700">
-                    {selected.howToResolve}
-                  </p>
-                </div>
-              ) : null}
-
-              <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
-                <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
-                  Próximo passo
-                </p>
-                <p className="mt-3 text-sm leading-relaxed text-zinc-700">
-                  Resolva esta pendência no módulo indicado. Depois, atualize o dashboard
-                  para confirmar se ela saiu da lista ou mudou de status.
-                </p>
-              </div>
-            </div>
-          </aside>
-        </div>
-      ) : null}
-    </>
-  );
-}
-
 const DASHBOARD_ACTIVE_TAB_STORAGE_KEY = "zion.dashboard.activeTab";
 const DASHBOARD_SCROLL_STORAGE_KEY = "zion.dashboard.scrollY";
+const DASHBOARD_STORE_START_YEAR_STORAGE_PREFIX = "zion.dashboard.storeStartYear";
 
 function isDashboardTab(value: string | null): value is DashboardTab {
   return Boolean(value && tabs.some((tab) => tab.id === value));
@@ -1385,43 +2036,57 @@ function DashboardDetailDrawer({
   );
 }
 
+function getStoreSystemStartYear(metrics: DashboardMetrics) {
+  const currentYear = new Date().getFullYear();
+  const explicitCandidates = [metrics.storeSystemStartedAt, metrics.storeCreatedAt];
+  const explicitYears = explicitCandidates
+    .filter((value): value is string => Boolean(value))
+    .map((value) => new Date(value).getFullYear())
+    .filter((year) => Number.isFinite(year) && year >= 2000 && year <= currentYear);
+
+  return explicitYears.length ? Math.min(...explicitYears) : currentYear;
+}
+
 export default function DashboardPage() {
   const { organizationId, activeStoreId } = useStoreContext();
   const [activeTab, setActiveTab] = useState<DashboardTab>(() => {
-    if (typeof window === "undefined") return "geral";
+    if (typeof window === "undefined") return "vendas";
 
     const savedTab = window.localStorage.getItem(DASHBOARD_ACTIVE_TAB_STORAGE_KEY);
-    return isDashboardTab(savedTab) ? savedTab : "geral";
+    return isDashboardTab(savedTab) ? savedTab : "vendas";
   });
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isTodayAppointmentsDrawerOpen, setIsTodayAppointmentsDrawerOpen] = useState(false);
+  const [leadDetailDrawer, setLeadDetailDrawer] = useState<LeadDetailDrawer | null>(null);
+  const [salesDetailDrawer, setSalesDetailDrawer] = useState<SalesDetailDrawer | null>(null);
+  const [salesPeriodView, setSalesPeriodView] = useState<SalesPeriodView>("week");
+  const [salesAnchorDate, setSalesAnchorDate] = useState(() => new Date());
+  const [storeSystemStartYear, setStoreSystemStartYear] = useState(
+    () => new Date().getFullYear()
+  );
+  const [isTodayAppointmentsDrawerOpen, setIsTodayAppointmentsDrawerOpen] =
+    useState(false);
   const [isUrgentStatesDrawerOpen, setIsUrgentStatesDrawerOpen] = useState(false);
-  const [isPendingFollowupsDrawerOpen, setIsPendingFollowupsDrawerOpen] = useState(false);
-  const [isMonthFollowupsDrawerOpen, setIsMonthFollowupsDrawerOpen] = useState(false);
+  const [isPendingFollowupsDrawerOpen, setIsPendingFollowupsDrawerOpen] =
+    useState(false);
+  const [isMonthFollowupsDrawerOpen, setIsMonthFollowupsDrawerOpen] =
+    useState(false);
   const [isCatalogStockDrawerOpen, setIsCatalogStockDrawerOpen] = useState(false);
   const [isTrackedStockDrawerOpen, setIsTrackedStockDrawerOpen] = useState(false);
   const [isLowStockDrawerOpen, setIsLowStockDrawerOpen] = useState(false);
   const [isZeroStockDrawerOpen, setIsZeroStockDrawerOpen] = useState(false);
-  const [isInventoryValueDrawerOpen, setIsInventoryValueDrawerOpen] = useState(false);
-  const [isFastMovingItemsDrawerOpen, setIsFastMovingItemsDrawerOpen] = useState(false);
-  const [isHistoricalMonthDrawerOpen, setIsHistoricalMonthDrawerOpen] = useState(false);
-  const [selectedHistoricalMonth, setSelectedHistoricalMonth] = useState("Mês anterior");
-  const [historicalDetailDrawer, setHistoricalDetailDrawer] = useState<
-    null | "messages" | "leads" | "conversations" | "appointments" | "currentMonth"
-  >(null);
-  const [generalDetailDrawer, setGeneralDetailDrawer] = useState<string | null>(null);
-  const [isRegionDrawerOpen, setIsRegionDrawerOpen] = useState(false);
-  const [selectedBestSellerCategory, setSelectedBestSellerCategory] = useState<string | null>(null);
+  const [isInventoryValueDrawerOpen, setIsInventoryValueDrawerOpen] =
+    useState(false);
+  const [isFastMovingItemsDrawerOpen, setIsFastMovingItemsDrawerOpen] =
+    useState(false);
   const [aiDetailDrawer, setAiDetailDrawer] = useState<
     null | "distribution" | "messages" | "conversations" | "pending" | "processes" | "actions"
   >(null);
-  const [isNextAppointmentsDrawerOpen, setIsNextAppointmentsDrawerOpen] = useState(false);
-  const [selectedGeneralItemId, setSelectedGeneralItemId] = useState('revenue_month');
-  const [selectedPendingIssueId, setSelectedPendingIssueId] = useState('sales_source');
+  const [isNextAppointmentsDrawerOpen, setIsNextAppointmentsDrawerOpen] =
+    useState(false);
 
-  async function loadDashboardMetrics() {
+  const loadDashboardMetrics = useCallback(async () => {
     if (!organizationId || !activeStoreId) {
       setMetrics(null);
       setErrorMessage("Loja ativa não encontrada.");
@@ -1433,13 +2098,10 @@ export default function DashboardPage() {
       setIsLoading(true);
       setErrorMessage(null);
 
-      const response = await fetch(
-        `/api/dashboard/metrics?organizationId=${organizationId}&storeId=${activeStoreId}`,
-        {
-          method: "GET",
-          cache: "no-store",
-        }
-      );
+      const response = await fetch("/api/dashboard/metrics", {
+        method: "GET",
+        cache: "no-store",
+      });
 
       const data = await response.json();
 
@@ -1449,19 +2111,42 @@ export default function DashboardPage() {
         );
       }
 
+      const detectedStartYear = getStoreSystemStartYear(data);
+      let resolvedStartYear = detectedStartYear;
+
+      if (typeof window !== "undefined") {
+        const storageKey = `${DASHBOARD_STORE_START_YEAR_STORAGE_PREFIX}.${activeStoreId}`;
+        const savedYear = Number(window.localStorage.getItem(storageKey));
+        const validSavedYear =
+          Number.isFinite(savedYear) &&
+          savedYear >= 2000 &&
+          savedYear <= new Date().getFullYear()
+            ? savedYear
+            : null;
+
+        resolvedStartYear =
+          validSavedYear == null
+            ? detectedStartYear
+            : Math.min(validSavedYear, detectedStartYear);
+        window.localStorage.setItem(storageKey, String(resolvedStartYear));
+      }
+
+      setStoreSystemStartYear(resolvedStartYear);
       setMetrics(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
       setErrorMessage(
-        error?.message || "Não foi possível carregar o dashboard agora."
+        error instanceof Error
+          ? error.message
+          : "Não foi possível carregar o dashboard agora."
       );
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [organizationId, activeStoreId]);
 
   useEffect(() => {
     loadDashboardMetrics();
-  }, [activeTab, organizationId, activeStoreId]);
+  }, [activeTab, loadDashboardMetrics]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1474,8 +2159,9 @@ export default function DashboardPage() {
 
     const previousBodyOverflowY = document.body.style.overflowY;
     const previousHtmlOverflowY = document.documentElement.style.overflowY;
+    const usesCompactViewport = ["ia", "agenda", "estoque"].includes(activeTab);
 
-    if (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
+    if (usesCompactViewport) {
       window.scrollTo({ top: 0, behavior: "auto" });
       document.body.style.overflowY = "hidden";
       document.documentElement.style.overflowY = "hidden";
@@ -1493,7 +2179,9 @@ export default function DashboardPage() {
   useEffect(() => {
     if (typeof window === "undefined" || isLoading) return;
 
-    if (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
+    const usesCompactViewport = ["ia", "agenda", "estoque"].includes(activeTab);
+
+    if (usesCompactViewport) {
       window.requestAnimationFrame(() => {
         window.scrollTo({ top: 0, behavior: "auto" });
       });
@@ -1517,7 +2205,7 @@ export default function DashboardPage() {
     let animationFrameId = 0;
 
     const saveScrollPosition = () => {
-      if (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") {
+      if (["ia", "agenda", "estoque"].includes(activeTab)) {
         window.localStorage.setItem(DASHBOARD_SCROLL_STORAGE_KEY, "0");
         return;
       }
@@ -1549,15 +2237,8 @@ export default function DashboardPage() {
       window.removeEventListener("pagehide", saveScrollPosition);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
-
-  const dashboardTitle = useMemo(() => {
-    if (activeTab === "geral") return "Visão geral";
-    if (activeTab === "ia") return "IA no atendimento";
-    if (activeTab === "agenda") return "Agenda e compromissos";
-    if (activeTab === "estoque") return "Catálogo e estoque";
-    return "Histórico da operação";
   }, [activeTab]);
+
 
   if (isLoading) {
     return (
@@ -1627,296 +2308,28 @@ export default function DashboardPage() {
       })),
   ];
   const monthFollowups = lists.pendingFollowups;
-
-  const generalSalesCards = [
-    {
-      label: "Faturamento do mês",
-      value: summary.sales.available ? "R$ 0,00" : "Sem dados",
-      helper: summary.sales.available
-        ? "Total vendido no mês"
-        : "Aguardando origem real de vendas",
-    },
-    {
-      label: "Vendas hoje",
-      value: summary.sales.available ? "0" : "Sem dados",
-      helper: summary.sales.available
-        ? "Vendas registradas hoje"
-        : "Precisa de pedidos/vendas registrados",
-    },
-    {
-      label: "Vendas na semana",
-      value: summary.sales.available ? "0" : "Sem dados",
-      helper: summary.sales.available
-        ? "Vendas registradas na semana"
-        : "Sem fonte confiável ainda",
-    },
-    {
-      label: "Vendas no mês",
-      value: summary.sales.available ? "0" : "Sem dados",
-      helper: summary.sales.available
-        ? "Vendas registradas no mês"
-        : "Sem fonte confiável ainda",
-    },
-    {
-      label: "Meta do mês",
-      value: "Não definida",
-      helper: "Precisa de configuração de meta mensal",
-    },
-  ];
-
-  const generalOperationCards = [
-    {
-      label: "% venda por lead",
-      value: summary.sales.available ? "0%" : "Sem dados",
-      helper: "Precisa cruzar leads com vendas fechadas",
-    },
-    {
-      label: "Mensagens hoje",
-      value: formatNumber(summary.messages.today),
-      helper: `${formatNumber(summary.messages.last7Days)} nos últimos 7 dias`,
-    },
-    {
-      label: "Compromissos hoje",
-      value: formatNumber(summary.appointments.today),
-      helper: `${formatNumber(summary.appointments.future)} compromisso(s) futuro(s)`,
-    },
-    {
-      label: "Leads do mês",
-      value: formatNumber(summary.leads.month),
-      helper: `${formatNumber(summary.leads.today)} novo(s) hoje`,
-    },
-    {
-      label: "Pendências",
-      value: formatNumber(summary.followups.pending + summary.ai.pendingQueueActions),
-      helper: "Follow-ups e ações automáticas pendentes",
-    },
-  ];
-
-  const aiSupportText =
-    summary.ai.aiParticipationPercent >= 70
-      ? "A IA está conduzindo boa parte do atendimento registrado neste mês."
-      : summary.ai.aiParticipationPercent >= 40
-        ? "A IA está participando de uma parte relevante dos atendimentos."
-        : "A IA ainda aparece pouco nos atendimentos deste período.";
-
-  const operationMovementText =
-    summary.messages.month > 0
-      ? `A loja teve ${formatNumber(summary.messages.month)} mensagens no mês, sendo ${formatNumber(summary.messages.last7Days)} nos últimos 7 dias.`
-      : "Ainda não há movimento suficiente de mensagens neste mês.";
-
+  const salesStatusText = summary.sales.available
+    ? "A origem de vendas foi localizada, mas esta resposta ainda não fornece os totais necessários para exibir valores reais."
+    : summary.sales.reason ||
+      "Ainda não há uma origem confiável de vendas conectada ao dashboard.";
   const salesPlaceholder =
-    "Ainda não existe uma origem confiável de vendas, pedidos ou orçamentos aprovados conectada ao dashboard. Quando essa base existir, este bloco deve mostrar faturamento, ticket médio e produtos mais vendidos.";
-
+    "Os dados serão exibidos aqui quando a origem real de vendas estiver disponível. Nenhum número será estimado ou inventado.";
   const paymentSlices: PaymentSlice[] = [
     { label: "Pix", percent: 0, color: "#111827" },
     { label: "Cartão", percent: 0, color: "#2563eb" },
     { label: "Dinheiro", percent: 0, color: "#16a34a" },
     { label: "Boleto", percent: 0, color: "#d97706" },
-    { label: "Financiamento", percent: 0, color: "#7c3aed" },
+    { label: "Financiamento", percent: 0, color: "#0f766e" },
   ];
-
-  const generalDetailItems: DetailItem[] = [
-    {
-      id: "revenue_month",
-      label: "Faturamento do mês",
-      value: summary.sales.available ? "R$ 0,00" : "Sem dados",
-      helper: "Total vendido no mês.",
-      detailTitle: "Faturamento do mês",
-      detailText:
-        "Este indicador deve mostrar quanto a loja vendeu no mês atual. Hoje ele ainda não tem uma origem confiável de vendas/pedidos/faturamento conectada.",
-      howToResolve:
-        "Criar ou conectar uma base real de pedidos, vendas ou orçamentos aprovados com valor, data, cliente, forma de pagamento e itens vendidos.",
-    },
-    {
-      id: "sales_today",
-      label: "Vendas hoje",
-      value: summary.sales.available ? "0" : "Sem dados",
-      helper: "Vendas registradas no dia.",
-      detailTitle: "Vendas hoje",
-      detailText:
-        "Este indicador deve mostrar quantas vendas foram fechadas hoje. Não será preenchido enquanto o ZION não tiver registro real de vendas.",
-      howToResolve:
-        "Conectar o fechamento comercial do CRM/orçamento a uma tabela de vendas ou pedidos aprovados.",
-    },
-    {
-      id: "sales_week",
-      label: "Vendas na semana",
-      value: summary.sales.available ? "0" : "Sem dados",
-      helper: "Vendas registradas na semana.",
-      detailTitle: "Vendas na semana",
-      detailText:
-        "Este indicador deve mostrar o volume de vendas na semana atual, usando somente vendas reais registradas no sistema.",
-      howToResolve:
-        "Registrar data de fechamento em vendas/pedidos e somar somente registros da semana atual.",
-    },
-    {
-      id: "sales_month",
-      label: "Vendas no mês",
-      value: summary.sales.available ? "0" : "Sem dados",
-      helper: "Vendas registradas no mês.",
-      detailTitle: "Vendas no mês",
-      detailText:
-        "Este indicador deve mostrar a quantidade de vendas fechadas no mês atual.",
-      howToResolve:
-        "Criar origem confiável de venda concluída, separando lead em negociação de venda realmente fechada.",
-    },
-    {
-      id: "monthly_goal",
-      label: "Meta do mês",
-      value: "Não definida",
-      helper: "Meta comercial mensal da loja.",
-      detailTitle: "Meta do mês",
-      detailText:
-        "A meta mensal ainda não foi configurada. Esse indicador deve comparar faturamento ou vendas reais com a meta escolhida pela loja.",
-      howToResolve:
-        "Adicionar configuração de meta mensal por loja, com valor em reais e/ou quantidade de vendas.",
-    },
-    {
-      id: "conversion_rate",
-      label: "% venda por lead",
-      value: summary.sales.available ? "0%" : "Sem dados",
-      helper: "Conversão de leads em vendas.",
-      detailTitle: "% de venda por lead",
-      detailText:
-        "Este indicador deve mostrar quantos leads viraram venda. Hoje ele ainda não pode ser calculado com segurança porque falta origem real de venda fechada.",
-      howToResolve:
-        "Conectar venda/pedido aprovado ao lead e calcular vendas fechadas dividido pelo total de leads do período.",
-    },
-    {
-      id: "messages_today",
-      label: "Mensagens hoje",
-      value: formatNumber(summary.messages.today),
-      helper: `${formatNumber(summary.messages.last7Days)} nos últimos 7 dias.`,
-      detailTitle: "Mensagens hoje",
-      detailText:
-        "Mostra o movimento de mensagens registradas hoje na loja, considerando a base atual de mensagens.",
-    },
-    {
-      id: "appointments_today",
-      label: "Compromissos hoje",
-      value: formatNumber(summary.appointments.today),
-      helper: `${formatNumber(summary.appointments.future)} compromisso(s) futuro(s).`,
-      detailTitle: "Compromissos de hoje",
-      detailText:
-        "Mostra quantos compromissos existem hoje na agenda da loja e quantos ainda estão pela frente.",
-    },
-    {
-      id: "leads_month",
-      label: "Leads do mês",
-      value: formatNumber(summary.leads.month),
-      helper: `${formatNumber(summary.leads.today)} novo(s) hoje.`,
-      detailTitle: "Leads do mês",
-      detailText:
-        "Mostra quantos leads foram criados no mês atual e quantos chegaram hoje.",
-    },
-    {
-      id: "pending",
-      label: "Pendências",
-      value: formatNumber(summary.followups.pending + summary.ai.pendingQueueActions + summary.catalog.zeroStockItems + summary.catalog.lowStockItems),
-      helper: "Pontos que precisam de atenção.",
-      detailTitle: "Pendências da operação",
-      detailText:
-        "Mostra problemas, dados faltando e processos que precisam de ação humana ou melhoria no sistema.",
-      howToResolve:
-        "Abrir a lista de pendências abaixo e resolver item por item conforme a orientação apresentada.",
-    },
-  ];
-
-  const pendingIssues: DetailItem[] = [
-    {
-      id: "sales_source",
-      label: "Vendas/faturamento sem origem confiável",
-      value: summary.sales.available ? "OK" : "Pendente",
-      helper: "Impede faturamento, vendas por período e conversão real.",
-      detailTitle: "Criar origem real de vendas",
-      detailText:
-        "O dashboard ainda não encontrou tabela confiável de vendas, pedidos ou orçamentos aprovados. Por isso, faturamento, vendas por dia/semana/mês, ticket médio e produtos mais vendidos não devem ser inventados.",
-      howToResolve:
-        "Implementar uma base de vendas/pedidos aprovados com organization_id, store_id, lead_id, conversation_id, valor, data, status, forma de pagamento e itens vendidos.",
-    },
-    {
-      id: "monthly_goal_missing",
-      label: "Meta mensal não configurada",
-      value: "Pendente",
-      helper: "A loja ainda não tem meta para comparar resultado.",
-      detailTitle: "Configurar meta do mês",
-      detailText:
-        "Sem meta mensal, o dashboard não consegue mostrar percentual atingido nem alertar se a loja está abaixo do esperado.",
-      howToResolve:
-        "Adicionar configuração de meta mensal por loja em reais e/ou número de vendas, depois comparar com o faturamento real do mês.",
-    },
-    {
-      id: "lead_origin_missing",
-      label: "Origem dos leads não conectada",
-      value: "Pendente",
-      helper: "Impede saber de onde os clientes estão vindo.",
-      detailTitle: "Conectar origem dos leads",
-      detailText:
-        "O dashboard precisa saber se o lead veio de WhatsApp, site, indicação, anúncio, manual ou outro canal. Hoje não há campo confiável conectado para essa leitura.",
-      howToResolve:
-        "Registrar origem do lead no cadastro/conversa e padronizar as opções por loja para montar a distribuição real.",
-    },
-    {
-      id: "region_missing",
-      label: "Região de venda não conectada",
-      value: "Pendente",
-      helper: "Impede saber qual região vende mais.",
-      detailTitle: "Conectar região do cliente/venda",
-      detailText:
-        "Para saber qual região vende mais, o sistema precisa de endereço, cidade, bairro ou região vinculada ao lead e à venda fechada.",
-      howToResolve:
-        "Padronizar campos de endereço/região do lead e cruzar com vendas reais aprovadas.",
-    },
-    {
-      id: "payment_missing",
-      label: "Formas de pagamento sem registro de uso",
-      value: "Pendente",
-      helper: "Impede calcular a porcentagem por forma usada.",
-      detailTitle: "Registrar forma de pagamento usada",
-      detailText:
-        "O painel deve mostrar a porcentagem das formas de pagamento realmente usadas, considerando apenas as formas ativadas pela loja. Hoje ainda não há venda registrada com forma de pagamento.",
-      howToResolve:
-        "No fechamento da venda/pedido, salvar a forma de pagamento escolhida e validar contra as formas configuradas pela loja.",
-    },
-    {
-      id: "top_products_missing",
-      label: "Produtos mais vendidos sem base de saída",
-      value: "Pendente",
-      helper: "Impede ranking real por categoria.",
-      detailTitle: "Criar histórico de itens vendidos",
-      detailText:
-        "Para mostrar piscina, produto, acessório, químico e outros que mais vendem, o sistema precisa registrar os itens vendidos em cada pedido.",
-      howToResolve:
-        "Criar itens de venda/pedido ligados ao catálogo e registrar quantidade, preço e categoria no momento da venda.",
-    },
-    ...lists.operationalAlerts.map((alert) => ({
-      id: `alert_${alert.type}`,
-      label: alert.title,
-      value: formatLabel(alert.severity),
-      helper: alert.description,
-      detailTitle: alert.title,
-      detailText: alert.description,
-      howToResolve:
-        alert.type === "stock_zero"
-          ? "Atualizar o estoque dos itens zerados ou marcar o item como indisponível/inativo até reposição."
-          : alert.type === "stock_low"
-            ? "Revisar os itens com estoque baixo e fazer reposição ou ajustar disponibilidade no catálogo."
-            : alert.type === "followups"
-              ? "Abrir os follow-ups pendentes e concluir, remarcar ou registrar o resultado do acompanhamento."
-              : alert.type === "ai_queue_errors"
-                ? "Verificar as ações da IA com erro e corrigir o motivo antes de reprocessar."
-                : "Abrir o módulo relacionado e resolver a pendência apontada.",
-    })),
-  ];
-
   const allCatalogItems = lists.allCatalogItems || [];
   const inStockItems = lists.inStockItems || [];
-  const inventoryValueByCategoryCents = summary.catalog.inventoryValueByCategoryCents || {
-    pools: 0,
-    chemicals: 0,
-    accessories: 0,
-    others: 0,
-  };
+  const inventoryValueByCategoryCents =
+    summary.catalog.inventoryValueByCategoryCents || {
+      pools: 0,
+      chemicals: 0,
+      accessories: 0,
+      others: 0,
+    };
   const inventoryValueCategories = [
     { key: "pools", label: "Piscinas" },
     { key: "chemicals", label: "Químicos" },
@@ -1924,49 +2337,151 @@ export default function DashboardPage() {
     { key: "others", label: "Outros" },
   ];
 
-  const historicalMonthItems = ["Mês anterior", "Há 2 meses", "Há 3 meses"];
+  const now = new Date();
+  const sevenDaysAgo = new Date(now);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+  sevenDaysAgo.setHours(0, 0, 0, 0);
 
-  function openHistoricalMonth(monthLabel: string) {
-    setSelectedHistoricalMonth(monthLabel);
-    setIsHistoricalMonthDrawerOpen(true);
-  }
+  const leadsToday = lists.recentLeads.filter((lead) =>
+    isSameLocalDate(lead.createdAt, now)
+  );
+  const leadsLast7Days = lists.recentLeads.filter((lead) => {
+    const createdAt = new Date(lead.createdAt);
+    return createdAt >= sevenDaysAgo && createdAt <= now;
+  });
+  const leadsThisMonth = lists.recentLeads.filter((lead) => {
+    const createdAt = new Date(lead.createdAt);
+    return (
+      createdAt.getFullYear() === now.getFullYear() &&
+      createdAt.getMonth() === now.getMonth()
+    );
+  });
 
-  const historicalDetailTitle =
-    historicalDetailDrawer === "messages"
-      ? "Mensagens do mês"
-      : historicalDetailDrawer === "leads"
-        ? "Leads no mês"
-        : historicalDetailDrawer === "conversations"
-          ? "Conversas ativas"
-          : historicalDetailDrawer === "appointments"
-            ? "Compromissos futuros"
-            : "Resumo do mês atual";
+  const selectedLeadDetail = leadDetailDrawer
+    ? {
+        today: {
+          title: "Leads de hoje",
+          description: "Leads criados hoje entre os registros recentes disponíveis no dashboard.",
+          value: summary.leads.today,
+          items: leadsToday,
+        },
+        last7: {
+          title: "Leads dos últimos 7 dias",
+          description: "Leads criados nos últimos sete dias entre os registros recentes disponíveis.",
+          value: summary.leads.last7Days,
+          items: leadsLast7Days,
+        },
+        month: {
+          title: "Leads do mês",
+          description: "Leads criados no mês atual entre os registros recentes disponíveis.",
+          value: summary.leads.month,
+          items: leadsThisMonth,
+        },
+        total: {
+          title: "Total de leads",
+          description: "Visão consolidada do total de leads e da distribuição pelo estado atual.",
+          value: summary.leads.total,
+          items: lists.recentLeads,
+        },
+      }[leadDetailDrawer]
+    : null;
 
-  const historicalDetailDescription =
-    historicalDetailDrawer === "messages"
-      ? "Resumo das mensagens registradas no mês atual."
-      : historicalDetailDrawer === "leads"
-        ? "Leads registrados no período e informações disponíveis."
-        : historicalDetailDrawer === "conversations"
-          ? "Conversas abertas e últimos sinais de atendimento."
-          : historicalDetailDrawer === "appointments"
-            ? "Pessoas, horários e dados dos próximos compromissos."
-            : "Explicação dos indicadores comerciais do mês em andamento.";
+  const salesDetailCopy: Record<
+    SalesDetailDrawer,
+    { title: string; value: string; description: string }
+  > = {
+    goal: {
+      title: "Meta do mês",
+      value: "Não definida",
+      description: "Meta comercial mensal, progresso realizado e diferença restante para o objetivo.",
+    },
+    revenueMonth: {
+      title: "Faturamento do mês",
+      value: "Sem dados",
+      description: "Valor total faturado no mês selecionado e composição das vendas que formam esse faturamento.",
+    },
+    salesToday: {
+      title: "Vendas de hoje",
+      value: "Sem dados",
+      description: "Quantidade, valor e lista das vendas realizadas hoje.",
+    },
+    salesWeek: {
+      title: "Vendas da semana",
+      value: "Sem dados",
+      description: "Quantidade, faturamento e vendas individuais da semana selecionada.",
+    },
+    salesMonth: {
+      title: "Vendas do mês",
+      value: "Sem dados",
+      description: "Quantidade de vendas do mês selecionado e distribuição ao longo das semanas.",
+    },
+    ticketAverage: {
+      title: "Ticket médio",
+      value: "Sem dados",
+      description: "Valor médio das vendas reais registradas no período selecionado.",
+    },
+    conversion: {
+      title: "Conversão por lead",
+      value: "Sem dados",
+      description: "Relação entre leads elegíveis e vendas reais concluídas no período.",
+    },
+    region: {
+      title: "Região que mais vende",
+      value: "Sem dados",
+      description: "Ranking das regiões responsáveis pelas vendas reais registradas.",
+    },
+    products: {
+      title: "Produtos mais vendidos",
+      value: "Sem dados",
+      description: "Ranking de produtos e categorias por quantidade vendida e faturamento.",
+    },
+    payments: {
+      title: "Formas de pagamento",
+      value: "Sem dados",
+      description: "Distribuição das vendas reais por Pix, cartão, dinheiro, boleto, financiamento e outras formas registradas.",
+    },
+    commercialReading: {
+      title: "Leitura comercial",
+      value: "Resumo inteligente",
+      description: "Interpretação dos sinais comerciais disponíveis agora e do que merece atenção.",
+    },
+  };
+
+  const selectedSalesDetail = salesDetailDrawer
+    ? salesDetailCopy[salesDetailDrawer]
+    : null;
 
   return (
     <main
       className={`overflow-x-hidden bg-zinc-50 text-zinc-950 ${
-        (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") ? "h-auto min-h-0" : "min-h-screen"
+        ["ia", "agenda", "estoque"].includes(activeTab)
+          ? "h-auto min-h-0"
+          : "min-h-screen"
       }`}
     >
       <div className="border-b border-zinc-200 bg-white">
         <div className="px-4 py-4 md:px-6">
-          <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <div className="min-w-0">
-              <h1 className="break-words text-2xl font-semibold tracking-tight">
-                {dashboardTitle}
-              </h1>
+          <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex max-w-full flex-wrap gap-2">
+              {tabs.map((tab) => {
+                const isActive = activeTab === tab.id;
 
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`flex min-w-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition ${
+                      isActive
+                        ? "border-zinc-950 bg-zinc-950 text-white"
+                        : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-950"
+                    }`}
+                  >
+                    <span className="shrink-0">{tab.icon}</span>
+                    <span className="break-words">{tab.label}</span>
+                  </button>
+                );
+              })}
             </div>
 
             <button
@@ -1977,357 +2492,373 @@ export default function DashboardPage() {
               Atualizar dados
             </button>
           </div>
-
-          <div className="mt-5 flex max-w-full flex-wrap gap-2 pb-1">
-            {tabs.map((tab) => {
-              const isActive = activeTab === tab.id;
-
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex min-w-0 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition ${
-                    isActive
-                      ? "border-zinc-950 bg-zinc-950 text-white"
-                      : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-950"
-                  }`}
-                >
-                  <span className="shrink-0">{tab.icon}</span>
-                  <span className="break-words">{tab.label}</span>
-                </button>
-              );
-            })}
-          </div>
         </div>
       </div>
 
       <div
         className={`min-w-0 ${
-          (activeTab === "ia" || activeTab === "agenda" || activeTab === "historico" || activeTab === "estoque") ? "space-y-3 p-4 pb-0 md:p-6 md:pb-0" : "space-y-5 p-4 md:p-6"
+          ["ia", "agenda", "estoque"].includes(activeTab)
+            ? "space-y-3 p-4 pb-0 md:p-6 md:pb-0"
+            : "space-y-5 p-4 md:p-6"
         }`}
       >
-        {activeTab === "geral" ? (
+        {activeTab === "leads" ? (
           <>
             <div className="space-y-4">
-              <div className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.35fr]">
-                <div className="grid min-w-0 gap-4">
-                  <GoalGauge
-                    percent={0}
-                    label="% da meta"
-                    helper="Só aparece com meta mensal configurada e vendas reais registradas."
-                  />
-
-                  <PaymentCirclePanel
-                    slices={paymentSlices}
-                    emptyText="Ainda não há vendas com forma de pagamento registrada."
-                  />
-
-                  <SmallDonutPlaceholder
-                    title="De onde os leads vêm"
-                    helper="Origem dos leads por canal."
-                    emptyText="Ainda não há campo confiável de origem do lead conectado ao dashboard."
-                  />
-                </div>
-
-                <div className="grid min-w-0 gap-4">
-                  <div className="grid min-w-0 gap-3 md:grid-cols-3">
-                    {[
-                      ["revenue_month", "Faturamento do mês", "Sem dados"],
-                      ["sales_today", "Vendas hoje", "Sem dados"],
-                      ["sales_week", "Vendas semana", "Sem dados"],
-                    ].map(([id, title, value]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => setGeneralDetailDrawer(id)}
-                        className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
-                      >
-                        <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
-                          {title}
-                        </p>
-                        <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
-                          {value}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="grid min-w-0 gap-3 md:grid-cols-3">
-                    <ExecutiveNumberCard
-                      title="% venda por lead"
-                      value="Sem dados"
-                      helper="Conversão"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setGeneralDetailDrawer("leads_month")}
-                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
-                    >
-                      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
-                        Leads do mês
-                      </p>
-                      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
-                        {formatNumber(summary.leads.month)}
-                      </p>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setGeneralDetailDrawer("pending")}
-                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
-                    >
-                      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
-                        Pendências
-                      </p>
-                      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
-                        {formatNumber(
-                          summary.followups.pending +
-                            summary.ai.pendingQueueActions +
-                            summary.catalog.zeroStockItems +
-                            summary.catalog.lowStockItems +
-                            (summary.sales.available ? 0 : 5)
-                        )}
-                      </p>
-                    </button>
-                  </div>
-
-                  <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                    <button
-                      type="button"
-                      onClick={() => setGeneralDetailDrawer("messages_today")}
-                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
-                    >
-                      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
-                        Mensagens hoje
-                      </p>
-                      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
-                        {formatNumber(summary.messages.today)}
-                      </p>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setGeneralDetailDrawer("appointments_today")}
-                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
-                    >
-                      <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
-                        Compromissos hoje
-                      </p>
-                      <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
-                        {formatNumber(summary.appointments.today)}
-                      </p>
-                    </button>
-                  </div>
-
-                  <div className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-                    <WeeklySalesChart
-                      title="Vendas por semana"
-                      emptyText="Ainda não há vendas registradas por semana."
-                    />
-
-                    <button
-                      type="button"
-                      onClick={() => setIsRegionDrawerOpen(true)}
-                      className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
-                    >
-                      <PanelTitle title="Região que mais vende" />
-                      <div className="rounded-[6px] border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm leading-relaxed text-zinc-500">
-                        Ainda não há região de venda conectada aos pedidos.
-                      </div>
-                    </button>
-                  </div>
-
-                  <DashboardPanel>
-                    <PanelTitle title="Mais vendidos" />
-                    <div className="space-y-2">
-                      {[
-                        ["Piscina", "Piscina"],
-                        ["Químico", "Químico"],
-                        ["Acessório", "Acessório"],
-                        ["Outro", "Outro"],
-                      ].map(([id, label]) => (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => setSelectedBestSellerCategory(id)}
-                          className="grid w-full min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-sm transition hover:border-zinc-950 hover:bg-white sm:grid-cols-[minmax(0,1fr)_auto]"
-                        >
-                          <span className="min-w-0 break-words font-medium text-zinc-950">
-                            {label}
-                          </span>
-                          <span className="shrink-0 text-zinc-500">Sem dados ›</span>
-                        </button>
-                      ))}
-                    </div>
-                  </DashboardPanel>
-                </div>
+              <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <ClickableExecutiveNumberCard
+                  title="Leads hoje"
+                  value={formatNumber(summary.leads.today)}
+                  helper="Clique para ver os registros de hoje"
+                  accent="blue"
+                  onClick={() => setLeadDetailDrawer("today")}
+                />
+                <ClickableExecutiveNumberCard
+                  title="Últimos 7 dias"
+                  value={formatNumber(summary.leads.last7Days)}
+                  helper="Clique para abrir o período"
+                  accent="cyan"
+                  onClick={() => setLeadDetailDrawer("last7")}
+                />
+                <ClickableExecutiveNumberCard
+                  title="Leads no mês"
+                  value={formatNumber(summary.leads.month)}
+                  helper="Clique para ver o mês atual"
+                  accent="green"
+                  onClick={() => setLeadDetailDrawer("month")}
+                />
+                <ClickableExecutiveNumberCard
+                  title="Total de leads"
+                  value={formatNumber(summary.leads.total)}
+                  helper="Clique para ver a visão consolidada"
+                  accent="amber"
+                  onClick={() => setLeadDetailDrawer("total")}
+                />
               </div>
 
-              <PendingDashboardPanel
-                items={pendingIssues}
-                selectedId={selectedPendingIssueId}
-                onSelect={setSelectedPendingIssueId}
-              />
+              <div className="grid min-w-0 gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+                <div className="space-y-4">
+                  <DashboardPanel className="border-blue-200">
+                    <PanelTitle
+                      title="Leads por estado atual"
+                      helper="Distribuição usando os dados já existentes."
+                    />
+                    <HorizontalBars items={summary.leads.byState} barClassName="bg-blue-600" />
+                  </DashboardPanel>
+
+                  <LeadSourceDonut
+                    sources={summary.leads.bySource || {}}
+                    emptyText="Ainda não há uma origem de lead confiável conectada ao dashboard. Quando a API enviar a distribuição por origem, o gráfico e a legenda percentual serão preenchidos automaticamente."
+                  />
+                </div>
+
+                <DashboardPanel className="border-emerald-200">
+                  <PanelTitle
+                    title="Leads recentes"
+                    helper="Role dentro do bloco para consultar os cadastros mais recentes."
+                  />
+                  <div className="max-h-[410px] overflow-y-auto pr-1">
+                    <InfoList
+                      emptyText="Nenhum lead recente encontrado."
+                      items={lists.recentLeads.map((lead) => ({
+                        id: lead.id,
+                        title: lead.name || "Lead sem nome",
+                        subtitle: lead.phone || "Sem telefone",
+                        meta: (
+                          <>
+                            <StatusPill>{formatLabel(lead.state)}</StatusPill>
+                            <span>Criado em {formatDate(lead.createdAt)}</span>
+                          </>
+                        ),
+                      }))}
+                    />
+                  </div>
+                </DashboardPanel>
+              </div>
             </div>
 
             <DashboardDetailDrawer
-              title={
-                generalDetailItems.find((item) => item.id === generalDetailDrawer)?.detailTitle ||
-                "Detalhes"
-              }
-              description="Informações do bloco selecionado."
-              isOpen={generalDetailDrawer !== null}
-              onClose={() => setGeneralDetailDrawer(null)}
+              title={selectedLeadDetail?.title || "Detalhes de leads"}
+              description={selectedLeadDetail?.description || "Detalhamento do indicador selecionado."}
+              isOpen={leadDetailDrawer !== null}
+              onClose={() => setLeadDetailDrawer(null)}
             >
-              {(() => {
-                const selected = generalDetailItems.find((item) => item.id === generalDetailDrawer);
+              {selectedLeadDetail ? (
+                <div className="space-y-4">
+                  <ExecutiveNumberCard
+                    title={selectedLeadDetail.title}
+                    value={formatNumber(selectedLeadDetail.value)}
+                  />
 
-                if (!selected) return null;
+                  {leadDetailDrawer === "total" ? (
+                    <DashboardPanel>
+                      <PanelTitle
+                        title="Distribuição atual"
+                        helper="Quantidade total por estado do lead."
+                      />
+                      <HorizontalBars items={summary.leads.byState} />
+                    </DashboardPanel>
+                  ) : null}
 
-                return (
-                  <div className="space-y-4">
-                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
-                        Resumo
-                      </p>
-                      <div className="mt-3 flex min-w-0 items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <h4 className="break-words text-xl font-semibold text-zinc-950">
-                            {selected.label}
-                          </h4>
-                          <p className="mt-2 break-words text-sm leading-relaxed text-zinc-700">
-                            {selected.detailText}
-                          </p>
+                  <DashboardPanel>
+                    <PanelTitle
+                      title="Registros disponíveis"
+                      helper="A lista mostra os leads recentes que a rota atual disponibiliza; o total do indicador continua sendo o número consolidado acima."
+                    />
+                    <InfoList
+                      emptyText="Nenhum registro recente deste período foi retornado."
+                      items={selectedLeadDetail.items.map((lead) => ({
+                        id: lead.id,
+                        title: lead.name || "Lead sem nome",
+                        subtitle: lead.phone || "Sem telefone",
+                        meta: (
+                          <>
+                            <StatusPill>{formatLabel(lead.state)}</StatusPill>
+                            <span>Criado em {formatDate(lead.createdAt)}</span>
+                          </>
+                        ),
+                      }))}
+                    />
+                  </DashboardPanel>
+                </div>
+              ) : null}
+            </DashboardDetailDrawer>
+          </>
+        ) : null}
+
+        {activeTab === "vendas" ? (
+          <>
+            <div className="space-y-3">
+              <div className="grid min-w-0 gap-3 xl:grid-cols-[0.82fr_1.65fr]">
+                <GoalGauge percent={0} onClick={() => setSalesDetailDrawer("goal")} />
+
+                <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  <SalesMetricTile
+                    title="Faturamento do mês"
+                    value="Sem dados"
+                    helper="Total vendido no mês"
+                    accent="blue"
+                    onClick={() => setSalesDetailDrawer("revenueMonth")}
+                  />
+                  <SalesMetricTile
+                    title="Vendas hoje"
+                    value="Sem dados"
+                    helper="Quantidade e valor do dia"
+                    accent="green"
+                    onClick={() => setSalesDetailDrawer("salesToday")}
+                  />
+                  <SalesMetricTile
+                    title="Vendas na semana"
+                    value="Sem dados"
+                    helper="Semana selecionada"
+                    accent="cyan"
+                    onClick={() => setSalesDetailDrawer("salesWeek")}
+                  />
+                  <SalesMetricTile
+                    title="Vendas no mês"
+                    value="Sem dados"
+                    helper="Quantidade de vendas"
+                    accent="amber"
+                    onClick={() => setSalesDetailDrawer("salesMonth")}
+                  />
+                  <SalesMetricTile
+                    title="Ticket médio"
+                    value="Sem dados"
+                    helper="Média por venda"
+                    accent="orange"
+                    onClick={() => setSalesDetailDrawer("ticketAverage")}
+                  />
+                  <SalesMetricTile
+                    title="Conversão por lead"
+                    value="Sem dados"
+                    helper="Leads convertidos em venda"
+                    accent="slate"
+                    onClick={() => setSalesDetailDrawer("conversion")}
+                  />
+                </div>
+              </div>
+
+              <div className="min-w-0">
+                <SalesPeriodExplorer
+                  view={salesPeriodView}
+                  anchorDate={salesAnchorDate}
+                  onViewChange={setSalesPeriodView}
+                  onAnchorDateChange={setSalesAnchorDate}
+                  salesAvailable={summary.sales.available}
+                  statusText={salesStatusText}
+                  systemStartYear={storeSystemStartYear}
+                />
+              </div>
+
+              <CommercialReadingPanel
+                salesAvailable={summary.sales.available}
+                leadsMonth={summary.leads.month}
+                pendingFollowups={summary.followups.pending}
+                futureAppointments={summary.appointments.future}
+                onClick={() => setSalesDetailDrawer("commercialReading")}
+              />
+
+              <div className="grid min-w-0 gap-3 xl:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={() => setSalesDetailDrawer("payments")}
+                  className="flex min-h-[205px] min-w-0 flex-col rounded-[4px] border border-cyan-200 bg-white p-4 text-left shadow-sm transition hover:border-zinc-950 hover:shadow"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.08em] text-zinc-950">
+                      Formas de pagamento
+                    </h3>
+                    <span className="h-2.5 w-2.5 rounded-[2px] bg-cyan-600" />
+                  </div>
+
+                  {paymentSlices.some((slice) => slice.percent > 0) ? (
+                    <div className="mt-4">
+                      <PaymentDonut
+                        slices={paymentSlices}
+                        emptyText="Sem vendas com forma de pagamento registrada."
+                      />
+                    </div>
+                  ) : (
+                    <div className="mt-4 flex flex-1 items-center gap-4">
+                      <div className="relative h-24 w-24 shrink-0 rounded-full border border-zinc-200 bg-zinc-100">
+                        <div className="absolute inset-[18px] flex items-center justify-center rounded-full border border-zinc-200 bg-white">
+                          <span className="text-xs font-semibold text-zinc-500">—</span>
                         </div>
-                        <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold text-zinc-700">
-                          {selected.value}
-                        </span>
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-base font-semibold text-zinc-950">
+                          Sem dados ainda
+                        </p>
+                        <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+                          As formas de pagamento aparecerão quando houver vendas registradas.
+                        </p>
                       </div>
                     </div>
+                  )}
+                </button>
 
-                    {generalDetailDrawer === "messages_today" ? (
-                      <DashboardPanel>
-                        <PanelTitle title="Mensagens recentes" />
-                        <InfoList
-                          emptyText="Nenhuma mensagem recente encontrada."
-                          items={lists.recentMessages.slice(0, 8).map((message) => ({
-                            id: message.id,
-                            title: message.isAi ? "IA" : message.isHumanOperator ? "Loja" : "Cliente",
-                            subtitle: compactText(message.content, 130),
-                            meta: <span>{formatLabel(message.direction)}</span>,
-                            right: <span className="text-xs text-zinc-500">{formatDateTime(message.createdAt)}</span>,
-                          }))}
-                        />
-                      </DashboardPanel>
-                    ) : null}
-
-                    {generalDetailDrawer === "leads_month" ? (
-                      <DashboardPanel>
-                        <PanelTitle title="Leads recentes" />
-                        <InfoList
-                          emptyText="Nenhum lead recente encontrado."
-                          items={lists.recentLeads.slice(0, 8).map((lead) => ({
-                            id: lead.id,
-                            title: lead.name || "Lead sem nome",
-                            subtitle: lead.phone || "Sem telefone",
-                            meta: (
-                              <>
-                                <StatusPill>{formatLabel(lead.state)}</StatusPill>
-                                <span>Criado em {formatDate(lead.createdAt)}</span>
-                              </>
-                            ),
-                          }))}
-                        />
-                      </DashboardPanel>
-                    ) : null}
-
-                    {generalDetailDrawer === "appointments_today" ? (
-                      <DashboardPanel>
-                        <PanelTitle title="Compromissos de hoje" />
-                        <InfoList
-                          emptyText="Nenhum compromisso encontrado para hoje."
-                          items={todayAppointments.map((appointment) => ({
-                            id: appointment.id,
-                            title: appointment.customerName || "Cliente sem nome",
-                            subtitle: appointment.title,
-                            meta: (
-                              <>
-                                <StatusPill>{formatLabel(appointment.status)}</StatusPill>
-                                <span>Tipo: {formatLabel(appointment.appointmentType)}</span>
-                                <span>Horário: {formatDateTime(appointment.scheduledStart)}</span>
-                                {appointment.customerPhone ? <span>Telefone: {appointment.customerPhone}</span> : null}
-                                <MapsRouteButton
-                                  addressText={getAppointmentRouteAddress(appointment)}
-                                  compact
-                                />
-                              </>
-                            ),
-                          }))}
-                        />
-                      </DashboardPanel>
-                    ) : null}
-
-                    {generalDetailDrawer === "pending" ? (
-                      <DashboardPanel>
-                        <PanelTitle title="Pendências encontradas" />
-                        <InfoList
-                          emptyText="Nenhuma pendência encontrada."
-                          items={pendingIssues.map((issue) => ({
-                            id: issue.id,
-                            title: issue.label,
-                            subtitle: issue.helper,
-                            right: <StatusPill>{issue.value}</StatusPill>,
-                          }))}
-                        />
-                      </DashboardPanel>
-                    ) : null}
-
-                    {selected.howToResolve ? (
-                      <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                        <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
-                          Como resolver
-                        </p>
-                        <p className="mt-3 break-words text-sm leading-relaxed text-zinc-700">
-                          {selected.howToResolve}
-                        </p>
-                      </div>
-                    ) : null}
+                <button
+                  type="button"
+                  onClick={() => setSalesDetailDrawer("region")}
+                  className="flex min-h-[205px] min-w-0 flex-col rounded-[4px] border border-blue-200 bg-white p-4 text-left shadow-sm transition hover:border-zinc-950 hover:shadow"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.08em] text-zinc-950">
+                      Região que mais vende
+                    </h3>
+                    <span className="h-2.5 w-2.5 rounded-[2px] bg-blue-600" />
                   </div>
-                );
-              })()}
-            </DashboardDetailDrawer>
+
+                  <div className="flex flex-1 flex-col justify-center">
+                    <p className="text-2xl font-semibold tracking-tight text-zinc-950">
+                      Sem dados
+                    </p>
+                    <p className="mt-2 max-w-sm text-sm leading-relaxed text-zinc-500">
+                      A região de maior resultado aparecerá quando houver vendas reais com localização identificada.
+                    </p>
+                  </div>
+
+                  <div className="h-1.5 w-full overflow-hidden bg-blue-50">
+                    <div className="h-full w-0 bg-blue-600" />
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSalesDetailDrawer("products")}
+                  className="flex min-h-[205px] min-w-0 flex-col rounded-[4px] border border-emerald-200 bg-white p-4 text-left shadow-sm transition hover:border-zinc-950 hover:shadow"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.08em] text-zinc-950">
+                      Produtos mais vendidos
+                    </h3>
+                    <span className="h-2.5 w-2.5 rounded-[2px] bg-emerald-600" />
+                  </div>
+
+                  <div className="mt-3 divide-y divide-zinc-100">
+                    {["Piscinas", "Químicos", "Acessórios", "Outros"].map(
+                      (category, index) => (
+                        <div
+                          key={category}
+                          className="grid min-w-0 grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-3 py-2.5 text-sm"
+                        >
+                          <span className="text-xs font-semibold text-zinc-400">
+                            {String(index + 1).padStart(2, "0")}
+                          </span>
+                          <span className="min-w-0 font-medium text-zinc-800">
+                            {category}
+                          </span>
+                          <span className="text-zinc-500">—</span>
+                        </div>
+                      )
+                    )}
+                  </div>
+                </button>
+              </div>
+            </div>
 
             <DashboardDetailDrawer
-              title="Região que mais vende"
-              description="Regiões com maior número de vendas quando houver base comercial real."
-              isOpen={isRegionDrawerOpen}
-              onClose={() => setIsRegionDrawerOpen(false)}
+              title={selectedSalesDetail?.title || "Detalhes de vendas"}
+              description={selectedSalesDetail?.description || "Detalhamento do indicador selecionado."}
+              isOpen={salesDetailDrawer !== null}
+              onClose={() => setSalesDetailDrawer(null)}
             >
-              <div className="space-y-4">
-                <EmptyState text="Ainda não há região de venda conectada aos pedidos." />
-                <DashboardPanel>
-                  <PanelTitle title="O que este bloco deve mostrar" />
-                  <p className="text-sm leading-relaxed text-zinc-700">
-                    Quando a base de vendas estiver conectada, esta tela deve listar as regiões com mais vendas e permitir entender onde a loja está vendendo melhor.
-                  </p>
-                </DashboardPanel>
-              </div>
-            </DashboardDetailDrawer>
+              {selectedSalesDetail ? (
+                salesDetailDrawer === "commercialReading" ? (
+                  <CommercialReadingDetail
+                    salesAvailable={summary.sales.available}
+                    salesStatusText={salesStatusText}
+                    leadsMonth={summary.leads.month}
+                    pendingFollowups={summary.followups.pending}
+                    futureAppointments={summary.appointments.future}
+                  />
+                ) : (
+                <div className="space-y-4">
+                  <ExecutiveNumberCard
+                    title={selectedSalesDetail.title}
+                    value={selectedSalesDetail.value}
+                  />
 
-            <DashboardDetailDrawer
-              title={selectedBestSellerCategory ? `Mais vendidos: ${selectedBestSellerCategory}` : "Mais vendidos"}
-              description="Itens vendidos e clientes relacionados à categoria escolhida."
-              isOpen={selectedBestSellerCategory !== null}
-              onClose={() => setSelectedBestSellerCategory(null)}
-            >
-              <div className="space-y-4">
-                <EmptyState text="Ainda não há histórico real de itens vendidos para esta categoria." />
-                <DashboardPanel>
-                  <PanelTitle title="Como deve funcionar" />
-                  <p className="text-sm leading-relaxed text-zinc-700">
-                    Quando existir base real de pedidos ou vendas, esta tela deve mostrar quais itens foram vendidos, a quantidade de cada item e para quais clientes.
-                  </p>
-                </DashboardPanel>
-              </div>
+                  {salesDetailDrawer === "payments" ? (
+                    <DashboardPanel>
+                      <PanelTitle title="Distribuição por forma de pagamento" />
+                      <PaymentDonut
+                        slices={paymentSlices}
+                        emptyText="Ainda não há vendas com forma de pagamento registrada."
+                      />
+                    </DashboardPanel>
+                  ) : null}
+
+                  {salesDetailDrawer === "products" ? (
+                    <DashboardPanel>
+                      <PanelTitle title="Categorias" />
+                      <div className="space-y-2">
+                        {["Piscinas", "Químicos", "Acessórios", "Outros"].map((category) => (
+                          <div
+                            key={category}
+                            className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-3 border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm"
+                          >
+                            <span className="font-medium text-zinc-800">{category}</span>
+                            <span className="text-zinc-500">Sem dados</span>
+                          </div>
+                        ))}
+                      </div>
+                    </DashboardPanel>
+                  ) : null}
+
+                  <DashboardPanel>
+                    <PanelTitle title="Situação dos dados" />
+                    <EmptyState text={salesStatusText} />
+                  </DashboardPanel>
+
+                  <div className="rounded-[4px] border border-zinc-200 bg-zinc-50 p-4">
+                    <p className="text-sm leading-relaxed text-zinc-700">
+                      Quando a origem real de vendas estiver conectada, este detalhe exibirá os registros que compõem o indicador sem estimar ou inventar valores.
+                    </p>
+                  </div>
+                </div>
+                )
+              ) : null}
             </DashboardDetailDrawer>
           </>
         ) : null}
@@ -2340,7 +2871,7 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     onClick={() => setAiDetailDrawer("distribution")}
-                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                    className="block w-full min-w-0 rounded-[6px] border border-blue-200 border-t-4 border-t-blue-600 bg-white p-3 text-left shadow-sm transition hover:border-blue-500"
                   >
                     <PanelTitle
                       title="IA x loja x cliente"
@@ -2357,24 +2888,24 @@ export default function DashboardPage() {
                     <button
                       type="button"
                       onClick={() => setAiDetailDrawer("messages")}
-                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
+                      className="min-w-0 rounded-[6px] border border-cyan-200 border-t-4 border-t-cyan-600 bg-white p-2 text-center shadow-sm transition hover:border-cyan-500"
                     >
                       <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                         Mensagens da IA
                       </p>
-                      <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
+                      <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-cyan-700">
                         {formatNumber(summary.messages.ai)}
                       </p>
                     </button>
                     <button
                       type="button"
                       onClick={() => setAiDetailDrawer("conversations")}
-                      className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
+                      className="min-w-0 rounded-[6px] border border-emerald-200 border-t-4 border-t-emerald-600 bg-white p-2 text-center shadow-sm transition hover:border-emerald-500"
                     >
                       <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                         Conversas com IA
                       </p>
-                      <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
+                      <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-emerald-700">
                         {formatNumber(lists.conversationsWithAiPresence.length)}
                       </p>
                     </button>
@@ -2383,20 +2914,20 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     onClick={() => setAiDetailDrawer("pending")}
-                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                    className="block w-full min-w-0 rounded-[6px] border border-amber-200 border-t-4 border-t-amber-500 bg-white p-3 text-left shadow-sm transition hover:border-amber-500"
                   >
                     <PanelTitle title="Pendências da IA" />
                     <div className="grid min-w-0 gap-2 sm:grid-cols-2">
-                      <div className="rounded-[6px] border border-zinc-200 bg-zinc-50 p-2 text-center">
-                        <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
+                      <div className="rounded-[6px] border border-amber-200 bg-amber-50 p-2 text-center">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-amber-700">
                           Pendentes
                         </p>
                         <p className="mt-0.5 text-lg font-semibold text-zinc-950">
                           {formatNumber(summary.ai.pendingQueueActions)}
                         </p>
                       </div>
-                      <div className="rounded-[6px] border border-zinc-200 bg-zinc-50 p-2 text-center">
-                        <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
+                      <div className="rounded-[6px] border border-orange-200 bg-orange-50 p-2 text-center">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-orange-700">
                           Com erro
                         </p>
                         <p className="mt-0.5 text-lg font-semibold text-zinc-950">
@@ -2411,7 +2942,7 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     onClick={() => setAiDetailDrawer("processes")}
-                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                    className="block w-full min-w-0 rounded-[6px] border border-cyan-200 border-t-4 border-t-cyan-600 bg-white p-3 text-left shadow-sm transition hover:border-cyan-500"
                   >
                     <PanelTitle title="Processos com maior presença da IA" />
                     {lists.conversationsWithAiPresence.length ? (
@@ -2438,13 +2969,13 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     onClick={() => setAiDetailDrawer("actions")}
-                    className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                    className="block w-full min-w-0 rounded-[6px] border border-emerald-200 border-t-4 border-t-emerald-600 bg-white p-3 text-left shadow-sm transition hover:border-emerald-500"
                   >
                     <PanelTitle
                       title="O que a IA está fazendo"
                       helper="Ações registradas pela IA neste mês."
                     />
-                    <HorizontalBars items={summary.ai.decisionsByAction} />
+                    <HorizontalBars items={summary.ai.decisionsByAction} barClassName="bg-emerald-600" />
                   </button>
                 </div>
               </div>
@@ -2577,12 +3108,12 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setIsTodayAppointmentsDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-blue-200 border-t-4 border-t-blue-600 bg-white p-2 text-center shadow-sm transition hover:border-blue-500"
                 >
                   <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Compromisso do dia
                   </p>
-                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-blue-700">
                     {formatNumber(summary.appointments.today)}
                   </p>
                   <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
@@ -2593,12 +3124,12 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setIsUrgentStatesDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-orange-200 border-t-4 border-t-orange-500 bg-white p-2 text-center shadow-sm transition hover:border-orange-500"
                 >
                   <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Estados urgentes
                   </p>
-                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-orange-700">
                     {formatNumber(urgentAgendaItems.length)}
                   </p>
                   <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
@@ -2609,12 +3140,12 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setIsPendingFollowupsDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-amber-200 border-t-4 border-t-amber-500 bg-white p-2 text-center shadow-sm transition hover:border-amber-500"
                 >
                   <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Follow-ups pendentes
                   </p>
-                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-amber-700">
                     {formatNumber(summary.followups.pending)}
                   </p>
                   <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
@@ -2625,12 +3156,12 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setIsMonthFollowupsDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-emerald-200 border-t-4 border-t-emerald-600 bg-white p-2 text-center shadow-sm transition hover:border-emerald-500"
                 >
                   <p className="break-words text-[11px] font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Follow-ups no mês
                   </p>
-                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-0.5 break-words text-lg font-semibold tracking-tight text-emerald-700">
                     {formatNumber(summary.followups.total)}
                   </p>
                   <p className="mt-0.5 break-words text-[10px] leading-relaxed text-zinc-500">
@@ -2641,10 +3172,10 @@ export default function DashboardPage() {
 
               <div className="grid min-w-0 gap-3 xl:grid-cols-[0.85fr_1.35fr]">
                 <div className="grid min-w-0 gap-3">
-                  <DashboardPanel>
+                  <DashboardPanel className="border-cyan-200">
                     <PanelTitle title="Processos" />
                     <div className="max-h-[145px] overflow-y-auto pr-1">
-                      <HorizontalBars items={summary.appointments.byType} />
+                      <HorizontalBars items={summary.appointments.byType} barClassName="bg-cyan-600" />
                     </div>
                   </DashboardPanel>
                 </div>
@@ -2660,7 +3191,7 @@ export default function DashboardPage() {
                         setIsNextAppointmentsDrawerOpen(true);
                       }
                     }}
-                    className="block w-full min-w-0 cursor-pointer rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                    className="block w-full min-w-0 cursor-pointer rounded-[6px] border border-blue-200 border-t-4 border-t-blue-600 bg-white p-3 text-left shadow-sm transition hover:border-blue-500"
                   >
                     <PanelTitle title="Próximos compromissos" />
                     {lists.nextAppointments.length ? (
@@ -2907,60 +3438,60 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setIsCatalogStockDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-blue-200 border-t-4 border-t-blue-600 bg-white p-2.5 text-center shadow-sm transition hover:border-blue-500"
                 >
                   <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Itens no catálogo
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-blue-700">
                     {formatNumber(summary.catalog.totalItems)}
                   </p>
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsTrackedStockDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-emerald-200 border-t-4 border-t-emerald-600 bg-white p-2.5 text-center shadow-sm transition hover:border-emerald-500"
                 >
                   <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Com estoque
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-emerald-700">
                     {formatNumber(summary.catalog.stockTrackedItems)}
                   </p>
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsLowStockDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-amber-200 border-t-4 border-t-amber-500 bg-white p-2.5 text-center shadow-sm transition hover:border-amber-500"
                 >
                   <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Estoque baixo
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-amber-700">
                     {formatNumber(summary.catalog.lowStockItems)}
                   </p>
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsZeroStockDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-red-200 border-t-4 border-t-red-500 bg-white p-2.5 text-center shadow-sm transition hover:border-red-500"
                 >
                   <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Estoque zerado
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-red-700">
                     {formatNumber(summary.catalog.zeroStockItems)}
                   </p>
                 </button>
                 <button
                   type="button"
                   onClick={() => setIsInventoryValueDrawerOpen(true)}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
+                  className="min-w-0 rounded-[6px] border border-cyan-200 border-t-4 border-t-cyan-600 bg-white p-2.5 text-center shadow-sm transition hover:border-cyan-500"
                 >
                   <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
                     Valor em estoque
                   </p>
-                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
+                  <p className="mt-1 break-words text-xl font-semibold tracking-tight text-cyan-700">
                     {formatCurrencyFromCents(summary.catalog.estimatedInventoryValueCents)}
                   </p>
                 </button>
@@ -2969,7 +3500,7 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => setIsFastMovingItemsDrawerOpen(true)}
-                className="block w-full min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
+                className="block w-full min-w-0 rounded-[6px] border border-emerald-200 border-t-4 border-t-emerald-600 bg-white p-3 text-left shadow-sm transition hover:border-emerald-500"
               >
                 <PanelTitle
                   title="Itens que mais saem"
@@ -3186,298 +3717,6 @@ export default function DashboardPage() {
           </>
         ) : null}
 
-        {activeTab === "historico" ? (
-          <>
-            <div className="space-y-4">
-              <div className="grid min-w-0 gap-3 md:grid-cols-4">
-                {[
-                  ["messages", "Mensagens do mês", formatNumber(summary.messages.month)],
-                  ["leads", "Leads no mês", formatNumber(summary.leads.month)],
-                  ["conversations", "Conversas ativas", formatNumber(summary.conversations.active)],
-                  ["appointments", "Compromissos futuros", formatNumber(summary.appointments.future)],
-                ].map(([id, title, value]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() =>
-                      setHistoricalDetailDrawer(
-                        id as "messages" | "leads" | "conversations" | "appointments"
-                      )
-                    }
-                    className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-2.5 text-center shadow-sm transition hover:border-zinc-950"
-                  >
-                    <p className="break-words text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
-                      {title}
-                    </p>
-                    <p className="mt-1 break-words text-xl font-semibold tracking-tight text-zinc-950">
-                      {value}
-                    </p>
-                  </button>
-                ))}
-              </div>
-
-              <div className="grid min-w-0 gap-4 xl:grid-cols-[1fr_0.9fr]">
-                <DashboardPanel>
-                  <PanelTitle
-                    title="Histórico dos meses anteriores"
-                    helper="Clique em um mês para ver vendas, meta, resultado e itens vendidos."
-                  />
-                  <div className="space-y-2">
-                    {historicalMonthItems.map((monthLabel) => (
-                      <button
-                        key={monthLabel}
-                        type="button"
-                        onClick={() => openHistoricalMonth(monthLabel)}
-                        className="grid w-full min-w-0 gap-2 rounded-[6px] border border-zinc-200 bg-zinc-50 px-3 py-2 text-left text-sm transition hover:border-zinc-950 hover:bg-white sm:grid-cols-[minmax(0,1fr)_minmax(84px,0.5fr)_minmax(84px,0.5fr)_minmax(88px,0.55fr)_minmax(82px,0.5fr)_auto]"
-                      >
-                        <span className="min-w-0 break-words font-medium text-zinc-950">
-                          {monthLabel}
-                        </span>
-                        <span className="min-w-0 break-words text-zinc-700">
-                          Vendido: Sem dados
-                        </span>
-                        <span className="min-w-0 break-words text-zinc-700">
-                          Meta: Sem dados
-                        </span>
-                        <span className="min-w-0 break-words text-zinc-700">
-                          Resultado: Sem dados
-                        </span>
-                        <span className="min-w-0 break-words text-zinc-700">
-                          Itens: Sem dados
-                        </span>
-                        <span className="shrink-0 text-zinc-500">›</span>
-                      </button>
-                    ))}
-                  </div>
-                </DashboardPanel>
-
-                <button
-                  type="button"
-                  onClick={() => setHistoricalDetailDrawer("currentMonth")}
-                  className="min-w-0 rounded-[6px] border border-zinc-300 bg-white p-3 text-left shadow-sm transition hover:border-zinc-950"
-                >
-                  <PanelTitle
-                    title="Resumo do mês atual"
-                    helper="Clique para ver o que cada indicador representa."
-                  />
-                  <div className="grid min-w-0 gap-2 sm:grid-cols-2">
-                    {[
-                      ["Vendido no mês", "Sem dados"],
-                      ["Meta do mês", "Não definida"],
-                      ["Resultado", "Sem dados"],
-                      ["Itens vendidos", "Sem dados"],
-                    ].map(([title, value]) => (
-                      <div
-                        key={title}
-                        className="rounded-[6px] border border-zinc-200 bg-zinc-50 p-3"
-                      >
-                        <p className="text-xs font-medium uppercase tracking-[0.1em] text-zinc-500">
-                          {title}
-                        </p>
-                        <p className="mt-1 text-lg font-semibold text-zinc-950">
-                          {value}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            <DashboardDetailDrawer
-              title={historicalDetailTitle}
-              description={historicalDetailDescription}
-              isOpen={historicalDetailDrawer !== null}
-              onClose={() => setHistoricalDetailDrawer(null)}
-            >
-              {historicalDetailDrawer === "messages" ? (
-                <div className="space-y-4">
-                  <div className="grid min-w-0 gap-3 sm:grid-cols-3">
-                    <ExecutiveNumberCard title="Mensagens no mês" value={formatNumber(summary.messages.month)} />
-                    <ExecutiveNumberCard title="Últimos 7 dias" value={formatNumber(summary.messages.last7Days)} />
-                    <ExecutiveNumberCard title="Hoje" value={formatNumber(summary.messages.today)} />
-                  </div>
-                  <DashboardPanel>
-                    <PanelTitle title="Quem participou" />
-                    <SplitProgress ai={summary.messages.ai} human={summary.messages.humanOperator} customer={summary.messages.customer} />
-                  </DashboardPanel>
-                  <DashboardPanel>
-                    <PanelTitle title="Mensagens recentes" />
-                    <InfoList
-                      emptyText="Nenhuma mensagem recente encontrada."
-                      items={lists.recentMessages.slice(0, 8).map((message) => ({
-                        id: message.id,
-                        title: message.isAi ? "IA" : message.isHumanOperator ? "Loja" : "Cliente",
-                        subtitle: compactText(message.content, 130),
-                        meta: <span>{formatLabel(message.direction)}</span>,
-                        right: <span className="text-xs text-zinc-500">{formatDateTime(message.createdAt)}</span>,
-                      }))}
-                    />
-                  </DashboardPanel>
-                </div>
-              ) : null}
-
-              {historicalDetailDrawer === "leads" ? (
-                <div className="space-y-4">
-                  <div className="grid min-w-0 gap-3 sm:grid-cols-3">
-                    <ExecutiveNumberCard title="Leads no mês" value={formatNumber(summary.leads.month)} />
-                    <ExecutiveNumberCard title="Últimos 7 dias" value={formatNumber(summary.leads.last7Days)} />
-                    <ExecutiveNumberCard title="Hoje" value={formatNumber(summary.leads.today)} />
-                  </div>
-                  <DashboardPanel>
-                    <PanelTitle title="Leads por etapa" />
-                    <HorizontalBars items={summary.leads.byState} />
-                  </DashboardPanel>
-                  <DashboardPanel>
-                    <PanelTitle title="Leads recentes" />
-                    <InfoList
-                      emptyText="Nenhum lead recente encontrado."
-                      items={lists.recentLeads.slice(0, 8).map((lead) => ({
-                        id: lead.id,
-                        title: lead.name || "Lead sem nome",
-                        subtitle: lead.phone || "Sem telefone",
-                        meta: (
-                          <>
-                            <StatusPill>{formatLabel(lead.state)}</StatusPill>
-                            <span>Criado em {formatDate(lead.createdAt)}</span>
-                          </>
-                        ),
-                      }))}
-                    />
-                  </DashboardPanel>
-                </div>
-              ) : null}
-
-              {historicalDetailDrawer === "conversations" ? (
-                <div className="space-y-4">
-                  <div className="grid min-w-0 gap-3 sm:grid-cols-3">
-                    <ExecutiveNumberCard title="Conversas ativas" value={formatNumber(summary.conversations.active)} />
-                    <ExecutiveNumberCard title="Humano ativo" value={formatNumber(summary.conversations.humanActive)} />
-                    <ExecutiveNumberCard title="Total" value={formatNumber(summary.conversations.total)} />
-                  </div>
-                  <DashboardPanel>
-                    <PanelTitle title="Conversas por status" />
-                    <HorizontalBars items={summary.conversations.byStatus} />
-                  </DashboardPanel>
-                  <DashboardPanel>
-                    <PanelTitle title="Conversas recentes" />
-                    <InfoList
-                      emptyText="Nenhuma conversa recente encontrada."
-                      items={lists.recentConversations.slice(0, 8).map((conversation) => ({
-                        id: conversation.id,
-                        title: conversation.customerName || "Cliente sem nome",
-                        subtitle: compactText(conversation.lastMessagePreview, 130),
-                        meta: (
-                          <>
-                            <StatusPill>{formatLabel(conversation.status)}</StatusPill>
-                            <span>Última mensagem: {formatDateTime(conversation.lastMessageAt)}</span>
-                            {conversation.isHumanActive ? <span>Humano ativo</span> : null}
-                          </>
-                        ),
-                      }))}
-                    />
-                  </DashboardPanel>
-                </div>
-              ) : null}
-
-              {historicalDetailDrawer === "appointments" ? (
-                <div className="space-y-4">
-                  <div className="grid min-w-0 gap-3 sm:grid-cols-3">
-                    <ExecutiveNumberCard title="Compromissos futuros" value={formatNumber(summary.appointments.future)} />
-                    <ExecutiveNumberCard title="Hoje" value={formatNumber(summary.appointments.today)} />
-                    <ExecutiveNumberCard title="Follow-ups pendentes" value={formatNumber(summary.followups.pending)} />
-                  </div>
-                  <DashboardPanel>
-                    <PanelTitle title="Próximos compromissos" />
-                    <InfoList
-                      emptyText="Nenhum compromisso futuro encontrado."
-                      items={lists.nextAppointments.slice(0, 10).map((appointment) => ({
-                        id: appointment.id,
-                        title: appointment.customerName || "Cliente sem nome",
-                        subtitle: appointment.title,
-                        meta: (
-                          <>
-                            <StatusPill>{formatLabel(appointment.status)}</StatusPill>
-                            <span>Tipo: {formatLabel(appointment.appointmentType)}</span>
-                            <span>Horário: {formatDateTime(appointment.scheduledStart)}</span>
-                            {appointment.customerPhone ? <span>Telefone: {appointment.customerPhone}</span> : null}
-                            <MapsRouteButton
-                              addressText={getAppointmentRouteAddress(appointment)}
-                              compact
-                            />
-                          </>
-                        ),
-                      }))}
-                    />
-                  </DashboardPanel>
-                </div>
-              ) : null}
-
-              {historicalDetailDrawer === "currentMonth" ? (
-                <div className="space-y-4">
-                  <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-                    <ExecutiveNumberCard title="Vendido no mês" value="Sem dados" />
-                    <ExecutiveNumberCard title="Meta do mês" value="Não definida" />
-                    <ExecutiveNumberCard title="Resultado" value="Sem dados" />
-                    <ExecutiveNumberCard title="Itens vendidos" value="Sem dados" />
-                  </div>
-                  <DashboardPanel>
-                    <PanelTitle title="O que este bloco mostra" />
-                    <p className="text-sm leading-relaxed text-zinc-700">
-                      Este resumo deve mostrar o desempenho comercial do mês atual: quanto a loja vendeu, qual era a meta, se bateu a meta e quais itens foram vendidos.
-                    </p>
-                  </DashboardPanel>
-                  <DashboardPanel>
-                    <PanelTitle title="Dados que ainda faltam" />
-                    <p className="text-sm leading-relaxed text-zinc-700">
-                      Hoje ainda não existe uma origem confiável de vendas, pedidos, metas e itens vendidos conectada ao dashboard. Por isso, estes campos continuam como “Sem dados” ou “Não definida”.
-                    </p>
-                  </DashboardPanel>
-                </div>
-              ) : null}
-            </DashboardDetailDrawer>
-
-            <DashboardDetailDrawer
-              title={selectedHistoricalMonth}
-              description="Histórico comercial do mês selecionado."
-              isOpen={isHistoricalMonthDrawerOpen}
-              onClose={() => setIsHistoricalMonthDrawerOpen(false)}
-            >
-              <div className="space-y-4">
-                <div className="grid min-w-0 gap-3 sm:grid-cols-3">
-                  <ExecutiveNumberCard title="Quanto foi vendido" value="Sem dados" />
-                  <ExecutiveNumberCard title="Meta do mês" value="Sem dados" />
-                  <ExecutiveNumberCard title="Resultado" value="Sem dados" />
-                </div>
-
-                <div className="grid min-w-0 gap-3 sm:grid-cols-3">
-                  <ExecutiveNumberCard title="Vendas fechadas" value="Sem dados" />
-                  <ExecutiveNumberCard title="Ticket médio" value="Sem dados" />
-                  <ExecutiveNumberCard title="Itens vendidos" value="Sem dados" />
-                </div>
-
-                <div className="grid min-w-0 gap-3 sm:grid-cols-3">
-                  <ExecutiveNumberCard title="Leads gerados" value="Sem dados" />
-                  <ExecutiveNumberCard title="Conversas abertas" value="Sem dados" />
-                  <ExecutiveNumberCard title="Compromissos" value="Sem dados" />
-                </div>
-
-                <DashboardPanel>
-                  <PanelTitle title="Meta" />
-                  <p className="text-sm leading-relaxed text-zinc-700">
-                    Quando existir venda real e meta configurada, este resumo vai mostrar se a loja bateu a meta, quanto faltou ou quanto passou.
-                  </p>
-                </DashboardPanel>
-
-                <DashboardPanel>
-                  <PanelTitle title="O que foi vendido" />
-                  <EmptyState text="Ainda não há histórico real de itens vendidos para este mês." />
-                </DashboardPanel>
-              </div>
-            </DashboardDetailDrawer>
-
-          </>
-        ) : null}
       </div>
     </main>
   );
