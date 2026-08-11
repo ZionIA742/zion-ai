@@ -2,53 +2,41 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { resolveAccessSelection } from "@/lib/account-access";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type AccessStatus = {
   is_blocked: boolean;
   reason?: string | null;
   grace_until?: string | null;
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
-function isNotMemberError(err: unknown) {
-  const msg = (err as any)?.message ?? String(err ?? "");
-  const lower = String(msg).toLowerCase();
-  return (
-    lower.includes("not_member") ||
-    lower.includes("not member") ||
-    lower.includes("p0001")
-  );
-}
+type MembershipRow = {
+  organization_id: string;
+  created_at: string | null;
+};
 
-async function rpcGetAccessStatus(
-  orgId: string
-): Promise<{ data: any; error: any }> {
-  const tries: Array<Record<string, any>> = [
-    { p_org_id: orgId },
-    { org_id: orgId },
-    { p_organization_id: orgId },
-    { organization_id: orgId },
-  ];
+type StoreRow = {
+  id: string;
+  organization_id: string;
+  created_at: string | null;
+};
 
-  let last: any = null;
-
-  for (const args of tries) {
-    const res = await supabase.rpc("get_org_access_status", args);
-    if (!res.error) return res;
-    last = res;
-  }
-
-  return last ?? {
-    data: null,
-    error: new Error("RPC get_org_access_status falhou"),
-  };
+function isNotMemberError(error: unknown) {
+  const message = String((error as { message?: string } | null)?.message || "").toLowerCase();
+  const code = String((error as { code?: string } | null)?.code || "").toLowerCase();
+  return message.includes("not_member") || code === "p0001";
 }
 
 export default function OrgGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-
   const mountedRef = useRef(true);
+
+  const [loading, setLoading] = useState(true);
+  const [fatalError, setFatalError] = useState<string | null>(null);
+  const [orgId, setOrgId] = useState<string | null>(null);
+  const [access, setAccess] = useState<AccessStatus | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -57,21 +45,13 @@ export default function OrgGuard({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const [loading, setLoading] = useState(true);
-  const [fatalError, setFatalError] = useState<string | null>(null);
-  const [orgId, setOrgId] = useState<string | null>(null);
-  const [access, setAccess] = useState<AccessStatus | null>(null);
-
   useEffect(() => {
     let cancelled = false;
     let running = false;
 
     const goLogin = () => {
       if (cancelled || !mountedRef.current) return;
-      if (
-        typeof window !== "undefined" &&
-        window.location.pathname === "/login"
-      ) {
+      if (typeof window !== "undefined" && window.location.pathname === "/login") {
         return;
       }
       router.replace("/login");
@@ -86,178 +66,190 @@ export default function OrgGuard({ children }: { children: React.ReactNode }) {
       setOrgId(null);
       setAccess(null);
 
-      const timeoutMs = 12000;
-      const timeout = setTimeout(() => {
-        if (cancelled || !mountedRef.current) return;
-        setFatalError("Tempo excedido verificando acesso. Recarregue a página.");
-        setLoading(false);
-      }, timeoutMs);
-
       try {
-        const { data: sessionRes, error: sessionErr } =
-          await supabase.auth.getSession();
+        const { data: sessionRes, error: sessionErr } = await supabase.auth.getSession();
 
         if (cancelled || !mountedRef.current) return;
 
         if (sessionErr) {
           console.error("[OrgGuard] auth.getSession error:", {
             message: sessionErr.message ?? null,
-            status: (sessionErr as any)?.status ?? null,
-            name: (sessionErr as any)?.name ?? null,
-            full: sessionErr,
+            status: (sessionErr as { status?: number | null })?.status ?? null,
           });
           goLogin();
           return;
         }
 
-        const session = sessionRes.session;
+        const user = sessionRes.session?.user;
 
-        if (!session?.user) {
-          console.warn("[OrgGuard] sessão ausente ou sem usuário.");
+        if (!user) {
           goLogin();
           return;
         }
 
-        const userId = session.user.id;
-
-        console.log("[OrgGuard] session user id:", userId);
-
-        const { data: memRows, error: memErr } = await supabase
+        const { data: memberships, error: membershipError } = await supabase
           .from("memberships")
-          .select("id, organization_id, user_id, role, created_at")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false });
+          .select("organization_id, created_at")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: true });
 
         if (cancelled || !mountedRef.current) return;
 
-        console.log("[OrgGuard] memberships rows:", memRows);
-        console.log("[OrgGuard] memberships error raw:", memErr);
-        console.log(
-          "[OrgGuard] memberships error json:",
-          JSON.stringify(memErr, null, 2)
+        if (membershipError) {
+          console.error("[OrgGuard] memberships error:", {
+            message: membershipError.message ?? null,
+            details: membershipError.details ?? null,
+            hint: membershipError.hint ?? null,
+            code: membershipError.code ?? null,
+          });
+          setFatalError("Não foi possível validar as organizações liberadas para esta conta.");
+          return;
+        }
+
+        const membershipRows = (memberships ?? []) as MembershipRow[];
+        const organizationIds = Array.from(
+          new Set(membershipRows.map((membership) => membership.organization_id).filter(Boolean)),
         );
 
-        if (memErr) {
-          console.error("[OrgGuard] memberships query error details:", {
-            message: (memErr as any)?.message ?? null,
-            details: (memErr as any)?.details ?? null,
-            hint: (memErr as any)?.hint ?? null,
-            code: (memErr as any)?.code ?? null,
-            full: memErr,
-          });
-          goLogin();
-          return;
-        }
+        let storeRows: StoreRow[] = [];
 
-        const foundOrgId = memRows?.[0]?.organization_id ?? null;
+        if (organizationIds.length > 0) {
+          const { data: stores, error: storeError } = await supabase
+            .from("stores")
+            .select("id, organization_id, created_at")
+            .in("organization_id", organizationIds)
+            .order("created_at", { ascending: true });
 
-        if (!foundOrgId) {
-          console.warn(
-            "[OrgGuard] usuário logado, mas sem membership (organization_id)."
-          );
-          goLogin();
-          return;
-        }
+          if (cancelled || !mountedRef.current) return;
 
-        setOrgId(foundOrgId);
-
-        const { data: accessData, error: accessErr } =
-          await rpcGetAccessStatus(foundOrgId);
-
-        if (cancelled || !mountedRef.current) return;
-
-        if (accessErr) {
-          console.error("[OrgGuard] RPC get_org_access_status error:", {
-            message: (accessErr as any)?.message ?? null,
-            details: (accessErr as any)?.details ?? null,
-            hint: (accessErr as any)?.hint ?? null,
-            code: (accessErr as any)?.code ?? null,
-            full: accessErr,
-          });
-
-          if (isNotMemberError(accessErr)) {
-            goLogin();
+          if (storeError) {
+            console.error("[OrgGuard] stores error:", {
+              message: storeError.message ?? null,
+              details: storeError.details ?? null,
+              hint: storeError.hint ?? null,
+              code: storeError.code ?? null,
+            });
+            setFatalError("Não foi possível validar a loja inicial desta conta.");
             return;
           }
 
-          setFatalError("Falha ao verificar assinatura/acesso. Veja o console.");
+          storeRows = (stores ?? []) as StoreRow[];
+        }
+
+        const selection = resolveAccessSelection(membershipRows, storeRows);
+
+        if (!selection.ok) {
+          setFatalError(selection.message);
           return;
         }
 
-        const normalized: AccessStatus =
+        setOrgId(selection.organizationId);
+
+        const { data: accessData, error: accessError } = await supabase.rpc(
+          "get_org_access_status",
+          {
+            p_org_id: selection.organizationId,
+          },
+        );
+
+        if (cancelled || !mountedRef.current) return;
+
+        if (accessError) {
+          console.error("[OrgGuard] get_org_access_status error:", {
+            message: accessError.message ?? null,
+            details: accessError.details ?? null,
+            hint: accessError.hint ?? null,
+            code: accessError.code ?? null,
+          });
+
+          if (isNotMemberError(accessError)) {
+            setFatalError(
+              "Sua conta não tem autorização válida para a organização selecionada. O time interno precisa revisar o provisionamento.",
+            );
+            return;
+          }
+
+          setFatalError("Falha técnica ao verificar o acesso desta organização.");
+          return;
+        }
+
+        const normalizedAccess: AccessStatus =
           accessData && typeof accessData === "object"
             ? (accessData as AccessStatus)
-            : ({ is_blocked: false, raw: accessData } as AccessStatus);
+            : ({ is_blocked: false } as AccessStatus);
 
-        setAccess(normalized);
-      } catch (e: any) {
+        setAccess(normalizedAccess);
+      } catch (error: unknown) {
         if (cancelled || !mountedRef.current) return;
 
-        console.error("[OrgGuard] erro inesperado:", {
-          message: e?.message ?? null,
-          stack: e?.stack ?? null,
-          full: e,
+        const message =
+          error &&
+          typeof error === "object" &&
+          "message" in error &&
+          typeof (error as { message?: unknown }).message === "string"
+            ? (error as { message: string }).message
+            : null;
+
+        console.error("[OrgGuard] unexpected error:", {
+          message,
         });
-
-        setFatalError("Erro inesperado no guard. Veja o console.");
+        setFatalError("Erro inesperado ao verificar o acesso da conta.");
       } finally {
-        clearTimeout(timeout);
         running = false;
-
-        if (cancelled || !mountedRef.current) return;
-        setLoading(false);
+        if (!cancelled && mountedRef.current) {
+          setLoading(false);
+        }
       }
     };
 
-    run();
+    void run();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (
-        event === "SIGNED_IN" ||
-        event === "SIGNED_OUT" ||
-        event === "TOKEN_REFRESHED"
-      ) {
-        run();
+    const { data: subscription } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+        void run();
       }
     });
 
     return () => {
       cancelled = true;
-      sub?.subscription?.unsubscribe?.();
+      subscription.subscription.unsubscribe();
     };
   }, [router]);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        Verificando assinatura...
+      <div className="flex h-screen items-center justify-center">
+        Verificando acesso da organização...
       </div>
     );
   }
 
   if (fatalError) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen text-center px-6 gap-3">
-        <h1 className="text-2xl font-bold">Ops…</h1>
+      <div className="flex h-screen flex-col items-center justify-center gap-3 px-6 text-center">
+        <h1 className="text-2xl font-bold">Acesso pendente de revisão</h1>
         <p className="max-w-xl">{fatalError}</p>
         <button
-          className="px-4 py-2 rounded bg-black text-white"
-          onClick={() => window.location.reload()}
+          type="button"
+          className="rounded bg-black px-4 py-2 text-white"
+          onClick={() => router.replace("/login")}
         >
-          Recarregar
+          Voltar ao login
         </button>
       </div>
     );
   }
 
-  if (!orgId) return null;
+  if (!orgId) {
+    return null;
+  }
 
   if (access?.is_blocked) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen text-center px-6">
-        <h1 className="text-2xl font-bold mb-4">Sistema bloqueado</h1>
-        <p className="mb-2">Motivo: {access?.reason ?? "bloqueio"}</p>
-        <p>Regularize sua assinatura para continuar usando o Zion.</p>
+      <div className="flex h-screen flex-col items-center justify-center px-6 text-center">
+        <h1 className="mb-4 text-2xl font-bold">Acesso bloqueado</h1>
+        <p className="mb-2">Motivo: {access.reason ?? "bloqueio de acesso"}</p>
+        <p>Regularize a situação da organização para continuar usando o ZION.</p>
       </div>
     );
   }
