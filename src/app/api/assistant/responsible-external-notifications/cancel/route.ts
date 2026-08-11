@@ -1,26 +1,27 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import { cancelResponsibleExternalNotification } from "@/lib/server/assistant/responsible-external-notifications";
+import {
+  resolveStoreApiAccess,
+  type ResolveStoreApiAccessDeps,
+} from "@/lib/server/store-api-access";
+import { createStoreApiDeniedResponse } from "@/lib/server/store-api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-type MembershipRow = {
-  organization_id: string;
-};
-
-type StoreRow = {
-  id: string;
-  organization_id: string;
-  name: string | null;
-};
 
 type CancelBody = {
   organizationId?: string;
   storeId?: string;
   notificationId?: string;
   notificationIds?: unknown;
+};
+
+type CancelNotification = typeof cancelResponsibleExternalNotification;
+
+type PostHandlerDeps = {
+  resolveAccess?: typeof resolveStoreApiAccess;
+  cancelNotification?: CancelNotification;
+  resolveAccessDeps?: Partial<ResolveStoreApiAccessDeps>;
 };
 
 function buildJsonResponse(body: unknown, status = 200) {
@@ -32,203 +33,101 @@ function buildJsonResponse(body: unknown, status = 200) {
   });
 }
 
-function getServiceSupabaseClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !serviceRoleKey) {
-    throw new Error("Supabase service role nao configurada.");
-  }
-
-  return createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
+function buildTenantMismatchResponse(kind: "organization" | "store") {
+  return buildJsonResponse(
+    {
+      ok: false,
+      updated: false,
+      reason: "forbidden",
+      message:
+        kind === "organization"
+          ? "organizationId nao corresponde ao tenant autorizado."
+          : "storeId nao corresponde a loja autorizada.",
     },
-  });
+    403,
+  );
 }
 
-async function resolveAuthorizedStoreContext(body: CancelBody) {
-  const sessionSupabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await sessionSupabase.auth.getUser();
+export function createResponsibleExternalNotificationsCancelPostHandler(
+  deps: PostHandlerDeps = {},
+) {
+  const resolveAccess = deps.resolveAccess ?? resolveStoreApiAccess;
+  const cancelNotification =
+    deps.cancelNotification ?? cancelResponsibleExternalNotification;
 
-  if (authError || !user) {
-    return {
-      ok: false as const,
-      response: buildJsonResponse(
+  return async function handleResponsibleExternalNotificationsCancelPost(
+    request: Request,
+  ) {
+    try {
+      const access = await resolveAccess({
+        requirement: "active",
+        deps: deps.resolveAccessDeps,
+      });
+
+      if (!access.ok) {
+        return createStoreApiDeniedResponse(access);
+      }
+
+      const body = (await request.json().catch(() => ({}))) as CancelBody;
+      const organizationId = String(body.organizationId || "").trim();
+      const storeId = String(body.storeId || "").trim();
+      const notificationId = String(body.notificationId || "").trim();
+
+      if (
+        Array.isArray(body.notificationIds) ||
+        Array.isArray(body.notificationId)
+      ) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            updated: false,
+            reason: "batch_not_allowed",
+            message: "Envie apenas um notificationId por vez.",
+          },
+          400,
+        );
+      }
+
+      if (!organizationId || !storeId || !notificationId) {
+        return buildJsonResponse(
+          {
+            ok: false,
+            updated: false,
+            reason: "missing_required_fields",
+          },
+          400,
+        );
+      }
+
+      if (organizationId !== access.organizationId) {
+        return buildTenantMismatchResponse("organization");
+      }
+
+      if (storeId !== access.storeId) {
+        return buildTenantMismatchResponse("store");
+      }
+
+      const result = await cancelNotification({
+        organizationId: access.organizationId,
+        storeId: access.storeId,
+        notificationId,
+      });
+
+      return buildJsonResponse(result, result.ok ? 200 : 409);
+    } catch (error: any) {
+      return buildJsonResponse(
         {
           ok: false,
-          error: "UNAUTHENTICATED",
-          message: "Usuario nao autenticado.",
+          updated: false,
+          reason: "RESPONSIBLE_EXTERNAL_NOTIFICATION_CANCEL_FAILED",
+          message:
+            error?.message ||
+            "Nao foi possivel cancelar a notificacao externa do responsavel.",
         },
-        401
-      ),
-    };
-  }
-
-  const storeId = String(body.storeId || "").trim();
-  const requestedOrganizationId = String(body.organizationId || "").trim();
-
-  if (!storeId || !requestedOrganizationId) {
-    return {
-      ok: false as const,
-      response: buildJsonResponse(
-        {
-          ok: false,
-          error: "MISSING_FIELDS",
-          message: "Envie organizationId e storeId.",
-        },
-        400
-      ),
-    };
-  }
-
-  const serviceSupabase = getServiceSupabaseClient();
-  const { data: memberships, error: membershipError } = await serviceSupabase
-    .from("memberships")
-    .select("organization_id")
-    .eq("user_id", user.id);
-
-  if (membershipError) {
-    throw membershipError;
-  }
-
-  const organizationIds = Array.from(
-    new Set(
-      ((memberships ?? []) as MembershipRow[])
-        .map((membership) => String(membership.organization_id || "").trim())
-        .filter(Boolean)
-    )
-  );
-
-  if (organizationIds.length === 0) {
-    return {
-      ok: false as const,
-      response: buildJsonResponse(
-        {
-          ok: false,
-          error: "FORBIDDEN",
-          message: "Usuario sem acesso a lojas.",
-        },
-        403
-      ),
-    };
-  }
-
-  const { data: store, error: storeError } = await serviceSupabase
-    .from("stores")
-    .select("id, organization_id, name")
-    .eq("id", storeId)
-    .maybeSingle<StoreRow>();
-
-  if (storeError) {
-    throw storeError;
-  }
-
-  if (!store) {
-    return {
-      ok: false as const,
-      response: buildJsonResponse(
-        {
-          ok: false,
-          error: "STORE_NOT_FOUND",
-          message: "Loja nao encontrada.",
-        },
-        404
-      ),
-    };
-  }
-
-  if (!organizationIds.includes(store.organization_id)) {
-    return {
-      ok: false as const,
-      response: buildJsonResponse(
-        {
-          ok: false,
-          error: "FORBIDDEN",
-          message: "Voce nao pode acessar esta loja.",
-        },
-        403
-      ),
-    };
-  }
-
-  if (requestedOrganizationId !== store.organization_id) {
-    return {
-      ok: false as const,
-      response: buildJsonResponse(
-        {
-          ok: false,
-          error: "ORGANIZATION_STORE_MISMATCH",
-          message: "organizationId nao corresponde a loja informada.",
-        },
-        400
-      ),
-    };
-  }
-
-  return {
-    ok: true as const,
-    store,
+        500,
+      );
+    }
   };
 }
 
-export async function POST(request: Request) {
-  try {
-    const body = (await request.json().catch(() => ({}))) as CancelBody;
-    const organizationId = String(body.organizationId || "").trim();
-    const storeId = String(body.storeId || "").trim();
-    const notificationId = String(body.notificationId || "").trim();
-
-    if (Array.isArray(body.notificationIds) || Array.isArray(body.notificationId)) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          updated: false,
-          reason: "batch_not_allowed",
-          message: "Envie apenas um notificationId por vez.",
-        },
-        400
-      );
-    }
-
-    if (!organizationId || !storeId || !notificationId) {
-      return buildJsonResponse(
-        {
-          ok: false,
-          updated: false,
-          reason: "missing_required_fields",
-        },
-        400
-      );
-    }
-
-    const auth = await resolveAuthorizedStoreContext(body);
-
-    if (!auth.ok) {
-      return auth.response;
-    }
-
-    const result = await cancelResponsibleExternalNotification({
-      organizationId: auth.store.organization_id,
-      storeId: auth.store.id,
-      notificationId,
-    });
-
-    return buildJsonResponse(result, result.ok ? 200 : 409);
-  } catch (error: any) {
-    return buildJsonResponse(
-      {
-        ok: false,
-        updated: false,
-        reason: "RESPONSIBLE_EXTERNAL_NOTIFICATION_CANCEL_FAILED",
-        message:
-          error?.message || "Nao foi possivel cancelar a notificacao externa do responsavel.",
-      },
-      500
-    );
-  }
-}
+export const POST = createResponsibleExternalNotificationsCancelPostHandler();
