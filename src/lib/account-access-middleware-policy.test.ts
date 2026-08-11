@@ -82,14 +82,26 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "internal released routes remain public",
+    name: "removed internal routes are no longer public",
     run: () => {
-      expectNext(
+      expectRedirect(
         "/api/internal/assistant/responsible-external-notifications/send",
         "anonymous",
+        "/login",
+        true,
       );
-      expectNext("/api/internal/whatsapp/process-inbox", "anonymous");
-      expectNext("/api/internal/assistant-operational-tasks/process", "anonymous");
+      expectRedirect(
+        "/api/internal/whatsapp/process-inbox",
+        "anonymous",
+        "/login",
+        true,
+      );
+      expectRedirect(
+        "/api/internal/assistant-operational-tasks/process",
+        "anonymous",
+        "/login",
+        true,
+      );
     },
   },
   {
