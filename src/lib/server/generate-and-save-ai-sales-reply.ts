@@ -5,6 +5,7 @@ import {
   type CommercialHandoffContext,
   type OperationalFollowUpDecision,
   type PaymentOrClosingSubtype,
+  type ResponseAnchorCommercialContext,
 } from "./generate-ai-sales-reply";
 import {
   evaluateContractWorkflowDecision,
@@ -16,6 +17,7 @@ import {
   findEligibleSentContractForCustomerAcceptance,
   signSalesContractAsCustomer,
 } from "./sales-contracts/customer-contract-acceptance";
+import { ContractAccessError } from "./sales-contracts/contract-auth";
 import { pushAssistantContractWorkflowDecisionMessage } from "./assistant/contract-workflow-messages";
 
 type GenerateAndSaveAiSalesReplyParams = {
@@ -53,6 +55,230 @@ type AiSalesReplyUsage = {
   pricingSource?: string;
 };
 
+type GenerateAndSaveAiSalesReplyDeps = {
+  createSupabaseClient: typeof createClient;
+  detectOpenAssistantOperationalFlow: typeof detectOpenAssistantOperationalFlow;
+  loadConversationMessageBoundaryState: typeof loadConversationMessageBoundaryState;
+  tryHandleCustomerContractAcceptance: typeof tryHandleCustomerContractAcceptance;
+  generateAiSalesReply: typeof generateAiSalesReply;
+  updateLatestRunningAiRunUsage: typeof updateLatestRunningAiRunUsage;
+  sendAiPanelMessage: typeof sendAiPanelMessage;
+  createCommercialAssistantHandoff: typeof createCommercialAssistantHandoff;
+};
+
+const AI_REPLY_GENERATION_ANCHOR_MISMATCH =
+  "AI_REPLY_GENERATION_ANCHOR_MISMATCH";
+const AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE =
+  "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE";
+const CONVERSATION_SCOPE_MISMATCH_ERRORS = new Set([
+  "CONVERSATION_SCOPE_ORGANIZATION_MISSING",
+  "CONVERSATION_SCOPE_LEAD_MISSING",
+  "CONVERSATION_SCOPE_STORE_MISSING",
+  "CONVERSATION_SCOPE_LEAD_ORGANIZATION_MISMATCH",
+  "CONVERSATION_SCOPE_ORGANIZATION_MISMATCH",
+  "CONVERSATION_SCOPE_STORE_MISMATCH",
+  "CONVERSATION_SCOPE_STORE_NOT_FOUND",
+  "CONVERSATION_SCOPE_STORE_ORGANIZATION_MISMATCH",
+]);
+
+export function mapGenerateAndSaveAiSalesReplyError(
+  error: unknown,
+): GenerateAndSaveAiSalesReplyResult {
+  if (error instanceof ContractAccessError) {
+    const context: Record<string, unknown> = {};
+    const details = (error as ContractAccessError & { details?: unknown }).details;
+    const sqlState = (error as ContractAccessError & { sqlState?: string | null }).sqlState;
+    const deterministicMessage = (
+      error as ContractAccessError & { deterministicMessage?: string | null }
+    ).deterministicMessage;
+
+    if (details !== undefined) {
+      context.details = details;
+    }
+
+    if (sqlState) {
+      context.sqlState = sqlState;
+    }
+
+    if (deterministicMessage) {
+      context.deterministicMessage = deterministicMessage;
+    }
+
+    return {
+      ok: false,
+      error: error.code,
+      message: error.message,
+      ...(Object.keys(context).length > 0 ? { context } : {}),
+    };
+  }
+
+  return {
+    ok: false,
+    error: "GENERATE_AND_SAVE_AI_SALES_REPLY_FAILED",
+    message:
+      (error as { message?: string } | null | undefined)?.message ||
+      "Erro interno ao gerar e salvar resposta comercial da IA.",
+  };
+}
+
+function normalizeConversationScopeLead(
+  value:
+    | {
+        organization_id: string | null;
+        store_id: string | null;
+      }
+    | Array<{
+        organization_id: string | null;
+        store_id: string | null;
+      }>
+    | null
+    | undefined,
+) {
+  if (Array.isArray(value)) {
+    return value[0] || null;
+  }
+
+  if (value && typeof value === "object") {
+    return value;
+  }
+
+  return null;
+}
+
+async function resolveConversationAiWindowStateScope(args: {
+  supabase: any;
+  conversationId: string;
+  expectedOrganizationId?: string | null;
+  expectedStoreId?: string | null;
+}) {
+  const { data, error } = await args.supabase
+    .from("conversations")
+    .select("id, organization_id, lead_id, is_human_active, leads!inner(organization_id, store_id)")
+    .eq("id", args.conversationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Falha ao resolver escopo canonico da janela da IA: ${error.message}`
+    );
+  }
+
+  const conversation =
+    data && typeof data === "object"
+      ? (data as ConversationRow & {
+          leads?:
+            | {
+                organization_id: string | null;
+                store_id: string | null;
+              }
+            | Array<{
+                organization_id: string | null;
+                store_id: string | null;
+              }>
+            | null;
+        })
+      : null;
+
+  if (!conversation?.id) {
+    throw new Error("CONVERSATION_SCOPE_NOT_FOUND");
+  }
+
+  const canonicalOrganizationId = String(conversation.organization_id || "").trim();
+  const canonicalLeadId = String(conversation.lead_id || "").trim();
+  const lead = normalizeConversationScopeLead(conversation.leads);
+  const leadOrganizationId = String(lead?.organization_id || "").trim();
+  const canonicalStoreId = String(lead?.store_id || "").trim();
+
+  if (!canonicalOrganizationId) {
+    throw new Error("CONVERSATION_SCOPE_ORGANIZATION_MISSING");
+  }
+
+  if (!canonicalLeadId) {
+    throw new Error("CONVERSATION_SCOPE_LEAD_MISSING");
+  }
+
+  if (!canonicalStoreId) {
+    throw new Error("CONVERSATION_SCOPE_STORE_MISSING");
+  }
+
+  if (!leadOrganizationId || leadOrganizationId !== canonicalOrganizationId) {
+    throw new Error("CONVERSATION_SCOPE_LEAD_ORGANIZATION_MISMATCH");
+  }
+
+  const expectedOrganizationId = String(args.expectedOrganizationId || "").trim();
+  if (expectedOrganizationId && expectedOrganizationId !== canonicalOrganizationId) {
+    throw new Error("CONVERSATION_SCOPE_ORGANIZATION_MISMATCH");
+  }
+
+  const expectedStoreId = String(args.expectedStoreId || "").trim();
+  if (expectedStoreId && expectedStoreId !== canonicalStoreId) {
+    throw new Error("CONVERSATION_SCOPE_STORE_MISMATCH");
+  }
+
+  const { data: store, error: storeError } = await args.supabase
+    .from("stores")
+    .select("id, organization_id")
+    .eq("id", canonicalStoreId)
+    .maybeSingle();
+
+  if (storeError) {
+    throw new Error(
+      `Falha ao validar loja canonica da janela da IA: ${storeError.message}`
+    );
+  }
+
+  const storeOrganizationId = String(
+    (store as { organization_id?: string | null } | null)?.organization_id || ""
+  ).trim();
+
+  if (!storeOrganizationId) {
+    throw new Error("CONVERSATION_SCOPE_STORE_NOT_FOUND");
+  }
+
+  if (storeOrganizationId !== canonicalOrganizationId) {
+    throw new Error("CONVERSATION_SCOPE_STORE_ORGANIZATION_MISMATCH");
+  }
+
+  return {
+    conversationId: String(conversation.id).trim(),
+    organizationId: canonicalOrganizationId,
+    leadId: canonicalLeadId,
+    storeId: canonicalStoreId,
+    isHumanActive: conversation.is_human_active ?? null,
+  };
+}
+
+function mapConversationScopeResolutionError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+
+  if (message === "CONVERSATION_SCOPE_NOT_FOUND") {
+    return {
+      ok: false as const,
+      result: {
+        ok: false,
+        error: "CONVERSATION_NOT_FOUND",
+        message: "Conversa não encontrada para a organização informada.",
+      } satisfies GenerateAndSaveAiSalesReplyResult,
+    };
+  }
+
+  if (CONVERSATION_SCOPE_MISMATCH_ERRORS.has(message)) {
+    return {
+      ok: false as const,
+      result: {
+        ok: false,
+        error: "CONVERSATION_SCOPE_MISMATCH",
+        message:
+          "A conversa não corresponde ao escopo informado para persistir a janela da IA.",
+      } satisfies GenerateAndSaveAiSalesReplyResult,
+    };
+  }
+
+  return {
+    ok: true as const,
+  };
+}
+
 async function transitionConversationStateAsInternalActor(args: {
   supabase: any;
   conversationId: string;
@@ -86,6 +312,155 @@ function buildAiSalesAutoProgressEventKey(args: {
   return `ai_sales_auto_progress:${args.taskId}:${args.step}`;
 }
 
+function buildAiSalesSignalProgressEventKey(args: {
+  generationAnchorMessageId: string;
+  targetStage: "qualificacao";
+}) {
+  return `ai_sales_signal_progress:${args.generationAnchorMessageId}:${args.targetStage}`;
+}
+
+type CommercialStageTransitionRpcRow = {
+  commercial_opportunity_id: string;
+  stage: string;
+  lifecycle_cycle: number | null;
+  lifecycle_event_id: string | null;
+  event_type: string | null;
+  reason_code: string | null;
+  stage_changed_at: string | null;
+  updated_at: string | null;
+};
+
+function summarizeCommercialHandoffEvidence(
+  handoff: CommercialHandoffContext,
+): string | null {
+  return (
+    cleanText(handoff.conversationSummary) ||
+    cleanText(handoff.nextStep) ||
+    cleanText(handoff.lastCustomerMessage) ||
+    null
+  );
+}
+
+function buildCommercialHandoffReasonDetails(
+  handoff: CommercialHandoffContext,
+): string | null {
+  const parts = [
+    cleanText(handoff.lastCustomerMessage)
+      ? `last_customer_message=${cleanText(handoff.lastCustomerMessage)}`
+      : null,
+    cleanText(handoff.conversationSummary)
+      ? `conversation_summary=${cleanText(handoff.conversationSummary)}`
+      : null,
+    cleanText(handoff.nextStep)
+      ? `next_step=${cleanText(handoff.nextStep)}`
+      : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" | ") : null;
+}
+
+async function transitionCommercialOpportunityStageBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  idempotencyKey: string;
+  targetStage: string;
+  reasonDetails?: string | null;
+  evidenceType: string;
+  evidenceMessageId?: string | null;
+  evidenceSummary?: string | null;
+  source: string;
+}) {
+  const { data, error } = await args.supabase.rpc(
+    "transition_commercial_opportunity_stage_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_idempotency_key: args.idempotencyKey,
+      p_target_stage: args.targetStage,
+      p_reason_details: args.reasonDetails ?? null,
+      p_evidence_type: args.evidenceType,
+      p_evidence_message_id: args.evidenceMessageId ?? null,
+      p_evidence_summary: args.evidenceSummary ?? null,
+      p_source: args.source,
+    },
+  );
+
+  const rows = Array.isArray(data)
+    ? (data as CommercialStageTransitionRpcRow[])
+    : data
+      ? ([data] as CommercialStageTransitionRpcRow[])
+      : [];
+
+  return {
+    data: rows[0] || null,
+    error,
+  };
+}
+
+type CommercialOpportunityStageRow = {
+  id: string;
+  stage: string | null;
+};
+
+async function loadCanonicalCommercialOpportunityStage(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("commercial_opportunities")
+    .select("id, stage")
+    .eq("id", args.commercialOpportunityId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("[zion-ai-sales-opportunity] canonical stage load failed", {
+      reason: "canonical_stage_lookup_failed",
+      commercialOpportunityId: args.commercialOpportunityId,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      error: error.message,
+    });
+    return {
+      ok: false as const,
+      reason: "canonical_stage_lookup_failed",
+      stage: null,
+    };
+  }
+
+  const row =
+    data && typeof data === "object"
+      ? (data as CommercialOpportunityStageRow)
+      : null;
+  const stage = normalizeText(row?.stage);
+
+  if (!row?.id || !stage) {
+    console.info("[zion-ai-sales-opportunity] canonical stage unavailable", {
+      reason: "canonical_stage_not_found",
+      commercialOpportunityId: args.commercialOpportunityId,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+    });
+    return {
+      ok: false as const,
+      reason: "canonical_stage_not_found",
+      stage: null,
+    };
+  }
+
+  return {
+    ok: true as const,
+    reason: "canonical_stage_loaded",
+    stage,
+  };
+}
+
 type CatalogPhotoAction = {
   shouldSend: true;
   reason: "explicit_strong_product_photo_request";
@@ -115,6 +490,7 @@ type OpenOperationalTaskRow = {
   id: string;
   task_type: string | null;
   status: string | null;
+  commercial_opportunity_id?: string | null;
   task_payload?: Record<string, unknown> | null;
 };
 
@@ -157,6 +533,12 @@ type CommercialHandoffCreationResult = {
   crmAutoProgressResult?: CrmAutoProgressResult | null;
 };
 
+export type CommercialAssistantHandoffDeps = {
+  findExistingTask: typeof findExistingCommercialHandoffTask;
+  enqueueNotification: typeof enqueueCommercialHandoffNotification;
+  autoProgressBudgetFromQuote: typeof maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical;
+};
+
 type ContractWorkflowQuoteCandidateRow = {
   id: string;
   organization_id: string;
@@ -179,6 +561,9 @@ type ExistingContractStateRow = {
 
 type CustomerIncomingMessageRow = {
   id: string;
+  organization_id: string | null;
+  store_id: string | null;
+  conversation_id: string | null;
   sender: string | null;
   direction: string | null;
   content: string | null;
@@ -354,32 +739,33 @@ function getOpenCommercialHandoffStatuses() {
   ];
 }
 
-async function findExistingCommercialHandoffTask(args: {
+export async function findExistingCommercialHandoffTask(args: {
   supabase: any;
   organizationId: string;
   storeId: string;
   conversationId: string;
   taskType: string;
+  commercialOpportunityId: string;
 }) {
   const { data, error } = await args.supabase
     .from("store_assistant_operational_tasks")
-    .select("id, task_type, status, task_payload")
+    .select("id, task_type, status, commercial_opportunity_id, task_payload")
     .eq("organization_id", args.organizationId)
     .eq("store_id", args.storeId)
     .eq("related_conversation_id", args.conversationId)
+    .eq("commercial_opportunity_id", args.commercialOpportunityId)
+    .eq("task_type", args.taskType)
     .in("status", getOpenCommercialHandoffStatuses())
-    .in("task_type", ["commercial_visit_request", "commercial_quote_request"])
     .order("updated_at", { ascending: false })
     .order("created_at", { ascending: false })
-    .limit(5);
+    .limit(1)
+    .maybeSingle();
 
   if (error) {
     throw new Error(`Falha ao verificar handoff comercial existente: ${error.message}`);
   }
 
-  return ((data || []) as OpenOperationalTaskRow[]).find(
-    (task) => normalizeText(task.task_type) === normalizeText(args.taskType)
-  );
+  return (data as OpenOperationalTaskRow | null) || null;
 }
 
 function buildCommercialHandoffNotificationBody(handoff: CommercialHandoffContext) {
@@ -1396,6 +1782,441 @@ async function maybeAutoProgressCrmToQualificationFromSalesSignal(args: {
   };
 }
 
+async function maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical(args: {
+  supabase: any;
+  systemSupabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  taskId: string;
+  handoff: CommercialHandoffContext;
+  generationAnchorMessageId?: string | null;
+}): Promise<CrmAutoProgressResult> {
+  if (args.handoff.taskType !== "commercial_quote_request") {
+    console.info("[zion-ai-sales-handoff] crm auto progress skipped", {
+      reason: "handoff_is_not_quote_request",
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "handoff_is_not_quote_request",
+      skippedReason: "handoff_is_not_quote_request",
+    };
+  }
+
+  if (!args.organizationId || !args.conversationId) {
+    console.info("[zion-ai-sales-handoff] crm auto progress skipped", {
+      reason: "missing_organization_or_conversation",
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "missing_organization_or_conversation",
+      skippedReason: "missing_organization_or_conversation",
+    };
+  }
+
+  const commercialOpportunityId = readCommercialOpportunityIdFromHandoff(args.handoff);
+
+  if (!commercialOpportunityId) {
+    console.info("[zion-ai-sales-handoff] crm auto progress skipped", {
+      reason: "missing_commercial_opportunity_context",
+      taskId: args.taskId,
+      taskType: args.handoff.taskType,
+      conversationId: args.conversationId,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "missing_commercial_opportunity_context",
+      skippedReason: "missing_commercial_opportunity_context",
+    };
+  }
+
+  const handoffReasonDetails = buildCommercialHandoffReasonDetails(args.handoff);
+  const handoffEvidenceSummary = summarizeCommercialHandoffEvidence(args.handoff);
+  const evidenceMessageId = cleanText(args.generationAnchorMessageId) || null;
+
+  const stageSnapshot = await loadCanonicalCommercialOpportunityStage({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    commercialOpportunityId,
+  });
+
+  if (!stageSnapshot.ok) {
+    return {
+      attempted: false,
+      progressed: false,
+      reason: stageSnapshot.reason,
+      skippedReason: stageSnapshot.reason,
+    };
+  }
+
+  const currentStage = stageSnapshot.stage;
+
+  if (!AUTO_PROGRESS_TO_ORCAMENTO_ALLOWED_FROM.has(currentStage)) {
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "current_state_not_allowed",
+      skippedReason: "current_state_not_allowed",
+      currentState: currentStage,
+    };
+  }
+
+  const transitionLegacyState = async (args2: {
+    toState: "qualificacao" | "orcamento";
+    reason: string;
+    eventKey: string;
+    previousState: string;
+    failureReason:
+      | "crm_transition_to_qualification_failed"
+      | "crm_transition_to_budget_failed_after_qualification"
+      | "crm_transition_rpc_failed";
+  }) => {
+    const { error } = await transitionConversationStateAsInternalActor({
+      supabase: args.supabase,
+      conversationId: args.conversationId,
+      toState: args2.toState,
+      reason: args2.reason,
+      actorType: "ai",
+      source: "ai_sales_auto_progress",
+      eventKey: args2.eventKey,
+    });
+
+    if (error) {
+      console.warn("[zion-ai-sales-handoff] legacy transition failed", {
+        reason: "legacy_transition_failed",
+        taskId: args.taskId,
+        conversationId: args.conversationId,
+        commercialOpportunityId,
+        previousState: args2.previousState,
+        toState: args2.toState,
+        error: error.message,
+      });
+      return {
+        attempted: true,
+        progressed: false,
+        reason: args2.failureReason,
+        previousState: args2.previousState,
+        currentState: args2.previousState,
+        error: error.message,
+      } satisfies CrmAutoProgressResult;
+    }
+
+    return null;
+  };
+
+  const transitionCanonicalStage = async (args2: {
+    targetStage: "qualificacao" | "orcamento";
+    idempotencyKey: string;
+    currentState: string;
+    failureReason:
+      | "canonical_transition_to_qualification_failed"
+      | "canonical_transition_to_budget_failed_after_qualification"
+      | "canonical_transition_to_budget_failed";
+  }) => {
+    const { error } = await transitionCommercialOpportunityStageBySystem({
+      supabase: args.systemSupabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      commercialOpportunityId,
+      idempotencyKey: args2.idempotencyKey,
+      targetStage: args2.targetStage,
+      reasonDetails: handoffReasonDetails,
+      evidenceType: "commercial_handoff_task",
+      evidenceMessageId,
+      evidenceSummary: handoffEvidenceSummary,
+      source: "ai_sales_auto_progress",
+    });
+
+    if (error) {
+      console.warn("[zion-ai-sales-handoff] canonical transition failed", {
+        reason: "canonical_transition_failed",
+        taskId: args.taskId,
+        conversationId: args.conversationId,
+        commercialOpportunityId,
+        currentState: args2.currentState,
+        targetStage: args2.targetStage,
+        error: error.message,
+      });
+      return {
+        attempted: true,
+        progressed: false,
+        reason: args2.failureReason,
+        previousState: args2.currentState,
+        currentState: args2.currentState,
+        error: error.message,
+      } satisfies CrmAutoProgressResult;
+    }
+
+    return null;
+  };
+
+  if (currentStage === "novo_lead") {
+    const qualificationEventKey = buildAiSalesAutoProgressEventKey({
+      taskId: args.taskId,
+      step: "prepare_qualification",
+    });
+    const qualificationCanonicalFailure = await transitionCanonicalStage({
+      targetStage: "qualificacao",
+      idempotencyKey: qualificationEventKey,
+      currentState: currentStage,
+      failureReason: "canonical_transition_to_qualification_failed",
+    });
+
+    if (qualificationCanonicalFailure) {
+      return qualificationCanonicalFailure;
+    }
+
+    const qualificationLegacyFailure = await transitionLegacyState({
+      toState: "qualificacao",
+      reason: "auto_progress_from_ai_sales_quote_request_prepare_qualification",
+      eventKey: qualificationEventKey,
+      previousState: currentStage,
+      failureReason: "crm_transition_to_qualification_failed",
+    });
+
+    if (qualificationLegacyFailure) {
+      return qualificationLegacyFailure;
+    }
+
+    const budgetEventKey = buildAiSalesAutoProgressEventKey({
+      taskId: args.taskId,
+      step: "prepare_budget",
+    });
+    const budgetCanonicalFailure = await transitionCanonicalStage({
+      targetStage: "orcamento",
+      idempotencyKey: budgetEventKey,
+      currentState: "qualificacao",
+      failureReason: "canonical_transition_to_budget_failed_after_qualification",
+    });
+
+    if (budgetCanonicalFailure) {
+      return budgetCanonicalFailure;
+    }
+
+    const budgetLegacyFailure = await transitionLegacyState({
+      toState: "orcamento",
+      reason: "auto_progress_from_ai_sales_quote_request",
+      eventKey: budgetEventKey,
+      previousState: "qualificacao",
+      failureReason: "crm_transition_to_budget_failed_after_qualification",
+    });
+
+    if (budgetLegacyFailure) {
+      return budgetLegacyFailure;
+    }
+
+    return {
+      attempted: true,
+      progressed: true,
+      reason: "crm_auto_progress_completed_via_qualification",
+      previousState: currentStage,
+      currentState: "orcamento",
+    };
+  }
+
+  const budgetEventKey = buildAiSalesAutoProgressEventKey({
+    taskId: args.taskId,
+    step: currentStage === "qualificacao" ? "prepare_budget" : "budget_direct",
+  });
+  const budgetCanonicalFailure = await transitionCanonicalStage({
+    targetStage: "orcamento",
+    idempotencyKey: budgetEventKey,
+    currentState: currentStage,
+    failureReason: "canonical_transition_to_budget_failed",
+  });
+
+  if (budgetCanonicalFailure) {
+    return budgetCanonicalFailure;
+  }
+
+  const budgetLegacyFailure = await transitionLegacyState({
+    toState: "orcamento",
+    reason: "auto_progress_from_ai_sales_quote_request",
+    eventKey: budgetEventKey,
+    previousState: currentStage,
+    failureReason: "crm_transition_rpc_failed",
+  });
+
+  if (budgetLegacyFailure) {
+    return budgetLegacyFailure;
+  }
+
+  return {
+    attempted: true,
+    progressed: true,
+    reason: "crm_auto_progress_completed",
+    previousState: currentStage,
+    currentState: "orcamento",
+  };
+}
+
+async function maybeAutoProgressCrmToQualificationFromSalesSignalCanonical(args: {
+  supabase: any;
+  systemSupabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  lastCustomerMessage: string | null | undefined;
+  commercialOpportunityId: string | null;
+  generationAnchorMessageId: string | null;
+}): Promise<CrmAutoProgressResult> {
+  if (!args.organizationId || !args.conversationId) {
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "missing_organization_or_conversation",
+      skippedReason: "missing_organization_or_conversation",
+    };
+  }
+
+  if (!hasClearCommercialQualificationSignal(args.lastCustomerMessage)) {
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "no_clear_commercial_signal",
+      skippedReason: "no_clear_commercial_signal",
+    };
+  }
+
+  const commercialOpportunityId = cleanText(args.commercialOpportunityId);
+  const generationAnchorMessageId = cleanText(args.generationAnchorMessageId);
+
+  if (!commercialOpportunityId || !generationAnchorMessageId) {
+    console.info("[zion-ai-sales-qualification] auto progress skipped", {
+      reason: "missing_commercial_opportunity_context",
+      conversationId: args.conversationId,
+    });
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "missing_commercial_opportunity_context",
+      skippedReason: "missing_commercial_opportunity_context",
+    };
+  }
+
+  const stageSnapshot = await loadCanonicalCommercialOpportunityStage({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    commercialOpportunityId,
+  });
+
+  if (!stageSnapshot.ok) {
+    return {
+      attempted: false,
+      progressed: false,
+      reason: stageSnapshot.reason,
+      skippedReason: stageSnapshot.reason,
+    };
+  }
+
+  const currentStage = stageSnapshot.stage;
+
+  if (AUTO_PROGRESS_TO_QUALIFICACAO_BLOCKED.has(currentStage)) {
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "current_state_blocked",
+      skippedReason: "current_state_blocked",
+      currentState: currentStage,
+    };
+  }
+
+  if (!AUTO_PROGRESS_TO_QUALIFICACAO_ALLOWED_FROM.has(currentStage)) {
+    return {
+      attempted: false,
+      progressed: false,
+      reason: "current_state_not_allowed",
+      skippedReason: "current_state_not_allowed",
+      currentState: currentStage,
+    };
+  }
+
+  const qualificationSignalEventKey = buildAiSalesSignalProgressEventKey({
+    generationAnchorMessageId,
+    targetStage: "qualificacao",
+  });
+  const { error: canonicalError } =
+    await transitionCommercialOpportunityStageBySystem({
+      supabase: args.systemSupabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      commercialOpportunityId,
+      idempotencyKey: qualificationSignalEventKey,
+      targetStage: "qualificacao",
+      reasonDetails: "clear_customer_qualification_signal_detected",
+      evidenceType: "incoming_customer_message",
+      evidenceMessageId: generationAnchorMessageId,
+      evidenceSummary:
+        "Mensagem do cliente contém sinal comercial claro para qualificação.",
+      source: "ai_sales_auto_progress",
+    });
+
+  if (canonicalError) {
+    console.warn("[zion-ai-sales-qualification] canonical transition failed", {
+      reason: "canonical_transition_failed",
+      conversationId: args.conversationId,
+      commercialOpportunityId,
+      generationAnchorMessageId,
+      currentState: currentStage,
+      error: canonicalError.message,
+    });
+    return {
+      attempted: true,
+      progressed: false,
+      reason: "canonical_transition_to_qualification_failed",
+      currentState: currentStage,
+      error: canonicalError.message,
+    };
+  }
+
+  const { error: legacyError } = await transitionConversationStateAsInternalActor({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+    toState: "qualificacao",
+    reason: "auto_progress_from_ai_sales_qualification_signal",
+    actorType: "ai",
+    source: "ai_sales_auto_progress",
+  });
+
+  if (legacyError) {
+    console.warn("[zion-ai-sales-qualification] legacy transition failed", {
+      reason: "legacy_transition_failed",
+      conversationId: args.conversationId,
+      commercialOpportunityId,
+      generationAnchorMessageId,
+      currentState: currentStage,
+      error: legacyError.message,
+    });
+    return {
+      attempted: true,
+      progressed: false,
+      reason: "crm_transition_rpc_failed",
+      currentState: currentStage,
+      error: legacyError.message,
+    };
+  }
+
+  return {
+    attempted: true,
+    progressed: true,
+    reason: "crm_auto_progress_completed",
+    previousState: currentStage,
+  };
+}
+
 function isCustomerIncomingMessage(row: MessageBoundaryRow): boolean {
   return (
     normalizeText(row.sender) === "user" &&
@@ -1476,25 +2297,423 @@ function hasAiReplyAfterLatestCustomerMessage(
   );
 }
 
-async function loadLatestIncomingCustomerMessage(args: {
+async function loadAnchoredIncomingCustomerMessage(args: {
   supabase: any;
+  organizationId: string;
+  storeId: string;
   conversationId: string;
+  messageId: string;
 }): Promise<CustomerIncomingMessageRow | null> {
   const { data, error } = await args.supabase
     .from("messages")
-    .select("id, sender, direction, content, created_at")
+    .select(
+      "id, organization_id, store_id, conversation_id, sender, direction, content, created_at"
+    )
+    .eq("id", args.messageId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
     .eq("conversation_id", args.conversationId)
-    .order("created_at", { ascending: false })
-    .limit(20);
+    .eq("sender", "user")
+    .eq("direction", "incoming")
+    .maybeSingle();
 
   if (error) {
     throw new Error(
-      `Falha ao carregar a ultima mensagem do cliente: ${error.message}`
+      `Falha ao carregar a mensagem-ancora do cliente: ${error.message}`
     );
   }
 
-  const rows = Array.isArray(data) ? (data as CustomerIncomingMessageRow[]) : [];
-  return rows.find(isCustomerIncomingMessage) || null;
+  const row =
+    data && typeof data === "object" ? (data as CustomerIncomingMessageRow) : null;
+
+  if (!row || cleanText(row.content) == null) {
+    return null;
+  }
+
+  return row;
+}
+
+type CustomerContractAcceptanceFlowDeps = {
+  detectStrongCustomerContractAcceptance: typeof detectStrongCustomerContractAcceptance;
+  findEligibleSentContractForCustomerAcceptance: typeof findEligibleSentContractForCustomerAcceptance;
+  signSalesContractAsCustomer: typeof signSalesContractAsCustomer;
+  buildCustomerContractAcceptanceConfirmationText: typeof buildCustomerContractAcceptanceConfirmationText;
+  sendAiPanelMessage: typeof sendAiPanelMessage;
+  loadConversationMessageBoundaryState: typeof loadConversationMessageBoundaryState;
+};
+
+function buildCustomerContractAcceptanceContext(args: {
+  contractId: string;
+  contractNumber: string | null;
+  matchedBy: string;
+  triggerMessageId: string;
+  triggerMessageContent: string;
+  partialSuccess: boolean;
+  confirmationPersisted: boolean;
+  confirmationStatus: "suppressed" | "failed" | "sent";
+  confirmationReason: string | null;
+  confirmationErrorMessage?: string;
+  acceptanceOutcome?: string | null;
+  replayed?: boolean;
+  reconciled?: boolean;
+  signatureId?: string | null;
+  contractStatus?: string | null;
+  versionStatus?: string | null;
+  sideEffects?: {
+    businessEvent: "completed" | "failed" | "skipped";
+    documentReview: "completed" | "failed" | "skipped";
+  } | null;
+}) {
+  return {
+    flow: "customer_contract_text_acceptance",
+    partialSuccess: args.partialSuccess,
+    contractAccepted: true,
+    confirmationPersisted: args.confirmationPersisted,
+    confirmationStatus: args.confirmationStatus,
+    confirmationReason: args.confirmationReason,
+    ...(args.confirmationErrorMessage
+      ? { confirmationErrorMessage: args.confirmationErrorMessage }
+      : {}),
+    contractId: args.contractId,
+    contractNumber: args.contractNumber,
+    matchedBy: args.matchedBy,
+    ...(args.acceptanceOutcome ? { acceptanceOutcome: args.acceptanceOutcome } : {}),
+    ...(typeof args.replayed === "boolean" ? { replayed: args.replayed } : {}),
+    ...(typeof args.reconciled === "boolean" ? { reconciled: args.reconciled } : {}),
+    ...(args.signatureId ? { signatureId: args.signatureId } : {}),
+    ...(args.contractStatus ? { contractStatus: args.contractStatus } : {}),
+    ...(args.versionStatus ? { versionStatus: args.versionStatus } : {}),
+    ...(args.sideEffects ? { sideEffects: args.sideEffects } : {}),
+    triggerMessageId: args.triggerMessageId,
+    triggerMessageContent: args.triggerMessageContent,
+  };
+}
+
+function normalizeConfirmedPanelMessageId(messageId: string | null | undefined) {
+  const confirmedMessageId = String(messageId || "").trim();
+  return confirmedMessageId || null;
+}
+
+function buildAiReplySupersededResult(aiText?: string): Extract<
+  GenerateAndSaveAiSalesReplyResult,
+  { ok: false }
+> {
+  return {
+    ok: false,
+    error: AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE,
+    message:
+      "Entrou mensagem mais nova do cliente durante a geracao. Ignorando esta resposta antiga.",
+    ...(aiText ? { aiText } : {}),
+  };
+}
+
+async function ensureBoundaryStillMatchesAnchor(args: {
+  deps: CustomerContractAcceptanceFlowDeps;
+  supabase: any;
+  conversationId: string;
+  anchorMessageId: string;
+  aiText?: string;
+}): Promise<Extract<GenerateAndSaveAiSalesReplyResult, { ok: false }> | null> {
+  const boundary = await args.deps.loadConversationMessageBoundaryState({
+    supabase: args.supabase,
+    conversationId: args.conversationId,
+  });
+
+  if (boundary.lastIncomingCustomerMessageId !== args.anchorMessageId) {
+    return buildAiReplySupersededResult(args.aiText);
+  }
+
+  return null;
+}
+
+export async function tryHandleCustomerContractAcceptance(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  leadId: string | null;
+  anchorMessageId: string;
+}, deps?: Partial<CustomerContractAcceptanceFlowDeps>): Promise<GenerateAndSaveAiSalesReplyResult | null> {
+  const resolvedDeps: CustomerContractAcceptanceFlowDeps = {
+    detectStrongCustomerContractAcceptance,
+    findEligibleSentContractForCustomerAcceptance,
+    signSalesContractAsCustomer,
+    buildCustomerContractAcceptanceConfirmationText,
+    sendAiPanelMessage,
+    loadConversationMessageBoundaryState,
+    ...deps,
+  };
+
+  const anchoredCustomerMessage = await loadAnchoredIncomingCustomerMessage({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    conversationId: args.conversationId,
+    messageId: args.anchorMessageId,
+  });
+
+  if (!anchoredCustomerMessage) {
+    return {
+      ok: false,
+      error: "INVALID_GENERATION_ANCHOR_MESSAGE",
+      message:
+        "A mensagem-ancora explicita nao e elegivel como mensagem de cliente para a geracao comercial.",
+    };
+  }
+
+  const acceptanceText = cleanText(anchoredCustomerMessage.content);
+
+  if (!acceptanceText) {
+    return {
+      ok: false,
+      error: "INVALID_GENERATION_ANCHOR_MESSAGE",
+      message:
+        "A mensagem-ancora explicita nao e elegivel como mensagem de cliente para a geracao comercial.",
+    };
+  }
+
+  if (!resolvedDeps.detectStrongCustomerContractAcceptance(acceptanceText)) {
+    return null;
+  }
+
+  const eligibleContract =
+    await resolvedDeps.findEligibleSentContractForCustomerAcceptance({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      leadId: args.leadId,
+      anchorMessageId: anchoredCustomerMessage.id,
+      allowLeadFallback: false,
+    });
+
+  if (eligibleContract.outcome === "single") {
+    const supersededBeforeSign = await ensureBoundaryStillMatchesAnchor({
+      deps: resolvedDeps,
+      supabase: args.supabase,
+      conversationId: args.conversationId,
+      anchorMessageId: anchoredCustomerMessage.id,
+    });
+
+    if (supersededBeforeSign) {
+      return supersededBeforeSign;
+    }
+
+    const acceptanceResult = await resolvedDeps.signSalesContractAsCustomer({
+      scope: eligibleContract.scope,
+      expectedAnchorMessageId: anchoredCustomerMessage.id,
+      acceptanceText,
+      metadataSource: "sales_ai_conversation_customer_acceptance_v1",
+      metadata: {
+        accepted_via: "conversation_text",
+        channel: "conversation",
+        conversation_id: args.conversationId,
+        lead_id: args.leadId,
+        trigger_message_id: anchoredCustomerMessage.id,
+        trigger_message_content: acceptanceText,
+        contract_number: eligibleContract.contractNumber,
+        matched_by: eligibleContract.matchedBy,
+      },
+    });
+
+    const aiText = resolvedDeps.buildCustomerContractAcceptanceConfirmationText();
+    const supersededBeforeSend = await ensureBoundaryStillMatchesAnchor({
+      deps: resolvedDeps,
+      supabase: args.supabase,
+      conversationId: args.conversationId,
+      anchorMessageId: anchoredCustomerMessage.id,
+      aiText,
+    });
+
+    if (supersededBeforeSend) {
+      return {
+        ok: true,
+        aiText,
+        context: buildCustomerContractAcceptanceContext({
+        contractId: eligibleContract.contractId,
+        contractNumber: eligibleContract.contractNumber,
+        matchedBy: eligibleContract.matchedBy,
+        acceptanceOutcome: acceptanceResult.outcome,
+        replayed: acceptanceResult.replayed,
+        reconciled: acceptanceResult.reconciled,
+        signatureId: acceptanceResult.signatureId,
+        contractStatus: acceptanceResult.contractStatus,
+        versionStatus: acceptanceResult.versionStatus,
+        sideEffects: acceptanceResult.sideEffects || null,
+        triggerMessageId: anchoredCustomerMessage.id,
+        triggerMessageContent: acceptanceText,
+        partialSuccess: true,
+          confirmationPersisted: false,
+          confirmationStatus: "suppressed",
+          confirmationReason: AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE,
+        }),
+        usage: null,
+        persisted: true,
+        messageId: null,
+      };
+    }
+
+    let messageId: string | null = null;
+
+    try {
+      messageId = await resolvedDeps.sendAiPanelMessage({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        aiText,
+      });
+    } catch (sendError: any) {
+      return {
+        ok: true,
+        aiText,
+        context: buildCustomerContractAcceptanceContext({
+          contractId: eligibleContract.contractId,
+          contractNumber: eligibleContract.contractNumber,
+          matchedBy: eligibleContract.matchedBy,
+          acceptanceOutcome: acceptanceResult.outcome,
+          replayed: acceptanceResult.replayed,
+          reconciled: acceptanceResult.reconciled,
+          signatureId: acceptanceResult.signatureId,
+          contractStatus: acceptanceResult.contractStatus,
+          versionStatus: acceptanceResult.versionStatus,
+          sideEffects: acceptanceResult.sideEffects || null,
+          triggerMessageId: anchoredCustomerMessage.id,
+          triggerMessageContent: acceptanceText,
+          partialSuccess: true,
+          confirmationPersisted: false,
+          confirmationStatus: "failed",
+          confirmationReason: "PANEL_SEND_MESSAGE_FAILED",
+          confirmationErrorMessage:
+            sendError?.message || "Falha ao enviar resposta da IA.",
+        }),
+        usage: null,
+        persisted: true,
+        messageId: null,
+      };
+    }
+
+    messageId = normalizeConfirmedPanelMessageId(messageId);
+
+    if (!messageId) {
+      return {
+        ok: true,
+        aiText,
+        context: buildCustomerContractAcceptanceContext({
+          contractId: eligibleContract.contractId,
+          contractNumber: eligibleContract.contractNumber,
+          matchedBy: eligibleContract.matchedBy,
+          acceptanceOutcome: acceptanceResult.outcome,
+          replayed: acceptanceResult.replayed,
+          reconciled: acceptanceResult.reconciled,
+          signatureId: acceptanceResult.signatureId,
+          contractStatus: acceptanceResult.contractStatus,
+          versionStatus: acceptanceResult.versionStatus,
+          sideEffects: acceptanceResult.sideEffects || null,
+          triggerMessageId: anchoredCustomerMessage.id,
+          triggerMessageContent: acceptanceText,
+          partialSuccess: true,
+          confirmationPersisted: false,
+          confirmationStatus: "failed",
+          confirmationReason: "PANEL_SEND_MESSAGE_FAILED",
+          confirmationErrorMessage: "PANEL_SEND_MESSAGE_NOT_CONFIRMED",
+        }),
+        usage: null,
+        persisted: true,
+        messageId: null,
+      };
+    }
+
+    return {
+      ok: true,
+      aiText,
+      context: buildCustomerContractAcceptanceContext({
+        contractId: eligibleContract.contractId,
+        contractNumber: eligibleContract.contractNumber,
+        matchedBy: eligibleContract.matchedBy,
+        acceptanceOutcome: acceptanceResult.outcome,
+        replayed: acceptanceResult.replayed,
+        reconciled: acceptanceResult.reconciled,
+        signatureId: acceptanceResult.signatureId,
+        contractStatus: acceptanceResult.contractStatus,
+        versionStatus: acceptanceResult.versionStatus,
+        sideEffects: acceptanceResult.sideEffects || null,
+        triggerMessageId: anchoredCustomerMessage.id,
+        triggerMessageContent: acceptanceText,
+        partialSuccess: false,
+        confirmationPersisted: true,
+        confirmationStatus: "sent",
+        confirmationReason: null,
+      }),
+      usage: null,
+      persisted: true,
+      messageId,
+    };
+  }
+
+  if (eligibleContract.outcome === "multiple") {
+    const aiText =
+      "Recebi seu aceite. Como encontrei mais de um contrato enviado em aberto para voce, preciso que a loja confirme qual deles seguir antes de registrar formalmente.";
+    const supersededBeforeSend = await ensureBoundaryStillMatchesAnchor({
+      deps: resolvedDeps,
+      supabase: args.supabase,
+      conversationId: args.conversationId,
+      anchorMessageId: anchoredCustomerMessage.id,
+      aiText,
+    });
+
+    if (supersededBeforeSend) {
+      return supersededBeforeSend;
+    }
+
+    let messageId: string | null = null;
+
+    try {
+      messageId = await resolvedDeps.sendAiPanelMessage({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: args.storeId,
+        conversationId: args.conversationId,
+        aiText,
+      });
+    } catch (sendError: any) {
+      return {
+        ok: false,
+        error: "PANEL_SEND_MESSAGE_FAILED",
+        message: sendError?.message || "Falha ao enviar resposta da IA.",
+        aiText,
+      };
+    }
+
+    messageId = normalizeConfirmedPanelMessageId(messageId);
+
+    if (!messageId) {
+      return {
+        ok: false,
+        error: "PANEL_SEND_MESSAGE_FAILED",
+        message: "PANEL_SEND_MESSAGE_NOT_CONFIRMED",
+        aiText,
+      };
+    }
+
+    return {
+      ok: true,
+      aiText,
+      context: {
+        flow: "customer_contract_text_acceptance_ambiguous",
+        candidateCount: eligibleContract.candidateCount,
+        candidates: eligibleContract.candidates,
+        matchedBy: eligibleContract.matchedBy,
+        triggerMessageId: anchoredCustomerMessage.id,
+        triggerMessageContent: acceptanceText,
+      },
+      usage: null,
+      persisted: true,
+      messageId,
+    };
+  }
+
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1894,12 +3113,18 @@ async function clearPendingResumeArtifacts(args: {
     nextResumeReason,
     queueCancelReason,
   } = args;
+  const canonicalScope = await resolveConversationAiWindowStateScope({
+    supabase,
+    conversationId,
+    expectedOrganizationId: organizationId,
+    expectedStoreId: storeId,
+  });
   const nowIso = new Date().toISOString();
 
   const windowPatch: Record<string, unknown> = {
-    conversation_id: conversationId,
-    organization_id: organizationId,
-    store_id: storeId,
+    conversation_id: canonicalScope.conversationId,
+    organization_id: canonicalScope.organizationId,
+    store_id: canonicalScope.storeId,
     waiting_next_day: false,
     next_resume_at: null,
     updated_at: nowIso,
@@ -1932,9 +3157,9 @@ async function clearPendingResumeArtifacts(args: {
       processed_at: nowIso,
       processing_error: queueCancelReason,
     })
-    .eq("organization_id", organizationId)
-    .eq("store_id", storeId)
-    .eq("conversation_id", conversationId)
+    .eq("organization_id", canonicalScope.organizationId)
+    .eq("store_id", canonicalScope.storeId)
+    .eq("conversation_id", canonicalScope.conversationId)
     .is("processed_at", null)
     .like("queue_key", `${queuePrefix}%`);
 
@@ -1965,6 +3190,12 @@ async function persistOperationalFollowUpDecision(args: {
     lastCustomerMessageAt,
     lastAiMessageAt,
   } = args;
+  const canonicalScope = await resolveConversationAiWindowStateScope({
+    supabase,
+    conversationId,
+    expectedOrganizationId: organizationId,
+    expectedStoreId: storeId,
+  });
 
   if (!decision || decision.kind === "none") {
     return;
@@ -1972,16 +3203,16 @@ async function persistOperationalFollowUpDecision(args: {
 
   const timeZone = await loadStoreTimeZone({
     supabase,
-    organizationId,
-    storeId,
+    organizationId: canonicalScope.organizationId,
+    storeId: canonicalScope.storeId,
   });
 
   if (decision.kind === "stop_contact") {
     await clearPendingResumeArtifacts({
       supabase,
-      organizationId,
-      storeId,
-      conversationId,
+      organizationId: canonicalScope.organizationId,
+      storeId: canonicalScope.storeId,
+      conversationId: canonicalScope.conversationId,
       customerMessageAt: lastCustomerMessageAt,
       preserveReason: true,
       nextResumeReason: decision.reason,
@@ -1997,7 +3228,9 @@ async function persistOperationalFollowUpDecision(args: {
         waiting_next_day: false,
         updated_at: new Date().toISOString(),
       })
-      .eq("conversation_id", conversationId);
+      .eq("conversation_id", canonicalScope.conversationId)
+      .eq("organization_id", canonicalScope.organizationId)
+      .eq("store_id", canonicalScope.storeId);
 
     if (stopWindowError) {
       throw new Error(
@@ -2014,9 +3247,9 @@ async function persistOperationalFollowUpDecision(args: {
   });
 
   const windowPayload: Record<string, unknown> = {
-    conversation_id: conversationId,
-    organization_id: organizationId,
-    store_id: storeId,
+    conversation_id: canonicalScope.conversationId,
+    organization_id: canonicalScope.organizationId,
+    store_id: canonicalScope.storeId,
     waiting_next_day: decision.reason === "customer_requested_tomorrow",
     pending_supervisor: false,
     last_ai_message_at: lastAiMessageAt,
@@ -2042,9 +3275,9 @@ async function persistOperationalFollowUpDecision(args: {
 
   await clearPendingResumeArtifacts({
     supabase,
-    organizationId,
-    storeId,
-    conversationId,
+    organizationId: canonicalScope.organizationId,
+    storeId: canonicalScope.storeId,
+    conversationId: canonicalScope.conversationId,
     customerMessageAt: lastCustomerMessageAt,
     preserveReason: true,
     nextResumeReason: decision.reason,
@@ -2093,10 +3326,10 @@ async function persistOperationalFollowUpDecision(args: {
   const { error: insertQueueError } = await supabase
     .from("ai_run_queue")
     .insert({
-      organization_id: organizationId,
-      store_id: storeId,
-      conversation_id: conversationId,
-      lead_id: leadId,
+      organization_id: canonicalScope.organizationId,
+      store_id: canonicalScope.storeId,
+      conversation_id: canonicalScope.conversationId,
+      lead_id: canonicalScope.leadId || leadId,
       queue_key: queueKey,
       input,
       enqueued_at: now.toISOString(),
@@ -2211,26 +3444,61 @@ async function updateLatestRunningAiRunUsage(args: {
   }
 }
 
-async function createCommercialAssistantHandoff(args: {
+function readCommercialOpportunityIdFromHandoff(
+  handoff: CommercialHandoffContext | null | undefined,
+) {
+  return cleanText(handoff?.commercialOpportunityId) || null;
+}
+
+function getRequiredCommercialOpportunityIdFromHandoff(
+  handoff: CommercialHandoffContext,
+) {
+  if (!handoff.shouldCreateTask) {
+    throw new Error("COMMERCIAL_HANDOFF_MISSING_OPPORTUNITY_CONTEXT");
+  }
+
+  const commercialOpportunityId = readCommercialOpportunityIdFromHandoff(handoff);
+
+  if (!commercialOpportunityId) {
+    throw new Error("COMMERCIAL_HANDOFF_MISSING_OPPORTUNITY_CONTEXT");
+  }
+
+  return commercialOpportunityId;
+}
+
+export async function createCommercialAssistantHandoff(
+  args: {
   supabase: any;
+  systemSupabase?: any;
   organizationId: string;
   storeId: string;
   conversationId: string;
   leadId: string | null;
   handoff: CommercialHandoffContext | null | undefined;
-}): Promise<CommercialHandoffCreationResult> {
+  generationAnchorMessageId?: string | null;
+},
+  deps: CommercialAssistantHandoffDeps = {
+    findExistingTask: findExistingCommercialHandoffTask,
+    enqueueNotification: enqueueCommercialHandoffNotification,
+    autoProgressBudgetFromQuote: maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical,
+  },
+): Promise<CommercialHandoffCreationResult> {
   const handoff = args.handoff;
 
   if (!handoff || !handoff.shouldCreateTask) {
     return { created: false, skipped: true, reason: "handoff_not_requested" };
   }
 
-  const similarTask = await findExistingCommercialHandoffTask({
+  const commercialOpportunityId =
+    getRequiredCommercialOpportunityIdFromHandoff(handoff);
+
+  const similarTask = await deps.findExistingTask({
     supabase: args.supabase,
     organizationId: args.organizationId,
     storeId: args.storeId,
     conversationId: args.conversationId,
     taskType: handoff.taskType,
+    commercialOpportunityId,
   });
 
   if (similarTask) {
@@ -2281,6 +3549,7 @@ async function createCommercialAssistantHandoff(args: {
       description: handoff.conversationSummary || handoff.nextStep,
       related_lead_id: args.leadId || null,
       related_conversation_id: args.conversationId,
+      commercial_opportunity_id: commercialOpportunityId,
       related_appointment_id: null,
       customer_name: handoff.customerName || null,
       customer_phone: handoff.customerPhone || null,
@@ -2301,7 +3570,7 @@ async function createCommercialAssistantHandoff(args: {
     );
   }
 
-  const notificationResult = await enqueueCommercialHandoffNotification({
+  const notificationResult = await deps.enqueueNotification({
     supabase: args.supabase,
     organizationId: args.organizationId,
     storeId: args.storeId,
@@ -2314,14 +3583,16 @@ async function createCommercialAssistantHandoff(args: {
   let crmAutoProgressResult: CrmAutoProgressResult | undefined;
 
   try {
-    crmAutoProgressResult = await maybeAutoProgressCrmToBudgetFromQuoteHandoff({
+    crmAutoProgressResult = await deps.autoProgressBudgetFromQuote({
       supabase: args.supabase,
+      systemSupabase: args.systemSupabase || args.supabase,
       organizationId: args.organizationId,
       storeId: args.storeId,
       conversationId: args.conversationId,
       leadId: args.leadId || null,
       taskId: String(data.id),
       handoff,
+      generationAnchorMessageId: args.generationAnchorMessageId || null,
     });
   } catch (error: any) {
     console.warn("[zion-ai-sales-handoff] falha inesperada no autoavanço do CRM", {
@@ -2600,9 +3871,21 @@ async function maybeCreateAssistantPreContractCardFromCustomerSignal(args: {
 
 
 export async function generateAndSaveAiSalesReply(
-  params: GenerateAndSaveAiSalesReplyParams
+  params: GenerateAndSaveAiSalesReplyParams,
+  deps?: Partial<GenerateAndSaveAiSalesReplyDeps>,
 ): Promise<GenerateAndSaveAiSalesReplyResult> {
   try {
+    const resolvedDeps: GenerateAndSaveAiSalesReplyDeps = {
+      createSupabaseClient: createClient,
+      detectOpenAssistantOperationalFlow,
+      loadConversationMessageBoundaryState,
+      tryHandleCustomerContractAcceptance,
+      generateAiSalesReply,
+      updateLatestRunningAiRunUsage,
+      sendAiPanelMessage,
+      createCommercialAssistantHandoff,
+      ...deps,
+    };
     const organizationId = String(params.organizationId || "").trim();
     const storeId = String(params.storeId || "").trim();
     const conversationId = String(params.conversationId || "").trim();
@@ -2627,22 +3910,44 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = resolvedDeps.createSupabaseClient(
+      supabaseUrl,
+      supabaseServiceKey,
+    );
+    const systemSupabase = resolvedDeps.createSupabaseClient(
+      supabaseUrl,
+      supabaseServiceKey,
+    );
 
-    const { data: conversation, error: conversationError } = await supabase
-      .from("conversations")
-      .select("id, organization_id, lead_id, is_human_active")
-      .eq("id", conversationId)
-      .eq("organization_id", organizationId)
-      .maybeSingle();
+    let canonicalScope: Awaited<
+      ReturnType<typeof resolveConversationAiWindowStateScope>
+    >;
+    try {
+      canonicalScope = await resolveConversationAiWindowStateScope({
+        supabase,
+        conversationId,
+        expectedOrganizationId: organizationId,
+        expectedStoreId: storeId,
+      });
+    } catch (scopeError) {
+      const mappedScopeError = mapConversationScopeResolutionError(scopeError);
 
-    if (conversationError) {
-      return {
-        ok: false,
-        error: "CONVERSATION_LOOKUP_FAILED",
-        message: conversationError.message,
-      };
+      if (!mappedScopeError.ok) {
+        return mappedScopeError.result;
+      }
+
+      throw scopeError;
     }
+
+    const canonicalOrganizationId = canonicalScope.organizationId;
+    const canonicalStoreId = canonicalScope.storeId;
+    const canonicalConversationId = canonicalScope.conversationId;
+    const conversation: ConversationRow = {
+      id: canonicalConversationId,
+      organization_id: canonicalOrganizationId,
+      lead_id: canonicalScope.leadId,
+      is_human_active: canonicalScope.isHumanActive,
+    };
 
     if (!conversation) {
       return {
@@ -2663,11 +3968,11 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    const operationalGuard = await detectOpenAssistantOperationalFlow({
+    const operationalGuard = await resolvedDeps.detectOpenAssistantOperationalFlow({
       supabase,
-      organizationId,
-      storeId,
-      conversationId,
+      organizationId: canonicalOrganizationId,
+      storeId: canonicalStoreId,
+      conversationId: canonicalConversationId,
     });
 
     if (operationalGuard.blocked) {
@@ -2682,9 +3987,9 @@ export async function generateAndSaveAiSalesReply(
       };
     }
 
-    const boundaryBeforeGeneration = await loadConversationMessageBoundaryState({
+    const boundaryBeforeGeneration = await resolvedDeps.loadConversationMessageBoundaryState({
       supabase,
-      conversationId,
+      conversationId: canonicalConversationId,
     });
 
     if (!boundaryBeforeGeneration.lastIncomingCustomerMessageId) {
@@ -2707,134 +4012,36 @@ export async function generateAndSaveAiSalesReply(
 
     await clearPendingResumeArtifacts({
       supabase,
-      organizationId,
-      storeId,
-      conversationId,
+      organizationId: canonicalOrganizationId,
+      storeId: canonicalStoreId,
+      conversationId: canonicalConversationId,
       customerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
       preserveReason: false,
       nextResumeReason: null,
       queueCancelReason: "cancelled_by_new_customer_message",
     });
 
-    const lastIncomingCustomerMessage = await loadLatestIncomingCustomerMessage({
+    const contractAcceptanceResult = await resolvedDeps.tryHandleCustomerContractAcceptance({
       supabase,
-      conversationId,
+      organizationId: canonicalOrganizationId,
+      storeId: canonicalStoreId,
+      conversationId: canonicalConversationId,
+      leadId: normalizedConversation.lead_id || null,
+      anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
     });
 
-    const lastCustomerMessageText = cleanText(lastIncomingCustomerMessage?.content);
-
-    if (detectStrongCustomerContractAcceptance(lastCustomerMessageText)) {
-      const eligibleContract = await findEligibleSentContractForCustomerAcceptance({
-        supabase,
-        organizationId,
-        storeId,
-        conversationId,
-        leadId: normalizedConversation.lead_id || null,
-      });
-
-      if (eligibleContract.outcome === "single") {
-        await signSalesContractAsCustomer({
-          scope: eligibleContract.scope,
-          acceptanceText: lastCustomerMessageText,
-          metadataSource: "sales_ai_conversation_customer_acceptance_v1",
-          metadata: {
-            accepted_via: "conversation_text",
-            channel: "conversation",
-            conversation_id: conversationId,
-            lead_id: normalizedConversation.lead_id || null,
-            trigger_message_id: lastIncomingCustomerMessage?.id || null,
-            trigger_message_content: lastCustomerMessageText,
-            contract_number: eligibleContract.contractNumber,
-            matched_by: eligibleContract.matchedBy,
-          },
-        });
-
-        const aiText = buildCustomerContractAcceptanceConfirmationText();
-        let messageId: string | null = null;
-
-        try {
-          messageId = await sendAiPanelMessage({
-            supabase,
-            organizationId,
-            storeId,
-            conversationId,
-            aiText,
-          });
-        } catch (sendAcceptanceReplyError: any) {
-          return {
-            ok: false,
-            error: "PANEL_SEND_MESSAGE_FAILED",
-            message:
-              sendAcceptanceReplyError?.message ||
-              "Falha ao enviar confirmacao de aceite do contrato.",
-            aiText,
-          };
-        }
-
-        return {
-          ok: true,
-          aiText,
-          context: {
-            flow: "customer_contract_text_acceptance",
-            contractId: eligibleContract.contractId,
-            contractNumber: eligibleContract.contractNumber,
-            matchedBy: eligibleContract.matchedBy,
-            triggerMessageId: lastIncomingCustomerMessage?.id || null,
-          },
-          usage: null,
-          persisted: true,
-          messageId,
-        };
-      }
-
-      if (eligibleContract.outcome === "multiple") {
-        const aiText =
-          "Recebi seu aceite. Como encontrei mais de um contrato enviado em aberto para voce, preciso que a loja confirme qual deles seguir antes de registrar formalmente.";
-        let messageId: string | null = null;
-
-        try {
-          messageId = await sendAiPanelMessage({
-            supabase,
-            organizationId,
-            storeId,
-            conversationId,
-            aiText,
-          });
-        } catch (sendClarificationError: any) {
-          return {
-            ok: false,
-            error: "PANEL_SEND_MESSAGE_FAILED",
-            message:
-              sendClarificationError?.message ||
-              "Falha ao enviar resposta de esclarecimento sobre o aceite do contrato.",
-            aiText,
-          };
-        }
-
-        return {
-          ok: true,
-          aiText,
-          context: {
-            flow: "customer_contract_text_acceptance_ambiguous",
-            candidateCount: eligibleContract.candidateCount,
-            candidates: eligibleContract.candidates,
-            matchedBy: eligibleContract.matchedBy,
-            triggerMessageId: lastIncomingCustomerMessage?.id || null,
-          },
-          usage: null,
-          persisted: true,
-          messageId,
-        };
-      }
+    if (contractAcceptanceResult) {
+      return contractAcceptanceResult;
     }
 
-    const generationResult = await generateAiSalesReply({
-      organizationId,
-      storeId,
-      conversationId,
+    const generationResult = await resolvedDeps.generateAiSalesReply({
+      organizationId: canonicalOrganizationId,
+      storeId: canonicalStoreId,
+      conversationId: canonicalConversationId,
+      anchorMessageId: boundaryBeforeGeneration.lastIncomingCustomerMessageId,
     });
 
-    if (!generationResult.ok) {
+    if (generationResult.ok === false) {
       return {
         ok: false,
         error: generationResult.error,
@@ -2843,6 +4050,22 @@ export async function generateAndSaveAiSalesReply(
     }
 
     let aiText = String(generationResult.aiText || "").trim();
+    const generationAnchorMessageId = String(generationResult.anchorMessageId || "").trim();
+    const generationResponseAnchorCommercialContext =
+      (generationResult.context?.responseAnchorCommercialContext ||
+        null) as ResponseAnchorCommercialContext | null;
+
+    if (
+      !generationAnchorMessageId ||
+      generationAnchorMessageId !== boundaryBeforeGeneration.lastIncomingCustomerMessageId
+    ) {
+      return {
+        ok: false,
+        error: AI_REPLY_GENERATION_ANCHOR_MISMATCH,
+        message:
+          "A geracao nao preservou a mensagem-ancora capturada antes da execucao. A resposta foi descartada com seguranca.",
+      };
+    }
 
     if (!aiText) {
       return {
@@ -2853,11 +4076,11 @@ export async function generateAndSaveAiSalesReply(
     }
 
     try {
-      await updateLatestRunningAiRunUsage({
+      await resolvedDeps.updateLatestRunningAiRunUsage({
         supabase,
-        organizationId,
-        storeId,
-        conversationId,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        conversationId: canonicalConversationId,
         usage: generationResult.usage,
       });
     } catch (usageError: any) {
@@ -2869,22 +4092,16 @@ export async function generateAndSaveAiSalesReply(
       });
     }
 
-    const boundaryBeforeSave = await loadConversationMessageBoundaryState({
+    const boundaryBeforeSave = await resolvedDeps.loadConversationMessageBoundaryState({
       supabase,
-      conversationId,
+      conversationId: canonicalConversationId,
     });
 
     if (
       boundaryBeforeSave.lastIncomingCustomerMessageId !==
       boundaryBeforeGeneration.lastIncomingCustomerMessageId
     ) {
-      return {
-        ok: false,
-        error: "AI_REPLY_SUPERSEDED_BY_NEWER_CUSTOMER_MESSAGE",
-        message:
-          "Entrou mensagem mais nova do cliente durante a geracao. Ignorando esta resposta antiga.",
-        aiText,
-      };
+      return buildAiReplySupersededResult(aiText);
     }
 
     if (hasAiReplyAfterLatestCustomerMessage(boundaryBeforeSave)) {
@@ -2898,44 +4115,64 @@ export async function generateAndSaveAiSalesReply(
     }
 
     const requestedCommercialHandoff = generationResult.context?.commercialHandoff || null;
+    let validatedCommercialHandoff = requestedCommercialHandoff;
+    let requestedCommercialOpportunityId: string | null = null;
 
     if (requestedCommercialHandoff?.shouldCreateTask) {
       try {
-        const similarOpenHandoff = await findExistingCommercialHandoffTask({
-          supabase,
-          organizationId,
-          storeId,
-          conversationId,
-          taskType: requestedCommercialHandoff.taskType,
+        requestedCommercialOpportunityId =
+          getRequiredCommercialOpportunityIdFromHandoff(
+            requestedCommercialHandoff
+          );
+      } catch {
+        validatedCommercialHandoff = null;
+        console.info("[zion-ai-sales-handoff] commercial handoff skipped", {
+          reason: "missing_commercial_opportunity_context",
+          organizationId: canonicalOrganizationId,
+          storeId: canonicalStoreId,
+          conversationId: canonicalConversationId,
         });
+      }
 
-        if (similarOpenHandoff) {
-          aiText =
-            requestedCommercialHandoff.taskType === "commercial_quote_request"
-              ? "Seu pedido de orcamento ja esta aberto por aqui. Se quiser, eu tambem posso organizar os detalhes do que voce procura para facilitar o retorno da loja."
-              : "Essa solicitacao de visita ja esta aberta por aqui. Se quiser, me confirma sua cidade e um bom dia ou periodo que isso ajuda no retorno da loja.";
+      if (validatedCommercialHandoff && requestedCommercialOpportunityId) {
+        try {
+          const similarOpenHandoff = await findExistingCommercialHandoffTask({
+            supabase,
+            organizationId: canonicalOrganizationId,
+            storeId: canonicalStoreId,
+            conversationId: canonicalConversationId,
+            taskType: validatedCommercialHandoff.taskType,
+            commercialOpportunityId: requestedCommercialOpportunityId,
+          });
+
+          if (similarOpenHandoff) {
+            aiText =
+              validatedCommercialHandoff.taskType === "commercial_quote_request"
+                ? "Seu pedido de orcamento ja esta aberto por aqui. Se quiser, eu tambem posso organizar os detalhes do que voce procura para facilitar o retorno da loja."
+                : "Essa solicitacao de visita ja esta aberta por aqui. Se quiser, me confirma sua cidade e um bom dia ou periodo que isso ajuda no retorno da loja.";
+          }
+        } catch (handoffLookupError) {
+          console.warn("[zion-ai-sales-handoff] Falha ao verificar handoff comercial antes do envio", {
+            organizationId,
+            storeId,
+            conversationId,
+            error:
+              handoffLookupError instanceof Error
+                ? handoffLookupError.message
+                : String(handoffLookupError || ""),
+          });
         }
-      } catch (handoffLookupError) {
-        console.warn("[zion-ai-sales-handoff] Falha ao verificar handoff comercial antes do envio", {
-          organizationId,
-          storeId,
-          conversationId,
-          error:
-            handoffLookupError instanceof Error
-              ? handoffLookupError.message
-              : String(handoffLookupError || ""),
-        });
       }
     }
 
     let messageId: string | null = null;
 
     try {
-      messageId = await sendAiPanelMessage({
+      messageId = await resolvedDeps.sendAiPanelMessage({
         supabase,
-        organizationId,
-        storeId,
-        conversationId,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        conversationId: canonicalConversationId,
         aiText,
       });
     } catch (sendError: any) {
@@ -2953,8 +4190,8 @@ export async function generateAndSaveAiSalesReply(
 
     if (
       catalogPhotoAction &&
-      catalogPhotoAction.organizationId === organizationId &&
-      catalogPhotoAction.storeId === storeId
+      catalogPhotoAction.organizationId === canonicalOrganizationId &&
+      catalogPhotoAction.storeId === canonicalStoreId
     ) {
       try {
         const imageMetadata: Record<string, unknown> = {
@@ -2975,7 +4212,7 @@ export async function generateAndSaveAiSalesReply(
         };
 
         const { error: imageInsertError } = await supabase.rpc("insert_message", {
-          p_conversation_id: conversationId,
+          p_conversation_id: canonicalConversationId,
           p_sender: "ai",
           p_direction: "outgoing",
           p_message_type: "image",
@@ -3016,9 +4253,9 @@ export async function generateAndSaveAiSalesReply(
 
     await persistOperationalFollowUpDecision({
       supabase,
-      organizationId,
-      storeId,
-      conversationId,
+      organizationId: canonicalOrganizationId,
+      storeId: canonicalStoreId,
+      conversationId: canonicalConversationId,
       leadId: normalizedConversation.lead_id || null,
       decision:
         generationResult.context?.operationalFollowUpDecision || {
@@ -3032,13 +4269,15 @@ export async function generateAndSaveAiSalesReply(
     let commercialHandoffResult: CommercialHandoffCreationResult | null = null;
 
     try {
-      commercialHandoffResult = await createCommercialAssistantHandoff({
+      commercialHandoffResult = await resolvedDeps.createCommercialAssistantHandoff({
         supabase,
-        organizationId,
-        storeId,
-        conversationId,
+        systemSupabase,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        conversationId: canonicalConversationId,
         leadId: normalizedConversation.lead_id || null,
-        handoff: generationResult.context?.commercialHandoff || null,
+        handoff: validatedCommercialHandoff,
+        generationAnchorMessageId,
       });
     } catch (handoffError: any) {
       commercialHandoffResult = {
@@ -3060,9 +4299,9 @@ export async function generateAndSaveAiSalesReply(
     try {
       preContractCardResult = await maybeCreateAssistantPreContractCardFromCustomerSignal({
         supabase,
-        organizationId,
-        storeId,
-        conversationId,
+        organizationId: canonicalOrganizationId,
+        storeId: canonicalStoreId,
+        conversationId: canonicalConversationId,
         leadId: normalizedConversation.lead_id || null,
         customerName: generationResult.context?.leadName || null,
         lastCustomerMessage:
@@ -3089,8 +4328,8 @@ export async function generateAndSaveAiSalesReply(
     }
 
     const shouldSkipQualificationBecauseBudgetProgressed =
-      requestedCommercialHandoff?.shouldCreateTask === true &&
-      requestedCommercialHandoff?.taskType === "commercial_quote_request" &&
+      validatedCommercialHandoff?.shouldCreateTask === true &&
+      validatedCommercialHandoff?.taskType === "commercial_quote_request" &&
       commercialHandoffResult?.crmAutoProgressed === true;
 
     let qualificationAutoProgressResult: CrmAutoProgressResult | null = null;
@@ -3110,12 +4349,17 @@ export async function generateAndSaveAiSalesReply(
     } else {
       try {
         qualificationAutoProgressResult =
-          await maybeAutoProgressCrmToQualificationFromSalesSignal({
+          await maybeAutoProgressCrmToQualificationFromSalesSignalCanonical({
             supabase,
-            organizationId,
-            storeId,
-            conversationId,
+            systemSupabase,
+            organizationId: canonicalOrganizationId,
+            storeId: canonicalStoreId,
+            conversationId: canonicalConversationId,
             leadId: normalizedConversation.lead_id || null,
+            commercialOpportunityId:
+              generationResponseAnchorCommercialContext?.commercialOpportunityId ||
+              null,
+            generationAnchorMessageId,
             lastCustomerMessage:
               generationResult.context?.lastCustomerMessage ||
               generationResult.context?.commercialHandoff?.lastCustomerMessage ||
@@ -3157,12 +4401,6 @@ export async function generateAndSaveAiSalesReply(
       messageId,
     };
   } catch (error: any) {
-    return {
-      ok: false,
-      error: "GENERATE_AND_SAVE_AI_SALES_REPLY_FAILED",
-      message:
-        error?.message ||
-        "Erro interno ao gerar e salvar resposta comercial da IA.",
-    };
+    return mapGenerateAndSaveAiSalesReplyError(error);
   }
 }

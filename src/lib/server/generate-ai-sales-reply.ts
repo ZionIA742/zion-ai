@@ -24,6 +24,9 @@ type LeadRow = {
 
 type MessageRow = {
   id: string;
+  organization_id?: string | null;
+  store_id?: string | null;
+  conversation_id?: string | null;
   sender: string | null;
   content: string | null;
   direction: string | null;
@@ -31,6 +34,89 @@ type MessageRow = {
   media_url: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
+  conversation_session_id?: string | null;
+  commercial_session_context_link_id?: string | null;
+  commercial_context_capture_state?: string | null;
+};
+
+type ConversationSessionRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  conversation_id: string;
+  status: string | null;
+};
+
+type CommercialSessionContextLinkRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  conversation_session_id: string;
+  customer_id: string | null;
+  commercial_opportunity_id: string | null;
+  lead_customer_link_id: string | null;
+  status: string | null;
+};
+
+export type HistoricalContextStatus =
+  | "captured"
+  | "pending_context"
+  | "no_active_session"
+  | "legacy_unknown"
+  | "inconsistent";
+
+export type AnchorHistoricalContextRelation =
+  | "same_anchor_context"
+  | "same_anchor_session_pending"
+  | "other_historical_context"
+  | "no_proven_historical_context"
+  | "inconsistent";
+
+export type ResponseAnchorCommercialContext = {
+  messageId: string;
+  captureState: HistoricalContextStatus;
+  historicalContextStatus: HistoricalContextStatus;
+  conversationSessionId: string | null;
+  commercialSessionContextLinkId: string | null;
+  customerId: string | null;
+  commercialOpportunityId: string | null;
+  leadCustomerLinkId: string | null;
+};
+
+export type MessageWithCommercialContext = MessageRow & {
+  messageMarker: string;
+  historicalContextStatus: HistoricalContextStatus;
+  anchorHistoricalContextRelation: AnchorHistoricalContextRelation;
+  historicalContextLabel: string;
+  conversationSessionIdResolved: string | null;
+  commercialSessionContextLinkIdResolved: string | null;
+  customerIdResolved: string | null;
+  commercialOpportunityIdResolved: string | null;
+  leadCustomerLinkIdResolved: string | null;
+};
+
+type LoadedCommercialSnapshotBatch = {
+  conversationSessions: ConversationSessionRow[];
+  commercialContextLinks: CommercialSessionContextLinkRow[];
+  resolutionFailed: boolean;
+};
+
+type QueryErrorLike = {
+  message: string;
+};
+
+type QueryResultLike<T> = Promise<{ data: T; error: QueryErrorLike | null }>;
+
+type SupabaseQueryChainLike = {
+  select(columns: string): unknown;
+  eq(field: string, value: unknown): unknown;
+  in(field: string, values: string[]): unknown;
+  order(field: string, options?: { ascending?: boolean }): unknown;
+  limit(value: number): unknown;
+};
+
+type SupabaseBatchClientLike = {
+  from(table: string): unknown;
 };
 
 type StoreRow = {
@@ -184,6 +270,7 @@ export type CommercialHandoffContext = {
   relevantObjection: string | null;
   customerPreferences: string | null;
   adModelOrRequestedModel: string | null;
+  commercialOpportunityId: string | null;
   nextStep: string;
 };
 
@@ -331,6 +418,7 @@ export type GenerateAiSalesReplyParams = {
   organizationId: string;
   storeId: string;
   conversationId: string;
+  anchorMessageId: string;
 };
 
 export type GenerateAiSalesReplyUsage = {
@@ -349,6 +437,7 @@ export type GenerateAiSalesReplyResult =
   | {
       ok: true;
       aiText: string;
+      anchorMessageId: string;
       usage: GenerateAiSalesReplyUsage;
       context: {
         leadName: string | null;
@@ -360,6 +449,7 @@ export type GenerateAiSalesReplyResult =
         operationalFollowUpDecision: OperationalFollowUpDecision;
         commercialHandoff: CommercialHandoffContext | null;
         catalogPhotoAction: CatalogPhotoActionContext | null;
+        responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
       };
     }
   | {
@@ -1242,6 +1332,641 @@ function looksLikeNeedSignal(text: string): boolean {
   );
 }
 
+function normalizeHistoricalContextStatus(
+  captureState: string | null | undefined
+): HistoricalContextStatus | null {
+  const normalized = normalizeText(captureState);
+
+  if (normalized === "captured") return "captured";
+  if (normalized === "pending_context") return "pending_context";
+  if (normalized === "no_active_session") return "no_active_session";
+  if (normalized === "legacy_unknown") return "legacy_unknown";
+  if (normalized === "inconsistent") return "inconsistent";
+
+  return null;
+}
+
+function buildMessageMarker(index: number): string {
+  return `M${String(index + 1).padStart(2, "0")}`;
+}
+
+function buildHistoricalContextLabel(
+  status: HistoricalContextStatus,
+  relation: AnchorHistoricalContextRelation
+): string {
+  if (status === "captured" && relation === "same_anchor_context") {
+    return "Mensagem do mesmo contexto comercial comprovado da mensagem atual.";
+  }
+
+  if (status === "captured" && relation === "other_historical_context") {
+    return "Mensagem de outro contexto comercial historico. Nao usar como estado atual.";
+  }
+
+  if (
+    status === "pending_context" ||
+    relation === "same_anchor_session_pending"
+  ) {
+    return "Havia sessao comercial, mas o customer/oportunidade ainda nao estavam comprovados naquele momento.";
+  }
+
+  if (status === "no_active_session") {
+    return "Nao havia sessao comercial ativa quando esta mensagem foi criada.";
+  }
+
+  if (status === "legacy_unknown") {
+    return "Historico comercial legado nao comprovado. Nao associar automaticamente ao processo atual.";
+  }
+
+  return "Snapshot comercial inconsistente. Nao usar como prova de customer, oportunidade ou processo.";
+}
+
+function isMessageRowInsideResolvedScope(args: {
+  message: MessageRow;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}): boolean {
+  const organizationId = String(args.message.organization_id || "").trim();
+  const storeId = String(args.message.store_id || "").trim();
+  const conversationId = String(args.message.conversation_id || "").trim();
+
+  return (
+    organizationId === args.organizationId &&
+    storeId === args.storeId &&
+    conversationId === args.conversationId
+  );
+}
+
+export function resolveGenerationAnchorMessage(args: {
+  messages: MessageRow[];
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  explicitAnchorMessageId: string;
+}):
+  | {
+      ok: true;
+      anchorMessage: MessageRow;
+      anchorMessageId: string;
+      fallbackUsed: boolean;
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+    } {
+  const explicitAnchorMessageId = String(args.explicitAnchorMessageId || "").trim();
+
+  if (!explicitAnchorMessageId) {
+    return {
+      ok: false,
+      error: "MISSING_GENERATION_ANCHOR_MESSAGE",
+      message: "A geracao comercial exige uma mensagem-ancora explicita e valida.",
+    };
+  }
+
+  const anchorMessage =
+    args.messages.find((message) => String(message.id || "").trim() === explicitAnchorMessageId) ||
+    null;
+
+  if (!anchorMessage) {
+    return {
+      ok: false,
+      error: "INVALID_GENERATION_ANCHOR_MESSAGE",
+      message: "A mensagem-ancora explicita nao foi encontrada no escopo carregado da conversa.",
+    };
+  }
+
+  if (
+    !isMessageRowInsideResolvedScope({
+      message: anchorMessage,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+    })
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_GENERATION_ANCHOR_MESSAGE",
+      message: "A mensagem-ancora explicita nao pertence ao escopo esperado da execucao.",
+    };
+  }
+
+  if (
+    normalizeText(anchorMessage.sender) !== "user" ||
+    normalizeText(anchorMessage.direction) !== "incoming" ||
+    getEffectiveMessageContent(anchorMessage).length === 0
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_GENERATION_ANCHOR_MESSAGE",
+      message:
+        "A mensagem-ancora explicita nao e elegivel como mensagem de cliente para a geracao comercial.",
+    };
+  }
+
+  return {
+    ok: true,
+    anchorMessage,
+    anchorMessageId: explicitAnchorMessageId,
+    fallbackUsed: false,
+  };
+}
+
+export async function loadScopedRecentMessages(args: {
+  supabase: SupabaseBatchClientLike;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}): QueryResultLike<MessageRow[] | null> {
+  const query = args.supabase.from("messages") as SupabaseQueryChainLike;
+  const selectedQuery = query.select(
+    "id, organization_id, store_id, conversation_id, sender, content, direction, message_type, media_url, metadata, created_at, conversation_session_id, commercial_session_context_link_id, commercial_context_capture_state"
+  ) as SupabaseQueryChainLike;
+  const scopedQuery = selectedQuery.eq(
+    "conversation_id",
+    args.conversationId
+  ) as SupabaseQueryChainLike;
+  const organizationScopedQuery = scopedQuery.eq(
+    "organization_id",
+    args.organizationId
+  ) as SupabaseQueryChainLike;
+  const storeScopedQuery = organizationScopedQuery.eq(
+    "store_id",
+    args.storeId
+  ) as SupabaseQueryChainLike;
+  const orderedQuery = storeScopedQuery.order("created_at", {
+    ascending: false,
+  }) as SupabaseQueryChainLike;
+
+  return orderedQuery.limit(12) as QueryResultLike<MessageRow[] | null>;
+}
+
+function resolveHistoricalContextStatusForMessage(args: {
+  message: MessageRow;
+  conversationSessionsById: Map<string, ConversationSessionRow>;
+  commercialContextLinksById: Map<string, CommercialSessionContextLinkRow>;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  resolutionFailed?: boolean;
+}): Omit<
+  MessageWithCommercialContext,
+  | "messageMarker"
+  | "anchorHistoricalContextRelation"
+  | "historicalContextLabel"
+> {
+  const sessionId = String(args.message.conversation_session_id || "").trim() || null;
+  const contextLinkId =
+    String(args.message.commercial_session_context_link_id || "").trim() || null;
+  const normalizedCaptureState = normalizeHistoricalContextStatus(
+    args.message.commercial_context_capture_state
+  );
+
+  if (args.resolutionFailed) {
+    return {
+      ...args.message,
+      historicalContextStatus: "inconsistent",
+      conversationSessionIdResolved: null,
+      commercialSessionContextLinkIdResolved: null,
+      customerIdResolved: null,
+      commercialOpportunityIdResolved: null,
+      leadCustomerLinkIdResolved: null,
+    };
+  }
+
+  const session = sessionId
+    ? args.conversationSessionsById.get(sessionId) || null
+    : null;
+  const link = contextLinkId
+    ? args.commercialContextLinksById.get(contextLinkId) || null
+    : null;
+  const sessionIsValid = Boolean(
+    session &&
+      session.organization_id === args.organizationId &&
+      session.store_id === args.storeId &&
+      session.conversation_id === args.conversationId
+  );
+  const linkIsValid = Boolean(
+    link &&
+      link.organization_id === args.organizationId &&
+      link.store_id === args.storeId &&
+      link.conversation_session_id === sessionId
+  );
+
+  if (normalizedCaptureState === "captured") {
+    if (!sessionId || !contextLinkId || !sessionIsValid || !linkIsValid || !link) {
+      return {
+        ...args.message,
+        historicalContextStatus: "inconsistent",
+        conversationSessionIdResolved: null,
+        commercialSessionContextLinkIdResolved: null,
+        customerIdResolved: null,
+        commercialOpportunityIdResolved: null,
+        leadCustomerLinkIdResolved: null,
+      };
+    }
+
+    return {
+      ...args.message,
+      historicalContextStatus: "captured",
+      conversationSessionIdResolved: sessionId,
+      commercialSessionContextLinkIdResolved: contextLinkId,
+      customerIdResolved: link.customer_id,
+      commercialOpportunityIdResolved: link.commercial_opportunity_id,
+      leadCustomerLinkIdResolved: link.lead_customer_link_id,
+    };
+  }
+
+  if (normalizedCaptureState === "pending_context") {
+    if (!sessionId || !sessionIsValid || contextLinkId) {
+      return {
+        ...args.message,
+        historicalContextStatus: "inconsistent",
+        conversationSessionIdResolved: null,
+        commercialSessionContextLinkIdResolved: null,
+        customerIdResolved: null,
+        commercialOpportunityIdResolved: null,
+        leadCustomerLinkIdResolved: null,
+      };
+    }
+
+    return {
+      ...args.message,
+      historicalContextStatus: "pending_context",
+      conversationSessionIdResolved: sessionId,
+      commercialSessionContextLinkIdResolved: null,
+      customerIdResolved: null,
+      commercialOpportunityIdResolved: null,
+      leadCustomerLinkIdResolved: null,
+    };
+  }
+
+  if (normalizedCaptureState === "no_active_session") {
+    if (sessionId || contextLinkId) {
+      return {
+        ...args.message,
+        historicalContextStatus: "inconsistent",
+        conversationSessionIdResolved: null,
+        commercialSessionContextLinkIdResolved: null,
+        customerIdResolved: null,
+        commercialOpportunityIdResolved: null,
+        leadCustomerLinkIdResolved: null,
+      };
+    }
+
+    return {
+      ...args.message,
+      historicalContextStatus: "no_active_session",
+      conversationSessionIdResolved: null,
+      commercialSessionContextLinkIdResolved: null,
+      customerIdResolved: null,
+      commercialOpportunityIdResolved: null,
+      leadCustomerLinkIdResolved: null,
+    };
+  }
+
+  if (normalizedCaptureState === "legacy_unknown") {
+    if (sessionId || contextLinkId) {
+      return {
+        ...args.message,
+        historicalContextStatus: "inconsistent",
+        conversationSessionIdResolved: null,
+        commercialSessionContextLinkIdResolved: null,
+        customerIdResolved: null,
+        commercialOpportunityIdResolved: null,
+        leadCustomerLinkIdResolved: null,
+      };
+    }
+
+    return {
+      ...args.message,
+      historicalContextStatus: "legacy_unknown",
+      conversationSessionIdResolved: null,
+      commercialSessionContextLinkIdResolved: null,
+      customerIdResolved: null,
+      commercialOpportunityIdResolved: null,
+      leadCustomerLinkIdResolved: null,
+    };
+  }
+
+  if (!sessionId && !contextLinkId) {
+    return {
+      ...args.message,
+      historicalContextStatus: "legacy_unknown",
+      conversationSessionIdResolved: null,
+      commercialSessionContextLinkIdResolved: null,
+      customerIdResolved: null,
+      commercialOpportunityIdResolved: null,
+      leadCustomerLinkIdResolved: null,
+    };
+  }
+
+  return {
+    ...args.message,
+    historicalContextStatus: "inconsistent",
+    conversationSessionIdResolved: null,
+    commercialSessionContextLinkIdResolved: null,
+    customerIdResolved: null,
+    commercialOpportunityIdResolved: null,
+    leadCustomerLinkIdResolved: null,
+  };
+}
+
+function classifyAnchorHistoricalContextRelation(args: {
+  resolvedMessage: Omit<
+    MessageWithCommercialContext,
+    "messageMarker" | "anchorHistoricalContextRelation" | "historicalContextLabel"
+  >;
+  responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
+}): AnchorHistoricalContextRelation {
+  const { resolvedMessage, responseAnchorCommercialContext } = args;
+
+  if (resolvedMessage.historicalContextStatus === "inconsistent") {
+    return "inconsistent";
+  }
+
+  if (!responseAnchorCommercialContext) {
+    return "no_proven_historical_context";
+  }
+
+  if (responseAnchorCommercialContext.historicalContextStatus === "captured") {
+    if (
+      resolvedMessage.historicalContextStatus === "captured" &&
+      resolvedMessage.commercialSessionContextLinkIdResolved ===
+        responseAnchorCommercialContext.commercialSessionContextLinkId
+    ) {
+      return "same_anchor_context";
+    }
+
+    if (
+      resolvedMessage.historicalContextStatus === "pending_context" &&
+      resolvedMessage.conversationSessionIdResolved ===
+        responseAnchorCommercialContext.conversationSessionId
+    ) {
+      return "same_anchor_session_pending";
+    }
+
+    if (resolvedMessage.historicalContextStatus === "captured") {
+      return "other_historical_context";
+    }
+
+    return "no_proven_historical_context";
+  }
+
+  if (responseAnchorCommercialContext.historicalContextStatus === "pending_context") {
+    if (
+      resolvedMessage.conversationSessionIdResolved &&
+      resolvedMessage.conversationSessionIdResolved ===
+        responseAnchorCommercialContext.conversationSessionId
+    ) {
+      return "same_anchor_session_pending";
+    }
+
+    if (resolvedMessage.historicalContextStatus === "captured") {
+      return "other_historical_context";
+    }
+
+    return "no_proven_historical_context";
+  }
+
+  return "no_proven_historical_context";
+}
+
+export function resolveMessagesWithCommercialContext(args: {
+  messages: MessageRow[];
+  anchorMessageId: string | null;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  conversationSessions: ConversationSessionRow[];
+  commercialContextLinks: CommercialSessionContextLinkRow[];
+  resolutionFailed?: boolean;
+}): {
+  annotatedMessages: MessageWithCommercialContext[];
+  responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
+} {
+  const conversationSessionsById = new Map(
+    args.conversationSessions.map((row) => [row.id, row])
+  );
+  const commercialContextLinksById = new Map(
+    args.commercialContextLinks.map((row) => [row.id, row])
+  );
+
+  const resolvedMessages = args.messages.map((message) =>
+    resolveHistoricalContextStatusForMessage({
+      message,
+      conversationSessionsById,
+      commercialContextLinksById,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      resolutionFailed: args.resolutionFailed,
+    })
+  );
+
+  const anchorResolvedMessage =
+    resolvedMessages.find((message) => message.id === args.anchorMessageId) || null;
+  const responseAnchorCommercialContext = anchorResolvedMessage
+    ? {
+        messageId: anchorResolvedMessage.id,
+        captureState: anchorResolvedMessage.historicalContextStatus,
+        historicalContextStatus: anchorResolvedMessage.historicalContextStatus,
+        conversationSessionId: anchorResolvedMessage.conversationSessionIdResolved,
+        commercialSessionContextLinkId:
+          anchorResolvedMessage.commercialSessionContextLinkIdResolved,
+        customerId: anchorResolvedMessage.customerIdResolved,
+        commercialOpportunityId:
+          anchorResolvedMessage.commercialOpportunityIdResolved,
+        leadCustomerLinkId: anchorResolvedMessage.leadCustomerLinkIdResolved,
+      }
+    : null;
+
+  const annotatedMessages = resolvedMessages.map((resolvedMessage, index) => {
+    const relation = classifyAnchorHistoricalContextRelation({
+      resolvedMessage,
+      responseAnchorCommercialContext,
+    });
+
+    return {
+      ...resolvedMessage,
+      messageMarker: buildMessageMarker(index),
+      anchorHistoricalContextRelation: relation,
+      historicalContextLabel: buildHistoricalContextLabel(
+        resolvedMessage.historicalContextStatus,
+        relation
+      ),
+    };
+  });
+
+  return {
+    annotatedMessages,
+    responseAnchorCommercialContext,
+  };
+}
+
+export function selectMessagesForCurrentCommercialInference(args: {
+  annotatedMessages: MessageWithCommercialContext[];
+  responseAnchorCommercialContext: ResponseAnchorCommercialContext | null;
+}): MessageWithCommercialContext[] {
+  const anchor = args.responseAnchorCommercialContext;
+
+  if (!anchor) {
+    return [];
+  }
+
+  if (anchor.historicalContextStatus === "captured") {
+    return args.annotatedMessages.filter(
+      (message) =>
+        message.anchorHistoricalContextRelation === "same_anchor_context" ||
+        message.anchorHistoricalContextRelation === "same_anchor_session_pending" ||
+        message.id === anchor.messageId
+    );
+  }
+
+  if (anchor.historicalContextStatus === "pending_context") {
+    return args.annotatedMessages.filter(
+      (message) =>
+        message.conversationSessionIdResolved != null &&
+        message.conversationSessionIdResolved === anchor.conversationSessionId &&
+        message.historicalContextStatus !== "inconsistent"
+    );
+  }
+
+  const anchorMessage =
+    args.annotatedMessages.find((message) => message.id === anchor.messageId) || null;
+  return anchorMessage ? [anchorMessage] : [];
+}
+
+function formatMessageActorLabel(message: MessageRow): string {
+  const sender = normalizeText(message.sender);
+  const direction = normalizeText(message.direction);
+
+  if (sender.includes("ai") || sender.includes("assistant") || sender.includes("bot")) {
+    return "IA";
+  }
+
+  if (direction === "outgoing") {
+    return "Humano";
+  }
+
+  return "Cliente";
+}
+
+export function buildHistoricalCommercialContextBlock(
+  messages: MessageWithCommercialContext[]
+): string {
+  if (messages.length === 0) {
+    return "Sem mensagens recentes classificadas.";
+  }
+
+  return messages
+    .map(
+      (message) =>
+        `- ${message.messageMarker} | ${formatMessageActorLabel(message)} | ${message.historicalContextLabel}`
+    )
+    .join("\n");
+}
+
+export async function loadCommercialSnapshotBatch(args: {
+  supabase: SupabaseBatchClientLike;
+  messages: MessageRow[];
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+}): Promise<LoadedCommercialSnapshotBatch> {
+  const conversationSessionIds = [...new Set(
+    args.messages
+      .map((message) => String(message.conversation_session_id || "").trim())
+      .filter(Boolean)
+  )];
+  const commercialContextLinkIds = [...new Set(
+    args.messages
+      .map((message) => String(message.commercial_session_context_link_id || "").trim())
+      .filter(Boolean)
+  )];
+
+  let resolutionFailed = false;
+  let conversationSessions: ConversationSessionRow[] = [];
+  let commercialContextLinks: CommercialSessionContextLinkRow[] = [];
+
+  if (conversationSessionIds.length > 0) {
+    const sessionQuery = args.supabase.from("conversation_sessions") as SupabaseQueryChainLike;
+    const selectedSessionQuery = sessionQuery.select(
+      "id, organization_id, store_id, conversation_id, status"
+    ) as SupabaseQueryChainLike;
+    const filteredSessionQuery = selectedSessionQuery.in(
+      "id",
+      conversationSessionIds
+    ) as SupabaseQueryChainLike;
+    const organizationScopedSessionQuery = filteredSessionQuery.eq(
+      "organization_id",
+      args.organizationId
+    ) as SupabaseQueryChainLike;
+    const storeScopedSessionQuery = organizationScopedSessionQuery.eq(
+      "store_id",
+      args.storeId
+    ) as SupabaseQueryChainLike;
+    const finalSessionQuery = storeScopedSessionQuery.eq(
+      "conversation_id",
+      args.conversationId
+    );
+    const { data, error } = (await finalSessionQuery) as {
+      data: ConversationSessionRow[] | null;
+      error: QueryErrorLike | null;
+    };
+
+    if (error) {
+      resolutionFailed = true;
+      console.error("[generateAiSalesReply] failed to load conversation_sessions batch", {
+        message: error.message,
+      });
+    } else {
+      conversationSessions = (data || []) as ConversationSessionRow[];
+    }
+  }
+
+  if (commercialContextLinkIds.length > 0) {
+    const linkQuery = args.supabase.from(
+      "commercial_session_context_links"
+    ) as SupabaseQueryChainLike;
+    const selectedLinkQuery = linkQuery.select(
+      "id, organization_id, store_id, conversation_session_id, customer_id, commercial_opportunity_id, lead_customer_link_id, status"
+    ) as SupabaseQueryChainLike;
+    const filteredLinkQuery = selectedLinkQuery.in(
+      "id",
+      commercialContextLinkIds
+    ) as SupabaseQueryChainLike;
+    const organizationScopedLinkQuery = filteredLinkQuery.eq(
+      "organization_id",
+      args.organizationId
+    ) as SupabaseQueryChainLike;
+    const finalLinkQuery = organizationScopedLinkQuery.eq("store_id", args.storeId);
+    const { data, error } = (await finalLinkQuery) as {
+      data: CommercialSessionContextLinkRow[] | null;
+      error: QueryErrorLike | null;
+    };
+
+    if (error) {
+      resolutionFailed = true;
+      console.error(
+        "[generateAiSalesReply] failed to load commercial_session_context_links batch",
+        {
+          message: error.message,
+        }
+      );
+    } else {
+      commercialContextLinks = (data || []) as CommercialSessionContextLinkRow[];
+    }
+  }
+
+  return {
+    conversationSessions,
+    commercialContextLinks,
+    resolutionFailed,
+  };
+}
+
 function collectConversationFacts(messages: MessageRow[]): ConversationFactState {
   const history = messages
     .filter((msg) => normalizeText(msg.sender) !== "ai_sales")
@@ -1550,6 +2275,7 @@ function inferCommercialHandoff(args: {
   offersTechnicalVisit: boolean;
   lastAiListedPools: boolean;
   recommendedModel: string | null;
+  commercialOpportunityId: string | null;
 }): CommercialHandoffContext | null {
   if (args.patienceSignal.status === "not_interested") return null;
 
@@ -1614,6 +2340,7 @@ function inferCommercialHandoff(args: {
     relevantObjection,
     customerPreferences,
     adModelOrRequestedModel,
+    commercialOpportunityId: args.commercialOpportunityId,
     nextStep:
       taskType === "commercial_quote_request"
         ? "Responsável deve revisar o pedido, confirmar procedimento comercial e retornar ao cliente com o orçamento correto."
@@ -5479,8 +6206,12 @@ function buildInstructions(args: {
   storeName: string | null;
   leadName: string | null;
   leadState: string | null;
+  conversationStatus: string | null;
+  humanActive: boolean | null;
   onboardingMap: Record<string, string>;
   recentHistory: string;
+  currentCommercialStateBlock: string;
+  historicalCommercialContextBlock: string;
   customerMediaContextBlock: string;
   productPhotoRequestContextBlock: string;
   hasCustomerLocationPhoto: boolean;
@@ -5702,10 +6433,16 @@ ${operationalBlock}
 RESUMO BRUTO DAS RESPOSTAS CONFIGURADAS
 ${rawOnboardingSummary}
 
+ESTADO COMERCIAL ATUAL
+${args.currentCommercialStateBlock}
+
 ETAPA DO LEAD
 - lead_state: ${args.leadState || "desconhecido"}
 
-HISTÓRICO RECENTE
+CONTEXTO COMERCIAL DAS MENSAGENS NO MOMENTO DO ENVIO
+${args.historicalCommercialContextBlock}
+
+HISTÓRICO RECENTE DA CONVERSA
 ${args.recentHistory || "Sem histórico recente relevante."}
 
 OPÇÕES DE PISCINA DISPONÍVEIS NO CONTEXTO
@@ -5752,18 +6489,11 @@ function formatRecentHistory(messages: MessageRow[]): string {
     .filter((msg) => getEffectiveMessageContent(msg).length > 0)
     .slice(-8)
     .map((msg) => {
-      const sender = normalizeText(msg.sender);
-      const direction = normalizeText(msg.direction);
-
-      let label = "Cliente";
-
-      if (sender.includes("ai") || sender.includes("assistant") || sender.includes("bot")) {
-        label = "IA";
-      } else if (direction === "outgoing") {
-        label = "Humano";
-      }
-
-      return `${label}: ${getEffectiveMessageContent(msg)}`;
+      const marker =
+        "messageMarker" in msg && typeof msg.messageMarker === "string"
+          ? `${msg.messageMarker} `
+          : "";
+      return `${marker}${formatMessageActorLabel(msg)}: ${getEffectiveMessageContent(msg)}`;
     })
     .join("\n");
 }
@@ -5915,7 +6645,24 @@ function cleanupAiText(text: string, responseMode: ResponseMode, leadName?: stri
   return applyWhatsAppOutputStyle(cleaned.trim(), responseMode, leadName);
 }
 
-function buildModelInput(messages: MessageRow[]) {
+function buildCurrentCommercialStateBlock(args: {
+  conversationStatus: string | null;
+  leadState: string | null;
+  humanActive: boolean | null;
+  onboardingMap: Record<string, string>;
+}): string {
+  return [
+    `- conversation.status atual: ${args.conversationStatus || "desconhecido"}`,
+    `- lead.state atual: ${args.leadState || "desconhecido"}`,
+    `- humanActive atual: ${args.humanActive === true ? "sim" : "nao"}`,
+    `- visita tecnica configurada atualmente: ${hasConfiguredTechnicalVisit(args.onboardingMap) ? "sim" : "nao"}`,
+    `- chave Pix configurada atualmente: ${hasConfiguredPixKey(args.onboardingMap) ? "sim" : "nao"}`,
+    `- regra de entrada/sinal configurada atualmente: ${hasConfiguredDownPaymentRule(args.onboardingMap) ? "sim" : "nao"}`,
+    "- use configuracoes atuais, catalogo atual e disponibilidade atual como fonte soberana para responder agora.",
+  ].join("\n");
+}
+
+export function buildModelInput(messages: MessageRow[]) {
   return messages
     .filter((msg) => getEffectiveMessageContent(msg).length > 0)
     .map((msg) => {
@@ -5931,7 +6678,7 @@ function buildModelInput(messages: MessageRow[]) {
 
       return {
         role: role as "user" | "assistant",
-        content: getEffectiveMessageContent(msg),
+        content: `${"messageMarker" in msg && typeof msg.messageMarker === "string" ? `[${msg.messageMarker}] ` : ""}${getEffectiveMessageContent(msg)}`,
       };
     });
 }
@@ -5943,6 +6690,15 @@ export async function generateAiSalesReply(
     const organizationId = String(params.organizationId || "").trim();
     const requestedStoreId = String(params.storeId || "").trim();
     const conversationId = String(params.conversationId || "").trim();
+    const explicitAnchorMessageId = String(params.anchorMessageId || "").trim();
+
+    if (!explicitAnchorMessageId) {
+      return {
+        ok: false,
+        error: "MISSING_GENERATION_ANCHOR_MESSAGE",
+        message: "A geracao comercial exige uma mensagem-ancora explicita e valida.",
+      };
+    }
 
     if (!organizationId || !conversationId) {
       return {
@@ -6074,12 +6830,13 @@ export async function generateAiSalesReply(
       }
     }
 
-    const { data: recentMessages, error: recentMessagesError } = await supabase
-      .from("messages")
-      .select("id, sender, content, direction, message_type, media_url, metadata, created_at")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: false })
-      .limit(12);
+    const { data: recentMessages, error: recentMessagesError } =
+      await loadScopedRecentMessages({
+        supabase,
+        organizationId,
+        storeId: resolvedStoreId,
+        conversationId,
+      });
 
     if (recentMessagesError) {
       return {
@@ -6090,21 +6847,26 @@ export async function generateAiSalesReply(
     }
 
     const orderedMessages = ([...(recentMessages || [])] as MessageRow[]).reverse();
-    const alreadyHasCustomerLocationPhoto = hasCustomerLocationPhoto(orderedMessages);
-    const customerMediaContextBlock = buildCustomerMediaContextBlock(orderedMessages);
 
-    const lastCustomerMessageRow =
-      [...orderedMessages]
-        .reverse()
-        .find(
-          (msg) =>
-            normalizeText(msg.sender) === "user" &&
-            normalizeText(msg.direction) === "incoming" &&
-            getEffectiveMessageContent(msg).length > 0
-        ) || null;
-    const lastCustomerMessage = lastCustomerMessageRow
-      ? getEffectiveMessageContent(lastCustomerMessageRow)
-      : "";
+    const anchorResolution = resolveGenerationAnchorMessage({
+      messages: orderedMessages,
+      organizationId,
+      storeId: resolvedStoreId,
+      conversationId,
+      explicitAnchorMessageId,
+    });
+
+    if (anchorResolution.ok === false) {
+      return {
+        ok: false,
+        error: anchorResolution.error,
+        message: anchorResolution.message,
+      };
+    }
+
+    const anchorMessageRow = anchorResolution.anchorMessage;
+    const anchorMessageId = anchorResolution.anchorMessageId;
+    const lastCustomerMessage = getEffectiveMessageContent(anchorMessageRow);
 
     if (!lastCustomerMessage) {
       return {
@@ -6114,17 +6876,61 @@ export async function generateAiSalesReply(
       };
     }
 
+    const commercialSnapshotBatch = await loadCommercialSnapshotBatch({
+      supabase,
+      messages: orderedMessages,
+      organizationId,
+      storeId: resolvedStoreId,
+      conversationId,
+    });
+    const { annotatedMessages, responseAnchorCommercialContext } =
+      resolveMessagesWithCommercialContext({
+        messages: orderedMessages,
+        anchorMessageId,
+        organizationId,
+        storeId: resolvedStoreId,
+        conversationId,
+        conversationSessions: commercialSnapshotBatch.conversationSessions,
+        commercialContextLinks: commercialSnapshotBatch.commercialContextLinks,
+        resolutionFailed: commercialSnapshotBatch.resolutionFailed,
+      });
+    const messagesForConversationContinuity = annotatedMessages;
+    const inferredCurrentCommercialMessages = selectMessagesForCurrentCommercialInference({
+      annotatedMessages,
+      responseAnchorCommercialContext,
+    });
+    const messagesForCurrentCommercialInference =
+      inferredCurrentCommercialMessages.length > 0
+        ? inferredCurrentCommercialMessages
+        : anchorMessageId
+          ? annotatedMessages.filter((message) => message.id === anchorMessageId)
+          : [];
+    const alreadyHasCustomerLocationPhoto = hasCustomerLocationPhoto(
+      messagesForCurrentCommercialInference
+    );
+    const customerMediaContextBlock = buildCustomerMediaContextBlock(
+      messagesForCurrentCommercialInference
+    );
+
     const behaviorInstructionBlock = buildBehaviorInstructionBlock(lastCustomerMessage);
     const questionIntentCount = countQuestionIntents(lastCustomerMessage);
-    const recentHistory = formatRecentHistory(orderedMessages);
-    const lastAiMessage = detectLastAiMessage(orderedMessages);
+    const recentHistory = formatRecentHistory(messagesForConversationContinuity);
+    const historicalCommercialContextBlock = buildHistoricalCommercialContextBlock(
+      messagesForConversationContinuity
+    );
+    const lastAiMessage = detectLastAiMessage(messagesForCurrentCommercialInference);
     const lastAiListedPools = detectLastAiListedPools(lastAiMessage);
     const lastAiOfferedPoolOptions = detectLastAiOfferedPoolOptions(lastAiMessage);
     const explicitCatalogRequest = isExplicitCatalogRequest(lastCustomerMessage);
     const catalogIntent = analyzeCatalogIntent(lastCustomerMessage);
     const requestedPoolReference = extractRequestedPoolReference(lastCustomerMessage);
-    const customerConversationText = buildCustomerConversationText(orderedMessages, lastCustomerMessage);
-    const latestLocationPhotoAnalysis = getLatestLocationPhotoAnalysis(orderedMessages);
+    const customerConversationText = buildCustomerConversationText(
+      messagesForCurrentCommercialInference,
+      lastCustomerMessage
+    );
+    const latestLocationPhotoAnalysis = getLatestLocationPhotoAnalysis(
+      messagesForCurrentCommercialInference
+    );
     const photoOrSimulationSubtype = looksLikePhotoOrSimulationRequest(lastCustomerMessage)
       ? detectPhotoOrSimulationSubtype({
           lastCustomerMessage,
@@ -6137,7 +6943,9 @@ export async function generateAiSalesReply(
         catalogIntent,
         requestedPoolReference,
       });
-    const conversationFacts = collectConversationFacts(orderedMessages);
+    const conversationFacts = collectConversationFacts(
+      messagesForCurrentCommercialInference
+    );
     const affirmativeContinuation = isAffirmativeReply(lastCustomerMessage);
     const customerAskedToRepeatPoolOptions =
       asksToRepeatPoolOptions(lastCustomerMessage);
@@ -6514,7 +7322,7 @@ export async function generateAiSalesReply(
       bestNamedPoolMatch,
       photoCandidatePools,
       matchedCatalogItems,
-      orderedMessages,
+      orderedMessages: messagesForCurrentCommercialInference,
     });
     const productPhotoRequestContextBlock = buildProductPhotoRequestContextBlock(
       productPhotoRequestContext
@@ -6536,7 +7344,7 @@ export async function generateAiSalesReply(
     });
     const commercialObjective = buildCommercialObjective({
       facts: conversationFacts,
-      orderedMessages,
+      orderedMessages: messagesForCurrentCommercialInference,
       lastCustomerMessage,
       photoOrSimulationSubtype,
       productPhotoRequestContext,
@@ -6558,7 +7366,7 @@ export async function generateAiSalesReply(
       humanActive: conversation.is_human_active,
       lastCustomerMessage,
       lastAiMessage,
-      orderedMessages,
+      orderedMessages: messagesForCurrentCommercialInference,
       recommendedModel: matchedPools[0]?.pool?.name || null,
       requestedPoolReferenceRaw: requestedPoolReference?.raw || null,
       strongestPoolReferenceMatch,
@@ -6626,8 +7434,17 @@ export async function generateAiSalesReply(
       storeName: store.name,
       leadName: lead.name,
       leadState: lead.state,
+      conversationStatus: conversation.status,
+      humanActive: conversation.is_human_active,
       onboardingMap,
       recentHistory,
+      currentCommercialStateBlock: buildCurrentCommercialStateBlock({
+        conversationStatus: conversation.status,
+        leadState: lead.state,
+        humanActive: conversation.is_human_active,
+        onboardingMap,
+      }),
+      historicalCommercialContextBlock,
       customerMediaContextBlock,
       productPhotoRequestContextBlock,
       hasCustomerLocationPhoto: alreadyHasCustomerLocationPhoto,
@@ -6655,7 +7472,7 @@ export async function generateAiSalesReply(
       bestNamedPoolMatch,
     });
 
-    const input = buildModelInput(orderedMessages);
+    const input = buildModelInput(messagesForConversationContinuity);
 
     const response = await openai.responses.create({
       model,
@@ -6684,6 +7501,8 @@ export async function generateAiSalesReply(
       offersTechnicalVisit: hasConfiguredTechnicalVisit(onboardingMap),
       lastAiListedPools,
       recommendedModel: matchedPools[0]?.pool?.name || null,
+      commercialOpportunityId:
+        responseAnchorCommercialContext?.commercialOpportunityId || null,
     });
     const operationalFollowUpDecision = inferOperationalFollowUpDecision({
       lastCustomerMessage,
@@ -6721,6 +7540,7 @@ export async function generateAiSalesReply(
     return {
       ok: true,
       aiText: finalAiText,
+      anchorMessageId,
       usage,
       context: {
         leadName: lead.name,
@@ -6732,6 +7552,7 @@ export async function generateAiSalesReply(
         operationalFollowUpDecision,
         commercialHandoff,
         catalogPhotoAction,
+        responseAnchorCommercialContext,
       },
     };
   } catch (error: any) {
