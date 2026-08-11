@@ -1,11 +1,35 @@
 import type { ContractWorkflowDecisionTrigger } from "@/lib/server/sales-contracts/contract-workflow-decision";
 
+type QueryError = { message: string };
+
+type QueryResult<T> = Promise<{ data: T; error: QueryError | null }>;
+
+type SupabaseQueryLike = {
+  select(columns: string): SupabaseQueryLike;
+  eq(field: string, value: unknown): SupabaseQueryLike;
+  or(expression: string): SupabaseQueryLike;
+  order(field: string, options?: { ascending?: boolean }): SupabaseQueryLike;
+  limit(value: number): SupabaseQueryLike;
+  maybeSingle(): QueryResult<unknown>;
+  then<TResult1 = { data: unknown; error: QueryError | null }, TResult2 = never>(
+    onfulfilled?:
+      | ((value: { data: unknown; error: QueryError | null }) => TResult1 | PromiseLike<TResult1>)
+      | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+  ): Promise<TResult1 | TResult2>;
+};
+
+type SupabaseLike = {
+  from(table: string): SupabaseQueryLike;
+};
+
 type BuildCustomerContextSummaryInput = {
-  supabase: any;
+  supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
   leadId?: string | null;
   conversationId?: string | null;
+  relatedMessageId?: string | null;
   quoteId?: string | null;
   quoteNumber?: string | null;
   customerName?: string | null;
@@ -52,6 +76,47 @@ type MessageSummaryRow = {
   direction: string | null;
   content: string | null;
   created_at: string | null;
+  organization_id?: string | null;
+  store_id?: string | null;
+  conversation_id?: string | null;
+  conversation_session_id?: string | null;
+  commercial_session_context_link_id?: string | null;
+  commercial_context_capture_state?: string | null;
+};
+
+type ConversationSessionSnapshotRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  conversation_id: string;
+};
+
+type CommercialSessionContextLinkSnapshotRow = {
+  id: string;
+  organization_id: string;
+  store_id: string;
+  conversation_session_id: string;
+  customer_id: string;
+  commercial_opportunity_id: string;
+  lead_customer_link_id: string;
+};
+
+export type HistoricalContextStatus =
+  | "captured"
+  | "pending_context"
+  | "no_active_session"
+  | "legacy_unknown"
+  | "inconsistent";
+
+export type RelatedMessageCommercialContext = {
+  messageId: string;
+  captureState: string | null;
+  historicalContextStatus: HistoricalContextStatus;
+  conversationSessionId: string | null;
+  commercialSessionContextLinkId: string | null;
+  customerId: string | null;
+  commercialOpportunityId: string | null;
+  leadCustomerLinkId: string | null;
 };
 
 type AppointmentSummaryRow = {
@@ -79,6 +144,7 @@ export type CustomerContextSummary = {
   latestCustomerMessage?: string;
   technicalVisitStatusLabel?: string;
   technicalVisitDate?: string;
+  relatedMessageCommercialContext?: RelatedMessageCommercialContext;
   happened: string[];
   suggestedNextAction: string;
 };
@@ -195,7 +261,7 @@ async function loadQuote(args: BuildCustomerContextSummaryInput) {
 }
 
 async function loadLead(args: {
-  supabase: any;
+  supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
   leadId?: string | null;
@@ -219,7 +285,7 @@ async function loadLead(args: {
 }
 
 async function loadLatestCustomerMessage(args: {
-  supabase: any;
+  supabase: SupabaseLike;
   organizationId: string;
   conversationId?: string | null;
 }) {
@@ -242,8 +308,245 @@ async function loadLatestCustomerMessage(args: {
   return messages[0] || null;
 }
 
+async function loadRelatedMessage(args: {
+  supabase: SupabaseLike;
+  organizationId: string;
+  conversationId: string;
+  relatedMessageId?: string | null;
+}) {
+  const relatedMessageId = cleanText(args.relatedMessageId);
+  if (!relatedMessageId) return null;
+
+  const { data, error } = await args.supabase
+    .from("messages")
+    .select(
+      "id, organization_id, store_id, conversation_id, sender, direction, content, created_at, conversation_session_id, commercial_session_context_link_id, commercial_context_capture_state"
+    )
+    .eq("id", relatedMessageId)
+    .eq("organization_id", args.organizationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao carregar mensagem relacionada do resumo: ${error.message}`);
+  }
+
+  return (data || null) as MessageSummaryRow | null;
+}
+
+async function loadConversationSessionSnapshot(args: {
+  supabase: SupabaseLike;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  conversationSessionId?: string | null;
+}) {
+  const conversationSessionId = cleanText(args.conversationSessionId);
+  if (!conversationSessionId) return null;
+
+  const { data, error } = await args.supabase
+    .from("conversation_sessions")
+    .select("id, organization_id, store_id, conversation_id")
+    .eq("id", conversationSessionId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .eq("conversation_id", args.conversationId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Falha ao carregar sessao historica da mensagem: ${error.message}`);
+  }
+
+  return (data || null) as ConversationSessionSnapshotRow | null;
+}
+
+async function loadCommercialSessionContextLinkSnapshot(args: {
+  supabase: SupabaseLike;
+  organizationId: string;
+  storeId: string;
+  commercialSessionContextLinkId?: string | null;
+}) {
+  const commercialSessionContextLinkId = cleanText(args.commercialSessionContextLinkId);
+  if (!commercialSessionContextLinkId) return null;
+
+  const { data, error } = await args.supabase
+    .from("commercial_session_context_links")
+    .select(
+      "id, organization_id, store_id, conversation_session_id, customer_id, commercial_opportunity_id, lead_customer_link_id"
+    )
+    .eq("id", commercialSessionContextLinkId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Falha ao carregar vinculo historico da mensagem relacionada: ${error.message}`
+    );
+  }
+
+  return (data || null) as CommercialSessionContextLinkSnapshotRow | null;
+}
+
+async function resolveRelatedMessageCommercialContext(args: {
+  supabase: SupabaseLike;
+  organizationId: string;
+  conversationId?: string | null;
+  relatedMessageId?: string | null;
+}) {
+  const conversationId = cleanText(args.conversationId);
+  const relatedMessageId = cleanText(args.relatedMessageId);
+  if (!relatedMessageId) return null;
+
+  if (!conversationId) {
+    return {
+      messageId: relatedMessageId,
+      captureState: null,
+      historicalContextStatus: "inconsistent",
+      conversationSessionId: null,
+      commercialSessionContextLinkId: null,
+      customerId: null,
+      commercialOpportunityId: null,
+      leadCustomerLinkId: null,
+    } satisfies RelatedMessageCommercialContext;
+  }
+
+  const relatedMessage = await loadRelatedMessage({
+    ...args,
+    conversationId,
+  });
+  if (!relatedMessage) return null;
+
+  const messageStoreId = cleanText(relatedMessage.store_id);
+  const messageConversationId = cleanText(relatedMessage.conversation_id);
+  const captureState = cleanText(relatedMessage.commercial_context_capture_state);
+  const conversationSessionId = cleanText(relatedMessage.conversation_session_id);
+  const commercialSessionContextLinkId = cleanText(
+    relatedMessage.commercial_session_context_link_id
+  );
+
+  if (!messageStoreId || !messageConversationId) {
+    return {
+      messageId: relatedMessage.id,
+      captureState,
+      historicalContextStatus: "inconsistent",
+      conversationSessionId,
+      commercialSessionContextLinkId,
+      customerId: null,
+      commercialOpportunityId: null,
+      leadCustomerLinkId: null,
+    } satisfies RelatedMessageCommercialContext;
+  }
+
+  if (conversationId && messageConversationId !== conversationId) {
+    return {
+      messageId: relatedMessage.id,
+      captureState,
+      historicalContextStatus: "inconsistent",
+      conversationSessionId,
+      commercialSessionContextLinkId,
+      customerId: null,
+      commercialOpportunityId: null,
+      leadCustomerLinkId: null,
+    } satisfies RelatedMessageCommercialContext;
+  }
+
+  if (captureState === "no_active_session") {
+    return {
+      messageId: relatedMessage.id,
+      captureState,
+      historicalContextStatus: "no_active_session",
+      conversationSessionId: null,
+      commercialSessionContextLinkId: null,
+      customerId: null,
+      commercialOpportunityId: null,
+      leadCustomerLinkId: null,
+    } satisfies RelatedMessageCommercialContext;
+  }
+
+  if (captureState === "legacy_unknown") {
+    return {
+      messageId: relatedMessage.id,
+      captureState,
+      historicalContextStatus: "legacy_unknown",
+      conversationSessionId: null,
+      commercialSessionContextLinkId: null,
+      customerId: null,
+      commercialOpportunityId: null,
+      leadCustomerLinkId: null,
+    } satisfies RelatedMessageCommercialContext;
+  }
+
+  if (captureState === "pending_context") {
+    const session = await loadConversationSessionSnapshot({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: messageStoreId,
+      conversationId: messageConversationId,
+      conversationSessionId,
+    });
+
+    return {
+      messageId: relatedMessage.id,
+      captureState,
+      historicalContextStatus: session ? "pending_context" : "inconsistent",
+      conversationSessionId,
+      commercialSessionContextLinkId: null,
+      customerId: null,
+      commercialOpportunityId: null,
+      leadCustomerLinkId: null,
+    } satisfies RelatedMessageCommercialContext;
+  }
+
+  if (captureState === "captured") {
+    const [session, contextLink] = await Promise.all([
+      loadConversationSessionSnapshot({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: messageStoreId,
+        conversationId: messageConversationId,
+        conversationSessionId,
+      }),
+      loadCommercialSessionContextLinkSnapshot({
+        supabase: args.supabase,
+        organizationId: args.organizationId,
+        storeId: messageStoreId,
+        commercialSessionContextLinkId,
+      }),
+    ]);
+
+    const isConsistent =
+      Boolean(session) &&
+      Boolean(contextLink) &&
+      contextLink?.conversation_session_id === conversationSessionId;
+
+    return {
+      messageId: relatedMessage.id,
+      captureState,
+      historicalContextStatus: isConsistent ? "captured" : "inconsistent",
+      conversationSessionId,
+      commercialSessionContextLinkId,
+      customerId: isConsistent ? contextLink?.customer_id || null : null,
+      commercialOpportunityId: isConsistent
+        ? contextLink?.commercial_opportunity_id || null
+        : null,
+      leadCustomerLinkId: isConsistent ? contextLink?.lead_customer_link_id || null : null,
+    } satisfies RelatedMessageCommercialContext;
+  }
+
+  return {
+    messageId: relatedMessage.id,
+    captureState,
+    historicalContextStatus: "inconsistent",
+    conversationSessionId,
+    commercialSessionContextLinkId,
+    customerId: null,
+    commercialOpportunityId: null,
+    leadCustomerLinkId: null,
+  } satisfies RelatedMessageCommercialContext;
+}
+
 async function loadLatestTechnicalVisit(args: {
-  supabase: any;
+  supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
   leadId?: string | null;
@@ -283,7 +586,7 @@ async function loadLatestTechnicalVisit(args: {
 }
 
 async function loadMainContract(args: {
-  supabase: any;
+  supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
   quoteId?: string | null;
@@ -445,7 +748,13 @@ export async function buildCustomerContextSummary(
   const conversationId =
     cleanText(quote?.conversation_id) || cleanText(input.conversationId);
 
-  const [lead, latestCustomerMessage, latestTechnicalVisit, mainContract] =
+  const [
+    lead,
+    latestCustomerMessage,
+    latestTechnicalVisit,
+    mainContract,
+    relatedMessageCommercialContext,
+  ] =
     await Promise.all([
       loadLead({
         supabase: input.supabase,
@@ -472,6 +781,12 @@ export async function buildCustomerContextSummary(
         quoteId: quote?.id || input.quoteId,
         leadId,
         conversationId,
+      }),
+      resolveRelatedMessageCommercialContext({
+        supabase: input.supabase,
+        organizationId: input.organizationId,
+        conversationId,
+        relatedMessageId: input.relatedMessageId,
       }),
     ]);
 
@@ -534,6 +849,9 @@ export async function buildCustomerContextSummary(
     summary.technicalVisitStatusLabel = technicalVisitStatusLabel;
   }
   if (technicalVisitDate) summary.technicalVisitDate = technicalVisitDate;
+  if (relatedMessageCommercialContext) {
+    summary.relatedMessageCommercialContext = relatedMessageCommercialContext;
+  }
 
   return summary;
 }

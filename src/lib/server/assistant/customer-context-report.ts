@@ -2,10 +2,34 @@ import type { ContractWorkflowDecisionTrigger } from "@/lib/server/sales-contrac
 import {
   buildCustomerContextSummary,
   type CustomerContextSummary,
+  type RelatedMessageCommercialContext,
 } from "@/lib/server/assistant/customer-context-summary";
 
+type QueryError = { message: string };
+
+type QueryResult<T> = Promise<{ data: T; error: QueryError | null }>;
+
+type SupabaseQueryLike = {
+  select(columns: string): SupabaseQueryLike;
+  eq(field: string, value: unknown): SupabaseQueryLike;
+  or(expression: string): SupabaseQueryLike;
+  order(field: string, options?: { ascending?: boolean }): SupabaseQueryLike;
+  limit(value: number): SupabaseQueryLike;
+  maybeSingle(): QueryResult<unknown>;
+  then<TResult1 = { data: unknown; error: QueryError | null }, TResult2 = never>(
+    onfulfilled?:
+      | ((value: { data: unknown; error: QueryError | null }) => TResult1 | PromiseLike<TResult1>)
+      | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+  ): Promise<TResult1 | TResult2>;
+};
+
+type SupabaseLike = {
+  from(table: string): SupabaseQueryLike;
+};
+
 type BuildCustomerContextReportInput = {
-  supabase: any;
+  supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
   leadId?: string | null;
@@ -25,6 +49,9 @@ type MessageRow = {
   content: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string | null;
+  conversation_session_id?: string | null;
+  commercial_session_context_link_id?: string | null;
+  commercial_context_capture_state?: string | null;
 };
 
 type OperationalTaskPayload = {
@@ -71,6 +98,7 @@ export type CustomerContextReportMetadata = {
   source_label: string | null;
   main_interest: string | null;
   customer_goal: string | null;
+  related_message_commercial_context: RelatedMessageCommercialContext | null;
   quote_number_label: string | null;
   quote_status_label: string | null;
   quote_total_label: string | null;
@@ -126,7 +154,7 @@ function readMetadataText(
 }
 
 async function loadRecentMessages(args: {
-  supabase: any;
+  supabase: SupabaseLike;
   organizationId: string;
   conversationId?: string | null;
 }) {
@@ -151,7 +179,7 @@ async function loadRecentMessages(args: {
 }
 
 async function loadRecentOperationalTasks(args: {
-  supabase: any;
+  supabase: SupabaseLike;
   organizationId: string;
   storeId: string;
   leadId?: string | null;
@@ -343,6 +371,30 @@ function buildCurrentSituation(args: {
   return "O atendimento ainda precisa de confirmação antes do próximo passo comercial.";
 }
 
+function buildHistoricalContextNarrative(
+  relatedMessageCommercialContext: RelatedMessageCommercialContext | null | undefined
+) {
+  if (!relatedMessageCommercialContext) return null;
+
+  if (relatedMessageCommercialContext.historicalContextStatus === "captured") {
+    return "Contexto historico comprovado da mensagem relacionada: havia sessao comercial e vinculo comercial congelado para essa mensagem.";
+  }
+
+  if (relatedMessageCommercialContext.historicalContextStatus === "pending_context") {
+    return "Contexto historico da mensagem relacionada: havia sessao comercial registrada, mas sem customer, oportunidade ou lead_customer_link historicos comprovados.";
+  }
+
+  if (relatedMessageCommercialContext.historicalContextStatus === "no_active_session") {
+    return "Contexto historico da mensagem relacionada: nao havia sessao comercial historica para essa mensagem.";
+  }
+
+  if (relatedMessageCommercialContext.historicalContextStatus === "legacy_unknown") {
+    return "Contexto historico da mensagem relacionada: o historico comercial dessa mensagem nao e comprovado.";
+  }
+
+  return "Contexto historico da mensagem relacionada: o snapshot existe, mas esta inconsistente e nao foi reinterpretado pelo contexto comercial atual.";
+}
+
 function buildNarrative(args: {
   summary: CustomerContextSummary | null;
   sourceLabel: string | null;
@@ -350,6 +402,7 @@ function buildNarrative(args: {
   customerGoal: string | null;
   latestCustomerMessage: string | null;
   importantPoints: string[];
+  historicalContextNarrative: string | null;
 }) {
   const customerName = cleanText(args.summary?.customerName) || "O cliente";
   const introParts = [
@@ -362,6 +415,10 @@ function buildNarrative(args: {
 
   if (args.customerGoal) {
     introParts.push(args.customerGoal);
+  }
+
+  if (args.historicalContextNarrative) {
+    introParts.push(args.historicalContextNarrative);
   }
 
   const quoteParts: string[] = [];
@@ -407,7 +464,10 @@ function buildNarrative(args: {
 export async function buildCustomerContextReportMetadata(
   input: BuildCustomerContextReportInput
 ): Promise<CustomerContextReportMetadata> {
-  const summary = await buildCustomerContextSummary(input);
+  const summary = await buildCustomerContextSummary({
+    ...input,
+    relatedMessageId: input.relatedMessageId,
+  });
   const recentMessages = await loadRecentMessages({
     supabase: input.supabase,
     organizationId: input.organizationId,
@@ -421,13 +481,19 @@ export async function buildCustomerContextReportMetadata(
     conversationId: input.conversationId,
   });
 
+  const relatedMessageId = cleanText(input.relatedMessageId);
   const latestCustomerMessage =
-    recentMessages.find(isCustomerMessage)?.content || summary?.latestCustomerMessage || null;
+    recentMessages.find(
+      (message) => isCustomerMessage(message) && cleanText(message.id) !== relatedMessageId
+    )?.content || null;
   const sourceLabel = resolveSourceLabel(recentMessages, recentTasks);
   const mainInterest = resolveMainInterest(recentTasks);
   const customerGoal = resolveCustomerGoal(recentMessages, recentTasks);
   const importantPoints = collectImportantConversationPoints(recentMessages, recentTasks);
   const currentSituation = buildCurrentSituation({ summary });
+  const historicalContextNarrative = buildHistoricalContextNarrative(
+    summary?.relatedMessageCommercialContext
+  );
   const reportKey = [
     "customer_context_report",
     cleanText(input.quoteId) || "unknown",
@@ -465,10 +531,12 @@ export async function buildCustomerContextReportMetadata(
       customerGoal,
       latestCustomerMessage: truncateText(latestCustomerMessage, 180),
       importantPoints,
+      historicalContextNarrative,
     }),
     source_label: sourceLabel,
     main_interest: cleanText(mainInterest),
     customer_goal: cleanText(customerGoal),
+    related_message_commercial_context: summary?.relatedMessageCommercialContext || null,
     quote_number_label: cleanText(summary?.quoteNumber) || cleanText(input.quoteNumber),
     quote_status_label: cleanText(summary?.quoteStatusLabel),
     quote_total_label: cleanText(summary?.quoteTotalLabel),
