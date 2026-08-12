@@ -128,6 +128,7 @@ async function createPasswordFlowHarness(options: {
     getUser: 0,
     getAuthAdminUserById: [] as string[],
     attempts: [] as Array<string | null | undefined>,
+    invalidAttemptMessages: [] as string[],
   };
 
   const runtimeState: PasswordFlowRuntimeState = {
@@ -178,6 +179,7 @@ async function createPasswordFlowHarness(options: {
       );
     },
     getInvalidFirstAccessAttemptMessage(state) {
+      calls.invalidAttemptMessages.push(state);
       return `invalid:${state}`;
     },
   };
@@ -299,6 +301,39 @@ const tests: TestCase[] = [
         requiresNewLogin: false,
       });
       assert.deepEqual(harness.calls.attempts, [null]);
+      assert.deepEqual(harness.calls.invalidAttemptMessages, []);
+      assert.equal(harness.calls.createServiceSupabase, 1);
+      assert.deepEqual(harness.calls.getAuthAdminUserById, ["user-3"]);
+      assertNoSensitiveMetadata(payload);
+    },
+  },
+  {
+    name: "recovery with attempt stays recovery and never promotes to first_access",
+    run: async () => {
+      const harness = await createPasswordFlowHarness({
+        requestUser: { id: "user-7" },
+        resolvedFlow: {
+          flow: "recovery",
+          message: "Digite sua nova senha para concluir a recuperacao.",
+          attemptState: "not_applicable",
+        },
+      });
+      const response = await harness.run(
+        "https://example.com/api/account/password-flow?attempt=fia_old",
+      );
+      const payload = await getJson(response);
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(payload, {
+        flow: "recovery",
+        message: "Digite sua nova senha para concluir a recuperacao.",
+        attemptValid: null,
+        requiresNewLogin: false,
+      });
+      assert.deepEqual(harness.calls.attempts, ["fia_old"]);
+      assert.deepEqual(harness.calls.invalidAttemptMessages, []);
+      assert.equal(harness.calls.createServiceSupabase, 1);
+      assert.deepEqual(harness.calls.getAuthAdminUserById, ["user-7"]);
       assertNoSensitiveMetadata(payload);
     },
   },

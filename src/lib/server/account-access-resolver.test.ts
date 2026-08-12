@@ -1172,6 +1172,111 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "recovery changing only credential does not unblock a blocked profile",
+    run: async () => {
+      const beforeRecovery = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          lookupProfileExists: async () => ({
+            hasProfile: true,
+            isBlocked: true,
+          }),
+        }),
+      });
+
+      const afterRecovery = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          lookupProfileExists: async () => ({
+            hasProfile: true,
+            isBlocked: true,
+          }),
+        }),
+      });
+
+      assert.equal(beforeRecovery.status, "account_blocked");
+      assert.equal(beforeRecovery.reasonCode, "account_blocked");
+      assert.equal(afterRecovery.status, "account_blocked");
+      assert.equal(afterRecovery.reasonCode, "account_blocked");
+      assert.equal(afterRecovery.organizationId, null);
+      assert.equal(afterRecovery.storeId, null);
+    },
+  },
+  {
+    name: "recovery changing only credential does not reactivate an inactive membership",
+    run: async () => {
+      const beforeRecovery = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          listMemberships: async () => [
+            {
+              organization_id: "org-1",
+              is_active: false,
+              created_at: "2026-07-24T00:00:00Z",
+            },
+          ],
+        }),
+      });
+
+      const afterRecovery = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          listMemberships: async () => [
+            {
+              organization_id: "org-1",
+              is_active: false,
+              created_at: "2026-07-24T00:00:00Z",
+            },
+          ],
+        }),
+      });
+
+      assert.equal(beforeRecovery.status, "inactive_membership");
+      assert.equal(beforeRecovery.reasonCode, "inactive_membership");
+      assert.equal(afterRecovery.status, "inactive_membership");
+      assert.equal(afterRecovery.reasonCode, "inactive_membership");
+      assert.equal(afterRecovery.organizationId, null);
+      assert.equal(afterRecovery.storeId, null);
+    },
+  },
+  {
+    name: "recovery changing only credential does not unsuspend commercial access",
+    run: async () => {
+      const suspendedCommercialPayload = createCommercialPayload({
+        subscription_status: "suspended",
+        is_blocked: true,
+        reason: "subscription_suspended",
+      });
+
+      const beforeRecovery = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchCommercialAccess: async () => suspendedCommercialPayload,
+        }),
+      });
+
+      const afterRecovery = await resolveAccessForRequest({
+        requestedDomain: "store_area",
+        supabase: createRequestSupabase("user-1"),
+        deps: createDeps({
+          fetchCommercialAccess: async () => suspendedCommercialPayload,
+        }),
+      });
+
+      assert.equal(beforeRecovery.status, "store_commercial_blocked");
+      assert.equal(beforeRecovery.reasonCode, "commercial_access_blocked");
+      assert.equal(afterRecovery.status, "store_commercial_blocked");
+      assert.equal(afterRecovery.reasonCode, "commercial_access_blocked");
+      assert.equal(afterRecovery.organizationId, null);
+      assert.equal(afterRecovery.storeId, null);
+    },
+  },
+  {
     name: "commercial lookup failure returns deny 503",
     run: async () => {
       const result = await resolveAccessForRequest({

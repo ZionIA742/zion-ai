@@ -29,6 +29,8 @@ const tests: TestCase[] = [
         'const trustedFlow = await fetchPasswordFlow();',
         'if (trustedFlow.flow !== "recovery") {',
         'const { data, error } = await supabase.auth.getSession();',
+        "await supabase.auth.updateUser({",
+        "password: nextPassword,",
         'const code = params.get("code");',
         'const recoveryError = params.get("recoveryError");',
       ];
@@ -39,6 +41,15 @@ const tests: TestCase[] = [
 
       assert.equal(source.includes("access_token"), false);
       assert.equal(source.includes("refresh_token"), false);
+      assert.equal(source.includes("/api/account/first-access/complete"), false);
+      assert.equal(source.includes("createServiceSupabaseClient"), false);
+      assert.equal(source.includes("getAuthAdminUserById"), false);
+      assert.equal(source.includes("resolveTrustedPasswordFlow"), false);
+      assert.equal(source.includes("profiles"), false);
+      assert.equal(source.includes("memberships"), false);
+      assert.equal(source.includes("subscriptions"), false);
+      assert.equal(source.includes("external_integrations"), false);
+      assert.equal(source.includes("provision"), false);
     },
   },
 ];
