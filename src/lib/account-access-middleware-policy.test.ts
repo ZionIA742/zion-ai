@@ -85,6 +85,12 @@ const tests: TestCase[] = [
     name: "removed internal routes are no longer public",
     run: () => {
       expectRedirect(
+        "/api/internal/ai-sales-reply",
+        "anonymous",
+        "/login",
+        true,
+      );
+      expectRedirect(
         "/api/internal/assistant/responsible-external-notifications/send",
         "anonymous",
         "/login",

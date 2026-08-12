@@ -22,7 +22,13 @@ type OrganizationRow = {
   id: string;
   name: string | null;
   created_at: string | null;
-  subscription_status: string | null;
+};
+
+type SubscriptionRow = {
+  id: string;
+  organization_id: string | null;
+  status: string | null;
+  created_at: string | null;
 };
 
 type StoreMetricRow = {
@@ -927,6 +933,38 @@ function compareIsoDateDesc(a: string | null, b: string | null) {
   return bTime - aTime;
 }
 
+function normalizeSubscriptionStatus(value: string | null | undefined) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function buildCanonicalSubscriptionMap(rows: SubscriptionRow[]) {
+  const grouped = new Map<string, SubscriptionRow[]>();
+  const canonical = new Map<string, SubscriptionRow | null>();
+
+  for (const row of rows) {
+    const organizationId = String(row.organization_id || "").trim();
+
+    if (!organizationId) {
+      continue;
+    }
+
+    const subscriptions = grouped.get(organizationId) ?? [];
+    subscriptions.push(row);
+    grouped.set(organizationId, subscriptions);
+  }
+
+  for (const [organizationId, subscriptions] of grouped.entries()) {
+    canonical.set(
+      organizationId,
+      subscriptions.length === 1 && subscriptions[0]?.id ? subscriptions[0] : null,
+    );
+  }
+
+  return canonical;
+}
+
 async function loadStoreIdRows(
   supabase: ReturnType<typeof getServiceSupabaseClient>,
   table: string,
@@ -1362,6 +1400,7 @@ export async function GET() {
       assistantThreadsCount,
       assistantMessagesCount,
       organizationsResult,
+      subscriptionsResult,
       storesResult,
       leadRows,
       messageRows,
@@ -1393,9 +1432,14 @@ export async function GET() {
       getExactCount(serviceSupabase, "store_assistant_messages"),
       serviceSupabase
         .from("organizations")
-        .select("id, name, created_at, subscription_status")
+        .select("id, name, created_at")
         .order("created_at", { ascending: false })
         .limit(100),
+      serviceSupabase
+        .from("subscriptions")
+        .select("id, organization_id, status, created_at")
+        .order("created_at", { ascending: false })
+        .limit(500),
       serviceSupabase
         .from("stores")
         .select("id, organization_id, name, created_at")
@@ -1423,6 +1467,7 @@ export async function GET() {
     ]);
 
     const organizationsError = organizationsResult.error;
+    const subscriptionsError = subscriptionsResult.error;
     const storesError = storesResult.error;
 
     if (organizationsError || storesError) {
@@ -1437,6 +1482,7 @@ export async function GET() {
     }
 
     const organizations = (organizationsResult.data ?? []) as OrganizationRow[];
+    const subscriptions = (subscriptionsResult.data ?? []) as SubscriptionRow[];
     const stores = (storesResult.data ?? []) as StoreRow[];
     const periodBoundaries = getPeriodBoundaries();
     const accountAccessByStoreId = await loadStoreAccountAccessSnapshots(
@@ -1449,6 +1495,11 @@ export async function GET() {
     for (const organization of organizations) {
       organizationMap.set(organization.id, organization);
     }
+
+    const canonicalSubscriptionByOrganizationId =
+      subscriptionsError == null
+        ? buildCanonicalSubscriptionMap(subscriptions)
+        : new Map<string, SubscriptionRow | null>();
 
     const metricsByStore = new Map<string, StoreOverviewMetrics>();
 
@@ -1629,6 +1680,8 @@ export async function GET() {
 
     const storesList = stores.map((store) => {
       const organization = organizationMap.get(store.organization_id);
+      const canonicalSubscription =
+        canonicalSubscriptionByOrganizationId.get(store.organization_id) ?? null;
       const metrics = metricsByStore.get(store.id) ?? createEmptyStoreMetrics();
 
       const totalOperationalIssues =
@@ -1645,7 +1698,10 @@ export async function GET() {
         name: store.name ?? "Loja sem nome",
         organizationId: store.organization_id,
         organizationName: organization?.name ?? "Organização não encontrada",
-        subscriptionStatus: organization?.subscription_status ?? "Sem dados",
+        subscriptionStatus:
+          canonicalSubscription?.status && normalizeSubscriptionStatus(canonicalSubscription.status)
+            ? canonicalSubscription.status
+            : "unavailable",
         createdAt: store.created_at,
 
         totalLeads: metrics.totalLeads,
@@ -1884,6 +1940,7 @@ export async function GET() {
         appointments: appointmentsCount.error,
         assistantThreads: assistantThreadsCount.error,
         assistantMessages: assistantMessagesCount.error,
+        storeSubscriptions: subscriptionsError ? OVERVIEW_LOAD_ERROR : null,
         storeLeads: leadRows.error,
         storeMessages: messageRows.error,
         storeSalesAiMessages: salesAiMessageRows.error,

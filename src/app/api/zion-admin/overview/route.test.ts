@@ -125,6 +125,17 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: "overview uses canonical subscriptions status and does not silently fallback to organization status",
+    run: () => {
+      const source = readSource(routePath);
+
+      assert.equal(source.includes('.from("subscriptions")'), true);
+      assert.equal(source.includes('select("id, organization_id, status, created_at")'), true);
+      assert.equal(source.includes("buildCanonicalSubscriptionMap("), true);
+      assert.equal(source.includes('subscriptionStatus: organization?.subscription_status'), false);
+    },
+  },
+  {
     name: "consumer route path remains unchanged",
     run: () => {
       const source = readSource(pagePath);

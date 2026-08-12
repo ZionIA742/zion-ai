@@ -23,7 +23,6 @@ const PUBLIC_PATHS = new Set([
   "/terms-of-service",
   "/data-deletion",
   "/api/webhooks/whatsapp",
-  "/api/internal/ai-sales-reply",
   "/api/cron/assistant-operational-tasks",
   "/api/cron/whatsapp-process-all",
 ]);

@@ -12,6 +12,12 @@ type QueueRow = {
   payload: Record<string, any> | null;
 };
 
+type OrganizationSubscriptionRow = {
+  id: string;
+  organization_id: string;
+  status: string | null;
+};
+
 type OperationalTaskRow = {
   id: string;
   organization_id: string;
@@ -84,6 +90,29 @@ export type ProcessAssistantOperationalTasksResult = {
     reason?: string;
   }>;
 };
+
+async function loadCanonicalOrganizationSubscription(
+  supabase: any,
+  organizationId: string,
+) {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("id, organization_id, status")
+    .eq("organization_id", organizationId)
+    .limit(2);
+
+  if (error) {
+    throw new Error(`Falha ao carregar subscription canonica: ${error.message}`);
+  }
+
+  const rows = (data ?? []) as OrganizationSubscriptionRow[];
+
+  if (rows.length !== 1) {
+    return null;
+  }
+
+  return rows[0];
+}
 
 function normalizeText(value: string | null | undefined) {
   return String(value || "")
@@ -1396,6 +1425,43 @@ export async function processAssistantOperationalTasks(
     }
 
     try {
+      const subscription = await loadCanonicalOrganizationSubscription(
+        supabase,
+        locked.organization_id,
+      );
+      const subscriptionStatus = normalizeText(subscription?.status);
+
+      if (subscriptionStatus === "suspended") {
+        const message =
+          "Organizacao suspensa. Tarefa operacional nao processada.";
+
+        await supabase
+          .from("store_assistant_operational_task_queue")
+          .update({
+            status: "failed",
+            error_text: message,
+            result_payload: {
+              ok: false,
+              skipped: true,
+              reason: "organization_subscription_suspended",
+              subscriptionId: subscription?.id ?? null,
+              subscriptionStatus: subscription?.status ?? null,
+              workerId,
+            },
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", locked.id);
+
+        results.push({
+          queueId: locked.id,
+          ok: false,
+          skipped: true,
+          reason: "organization_subscription_suspended",
+          error: message,
+        });
+        continue;
+      }
+
       const result = await processQueueItem({ supabase, queue: locked, workerId });
 
       await supabase

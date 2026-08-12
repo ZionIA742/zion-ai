@@ -583,11 +583,26 @@ function getStoreStatusLabel(status: string | null | undefined) {
   if (normalized === "active") return "Ativa";
   if (normalized === "trial") return "Teste";
   if (normalized === "past_due") return "Pagamento em atraso";
+  if (normalized === "suspended") return "Desativada";
   if (normalized === "canceled" || normalized === "cancelled")
     return "Cancelada";
   if (normalized === "inactive" || normalized === "disabled") return "Inativa";
+  if (normalized === "unavailable") return "Status indisponivel";
 
   return status || "Sem status";
+}
+
+function shouldShowBlockedAccessBadge(store: ZionAdminStore) {
+  return store.accountAccess?.accessState === "blocked";
+}
+
+function getStoreSubscriptionAction(store: ZionAdminStore) {
+  const normalized = normalizeStatus(store.subscriptionStatus);
+
+  if (normalized === "active") return "suspend" as const;
+  if (normalized === "suspended") return "reactivate" as const;
+
+  return null;
 }
 
 function isStoreActive(store: ZionAdminStore) {
@@ -606,15 +621,20 @@ function getInactiveReason(store: ZionAdminStore) {
     return "Possível atraso de pagamento conforme status atual. Confirmar quando o billing real estiver conectado.";
   }
 
+  if (normalized === "suspended") {
+    return "Loja desativada no momento.";
+  }
+
   if (normalized === "canceled" || normalized === "cancelled") {
-    return "Cancelada no status da assinatura. Motivo detalhado ainda sem base confiável.";
+    return "Loja cancelada ou inativa.";
   }
 
   if (normalized === "inactive" || normalized === "disabled") {
-    return "Inativa no sistema. Motivo detalhado ainda sem base confiável.";
+    return "Loja inativa no momento.";
   }
 
-  return "Motivo detalhado ainda não registrado em base confiável.";
+  return "Status da loja indisponível no momento.";
+
 }
 
 function getOperationalSummary(store: ZionAdminStore) {
@@ -876,6 +896,11 @@ function StoreRowCard({
             <span className="rounded-full border border-white/10 bg-zinc-950/60 px-2 py-0.5 text-[10px] text-zinc-400">
               {getStoreStatusLabel(store.subscriptionStatus)}
             </span>
+            {shouldShowBlockedAccessBadge(store) ? (
+              <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-200">
+                Acesso bloqueado
+              </span>
+            ) : null}
           </div>
           <div className="mt-0.5 truncate text-xs text-zinc-400">
             {store.organizationName}
@@ -1243,20 +1268,28 @@ function StoreDetailsDrawer({
   onClose,
   onResendFirstAccess,
   onToggleAccountAccess,
+  onToggleStoreSubscription,
   accessState,
   resendState,
+  storeState,
 }: {
   store: ZionAdminStore | null;
   canManageAccounts: boolean;
   onClose: () => void;
   onResendFirstAccess: (store: ZionAdminStore) => Promise<void>;
   onToggleAccountAccess: (store: ZionAdminStore) => Promise<void>;
+  onToggleStoreSubscription: (store: ZionAdminStore) => Promise<void>;
   accessState: {
     busyMembershipId: string | null;
     error: string | null;
     success: string | null;
   };
   resendState: {
+    busyStoreId: string | null;
+    error: string | null;
+    success: string | null;
+  };
+  storeState: {
     busyStoreId: string | null;
     error: string | null;
     success: string | null;
@@ -1280,13 +1313,18 @@ function StoreDetailsDrawer({
       : accountAccess?.accessState === "blocked"
         ? "reactivate"
         : null;
+  const storeAction = getStoreSubscriptionAction(store);
   const accessActionLabel =
     accessAction === "block" ? "Bloquear acesso" : "Reativar acesso";
+  const storeActionLabel =
+    storeAction === "suspend" ? "Desativar loja" : "Reativar loja";
   const accessDisabled =
     !canManageAccounts ||
     !accountAccess?.membershipId ||
     !accessAction ||
     accessState.busyMembershipId === accountAccess.membershipId;
+  const storeActionDisabled =
+    !canManageAccounts || !storeAction || storeState.busyStoreId === store.id;
 
   return (
     <DrawerShell
@@ -1305,37 +1343,105 @@ function StoreDetailsDrawer({
 
       <div className="space-y-4">
         <section>
-          <h3 className="text-sm font-semibold text-zinc-200">Acesso da conta</h3>
-          <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              <DetailItem
-                label="Responsavel"
-                value={accountAccess?.responsibleName || "Nao informado"}
-              />
-              <DetailItem
-                label="E-mail"
-                value={accountAccess?.emailMasked || "E-mail indisponivel"}
-              />
-              <DetailItem
-                label="Status"
-                value={accountAccess?.statusLabel || "Conta indisponivel"}
-                help={getAccountAccessStatusHelp(accountAccess)}
-              />
-              <DetailItem
-                label="Acesso"
-                value={accountAccess?.accessStateLabel || "Acesso indisponivel"}
-              />
-              <DetailItem
-                label="Ultimo envio"
-                value={formatDateTime(accountAccess?.lastInviteSentAt)}
-              />
-            </div>
+          <h3 className="text-sm font-semibold text-zinc-200">Gestão da loja</h3>
+          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
+              <div>
+                <h4 className="text-sm font-semibold text-zinc-200">Operação da loja</h4>
+                <p className="mt-1 text-xs leading-5 text-zinc-500">
+                  Gerencie o funcionamento desta loja no ZION.
+                </p>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                <DetailItem
+                  label="Status"
+                  value={getStoreStatusLabel(store.subscriptionStatus)}
+                />
+                <DetailItem
+                  label="Última IA"
+                  value={formatDateTime(store.lastAiRunAt)}
+                />
+              </div>
 
-            {accountAccess?.firstAccessCompletedAt ? (
-              <div className="mt-3 text-xs text-zinc-400">
-                Conclusao: {formatDateTime(accountAccess.firstAccessCompletedAt)}
+            {storeState.error ? (
+              <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                {storeState.error}
               </div>
             ) : null}
+
+            {storeState.success ? (
+              <div className="mt-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                {storeState.success}
+              </div>
+            ) : null}
+
+            {storeAction ? (
+              <button
+                type="button"
+                disabled={storeActionDisabled}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      storeAction === "suspend"
+                        ? `Desativar a loja ${store.name}? O WhatsApp sera desligado antes da suspension e nao volta automaticamente na reativacao.`
+                        : `Reativar a loja ${store.name}? O WhatsApp continuara desligado ate reconfiguracao manual.`,
+                    )
+                  ) {
+                    void onToggleStoreSubscription(store);
+                  }
+                }}
+                className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {storeState.busyStoreId === store.id
+                  ? storeAction === "suspend"
+                    ? "Desativando loja..."
+                    : "Reativando loja..."
+                  : storeActionLabel}
+              </button>
+            ) : null}
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-zinc-300">
+              <div>
+                <h4 className="text-sm font-semibold text-zinc-200">Conta responsável</h4>
+                <p className="mt-1 text-xs leading-5 text-zinc-500">
+                  Gerencie o acesso do responsável à loja.
+                </p>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                <DetailItem
+                  label="Responsável"
+                  value={accountAccess?.responsibleName || "Não informado"}
+                />
+                <DetailItem
+                  label="E-mail"
+                  value={accountAccess?.emailMasked || "E-mail indisponível"}
+                />
+                <DetailItem
+                  label="Acesso"
+                  value={
+                    accountAccess?.accessState === "blocked"
+                      ? "Acesso bloqueado"
+                      : accountAccess?.accessState === "active"
+                        ? "Acesso ativo"
+                        : accountAccess?.accessStateLabel || "Acesso indisponível"
+                  }
+                />
+                <DetailItem
+                  label="Status"
+                  value={accountAccess?.statusLabel || "Conta indisponível"}
+                  help={getAccountAccessStatusHelp(accountAccess)}
+                />
+                <DetailItem
+                  label="Último envio"
+                  value={formatDateTime(accountAccess?.lastInviteSentAt)}
+                />
+                <DetailItem
+                  label="Primeiro acesso"
+                  value={formatDateTime(accountAccess?.firstAccessCompletedAt)}
+                />
+              </div>
 
             {resendState.error ? (
               <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
@@ -1404,6 +1510,7 @@ function StoreDetailsDrawer({
                   : "Reenviar link para criar senha"}
               </button>
             ) : null}
+          </div>
           </div>
         </section>
 
@@ -2952,6 +3059,9 @@ export default function ZionAdminDashboardClient({
   const [accessBusyMembershipId, setAccessBusyMembershipId] = useState<string | null>(null);
   const [accessError, setAccessError] = useState<string | null>(null);
   const [accessSuccess, setAccessSuccess] = useState<string | null>(null);
+  const [storeBusyId, setStoreBusyId] = useState<string | null>(null);
+  const [storeActionError, setStoreActionError] = useState<string | null>(null);
+  const [storeActionSuccess, setStoreActionSuccess] = useState<string | null>(null);
 
   const data = initialData;
   const stores = data?.stores ?? [];
@@ -3159,6 +3269,54 @@ export default function ZionAdminDashboardClient({
     }
   }
 
+  async function handleToggleStoreSubscription(store: ZionAdminStore) {
+    const action = getStoreSubscriptionAction(store);
+
+    if (!store.id || !action) {
+      return;
+    }
+
+    setStoreBusyId(store.id);
+    setStoreActionError(null);
+    setStoreActionSuccess(null);
+
+    try {
+      const response = await fetch("/api/zion-admin/stores/subscription-state", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          storeId: store.id,
+          action,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(payload?.error || "Nao foi possivel atualizar o estado da loja.");
+      }
+
+      setStoreActionSuccess(
+        action === "suspend"
+          ? "Loja desativada com sucesso."
+          : "Loja reativada com sucesso.",
+      );
+      router.refresh();
+    } catch (error: unknown) {
+      setStoreActionError(
+        error &&
+          typeof error === "object" &&
+          "message" in error &&
+          typeof (error as { message?: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : "Nao foi possivel atualizar o estado da loja.",
+      );
+    } finally {
+      setStoreBusyId(null);
+    }
+  }
+
   return (
     <main className="min-h-screen overflow-x-hidden bg-zinc-950 px-4 py-5 text-zinc-50 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-3">
@@ -3293,6 +3451,7 @@ export default function ZionAdminDashboardClient({
         onClose={() => setSelectedStore(null)}
         onResendFirstAccess={handleResendFirstAccess}
         onToggleAccountAccess={handleToggleAccountAccess}
+        onToggleStoreSubscription={handleToggleStoreSubscription}
         accessState={{
           busyMembershipId: accessBusyMembershipId,
           error: accessError,
@@ -3302,6 +3461,11 @@ export default function ZionAdminDashboardClient({
           busyStoreId: resendBusyStoreId,
           error: resendError,
           success: resendSuccess,
+        }}
+        storeState={{
+          busyStoreId: storeBusyId,
+          error: storeActionError,
+          success: storeActionSuccess,
         }}
       />
 
