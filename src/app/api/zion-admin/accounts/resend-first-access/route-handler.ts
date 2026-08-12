@@ -3,6 +3,7 @@ import {
   createZionAdminApiJsonResponse,
 } from "@/lib/server/zion-admin-api-response";
 import type { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
+import { type writeZionAdminAuditEvent } from "@/lib/server/zion-admin-audit";
 import type {
   createFirstAccessAttemptId,
   createFirstAccessInviteMetadataPatch,
@@ -25,6 +26,7 @@ type StoreRow = {
 };
 
 type MembershipRow = {
+  id: string;
   user_id: string;
   organization_id: string;
   role: string | null;
@@ -47,6 +49,7 @@ export type ResendFirstAccessHandlerDeps = {
   maskEmail: typeof maskEmail;
   mergeProvisioningAppMetadata: typeof mergeProvisioningAppMetadata;
   readFirstAccessInviteId: typeof readFirstAccessInviteId;
+  writeAuditEvent: typeof writeZionAdminAuditEvent;
 };
 
 function getErrorDetails(error: unknown) {
@@ -54,12 +57,14 @@ function getErrorDetails(error: unknown) {
     message?: string | null;
     code?: string | null;
     status?: number | null;
+    publicMessage?: string | null;
   } | null;
 
   return {
     message: value?.message ?? null,
     code: value?.code ?? null,
     status: value?.status ?? null,
+    publicMessage: value?.publicMessage ?? null,
   };
 }
 
@@ -110,12 +115,21 @@ export async function handleResendFirstAccess(
   request: Request,
   deps: ResendFirstAccessHandlerDeps,
 ): Promise<Response> {
+  let actorUserId: string | null = null;
+  let resolvedStore: StoreRow | null = null;
+  let resolvedMembership: MembershipRow | null = null;
+  let resolvedTargetUserId: string | null = null;
+  let serviceSupabase: ReturnType<typeof createServiceSupabaseClient> | null = null;
+  let operationId: string | null = null;
+
   try {
     const access = (await deps.resolveAccess()) as ZionAdminAccessResult;
 
     if (!access.ok) {
       return createZionAdminApiDeniedResponse(access);
     }
+
+    actorUserId = access.sessionUserId;
 
     const body = await request.json().catch(() => null);
     const storeId = String(body?.storeId || "").trim();
@@ -129,7 +143,7 @@ export async function handleResendFirstAccess(
       );
     }
 
-    const serviceSupabase = deps.createServiceSupabase();
+    serviceSupabase = deps.createServiceSupabase();
     const { data: store, error: storeError } = await serviceSupabase
       .from("stores")
       .select("id, organization_id, name")
@@ -140,7 +154,18 @@ export async function handleResendFirstAccess(
       throw storeError;
     }
 
+    resolvedStore = store ?? null;
+
     if (!store?.id || !store.organization_id) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: "account.first_access_resend",
+        targetType: "store",
+        targetId: storeId || null,
+        outcome: "denied",
+        reasonCode: "store_not_found",
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "Loja nao encontrada.",
@@ -151,7 +176,7 @@ export async function handleResendFirstAccess(
 
     const { data: memberships, error: membershipsError } = await serviceSupabase
       .from("memberships")
-      .select("user_id, organization_id, role, created_at")
+      .select("id, user_id, organization_id, role, created_at")
       .eq("organization_id", store.organization_id)
       .order("created_at", { ascending: true });
 
@@ -164,6 +189,17 @@ export async function handleResendFirstAccess(
     );
 
     if (ownerMemberships.length !== 1) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: "account.first_access_resend",
+        targetType: "store",
+        targetId: store.id,
+        organizationId: store.organization_id,
+        storeId: store.id,
+        outcome: "denied",
+        reasonCode: "owner_target_ambiguous",
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "A loja possui alvo de primeiro acesso inexistente ou ambiguo.",
@@ -173,6 +209,8 @@ export async function handleResendFirstAccess(
     }
 
     const targetMembership = ownerMemberships[0];
+    resolvedMembership = targetMembership;
+    resolvedTargetUserId = targetMembership.user_id;
     const { data: internalAdminRow, error: internalAdminError } = await serviceSupabase
       .from("zion_internal_admins")
       .select("user_id")
@@ -184,6 +222,19 @@ export async function handleResendFirstAccess(
     }
 
     if (internalAdminRow?.user_id) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: "account.first_access_resend",
+        targetType: "user",
+        targetId: targetMembership.user_id,
+        organizationId: store.organization_id,
+        storeId: store.id,
+        outcome: "denied",
+        reasonCode: "internal_admin_target_protected",
+        membershipId: targetMembership.id,
+        userId: targetMembership.user_id,
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "A conta interna do ZION nao pode receber convite de loja.",
@@ -196,6 +247,19 @@ export async function handleResendFirstAccess(
     const accountSummary = deps.getAccountAccessSummary(authUser);
 
     if (accountSummary.status !== "first_access_pending") {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: "account.first_access_resend",
+        targetType: "user",
+        targetId: authUser.id,
+        organizationId: store.organization_id,
+        storeId: store.id,
+        outcome: "denied",
+        reasonCode: "first_access_not_pending",
+        membershipId: targetMembership.id,
+        userId: authUser.id,
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "Esta conta nao esta apta para reenviar o link de primeira senha.",
@@ -221,6 +285,19 @@ export async function handleResendFirstAccess(
       "is_blocked" in commercialAccess &&
       (commercialAccess as { is_blocked?: unknown }).is_blocked === true
     ) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: "account.first_access_resend",
+        targetType: "user",
+        targetId: authUser.id,
+        organizationId: store.organization_id,
+        storeId: store.id,
+        outcome: "denied",
+        reasonCode: "account_blocked",
+        membershipId: targetMembership.id,
+        userId: authUser.id,
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "A conta da loja esta bloqueada e nao pode receber reenvio comum.",
@@ -230,6 +307,19 @@ export async function handleResendFirstAccess(
     }
 
     if (deps.isInviteCooldownActive(authUser.app_metadata)) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: "account.first_access_resend",
+        targetType: "user",
+        targetId: authUser.id,
+        organizationId: store.organization_id,
+        storeId: store.id,
+        outcome: "denied",
+        reasonCode: "first_access_cooldown_active",
+        membershipId: targetMembership.id,
+        userId: authUser.id,
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "Aguarde antes de reenviar um novo link.",
@@ -252,6 +342,20 @@ export async function handleResendFirstAccess(
         status: "provisioned",
       }),
     );
+
+    operationId =
+      (await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: "account.first_access_resend",
+        targetType: "user",
+        targetId: authUser.id,
+        organizationId: store.organization_id,
+        storeId: store.id,
+        outcome: "started",
+        membershipId: targetMembership.id,
+        userId: authUser.id,
+        serviceSupabase,
+      })) ?? crypto.randomUUID();
 
     const { error: metadataError } = await serviceSupabase.auth.admin.updateUserById(authUser.id, {
       app_metadata: nextMetadata,
@@ -286,22 +390,28 @@ export async function handleResendFirstAccess(
       );
 
       if (!restoreState.restored && !restoreState.replacedByNewerAttempt) {
-        return createZionAdminApiJsonResponse(
+        throw Object.assign(
+          new Error(
+            "A metadata administrativa do primeiro acesso exige revisao manual antes de novo envio.",
+          ),
           {
-            error:
+            publicMessage:
               "A metadata administrativa do primeiro acesso exige revisao manual antes de novo envio.",
+            status: 409,
           },
-          409,
         );
       }
 
       if (restoreState.replacedByNewerAttempt) {
-        return createZionAdminApiJsonResponse(
+        throw Object.assign(
+          new Error(
+            "Outro reenvio mais recente substituiu esta tentativa. Use apenas o ultimo link enviado.",
+          ),
           {
-            error:
+            publicMessage:
               "Outro reenvio mais recente substituiu esta tentativa. Use apenas o ultimo link enviado.",
+            status: 409,
           },
-          409,
         );
       }
 
@@ -314,13 +424,38 @@ export async function handleResendFirstAccess(
     );
 
     if (deps.readFirstAccessInviteId(latestAuthUser.app_metadata) !== nextAttemptId) {
-      return createZionAdminApiJsonResponse(
+      throw Object.assign(
+        new Error(
+          "Outro reenvio mais recente substituiu esta tentativa. Use apenas o ultimo link enviado.",
+        ),
         {
-          error:
+          publicMessage:
             "Outro reenvio mais recente substituiu esta tentativa. Use apenas o ultimo link enviado.",
+          status: 409,
         },
-        409,
       );
+    }
+
+    try {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: "account.first_access_resend",
+        targetType: "user",
+        targetId: authUser.id,
+        organizationId: store.organization_id,
+        storeId: store.id,
+        outcome: "success",
+        operationId,
+        membershipId: targetMembership.id,
+        userId: authUser.id,
+        serviceSupabase,
+      });
+    } catch (auditError) {
+      console.error("[zion-admin][accounts][resend-first-access][audit-terminal-failed]", {
+        operation_id: operationId,
+        phase: "success",
+        error: auditError instanceof Error ? auditError.message : String(auditError),
+      });
     }
 
     return createZionAdminApiJsonResponse(
@@ -335,13 +470,41 @@ export async function handleResendFirstAccess(
       200,
     );
   } catch (error: unknown) {
-    console.error("[zion-admin/accounts/resend-first-access] error:", getErrorDetails(error));
+    const diagnostics = getErrorDetails(error);
+
+    console.error("[zion-admin/accounts/resend-first-access] error:", diagnostics);
+
+    try {
+      if (actorUserId && serviceSupabase && operationId) {
+        await deps.writeAuditEvent({
+          actorUserId,
+          action: "account.first_access_resend",
+          targetType: resolvedTargetUserId ? "user" : "store",
+          targetId: resolvedTargetUserId || resolvedStore?.id || null,
+          organizationId: resolvedStore?.organization_id || resolvedMembership?.organization_id || null,
+          storeId: resolvedStore?.id || null,
+          outcome: "failed",
+          operationId,
+          reasonCode: "resend_first_access_failed",
+          membershipId: resolvedMembership?.id || null,
+          userId: resolvedTargetUserId,
+          serviceSupabase,
+        });
+      }
+    } catch (auditError) {
+      console.error("[zion-admin][accounts][resend-first-access][audit-terminal-failed]", {
+        operation_id: operationId,
+        phase: "failed",
+        error: auditError instanceof Error ? auditError.message : String(auditError),
+      });
+    }
 
     return createZionAdminApiJsonResponse(
       {
-        error: "Nao foi possivel reenviar o link de primeira senha.",
+        error:
+          diagnostics.publicMessage || "Nao foi possivel reenviar o link de primeira senha.",
       },
-      500,
+      Number.isInteger(diagnostics.status) ? Number(diagnostics.status) : 500,
     );
   }
 }

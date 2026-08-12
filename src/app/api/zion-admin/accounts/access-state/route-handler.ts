@@ -3,6 +3,7 @@ import {
   createZionAdminApiJsonResponse,
 } from "@/lib/server/zion-admin-api-response";
 import type { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
+import { type writeZionAdminAuditEvent } from "@/lib/server/zion-admin-audit";
 import type { createServiceSupabaseClient } from "@/lib/server/zion-account-provisioning";
 
 type ZionAdminAccessResult = Awaited<ReturnType<typeof resolveZionAdminApiAccess>>;
@@ -29,6 +30,7 @@ type AccessStateAction = "block" | "reactivate";
 export type AccessStateHandlerDeps = {
   resolveAccess: typeof resolveZionAdminApiAccess;
   createServiceSupabase: typeof createServiceSupabaseClient;
+  writeAuditEvent: typeof writeZionAdminAuditEvent;
 };
 
 function normalizeAction(value: unknown): AccessStateAction | null {
@@ -107,6 +109,16 @@ export async function handleAccessStateMutation(
   request: Request,
   deps: AccessStateHandlerDeps,
 ): Promise<Response> {
+  let actorUserId: string | null = null;
+  let serviceSupabase: ReturnType<typeof createServiceSupabaseClient> | null = null;
+  let resolvedMembership: MembershipRow | null = null;
+  let previousState: "active" | "blocked" | "unavailable" | null = null;
+  let nextState: "active" | "blocked" | "unavailable" | null = null;
+  let action: AccessStateAction | null = null;
+  let operationId: string | null = null;
+  let currentMembershipActive: boolean | null = null;
+  let currentProfileBlocked: boolean | null = null;
+
   try {
     const access = (await deps.resolveAccess()) as ZionAdminAccessResult;
 
@@ -114,9 +126,11 @@ export async function handleAccessStateMutation(
       return createZionAdminApiDeniedResponse(access);
     }
 
+    actorUserId = access.sessionUserId;
+
     const body = await request.json().catch(() => null);
     const membershipId = String(body?.membershipId || "").trim();
-    const action = normalizeAction(body?.action);
+    action = normalizeAction(body?.action);
 
     if (!membershipId) {
       return createZionAdminApiJsonResponse(
@@ -136,7 +150,7 @@ export async function handleAccessStateMutation(
       );
     }
 
-    const serviceSupabase = deps.createServiceSupabase();
+    serviceSupabase = deps.createServiceSupabase();
     const { data: membership, error: membershipError } = await serviceSupabase
       .from("memberships")
       .select("id, user_id, organization_id, role, is_active")
@@ -147,7 +161,18 @@ export async function handleAccessStateMutation(
       throw membershipError;
     }
 
+    resolvedMembership = membership ?? null;
+
     if (!membership?.id || !membership.user_id || !membership.organization_id) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: action === "reactivate" ? "account.access_reactivate" : "account.access_block",
+        targetType: "membership",
+        targetId: membershipId,
+        outcome: "denied",
+        reasonCode: "membership_not_found",
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "Membership alvo nao encontrada.",
@@ -157,6 +182,18 @@ export async function handleAccessStateMutation(
     }
 
     if (normalizeRole(membership.role) !== "owner") {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: action === "reactivate" ? "account.access_reactivate" : "account.access_block",
+        targetType: "membership",
+        targetId: membership.id,
+        organizationId: membership.organization_id,
+        outcome: "denied",
+        reasonCode: "membership_role_not_owner",
+        membershipId: membership.id,
+        userId: membership.user_id,
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "Somente a conta owner da loja pode ser administrada nesta etapa.",
@@ -166,6 +203,18 @@ export async function handleAccessStateMutation(
     }
 
     if (membership.user_id === access.sessionUserId) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: action === "reactivate" ? "account.access_reactivate" : "account.access_block",
+        targetType: "user",
+        targetId: membership.user_id,
+        organizationId: membership.organization_id,
+        outcome: "denied",
+        reasonCode: "self_target_forbidden",
+        membershipId: membership.id,
+        userId: membership.user_id,
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "A conta interna do ZION nao pode alterar o proprio acesso.",
@@ -185,6 +234,18 @@ export async function handleAccessStateMutation(
     }
 
     if (internalAdminRow?.user_id) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: action === "reactivate" ? "account.access_reactivate" : "account.access_block",
+        targetType: "user",
+        targetId: membership.user_id,
+        organizationId: membership.organization_id,
+        outcome: "denied",
+        reasonCode: "internal_admin_target_protected",
+        membershipId: membership.id,
+        userId: membership.user_id,
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "A conta interna do ZION nao pode ser bloqueada ou reativada por esta rota.",
@@ -204,6 +265,18 @@ export async function handleAccessStateMutation(
     }
 
     if (!profile?.user_id) {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: action === "reactivate" ? "account.access_reactivate" : "account.access_block",
+        targetType: "user",
+        targetId: membership.user_id,
+        organizationId: membership.organization_id,
+        outcome: "denied",
+        reasonCode: "profile_not_found",
+        membershipId: membership.id,
+        userId: membership.user_id,
+        serviceSupabase,
+      });
       return createZionAdminApiJsonResponse(
         {
           error: "Profile alvo nao encontrado.",
@@ -212,8 +285,25 @@ export async function handleAccessStateMutation(
       );
     }
 
+    previousState = deriveAccessState(profile.is_blocked, membership.is_active);
+    currentMembershipActive = membership.is_active;
+    currentProfileBlocked = profile.is_blocked;
     let nextProfileBlocked = profile.is_blocked;
     let nextMembershipActive = membership.is_active;
+
+    operationId =
+      (await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: action === "reactivate" ? "account.access_reactivate" : "account.access_block",
+        targetType: "user",
+        targetId: membership.user_id,
+        organizationId: membership.organization_id,
+      outcome: "started",
+        membershipId: membership.id,
+        userId: membership.user_id,
+        previousState,
+        serviceSupabase,
+      })) ?? crypto.randomUUID();
 
     if (action === "block") {
       const nextMembership = await updateMembershipActiveState(
@@ -222,6 +312,7 @@ export async function handleAccessStateMutation(
         false,
       );
       nextMembershipActive = nextMembership.is_active;
+      currentMembershipActive = nextMembership.is_active;
 
       const nextProfile = await updateProfileBlockedState(
         serviceSupabase,
@@ -229,6 +320,7 @@ export async function handleAccessStateMutation(
         true,
       );
       nextProfileBlocked = nextProfile.is_blocked;
+      currentProfileBlocked = nextProfile.is_blocked;
     } else {
       const nextProfile = await updateProfileBlockedState(
         serviceSupabase,
@@ -236,6 +328,7 @@ export async function handleAccessStateMutation(
         false,
       );
       nextProfileBlocked = nextProfile.is_blocked;
+      currentProfileBlocked = nextProfile.is_blocked;
 
       const nextMembership = await updateMembershipActiveState(
         serviceSupabase,
@@ -243,6 +336,35 @@ export async function handleAccessStateMutation(
         true,
       );
       nextMembershipActive = nextMembership.is_active;
+      currentMembershipActive = nextMembership.is_active;
+    }
+
+    nextState = deriveAccessState(nextProfileBlocked, nextMembershipActive);
+
+    try {
+      await deps.writeAuditEvent({
+        actorUserId: access.sessionUserId,
+        action: action === "reactivate" ? "account.access_reactivate" : "account.access_block",
+        targetType: "user",
+        targetId: membership.user_id,
+        organizationId: membership.organization_id,
+        outcome: "success",
+        operationId,
+        membershipId: membership.id,
+        userId: membership.user_id,
+        previousState,
+        nextState,
+        membershipIsActive: nextMembershipActive,
+        profileIsBlocked: nextProfileBlocked,
+        serviceSupabase,
+      });
+    } catch (auditError) {
+      console.error("[zion-admin][accounts][access-state][audit-terminal-failed]", {
+        operation_id: operationId,
+        action,
+        phase: "success",
+        error: auditError instanceof Error ? auditError.message : String(auditError),
+      });
     }
 
     return createZionAdminApiJsonResponse(
@@ -252,13 +374,42 @@ export async function handleAccessStateMutation(
         userId: membership.user_id,
         organizationId: membership.organization_id,
         action,
-        accessState: deriveAccessState(nextProfileBlocked, nextMembershipActive),
+        accessState: nextState,
         isProfileBlocked: nextProfileBlocked,
         isMembershipActive: nextMembershipActive,
       },
       200,
     );
   } catch (error) {
+    if (actorUserId && action && serviceSupabase && resolvedMembership?.id && operationId) {
+      try {
+        await deps.writeAuditEvent({
+          actorUserId,
+          action: action === "reactivate" ? "account.access_reactivate" : "account.access_block",
+          targetType: "user",
+          targetId: resolvedMembership.user_id,
+          organizationId: resolvedMembership.organization_id,
+          outcome: "failed",
+          operationId,
+          reasonCode: "access_state_update_failed",
+          membershipId: resolvedMembership.id,
+          userId: resolvedMembership.user_id,
+          previousState,
+          nextState: deriveAccessState(currentProfileBlocked, currentMembershipActive),
+          membershipIsActive: currentMembershipActive,
+          profileIsBlocked: currentProfileBlocked,
+          serviceSupabase,
+        });
+      } catch (auditError) {
+        console.error("[zion-admin][accounts][access-state][audit-terminal-failed]", {
+          operation_id: operationId,
+          action,
+          phase: "failed",
+          error: auditError instanceof Error ? auditError.message : String(auditError),
+        });
+      }
+    }
+
     console.error("[zion-admin][accounts][access-state] unexpected error", error);
     return createZionAdminApiJsonResponse(
       {

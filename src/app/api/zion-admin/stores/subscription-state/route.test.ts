@@ -63,6 +63,7 @@ function createBaseState(overrides: Partial<RuntimeState> = {}): RuntimeState {
 async function createHarness(state: RuntimeState) {
   const runtimeState = {
     ...state,
+    auditEvents: [] as Array<Record<string, unknown>>,
     calls: {
       resolveAccess: 0,
       createServiceSupabase: 0,
@@ -226,6 +227,17 @@ async function createHarness(state: RuntimeState) {
           };
         },
       };
+    },
+    async writeAuditEvent(event: Record<string, unknown>) {
+      const operationId =
+        typeof event.operationId === "string" && event.operationId.length > 0
+          ? event.operationId
+          : crypto.randomUUID();
+      runtimeState.auditEvents.push({
+        ...event,
+        operationId,
+      });
+      return operationId;
     },
   };
 
@@ -406,6 +418,11 @@ const tests: TestCase[] = [
           status: "suspended",
         },
       ]);
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents[1]?.outcome, "success");
+      assert.equal(harness.state.auditEvents[1]?.previousState, "active");
+      assert.equal(harness.state.auditEvents[1]?.nextState, "suspended");
+      assert.equal(harness.state.auditEvents[0]?.operationId, harness.state.auditEvents[1]?.operationId);
     },
   },
   {
@@ -429,6 +446,8 @@ const tests: TestCase[] = [
       assert.equal(payload.error, "Falha interna ao atualizar o estado da loja.");
       assert.deepEqual(harness.state.calls.subscriptionUpdates, []);
       assert.equal(harness.state.subscriptions?.[0]?.status, "active");
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents.at(-1)?.outcome, "failed");
     },
   },
   {
@@ -461,6 +480,9 @@ const tests: TestCase[] = [
         },
       ]);
       assert.equal(harness.state.subscriptions?.[0]?.status, "active");
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents.at(-1)?.outcome, "failed");
+      assert.equal(harness.state.auditEvents[0]?.operationId, harness.state.auditEvents.at(-1)?.operationId);
     },
   },
   {
@@ -494,6 +516,8 @@ const tests: TestCase[] = [
           status: "active",
         },
       ]);
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents[1]?.outcome, "success");
       assert.equal(harness.state.calls.profileUpdates, 0);
       assert.equal(harness.state.calls.membershipUpdates, 0);
     },
@@ -536,6 +560,10 @@ const tests: TestCase[] = [
       assert.equal(
         reactivatePayload.error,
         "Somente lojas suspensas podem ser reativadas nesta etapa.",
+      );
+      assert.equal(
+        reactivateHarness.state.auditEvents[0]?.reasonCode,
+        "subscription_status_not_suspended",
       );
     },
   },

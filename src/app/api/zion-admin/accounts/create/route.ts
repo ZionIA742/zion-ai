@@ -1,4 +1,5 @@
 import { resolveZionAdminApiAccess } from "@/lib/server/zion-admin-api-access";
+import { writeZionAdminAuditEvent } from "@/lib/server/zion-admin-audit";
 import {
   createZionAdminApiDeniedResponse,
   createZionAdminApiJsonResponse,
@@ -695,6 +696,7 @@ async function createZionAdminAccountCore(params: {
   access: ZionAdminAccessContext;
   body: unknown;
   serviceSupabase: ReturnType<typeof createServiceSupabaseClient>;
+  writeAuditEvent: typeof writeZionAdminAuditEvent;
 }) {
   let invitedUserId: string | null = null;
   let invitedUserAppMetadata: Record<string, unknown> | null | undefined = null;
@@ -702,6 +704,7 @@ async function createZionAdminAccountCore(params: {
   let shouldDeleteAuthUserOnCleanup = false;
   let cleanupTarget: ProvisioningCleanupTarget | null = null;
   let originalExistingUserMetadata: Record<string, unknown> | null | undefined = null;
+  let operationId: string | null = null;
 
   try {
     const email = normalizeEmail((params.body as { email?: unknown } | null)?.email);
@@ -751,6 +754,19 @@ async function createZionAdminAccountCore(params: {
 
       if (decision.kind === "repair_provisioned_metadata") {
         effectiveProcessedUserId = existingUser.id;
+        operationId =
+          (await params.writeAuditEvent({
+            actorUserId: params.access.sessionUserId,
+            action: "account.create",
+            targetType: "user",
+            targetId: existingUser.id,
+            organizationId: existingState.organizationIds[0] ?? null,
+            storeId: existingState.storeRows[0]?.id ?? null,
+            outcome: "started",
+            membershipId: existingState.membershipRows[0]?.id ?? null,
+            userId: existingUser.id,
+            serviceSupabase,
+          })) ?? crypto.randomUUID();
 
         await updateProvisioningMetadata(
           serviceSupabase,
@@ -758,6 +774,29 @@ async function createZionAdminAccountCore(params: {
           existingUser.app_metadata,
           "provisioned",
         );
+
+        try {
+          await params.writeAuditEvent({
+            actorUserId: params.access.sessionUserId,
+            action: "account.create",
+            targetType: "user",
+            targetId: existingUser.id,
+            organizationId: existingState.organizationIds[0] ?? null,
+            storeId: existingState.storeRows[0]?.id ?? null,
+            outcome: "success",
+            operationId,
+            membershipId: existingState.membershipRows[0]?.id ?? null,
+            userId: existingUser.id,
+            serviceSupabase,
+          });
+        } catch (auditError) {
+          console.error("[zion-admin/accounts/create][audit-terminal-failed]", {
+            operation_id: operationId,
+            phase: "success",
+            mode: "repair_provisioned_metadata",
+            error: auditError instanceof Error ? auditError.message : String(auditError),
+          });
+        }
 
         return {
           body: {
@@ -779,6 +818,16 @@ async function createZionAdminAccountCore(params: {
         effectiveProcessedUserId = existingUser.id;
         originalExistingUserMetadata =
           (existingUser.app_metadata as Record<string, unknown> | null | undefined) ?? null;
+        operationId =
+          (await params.writeAuditEvent({
+            actorUserId: params.access.sessionUserId,
+            action: "account.create",
+            targetType: "user",
+            targetId: existingUser.id,
+            outcome: "started",
+            userId: existingUser.id,
+            serviceSupabase,
+          })) ?? crypto.randomUUID();
 
         await updateProvisioningMetadata(
           serviceSupabase,
@@ -807,6 +856,29 @@ async function createZionAdminAccountCore(params: {
           "provisioned",
         );
 
+        try {
+          await params.writeAuditEvent({
+            actorUserId: params.access.sessionUserId,
+            action: "account.create",
+            targetType: "user",
+            targetId: existingUser.id,
+            organizationId: provisioningRow.organization_id,
+            storeId: provisioningRow.store_id,
+            outcome: "success",
+            operationId,
+            membershipId: provisioningRow.membership_id,
+            userId: existingUser.id,
+            serviceSupabase,
+          });
+        } catch (auditError) {
+          console.error("[zion-admin/accounts/create][audit-terminal-failed]", {
+            operation_id: operationId,
+            phase: "success",
+            mode: "recover_failed",
+            error: auditError instanceof Error ? auditError.message : String(auditError),
+          });
+        }
+
         return {
           body: {
             ok: true,
@@ -826,6 +898,20 @@ async function createZionAdminAccountCore(params: {
         } satisfies JsonResponseShape;
       }
 
+      await params.writeAuditEvent({
+        actorUserId: params.access.sessionUserId,
+        action: "account.create",
+        targetType: "user",
+        targetId: existingUser.id,
+        organizationId: existingState.organizationIds[0] ?? null,
+        storeId: existingState.storeRows[0]?.id ?? null,
+        outcome: "denied",
+        reasonCode: decision.code,
+        membershipId: existingState.membershipRows[0]?.id ?? null,
+        userId: existingUser.id,
+        serviceSupabase,
+      });
+
       return {
         body: {
           error: decision.error,
@@ -841,9 +927,18 @@ async function createZionAdminAccountCore(params: {
     const inviteMetadataPatch = createFirstAccessInviteMetadataPatch({
       attemptId: firstAccessAttemptId,
       sentAt: inviteSentAt,
-      sentBy: params.access.sessionUserId,
-      status: "pending",
-    });
+        sentBy: params.access.sessionUserId,
+        status: "pending",
+      });
+    operationId =
+      (await params.writeAuditEvent({
+        actorUserId: params.access.sessionUserId,
+        action: "account.create",
+        targetType: "user",
+        targetId: null,
+        outcome: "started",
+        serviceSupabase,
+      })) ?? crypto.randomUUID();
     const { data: invitedUserResponse, error: inviteError } =
       await serviceSupabase.auth.admin.inviteUserByEmail(email, {
         data: {
@@ -909,6 +1004,29 @@ async function createZionAdminAccountCore(params: {
       }),
     );
 
+    try {
+      await params.writeAuditEvent({
+        actorUserId: params.access.sessionUserId,
+        action: "account.create",
+        targetType: "user",
+        targetId: invitedUserId,
+        organizationId: provisioningRow.organization_id,
+        storeId: provisioningRow.store_id,
+        outcome: "success",
+        operationId,
+        membershipId: provisioningRow.membership_id,
+        userId: invitedUserId,
+        serviceSupabase,
+      });
+    } catch (auditError) {
+      console.error("[zion-admin/accounts/create][audit-terminal-failed]", {
+        operation_id: operationId,
+        phase: "success",
+        mode: "invite_new",
+        error: auditError instanceof Error ? auditError.message : String(auditError),
+      });
+    }
+
     return {
       body: {
         ok: true,
@@ -927,6 +1045,10 @@ async function createZionAdminAccountCore(params: {
     } satisfies JsonResponseShape;
   } catch (error: unknown) {
     const diagnostics = getErrorDetails(error);
+    let failureBody: Record<string, unknown> = {};
+    let failureStatus = Number.isInteger(diagnostics.status)
+      ? Number(diagnostics.status)
+      : 500;
 
     if (effectiveProcessedUserId) {
       try {
@@ -947,17 +1069,14 @@ async function createZionAdminAccountCore(params: {
             code: diagnostics.code,
             status: diagnostics.status,
           });
-
-          return {
-            body: {
-              error:
+          failureBody = {
+            error:
               "Falha administrativa: o provisionamento ficou parcial e exige revisao interna antes de qualquer nova tentativa.",
-              code: hasProvisioningTarget(cleanupTarget)
-                ? COMPENSATION_FAILED_CODE
-                : PARTIAL_REVIEW_CODE,
-            },
-            status: hasProvisioningTarget(cleanupTarget) ? 503 : 409,
-          } satisfies JsonResponseShape;
+            code: hasProvisioningTarget(cleanupTarget)
+              ? COMPENSATION_FAILED_CODE
+              : PARTIAL_REVIEW_CODE,
+          };
+          failureStatus = hasProvisioningTarget(cleanupTarget) ? 503 : 409;
         }
       } catch (cleanupError) {
         const cleanupDiagnostics = getErrorDetails(cleanupError);
@@ -967,17 +1086,14 @@ async function createZionAdminAccountCore(params: {
           code: cleanupDiagnostics.code,
           status: cleanupDiagnostics.status,
         });
-
-        return {
-          body: {
-            error:
-              "Falha administrativa: o provisionamento ficou parcial e exige revisao interna antes de qualquer nova tentativa.",
-            code: hasProvisioningTarget(cleanupTarget)
-              ? COMPENSATION_FAILED_CODE
-              : PARTIAL_REVIEW_CODE,
-          },
-          status: hasProvisioningTarget(cleanupTarget) ? 503 : 409,
-        } satisfies JsonResponseShape;
+        failureBody = {
+          error:
+            "Falha administrativa: o provisionamento ficou parcial e exige revisao interna antes de qualquer nova tentativa.",
+          code: hasProvisioningTarget(cleanupTarget)
+            ? COMPENSATION_FAILED_CODE
+            : PARTIAL_REVIEW_CODE,
+        };
+        failureStatus = hasProvisioningTarget(cleanupTarget) ? 503 : 409;
       }
     }
 
@@ -987,18 +1103,43 @@ async function createZionAdminAccountCore(params: {
       status: diagnostics.status,
     });
 
-    const status = Number.isInteger(diagnostics.status)
-      ? Number(diagnostics.status)
-      : 500;
-    const publicMessage =
-      diagnostics.publicMessage ||
-      "Falha tecnica interna ao criar e provisionar a conta.";
+    if (operationId && effectiveProcessedUserId) {
+      try {
+        await params.writeAuditEvent({
+          actorUserId: params.access.sessionUserId,
+          action: "account.create",
+          targetType: "user",
+          targetId: effectiveProcessedUserId,
+          organizationId: cleanupTarget?.organizationId ?? null,
+          storeId: cleanupTarget?.storeId ?? null,
+          outcome: "failed",
+          operationId,
+          reasonCode: "account_create_failed",
+          membershipId: cleanupTarget?.membershipId ?? null,
+          userId: effectiveProcessedUserId,
+          serviceSupabase: params.serviceSupabase,
+        });
+      } catch (auditError) {
+        console.error("[zion-admin/accounts/create][audit-terminal-failed]", {
+          operation_id: operationId,
+          phase: "failed",
+          error: auditError instanceof Error ? auditError.message : String(auditError),
+        });
+      }
+    }
+
+    if (Object.keys(failureBody).length === 0) {
+      const publicMessage =
+        diagnostics.publicMessage ||
+        "Falha tecnica interna ao criar e provisionar a conta.";
+      failureBody = {
+        error: publicMessage,
+      };
+    }
 
     return {
-      body: {
-        error: publicMessage,
-      },
-      status,
+      body: failureBody,
+      status: failureStatus,
     } satisfies JsonResponseShape;
   }
 }
@@ -1024,6 +1165,7 @@ export async function POST(request: Request) {
     access,
     body,
     serviceSupabase: createServiceSupabaseClient(),
+    writeAuditEvent: writeZionAdminAuditEvent,
   });
 
   return createZionAdminApiJsonResponse(result.body, result.status);

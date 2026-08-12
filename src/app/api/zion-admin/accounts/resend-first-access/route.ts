@@ -13,6 +13,7 @@ import {
   mergeProvisioningAppMetadata,
   readFirstAccessInviteId,
 } from "@/lib/server/zion-account-provisioning";
+import { writeZionAdminAuditEvent } from "@/lib/server/zion-admin-audit";
 import { handleResendFirstAccess } from "./route-handler";
 
 export async function POST(request: Request) {
@@ -30,5 +31,6 @@ export async function POST(request: Request) {
     maskEmail,
     mergeProvisioningAppMetadata,
     readFirstAccessInviteId,
+    writeAuditEvent: writeZionAdminAuditEvent,
   });
 }

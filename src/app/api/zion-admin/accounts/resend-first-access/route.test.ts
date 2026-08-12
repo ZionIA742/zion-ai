@@ -32,6 +32,7 @@ type RuntimeState = {
       };
   store?: { id: string; organization_id: string; name: string | null } | null;
   memberships?: Array<{
+    id: string;
     user_id: string;
     organization_id: string;
     role: string | null;
@@ -73,6 +74,7 @@ function createBaseState(overrides: Partial<RuntimeState> = {}): RuntimeState {
     },
     memberships: [
       {
+        id: "membership-1",
         user_id: "owner-1",
         organization_id: "org-1",
         role: "owner",
@@ -106,6 +108,7 @@ async function createHarness(state: RuntimeState) {
   const runtimeState = {
     ...state,
     attemptIds: [...(state.attemptIds ?? ["fia_new"])],
+    auditEvents: [] as Array<Record<string, unknown>>,
     calls: {
       resolveAccess: 0,
       createServiceSupabase: 0,
@@ -263,6 +266,17 @@ async function createHarness(state: RuntimeState) {
         ?.zion_first_access_invite_id;
       return typeof value === "string" ? value : null;
     },
+    async writeAuditEvent(event: Record<string, unknown>) {
+      const operationId =
+        typeof event.operationId === "string" && event.operationId.length > 0
+          ? event.operationId
+          : crypto.randomUUID();
+      runtimeState.auditEvents.push({
+        ...event,
+        operationId,
+      });
+      return operationId;
+    },
   };
 
   return {
@@ -324,6 +338,9 @@ const tests: TestCase[] = [
       assert.equal(payload.ok, true);
       assert.equal(harness.state.calls.resetPasswordForEmail.length, 1);
       assert.equal(harness.state.calls.inviteUserByEmail.length, 0);
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents[1]?.outcome, "success");
+      assert.equal(harness.state.auditEvents[0]?.operationId, harness.state.auditEvents[1]?.operationId);
     },
   },
   {
@@ -384,6 +401,7 @@ const tests: TestCase[] = [
       assert.equal(payload.cooldownRemainingMs, 4321);
       assert.equal(harness.state.calls.resetPasswordForEmail.length, 0);
       assert.equal(harness.state.calls.inviteUserByEmail.length, 0);
+      assert.equal(harness.state.auditEvents[0]?.reasonCode, "first_access_cooldown_active");
     },
   },
   {
@@ -451,6 +469,8 @@ const tests: TestCase[] = [
       assert.equal(response.status, 500);
       assert.deepEqual(harness.state.authUser.app_metadata, previousMetadata);
       assert.equal(harness.state.calls.updateUserById.length, 2);
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents.at(-1)?.outcome, "failed");
     },
   },
   {
@@ -470,6 +490,8 @@ const tests: TestCase[] = [
         payload.error,
         "A metadata administrativa do primeiro acesso exige revisao manual antes de novo envio.",
       );
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents.at(-1)?.outcome, "failed");
     },
   },
   {
@@ -489,6 +511,8 @@ const tests: TestCase[] = [
         payload.error,
         "Outro reenvio mais recente substituiu esta tentativa. Use apenas o ultimo link enviado.",
       );
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents.at(-1)?.outcome, "failed");
     },
   },
 ];

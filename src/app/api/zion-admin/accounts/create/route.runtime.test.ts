@@ -72,6 +72,7 @@ const {
     access: { ok: true; sessionUserId: string };
     body: unknown;
     serviceSupabase: ReturnType<typeof createHarnessServiceSupabase>;
+    writeAuditEvent: (event: Record<string, unknown>) => Promise<void>;
   }) => Promise<{ body: Record<string, unknown>; status: number }>;
   cleanupFailedProvisioningAttempt: (
     serviceSupabase: ReturnType<typeof createHarnessServiceSupabase>,
@@ -400,6 +401,7 @@ async function runCoreWithState(
     },
     body,
     serviceSupabase: createHarnessServiceSupabase(state),
+    writeAuditEvent: async () => {},
   });
 }
 

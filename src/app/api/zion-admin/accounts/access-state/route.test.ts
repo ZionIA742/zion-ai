@@ -65,6 +65,7 @@ function createBaseState(overrides: Partial<RuntimeState> = {}): RuntimeState {
 async function createHarness(state: RuntimeState) {
   const runtimeState = {
     ...state,
+    auditEvents: [] as Array<Record<string, unknown>>,
     calls: {
       resolveAccess: 0,
       createServiceSupabase: 0,
@@ -247,6 +248,17 @@ async function createHarness(state: RuntimeState) {
         },
       };
     },
+    async writeAuditEvent(event: Record<string, unknown>) {
+      const operationId =
+        typeof event.operationId === "string" && event.operationId.length > 0
+          ? event.operationId
+          : crypto.randomUUID();
+      runtimeState.auditEvents.push({
+        ...event,
+        operationId,
+      });
+      return operationId;
+    },
   };
 
   return {
@@ -320,6 +332,11 @@ const tests: TestCase[] = [
       assert.equal(payload.accessState, "blocked");
       assert.equal(payload.isMembershipActive, false);
       assert.equal(payload.isProfileBlocked, true);
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents[1]?.outcome, "success");
+      assert.equal(harness.state.auditEvents[1]?.previousState, "active");
+      assert.equal(harness.state.auditEvents[1]?.nextState, "blocked");
+      assert.equal(harness.state.auditEvents[0]?.operationId, harness.state.auditEvents[1]?.operationId);
     },
   },
   {
@@ -375,6 +392,7 @@ const tests: TestCase[] = [
       assert.equal(response.status, 409);
       assert.equal(payload.error, "A conta interna do ZION nao pode alterar o proprio acesso.");
       assert.deepEqual(harness.state.calls.updates, []);
+      assert.equal(harness.state.auditEvents[0]?.reasonCode, "self_target_forbidden");
     },
   },
   {
@@ -466,6 +484,9 @@ const tests: TestCase[] = [
       assert.deepEqual(harness.state.calls.updates, ["memberships", "profiles"]);
       assert.equal(harness.state.membership?.is_active, false);
       assert.equal(harness.state.profile?.is_blocked, false);
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents.at(-1)?.outcome, "failed");
+      assert.equal(harness.state.auditEvents[0]?.operationId, harness.state.auditEvents.at(-1)?.operationId);
     },
   },
   {
@@ -502,6 +523,8 @@ const tests: TestCase[] = [
       assert.deepEqual(harness.state.calls.updates, ["profiles", "memberships"]);
       assert.equal(harness.state.profile?.is_blocked, false);
       assert.equal(harness.state.membership?.is_active, false);
+      assert.equal(harness.state.auditEvents[0]?.outcome, "started");
+      assert.equal(harness.state.auditEvents.at(-1)?.outcome, "failed");
     },
   },
   {
