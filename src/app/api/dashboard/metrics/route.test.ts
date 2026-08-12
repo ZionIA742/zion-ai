@@ -18,7 +18,7 @@ type TestCase = {
 type QueryCall = {
   table: string;
   columns: string;
-  filters: Array<{ op: "eq" | "gte" | "lte"; column: string; value: unknown }>;
+  filters: Array<{ op: "eq" | "gte" | "lte" | "in"; column: string; value: unknown }>;
   orders: Array<{ column: string; options: Record<string, unknown> | undefined }>;
   limit: number | null;
 };
@@ -112,6 +112,10 @@ function createPrivilegedClientMock(
             },
             lte(column: string, value: unknown) {
               call.filters.push({ op: "lte", column, value });
+              return builder;
+            },
+            in(column: string, value: readonly unknown[]) {
+              call.filters.push({ op: "in", column, value: [...value] });
               return builder;
             },
             order(
@@ -308,6 +312,20 @@ const tests: TestCase[] = [
           true,
           `missing organization scope for ${call.table}`,
         );
+
+        if (call.table === "conversations") {
+          assert.equal(
+            call.filters.some(
+              (filter) =>
+                filter.op === "in" &&
+                filter.column === "lead_id",
+            ),
+            true,
+            "conversations must be scoped through authorized store leads",
+          );
+          continue;
+        }
+
         assert.equal(
           call.filters.some(
             (filter) =>
@@ -322,9 +340,26 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: "conversations query includes store_id in select and filter",
+    name: "conversations query avoids missing store_id and scopes through authorized store leads",
     run: async () => {
-      const harness = createHandlerHarness();
+      const harness = createHandlerHarness({
+        responses: {
+          leads: {
+            data: [
+              {
+                id: "lead-store-1",
+                name: "Lead da loja",
+                phone: null,
+                state: "novo_lead",
+                created_at: "2026-08-06T12:00:00.000Z",
+                updated_at: null,
+              },
+            ],
+            error: null,
+          },
+        },
+      });
+
       await harness.handler(new Request("https://example.test/api/dashboard/metrics"));
 
       const conversationsCall = harness.calls.find(
@@ -332,15 +367,18 @@ const tests: TestCase[] = [
       );
 
       assert.ok(conversationsCall);
-      assert.equal(conversationsCall.columns.includes("store_id"), true);
+      assert.equal(conversationsCall.columns.includes("store_id"), false);
       assert.equal(
         conversationsCall.filters.some(
-          (filter) =>
-            filter.op === "eq" &&
-            filter.column === "store_id" &&
-            filter.value === "server-store",
+          (filter) => filter.op === "eq" && filter.column === "store_id",
         ),
-        true,
+        false,
+      );
+      assert.deepEqual(
+        conversationsCall.filters.find(
+          (filter) => filter.op === "in" && filter.column === "lead_id",
+        )?.value,
+        ["lead-store-1"],
       );
     },
   },

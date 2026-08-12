@@ -24,7 +24,6 @@ type LeadRow = {
 type ConversationRow = {
   id: string;
   lead_id: string;
-  store_id: string | null;
   status: string;
   is_human_active: boolean;
   last_message_at: string | null;
@@ -110,6 +109,14 @@ type FollowupRow = {
   resolved_at: string | null;
 };
 
+type CatalogMetadataValue =
+  | string
+  | number
+  | boolean
+  | null
+  | CatalogMetadataValue[]
+  | { [key: string]: CatalogMetadataValue };
+
 type CatalogItemRow = {
   id: string;
   sku: string | null;
@@ -121,7 +128,7 @@ type CatalogItemRow = {
   track_stock: boolean;
   stock_quantity: number | null;
   stock_status?: string | null;
-  metadata: Record<string, any> | null;
+  metadata: Record<string, CatalogMetadataValue> | null;
   created_at: string;
   updated_at: string;
 };
@@ -217,7 +224,7 @@ function isHumanOperatorMessage(message: Pick<MessageRow, "sender" | "direction"
   );
 }
 
-function countBy<T extends Record<string, any>>(items: T[], key: keyof T) {
+function countBy<T extends Record<string, unknown>>(items: T[], key: keyof T) {
   return items.reduce<Record<string, number>>((acc, item) => {
     const value = String(item[key] ?? "sem_status");
     acc[value] = (acc[value] || 0) + 1;
@@ -268,7 +275,7 @@ function getCatalogCategory(item: CatalogItemRow) {
     metadata.product_category ||
     null;
 
-  return normalizeCatalogCategory(rawCategory);
+  return normalizeCatalogCategory(typeof rawCategory === "string" ? rawCategory : null);
 }
 
 function getCatalogCategoryLabel(category: string) {
@@ -350,7 +357,8 @@ export function createDashboardMetricsGetHandler(
   const createPrivilegedClient =
     deps.createPrivilegedClient ?? createPrivilegedDashboardClient;
 
-  return async function GET(_request: Request) {
+  return async function GET(request: Request) {
+    void request;
     const access = await resolveAccess({ requirement: "active" });
 
     if (!access.ok) {
@@ -371,8 +379,42 @@ export function createDashboardMetricsGetHandler(
     const monthEnd = endOfLocalMonth(now);
     const next30DaysEnd = addDays(todayEnd, 30);
 
+    const leadsResult = await supabase
+      .from("leads")
+      .select("id,name,phone,state,created_at,updated_at")
+      .eq("organization_id", organizationId)
+      .eq("store_id", storeId)
+      .order("created_at", { ascending: false })
+      .limit(10000);
+
+    if (leadsResult.error) {
+      console.error("[dashboard-metrics] query failure", [
+        {
+          source: "leads",
+          code: leadsResult.error.code,
+          message: leadsResult.error.message,
+          details: leadsResult.error.details,
+          hint: leadsResult.error.hint,
+        },
+      ]);
+
+      return buildJsonResponse(
+        {
+          ok: false,
+          error: "LOAD_DASHBOARD_METRICS_FAILED",
+          message: "Nao foi possivel carregar as metricas do dashboard no momento.",
+        },
+        500
+      );
+    }
+
+    const leads = (leadsResult.data || []) as LeadRow[];
+    const authorizedLeadIds = leads.map((lead) => lead.id);
+    const conversationLeadIds = authorizedLeadIds.length
+      ? authorizedLeadIds
+      : ["00000000-0000-0000-0000-000000000000"];
+
     const [
-      leadsResult,
       conversationsResult,
       monthMessagesResult,
       recentMessagesResult,
@@ -385,20 +427,12 @@ export function createDashboardMetricsGetHandler(
       poolsResult,
     ] = await Promise.all([
       supabase
-        .from("leads")
-        .select("id,name,phone,state,created_at,updated_at")
-        .eq("organization_id", organizationId)
-        .eq("store_id", storeId)
-        .order("created_at", { ascending: false })
-        .limit(10000),
-
-      supabase
         .from("conversations")
         .select(
-          "id,lead_id,store_id,status,is_human_active,last_message_at,last_message_preview,last_message_direction,last_message_sender,created_at"
+          "id,lead_id,status,is_human_active,last_message_at,last_message_preview,last_message_direction,last_message_sender,created_at"
         )
         .eq("organization_id", organizationId)
-        .eq("store_id", storeId)
+        .in("lead_id", conversationLeadIds)
         .order("last_message_at", { ascending: false, nullsFirst: false })
         .limit(10000),
 
@@ -489,20 +523,34 @@ export function createDashboardMetricsGetHandler(
         .limit(10000),
     ]);
 
-    const queryError =
-      leadsResult.error ||
-      conversationsResult.error ||
-      monthMessagesResult.error ||
-      recentMessagesResult.error ||
-      aiRunsResult.error ||
-      aiDecisionsResult.error ||
-      aiQueueResult.error ||
-      appointmentsResult.error ||
-      followupsResult.error ||
-      catalogResult.error ||
-      poolsResult.error;
+    const queryFailures = [
+      { source: "conversations", error: conversationsResult.error },
+      { source: "messages_month", error: monthMessagesResult.error },
+      { source: "messages_recent", error: recentMessagesResult.error },
+      { source: "ai_runs", error: aiRunsResult.error },
+      { source: "ai_decisions", error: aiDecisionsResult.error },
+      { source: "ai_sales_action_queue", error: aiQueueResult.error },
+      { source: "store_appointments", error: appointmentsResult.error },
+      {
+        source: "schedule_post_appointment_followups",
+        error: followupsResult.error,
+      },
+      { source: "store_catalog_items", error: catalogResult.error },
+      { source: "pools", error: poolsResult.error },
+    ].filter((item) => item.error);
 
-    if (queryError) {
+    if (queryFailures.length > 0) {
+      console.error(
+        "[dashboard-metrics] query failure",
+        queryFailures.map(({ source, error }) => ({
+          source,
+          code: error?.code,
+          message: error?.message,
+          details: error?.details,
+          hint: error?.hint,
+        }))
+      );
+
       return buildJsonResponse(
         {
           ok: false,
@@ -513,7 +561,6 @@ export function createDashboardMetricsGetHandler(
       );
     }
 
-    const leads = (leadsResult.data || []) as LeadRow[];
     const conversations = (conversationsResult.data || []) as ConversationRow[];
     const monthMessages = (monthMessagesResult.data || []) as MessageRow[];
     const recentMessages = (recentMessagesResult.data || []) as MessageRow[];
@@ -932,7 +979,9 @@ export function createDashboardMetricsGetHandler(
         operationalAlerts,
       },
     });
-    } catch (_error: any) {
+    } catch (error: unknown) {
+      console.error("[dashboard-metrics] unexpected failure", error);
+
       return buildJsonResponse(
         {
           ok: false,
