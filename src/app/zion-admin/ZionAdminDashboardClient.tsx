@@ -125,9 +125,14 @@ type TokenUsageBreakdown = {
 };
 
 type StoreAccountAccess = {
+  membershipId: string | null;
   responsibleName: string | null;
   emailMasked: string;
   userId: string | null;
+  isMembershipActive: boolean | null;
+  isProfileBlocked: boolean | null;
+  accessState: "active" | "blocked" | "unavailable";
+  accessStateLabel: string;
   status:
     | "first_access_pending"
     | "first_access_completed"
@@ -1234,13 +1239,23 @@ function DrawerShell({
 
 function StoreDetailsDrawer({
   store,
+  canManageAccounts,
   onClose,
   onResendFirstAccess,
+  onToggleAccountAccess,
+  accessState,
   resendState,
 }: {
   store: ZionAdminStore | null;
+  canManageAccounts: boolean;
   onClose: () => void;
   onResendFirstAccess: (store: ZionAdminStore) => Promise<void>;
+  onToggleAccountAccess: (store: ZionAdminStore) => Promise<void>;
+  accessState: {
+    busyMembershipId: string | null;
+    error: string | null;
+    success: string | null;
+  };
   resendState: {
     busyStoreId: string | null;
     error: string | null;
@@ -1259,6 +1274,19 @@ function StoreDetailsDrawer({
     !accountAccess?.canResend ||
     (accountAccess?.cooldownRemainingMs ?? 0) > 0 ||
     resendState.busyStoreId === store.id;
+  const accessAction =
+    accountAccess?.accessState === "active"
+      ? "block"
+      : accountAccess?.accessState === "blocked"
+        ? "reactivate"
+        : null;
+  const accessActionLabel =
+    accessAction === "block" ? "Bloquear acesso" : "Reativar acesso";
+  const accessDisabled =
+    !canManageAccounts ||
+    !accountAccess?.membershipId ||
+    !accessAction ||
+    accessState.busyMembershipId === accountAccess.membershipId;
 
   return (
     <DrawerShell
@@ -1294,6 +1322,10 @@ function StoreDetailsDrawer({
                 help={getAccountAccessStatusHelp(accountAccess)}
               />
               <DetailItem
+                label="Acesso"
+                value={accountAccess?.accessStateLabel || "Acesso indisponivel"}
+              />
+              <DetailItem
                 label="Ultimo envio"
                 value={formatDateTime(accountAccess?.lastInviteSentAt)}
               />
@@ -1315,6 +1347,41 @@ function StoreDetailsDrawer({
               <div className="mt-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
                 {resendState.success}
               </div>
+            ) : null}
+
+            {accessState.error ? (
+              <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                {accessState.error}
+              </div>
+            ) : null}
+
+            {accessState.success ? (
+              <div className="mt-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                {accessState.success}
+              </div>
+            ) : null}
+
+            {accessAction ? (
+              <button
+                type="button"
+                disabled={accessDisabled}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `${accessAction === "block" ? "Bloquear" : "Reativar"} o acesso de ${accountAccess?.emailMasked || "esta conta"}?`,
+                    )
+                  ) {
+                    void onToggleAccountAccess(store);
+                  }
+                }}
+                className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {accessState.busyMembershipId === accountAccess?.membershipId
+                  ? accessAction === "block"
+                    ? "Bloqueando..."
+                    : "Reativando..."
+                  : accessActionLabel}
+              </button>
             ) : null}
 
             {accountAccess?.canResend ? (
@@ -2882,6 +2949,9 @@ export default function ZionAdminDashboardClient({
   const [resendBusyStoreId, setResendBusyStoreId] = useState<string | null>(null);
   const [resendError, setResendError] = useState<string | null>(null);
   const [resendSuccess, setResendSuccess] = useState<string | null>(null);
+  const [accessBusyMembershipId, setAccessBusyMembershipId] = useState<string | null>(null);
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const [accessSuccess, setAccessSuccess] = useState<string | null>(null);
 
   const data = initialData;
   const stores = data?.stores ?? [];
@@ -3035,6 +3105,60 @@ export default function ZionAdminDashboardClient({
     }
   }
 
+  async function handleToggleAccountAccess(store: ZionAdminStore) {
+    const membershipId = store.accountAccess?.membershipId ?? null;
+    const action =
+      store.accountAccess?.accessState === "active"
+        ? "block"
+        : store.accountAccess?.accessState === "blocked"
+          ? "reactivate"
+          : null;
+
+    if (!membershipId || !action) {
+      return;
+    }
+
+    setAccessBusyMembershipId(membershipId);
+    setAccessError(null);
+    setAccessSuccess(null);
+
+    try {
+      const response = await fetch("/api/zion-admin/accounts/access-state", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          membershipId,
+          action,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(payload?.error || "Nao foi possivel atualizar o acesso.");
+      }
+
+      setAccessSuccess(
+        action === "block"
+          ? "Acesso bloqueado com sucesso."
+          : "Acesso reativado com sucesso.",
+      );
+      router.refresh();
+    } catch (error: unknown) {
+      setAccessError(
+        error &&
+          typeof error === "object" &&
+          "message" in error &&
+          typeof (error as { message?: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : "Nao foi possivel atualizar o acesso.",
+      );
+    } finally {
+      setAccessBusyMembershipId(null);
+    }
+  }
+
   return (
     <main className="min-h-screen overflow-x-hidden bg-zinc-950 px-4 py-5 text-zinc-50 sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-3">
@@ -3165,8 +3289,15 @@ export default function ZionAdminDashboardClient({
 
       <StoreDetailsDrawer
         store={selectedStore}
+        canManageAccounts={canManageAccounts}
         onClose={() => setSelectedStore(null)}
         onResendFirstAccess={handleResendFirstAccess}
+        onToggleAccountAccess={handleToggleAccountAccess}
+        accessState={{
+          busyMembershipId: accessBusyMembershipId,
+          error: accessError,
+          success: accessSuccess,
+        }}
         resendState={{
           busyStoreId: resendBusyStoreId,
           error: resendError,

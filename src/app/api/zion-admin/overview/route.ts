@@ -142,16 +142,28 @@ type StoreCatalogConfigRow = StoreBooleanConfigRow & {
 };
 
 type OwnerMembershipRow = {
+  id: string;
   organization_id: string;
   user_id: string;
   role: string | null;
+  is_active: boolean | null;
   created_at: string | null;
 };
 
+type ProfileAccessRow = {
+  user_id: string;
+  is_blocked: boolean | null;
+};
+
 type StoreAccountAccessSnapshot = {
+  membershipId: string | null;
   responsibleName: string | null;
   emailMasked: string;
   userId: string | null;
+  isMembershipActive: boolean | null;
+  isProfileBlocked: boolean | null;
+  accessState: "active" | "blocked" | "unavailable";
+  accessStateLabel: string;
   status:
     | "first_access_pending"
     | "first_access_completed"
@@ -731,6 +743,35 @@ function applyPendingIssueDetails(args: {
   }
 }
 
+function deriveAccountAccessState(
+  isProfileBlocked: boolean | null,
+  isMembershipActive: boolean | null,
+): "active" | "blocked" | "unavailable" {
+  if (isProfileBlocked === false && isMembershipActive === true) {
+    return "active";
+  }
+
+  if (isProfileBlocked === null || isMembershipActive === null) {
+    return "unavailable";
+  }
+
+  return "blocked";
+}
+
+function getAccountAccessStateLabel(
+  accessState: "active" | "blocked" | "unavailable",
+) {
+  if (accessState === "active") {
+    return "Acesso ativo";
+  }
+
+  if (accessState === "blocked") {
+    return "Acesso bloqueado";
+  }
+
+  return "Acesso indisponivel";
+}
+
 function normalizeRole(value: string | null | undefined) {
   return String(value || "")
     .trim()
@@ -1160,7 +1201,7 @@ async function loadStoreAccountAccessSnapshots(
 
   const { data: memberships, error: membershipsError } = await supabase
     .from("memberships")
-    .select("organization_id, user_id, role, created_at")
+    .select("id, organization_id, user_id, role, is_active, created_at")
     .in("organization_id", organizationIds)
     .order("created_at", { ascending: true });
 
@@ -1189,6 +1230,23 @@ async function loadStoreAccountAccessSnapshots(
         .filter(Boolean),
     ),
   );
+  const { data: profiles, error: profilesError } =
+    ownerUserIds.length > 0
+      ? await supabase
+          .from("profiles")
+          .select("user_id, is_blocked")
+          .in("user_id", ownerUserIds)
+      : { data: [], error: null };
+
+  if (profilesError) {
+    throw profilesError;
+  }
+
+  const profilesByUserId = new Map<string, ProfileAccessRow>();
+
+  for (const profile of (profiles ?? []) as ProfileAccessRow[]) {
+    profilesByUserId.set(profile.user_id, profile);
+  }
 
   await Promise.all(
     ownerUserIds.map(async (userId) => {
@@ -1205,9 +1263,14 @@ async function loadStoreAccountAccessSnapshots(
     if (ownerMemberships.length !== 1) {
       for (const store of orgStores) {
         snapshots.set(store.id, {
+          membershipId: null,
           responsibleName: null,
           emailMasked: "E-mail indisponivel",
           userId: null,
+          isMembershipActive: null,
+          isProfileBlocked: null,
+          accessState: "unavailable",
+          accessStateLabel: "Acesso indisponivel",
           status: ownerMemberships.length === 0 ? "missing" : "ambiguous",
           statusLabel:
             ownerMemberships.length === 0
@@ -1224,13 +1287,24 @@ async function loadStoreAccountAccessSnapshots(
 
     const targetMembership = ownerMemberships[0];
     const authUser = authUsersById.get(targetMembership.user_id);
+    const profile = profilesByUserId.get(targetMembership.user_id);
+    const accessState = deriveAccountAccessState(
+      profile?.is_blocked ?? null,
+      targetMembership.is_active,
+    );
+    const accessStateLabel = getAccountAccessStateLabel(accessState);
 
     if (!authUser) {
       for (const store of orgStores) {
         snapshots.set(store.id, {
+          membershipId: targetMembership.id,
           responsibleName: null,
           emailMasked: "E-mail indisponivel",
           userId: targetMembership.user_id,
+          isMembershipActive: targetMembership.is_active,
+          isProfileBlocked: profile?.is_blocked ?? null,
+          accessState,
+          accessStateLabel,
           status: "missing",
           statusLabel: "Conta de loja nao encontrada",
           canResend: false,
@@ -1247,9 +1321,14 @@ async function loadStoreAccountAccessSnapshots(
 
     for (const store of orgStores) {
       snapshots.set(store.id, {
+        membershipId: targetMembership.id,
         responsibleName,
         emailMasked: maskEmail(authUser.email),
         userId: authUser.id,
+        isMembershipActive: targetMembership.is_active,
+        isProfileBlocked: profile?.is_blocked ?? null,
+        accessState,
+        accessStateLabel,
         status: summary.status,
         statusLabel: summary.label,
         canResend: summary.canResend,
@@ -1606,9 +1685,14 @@ export async function GET() {
         lastAiRunAt: metrics.lastAiRunAt,
         accountAccess:
           accountAccessByStoreId.get(store.id) ?? {
+            membershipId: null,
             responsibleName: null,
             emailMasked: "E-mail indisponivel",
             userId: null,
+            isMembershipActive: null,
+            isProfileBlocked: null,
+            accessState: "unavailable",
+            accessStateLabel: "Acesso indisponivel",
             status: "missing",
             statusLabel: "Conta de loja nao encontrada",
             canResend: false,
