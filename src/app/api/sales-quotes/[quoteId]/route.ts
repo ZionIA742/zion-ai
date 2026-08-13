@@ -3,6 +3,7 @@ import {
   QuoteAccessError,
   resolveAuthorizedExistingQuote,
 } from "@/lib/server/sales-quotes/quote-auth";
+import { resolveDisplayValidityDays } from "@/lib/sales-quotes/validity";
 import type {
   SalesQuoteItemRow,
   SalesQuoteVersionRow,
@@ -150,6 +151,15 @@ export async function GET(
         payment_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "payment_terms"),
         delivery_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "delivery_terms"),
         warranty_terms: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "warranty_terms"),
+        validity_days: resolveDisplayValidityDays({
+          validityDaysValue: readMetadataValue(quoteMetadata, "validity_days"),
+          validUntilValue: readOfficialOrMetadataValue(
+            scope.quote as Record<string, unknown>,
+            quoteMetadata,
+            "valid_until"
+          ),
+          baseDateValue: scope.quote.created_at,
+        }),
         valid_until: readOfficialOrMetadataValue(scope.quote as Record<string, unknown>, quoteMetadata, "valid_until"),
         subtotal_cents:
           typeof scope.quote.subtotal_cents === "number" ? scope.quote.subtotal_cents : null,

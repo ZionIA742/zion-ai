@@ -12,7 +12,7 @@ type MembershipRow = {
 };
 
 const SALES_QUOTES_SELECT =
-  "id, organization_id, store_id, conversation_id, lead_id, quote_number, title, status, customer_name, customer_phone, customer_notes, internal_notes, payment_terms, delivery_terms, warranty_terms, valid_until, subtotal_cents, discount_cents, total_cents, current_version_id, last_change_request_id, metadata, created_at, updated_at";
+  "id, organization_id, store_id, commercial_opportunity_id, creation_idempotency_key, creation_request_fingerprint, conversation_id, lead_id, quote_number, title, status, customer_name, customer_phone, customer_notes, internal_notes, payment_terms, delivery_terms, warranty_terms, valid_until, subtotal_cents, discount_cents, total_cents, current_version_id, last_change_request_id, metadata, created_at, updated_at";
 
 function createServiceSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -35,11 +35,18 @@ function createServiceSupabaseClient() {
 export class QuoteAccessError extends Error {
   status: number;
   code: string;
+  details?: Record<string, unknown>;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details?: Record<string, unknown>,
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 

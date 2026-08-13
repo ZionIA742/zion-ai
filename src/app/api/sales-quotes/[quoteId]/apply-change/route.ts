@@ -19,6 +19,11 @@ import {
   getNextQuoteVersionNumber,
   recordQuoteGenerationFailure,
 } from "@/lib/server/sales-quotes/quote-versioning";
+import {
+  parseValidityDays,
+  resolveDisplayValidityDays,
+  resolveValidUntilFromValidityDays,
+} from "@/lib/sales-quotes/validity";
 import type {
   QuoteSnapshot,
   SalesQuoteChangeRequestRow,
@@ -100,6 +105,34 @@ function buildErrorResponse(error: unknown) {
 function normalizeOptionalText(value: unknown) {
   const normalized = String(value ?? "").trim();
   return normalized || null;
+}
+
+function resolveNextValidUntil(args: {
+  validityDays: string | null;
+  baseDateValue: unknown;
+}) {
+  if (args.validityDays == null) {
+    return null;
+  }
+
+  if (parseValidityDays(args.validityDays) == null) {
+    throw new QuoteAccessError(
+      400,
+      "INVALID_VALIDITY_DAYS",
+      "validity_days deve ser um numero inteiro maior ou igual a zero."
+    );
+  }
+
+  const resolvedValidUntil = resolveValidUntilFromValidityDays({
+    validityDays: args.validityDays,
+    baseDateValue: args.baseDateValue,
+  });
+
+  if (!resolvedValidUntil) {
+    throw new Error("Falha ao resolver valid_until da alteracao da quote.");
+  }
+
+  return resolvedValidUntil;
 }
 
 function hasOwn(obj: object, key: keyof ApplyChangeBody) {
@@ -497,8 +530,15 @@ function buildUpdatedQuote(args: {
 
   if (hasOwn(args.body, "validity_days")) {
     const normalizedValidityDays = normalizeOptionalText(args.body.validity_days);
-    const currentValidityDays =
-      normalizeOptionalText(currentMetadata.validity_days) || nextValidUntil;
+    const currentValidityDays = resolveDisplayValidityDays({
+      validityDaysValue: currentMetadata.validity_days,
+      validUntilValue: nextValidUntil || currentMetadata.valid_until,
+      baseDateValue: args.quote.created_at,
+    });
+    const nextResolvedValidUntil = resolveNextValidUntil({
+      validityDays: normalizedValidityDays,
+      baseDateValue: args.quote.created_at,
+    });
 
     if (normalizedValidityDays !== currentValidityDays) {
       appliedChanges.validity_days = {
@@ -506,9 +546,9 @@ function buildUpdatedQuote(args: {
         to: normalizedValidityDays,
       };
       nextMetadata.validity_days = normalizedValidityDays;
-      nextMetadata.valid_until = normalizedValidityDays;
+      nextMetadata.valid_until = nextResolvedValidUntil;
       metadataChanged = true;
-      nextValidUntil = normalizedValidityDays;
+      nextValidUntil = nextResolvedValidUntil;
     }
   }
 

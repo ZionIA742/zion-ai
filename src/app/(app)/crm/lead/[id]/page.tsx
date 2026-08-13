@@ -2,8 +2,20 @@
 
 import Link from "next/link";
 import { KeyboardEvent, useEffect, useRef, useState, type ChangeEvent } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { getCanonicalCrmStage } from "@/config/crm";
+import {
+  canEnableConcludeOpportunityAction,
+  canEnableReopenForPostSaleAction,
+  canRenderConcludeOpportunityAction,
+  canRenderReopenForPostSaleAction,
+} from "./conclude-opportunity-visibility";
+import {
+  buildManualQuoteCreationSnapshot,
+  buildManualQuoteCreationStorageKey,
+  clearPendingManualQuoteCreationOperation,
+  getOrCreatePendingManualQuoteCreationOperation,
+} from "./quote-create-operation";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type Lead = {
@@ -111,9 +123,40 @@ type OpportunitySummary = {
   leadId: string;
   conversationId: string | null;
   stage: string | null;
+  lifecycleCycle?: number | null;
   stageChangedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+};
+
+type ConcludeOpportunityResponse = {
+  ok: boolean;
+  commercialOpportunityId?: string;
+  stage?: string;
+  lifecycleCycle?: number;
+  lifecycleEventId?: string;
+  eventType?: string;
+  reasonCode?: string;
+  stageChangedAt?: string;
+  updatedAt?: string;
+  idempotencyKey?: string;
+  error?: string;
+  message?: string;
+};
+
+type ReopenForPostSaleResponse = {
+  ok: boolean;
+  commercialOpportunityId?: string;
+  stage?: string;
+  lifecycleCycle?: number;
+  lifecycleEventId?: string;
+  eventType?: string;
+  reasonCode?: string;
+  stageChangedAt?: string;
+  updatedAt?: string;
+  idempotencyKey?: string;
+  error?: string;
+  message?: string;
 };
 
 type SimulateCustomerResponse = {
@@ -159,6 +202,7 @@ type CreateSalesQuoteResponse = {
   error?: string;
   message?: string;
   quoteId?: string;
+  replayed?: boolean;
 };
 
 type GenerateSalesQuotePdfResponse = {
@@ -210,6 +254,7 @@ type SalesQuoteDetailResponse = {
     payment_terms: string | null;
     delivery_terms: string | null;
     warranty_terms: string | null;
+    validity_days?: string | null;
     valid_until: string | null;
     subtotal_cents: number | null;
     discount_cents: number | null;
@@ -974,6 +1019,7 @@ function EmptyState({ text }: { text: string }) {
 
 export default function LeadPage() {
   const params = useParams();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const leadId = params.id as string;
   const requestedConversationId =
@@ -1082,6 +1128,20 @@ export default function LeadPage() {
     opportunities.find((opportunity) => opportunity.id === selectedOpportunityId) || null;
   const activeOpportunities = opportunities.filter(
     (opportunity) => getCanonicalCrmStage(opportunity.stage)?.area === "pipeline"
+  );
+  const canConcludeSelectedOpportunity = canRenderConcludeOpportunityAction(
+    selectedOpportunity?.stage,
+    Boolean(selectedOpportunity),
+  );
+  const isConcludeSelectedOpportunityEnabled = canEnableConcludeOpportunityAction(
+    selectedOpportunity?.stage,
+  );
+  const canRenderReopenSelectedOpportunity = canRenderReopenForPostSaleAction(
+    selectedOpportunity?.stage,
+    Boolean(selectedOpportunity),
+  );
+  const canEnableReopenSelectedOpportunity = canEnableReopenForPostSaleAction(
+    selectedOpportunity?.stage,
   );
   const selectedOpportunityStageLabel = selectedOpportunity
     ? formatOpportunityStage(selectedOpportunity.stage)
@@ -1318,12 +1378,13 @@ export default function LeadPage() {
   }
 
   function openCreateQuoteModal() {
-    if (requiresOpportunitySelection && !selectedOpportunity) {
+    if (!selectedOpportunity) {
       setQuoteFormError(
         "Selecione primeiro a oportunidade comercial para criar o orcamento desta conversa."
       );
+      setQuoteFormSuccess(null);
       setStatusText(
-        "Existem multiplas oportunidades ativas nesta conversa. Escolha a oportunidade comercial antes de seguir."
+        "Escolha explicitamente a oportunidade comercial antes de seguir com o orcamento."
       );
       return;
     }
@@ -1359,6 +1420,162 @@ export default function LeadPage() {
           : item
       )
     );
+  }
+
+  function syncSelectedOpportunityInUrl(opportunityId: string | null) {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const nextSearchParams = new URLSearchParams(window.location.search);
+
+    if (opportunityId) {
+      nextSearchParams.set("opportunityId", opportunityId);
+    } else {
+      nextSearchParams.delete("opportunityId");
+    }
+
+    const nextSearch = nextSearchParams.toString();
+    const nextHref = nextSearch
+      ? `${window.location.pathname}?${nextSearch}`
+      : window.location.pathname;
+
+    router.replace(nextHref, { scroll: false });
+  }
+
+  function applySelectedOpportunity(opportunityId: string) {
+    setSelectedOpportunityId(opportunityId);
+    setRequiresOpportunitySelection(false);
+    syncSelectedOpportunityInUrl(opportunityId);
+  }
+
+  async function concludeSelectedOpportunity() {
+    if (!selectedOpportunity) {
+      setErrorText("Selecione uma oportunidade comercial antes de concluir.");
+      setStatusText(null);
+      return;
+    }
+
+    if (!isConcludeSelectedOpportunityEnabled) {
+      setErrorText("A oportunidade selecionada nao pode ser concluida neste estado.");
+      setStatusText(null);
+      return;
+    }
+
+    const confirmationText = [
+      `Concluir a opportunity ${selectedOpportunity.id}?`,
+      `Stage atual: ${selectedOpportunityStageLabel}.`,
+      "A oportunidade saira do fluxo comercial normal.",
+    ].join("\n");
+
+    if (!window.confirm(confirmationText)) {
+      return;
+    }
+
+    setWorking(true);
+    setErrorText(null);
+    setStatusText(null);
+
+    try {
+      const response = await fetch("/api/crm/opportunities/conclude", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          commercialOpportunityId: selectedOpportunity.id,
+          expectedStage: selectedOpportunity.stage,
+          expectedLifecycleCycle: selectedOpportunity.lifecycleCycle ?? null,
+        }),
+      });
+
+      const result =
+        (await response.json().catch(() => null)) as ConcludeOpportunityResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            "Nao foi possivel concluir a oportunidade comercial agora."
+        );
+      }
+
+      setStatusText("Oportunidade concluida com sucesso.");
+      await fetchLeadConversationAndMessages({ silent: true });
+    } catch (error: any) {
+      setErrorText(
+        error?.message || "Nao foi possivel concluir a oportunidade comercial agora."
+      );
+      setStatusText(null);
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function reopenSelectedOpportunityForPostSale() {
+    if (!selectedOpportunity) {
+      setErrorText("Selecione uma oportunidade comercial antes de reabrir.");
+      setStatusText(null);
+      return;
+    }
+
+    if (!canEnableReopenSelectedOpportunity) {
+      setErrorText(
+        "A oportunidade selecionada nao pode ser reaberta para Pos-venda neste estado."
+      );
+      setStatusText(null);
+      return;
+    }
+
+    const confirmationText = [
+      `Reabrir a opportunity ${selectedOpportunity.id}?`,
+      `Stage atual: ${selectedOpportunityStageLabel}.`,
+      "Ela retornara para Pos-venda usando a mesma opportunity selecionada.",
+      "Nenhuma nova opportunity sera criada.",
+    ].join("\n");
+
+    if (!window.confirm(confirmationText)) {
+      return;
+    }
+
+    setWorking(true);
+    setErrorText(null);
+    setStatusText(null);
+
+    try {
+      const response = await fetch("/api/crm/opportunities/reopen-for-post-sale", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          commercialOpportunityId: selectedOpportunity.id,
+          expectedStage: selectedOpportunity.stage,
+          expectedLifecycleCycle: selectedOpportunity.lifecycleCycle ?? null,
+        }),
+      });
+
+      const result =
+        (await response.json().catch(() => null)) as ReopenForPostSaleResponse | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            "Nao foi possivel reabrir a oportunidade comercial agora."
+        );
+      }
+
+      setStatusText("Oportunidade reaberta com sucesso em Pos-venda.");
+      await fetchLeadConversationAndMessages({ silent: true });
+    } catch (error: any) {
+      setErrorText(
+        error?.message || "Nao foi possivel reabrir a oportunidade comercial agora."
+      );
+      setStatusText(null);
+    } finally {
+      setWorking(false);
+    }
   }
 
   async function generateManualQuotePdf() {
@@ -1416,18 +1633,51 @@ export default function LeadPage() {
       validity_days: quoteValidityDays.trim() || null,
       items: normalizedItems,
     };
+    const pendingOperationStorageKey = buildManualQuoteCreationStorageKey({
+      organizationId: lead.organization_id,
+      storeId: lead.store_id,
+      leadId: lead.id,
+      conversationId: conversation?.id || null,
+      commercialOpportunityId: selectedOpportunity?.id || null,
+    });
+    const requestSnapshot = buildManualQuoteCreationSnapshot({
+      organizationId: lead.organization_id,
+      storeId: lead.store_id,
+      leadId: lead.id,
+      conversationId: conversation?.id || null,
+      commercialOpportunityId: selectedOpportunity?.id || null,
+      title: quoteTitle.trim() || null,
+      customer_name: lead.name || null,
+      customer_phone: lead.phone || null,
+      customer_notes: quoteCustomerNotes.trim() || null,
+      internal_notes: null,
+      warranty_terms: quoteWarrantyTerms.trim() || null,
+      validity_days: quoteValidityDays.trim() || null,
+      discount_cents: 0,
+      items: normalizedItems,
+    });
 
     setIsGeneratingManualQuote(true);
     setQuoteFormError(null);
     setQuoteFormSuccess(null);
 
     try {
+      const creationOperation = getOrCreatePendingManualQuoteCreationOperation({
+        storage: window.sessionStorage,
+        storageKey: pendingOperationStorageKey,
+        requestSnapshot,
+        createIdempotencyKey: () => `quote_create:${crypto.randomUUID()}`,
+      });
+
       const createResponse = await fetch("/api/sales-quotes/create", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...payload,
+          creationIdempotencyKey: creationOperation.idempotencyKey,
+        }),
       });
 
       const createResult =
@@ -1459,6 +1709,11 @@ export default function LeadPage() {
             "O orcamento foi criado, mas nao foi possivel gerar o PDF."
         );
       }
+
+      clearPendingManualQuoteCreationOperation({
+        storage: window.sessionStorage,
+        storageKey: pendingOperationStorageKey,
+      });
 
       setQuoteFormSuccess("Orcamento gerado com sucesso.");
       setQuoteFormError(null);
@@ -2174,7 +2429,10 @@ export default function LeadPage() {
       setQuoteTitle(result.quote.title || "");
       setQuoteCustomerNotes(result.quote.customer_notes || "");
       setQuoteWarrantyTerms(result.quote.warranty_terms || "");
-      setQuoteValidityDays(convertQuoteValidUntilToDays(result.quote.valid_until));
+      setQuoteValidityDays(
+        String(result.quote.validity_days || "").trim() ||
+          convertQuoteValidUntilToDays(result.quote.valid_until)
+      );
       setQuoteItems(formItems.length > 0 ? formItems : [createEmptyQuoteFormItem()]);
       setQuoteFormError(null);
       setQuoteFormSuccess(null);
@@ -3592,12 +3850,51 @@ export default function LeadPage() {
                       working ||
                       refreshing ||
                       simulatingCustomer ||
-                      (requiresOpportunitySelection && !selectedOpportunity)
+                      !selectedOpportunity
                     }
                     className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Criar orçamento
                   </button>
+
+                  {canConcludeSelectedOpportunity ? (
+                    <button
+                      type="button"
+                      onClick={() => void concludeSelectedOpportunity()}
+                      disabled={
+                        !selectedOpportunity ||
+                        !isConcludeSelectedOpportunityEnabled ||
+                        working ||
+                        refreshing ||
+                        simulatingCustomer
+                      }
+                      title={
+                        selectedOpportunity && !isConcludeSelectedOpportunityEnabled
+                          ? "Disponivel ao final do Pos-venda"
+                          : undefined
+                      }
+                      className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Concluir oportunidade
+                    </button>
+                  ) : null}
+
+                  {canRenderReopenSelectedOpportunity ? (
+                    <button
+                      type="button"
+                      onClick={() => void reopenSelectedOpportunityForPostSale()}
+                      disabled={
+                        !selectedOpportunity ||
+                        !canEnableReopenSelectedOpportunity ||
+                        working ||
+                        refreshing ||
+                        simulatingCustomer
+                      }
+                      className="rounded-xl bg-white px-3.5 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Reabrir para Pos-venda
+                    </button>
+                  ) : null}
                 </div>
 
                 <Link
@@ -3665,7 +3962,7 @@ export default function LeadPage() {
                       <button
                         key={opportunity.id}
                         type="button"
-                        onClick={() => setSelectedOpportunityId(opportunity.id)}
+                        onClick={() => applySelectedOpportunity(opportunity.id)}
                         className={`rounded-xl px-3 py-2 text-xs font-semibold shadow-sm ${
                           isSelected
                             ? "bg-amber-900 text-white"
@@ -3846,7 +4143,7 @@ export default function LeadPage() {
                           <div className="text-sm font-semibold text-gray-900">
                             Oportunidades deste lead
                           </div>
-                          <div className="mt-3 space-y-3">
+                      <div className="mt-3 space-y-3">
                             {opportunities.map((opportunity) => {
                               const isSelected = selectedOpportunity?.id === opportunity.id;
                               return (
@@ -3869,20 +4166,19 @@ export default function LeadPage() {
                                       </div>
                                     </div>
 
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setSelectedOpportunityId(opportunity.id);
-                                        setRequiresOpportunitySelection(false);
-                                      }}
-                                      className={`rounded-xl px-3 py-2 text-xs font-semibold shadow-sm ${
-                                        isSelected
-                                          ? "bg-black text-white"
-                                          : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
-                                      }`}
-                                    >
-                                      {isSelected ? "Selecionada" : "Selecionar"}
-                                    </button>
+                                    <div className="flex flex-wrap gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => applySelectedOpportunity(opportunity.id)}
+                                        className={`rounded-xl px-3 py-2 text-xs font-semibold shadow-sm ${
+                                          isSelected
+                                            ? "bg-black text-white"
+                                            : "bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-100"
+                                        }`}
+                                      >
+                                        {isSelected ? "Selecionada" : "Selecionar"}
+                                      </button>
+                                    </div>
                                   </div>
                                 </div>
                               );

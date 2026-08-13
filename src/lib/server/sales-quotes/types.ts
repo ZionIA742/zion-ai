@@ -56,6 +56,9 @@ export type SalesQuoteRow = {
   id: string;
   organization_id: string;
   store_id: string;
+  commercial_opportunity_id?: string | null;
+  creation_idempotency_key?: string | null;
+  creation_request_fingerprint?: string | null;
   conversation_id: string | null;
   lead_id: string | null;
   quote_number: string | null;
