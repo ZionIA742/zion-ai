@@ -10,6 +10,7 @@ import {
   getAuthAdminUserById,
   maskEmail,
 } from "@/lib/server/zion-account-provisioning";
+import { resolveCanonicalOwnerMembership } from "./store-account-access-resolution";
 
 type StoreRow = {
   id: string;
@@ -182,6 +183,8 @@ type StoreAccountAccessSnapshot = {
   canResend: boolean;
   lastInviteSentAt: string | null;
   firstAccessCompletedAt: string | null;
+  lastInviteHistoryStatus: "available" | "unavailable";
+  firstAccessHistoryStatus: "available" | "unavailable";
   cooldownRemainingMs: number;
 };
 
@@ -778,6 +781,20 @@ function getAccountAccessStateLabel(
   return "Acesso indisponivel";
 }
 
+function getAccountAccessHistoryStatus(args: {
+  summaryStatus:
+    | "first_access_pending"
+    | "first_access_completed"
+    | "provisioning_pending"
+    | "provisioning_failed"
+    | "invalid_account";
+  timestamp: string | null;
+}) {
+  return args.summaryStatus === "invalid_account" && !args.timestamp
+    ? "unavailable"
+    : "available";
+}
+
 function normalizeRole(value: string | null | undefined) {
   return String(value || "")
     .trim()
@@ -1298,7 +1315,11 @@ async function loadStoreAccountAccessSnapshots(
   for (const [organizationId, orgStores] of storeByOrganizationId.entries()) {
     const ownerMemberships = membershipsByOrganizationId.get(organizationId) ?? [];
 
-    if (ownerMemberships.length !== 1) {
+    const canonicalOwner = resolveCanonicalOwnerMembership({
+      ownerMemberships,
+    });
+
+    if (canonicalOwner.kind !== "resolved") {
       for (const store of orgStores) {
         snapshots.set(store.id, {
           membershipId: null,
@@ -1309,21 +1330,23 @@ async function loadStoreAccountAccessSnapshots(
           isProfileBlocked: null,
           accessState: "unavailable",
           accessStateLabel: "Acesso indisponivel",
-          status: ownerMemberships.length === 0 ? "missing" : "ambiguous",
+          status: canonicalOwner.kind,
           statusLabel:
-            ownerMemberships.length === 0
+            canonicalOwner.kind === "missing"
               ? "Conta de loja nao encontrada"
               : "Conta de loja ambigua",
           canResend: false,
           lastInviteSentAt: null,
           firstAccessCompletedAt: null,
+          lastInviteHistoryStatus: "available",
+          firstAccessHistoryStatus: "available",
           cooldownRemainingMs: 0,
         });
       }
       continue;
     }
 
-    const targetMembership = ownerMemberships[0];
+    const targetMembership = canonicalOwner.membership;
     const authUser = authUsersById.get(targetMembership.user_id);
     const profile = profilesByUserId.get(targetMembership.user_id);
     const accessState = deriveAccountAccessState(
@@ -1348,6 +1371,8 @@ async function loadStoreAccountAccessSnapshots(
           canResend: false,
           lastInviteSentAt: null,
           firstAccessCompletedAt: null,
+          lastInviteHistoryStatus: "available",
+          firstAccessHistoryStatus: "available",
           cooldownRemainingMs: 0,
         });
       }
@@ -1356,6 +1381,14 @@ async function loadStoreAccountAccessSnapshots(
 
     const summary = getProvisioningAccountAccessSummary(authUser);
     const responsibleName = String(authUser.user_metadata?.responsible_name || "").trim() || null;
+    const lastInviteHistoryStatus = getAccountAccessHistoryStatus({
+      summaryStatus: summary.status,
+      timestamp: summary.sentAt,
+    });
+    const firstAccessHistoryStatus = getAccountAccessHistoryStatus({
+      summaryStatus: summary.status,
+      timestamp: summary.completedAt,
+    });
 
     for (const store of orgStores) {
       snapshots.set(store.id, {
@@ -1372,6 +1405,8 @@ async function loadStoreAccountAccessSnapshots(
         canResend: summary.canResend,
         lastInviteSentAt: summary.sentAt,
         firstAccessCompletedAt: summary.completedAt,
+        lastInviteHistoryStatus,
+        firstAccessHistoryStatus,
         cooldownRemainingMs: getFirstAccessInviteCooldownRemainingMs(authUser.app_metadata),
       });
     }
@@ -1754,6 +1789,8 @@ export async function GET() {
             canResend: false,
             lastInviteSentAt: null,
             firstAccessCompletedAt: null,
+            lastInviteHistoryStatus: "available",
+            firstAccessHistoryStatus: "available",
             cooldownRemainingMs: 0,
           },
 

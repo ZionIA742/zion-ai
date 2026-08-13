@@ -32,8 +32,14 @@ const tests: TestCase[] = [
       assert.equal(source.includes("Assinatura canônica"), false);
       assert.equal(source.includes("Autoridade da etapa 5.2: subscriptions.status"), false);
       assert.equal(source.includes("Semântica"), false);
-      assert.equal(source.includes("Acesso bloqueado = pessoa/conta. Inativa/Suspensa = loja."), false);
-      assert.equal(source.includes("Motivo detalhado ainda não registrado em base confiável."), false);
+      assert.equal(
+        source.includes("Acesso bloqueado = pessoa/conta. Inativa/Suspensa = loja."),
+        false,
+      );
+      assert.equal(
+        source.includes("Motivo detalhado ainda não registrado em base confiável."),
+        false,
+      );
     },
   },
   {
@@ -45,6 +51,30 @@ const tests: TestCase[] = [
       assert.equal(source.includes("storeId: store.id"), true);
       assert.equal(source.includes("organizationId: store.organizationId"), false);
       assert.equal(source.includes("subscriptionId:"), false);
+    },
+  },
+  {
+    name: "first access control stays visible in drawer header and reuses resend handler",
+    run: () => {
+      const source = readSource();
+
+      assert.equal(source.includes("headerActions={"), true);
+      assert.equal(source.includes("flex flex-wrap items-start justify-end gap-2"), true);
+      assert.equal(source.includes("getFirstAccessControlState({"), true);
+      assert.equal(source.includes("title={firstAccessControl.reason || undefined}"), true);
+      assert.equal(source.includes("void onResendFirstAccess(store)"), true);
+      assert.equal(source.includes('/api/zion-admin/accounts/resend-first-access'), true);
+    },
+  },
+  {
+    name: "historical account overview distinguishes unavailable history from no activity",
+    run: () => {
+      const source = readSource();
+
+      assert.equal(source.includes('return "Histórico não disponível";'), true);
+      assert.equal(source.includes('return "Sem atividade";'), true);
+      assert.equal(source.includes("accountAccess?.lastInviteHistoryStatus"), true);
+      assert.equal(source.includes("accountAccess?.firstAccessHistoryStatus"), true);
     },
   },
   {

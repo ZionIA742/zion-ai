@@ -2,6 +2,10 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  getFirstAccessControlState,
+  type StoreAccountAccess,
+} from "./first-access-control";
 import { supabase } from "@/lib/supabaseBrowser";
 
 type OverviewPanelKey =
@@ -124,30 +128,6 @@ type TokenUsageBreakdown = {
   unclassifiedTokens?: number | string | null;
 };
 
-type StoreAccountAccess = {
-  membershipId: string | null;
-  responsibleName: string | null;
-  emailMasked: string;
-  userId: string | null;
-  isMembershipActive: boolean | null;
-  isProfileBlocked: boolean | null;
-  accessState: "active" | "blocked" | "unavailable";
-  accessStateLabel: string;
-  status:
-    | "first_access_pending"
-    | "first_access_completed"
-    | "provisioning_pending"
-    | "provisioning_failed"
-    | "invalid_account"
-    | "ambiguous"
-    | "missing";
-  statusLabel: string;
-  canResend: boolean;
-  lastInviteSentAt: string | null;
-  firstAccessCompletedAt: string | null;
-  cooldownRemainingMs: number;
-};
-
 export type ZionAdminStore = {
   id: string;
   name: string;
@@ -201,6 +181,8 @@ export type ZionAdminStore = {
   pendingIssueDetails?: PendingIssueDetail[];
   accountAccess?: StoreAccountAccess | null;
 };
+
+type AccountAccessHistoryStatus = "available" | "unavailable";
 
 type Props = {
   adminRole: string;
@@ -423,7 +405,14 @@ function formatPercent(
   return `${Math.round((parsedPart / parsedTotal) * 100)}%`;
 }
 
-function formatDateTime(value: string | null | undefined) {
+function formatAccountAccessDateTime(
+  value: string | null | undefined,
+  historyStatus: AccountAccessHistoryStatus | null | undefined = "available",
+) {
+  if (historyStatus === "unavailable") {
+    return "Histórico não disponível";
+  }
+
   if (!value) {
     return "Sem atividade";
   }
@@ -441,6 +430,10 @@ function formatDateTime(value: string | null | undefined) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(parsed);
+}
+
+function formatDateTime(value: string | null | undefined) {
+  return formatAccountAccessDateTime(value);
 }
 
 function getAiRunEventDate(event: AiRunEvent) {
@@ -1212,11 +1205,13 @@ function DrawerShell({
   subtitle,
   children,
   onClose,
+  headerActions,
 }: {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
   onClose: () => void;
+  headerActions?: React.ReactNode;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/55 backdrop-blur-sm">
@@ -1244,13 +1239,18 @@ function DrawerShell({
               ) : null}
             </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="shrink-0 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-zinc-200 hover:bg-white/[0.08]"
-            >
-              Fechar
-            </button>
+            <div className="flex shrink-0 flex-col items-end gap-2">
+              <div className="flex flex-wrap items-start justify-end gap-2">
+                {headerActions}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="shrink-0 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-zinc-200 hover:bg-white/[0.08]"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1303,10 +1303,11 @@ function StoreDetailsDrawer({
   const successfulRuns = numberValue(store.successfulAiRuns);
   const failedRuns = numberValue(store.failedAiRuns);
   const accountAccess = store.accountAccess ?? null;
-  const resendDisabled =
-    !accountAccess?.canResend ||
-    (accountAccess?.cooldownRemainingMs ?? 0) > 0 ||
-    resendState.busyStoreId === store.id;
+  const firstAccessControl = getFirstAccessControlState({
+    accountAccess,
+    canManageAccounts,
+    isBusy: resendState.busyStoreId === store.id,
+  });
   const accessAction =
     accountAccess?.accessState === "active"
       ? "block"
@@ -1331,6 +1332,34 @@ function StoreDetailsDrawer({
       title={store.name}
       subtitle={store.organizationName}
       onClose={onClose}
+      headerActions={
+        <div className="flex max-w-[260px] flex-col items-end gap-1">
+          <button
+            type="button"
+            disabled={firstAccessControl.disabled}
+            aria-label={firstAccessControl.label}
+            title={firstAccessControl.reason || undefined}
+            onClick={() => {
+              if (
+                firstAccessControl.confirmMessage &&
+                window.confirm(firstAccessControl.confirmMessage)
+              ) {
+                void onResendFirstAccess(store);
+              }
+            }}
+            className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {resendState.busyStoreId === store.id
+              ? "Enviando..."
+              : firstAccessControl.label}
+          </button>
+          {firstAccessControl.reason ? (
+            <div className="text-right text-[11px] leading-4 text-zinc-500">
+              {firstAccessControl.reason}
+            </div>
+          ) : null}
+        </div>
+      }
     >
       <div className="mb-5 mt-1 flex flex-wrap gap-2">
         <span className="rounded-full border border-white/10 bg-zinc-900 px-3 py-1 text-xs text-zinc-300">
@@ -1435,11 +1464,17 @@ function StoreDetailsDrawer({
                 />
                 <DetailItem
                   label="Último envio"
-                  value={formatDateTime(accountAccess?.lastInviteSentAt)}
+                  value={formatAccountAccessDateTime(
+                    accountAccess?.lastInviteSentAt,
+                    accountAccess?.lastInviteHistoryStatus,
+                  )}
                 />
                 <DetailItem
                   label="Primeiro acesso"
-                  value={formatDateTime(accountAccess?.firstAccessCompletedAt)}
+                  value={formatAccountAccessDateTime(
+                    accountAccess?.firstAccessCompletedAt,
+                    accountAccess?.firstAccessHistoryStatus,
+                  )}
                 />
               </div>
 
@@ -1490,26 +1525,6 @@ function StoreDetailsDrawer({
               </button>
             ) : null}
 
-            {accountAccess?.canResend ? (
-              <button
-                type="button"
-                disabled={resendDisabled}
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      `Reenviar um novo link para ${accountAccess.emailMasked}? O link anterior sera substituido.`,
-                    )
-                  ) {
-                    void onResendFirstAccess(store);
-                  }
-                }}
-                className="mt-4 rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {resendState.busyStoreId === store.id
-                  ? "Reenviando..."
-                  : "Reenviar link para criar senha"}
-              </button>
-            ) : null}
           </div>
           </div>
         </section>

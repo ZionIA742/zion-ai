@@ -117,11 +117,23 @@ const tests: TestCase[] = [
         "responsibleName:",
         "emailMasked:",
         "cooldownRemainingMs:",
+        "lastInviteHistoryStatus:",
+        "firstAccessHistoryStatus:",
       ];
 
       for (const token of requiredTokens) {
         assert.equal(source.includes(token), true, `missing token: ${token}`);
       }
+    },
+  },
+  {
+    name: "legacy invalid-account snapshots mark first-access history as unavailable",
+    run: () => {
+      const source = readSource(routePath);
+
+      assert.equal(source.includes('summaryStatus === "invalid_account" && !args.timestamp'), true);
+      assert.equal(source.includes("lastInviteHistoryStatus = getAccountAccessHistoryStatus({"), true);
+      assert.equal(source.includes("firstAccessHistoryStatus = getAccountAccessHistoryStatus({"), true);
     },
   },
   {
