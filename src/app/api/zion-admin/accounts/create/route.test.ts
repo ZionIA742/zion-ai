@@ -27,8 +27,11 @@ const tests: TestCase[] = [
         "createZionAdminApiJsonResponse",
         "async function createZionAdminAccountCore(",
         "async function cleanupFailedProvisioningAttempt(",
+        "const firstAccessAttemptId = createFirstAccessAttemptId();",
+        "const inviteRedirectTo = getFirstAccessInviteRedirectTo(firstAccessAttemptId);",
+        "redirectTo: inviteRedirectTo,",
         "__zionAdminAccountsCreateRouteTestHooks",
-        "status: hasProvisioningTarget(cleanupTarget) ? 503 : 409",
+        "failureStatus = hasProvisioningTarget(cleanupTarget) ? 503 : 409;",
       ];
 
       for (const token of requiredTokens) {

@@ -29,8 +29,13 @@ const tests: TestCase[] = [
         'const trustedFlow = await fetchPasswordFlow();',
         'if (trustedFlow.flow !== "recovery") {',
         'const { data, error } = await supabase.auth.getSession();',
+        "function isRecoverySessionTerminalError(message: string | null | undefined)",
         "await supabase.auth.updateUser({",
         "password: nextPassword,",
+        'setStatus("ready");',
+        'await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);',
+        'setMessage("Senha alterada com sucesso.");',
+        'const statusSubtitle = status === "success" ? "Senha redefinida" : "Recuperar senha";',
         'const code = params.get("code");',
         'const recoveryError = params.get("recoveryError");',
       ];
@@ -45,11 +50,30 @@ const tests: TestCase[] = [
       assert.equal(source.includes("createServiceSupabaseClient"), false);
       assert.equal(source.includes("getAuthAdminUserById"), false);
       assert.equal(source.includes("resolveTrustedPasswordFlow"), false);
+      assert.equal(source.includes("ZION"), false);
       assert.equal(source.includes("profiles"), false);
       assert.equal(source.includes("memberships"), false);
       assert.equal(source.includes("subscriptions"), false);
       assert.equal(source.includes("external_integrations"), false);
       assert.equal(source.includes("provision"), false);
+    },
+  },
+  {
+    name: "recoverable submit errors keep the page reusable without masking terminal token failures",
+    run: () => {
+      const source = readPageSource();
+
+      const recoverableTokens = [
+        'setStatus("ready");\n      setMessage("As senhas nao estao iguais.");',
+        'setStatus("ready");\n      setMessage(\n        "A senha precisa ter pelo menos 8 caracteres, uma letra maiuscula, um numero e um caractere especial.",',
+        'if (isRecoverySessionTerminalError(rawMessage)) {',
+        'setStatus("error");',
+        'setStatus("ready");\n        setMessage(friendlyMessage);',
+      ];
+
+      for (const token of recoverableTokens) {
+        assert.equal(source.includes(token), true, `missing token: ${token}`);
+      }
     },
   },
 ];

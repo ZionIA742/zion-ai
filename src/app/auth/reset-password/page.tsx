@@ -28,6 +28,16 @@ function getFriendlyErrorMessage(message: string | null | undefined) {
   return message || "Nao foi possivel continuar. Tente novamente.";
 }
 
+function isRecoverySessionTerminalError(message: string | null | undefined) {
+  const normalized = String(message || "").toLowerCase();
+
+  if (!normalized) {
+    return false;
+  }
+
+  return normalized.includes("expired") || normalized.includes("invalid");
+}
+
 function getRecoveryLinkErrorMessage(params: URLSearchParams) {
   const error = params.get("error");
   const errorCode = params.get("error_code");
@@ -78,6 +88,7 @@ export default function ResetPasswordPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const statusSubtitle = status === "success" ? "Senha redefinida" : "Recuperar senha";
 
   useEffect(() => {
     let cancelled = false;
@@ -163,7 +174,7 @@ export default function ResetPasswordPage() {
       !/\d/.test(nextPassword) ||
       !/[@.!?$%#&*-]/.test(nextPassword)
     ) {
-      setStatus("error");
+      setStatus("ready");
       setMessage(
         "A senha precisa ter pelo menos 8 caracteres, uma letra maiuscula, um numero e um caractere especial.",
       );
@@ -171,7 +182,7 @@ export default function ResetPasswordPage() {
     }
 
     if (nextPassword !== nextConfirmPassword) {
-      setStatus("error");
+      setStatus("ready");
       setMessage("As senhas nao estao iguais.");
       return;
     }
@@ -185,8 +196,18 @@ export default function ResetPasswordPage() {
       });
 
       if (error) {
-        setStatus("error");
-        setMessage(getFriendlyErrorMessage(error.message ?? ""));
+        const rawMessage = error.message ?? "";
+        const friendlyMessage = getFriendlyErrorMessage(rawMessage);
+
+        if (isRecoverySessionTerminalError(rawMessage)) {
+          await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
+          setStatus("error");
+          setMessage(friendlyMessage);
+          return;
+        }
+
+        setStatus("ready");
+        setMessage(friendlyMessage);
         return;
       }
 
@@ -199,12 +220,21 @@ export default function ResetPasswordPage() {
         router.replace("/login");
       }, 700);
     } catch (error: unknown) {
-      setStatus("error");
-      setMessage(
-        getFriendlyErrorMessage(
-          getUnknownErrorMessage(error, "Nao foi possivel salvar a nova senha."),
-        ),
+      const rawMessage = getUnknownErrorMessage(
+        error,
+        "Nao foi possivel salvar a nova senha.",
       );
+      const friendlyMessage = getFriendlyErrorMessage(rawMessage);
+
+      if (isRecoverySessionTerminalError(rawMessage)) {
+        await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
+        setStatus("error");
+        setMessage(friendlyMessage);
+        return;
+      }
+
+      setStatus("ready");
+      setMessage(friendlyMessage);
     }
   }
 
@@ -217,8 +247,8 @@ export default function ResetPasswordPage() {
     <div className="flex min-h-screen items-center justify-center bg-black px-4 text-white">
       <div className="w-full max-w-md rounded-3xl border border-white/10 bg-zinc-950 p-6 shadow-sm">
         <div className="text-center">
-          <div className="text-2xl font-black tracking-tight">ZION</div>
-          <div className="mt-1 text-sm text-zinc-400">Recuperar senha</div>
+          <div className="text-2xl font-black tracking-tight">Conta</div>
+          <div className="mt-1 text-sm text-zinc-400">{statusSubtitle}</div>
         </div>
 
         <div

@@ -338,6 +338,13 @@ const tests: TestCase[] = [
       assert.equal(payload.ok, true);
       assert.equal(harness.state.calls.resetPasswordForEmail.length, 1);
       assert.equal(harness.state.calls.inviteUserByEmail.length, 0);
+      assert.deepEqual(harness.state.calls.resetPasswordForEmail[0], {
+        email: "owner@example.com",
+        options: {
+          redirectTo:
+            "https://example.com/auth/callback?next=%2Fauth%2Fset-initial-password&attempt=fia_new",
+        },
+      });
       assert.equal(harness.state.auditEvents[0]?.outcome, "started");
       assert.equal(harness.state.auditEvents[1]?.outcome, "success");
       assert.equal(harness.state.auditEvents[0]?.operationId, harness.state.auditEvents[1]?.operationId);
@@ -383,6 +390,38 @@ const tests: TestCase[] = [
         harness.state.authUser.app_metadata?.zion_first_access_invite_id,
         "fia_legacy_new",
       );
+    },
+  },
+  {
+    name: "unconfirmed user falls back to inviteUserByEmail with the same callback contract",
+    run: async () => {
+      const harness = await createHarness(
+        createBaseState({
+          authUser: {
+            id: "owner-1",
+            email: "owner@example.com",
+            email_confirmed_at: null,
+            app_metadata: {
+              provisioned_via: "zion-admin",
+              zion_provisioning_status: "provisioned",
+              zion_first_access_required: true,
+              zion_first_access_invite_id: "fia_old",
+            },
+          },
+          attemptIds: ["fia_unconfirmed_new"],
+        }),
+      );
+      const response = await harness.run();
+
+      assert.equal(response.status, 200);
+      assert.equal(harness.state.calls.resetPasswordForEmail.length, 0);
+      assert.deepEqual(harness.state.calls.inviteUserByEmail[0], {
+        email: "owner@example.com",
+        options: {
+          redirectTo:
+            "https://example.com/auth/callback?next=%2Fauth%2Fset-initial-password&attempt=fia_unconfirmed_new",
+        },
+      });
     },
   },
   {
