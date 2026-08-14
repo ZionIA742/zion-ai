@@ -45,6 +45,11 @@ import {
   safeScheduleTimezone,
 } from "@/lib/server/assistant/datetime";
 import {
+  TechnicalVisitStageProjectionError,
+  projectTechnicalVisitStageBySystem,
+  shouldAttemptTechnicalVisitStageProjection,
+} from "@/lib/commercial-opportunity-visit-stage-projection";
+import {
   buildAppointmentCandidateOptions,
   getSelectedAssistantCandidateOption,
   readAssistantCandidateOptions,
@@ -55,6 +60,7 @@ import {
   resolveCustomerRescheduleWorkflow,
   type CustomerRescheduleWorkflowDeps,
 } from "@/lib/server/assistant/customer-reschedule-workflow";
+import { parseRescheduleTargetFromText } from "@/lib/server/assistant/reschedule-target";
 import { handleAssistantDocumentEditRequest } from "@/lib/server/assistant/document-edit-intent";
 import { handleAssistantContractGenerationRequest } from "@/lib/server/assistant/contract-generation-intent";
 import {
@@ -3812,27 +3818,62 @@ async function resolveSuggestedTimeApprovalReply(args: { supabase: any; organiza
     return `Não confirmei com ${customerName}, porque a agenda não aceitou esse horário: ${updateError.message}`;
   }
 
+  const updatedAppointmentWithCommercialContext =
+    updatedAppointment as (AppointmentRow & {
+      commercial_opportunity_id?: string | null;
+    }) | null;
+  const appointmentWithCommercialContext =
+    appointment as AppointmentRow & {
+      commercial_opportunity_id?: string | null;
+    };
+  const updatedAppointmentCommercialOpportunityId =
+    String(
+      updatedAppointmentWithCommercialContext?.commercial_opportunity_id ||
+        appointmentWithCommercialContext.commercial_opportunity_id ||
+        "",
+    ).trim() || null;
+  const projectionWarning =
+    typeof updatedAppointment?.id === "string"
+      ? await maybeProjectAppointmentToTechnicalVisitStageBySystem({
+          supabase: args.supabase,
+          organizationId: args.organizationId,
+          storeId: args.storeId,
+          appointmentId: updatedAppointment.id,
+          appointmentType:
+            updatedAppointmentWithCommercialContext?.appointment_type ||
+            appointment.appointment_type,
+          appointmentStatus:
+            updatedAppointmentWithCommercialContext?.status || "rescheduled",
+          commercialOpportunityId: updatedAppointmentCommercialOpportunityId,
+          source: "assistant_reply_route",
+          operationSummary: "atualizado",
+        })
+      : null;
+
   const customerMessageResult = appointment.conversation_id
     ? await sendAiMessageToCustomerConversation({ supabase: args.supabase, conversationId: appointment.conversation_id, text: buildCustomerConfirmationTextForSuggestedTime({ appointment, suggestedStartIso, timezoneName }) })
     : null;
   if (!customerMessageResult?.ok) {
     await args.supabase.from("store_assistant_operational_tasks").update({
       status: "failed", error_text: customerMessageResult?.error || "Conversa do cliente não encontrada.",
-      task_payload: { ...payload, last_responsible_reply: args.lastHumanMessage, responsible_approved_suggested_time: true, customer_confirmation_message_sent: false, appointment_update_attempted: true, appointment_update_succeeded: true, updated_appointment: updatedAppointment, last_execution_error: customerMessageResult?.error || "Conversa do cliente não encontrada.", updated_by_assistant_route_at: new Date().toISOString() },
+      task_payload: { ...payload, last_responsible_reply: args.lastHumanMessage, responsible_approved_suggested_time: true, customer_confirmation_message_sent: false, appointment_update_attempted: true, appointment_update_succeeded: true, updated_appointment: updatedAppointment, commercial_projection_warning: projectionWarning, last_execution_error: customerMessageResult?.error || "Conversa do cliente não encontrada.", updated_by_assistant_route_at: new Date().toISOString() },
       last_action_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
-    return `Atualizei a agenda para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}, mas não consegui avisar ${customerName}. ${customerMessageResult?.error ? `Erro: ${customerMessageResult.error}` : "Conversa do cliente não encontrada."}`;
+    return `Atualizei a agenda para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}, mas não consegui avisar ${customerName}. ${customerMessageResult?.error ? `Erro: ${customerMessageResult.error}` : "Conversa do cliente não encontrada."}${projectionWarning ? ` Aviso: ${projectionWarning}` : ""}`;
   }
 
-  const resolvedPayload = { ...payload, needs_responsible_approval: false, responsible_approved_suggested_time: true, responsible_approved_suggested_time_at: new Date().toISOString(), last_responsible_reply: args.lastHumanMessage, customer_confirmation_message_sent: true, customer_confirmation_message_id: customerMessageResult.messageId || null, appointment_update_attempted: true, appointment_update_succeeded: true, updated_appointment: updatedAppointment, updated_by_assistant_route_at: new Date().toISOString() };
+  const resolvedPayload: Record<string, unknown> = { ...payload, needs_responsible_approval: false, responsible_approved_suggested_time: true, responsible_approved_suggested_time_at: new Date().toISOString(), last_responsible_reply: args.lastHumanMessage, customer_confirmation_message_sent: true, customer_confirmation_message_id: customerMessageResult.messageId || null, appointment_update_attempted: true, appointment_update_succeeded: true, updated_appointment: updatedAppointment, updated_by_assistant_route_at: new Date().toISOString() };
+  if (projectionWarning) {
+    resolvedPayload.commercial_projection_warning = projectionWarning;
+  }
   const { error: taskUpdateError } = await args.supabase.from("store_assistant_operational_tasks").update({
     status: "resolved", resolved_at: new Date().toISOString(), task_payload: resolvedPayload,
     last_action_at: new Date().toISOString(), description: "Responsável aprovou o horário sugerido pelo cliente. Cliente avisado e agenda atualizada.", updated_at: new Date().toISOString(),
   }).eq("id", task.id).eq("organization_id", args.organizationId).eq("store_id", args.storeId);
-  if (taskUpdateError) return `Atualizei a agenda e avisei ${customerName}, mas não consegui finalizar a tarefa operacional: ${taskUpdateError.message}`;
+  if (taskUpdateError) return `Atualizei a agenda e avisei ${customerName}, mas não consegui finalizar a tarefa operacional: ${taskUpdateError.message}${projectionWarning ? ` Aviso: ${projectionWarning}` : ""}`;
 
   await resolveAssistantContextState({ supabase: args.supabase, organizationId: args.organizationId, storeId: args.storeId, threadId: args.threadId, currentContextState: args.assistantContextState || null, lastUserMessage: args.lastHumanMessage, lastAssistantMessage: `${customerName} confirmado em ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.` });
-  return `Pronto. Confirmei com ${customerName} e atualizei ${appointment.title} para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.`;
+  return `Pronto. Confirmei com ${customerName} e atualizei ${appointment.title} para ${formatSuggestedDateTimeForResponsible(suggestedStartIso, timezoneName)}.${projectionWarning ? `\n\nAviso: ${projectionWarning}` : ""}`;
 }
 
 function buildProfessionalAppointmentClarificationReply(args: {
@@ -4608,7 +4649,13 @@ function extractCreateAppointmentPayload(text: string, now: Date, settings?: Sto
 }
 
 function extractReschedulePayload(text: string, now: Date, settings?: StoreScheduleSettingsRow | null) {
-  const targetText = getRescheduleTargetTextSegment(text);
+  return parseRescheduleTargetFromText({
+    text,
+    now,
+    settings: settings || null,
+  });
+
+  /* const targetText = getRescheduleTargetTextSegment(text);
   const dateParts = parseDateReferenceFromText(targetText, now);
   const timeRange = parseTimeRangeFromText(targetText);
 
@@ -4630,7 +4677,7 @@ function extractReschedulePayload(text: string, now: Date, settings?: StoreSched
       scheduled_start: scheduledStart,
       scheduled_end: scheduledEnd,
     },
-  };
+  }; */
 }
 
 
@@ -4738,6 +4785,7 @@ async function resolveAppointmentActionReply(args: {
   organizationId: string;
   storeId: string;
   threadId?: string | null;
+  openOperationalTasks?: StoreAssistantOperationalTaskRow[];
   assistantContextState?: StoreAssistantContextStateRow | null;
   lastHumanMessage: string;
   recentMessages: AssistantMessageRow[];
@@ -4964,30 +5012,54 @@ async function resolveAppointmentActionReply(args: {
     if (!createPayload.ok) {
       return createPayload.message;
     }
+    const commercialOpportunityId =
+      createPayload.payload.appointment_type === "technical_visit"
+        ? resolveExplicitCommercialOpportunityIdForAssistantTechnicalVisit({
+            openOperationalTasks: args.openOperationalTasks || [],
+          })
+        : null;
 
-    const insertBody = {
-      organization_id: args.organizationId,
-      store_id: args.storeId,
-      title: createPayload.payload.title,
-      appointment_type: createPayload.payload.appointment_type,
-      status: "scheduled",
-      scheduled_start: createPayload.payload.scheduled_start,
-      scheduled_end: createPayload.payload.scheduled_end,
-      customer_name: createPayload.payload.customer_name,
-      customer_phone: createPayload.payload.customer_phone,
-      address_text: createPayload.payload.address_text,
-      notes: "Criado pela assistente operacional.",
-    };
-
-    const { error } = await args.supabase
-      .from("store_appointments")
-      .insert(insertBody);
+    const { data: createdAppointment, error } = await args.supabase.rpc(
+      "create_store_appointment_with_commercial_context",
+      {
+        p_organization_id: args.organizationId,
+        p_store_id: args.storeId,
+        p_lead_id: null,
+        p_conversation_id: null,
+        p_title: createPayload.payload.title,
+        p_appointment_type: createPayload.payload.appointment_type,
+        p_status: "scheduled",
+        p_scheduled_start: createPayload.payload.scheduled_start,
+        p_scheduled_end: createPayload.payload.scheduled_end,
+        p_customer_name: createPayload.payload.customer_name,
+        p_customer_phone: createPayload.payload.customer_phone,
+        p_address_text: createPayload.payload.address_text,
+        p_notes: "Criado pela assistente operacional.",
+        p_source: "assistant_operational",
+        p_created_by_user_id: null,
+        p_commercial_opportunity_id: commercialOpportunityId,
+      },
+    );
 
     if (error) {
       return `Tentei criar o compromisso, mas encontrei um erro: ${error.message}`;
     }
 
-    return buildAppointmentActionSuccessReply({
+    const projectionWarning =
+      typeof createdAppointment?.id === "string"
+        ? await maybeProjectAppointmentToTechnicalVisitStageBySystem({
+            supabase: args.supabase,
+            organizationId: args.organizationId,
+            storeId: args.storeId,
+            appointmentId: createdAppointment.id,
+            appointmentType: createPayload.payload.appointment_type,
+            appointmentStatus: "scheduled",
+            commercialOpportunityId,
+            source: "assistant_reply_route",
+          })
+        : null;
+
+    const successReply = buildAppointmentActionSuccessReply({
       action,
       scheduleSettings: args.scheduleSettings || null,
       createdPayload: {
@@ -4997,6 +5069,10 @@ async function resolveAppointmentActionReply(args: {
         scheduled_start: createPayload.payload.scheduled_start,
       },
     });
+
+    return projectionWarning
+      ? `${successReply}\n\nAviso: ${projectionWarning}`
+      : successReply;
   }
 
   if (commandHasExplicitTitleAndOriginalSchedule) {
@@ -5941,6 +6017,61 @@ function buildAssistantOperationalTasksBlock(tasks: StoreAssistantOperationalTas
       return `- ${pieces.join(" • ")}`;
     })
     .join("\n");
+}
+
+function resolveExplicitCommercialOpportunityIdForAssistantTechnicalVisit(args: {
+  openOperationalTasks: StoreAssistantOperationalTaskRow[];
+}) {
+  const uniqueOpportunityIds = Array.from(
+    new Set(
+      (args.openOperationalTasks || [])
+        .filter((task) => normalizeText(task.task_type) === "commercial_visit_request")
+        .map((task) => String((task as StoreAssistantOperationalTaskRow & { commercial_opportunity_id?: string | null }).commercial_opportunity_id || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  return uniqueOpportunityIds.length === 1 ? uniqueOpportunityIds[0]! : null;
+}
+
+async function maybeProjectAppointmentToTechnicalVisitStageBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  appointmentId: string;
+  appointmentType: string | null | undefined;
+  appointmentStatus: string | null | undefined;
+  commercialOpportunityId: string | null | undefined;
+  source: string;
+  operationSummary?: string;
+}) {
+  if (
+    !shouldAttemptTechnicalVisitStageProjection({
+      appointmentType: args.appointmentType,
+      appointmentStatus: args.appointmentStatus,
+      commercialOpportunityId: args.commercialOpportunityId,
+    })
+  ) {
+    return null;
+  }
+
+  try {
+    await projectTechnicalVisitStageBySystem({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      commercialOpportunityId: String(args.commercialOpportunityId || ""),
+      appointmentId: args.appointmentId,
+      source: args.source,
+    });
+    return null;
+  } catch (error) {
+    if (error instanceof TechnicalVisitStageProjectionError) {
+      return error.message;
+    }
+
+    return `O compromisso foi ${args.operationSummary || "criado"}, mas nao foi possivel sincronizar a opportunity comercial.`;
+  }
 }
 
 function buildDeterministicTodayOverviewReply(args: {
@@ -7688,7 +7819,7 @@ async function generateAssistantReply(params: {
     const { data: operationalTasksData, error: operationalTasksError } = await supabase
       .from("store_assistant_operational_tasks")
       .select(
-        "id, organization_id, store_id, thread_id, task_type, status, priority, title, description, related_lead_id, related_conversation_id, related_appointment_id, customer_name, customer_phone, target_date, target_time, target_start_at, target_end_at, timezone_name, task_payload, last_action_at, resolved_at, cancelled_at, error_text, created_at, updated_at"
+        "id, organization_id, store_id, thread_id, task_type, status, priority, title, description, related_lead_id, related_conversation_id, related_appointment_id, commercial_opportunity_id, customer_name, customer_phone, target_date, target_time, target_start_at, target_end_at, timezone_name, task_payload, last_action_at, resolved_at, cancelled_at, error_text, created_at, updated_at"
       )
       .eq("organization_id", organizationId)
       .eq("store_id", storeId)

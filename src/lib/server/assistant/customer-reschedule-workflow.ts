@@ -18,6 +18,7 @@ import {
   parseDbDateKeyToScheduleParts,
   parseTimeRangeFromText,
 } from "./datetime";
+import { getRescheduleTargetTextSegment } from "./reschedule-target";
 
 function normalizeWorkflowText(value: string | null | undefined): string {
   return String(value || "")
@@ -111,7 +112,8 @@ export async function resolveCustomerRescheduleWorkflow(args: {
   const contextIntent = normalizeWorkflowText(contextState?.active_intent || "");
   const contextStatus = normalizeWorkflowText(contextState?.active_status || "");
   const action = deps.resolveScheduleAction(args.lastHumanMessage);
-  const currentTimeRange = parseTimeRangeFromText(args.lastHumanMessage);
+  const targetText = getRescheduleTargetTextSegment(args.lastHumanMessage);
+  const currentTimeRange = parseTimeRangeFromText(targetText);
 
   if (contextTopic === "appointment_reschedule" && contextStatus === "waiting_customer_response") {
     return { type: "not_applicable" };
@@ -174,7 +176,7 @@ export async function resolveCustomerRescheduleWorkflow(args: {
     };
   }
 
-  const explicitDateParts = parseCompleteScheduleDateFromText(args.lastHumanMessage, args.now);
+  const explicitDateParts = parseCompleteScheduleDateFromText(targetText, args.now);
   const dateParts =
     explicitDateParts ||
     parseDbDateKeyToScheduleParts(String(contextPayload.requested_date || contextState?.target_date || "")) ||

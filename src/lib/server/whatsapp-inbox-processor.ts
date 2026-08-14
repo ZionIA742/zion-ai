@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { generateAndSaveAiSalesReply } from "@/lib/server/generate-and-save-ai-sales-reply";
+import { routeIncomingCustomerReplyToOperationalTask } from "@/lib/server/process-assistant-operational-tasks";
 import {
   downloadAndStoreWhatsappInboundMedia,
   removeWhatsappInboundStoredMedia,
@@ -154,6 +155,7 @@ export type ProcessWhatsappInboxInput = {
 type ProcessorStatus = "succeeded" | "failed" | "skipped";
 type ProcessorAiStatus =
   | "called"
+  | "routed_operational_task"
   | "skipped_human_active"
   | "skipped_ai_paused"
   | "skipped_not_text"
@@ -1076,7 +1078,40 @@ async function dispatchAiSalesReplyForConversation(args: {
   organizationId: string;
   storeId: string;
   conversationId: string;
+  messageId?: string | null;
+  customerMessage?: string | null;
 }) {
+  const messageId = String(args.messageId || "").trim();
+  const customerMessage = String(args.customerMessage || "").trim();
+
+  if (messageId && customerMessage) {
+    const operationalRoute = await routeIncomingCustomerReplyToOperationalTask({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      messageId,
+      customerMessage,
+      workerName: "whatsapp-inbox-inline-router",
+    });
+
+    if (operationalRoute.handled) {
+      return {
+        ai_status: operationalRoute.ok
+          ? ("routed_operational_task" as const)
+          : ("failed" as const),
+        ai_error: operationalRoute.ok
+          ? null
+          : safeAiError(
+              operationalRoute.error ||
+                operationalRoute.reason ||
+                "operational_customer_reply_failed",
+            ),
+        ai_message_id: null,
+      };
+    }
+  }
+
   const conversationState = await loadConversationAutomationState({
     supabase: args.supabase,
     organizationId: args.organizationId,
@@ -1603,6 +1638,8 @@ async function processSingleInboxRow(
         organizationId: inbox.organization_id,
         storeId: inbox.store_id,
         conversationId: conversation.id,
+        messageId: inserted.id || null,
+        customerMessage: extracted.textBody || "",
       });
     } catch (aiError) {
       aiDispatchResult = {

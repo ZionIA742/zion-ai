@@ -3,6 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useStoreContext } from "@/components/StoreProvider";
+import {
+  TechnicalVisitStageProjectionError,
+  projectTechnicalVisitStageByUser,
+  shouldAttemptTechnicalVisitStageProjection,
+} from "@/lib/commercial-opportunity-visit-stage-projection";
+import {
+  buildCommercialOpportunitySelectOptions,
+  isCommercialOpportunitySelectionCompatible,
+  resolveCommercialOpportunityIdForAppointmentCreate,
+  type LeadCommercialOpportunityOption,
+} from "./appointment-create-contract";
 
 type ScheduleItem = {
   itemKind: "appointment" | "block" | string;
@@ -11,6 +22,7 @@ type ScheduleItem = {
   storeId: string;
   leadId: string | null;
   conversationId: string | null;
+  commercialOpportunityId?: string | null;
   title: string;
   itemType: string;
   status: string;
@@ -62,6 +74,7 @@ type AppointmentCreateForm = {
   notes: string;
   leadId: string;
   conversationId: string;
+  commercialOpportunityId: string;
 };
 
 type LeadConversationOption = {
@@ -426,6 +439,7 @@ function createDefaultAppointmentCreateForm(
       notes: "",
       leadId: "",
       conversationId: "",
+      commercialOpportunityId: "",
     };
   }
 
@@ -446,6 +460,7 @@ function createDefaultAppointmentCreateForm(
     notes: "",
     leadId: "",
     conversationId: "",
+    commercialOpportunityId: "",
   };
 }
 
@@ -798,7 +813,7 @@ function DateTimePickerField(props: DateTimePickerFieldProps) {
           <select
             value={timeValue}
             onChange={(event) => onTimeChange(event.target.value)}
-            className="w-full rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-xs text-gray-900 outline-none focus:border-black"
+            className="w-full min-w-[88px] rounded-lg border border-black/10 bg-white px-3 py-1.5 font-mono text-xs tabular-nums text-gray-900 outline-none focus:border-black"
           >
             {TIME_OPTIONS.map((option) => (
               <option key={`${label}-${option}`} value={option}>
@@ -855,6 +870,10 @@ export default function SchedulePage() {
     useState<string | null>(null);
   const [leadOptions, setLeadOptions] = useState<LeadConversationOption[]>([]);
   const [loadingLeadOptions, setLoadingLeadOptions] = useState(false);
+  const [leadCommercialOpportunityOptions, setLeadCommercialOpportunityOptions] =
+    useState<LeadCommercialOpportunityOption[]>([]);
+  const [loadingLeadCommercialOpportunityOptions, setLoadingLeadCommercialOpportunityOptions] =
+    useState(false);
   const [createLeadConversationState, setCreateLeadConversationState] =
     useState<CreateLeadConversationState>({
       leadId: null,
@@ -1149,6 +1168,48 @@ export default function SchedulePage() {
     [organizationId]
   );
 
+  const loadLeadCommercialOpportunityOptions = useCallback(
+    async (leadId: string) => {
+      if (!canLoadSchedule || !organizationId || !activeStoreId || !leadId) {
+        setLeadCommercialOpportunityOptions([]);
+        return;
+      }
+
+      setLoadingLeadCommercialOpportunityOptions(true);
+
+      try {
+        const { data, error } = await supabase
+          .from("commercial_opportunities")
+          .select("id, stage, primary_conversation_id")
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .eq("origin_lead_id", leadId)
+          .order("created_at", { ascending: false })
+          .limit(20);
+
+        if (error) throw error;
+
+        setLeadCommercialOpportunityOptions(
+          ((data || []) as Array<{
+            id: string;
+            stage: string | null;
+            primary_conversation_id: string | null;
+          }>).map((row) => ({
+            id: row.id,
+            stage: row.stage,
+            primaryConversationId: row.primary_conversation_id,
+          })),
+        );
+      } catch (error) {
+        console.error("[SchedulePage] loadLeadCommercialOpportunityOptions error:", error);
+        setLeadCommercialOpportunityOptions([]);
+      } finally {
+        setLoadingLeadCommercialOpportunityOptions(false);
+      }
+    },
+    [canLoadSchedule, organizationId, activeStoreId],
+  );
+
   useEffect(() => {
     if (!canLoadSchedule) return;
     void loadLeadOptions();
@@ -1226,6 +1287,45 @@ export default function SchedulePage() {
     if (!selectedItem?.leadId) return null;
     return leadOptions.find((lead) => lead.leadId === selectedItem.leadId) || null;
   }, [leadOptions, selectedItem?.leadId]);
+
+  const commercialOpportunitySelectOptions = useMemo(
+    () =>
+      buildCommercialOpportunitySelectOptions({
+        opportunities: leadCommercialOpportunityOptions,
+        selectedConversationId: effectiveCreateConversationId || null,
+      }),
+    [effectiveCreateConversationId, leadCommercialOpportunityOptions],
+  );
+
+  const compatibleCommercialOpportunities = useMemo(
+    () =>
+      leadCommercialOpportunityOptions.filter(
+        (opportunity) =>
+          !effectiveCreateConversationId ||
+          opportunity.primaryConversationId === effectiveCreateConversationId,
+      ),
+    [effectiveCreateConversationId, leadCommercialOpportunityOptions],
+  );
+
+  useEffect(() => {
+    if (
+      isCommercialOpportunitySelectionCompatible({
+        selectedCommercialOpportunityId:
+          appointmentCreateForm.commercialOpportunityId,
+        availableCommercialOpportunities: compatibleCommercialOpportunities,
+      })
+    ) {
+      return;
+    }
+
+    setAppointmentCreateForm((prev) => ({
+      ...prev,
+      commercialOpportunityId: "",
+    }));
+  }, [
+    appointmentCreateForm.commercialOpportunityId,
+    compatibleCommercialOpportunities,
+  ]);
 
   function changeCalendarView(nextView: CalendarView) {
     const now = new Date();
@@ -1492,6 +1592,7 @@ export default function SchedulePage() {
     const leadId = appointmentCreateForm.leadId;
 
     if (!leadId) {
+      setLeadCommercialOpportunityOptions([]);
       setCreateLeadConversationState({
         leadId: null,
         status: "idle",
@@ -1508,10 +1609,12 @@ export default function SchedulePage() {
     }
 
     void syncCreateConversationPreview(leadId, selectedLeadOption);
+    void loadLeadCommercialOpportunityOptions(leadId);
   }, [
     createAppointmentOpen,
     appointmentCreateForm.leadId,
     createLeadConversationState.leadId,
+    loadLeadCommercialOpportunityOptions,
     selectedLeadOption,
     syncCreateConversationPreview,
   ]);
@@ -1567,6 +1670,7 @@ export default function SchedulePage() {
       ...prev,
       leadId: nextLeadId,
       conversationId: matchedLead?.conversationId || "",
+      commercialOpportunityId: "",
       customerName: matchedLead?.leadName || prev.customerName,
       customerPhone: matchedLead?.leadPhone
         ? applyPhoneMask(matchedLead.leadPhone)
@@ -1574,6 +1678,64 @@ export default function SchedulePage() {
     }));
 
     await syncCreateConversationPreview(nextLeadId, matchedLead);
+    await loadLeadCommercialOpportunityOptions(nextLeadId);
+  }
+
+  async function resolveAppointmentCommercialOpportunityId(appointmentId: string) {
+    if (!organizationId || !activeStoreId) {
+      return null;
+    }
+
+    const { data, error } = await supabase
+      .from("store_appointments")
+      .select("commercial_opportunity_id")
+      .eq("organization_id", organizationId)
+      .eq("store_id", activeStoreId)
+      .eq("id", appointmentId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return String(data?.commercial_opportunity_id || "").trim() || null;
+  }
+
+  async function maybeProjectAppointmentToTechnicalVisitStage(args: {
+    appointmentId: string;
+    appointmentType: string;
+    appointmentStatus: string;
+    commercialOpportunityId: string | null;
+  }) {
+    if (
+      !organizationId ||
+      !activeStoreId ||
+      !shouldAttemptTechnicalVisitStageProjection({
+        appointmentType: args.appointmentType,
+        appointmentStatus: args.appointmentStatus,
+        commercialOpportunityId: args.commercialOpportunityId,
+      })
+    ) {
+      return null;
+    }
+
+    try {
+      await projectTechnicalVisitStageByUser({
+        supabase,
+        organizationId,
+        storeId: activeStoreId,
+        commercialOpportunityId: args.commercialOpportunityId!,
+        appointmentId: args.appointmentId,
+        source: "schedule_page",
+      });
+      return null;
+    } catch (error) {
+      if (error instanceof TechnicalVisitStageProjectionError) {
+        return error.message;
+      }
+
+      return "O compromisso foi salvo, mas nao foi possivel sincronizar a opportunity comercial.";
+    }
   }
 
   async function saveAppointmentEdit(
@@ -1673,6 +1835,18 @@ export default function SchedulePage() {
         return;
       }
 
+      const appointmentCommercialOpportunityId = !isCompletingNow
+        ? await resolveAppointmentCommercialOpportunityId(selectedItem.itemId)
+        : null;
+      const projectionWarning = !isCompletingNow
+        ? await maybeProjectAppointmentToTechnicalVisitStage({
+            appointmentId: selectedItem.itemId,
+            appointmentType: editForm.appointmentType,
+            appointmentStatus: nextStatus,
+            commercialOpportunityId: appointmentCommercialOpportunityId,
+          })
+        : null;
+
       const updatedItem = data
         ? ({
             itemKind: "appointment",
@@ -1681,6 +1855,8 @@ export default function SchedulePage() {
             storeId: data.store_id,
             leadId: data.lead_id,
             conversationId: data.conversation_id,
+            commercialOpportunityId:
+              String(data.commercial_opportunity_id || "").trim() || appointmentCommercialOpportunityId,
             title: data.title,
             itemType: data.appointment_type,
             status: data.status,
@@ -1708,6 +1884,7 @@ export default function SchedulePage() {
       editModeRef.current = false;
 
       await loadSchedule({ silent: true });
+      setErrorText(projectionWarning);
       setSavingEdit(false);
     } catch (error: unknown) {
       setSaveErrorText(getErrorMessage(error, "Erro inesperado ao salvar compromisso."));
@@ -1999,6 +2176,18 @@ export default function SchedulePage() {
         return;
       }
 
+      if (
+        appointmentCreateForm.appointmentType === "technical_visit" &&
+        appointmentCreateForm.leadId &&
+        loadingLeadCommercialOpportunityOptions
+      ) {
+        setAppointmentCreateErrorText(
+          "Aguarde o carregamento das opportunities comerciais deste lead antes de salvar."
+        );
+        setSavingAppointmentCreate(false);
+        return;
+      }
+
       let resolvedConversationId =
         effectiveCreateConversationId || null;
 
@@ -2021,7 +2210,26 @@ export default function SchedulePage() {
         resolvedConversationId = fallbackConversation?.id || null;
       }
 
-      const { error } = await supabase.rpc("create_store_appointment", {
+      const commercialOpportunityResolution =
+        resolveCommercialOpportunityIdForAppointmentCreate({
+          appointmentType: appointmentCreateForm.appointmentType,
+          selectedCommercialOpportunityId:
+            appointmentCreateForm.commercialOpportunityId,
+          availableCommercialOpportunities: compatibleCommercialOpportunities,
+        });
+
+      if (!commercialOpportunityResolution.ok) {
+        setAppointmentCreateErrorText(
+          commercialOpportunityResolution.errorMessage
+        );
+        setSavingAppointmentCreate(false);
+        return;
+      }
+
+      const commercialOpportunityId =
+        commercialOpportunityResolution.commercialOpportunityId;
+
+      const { data, error } = await supabase.rpc("create_store_appointment_with_commercial_context", {
         p_organization_id: organizationId,
         p_store_id: activeStoreId,
         p_lead_id: appointmentCreateForm.leadId || null,
@@ -2037,6 +2245,7 @@ export default function SchedulePage() {
         p_notes: appointmentCreateForm.notes.trim() || null,
         p_source: "panel",
         p_created_by_user_id: null,
+        p_commercial_opportunity_id: commercialOpportunityId,
       });
 
       if (error) {
@@ -2045,8 +2254,20 @@ export default function SchedulePage() {
         return;
       }
 
+      const createdAppointmentId = String(data?.id || "").trim() || null;
+      const projectionWarning =
+        createdAppointmentId && commercialOpportunityId
+          ? await maybeProjectAppointmentToTechnicalVisitStage({
+              appointmentId: createdAppointmentId,
+              appointmentType: appointmentCreateForm.appointmentType,
+              appointmentStatus: appointmentCreateForm.status,
+              commercialOpportunityId,
+            })
+          : null;
+
       closeCreateAppointmentPanel();
       await loadSchedule({ silent: true });
+      setErrorText(projectionWarning);
       setSavingAppointmentCreate(false);
     } catch (error: unknown) {
       setAppointmentCreateErrorText(
@@ -3135,7 +3356,7 @@ export default function SchedulePage() {
             onClick={closeCreateBlockPanel}
           >
             <div
-              className="flex h-full w-full max-w-lg flex-col bg-white shadow-2xl"
+              className="flex h-full w-full max-w-[min(92vw,640px)] flex-col bg-white shadow-2xl"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
@@ -3202,6 +3423,43 @@ export default function SchedulePage() {
                       <option value="holiday">Feriado</option>
                       <option value="other">Outro</option>
                     </select>
+                  </div>
+
+                  <div className="hidden">
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">
+                      Opportunity comercial
+                    </label>
+                    <select
+                      value={appointmentCreateForm.commercialOpportunityId}
+                      onChange={(e) =>
+                        setAppointmentCreateForm((prev) => ({
+                          ...prev,
+                          commercialOpportunityId: e.target.value,
+                        }))
+                      }
+                      disabled={
+                        appointmentCreateForm.appointmentType !== "technical_visit" ||
+                        !appointmentCreateForm.leadId
+                      }
+                      className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-50"
+                    >
+                      <option value="">Sem vínculo comercial</option>
+                      {commercialOpportunitySelectOptions.map((opportunity) => (
+                        <option key={opportunity.value} value={opportunity.value}>
+                          {opportunity.label}
+                          {opportunity.stage ? ` • ${opportunity.stage}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-0.5 text-[11px] text-gray-500">
+                      {appointmentCreateForm.appointmentType !== "technical_visit"
+                        ? "A projeção automática só se aplica a visita técnica."
+                        : loadingLeadCommercialOpportunityOptions
+                          ? "Carregando opportunities do lead..."
+                          : appointmentCreateForm.leadId
+                            ? "Seleção explícita. Nenhuma opportunity é inferida automaticamente."
+                            : "Escolha primeiro o lead para selecionar uma opportunity válida."}
+                    </div>
                   </div>
 
                   <div className="grid gap-3 md:grid-cols-2">
@@ -3300,7 +3558,7 @@ export default function SchedulePage() {
             onClick={closeCreateAppointmentPanel}
           >
             <div
-              className="flex h-full w-full max-w-lg flex-col bg-white shadow-2xl"
+              className="flex h-full w-full max-w-[min(92vw,640px)] flex-col bg-white shadow-2xl"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between border-b border-black/10 px-5 py-4">
@@ -3495,6 +3753,48 @@ export default function SchedulePage() {
                       </div>
                     </div>
                   </div>
+
+                  {appointmentCreateForm.appointmentType === "technical_visit" ? (
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold text-gray-700">
+                        Oportunidade vinculada
+                      </label>
+                      <select
+                        value={appointmentCreateForm.commercialOpportunityId}
+                        onChange={(e) =>
+                          setAppointmentCreateForm((prev) => ({
+                            ...prev,
+                            commercialOpportunityId: e.target.value,
+                          }))
+                        }
+                        disabled={!appointmentCreateForm.leadId}
+                        className="w-full rounded-lg border border-black/10 px-2.5 py-1.5 text-xs outline-none focus:border-black disabled:cursor-not-allowed disabled:bg-gray-50"
+                      >
+                        <option value="">
+                          Selecione a oportunidade comercial
+                        </option>
+                        {commercialOpportunitySelectOptions.map((opportunity) => (
+                          <option
+                            key={opportunity.value}
+                            value={opportunity.value}
+                          >
+                            {opportunity.stage
+                              ? `${opportunity.stage} • ${opportunity.label}`
+                              : opportunity.label}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="mt-0.5 text-[11px] text-gray-500">
+                        {!appointmentCreateForm.leadId
+                          ? "Escolha primeiro o lead para listar as opportunities compatíveis."
+                          : loadingLeadCommercialOpportunityOptions
+                            ? "Carregando opportunities compatíveis com o lead e a conversa selecionados..."
+                            : commercialOpportunitySelectOptions.length > 0
+                              ? "Seleção explícita. Nenhuma opportunity é inferida automaticamente."
+                              : "Nenhuma opportunity compatível encontrada para o contexto atual."}
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-gray-700">

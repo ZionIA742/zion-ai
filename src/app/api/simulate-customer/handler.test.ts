@@ -106,6 +106,7 @@ function createRequest(
 function createFakeSupabase(options?: {
   conversationResult?: { data: unknown; error: { message: string } | null };
   leadResult?: { data: unknown; error: { message: string } | null };
+  insertData?: unknown;
   insertError?: { message: string } | null;
   throwOnFromTable?: string | null;
   throwOnMaybeSingleCall?: number | null;
@@ -176,6 +177,7 @@ function createFakeSupabase(options?: {
           throw new Error("RPC_THROW_SENTINEL");
         }
         return {
+          data: options?.insertData ?? "",
           error: options?.insertError ?? null,
         };
       },
@@ -771,6 +773,79 @@ const tests: TestCase[] = [
       assert.equal(body.error, "SIMULATE_CUSTOMER_ROUTE_FAILED");
       assert.equal(response.headers.get("Cache-Control"), "no-store");
       assert.equal(String(JSON.stringify(body)).includes("RPC_THROW_SENTINEL"), false);
+      assert.equal(aiCalls, 0);
+    },
+  },
+  {
+    name: "operational customer reply routing returns 200 without commercial AI fallback",
+    run: async () => {
+      const fakeSupabase = createFakeSupabase({
+        insertData: "inserted-message-1",
+      });
+      let aiCalls = 0;
+      const handler = createSimulateCustomerPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        createPrivilegedClient: () => fakeSupabase.client as never,
+        routeOperationalCustomerReply: async (args) => {
+          assert.equal(args.messageId, "inserted-message-1");
+          assert.equal(args.customerMessage, "Claro podemos remarcar para esse dia e esse horario");
+          return {
+            handled: true,
+            ok: true,
+          };
+        },
+        runAiFlow: async () => {
+          aiCalls += 1;
+          return { ok: true };
+        },
+      });
+
+      const response = await handler(
+        createRequest({
+          conversationId: "conv-1",
+          text: "Claro podemos remarcar para esse dia e esse horario",
+        }),
+      );
+      const body = (await response.json()) as Record<string, unknown>;
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.customerMessageSaved, true);
+      assert.equal(body.aiReplySaved, false);
+      assert.equal(aiCalls, 0);
+    },
+  },
+  {
+    name: "operational customer reply routing failure stays sanitized and blocks commercial AI fallback",
+    run: async () => {
+      const fakeSupabase = createFakeSupabase({
+        insertData: "inserted-message-1",
+      });
+      let aiCalls = 0;
+      const handler = createSimulateCustomerPostHandler({
+        resolveAccess: async () => createGrantedAccess(),
+        createPrivilegedClient: () => fakeSupabase.client as never,
+        routeOperationalCustomerReply: async () => ({
+          handled: true,
+          ok: false,
+          error: "QUEUE_PROCESSING_FAILED",
+        }),
+        runAiFlow: async () => {
+          aiCalls += 1;
+          return { ok: true };
+        },
+      });
+
+      const response = await handler(
+        createRequest({ conversationId: "conv-1", text: "Claro podemos remarcar para esse dia e esse horario" }),
+      );
+      const body = (await response.json()) as Record<string, unknown>;
+
+      assert.equal(response.status, 409);
+      assert.equal(body.error, "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE");
+      assert.equal(body.customerMessageSaved, true);
+      assert.equal(body.aiReplySaved, false);
+      assert.equal(String(JSON.stringify(body)).includes("QUEUE_PROCESSING_FAILED"), false);
       assert.equal(aiCalls, 0);
     },
   },

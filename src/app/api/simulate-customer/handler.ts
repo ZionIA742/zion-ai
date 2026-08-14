@@ -6,6 +6,7 @@ import {
   type StoreApiAccessResult,
 } from "../../../lib/server/store-api-access";
 import { createStoreApiDeniedResponse } from "../../../lib/server/store-api-response";
+import { routeIncomingCustomerReplyToOperationalTask } from "../../../lib/server/process-assistant-operational-tasks";
 
 type RequestBody = {
   organizationId?: string;
@@ -60,6 +61,24 @@ type HandlerDeps = {
         ok: false;
         error: string;
         message: string;
+      }
+  >;
+  routeOperationalCustomerReply: (args: {
+    supabase: PrivilegedClient;
+    organizationId: string;
+    storeId: string;
+    conversationId: string;
+    messageId: string;
+    customerMessage: string;
+  }) => Promise<
+    | {
+        handled: false;
+      }
+    | {
+        handled: true;
+        ok: boolean;
+        error?: string;
+        reason?: string;
       }
   >;
 };
@@ -123,6 +142,16 @@ const defaultDeps: HandlerDeps = {
 
     return runAiFlow(args);
   },
+  routeOperationalCustomerReply: async (args) =>
+    routeIncomingCustomerReplyToOperationalTask({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      conversationId: args.conversationId,
+      messageId: args.messageId,
+      customerMessage: args.customerMessage,
+      workerName: "simulate-customer-inline-router",
+    }),
 };
 
 export function createSimulateCustomerPostHandler(
@@ -279,10 +308,14 @@ export function createSimulateCustomerPostHandler(
       );
     }
 
+    let insertData: unknown;
     let insertError: { message: string } | null;
 
     try {
-      ({ error: insertError } = await supabase.rpc("insert_message", {
+      ({
+        data: insertData,
+        error: insertError,
+      } = await supabase.rpc("insert_message", {
         p_conversation_id: conversation.id,
         p_sender: "user",
         p_direction: "incoming",
@@ -309,6 +342,60 @@ export function createSimulateCustomerPostHandler(
         "SIMULATE_CUSTOMER_MESSAGE_SAVE_FAILED",
         "Nao foi possivel registrar a mensagem simulada do cliente.",
       );
+    }
+
+    const insertedMessageId =
+      typeof insertData === "string"
+        ? insertData
+        : typeof (insertData as { id?: unknown } | null | undefined)?.id === "string"
+          ? String((insertData as { id?: string }).id)
+          : "";
+
+    if (insertedMessageId) {
+      try {
+        const operationalRoute = await resolvedDeps.routeOperationalCustomerReply({
+          supabase,
+          organizationId: access.organizationId,
+          storeId: access.storeId,
+          conversationId: conversation.id,
+          messageId: insertedMessageId,
+          customerMessage: text,
+        });
+
+        if (operationalRoute.handled) {
+          if (!operationalRoute.ok) {
+            return createPublicError(
+              409,
+              "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE",
+              PUBLIC_AI_REPLY_UNAVAILABLE_MESSAGE,
+              {
+                customerMessageSaved: true,
+                aiReplySaved: false,
+              },
+            );
+          }
+
+          return jsonNoStore(
+            {
+              ok: true,
+              message: "Simulacao concluida com sucesso.",
+              customerMessageSaved: true,
+              aiReplySaved: false,
+            },
+            200,
+          );
+        }
+      } catch {
+        return createPublicError(
+          409,
+          "SIMULATE_CUSTOMER_AI_REPLY_UNAVAILABLE",
+          PUBLIC_AI_REPLY_UNAVAILABLE_MESSAGE,
+          {
+            customerMessageSaved: true,
+            aiReplySaved: false,
+          },
+        );
+      }
     }
 
     let aiResult:

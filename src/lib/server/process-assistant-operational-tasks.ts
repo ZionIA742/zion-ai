@@ -91,6 +91,22 @@ export type ProcessAssistantOperationalTasksResult = {
   }>;
 };
 
+export type RouteIncomingCustomerReplyToOperationalTaskResult =
+  | {
+      handled: false;
+      reason: "no_matching_operational_task";
+    }
+  | {
+      handled: true;
+      taskId: string;
+      queueId: string;
+      ok: boolean;
+      skipped?: boolean;
+      reason?: string;
+      result?: any;
+      error?: string;
+    };
+
 async function loadCanonicalOrganizationSubscription(
   supabase: any,
   organizationId: string,
@@ -122,7 +138,7 @@ function normalizeText(value: string | null | undefined) {
     .trim();
 }
 
-function classifyCustomerReply(content: string): CustomerReplyDecision {
+export function classifyCustomerReply(content: string): CustomerReplyDecision {
   const text = normalizeText(content);
 
   const hasRejection =
@@ -133,7 +149,8 @@ function classifyCustomerReply(content: string): CustomerReplyDecision {
   const hasConfirmation =
     /(?:^|\s)(sim|confirmado|confirmo|fechado|combinado|ok|blz|beleza|esta bom|ta bom|serve|da certo|dá certo|pode marcar|marca|marcar nesse horario|esse horario serve)(?:\s|$|[.!?,])/i.test(
       text
-    ) || /(?:^|\s)pode ser(?:\s|$|[.!?,])/i.test(text);
+    ) || /(?:^|\s)pode ser(?:\s|$|[.!?,])/i.test(text)
+    || /(?:^|\s)(claro|pode remarcar|podemos remarcar)(?:\s|$|[.!?,])/i.test(text);
 
   const hasPossibleAlternativeTime = hasCustomerSuggestedExplicitDateOrTime(content);
 
@@ -1354,6 +1371,279 @@ async function processQueueItem(args: {
   };
 }
 
+async function lockPendingQueueRow(args: {
+  supabase: any;
+  queueId: string;
+  attempts: number | null | undefined;
+  workerId: string;
+}) {
+  const now = new Date().toISOString();
+
+  const { data: lockedRows, error: lockError } = await args.supabase
+    .from("store_assistant_operational_task_queue")
+    .update({
+      status: "processing",
+      attempts: (args.attempts || 0) + 1,
+      locked_at: now,
+      locked_by: args.workerId,
+      updated_at: now,
+    })
+    .eq("id", args.queueId)
+    .eq("status", "pending")
+    .select("*");
+
+  if (lockError) {
+    throw new Error(lockError.message);
+  }
+
+  return ((lockedRows || [])[0] as QueueRow | undefined) || null;
+}
+
+async function processLockedQueueRowWithSubscriptionGuard(args: {
+  supabase: any;
+  queue: QueueRow;
+  workerId: string;
+}) {
+  const subscription = await loadCanonicalOrganizationSubscription(
+    args.supabase,
+    args.queue.organization_id,
+  );
+  const subscriptionStatus = normalizeText(subscription?.status);
+
+  if (subscriptionStatus === "suspended") {
+    const message =
+      "Organizacao suspensa. Tarefa operacional nao processada.";
+
+    await args.supabase
+      .from("store_assistant_operational_task_queue")
+      .update({
+        status: "failed",
+        error_text: message,
+        result_payload: {
+          ok: false,
+          skipped: true,
+          reason: "organization_subscription_suspended",
+          subscriptionId: subscription?.id ?? null,
+          subscriptionStatus: subscription?.status ?? null,
+          workerId: args.workerId,
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", args.queue.id);
+
+    return {
+      ok: false,
+      skipped: true,
+      reason: "organization_subscription_suspended",
+      error: message,
+    };
+  }
+
+  try {
+    const result = await processQueueItem({
+      supabase: args.supabase,
+      queue: args.queue,
+      workerId: args.workerId,
+    });
+
+    await args.supabase
+      .from("store_assistant_operational_task_queue")
+      .update({
+        status: "processed",
+        processed_at: new Date().toISOString(),
+        result_payload: result,
+        error_text: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", args.queue.id);
+
+    return {
+      ok: true,
+      skipped: Boolean(result?.skipped),
+      reason: result?.reason,
+      result,
+    };
+  } catch (error: any) {
+    const message =
+      error?.message || "Erro desconhecido ao processar fila operacional.";
+
+    await args.supabase
+      .from("store_assistant_operational_task_queue")
+      .update({
+        status: "failed",
+        error_text: message,
+        result_payload: {
+          ok: false,
+          error: message,
+          workerId: args.workerId,
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", args.queue.id);
+
+    return {
+      ok: false,
+      error: message,
+    };
+  }
+}
+
+export async function routeIncomingCustomerReplyToOperationalTask(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  conversationId: string;
+  messageId: string;
+  customerMessage: string;
+  workerName?: string;
+}) : Promise<RouteIncomingCustomerReplyToOperationalTaskResult> {
+  const organizationId = String(args.organizationId || "").trim();
+  const storeId = String(args.storeId || "").trim();
+  const conversationId = String(args.conversationId || "").trim();
+  const messageId = String(args.messageId || "").trim();
+  const customerMessage = String(args.customerMessage || "").trim();
+
+  if (!organizationId || !storeId || !conversationId || !messageId || !customerMessage) {
+    return {
+      handled: false,
+      reason: "no_matching_operational_task",
+    };
+  }
+
+  const { data: taskRow, error: taskError } = await args.supabase
+    .from("store_assistant_operational_tasks")
+    .select("id, status, task_type, related_conversation_id")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("related_conversation_id", conversationId)
+    .eq("task_type", "appointment_reschedule_with_customer")
+    .eq("status", "waiting_customer_response")
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (taskError) {
+    throw new Error(taskError.message);
+  }
+
+  const taskId = String((taskRow as { id?: string | null } | null)?.id || "").trim();
+  if (!taskId) {
+    return {
+      handled: false,
+      reason: "no_matching_operational_task",
+    };
+  }
+
+  const { data: existingQueueRow, error: existingQueueError } = await args.supabase
+    .from("store_assistant_operational_task_queue")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .eq("store_id", storeId)
+    .eq("task_id", taskId)
+    .eq("conversation_id", conversationId)
+    .eq("message_id", messageId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingQueueError) {
+    throw new Error(existingQueueError.message);
+  }
+
+  const existingQueue = (existingQueueRow || null) as QueueRow | null;
+  if (existingQueue?.id) {
+    if (existingQueue.status === "processed") {
+      return {
+        handled: true,
+        taskId,
+        queueId: existingQueue.id,
+        ok: true,
+        skipped: true,
+        reason: "duplicate_customer_reply_already_processed",
+        result: (existingQueue as QueueRow & { result_payload?: any }).result_payload || null,
+      };
+    }
+
+    if (existingQueue.status === "processing" || existingQueue.status === "pending") {
+      return {
+        handled: true,
+        taskId,
+        queueId: existingQueue.id,
+        ok: true,
+        skipped: true,
+        reason: "duplicate_customer_reply_already_enqueued",
+      };
+    }
+  }
+
+  const now = new Date().toISOString();
+  const { data: insertedQueueRows, error: insertQueueError } = await args.supabase
+    .from("store_assistant_operational_task_queue")
+    .insert({
+      organization_id: organizationId,
+      store_id: storeId,
+      task_id: taskId,
+      conversation_id: conversationId,
+      message_id: messageId,
+      status: "pending",
+      attempts: 0,
+      available_at: now,
+      payload: {
+        source: "customer_reply_router",
+        customer_message: customerMessage,
+      },
+      created_at: now,
+      updated_at: now,
+    })
+    .select("*");
+
+  if (insertQueueError) {
+    throw new Error(insertQueueError.message);
+  }
+
+  const insertedQueue = ((insertedQueueRows || [])[0] as QueueRow | undefined) || null;
+  if (!insertedQueue?.id) {
+    throw new Error("Nao consegui confirmar a fila operacional criada para a resposta do cliente.");
+  }
+
+  const workerId = `${args.workerName || "assistant-operational-inline-router"}-${Date.now()}`;
+  const lockedQueue = await lockPendingQueueRow({
+    supabase: args.supabase,
+    queueId: insertedQueue.id,
+    attempts: insertedQueue.attempts,
+    workerId,
+  });
+
+  if (!lockedQueue) {
+    return {
+      handled: true,
+      taskId,
+      queueId: insertedQueue.id,
+      ok: true,
+      skipped: true,
+      reason: "queue_row_not_locked",
+    };
+  }
+
+  const processed = await processLockedQueueRowWithSubscriptionGuard({
+    supabase: args.supabase,
+    queue: lockedQueue,
+    workerId,
+  });
+
+  return {
+    handled: true,
+    taskId,
+    queueId: lockedQueue.id,
+    ok: processed.ok,
+    skipped: processed.skipped,
+    reason: processed.reason,
+    result: processed.result,
+    error: processed.error,
+  };
+}
+
 export async function processAssistantOperationalTasks(
   params: ProcessAssistantOperationalTasksParams
 ): Promise<ProcessAssistantOperationalTasksResult> {
@@ -1424,77 +1714,30 @@ export async function processAssistantOperationalTasks(
       continue;
     }
 
-    try {
-      const subscription = await loadCanonicalOrganizationSubscription(
-        supabase,
-        locked.organization_id,
-      );
-      const subscriptionStatus = normalizeText(subscription?.status);
+    const processed = await processLockedQueueRowWithSubscriptionGuard({
+      supabase,
+      queue: locked,
+      workerId,
+    });
 
-      if (subscriptionStatus === "suspended") {
-        const message =
-          "Organizacao suspensa. Tarefa operacional nao processada.";
-
-        await supabase
-          .from("store_assistant_operational_task_queue")
-          .update({
-            status: "failed",
-            error_text: message,
-            result_payload: {
-              ok: false,
-              skipped: true,
-              reason: "organization_subscription_suspended",
-              subscriptionId: subscription?.id ?? null,
-              subscriptionStatus: subscription?.status ?? null,
-              workerId,
-            },
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", locked.id);
-
-        results.push({
-          queueId: locked.id,
-          ok: false,
-          skipped: true,
-          reason: "organization_subscription_suspended",
-          error: message,
-        });
-        continue;
-      }
-
-      const result = await processQueueItem({ supabase, queue: locked, workerId });
-
-      await supabase
-        .from("store_assistant_operational_task_queue")
-        .update({
-          status: "processed",
-          processed_at: new Date().toISOString(),
-          result_payload: result,
-          error_text: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", locked.id);
-
-      results.push({ queueId: locked.id, ok: true, result });
-    } catch (error: any) {
-      const message = error?.message || "Erro desconhecido ao processar fila operacional.";
-
-      await supabase
-        .from("store_assistant_operational_task_queue")
-        .update({
-          status: "failed",
-          error_text: message,
-          result_payload: {
-            ok: false,
-            error: message,
-            workerId,
-          },
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", locked.id);
-
-      results.push({ queueId: locked.id, ok: false, error: message });
+    if (processed.ok) {
+      results.push({
+        queueId: locked.id,
+        ok: true,
+        skipped: processed.skipped,
+        reason: processed.reason,
+        result: processed.result,
+      });
+      continue;
     }
+
+    results.push({
+      queueId: locked.id,
+      ok: false,
+      skipped: processed.skipped,
+      reason: processed.reason,
+      error: processed.error,
+    });
   }
 
   return {
