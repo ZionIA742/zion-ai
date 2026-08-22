@@ -311,6 +311,13 @@ type SalesQuoteActionResponse = {
   versionId?: string;
   quoteNumber?: string | null;
   changeRequestId?: string;
+  currentCommercialProposalWarning?: {
+    code?: string;
+    message?: string;
+    commercialOpportunityId?: string;
+    salesQuoteId?: string;
+    salesQuoteVersionId?: string;
+  } | null;
 };
 
 type GeneratedContractSummary = {
@@ -540,6 +547,19 @@ function getQuoteSendErrorMessage(errorCode: string | null | undefined, fallback
     default:
       return fallback || "Nao foi possivel enviar o orcamento ao cliente.";
   }
+}
+
+function appendQuoteSendWarning(
+  baseMessage: string,
+  warning: SalesQuoteActionResponse["currentCommercialProposalWarning"]
+) {
+  const warningMessage = String(warning?.message || "").trim();
+
+  if (!warningMessage) {
+    return baseMessage;
+  }
+
+  return `${baseMessage} Aviso: ${warningMessage}`;
 }
 
 function createQuoteFormItemId() {
@@ -2529,7 +2549,12 @@ export default function LeadPage() {
         await fetchLeadConversationAndMessages({ silent: true });
       }
 
-      setQuoteActionSuccess("Orcamento enviado ao cliente com sucesso.");
+      setQuoteActionSuccess(
+        appendQuoteSendWarning(
+          String(result.message || "").trim() || "Orcamento enviado ao cliente com sucesso.",
+          result.currentCommercialProposalWarning
+        )
+      );
     } catch (error: any) {
       setQuoteActionError(
         error?.message || "Nao foi possivel enviar o orcamento ao cliente."

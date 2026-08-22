@@ -60,6 +60,21 @@ function isAlreadyApprovedError(code: string | null | undefined) {
   return code === "QUOTE_ALREADY_APPROVED";
 }
 
+function appendWarningToMessage(baseMessage: string, warning: unknown) {
+  const warningMessage =
+    warning &&
+    typeof warning === "object" &&
+    "message" in warning
+      ? String((warning as { message?: string | null }).message || "").trim()
+      : "";
+
+  if (!warningMessage) {
+    return baseMessage;
+  }
+
+  return `${baseMessage} Aviso: ${warningMessage}`;
+}
+
 function isTerminalDocumentStatus(value: string | null | undefined) {
   return TERMINAL_DOCUMENT_STATUSES.has(String(value || "").trim().toLowerCase());
 }
@@ -336,10 +351,13 @@ async function approveAndSendQuote(request: Request, quoteId: string) {
     return {
       ok: true as const,
       status: 200,
-      message:
-        isAlreadyHandledError(sendErrorCode)
-          ? "Este orcamento ja havia sido enviado ao cliente."
-          : "Orcamento aprovado e enviado ao cliente com sucesso.",
+      message: appendWarningToMessage(
+        String(sendResult.body?.message || "").trim() ||
+          (isAlreadyHandledError(sendErrorCode)
+            ? "Este orcamento ja havia sido enviado ao cliente."
+            : "Orcamento aprovado e enviado ao cliente com sucesso."),
+        sendResult.body?.currentCommercialProposalWarning
+      ),
     };
   } catch (error) {
     if (error instanceof QuoteAccessError) {
