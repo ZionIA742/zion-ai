@@ -2217,7 +2217,48 @@ export default function ConfiguracoesPage() {
           typeof entries.store_display_name === "string"
             ? entries.store_display_name.trim()
             : "";
-        for (const [questionKey, rawValue] of Object.entries(entries)) {
+        const hasPrimaryResponsibleData =
+          Object.prototype.hasOwnProperty.call(entries, "responsible_name") ||
+          Object.prototype.hasOwnProperty.call(entries, "responsible_whatsapp");
+
+        if (hasPrimaryResponsibleData) {
+          const responsibleName =
+            typeof entries.responsible_name === "string"
+              ? entries.responsible_name.trim()
+              : "";
+          const responsibleWhatsapp =
+            typeof entries.responsible_whatsapp === "string"
+              ? entries.responsible_whatsapp.trim()
+              : "";
+
+          if (!responsibleName || !responsibleWhatsapp) {
+            throw new Error(
+              "Nome e WhatsApp do responsavel principal sao obrigatorios para sincronizar a configuracao."
+            );
+          }
+
+          const { error: responsibleSyncError } = await supabase.rpc(
+            "upsert_store_primary_responsible_with_legacy_mirror_scoped",
+            {
+              p_organization_id: organizationId,
+              p_store_id: activeStoreId,
+              p_name: responsibleName,
+              p_whatsapp_number: responsibleWhatsapp,
+            }
+          );
+
+          if (responsibleSyncError) throw responsibleSyncError;
+        }
+
+        const legacyEntries = Object.fromEntries(
+          Object.entries(entries).filter(
+            ([questionKey]) =>
+              questionKey !== "responsible_name" &&
+              questionKey !== "responsible_whatsapp"
+          )
+        );
+
+        for (const [questionKey, rawValue] of Object.entries(legacyEntries)) {
           const answerValue =
             typeof rawValue === "string" ? rawValue.trim() : rawValue ?? null;
 

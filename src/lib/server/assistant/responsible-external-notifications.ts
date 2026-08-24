@@ -1,4 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
+import {
+  loadCanonicalActivePrimaryStoreResponsible,
+  normalizeResponsibleWhatsappDestination,
+} from "@/lib/server/store-responsibles";
 
 type Json =
   | string
@@ -7,14 +11,6 @@ type Json =
   | null
   | { [key: string]: Json }
   | Json[];
-
-type ResponsibleRow = {
-  id: string;
-  name: string | null;
-  whatsapp_number: string | null;
-  role: string | null;
-  created_at: string | null;
-};
 
 type InternalAssistantNotificationRow = {
   id: string;
@@ -155,25 +151,6 @@ function safeUuidOrNull(value: unknown) {
   return isUuidLike(text) ? text : null;
 }
 
-export function normalizeResponsibleWhatsappDestination(value: string): string | null {
-  const digits = String(value || "").replace(/\D/g, "");
-
-  if (!digits) return null;
-  if (digits.startsWith("55") && digits.length >= 12 && digits.length <= 13) {
-    return digits;
-  }
-
-  if (digits.length === 11) {
-    return `55${digits}`;
-  }
-
-  if (digits.length >= 12 && digits.length <= 15) {
-    return digits;
-  }
-
-  return null;
-}
-
 export function maskResponsibleDestination(value: string | null | undefined) {
   const digits = String(value || "").replace(/\D/g, "");
 
@@ -221,44 +198,17 @@ export async function loadPrimaryResponsibleForExternalNotifications(args: {
   organizationId: string;
   storeId: string;
 }) {
-  const supabase = args.supabase || getSupabaseAdmin();
+  const result = await loadCanonicalActivePrimaryStoreResponsible({
+    supabase: args.supabase || getSupabaseAdmin(),
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+  });
 
-  const { data, error } = await supabase
-    .from("store_responsibles")
-    .select("id, name, whatsapp_number, role, created_at")
-    .eq("organization_id", args.organizationId)
-    .eq("store_id", args.storeId)
-    .not("whatsapp_number", "is", null)
-    .order("created_at", { ascending: true });
-
-  if (error) {
-    throw new Error(`Falha ao carregar store_responsibles: ${error.message}`);
+  if (!result.ok) {
+    return result;
   }
 
-  const candidates = ((data || []) as ResponsibleRow[])
-    .map((row) => ({
-      id: row.id,
-      name: cleanText(row.name) || null,
-      role: cleanText(row.role) || null,
-      whatsappNumber: normalizeResponsibleWhatsappDestination(
-        cleanText(row.whatsapp_number)
-      ),
-      createdAt: row.created_at,
-    }))
-    .filter((row) => row.whatsappNumber);
-
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  const owner = candidates.find((row) => normalizeText(row.role) === "owner");
-  const selected = owner || candidates[0];
-
-  return {
-    id: selected.id,
-    name: selected.name,
-    whatsappNumber: selected.whatsappNumber as string,
-  };
+  return result;
 }
 
 export function shouldEnqueueResponsibleExternalNotification(
@@ -444,8 +394,8 @@ export async function enqueueResponsibleExternalNotificationFromAssistantNotific
     storeId,
   });
 
-  if (!responsible) {
-    return { created: false as const, skippedReason: "responsible_not_found_or_invalid_destination" };
+  if (!responsible.ok) {
+    return { created: false as const, skippedReason: responsible.reason };
   }
 
   const context = isRecord(internalNotification.context)
@@ -457,7 +407,7 @@ export async function enqueueResponsibleExternalNotificationFromAssistantNotific
     supabase,
     organizationId,
     storeId,
-    responsibleId: responsible.id,
+    responsibleId: responsible.responsible.id,
     internalNotificationId: internalNotification.id,
     channel: RESPONSIBLE_CHANNEL,
     sourceEventKey,
@@ -476,10 +426,10 @@ export async function enqueueResponsibleExternalNotificationFromAssistantNotific
   const insertPayload: ExternalNotificationInsertRow = {
     organization_id: organizationId,
     store_id: storeId,
-    responsible_id: responsible.id,
+    responsible_id: responsible.responsible.id,
     internal_notification_id: internalNotification.id,
     channel: RESPONSIBLE_CHANNEL,
-    destination: responsible.whatsappNumber,
+    destination: responsible.responsible.whatsappNumber,
     notification_type: cleanText(internalNotification.notification_type),
     priority: cleanText(internalNotification.priority),
     status: "materialized",

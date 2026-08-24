@@ -1841,9 +1841,19 @@ function OnboardingContent() {
     setFormError(null);
     setSuccessMessage(null);
     try {
+      const { error: responsibleSyncError } = await supabase.rpc(
+        "upsert_store_primary_responsible_with_legacy_mirror_scoped",
+        {
+          p_organization_id: organizationId,
+          p_store_id: activeStore.id,
+          p_name: step5Form.responsible_name.trim(),
+          p_whatsapp_number: step5Form.responsible_whatsapp.trim(),
+        }
+      );
+      if (responsibleSyncError) {
+        throw new Error("Falha ao sincronizar o responsavel operacional principal.");
+      }
       const payloads: Array<[string, unknown]> = [
-        ["responsible_name", step5Form.responsible_name.trim()],
-        ["responsible_whatsapp", step5Form.responsible_whatsapp.trim()],
         [
           "ai_should_notify_responsible",
           step5Form.ai_should_notify_responsible.trim().toLowerCase() === "sim",
