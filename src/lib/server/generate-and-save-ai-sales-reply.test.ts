@@ -245,12 +245,12 @@ function createAiWindowScopeSupabase(args?: {
   conversationError?: { message: string } | null;
   storeError?: { message: string } | null;
 }) {
-  const canonicalOrganizationId = args?.canonicalOrganizationId || "org-canonical";
-  const canonicalStoreId = args?.canonicalStoreId || "store-canonical";
-  const conversationId = args?.conversationId || "conv-canonical";
-  const leadId = args?.leadId || "lead-canonical";
-  const storeOrganizationId = args?.storeOrganizationId || canonicalOrganizationId;
-  const leadOrganizationId = args?.leadOrganizationId || canonicalOrganizationId;
+  const canonicalOrganizationId = args?.canonicalOrganizationId ?? "org-canonical";
+  const canonicalStoreId = args?.canonicalStoreId ?? "store-canonical";
+  const conversationId = args?.conversationId ?? "conv-canonical";
+  const leadId = args?.leadId ?? "lead-canonical";
+  const storeOrganizationId = args?.storeOrganizationId ?? canonicalOrganizationId;
+  const leadOrganizationId = args?.leadOrganizationId ?? canonicalOrganizationId;
   const windowUpserts: Array<{ row: Record<string, unknown>; options: Record<string, unknown> }> = [];
   const stateUpdates: Array<{
     payload: Record<string, unknown>;
@@ -342,6 +342,25 @@ function createAiWindowScopeSupabase(args?: {
                 data: {
                   id: canonicalStoreId,
                   organization_id: storeOrganizationId,
+                },
+                error: null,
+              };
+            },
+          };
+        }
+
+        if (table === "store_schedule_settings") {
+          return {
+            select(_selection: string) {
+              return this;
+            },
+            eq(_column: string, _value: unknown) {
+              return this;
+            },
+            async maybeSingle() {
+              return {
+                data: {
+                  timezone_name: "America/Sao_Paulo",
                 },
                 error: null,
               };
@@ -2161,8 +2180,13 @@ const tests: TestCase[] = [
           { column: "organization_id", value: "org-canonical" },
           { column: "store_id", value: "store-canonical" },
         ]);
-        assert.equal(supabase.queueUpdates.length, 1);
+        assert.equal(supabase.queueUpdates.length, 2);
         assert.deepEqual(supabase.queueUpdates[0]?.eq, [
+          { column: "organization_id", value: "org-canonical" },
+          { column: "store_id", value: "store-canonical" },
+          { column: "conversation_id", value: "conv-canonical" },
+        ]);
+        assert.deepEqual(supabase.queueUpdates[1]?.eq, [
           { column: "organization_id", value: "org-canonical" },
           { column: "store_id", value: "store-canonical" },
           { column: "conversation_id", value: "conv-canonical" },
@@ -2429,7 +2453,7 @@ const tests: TestCase[] = [
           p_evidence_type: "incoming_customer_message",
           p_evidence_message_id: "msg-1",
           p_evidence_summary:
-            "Mensagem do cliente contÃ©m sinal comercial claro para qualificaÃ§Ã£o.",
+            "Mensagem do cliente contém sinal comercial claro para qualificação.",
           p_source: "ai_sales_auto_progress",
         });
       });
@@ -2512,13 +2536,25 @@ const tests: TestCase[] = [
       const helperIndex = source.indexOf(
         "async function loadCanonicalCommercialOpportunityStage(args: {"
       );
+      const nextTopLevelDeclarationIndex = source.indexOf(
+        "\ntype CatalogPhotoAction =",
+        helperIndex
+      );
 
       assert.equal(helperIndex > -1, true);
-      assert.equal(source.indexOf('.from("commercial_opportunities")', helperIndex) > helperIndex, true);
-      assert.equal(source.indexOf('.eq("id", args.commercialOpportunityId)', helperIndex) > helperIndex, true);
-      assert.equal(source.indexOf('.eq("organization_id", args.organizationId)', helperIndex) > helperIndex, true);
-      assert.equal(source.indexOf('.eq("store_id", args.storeId)', helperIndex) > helperIndex, true);
-      assert.equal(source.indexOf('.order("created_at"', helperIndex), -1);
+      assert.equal(nextTopLevelDeclarationIndex > helperIndex, true);
+
+      const helperSource = source.slice(helperIndex, nextTopLevelDeclarationIndex);
+
+      assert.equal(helperSource.includes('.from("commercial_opportunities")'), true);
+      assert.equal(helperSource.includes('.eq("id", args.commercialOpportunityId)'), true);
+      assert.equal(helperSource.includes('.eq("organization_id", args.organizationId)'), true);
+      assert.equal(helperSource.includes('.eq("store_id", args.storeId)'), true);
+      assert.equal(helperSource.includes('.order("created_at"'), false);
+      assert.equal(helperSource.includes(".limit(1)"), false);
+      assert.equal(helperSource.includes("latest"), false);
+      assert.equal(helperSource.includes("first"), false);
+      assert.equal(helperSource.includes("fallback"), false);
     },
   },
   {
@@ -2602,18 +2638,57 @@ const tests: TestCase[] = [
       const helperIndex = source.indexOf(
         "async function maybeAutoProgressCrmToBudgetFromQuoteHandoffCanonical("
       );
-      const canonicalIndex = source.indexOf(
-        "await transitionCommercialOpportunityStageBySystem({",
+      const nextTopLevelFunctionIndex = source.indexOf(
+        "async function maybeAutoProgressCrmToQualificationFromSalesSignalCanonical(",
         helperIndex
       );
-      const legacyIndex = source.indexOf(
-        "await transitionConversationStateAsInternalActor({",
-        helperIndex
+      const helperBody = source.slice(helperIndex, nextTopLevelFunctionIndex);
+
+      const qualificationCanonicalIndex = helperBody.indexOf(
+        "const qualificationCanonicalFailure = await transitionCanonicalStage({"
+      );
+      const qualificationLegacyIndex = helperBody.indexOf(
+        "const qualificationLegacyFailure = await transitionLegacyState({"
+      );
+      const budgetCanonicalNovoLeadIndex = helperBody.indexOf(
+        "const budgetCanonicalFailure = await transitionCanonicalStage({"
+      );
+      const budgetLegacyNovoLeadIndex = helperBody.indexOf(
+        "const budgetLegacyFailure = await transitionLegacyState({"
+      );
+      const directBudgetBranchIndex = helperBody.indexOf(
+        'const budgetEventKey = buildAiSalesAutoProgressEventKey({\n' +
+          "    taskId: args.taskId,\n" +
+          '    step: currentStage === "qualificacao" ? "prepare_budget" : "budget_direct",\n' +
+          "  });"
+      );
+      const budgetCanonicalDirectIndex = helperBody.indexOf(
+        "const budgetCanonicalFailure = await transitionCanonicalStage({",
+        directBudgetBranchIndex
+      );
+      const budgetLegacyDirectIndex = helperBody.indexOf(
+        "const budgetLegacyFailure = await transitionLegacyState({",
+        directBudgetBranchIndex
       );
 
       assert.equal(helperIndex > -1, true);
-      assert.equal(canonicalIndex > helperIndex, true);
-      assert.equal(legacyIndex > canonicalIndex, true);
+      assert.equal(nextTopLevelFunctionIndex > helperIndex, true);
+      assert.equal(qualificationCanonicalIndex > -1, true);
+      assert.equal(qualificationLegacyIndex > qualificationCanonicalIndex, true);
+      assert.equal(
+        budgetCanonicalNovoLeadIndex > qualificationLegacyIndex,
+        true
+      );
+      assert.equal(
+        budgetLegacyNovoLeadIndex > budgetCanonicalNovoLeadIndex,
+        true
+      );
+      assert.equal(directBudgetBranchIndex > budgetLegacyNovoLeadIndex, true);
+      assert.equal(
+        budgetCanonicalDirectIndex > directBudgetBranchIndex,
+        true
+      );
+      assert.equal(budgetLegacyDirectIndex > budgetCanonicalDirectIndex, true);
     },
   },
   {
@@ -2654,19 +2729,50 @@ const tests: TestCase[] = [
       const helperIndex = source.indexOf(
         "async function maybeAutoProgressCrmToQualificationFromSalesSignalCanonical("
       );
-      const guardIndex = source.indexOf(
-        "if (!commercialOpportunityId || !generationAnchorMessageId) {",
+      const helperEndIndex = source.indexOf(
+        "async function loadConversationMessageBoundaryState(args: {",
         helperIndex
       );
-      const writerIndex = source.indexOf(
-        "await transitionCommercialOpportunityStageBySystem({",
-        helperIndex
+      const helperSource = source.slice(helperIndex, helperEndIndex);
+      const guardIndex = helperSource.indexOf(
+        "if (!commercialOpportunityId || !generationAnchorMessageId) {"
+      );
+      const stageSnapshotIndex = helperSource.indexOf(
+        "const stageSnapshot = await loadCanonicalCommercialOpportunityStage({"
+      );
+      const missingContextGuardSource = helperSource.slice(
+        guardIndex,
+        stageSnapshotIndex
+      );
+      const writerIndex = helperSource.indexOf(
+        "await transitionCommercialOpportunityStageBySystem({"
       );
 
       assert.equal(helperIndex > -1, true);
-      assert.equal(guardIndex > helperIndex, true);
-      assert.equal(writerIndex > guardIndex, true);
-      assert.equal(source.includes("missing_commercial_opportunity_context"), true);
+      assert.equal(helperEndIndex > helperIndex, true);
+      assert.equal(guardIndex > -1, true);
+      assert.equal(stageSnapshotIndex > guardIndex, true);
+      assert.equal(
+        missingContextGuardSource.includes(
+          'reason: "missing_commercial_opportunity_context"'
+        ),
+        true
+      );
+      assert.equal(
+        missingContextGuardSource.includes(
+          'skippedReason: "missing_commercial_opportunity_context"'
+        ),
+        true
+      );
+      assert.equal(
+        missingContextGuardSource.includes("attempted: false"),
+        true
+      );
+      assert.equal(
+        missingContextGuardSource.includes("progressed: false"),
+        true
+      );
+      assert.equal(writerIndex > stageSnapshotIndex, true);
     },
   },
   {
@@ -2763,25 +2869,35 @@ const tests: TestCase[] = [
         "utf8",
       );
 
-      assert.equal(
-        source.includes('async function loadCanonicalCommercialOpportunityStage(args: {'),
-        true,
+      const helperIndex = source.indexOf(
+        "async function loadCanonicalCommercialOpportunityStage(args: {"
       );
-      assert.equal(source.includes('from("commercial_opportunities")'), true);
-      assert.equal(source.includes('.eq("id", args.commercialOpportunityId)'), true);
-      assert.equal(source.includes('.eq("organization_id", args.organizationId)'), true);
-      assert.equal(source.includes('.eq("store_id", args.storeId)'), true);
-      assert.equal(source.includes('.order("created_at"'), false);
+      const nextTopLevelDeclarationIndex = source.indexOf(
+        "\ntype CatalogPhotoAction =",
+        helperIndex
+      );
+      const helperSource = source.slice(helperIndex, nextTopLevelDeclarationIndex);
+
+      assert.equal(helperIndex > -1, true);
+      assert.equal(nextTopLevelDeclarationIndex > helperIndex, true);
+      assert.equal(helperSource.includes('.from("commercial_opportunities")'), true);
+      assert.equal(helperSource.includes('.select("id, stage")'), true);
+      assert.equal(helperSource.includes('.eq("id", args.commercialOpportunityId)'), true);
+      assert.equal(helperSource.includes('.eq("organization_id", args.organizationId)'), true);
+      assert.equal(helperSource.includes('.eq("store_id", args.storeId)'), true);
+      assert.equal(helperSource.includes(".maybeSingle()"), true);
+      assert.equal(helperSource.includes('.order("created_at"'), false);
+      assert.equal(helperSource.includes(".limit(1)"), false);
+      assert.equal(helperSource.includes("latest"), false);
+      assert.equal(helperSource.includes("first"), false);
+      assert.equal(helperSource.includes("fallback"), false);
       assert.equal(
-        source.includes(
-          '.in("task_type", ["commercial_visit_request", "commercial_quote_request"])'
-        ),
+        helperSource.includes("loadConservativeCrmStateForQuoteAutoProgress"),
         false
       );
-      assert.equal(source.includes('.eq("task_type", args.taskType)'), true);
       assert.equal(
-        source.includes('reason: "missing_commercial_opportunity_context"'),
-        true,
+        helperSource.includes("readCommercialOpportunityIdFromHandoff"),
+        false
       );
     },
   },

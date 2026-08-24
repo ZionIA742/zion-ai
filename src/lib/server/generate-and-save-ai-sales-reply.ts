@@ -3095,9 +3095,9 @@ async function loadStoreTimeZone(args: {
 
 async function clearPendingResumeArtifacts(args: {
   supabase: any;
-  organizationId: string;
-  storeId: string;
-  conversationId: string;
+  canonicalScope: Awaited<
+    ReturnType<typeof resolveConversationAiWindowStateScope>
+  >;
   customerMessageAt?: string | null;
   preserveReason?: boolean;
   nextResumeReason?: string | null;
@@ -3105,20 +3105,12 @@ async function clearPendingResumeArtifacts(args: {
 }) {
   const {
     supabase,
-    organizationId,
-    storeId,
-    conversationId,
+    canonicalScope,
     customerMessageAt,
     preserveReason,
     nextResumeReason,
     queueCancelReason,
   } = args;
-  const canonicalScope = await resolveConversationAiWindowStateScope({
-    supabase,
-    conversationId,
-    expectedOrganizationId: organizationId,
-    expectedStoreId: storeId,
-  });
   const nowIso = new Date().toISOString();
 
   const windowPatch: Record<string, unknown> = {
@@ -3150,7 +3142,7 @@ async function clearPendingResumeArtifacts(args: {
     );
   }
 
-  const queuePrefix = `resume:${conversationId}:`;
+  const queuePrefix = `resume:${canonicalScope.conversationId}:`;
   const { error: queueError } = await supabase
     .from("ai_run_queue")
     .update({
@@ -3172,9 +3164,9 @@ async function clearPendingResumeArtifacts(args: {
 
 async function persistOperationalFollowUpDecision(args: {
   supabase: any;
-  organizationId: string;
-  storeId: string;
-  conversationId: string;
+  canonicalScope: Awaited<
+    ReturnType<typeof resolveConversationAiWindowStateScope>
+  >;
   leadId: string | null;
   decision: OperationalFollowUpDecision;
   lastCustomerMessageAt: string | null;
@@ -3182,20 +3174,12 @@ async function persistOperationalFollowUpDecision(args: {
 }) {
   const {
     supabase,
-    organizationId,
-    storeId,
-    conversationId,
+    canonicalScope,
     leadId,
     decision,
     lastCustomerMessageAt,
     lastAiMessageAt,
   } = args;
-  const canonicalScope = await resolveConversationAiWindowStateScope({
-    supabase,
-    conversationId,
-    expectedOrganizationId: organizationId,
-    expectedStoreId: storeId,
-  });
 
   if (!decision || decision.kind === "none") {
     return;
@@ -3210,9 +3194,7 @@ async function persistOperationalFollowUpDecision(args: {
   if (decision.kind === "stop_contact") {
     await clearPendingResumeArtifacts({
       supabase,
-      organizationId: canonicalScope.organizationId,
-      storeId: canonicalScope.storeId,
-      conversationId: canonicalScope.conversationId,
+      canonicalScope,
       customerMessageAt: lastCustomerMessageAt,
       preserveReason: true,
       nextResumeReason: decision.reason,
@@ -3275,9 +3257,7 @@ async function persistOperationalFollowUpDecision(args: {
 
   await clearPendingResumeArtifacts({
     supabase,
-    organizationId: canonicalScope.organizationId,
-    storeId: canonicalScope.storeId,
-    conversationId: canonicalScope.conversationId,
+    canonicalScope,
     customerMessageAt: lastCustomerMessageAt,
     preserveReason: true,
     nextResumeReason: decision.reason,
@@ -3305,7 +3285,7 @@ async function persistOperationalFollowUpDecision(args: {
     return;
   }
 
-  const queueKey = `resume:${conversationId}:${decision.reason}:${formatQueueTimestamp(nextResumeAt, timeZone)}`;
+  const queueKey = `resume:${canonicalScope.conversationId}:${decision.reason}:${formatQueueTimestamp(nextResumeAt, timeZone)}`;
   const input = {
     type: "resume_sales_conversation",
     reason: decision.reason,
@@ -4012,9 +3992,7 @@ export async function generateAndSaveAiSalesReply(
 
     await clearPendingResumeArtifacts({
       supabase,
-      organizationId: canonicalOrganizationId,
-      storeId: canonicalStoreId,
-      conversationId: canonicalConversationId,
+      canonicalScope,
       customerMessageAt: boundaryBeforeGeneration.lastIncomingCustomerMessageAt,
       preserveReason: false,
       nextResumeReason: null,
@@ -4253,9 +4231,7 @@ export async function generateAndSaveAiSalesReply(
 
     await persistOperationalFollowUpDecision({
       supabase,
-      organizationId: canonicalOrganizationId,
-      storeId: canonicalStoreId,
-      conversationId: canonicalConversationId,
+      canonicalScope,
       leadId: normalizedConversation.lead_id || null,
       decision:
         generationResult.context?.operationalFollowUpDecision || {

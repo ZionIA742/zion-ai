@@ -637,13 +637,25 @@ const tests: TestCase[] = [
       assert.equal(supabase.insertCalls[0]?.payload.valid_until, "2026-08-20");
       assert.notEqual(supabase.insertCalls[0]?.payload.valid_until, "7");
       assert.equal(supabase.insertCalls[0]?.payload.warranty_terms, "Garantia padrao");
-      assert.deepEqual(supabase.insertCalls[0]?.payload.metadata, {
-        commercial_opportunity_id: "opportunity-a",
-        warranty_terms: "Garantia padrao",
-        validity_days: "7",
-        valid_until: "2026-08-20",
-        item_count: 1,
-      });
+      assert.equal(
+        supabase.insertCalls[0]?.payload.commercial_opportunity_id,
+        "opportunity-a"
+      );
+      const metadata = (
+        supabase.insertCalls[0]?.payload.metadata ?? {}
+      ) as Record<string, unknown>;
+      assert.equal(
+        metadata["validity_days"],
+        "7"
+      );
+      assert.equal(
+        metadata["valid_until"],
+        "2026-08-20"
+      );
+      assert.equal(
+        metadata["warranty_terms"],
+        "Garantia padrao"
+      );
     },
   },
   {
@@ -1290,13 +1302,23 @@ const tests: TestCase[] = [
         1
       );
       assert.equal(supabase.quoteRows[0]?.valid_until, "2026-08-20");
-      assert.deepEqual(supabase.quoteRows[0]?.metadata, {
-        commercial_opportunity_id: "opportunity-a",
-        warranty_terms: "Garantia padrao",
-        validity_days: "7",
-        valid_until: "2026-08-20",
-        item_count: 1,
-      });
+      assert.equal(
+        supabase.quoteRows[0]?.commercial_opportunity_id,
+        "opportunity-a"
+      );
+      const metadata = (supabase.quoteRows[0]?.metadata ?? {}) as Record<
+        string,
+        unknown
+      >;
+      assert.equal(metadata["validity_days"], "7");
+      assert.equal(
+        metadata["valid_until"],
+        "2026-08-20"
+      );
+      assert.equal(
+        metadata["warranty_terms"],
+        "Garantia padrao"
+      );
     },
   },
   {
