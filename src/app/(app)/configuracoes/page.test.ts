@@ -29,6 +29,30 @@ function getActivationSaveBlock(source: string) {
   return source.slice(start, end);
 }
 
+function getCommercialSaveBlock(source: string) {
+  const start = source.indexOf("  const handleCommercialEditSave = useCallback(async () => {");
+  assert.equal(start > -1, true, "handleCommercialEditSave not found");
+  const end = source.indexOf("  }, [", start);
+  assert.equal(end > start, true, "handleCommercialEditSave end not found");
+  return source.slice(start, end);
+}
+
+function getCommercialPaymentItemsBlock(source: string) {
+  const start = source.indexOf("  const commercialPaymentItems = useMemo(() => {");
+  assert.equal(start > -1, true, "commercialPaymentItems block not found");
+  const end = source.indexOf("  const commercialNegotiationItems = useMemo(() => {", start);
+  assert.equal(end > start, true, "commercialPaymentItems end not found");
+  return source.slice(start, end);
+}
+
+function getFetchPageDataBlock(source: string) {
+  const start = source.indexOf("  const fetchPageData = useCallback(async () => {");
+  assert.equal(start > -1, true, "fetchPageData not found");
+  const end = source.indexOf("  const upsertConfigAnswers = useCallback(", start);
+  assert.equal(end > start, true, "fetchPageData end not found");
+  return source.slice(start, end);
+}
+
 const tests: TestCase[] = [
   {
     name: "configuracoes uses the transactional responsible writer before remaining legacy answers and before onboarding status update",
@@ -104,6 +128,91 @@ const tests: TestCase[] = [
       assert.equal(
         block.includes('"Alterações de responsável e ativação salvas com sucesso."'),
         true,
+      );
+    },
+  },
+  {
+    name: "commercial editor uses the canonical payment writer before shared legacy answer sync and keeps summary derived",
+    run: () => {
+      const source = readPageSource();
+      const block = getCommercialSaveBlock(source);
+
+      const canonicalSyncIndex = block.indexOf(
+        '"upsert_store_payment_settings_with_legacy_mirror_scoped"',
+      );
+      const sharedLegacySyncIndex = block.indexOf("const saved = await upsertConfigAnswers(");
+
+      assert.equal(canonicalSyncIndex > -1, true);
+      assert.equal(sharedLegacySyncIndex > -1, true);
+      assert.equal(canonicalSyncIndex < sharedLegacySyncIndex, true);
+      assert.equal(
+        block.includes("const derivedPaymentSummary = deriveStorePaymentSettingsSummary("),
+        true,
+      );
+      assert.equal(
+        block.includes("accepted_payment_methods_summary: derivedPaymentSummary"),
+        true,
+      );
+    },
+  },
+  {
+    name: "commercial payment read-only view uses shared payment presentation helper and surfaces legacy tags outside the canonical summary",
+    run: () => {
+      const source = readPageSource();
+      const block = getCommercialPaymentItemsBlock(source);
+
+      assert.equal(
+        block.includes("createStorePaymentPresentationFromSources({"),
+        true,
+      );
+      assert.equal(block.includes("settings: paymentSettings"), true);
+      assert.equal(
+        block.includes("joinSelectedLabels(parseArrayAnswer(answers.accepted_payment_methods)"),
+        false,
+      );
+      assert.equal(
+        block.includes('label: "Dados antigos para revisar"'),
+        true,
+      );
+    },
+  },
+  {
+    name: "commercial edit form keeps only canonical payment buttons and shows legacy condition tags as read-only review data",
+    run: () => {
+      const source = readPageSource();
+
+      assert.equal(
+        source.includes("{PAYMENT_METHOD_MAIN_OPTIONS.map((option) => {"),
+        true,
+      );
+      assert.equal(
+        source.includes("{PAYMENT_METHOD_CONDITION_OPTIONS.map((option) => {"),
+        false,
+      );
+      assert.equal(
+        source.includes("legacy_payment_condition_tags.length > 0"),
+        true,
+      );
+      assert.equal(
+        source.includes("Dados antigos para revisar:"),
+        true,
+      );
+    },
+  },
+  {
+    name: "simple page load reads canonical payment settings but does not call any payment writer",
+    run: () => {
+      const source = readPageSource();
+      const block = getFetchPageDataBlock(source);
+
+      assert.equal(block.includes('.from("store_payment_settings")'), true);
+      assert.equal(
+        block.includes("upsert_store_payment_settings_with_legacy_mirror_scoped"),
+        false,
+      );
+      assert.equal(
+        block.includes("upsert_store_payment_settings_scoped"),
+        false,
       );
     },
   },

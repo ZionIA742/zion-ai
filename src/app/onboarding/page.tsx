@@ -15,6 +15,14 @@ import OrgGuard from "../../components/OrgGuard";
 import { StoreProvider, useStoreContext } from "../../components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
 import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatalogImportPanel";
+import {
+  createStorePaymentSettingsInputFromSources,
+  formatStorePaymentCurrencyInput,
+  formatStorePaymentInstallmentsInput,
+  formatStorePaymentPercentInput,
+  normalizeStorePaymentSettingsInput,
+  type StorePaymentSettingsRow,
+} from "@/lib/store-payment-settings";
 type Step1FormData = {
   store_display_name: string;
   store_description: string;
@@ -67,6 +75,17 @@ type Step4FormData = {
   can_offer_discount: string;
   max_discount_percent: string;
   accepted_payment_methods: string[];
+  pix_key_type: string;
+  pix_key: string;
+  pix_holder_name: string;
+  down_payment_mode: string;
+  down_payment_value_type: string;
+  down_payment_percent: string;
+  down_payment_amount: string;
+  installments_enabled: string;
+  max_installments: string;
+  installment_interest_policy: string;
+  payment_notes: string;
   ai_can_send_price_directly: string;
   price_direct_rule: string;
   human_help_discount_cases: string;
@@ -207,6 +226,28 @@ const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
 const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
   { value: "parcelado", label: "Aceita parcelamento" },
   { value: "financiamento", label: "Trabalha com financiamento" },
+];
+const PIX_KEY_TYPE_OPTIONS: Option[] = [
+  { value: "cpf", label: "CPF" },
+  { value: "cnpj", label: "CNPJ" },
+  { value: "email", label: "E-mail" },
+  { value: "phone", label: "Telefone" },
+  { value: "random", label: "Chave aleatoria" },
+];
+const DOWN_PAYMENT_MODE_OPTIONS: Option[] = [
+  { value: "none", label: "Nao usa entrada" },
+  { value: "optional", label: "Entrada opcional" },
+  { value: "required", label: "Entrada obrigatoria" },
+];
+const DOWN_PAYMENT_VALUE_TYPE_OPTIONS: Option[] = [
+  { value: "percent", label: "Percentual" },
+  { value: "fixed", label: "Valor fixo" },
+  { value: "case_by_case", label: "Caso a caso" },
+];
+const INSTALLMENT_INTEREST_POLICY_OPTIONS: Option[] = [
+  { value: "interest_free", label: "Sem juros" },
+  { value: "with_interest", label: "Com juros" },
+  { value: "case_by_case", label: "Juros caso a caso" },
 ];
 const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
   { value: "so_apos_entender_objetivo", label: "Só depois de entender o que o cliente quer" },
@@ -564,6 +605,17 @@ function OnboardingContent() {
     can_offer_discount: "",
     max_discount_percent: "",
     accepted_payment_methods: [],
+    pix_key_type: "",
+    pix_key: "",
+    pix_holder_name: "",
+    down_payment_mode: "none",
+    down_payment_value_type: "",
+    down_payment_percent: "",
+    down_payment_amount: "",
+    installments_enabled: "nao",
+    max_installments: "",
+    installment_interest_policy: "",
+    payment_notes: "",
     ai_can_send_price_directly: "",
     price_direct_rule: "",
     human_help_discount_cases: "",
@@ -602,6 +654,8 @@ function OnboardingContent() {
       Boolean(discountSettings.allow_ask_above_max_discount)
     );
   }, [discountSettings, step4Form.can_offer_discount]);
+  const [paymentSettings, setPaymentSettings] =
+    useState<StorePaymentSettingsRow | null>(null);
   const effectiveDiscountCanOfferValue = effectiveDiscountCanOffer ? "sim" : "não";
   const effectiveOnboardingDiscountPercent = useMemo(() => {
     if (!discountSettings) {
@@ -1098,16 +1152,41 @@ function OnboardingContent() {
     const loadAnswers = async () => {
       if (!organizationId || !activeStore?.id) return;
       try {
-        const { data, error: rpcError } = await supabase.rpc("onboarding_get_answers_scoped", {
-          p_organization_id: organizationId,
-          p_store_id: activeStore.id,
-        });
-        if (rpcError) {
-          console.error("[OnboardingPage] loadAnswers RPC error:", rpcError);
+        const [answersResult, paymentSettingsResult] = await Promise.all([
+          supabase.rpc("onboarding_get_answers_scoped", {
+            p_organization_id: organizationId,
+            p_store_id: activeStore.id,
+          }),
+          supabase
+            .from("store_payment_settings")
+            .select(
+              "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
+            )
+            .eq("organization_id", organizationId)
+            .eq("store_id", activeStore.id)
+            .maybeSingle(),
+        ]);
+        if (answersResult.error) {
+          console.error("[OnboardingPage] loadAnswers RPC error:", answersResult.error);
           setFatalError("Falha ao carregar respostas do onboarding.");
           return;
         }
-        const answers = (data ?? {}) as AnswersMap;
+        if (paymentSettingsResult.error) {
+          console.error(
+            "[OnboardingPage] loadPaymentSettings error:",
+            paymentSettingsResult.error,
+          );
+          setFatalError("Falha ao carregar configuracoes canonicas de pagamento.");
+          return;
+        }
+        const answers = (answersResult.data ?? {}) as AnswersMap;
+        const canonicalPaymentSettings =
+          (paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null;
+        const paymentSettingsInput = createStorePaymentSettingsInputFromSources({
+          answers,
+          settings: canonicalPaymentSettings,
+        });
+        setPaymentSettings(canonicalPaymentSettings);
         const remoteStoreServices = parseArrayAnswer(answers.store_services);
         const remotePoolTypesSelected = parseArrayAnswer(answers.pool_types_selected);
         const remoteTechnicalVisitRulesSelected = parseArrayAnswer(answers.technical_visit_rules_selected);
@@ -1272,9 +1351,29 @@ function OnboardingContent() {
           accepted_payment_methods:
             prev.accepted_payment_methods.length
               ? prev.accepted_payment_methods
-              : Array.isArray(answers.accepted_payment_methods)
-              ? answers.accepted_payment_methods.map(String)
-              : [],
+              : paymentSettingsInput.acceptedPaymentMethods,
+          pix_key_type: prev.pix_key_type || paymentSettingsInput.pixKeyType,
+          pix_key: prev.pix_key || paymentSettingsInput.pixKey,
+          pix_holder_name:
+            prev.pix_holder_name || paymentSettingsInput.pixHolderName,
+          down_payment_mode:
+            prev.down_payment_mode || paymentSettingsInput.downPaymentMode,
+          down_payment_value_type:
+            prev.down_payment_value_type ||
+            paymentSettingsInput.downPaymentValueType,
+          down_payment_percent:
+            prev.down_payment_percent || paymentSettingsInput.downPaymentPercent,
+          down_payment_amount:
+            prev.down_payment_amount || paymentSettingsInput.downPaymentAmount,
+          installments_enabled:
+            prev.installments_enabled ||
+            paymentSettingsInput.installmentsEnabled,
+          max_installments:
+            prev.max_installments || paymentSettingsInput.maxInstallments,
+          installment_interest_policy:
+            prev.installment_interest_policy ||
+            paymentSettingsInput.installmentInterestPolicy,
+          payment_notes: prev.payment_notes || paymentSettingsInput.paymentNotes,
           ai_can_send_price_directly:
             prev.ai_can_send_price_directly ||
             (typeof answers.ai_can_send_price_directly === "boolean"
@@ -1705,16 +1804,67 @@ function OnboardingContent() {
       HUMAN_HELP_PAYMENT_OPTIONS,
       step4Form.human_help_payment_cases_other
     );
+    const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({
+      acceptedPaymentMethods: step4Form.accepted_payment_methods,
+      pixKeyType: step4Form.pix_key_type,
+      pixKey: step4Form.pix_key,
+      pixHolderName: step4Form.pix_holder_name,
+      downPaymentMode: step4Form.down_payment_mode,
+      downPaymentValueType: step4Form.down_payment_value_type,
+      downPaymentPercent: step4Form.down_payment_percent,
+      downPaymentAmount: step4Form.down_payment_amount,
+      installmentsEnabled: step4Form.installments_enabled,
+      maxInstallments: step4Form.max_installments,
+      installmentInterestPolicy: step4Form.installment_interest_policy,
+      paymentNotes: step4Form.payment_notes,
+    });
+    if (!normalizedPaymentSettings.ok) {
+      setFormError(normalizedPaymentSettings.error);
+      return;
+    }
     if (!organizationId || !activeStore?.id) return;
     setSaving(true);
     setFormError(null);
     setSuccessMessage(null);
     try {
+      const { data: savedPaymentSettings, error: paymentSettingsError } =
+        await supabase.rpc(
+          "upsert_store_payment_settings_with_legacy_mirror_scoped",
+          {
+            p_organization_id: organizationId,
+            p_store_id: activeStore.id,
+            p_accepted_payment_methods:
+              normalizedPaymentSettings.value.acceptedPaymentMethods,
+            p_pix_key_type: normalizedPaymentSettings.value.pixKeyType,
+            p_pix_key: normalizedPaymentSettings.value.pixKey,
+            p_pix_holder_name: normalizedPaymentSettings.value.pixHolderName,
+            p_down_payment_mode: normalizedPaymentSettings.value.downPaymentMode,
+            p_down_payment_value_type:
+              normalizedPaymentSettings.value.downPaymentValueType,
+            p_down_payment_percent:
+              normalizedPaymentSettings.value.downPaymentPercent,
+            p_down_payment_amount_cents:
+              normalizedPaymentSettings.value.downPaymentAmountCents,
+            p_installments_enabled:
+              normalizedPaymentSettings.value.installmentsEnabled,
+            p_max_installments: normalizedPaymentSettings.value.maxInstallments,
+            p_installment_interest_policy:
+              normalizedPaymentSettings.value.installmentInterestPolicy,
+            p_payment_notes: normalizedPaymentSettings.value.paymentNotes,
+          },
+        );
+      if (paymentSettingsError) {
+        throw new Error(
+          "Falha ao sincronizar as configuracoes canonicas de pagamento.",
+        );
+      }
+      setPaymentSettings(
+        (savedPaymentSettings ?? null) as StorePaymentSettingsRow | null,
+      );
       const payloads: Array<[string, unknown]> = [
         ["average_ticket", step4Form.average_ticket.trim()],
         ["can_offer_discount", effectiveCanOfferDiscountForSave.trim().toLowerCase() === "sim"],
         ["max_discount_percent", effectiveMaxDiscountPercentForSave],
-        ["accepted_payment_methods", step4Form.accepted_payment_methods],
         [
           "ai_can_send_price_directly",
           step4Form.ai_can_send_price_directly.trim().toLowerCase() === "sim",
@@ -2621,6 +2771,130 @@ function OnboardingContent() {
                     onToggle={(value) => toggleStep4ArrayField("accepted_payment_methods", value)}
                   />
                 </div>
+                {step4Form.accepted_payment_methods.includes("pix") ? (
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div>
+                      <SectionTitle title="Tipo da chave Pix" hint="Se a chave for preenchida, o tipo tambem precisa ser informado." />
+                      <SingleSelectorGrid
+                        options={PIX_KEY_TYPE_OPTIONS}
+                        value={step4Form.pix_key_type}
+                        onChange={(value) => updateStep4Field("pix_key_type", value)}
+                      />
+                    </div>
+                    <label className="space-y-2 md:col-span-2">
+                      <SectionTitle title="Chave Pix" hint="Pode ficar em branco se a loja ainda prefere confirmar a chave manualmente." />
+                      <input
+                        type="text"
+                        value={step4Form.pix_key}
+                        onChange={(e) => updateStep4Field("pix_key", e.target.value)}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                        placeholder="financeiro@loja.com.br"
+                      />
+                    </label>
+                    <label className="space-y-2 md:col-span-3">
+                      <SectionTitle title="Titular da chave Pix" hint="Complemento para o time humano informar o dado correto quando precisar." />
+                      <input
+                        type="text"
+                        value={step4Form.pix_holder_name}
+                        onChange={(e) => updateStep4Field("pix_holder_name", e.target.value)}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                        placeholder="Piscinas Exemplo LTDA"
+                      />
+                    </label>
+                  </div>
+                ) : null}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-3">
+                    <SectionTitle title="Regra global de entrada / sinal" hint="Defina se a loja nao usa, trata como opcional ou exige entrada." />
+                    <SingleSelectorGrid
+                      options={DOWN_PAYMENT_MODE_OPTIONS}
+                      value={step4Form.down_payment_mode}
+                      onChange={(value) => updateStep4Field("down_payment_mode", value)}
+                    />
+                  </div>
+                  {step4Form.down_payment_mode !== "none" ? (
+                    <div className="space-y-3">
+                      <SectionTitle title="Como a entrada e definida?" hint="Percentual, valor fixo ou caso a caso." />
+                      <SingleSelectorGrid
+                        options={DOWN_PAYMENT_VALUE_TYPE_OPTIONS}
+                        value={step4Form.down_payment_value_type}
+                        onChange={(value) => updateStep4Field("down_payment_value_type", value)}
+                      />
+                    </div>
+                  ) : null}
+                  {step4Form.down_payment_mode !== "none" && step4Form.down_payment_value_type === "percent" ? (
+                    <label className="space-y-2">
+                      <SectionTitle title="Percentual da entrada" hint="Preencha apenas o numero." />
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={step4Form.down_payment_percent}
+                          onChange={(e) => updateStep4Field("down_payment_percent", formatStorePaymentPercentInput(e.target.value))}
+                          className="w-full rounded-xl border border-gray-300 py-2.5 pl-4 pr-10 outline-none focus:border-black"
+                          placeholder="30"
+                        />
+                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">%</span>
+                      </div>
+                    </label>
+                  ) : null}
+                  {step4Form.down_payment_mode !== "none" && step4Form.down_payment_value_type === "fixed" ? (
+                    <label className="space-y-2">
+                      <SectionTitle title="Valor fixo da entrada" hint="Use reais inteiros sem pontuacao." />
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={step4Form.down_payment_amount}
+                          onChange={(e) => updateStep4Field("down_payment_amount", formatStorePaymentCurrencyInput(e.target.value))}
+                          className="w-full rounded-xl border border-gray-300 py-2.5 pl-12 pr-4 outline-none focus:border-black"
+                          placeholder="8400"
+                        />
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">R$</span>
+                      </div>
+                    </label>
+                  ) : null}
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-3">
+                    <SectionTitle title="A loja trabalha com parcelamento?" hint="Se sim, registre o maximo e a politica de juros." />
+                    <SingleSelectorGrid
+                      options={YES_NO_OPTIONS}
+                      value={step4Form.installments_enabled}
+                      onChange={(value) => updateStep4Field("installments_enabled", value)}
+                    />
+                  </div>
+                  {step4Form.installments_enabled === "sim" ? (
+                    <>
+                      <label className="space-y-2">
+                        <SectionTitle title="Numero maximo de parcelas" hint="Use apenas o numero." />
+                        <input
+                          type="text"
+                          value={step4Form.max_installments}
+                          onChange={(e) => updateStep4Field("max_installments", formatStorePaymentInstallmentsInput(e.target.value))}
+                          className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                          placeholder="10"
+                        />
+                      </label>
+                      <div className="space-y-3">
+                        <SectionTitle title="Politica de juros" hint="Nao calcula juros aqui; so registra a regra global." />
+                        <SingleSelectorGrid
+                          options={INSTALLMENT_INTEREST_POLICY_OPTIONS}
+                          value={step4Form.installment_interest_policy}
+                          onChange={(value) => updateStep4Field("installment_interest_policy", value)}
+                        />
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+                <label className="space-y-2">
+                  <SectionTitle title="Observacao complementar de pagamento" hint="Use como complemento; a regra estruturada continua sendo a autoridade." />
+                  <textarea
+                    value={step4Form.payment_notes}
+                    onChange={(e) => updateStep4Field("payment_notes", e.target.value)}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 outline-none focus:border-black"
+                    placeholder="Ex.: a condicao final pode variar conforme projeto, logistica e aprovacao interna."
+                  />
+                </label>
               </div>
               <div>
                 <SectionTitle

@@ -21,7 +21,41 @@ function getSaveStep5Block(source: string) {
   return source.slice(start, end);
 }
 
+function getSaveStep4Block(source: string) {
+  const start = source.indexOf("  async function saveStep4(e: FormEvent) {");
+  assert.equal(start > -1, true, "saveStep4 not found");
+  const end = source.indexOf("  async function saveStep5(e: FormEvent) {", start);
+  assert.equal(end > start, true, "saveStep4 end not found");
+  return source.slice(start, end);
+}
+
 const tests: TestCase[] = [
+  {
+    name: "step 4 uses the canonical payment writer before remaining onboarding answers and does not write accepted_payment_methods directly",
+    run: () => {
+      const source = readPageSource();
+      const block = getSaveStep4Block(source);
+
+      const canonicalSyncIndex = block.indexOf(
+        '"upsert_store_payment_settings_with_legacy_mirror_scoped"',
+      );
+      const legacyAnswersIndex = block.indexOf('await supabase.rpc("onboarding_upsert_answer_scoped", {');
+
+      assert.equal(canonicalSyncIndex > -1, true);
+      assert.equal(legacyAnswersIndex > -1, true);
+      assert.equal(canonicalSyncIndex < legacyAnswersIndex, true);
+      assert.equal(
+        block.includes('["accepted_payment_methods", step4Form.accepted_payment_methods]'),
+        false,
+      );
+      assert.equal(
+        block.includes(
+          'throw new Error(\n          "Falha ao sincronizar as configuracoes canonicas de pagamento.",',
+        ) || block.includes('"Falha ao sincronizar as configuracoes canonicas de pagamento."'),
+        true,
+      );
+    },
+  },
   {
     name: "step 5 uses the transactional responsible writer before other onboarding answers and before completed status",
     run: () => {

@@ -5,6 +5,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import IntelligentCatalogImportPanel from "@/components/catalog/IntelligentCatalogImportPanel";
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase } from "@/lib/supabaseBrowser";
+import {
+  createStorePaymentPresentationFromSources,
+  createStorePaymentSettingsInputFromSources,
+  deriveStorePaymentSettingsSummary,
+  formatStorePaymentCurrencyInput,
+  formatStorePaymentInstallmentsInput,
+  formatStorePaymentPercentInput,
+  getStorePaymentLegacyConditionTagLabel,
+  normalizeStorePaymentSettingsInput,
+  type StorePaymentLegacyConditionTag,
+  type StorePaymentSettingsRow,
+} from "@/lib/store-payment-settings";
 
 type CountState = {
   pools: number;
@@ -317,6 +329,19 @@ type CommercialDraftState = {
   price_policy_summary: string;
   human_help_summary: string;
   payment_methods_summary: string;
+  accepted_payment_methods: string[];
+  legacy_payment_condition_tags: string[];
+  pix_key_type: string;
+  pix_key: string;
+  pix_holder_name: string;
+  down_payment_mode: string;
+  down_payment_value_type: string;
+  down_payment_percent: string;
+  down_payment_amount: string;
+  installments_enabled: string;
+  max_installments: string;
+  installment_interest_policy: string;
+  payment_notes: string;
   discount_policy_summary: string;
   negotiation_rules_summary: string;
   promise_limits_summary: string;
@@ -516,6 +541,7 @@ const PAYMENT_METHOD_MAIN_OPTIONS: Option[] = [
   { value: "boleto", label: "Boleto" },
   { value: "dinheiro", label: "Dinheiro" },
   { value: "transferencia", label: "Transferência" },
+  { value: "financiamento", label: "Financiamento" },
 ];
 
 const PRICE_DIRECT_BEFORE_OPTIONS: Option[] = [
@@ -569,11 +595,37 @@ const ACTIVATION_GUARDRAIL_OPTIONS: Option[] = [
   { value: "encaminhar_humano_casos_criticos", label: "Chamar humano em casos críticos" },
 ];
 
-const PAYMENT_METHOD_CONDITION_OPTIONS: Option[] = [
+const LEGACY_PAYMENT_CONDITION_OPTIONS: Option[] = [
   { value: "parcelado", label: "Parcelado" },
   { value: "a_vista", label: "À vista" },
   { value: "sinal_mais_parcelas", label: "Sinal + parcelas" },
   { value: "sob_analise", label: "Sob análise" },
+];
+
+const PIX_KEY_TYPE_OPTIONS: Option[] = [
+  { value: "cpf", label: "CPF" },
+  { value: "cnpj", label: "CNPJ" },
+  { value: "email", label: "E-mail" },
+  { value: "phone", label: "Telefone" },
+  { value: "random", label: "Chave aleatoria" },
+];
+
+const DOWN_PAYMENT_MODE_OPTIONS: Option[] = [
+  { value: "none", label: "Nao usa entrada" },
+  { value: "optional", label: "Entrada opcional" },
+  { value: "required", label: "Entrada obrigatoria" },
+];
+
+const DOWN_PAYMENT_VALUE_TYPE_OPTIONS: Option[] = [
+  { value: "percent", label: "Percentual" },
+  { value: "fixed", label: "Valor fixo" },
+  { value: "case_by_case", label: "Caso a caso" },
+];
+
+const INSTALLMENT_INTEREST_POLICY_OPTIONS: Option[] = [
+  { value: "interest_free", label: "Sem juros" },
+  { value: "with_interest", label: "Com juros" },
+  { value: "case_by_case", label: "Juros caso a caso" },
 ];
 
 const PRICE_TALK_MODE_OPTIONS: Option[] = [
@@ -1028,14 +1080,14 @@ function createOperationDraftFromAnswers(
 }
 
 
-function createCommercialDraftFromAnswers(answers: AnswersMap): CommercialDraftState {
+function createCommercialDraftFromAnswers(answers: AnswersMap): any {
   const paymentMain = joinSelectedLabels(
     parseArrayAnswer(answers.accepted_payment_methods),
     PAYMENT_METHOD_MAIN_OPTIONS
   );
   const paymentConditions = joinSelectedLabels(
     parseArrayAnswer(answers.accepted_payment_methods),
-    PAYMENT_METHOD_CONDITION_OPTIONS
+    LEGACY_PAYMENT_CONDITION_OPTIONS
   );
   const priceBefore = joinSelectedLabels(
     parseArrayAnswer(answers.price_must_understand_before),
@@ -1092,6 +1144,39 @@ function createCommercialDraftFromAnswers(answers: AnswersMap): CommercialDraftS
   };
 }
 
+
+function createCommercialDraftFromAnswersWithPaymentSettings(
+  answers: AnswersMap,
+  paymentSettings?: StorePaymentSettingsRow | null,
+): CommercialDraftState {
+  const baseDraft = createCommercialDraftFromAnswers(answers);
+  const paymentPresentation = createStorePaymentPresentationFromSources({
+    answers,
+    settings: paymentSettings ?? null,
+  });
+  const paymentSettingsInput = createStorePaymentSettingsInputFromSources({
+    answers,
+    settings: paymentSettings ?? null,
+  });
+
+  return {
+    ...baseDraft,
+    payment_methods_summary: paymentPresentation.paymentSummary,
+    accepted_payment_methods: paymentSettingsInput.acceptedPaymentMethods,
+    legacy_payment_condition_tags: paymentPresentation.legacyPaymentConditionTags,
+    pix_key_type: paymentSettingsInput.pixKeyType,
+    pix_key: paymentSettingsInput.pixKey,
+    pix_holder_name: paymentSettingsInput.pixHolderName,
+    down_payment_mode: paymentSettingsInput.downPaymentMode,
+    down_payment_value_type: paymentSettingsInput.downPaymentValueType,
+    down_payment_percent: paymentSettingsInput.downPaymentPercent,
+    down_payment_amount: paymentSettingsInput.downPaymentAmount,
+    installments_enabled: paymentSettingsInput.installmentsEnabled,
+    max_installments: paymentSettingsInput.maxInstallments,
+    installment_interest_policy: paymentSettingsInput.installmentInterestPolicy,
+    payment_notes: paymentSettingsInput.paymentNotes,
+  };
+}
 
 function createDiscountDraftFromAnswers(answers: AnswersMap): DiscountDraftState {
   return {
@@ -1535,6 +1620,7 @@ export default function ConfiguracoesPage() {
   const [onboarding, setOnboarding] = useState<OnboardingRow | null>(null);
   const [answers, setAnswers] = useState<AnswersMap>({});
   const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettingsRow | null>(null);
+  const [paymentSettings, setPaymentSettings] = useState<StorePaymentSettingsRow | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("visao-geral");
   const [isOverviewEditing, setIsOverviewEditing] = useState(false);
   const [isStrategyEditing, setIsStrategyEditing] = useState(false);
@@ -1543,7 +1629,9 @@ export default function ConfiguracoesPage() {
   const [strategyDraft, setStrategyDraft] = useState<Record<string, string>>({});
   const [operationDraft, setOperationDraft] = useState<OperationDraftState>(createOperationDraftFromAnswers({}, null));
   const [isCommercialEditing, setIsCommercialEditing] = useState(false);
-  const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(createCommercialDraftFromAnswers({}));
+  const [commercialDraft, setCommercialDraft] = useState<CommercialDraftState>(
+    createCommercialDraftFromAnswersWithPaymentSettings({}),
+  );
   const [isDiscountEditing, setIsDiscountEditing] = useState(false);
   const [discountDraft, setDiscountDraft] = useState<DiscountDraftState>(createDiscountDraftFromAnswers({}));
   const [isChannelsEditing, setIsChannelsEditing] = useState(false);
@@ -2083,6 +2171,7 @@ export default function ConfiguracoesPage() {
         onboardingResult,
         answersResult,
         scheduleSettingsResult,
+        paymentSettingsResult,
       ] = await Promise.all([
         supabase
           .from("pools")
@@ -2108,6 +2197,14 @@ export default function ConfiguracoesPage() {
           .eq("organization_id", organizationId)
           .eq("store_id", activeStoreId)
           .maybeSingle(),
+        supabase
+          .from("store_payment_settings")
+          .select(
+            "organization_id, store_id, accepted_payment_methods, pix_key_type, pix_key, pix_holder_name, down_payment_mode, down_payment_value_type, down_payment_percent, down_payment_amount_cents, installments_enabled, max_installments, installment_interest_policy, payment_notes, created_at, updated_at",
+          )
+          .eq("organization_id", organizationId)
+          .eq("store_id", activeStoreId)
+          .maybeSingle(),
       ]);
 
       if (poolsResult.error) throw poolsResult.error;
@@ -2115,6 +2212,7 @@ export default function ConfiguracoesPage() {
       if (onboardingResult.error) throw onboardingResult.error;
       if (answersResult.error) throw answersResult.error;
       if (scheduleSettingsResult.error) throw scheduleSettingsResult.error;
+      if (paymentSettingsResult.error) throw paymentSettingsResult.error;
 
       const nextCounts: CountState = {
         pools: poolsResult.count ?? 0,
@@ -2192,6 +2290,7 @@ export default function ConfiguracoesPage() {
       setOnboarding((onboardingResult.data ?? null) as OnboardingRow | null);
       setAnswers((answersResult.data ?? {}) as AnswersMap);
       setScheduleSettings((scheduleSettingsResult.data ?? null) as ScheduleSettingsRow | null);
+      setPaymentSettings((paymentSettingsResult.data ?? null) as StorePaymentSettingsRow | null);
       setPoolImportFiles(nextPoolImportFiles);
       setCatalogImportFiles(nextCatalogImportFiles);
       await fetchStoreBrandingFromApi(activeStoreId);
@@ -2549,7 +2648,7 @@ export default function ConfiguracoesPage() {
       strategy_ai_priorities: cleanText(answers.strategy_ai_priorities),
       strategy_ai_never_forget: cleanText(answers.strategy_ai_never_forget),
     });
-  }, [answers]);
+  }, [answers, paymentSettings]);
 
   useEffect(() => {
     if (selectedStoreLogoFile) {
@@ -2588,7 +2687,7 @@ export default function ConfiguracoesPage() {
       { label: "Até onde atende", value: regionModes },
       { label: "Observações sobre cobertura", value: cleanText(answers.service_region_notes) },
     ]);
-  }, [answers]);
+  }, [answers, paymentSettings]);
 
   const strategyServicesItems = useMemo(() => {
     const services = joinSelectedLabels(
@@ -2602,7 +2701,7 @@ export default function ConfiguracoesPage() {
       { label: "Serviços extras", value: cleanText(answers.store_services_other) },
       { label: "Serviços que a loja não faz", value: cleanText(answers.strategy_service_exclusions) },
     ]);
-  }, [answers]);
+  }, [answers, paymentSettings]);
 
   const strategyCommercialFocusItems = useMemo(() => {
     return buildBulletRows([
@@ -2926,14 +3025,23 @@ export default function ConfiguracoesPage() {
   }, [answers]);
 
   const commercialPaymentItems = useMemo(() => {
-    const payments = joinSelectedLabels(parseArrayAnswer(answers.accepted_payment_methods), PAYMENT_METHOD_MAIN_OPTIONS);
-    const paymentConditions = joinSelectedLabels(parseArrayAnswer(answers.accepted_payment_methods), PAYMENT_METHOD_CONDITION_OPTIONS);
+    const paymentPresentation = createStorePaymentPresentationFromSources({
+      answers,
+      settings: paymentSettings,
+    });
     return buildBulletRows([
-      { label: "Formas de pagamento", value: [payments, paymentConditions].filter(Boolean).join(" • ") || cleanText(answers.accepted_payment_methods_summary) },
+      {
+        label: "Formas de pagamento",
+        value: paymentPresentation.paymentSummary || "Nao definido",
+      },
+      {
+        label: "Dados antigos para revisar",
+        value: paymentPresentation.legacyConditionSummary || "Nenhum",
+      },
       { label: "Pode trabalhar com desconto", value: `${yesNoLabel(answers.can_offer_discount)}${cleanText(answers.max_discount_percent) ? ` • máximo de ${cleanText(answers.max_discount_percent)}%` : ""}` },
       { label: "Ticket médio da loja", value: cleanText(answers.average_ticket) ? `R$ ${cleanText(answers.average_ticket)}` : "Não definido" },
     ]);
-  }, [answers]);
+  }, [answers, paymentSettings]);
 
   const commercialNegotiationItems = useMemo(() => {
     return buildBulletRows([
@@ -3600,8 +3708,13 @@ export default function ConfiguracoesPage() {
 
 
   useEffect(() => {
-    setCommercialDraft(createCommercialDraftFromAnswers(answers));
-  }, [answers]);
+    setCommercialDraft(
+      createCommercialDraftFromAnswersWithPaymentSettings(
+        answers,
+        paymentSettings,
+      ),
+    );
+  }, [answers, paymentSettings]);
 
   useEffect(() => {
     setPrimaryResponsibleDraft({
@@ -3640,12 +3753,93 @@ export default function ConfiguracoesPage() {
     }));
   }, []);
 
+  const handleCommercialPaymentMethodToggle = useCallback((value: string) => {
+    setCommercialDraft((current) => {
+      const selectedValues = current.accepted_payment_methods.includes(value)
+        ? current.accepted_payment_methods.filter((item) => item !== value)
+        : [...current.accepted_payment_methods, value];
+
+      return {
+        ...current,
+        accepted_payment_methods: selectedValues,
+      };
+    });
+  }, []);
+
   const handleCommercialEditCancel = useCallback(() => {
-    setCommercialDraft(createCommercialDraftFromAnswers(answers));
+    setCommercialDraft(
+      createCommercialDraftFromAnswersWithPaymentSettings(
+        answers,
+        paymentSettings,
+      ),
+    );
     setIsCommercialEditing(false);
-  }, [answers]);
+  }, [answers, paymentSettings]);
 
   const handleCommercialEditSave = useCallback(async () => {
+    if (!organizationId || !activeStoreId) {
+      setErrorText("Nenhuma loja ativa foi encontrada para salvar essas alteraÃ§Ãµes.");
+      setSuccessText(null);
+      return;
+    }
+
+    const normalizedPaymentSettings = normalizeStorePaymentSettingsInput({
+      acceptedPaymentMethods: commercialDraft.accepted_payment_methods,
+      pixKeyType: commercialDraft.pix_key_type,
+      pixKey: commercialDraft.pix_key,
+      pixHolderName: commercialDraft.pix_holder_name,
+      downPaymentMode: commercialDraft.down_payment_mode,
+      downPaymentValueType: commercialDraft.down_payment_value_type,
+      downPaymentPercent: commercialDraft.down_payment_percent,
+      downPaymentAmount: commercialDraft.down_payment_amount,
+      installmentsEnabled: commercialDraft.installments_enabled,
+      maxInstallments: commercialDraft.max_installments,
+      installmentInterestPolicy: commercialDraft.installment_interest_policy,
+      paymentNotes: commercialDraft.payment_notes,
+    });
+
+    if (!normalizedPaymentSettings.ok) {
+      setErrorText(normalizedPaymentSettings.error);
+      setSuccessText(null);
+      return;
+    }
+
+    const derivedPaymentSummary = deriveStorePaymentSettingsSummary(
+      normalizedPaymentSettings.value,
+    );
+
+    const { data: savedPaymentSettings, error: paymentSettingsError } =
+      await supabase.rpc("upsert_store_payment_settings_with_legacy_mirror_scoped", {
+        p_organization_id: organizationId,
+        p_store_id: activeStoreId,
+        p_accepted_payment_methods:
+          normalizedPaymentSettings.value.acceptedPaymentMethods,
+        p_pix_key_type: normalizedPaymentSettings.value.pixKeyType,
+        p_pix_key: normalizedPaymentSettings.value.pixKey,
+        p_pix_holder_name: normalizedPaymentSettings.value.pixHolderName,
+        p_down_payment_mode: normalizedPaymentSettings.value.downPaymentMode,
+        p_down_payment_value_type:
+          normalizedPaymentSettings.value.downPaymentValueType,
+        p_down_payment_percent:
+          normalizedPaymentSettings.value.downPaymentPercent,
+        p_down_payment_amount_cents:
+          normalizedPaymentSettings.value.downPaymentAmountCents,
+        p_installments_enabled:
+          normalizedPaymentSettings.value.installmentsEnabled,
+        p_max_installments: normalizedPaymentSettings.value.maxInstallments,
+        p_installment_interest_policy:
+          normalizedPaymentSettings.value.installmentInterestPolicy,
+        p_payment_notes: normalizedPaymentSettings.value.paymentNotes,
+      });
+
+    if (paymentSettingsError) {
+      setErrorText("Falha ao sincronizar as configuracoes canonicas de pagamento.");
+      setSuccessText(null);
+      return;
+    }
+
+    setPaymentSettings((savedPaymentSettings ?? null) as StorePaymentSettingsRow | null);
+
     const saved = await upsertConfigAnswers(
       {
         store_display_name: commercialDraft.ai_display_name,
@@ -3656,7 +3850,7 @@ export default function ConfiguracoesPage() {
         price_direct_rule_other: commercialDraft.price_before_summary,
         price_direct_rule: commercialDraft.price_policy_summary,
         human_help_general_summary: commercialDraft.human_help_summary,
-        accepted_payment_methods_summary: commercialDraft.payment_methods_summary,
+        accepted_payment_methods_summary: derivedPaymentSummary,
         discount_policy_summary: commercialDraft.discount_policy_summary,
         negotiation_rules_summary: commercialDraft.negotiation_rules_summary,
         final_activation_notes: commercialDraft.promise_limits_summary,
@@ -3670,7 +3864,7 @@ export default function ConfiguracoesPage() {
     if (!saved) return;
 
     setIsCommercialEditing(false);
-  }, [commercialDraft, upsertConfigAnswers]);
+  }, [activeStoreId, commercialDraft, organizationId, upsertConfigAnswers]);
 
 
 
@@ -6865,9 +7059,113 @@ export default function ConfiguracoesPage() {
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Quando deve chamar humano</span>
                   <textarea value={commercialDraft.human_help_summary} onChange={(e)=>handleCommercialDraftChange("human_help_summary", e.target.value)} rows={3} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
                 </label>
+                <div className="space-y-3 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Formas de pagamento canonicas</span>
+                  <div className="grid gap-2 md:grid-cols-3">
+                    {PAYMENT_METHOD_MAIN_OPTIONS.map((option) => {
+                      const selected = commercialDraft.accepted_payment_methods.includes(option.value);
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => handleCommercialPaymentMethodToggle(option.value)}
+                          className={selected ? "rounded-xl border border-black bg-black px-3 py-2 text-sm font-medium text-white" : "rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700"}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-3">
+                    {commercialDraft.legacy_payment_condition_tags.length > 0 ? (
+                      <div className="md:col-span-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                        Dados antigos para revisar: {commercialDraft.legacy_payment_condition_tags
+                          .map((value) => getStorePaymentLegacyConditionTagLabel(value as StorePaymentLegacyConditionTag))
+                          .join(", ")}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                {commercialDraft.accepted_payment_methods.includes("pix") ? (
+                  <>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo da chave Pix</span>
+                      <select value={commercialDraft.pix_key_type} onChange={(e)=>handleCommercialDraftChange("pix_key_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
+                        <option value="">Nao definido</option>
+                        {PIX_KEY_TYPE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Chave Pix</span>
+                      <input value={commercialDraft.pix_key} onChange={(e)=>handleCommercialDraftChange("pix_key", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1 md:col-span-2">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Titular da chave Pix</span>
+                      <input value={commercialDraft.pix_holder_name} onChange={(e)=>handleCommercialDraftChange("pix_holder_name", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                  </>
+                ) : null}
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Regra de entrada</span>
+                  <select value={commercialDraft.down_payment_mode} onChange={(e)=>handleCommercialDraftChange("down_payment_mode", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
+                    {DOWN_PAYMENT_MODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                {commercialDraft.down_payment_mode !== "none" ? (
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Tipo do valor da entrada</span>
+                    <select value={commercialDraft.down_payment_value_type} onChange={(e)=>handleCommercialDraftChange("down_payment_value_type", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
+                      <option value="">Nao definido</option>
+                      {DOWN_PAYMENT_VALUE_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {commercialDraft.down_payment_mode !== "none" && commercialDraft.down_payment_value_type === "percent" ? (
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Percentual da entrada</span>
+                    <input value={commercialDraft.down_payment_percent} onChange={(e)=>handleCommercialDraftChange("down_payment_percent", formatStorePaymentPercentInput(e.target.value))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  </label>
+                ) : null}
+                {commercialDraft.down_payment_mode !== "none" && commercialDraft.down_payment_value_type === "fixed" ? (
+                  <label className="space-y-1">
+                    <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Valor fixo da entrada</span>
+                    <input value={commercialDraft.down_payment_amount} onChange={(e)=>handleCommercialDraftChange("down_payment_amount", formatStorePaymentCurrencyInput(e.target.value))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  </label>
+                ) : null}
+                <label className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Trabalha com parcelamento</span>
+                  <select value={commercialDraft.installments_enabled} onChange={(e)=>handleCommercialDraftChange("installments_enabled", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black"><option value="nao">Nao</option><option value="sim">Sim</option></select>
+                </label>
+                {commercialDraft.installments_enabled === "sim" ? (
+                  <>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Maximo de parcelas</span>
+                      <input value={commercialDraft.max_installments} onChange={(e)=>handleCommercialDraftChange("max_installments", formatStorePaymentInstallmentsInput(e.target.value))} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Politica de juros</span>
+                      <select value={commercialDraft.installment_interest_policy} onChange={(e)=>handleCommercialDraftChange("installment_interest_policy", e.target.value)} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black">
+                        <option value="">Nao definido</option>
+                        {INSTALLMENT_INTEREST_POLICY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                ) : null}
                 <label className="space-y-1 md:col-span-2">
-                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Formas de pagamento</span>
-                  <textarea value={commercialDraft.payment_methods_summary} onChange={(e)=>handleCommercialDraftChange("payment_methods_summary", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Observacao complementar de pagamento</span>
+                  <textarea value={commercialDraft.payment_notes} onChange={(e)=>handleCommercialDraftChange("payment_notes", e.target.value)} rows={2} className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-black" />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Resumo derivado de pagamento</span>
+                  <textarea value={commercialDraft.payment_methods_summary} readOnly rows={2} className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700 outline-none" />
                 </label>
                 <label className="space-y-1">
                   <span className="text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">Política de desconto</span>
