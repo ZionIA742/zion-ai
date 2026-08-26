@@ -146,6 +146,63 @@ type InsertMessageResult = {
   store_id?: string | null;
 };
 
+export type ResolveWhatsappInboundThreadArgs = {
+  supabase: {
+    rpc(
+      fn: string,
+      payload: Record<string, unknown>,
+    ): PromiseLike<{
+      data: unknown;
+      error: { message: string } | null;
+    }>;
+  };
+  organizationId: string;
+  storeId: string;
+  whatsappIdentity: string;
+  contactName?: string | null;
+};
+
+type ResolveWhatsappInboundThreadRow = {
+  lead_id?: string | null;
+  conversation_id?: string | null;
+  normalized_whatsapp_identity?: string | null;
+  thread_state?: string | null;
+  lead_created?: boolean | null;
+  conversation_created?: boolean | null;
+};
+
+export type BootstrapCommercialContextBeforeInsertArgs = {
+  supabase: {
+    rpc(
+      fn: string,
+      payload: Record<string, unknown>,
+    ): PromiseLike<{
+      data: unknown;
+      error: { message: string } | null;
+    }>;
+  };
+  organizationId: string;
+  storeId: string;
+  leadId: string;
+  conversationId: string;
+  whatsappIdentity: string;
+  contactName?: string | null;
+};
+
+type BootstrapCommercialContextBeforeInsertRow = {
+  customer_id?: string | null;
+  customer_channel_identity_id?: string | null;
+  customer_store_link_id?: string | null;
+  lead_customer_link_id?: string | null;
+  commercial_opportunity_id?: string | null;
+  bootstrap_state?: string | null;
+  customer_created?: boolean | null;
+  customer_channel_identity_created?: boolean | null;
+  customer_store_link_created?: boolean | null;
+  lead_customer_link_created?: boolean | null;
+  commercial_opportunity_created?: boolean | null;
+};
+
 export type ProcessWhatsappInboxInput = {
   organizationId: string;
   storeId: string;
@@ -617,155 +674,71 @@ async function findExistingMessageByExternalId(
   return (data as MessageRow | null) ?? null;
 }
 
-async function findLeadByPhone(
-  supabase: SupabaseClient,
-  organizationId: string,
-  storeId: string,
-  phone: string,
+export async function resolveWhatsappInboundThreadBySystem(
+  args: ResolveWhatsappInboundThreadArgs,
 ) {
-  const { data, error } = await supabase
-    .from("leads")
-    .select("id, organization_id, store_id, name, phone, created_at, updated_at")
-    .eq("organization_id", organizationId)
-    .eq("store_id", storeId)
-    .eq("phone", phone)
-    .order("updated_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false, nullsFirst: false })
-    .limit(1);
+  const organizationId = String(args.organizationId || "").trim();
+  const storeId = String(args.storeId || "").trim();
+  const whatsappIdentity = String(args.whatsappIdentity || "").trim();
+  const contactName = String(args.contactName || "").trim() || null;
 
-  if (error) {
-    throw new Error(`Falha ao buscar lead por telefone: ${error.message}`);
+  if (!organizationId || !storeId || !whatsappIdentity) {
+    throw new Error(
+      "resolveWhatsappInboundThreadBySystem requires organization, store and WhatsApp identity.",
+    );
   }
 
-  return ((data || [])[0] as LeadRow | undefined) || null;
-}
-
-async function createLead(
-  supabase: SupabaseClient,
-  organizationId: string,
-  storeId: string,
-  phone: string,
-  contactName: string | null,
-) {
-  const { data, error } = await supabase
-    .from("leads")
-    .insert({
-      organization_id: organizationId,
-      store_id: storeId,
-      phone,
-      name: contactName || "Cliente WhatsApp",
-    })
-    .select("id, organization_id, store_id, name, phone, created_at, updated_at")
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(`Falha ao criar lead: ${error.message}`);
-  }
-
-  if (!data?.id) {
-    throw new Error("Lead criada sem id retornado.");
-  }
-
-  return data as LeadRow;
-}
-
-async function findOrCreateLead(
-  supabase: SupabaseClient,
-  organizationId: string,
-  storeId: string,
-  phone: string,
-  contactName: string | null,
-) {
-  const existing = await findLeadByPhone(supabase, organizationId, storeId, phone);
-  if (existing) {
-    return existing;
-  }
-
-  return createLead(supabase, organizationId, storeId, phone, contactName);
-}
-
-async function findConversation(
-  supabase: SupabaseClient,
-  organizationId: string,
-  leadId: string,
-  activeOnly: boolean,
-) {
-  let query = supabase
-    .from("conversations")
-    .select("id, organization_id, lead_id, status, is_human_active, last_message_at, created_at")
-    .eq("organization_id", organizationId)
-    .eq("lead_id", leadId)
-    .order("last_message_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  if (activeOnly) {
-    query = query.eq("status", "active");
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    throw new Error(`Falha ao buscar conversa: ${error.message}`);
-  }
-
-  return ((data || [])[0] as ConversationRow | undefined) || null;
-}
-
-async function createConversation(
-  supabase: SupabaseClient,
-  organizationId: string,
-  leadId: string,
-) {
-  const { data, error } = await supabase
-    .from("conversations")
-    .insert({
-      organization_id: organizationId,
-      lead_id: leadId,
-      status: "active",
-    })
-    .select("id, organization_id, lead_id, status, is_human_active, last_message_at, created_at")
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(`Falha ao criar conversa: ${error.message}`);
-  }
-
-  if (!data?.id) {
-    throw new Error("Conversa criada sem id retornado.");
-  }
-
-  return data as ConversationRow;
-}
-
-async function findOrCreateConversation(
-  supabase: SupabaseClient,
-  organizationId: string,
-  leadId: string,
-) {
-  const activeConversation = await findConversation(
-    supabase,
-    organizationId,
-    leadId,
-    true,
+  const { data, error } = await args.supabase.rpc(
+    "resolve_whatsapp_inbound_thread_by_system",
+    {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+      p_whatsapp_identity: whatsappIdentity,
+      p_contact_name: contactName,
+    },
   );
 
-  if (activeConversation) {
-    return activeConversation;
+  if (error) {
+    throw new Error(
+      `Falha ao resolver lead/conversation canônicos do inbound: ${error.message}`,
+    );
   }
 
-  const latestConversation = await findConversation(
-    supabase,
-    organizationId,
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  if (rows.length !== 1) {
+    throw new Error(
+      `resolve_whatsapp_inbound_thread_by_system retornou ${rows.length} linhas; esperado exatamente 1.`,
+    );
+  }
+
+  const row = rows[0] as ResolveWhatsappInboundThreadRow;
+  const leadId = String(row?.lead_id || "").trim();
+  const conversationId = String(row?.conversation_id || "").trim();
+  const normalizedWhatsappIdentity = String(
+    row?.normalized_whatsapp_identity || "",
+  ).trim();
+  const threadState = String(row?.thread_state || "").trim();
+
+  if (
+    !leadId ||
+    !conversationId ||
+    !normalizedWhatsappIdentity ||
+    (threadState !== "existing_active_thread" &&
+      threadState !== "created_active_thread")
+  ) {
+    throw new Error(
+      "resolve_whatsapp_inbound_thread_by_system retornou contrato inválido.",
+    );
+  }
+
+  return {
     leadId,
-    false,
-  );
-
-  if (latestConversation) {
-    return latestConversation;
-  }
-
-  return createConversation(supabase, organizationId, leadId);
+    conversationId,
+    normalizedWhatsappIdentity,
+    threadState,
+    leadCreated: row?.lead_created === true,
+    conversationCreated: row?.conversation_created === true,
+  };
 }
 
 async function insertIncomingMessage(args: {
@@ -1198,6 +1171,101 @@ async function dispatchAiSalesReplyForConversation(args: {
   };
 }
 
+export async function bootstrapCommercialContextBeforeInsert(
+  args: BootstrapCommercialContextBeforeInsertArgs,
+) {
+  const organizationId = String(args.organizationId || "").trim();
+  const storeId = String(args.storeId || "").trim();
+  const leadId = String(args.leadId || "").trim();
+  const conversationId = String(args.conversationId || "").trim();
+  const whatsappIdentity = String(args.whatsappIdentity || "").trim();
+  const contactName = String(args.contactName || "").trim() || null;
+
+  if (!organizationId || !storeId || !leadId || !conversationId || !whatsappIdentity) {
+    throw new Error(
+      "bootstrapCommercialContextBeforeInsert requires organization, store, lead, conversation and WhatsApp identity.",
+    );
+  }
+
+  const { data, error } = await args.supabase.rpc(
+    "bootstrap_first_commercial_context_for_inbound_by_system",
+    {
+      p_organization_id: organizationId,
+      p_store_id: storeId,
+      p_lead_id: leadId,
+      p_conversation_id: conversationId,
+      p_whatsapp_identity: whatsappIdentity,
+      p_contact_name: contactName,
+    },
+  );
+
+  if (error) {
+    throw new Error(
+      `Falha ao executar o bootstrap comercial antes do insert_message: ${error.message}`,
+    );
+  }
+
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  if (rows.length !== 1) {
+    throw new Error(
+      `bootstrap_first_commercial_context_for_inbound_by_system retornou ${rows.length} linhas; esperado exatamente 1.`,
+    );
+  }
+
+  const row = rows[0] as BootstrapCommercialContextBeforeInsertRow;
+  const customerId = String(row?.customer_id || "").trim();
+  const customerChannelIdentityId = String(
+    row?.customer_channel_identity_id || "",
+  ).trim();
+  const customerStoreLinkId = String(row?.customer_store_link_id || "").trim();
+  const leadCustomerLinkId = String(row?.lead_customer_link_id || "").trim();
+  const commercialOpportunityId =
+    String(row?.commercial_opportunity_id || "").trim() || null;
+  const bootstrapState = String(row?.bootstrap_state || "").trim();
+
+  const opportunityRequiredStates = new Set([
+    "existing_active_commercial_context",
+    "existing_contextual_opportunity",
+    "created_first_contextual_opportunity",
+  ]);
+  const opportunityForbiddenStates = new Set([
+    "historical_context_requires_manual_resolution",
+    "commercial_opportunity_exact_context_ambiguous",
+  ]);
+
+  if (
+    !customerId ||
+    !customerChannelIdentityId ||
+    !customerStoreLinkId ||
+    !leadCustomerLinkId ||
+    (!opportunityRequiredStates.has(bootstrapState) &&
+      !opportunityForbiddenStates.has(bootstrapState)) ||
+    (opportunityRequiredStates.has(bootstrapState) && !commercialOpportunityId) ||
+    (opportunityForbiddenStates.has(bootstrapState) && commercialOpportunityId) ||
+    (row?.commercial_opportunity_created === true &&
+      bootstrapState !== "created_first_contextual_opportunity")
+  ) {
+    throw new Error(
+      "bootstrap_first_commercial_context_for_inbound_by_system retornou contrato inválido.",
+    );
+  }
+
+  return {
+    customerId,
+    customerChannelIdentityId,
+    customerStoreLinkId,
+    leadCustomerLinkId,
+    commercialOpportunityId,
+    bootstrapState,
+    customerCreated: row?.customer_created === true,
+    customerChannelIdentityCreated:
+      row?.customer_channel_identity_created === true,
+    customerStoreLinkCreated: row?.customer_store_link_created === true,
+    leadCustomerLinkCreated: row?.lead_customer_link_created === true,
+    commercialOpportunityCreated: row?.commercial_opportunity_created === true,
+  };
+}
+
 async function processStatusInboxRow(
   supabase: SupabaseClient,
   inbox: InboxRow,
@@ -1419,19 +1487,26 @@ async function processSingleInboxRow(
     };
   }
 
-  const lead = await findOrCreateLead(
+  const thread = await resolveWhatsappInboundThreadBySystem({
     supabase,
-    inbox.organization_id,
-    inbox.store_id,
-    resolvedFromPhone,
-    extracted.contactName,
-  );
+    organizationId: inbox.organization_id,
+    storeId: inbox.store_id,
+    whatsappIdentity: resolvedFromPhone,
+    contactName: extracted.contactName,
+  });
 
-  const conversation = await findOrCreateConversation(
+  const lead = { id: thread.leadId } as LeadRow;
+  const conversation = { id: thread.conversationId } as ConversationRow;
+
+  await bootstrapCommercialContextBeforeInsert({
     supabase,
-    inbox.organization_id,
-    lead.id,
-  );
+    organizationId: inbox.organization_id,
+    storeId: inbox.store_id,
+    leadId: thread.leadId,
+    conversationId: thread.conversationId,
+    whatsappIdentity: resolvedFromPhone,
+    contactName: extracted.contactName,
+  });
 
   let uploadedMediaStoragePath: string | null = null;
 
