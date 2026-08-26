@@ -3,11 +3,17 @@ import assert from "node:assert/strict";
 import {
   buildHistoricalCommercialContextBlock,
   buildModelInput,
+  describeCanonicalKnownFact,
   generateAiSalesReply,
+  loadAnchoredCanonicalCommercialContext,
+  loadCanonicalCommercialOpportunityStage,
+  loadCanonicalQualificationSnapshotBySystem,
   loadCommercialSnapshotBatch,
+  resolveQualificationNextBestQuestion,
   loadScopedRecentMessages,
   resolveGenerationAnchorMessage,
   resolveMessagesWithCommercialContext,
+  summarizeCanonicalKnownFacts,
   selectMessagesForCurrentCommercialInference,
 } from "./generate-ai-sales-reply.js";
 
@@ -46,6 +52,14 @@ class FakeQuery {
     void field;
     void options;
     return this;
+  }
+
+  async maybeSingle() {
+    const result = await this.execute();
+    return {
+      data: result.data[0] || null,
+      error: result.error,
+    };
   }
 
   limit(value: number) {
@@ -87,21 +101,266 @@ class FakeQuery {
 
 class FakeSupabase {
   readonly fromCalls: string[] = [];
+  readonly rpcCalls: Array<{ fn: string; payload: Record<string, unknown> }> = [];
   private readonly tables: Record<string, Row[]>;
   private readonly tableErrors: Record<string, { message: string } | null>;
+  private readonly rpcResults: Record<
+    string,
+    | { data: unknown; error: { message: string } | null }
+    | Array<{ data: unknown; error: { message: string } | null }>
+    | ((payload: Record<string, unknown>) => { data: unknown; error: { message: string } | null })
+  >;
 
   constructor(
     tables: Record<string, Row[]>,
-    tableErrors?: Record<string, { message: string } | null>
+    tableErrors?: Record<string, { message: string } | null>,
+    rpcResults?: Record<string, RpcMockEntry>
   ) {
     this.tables = tables;
     this.tableErrors = tableErrors || {};
+    this.rpcResults = rpcResults || {};
   }
 
   from(table: string) {
     this.fromCalls.push(table);
     return new FakeQuery(this.tables[table] || [], this.tableErrors[table] || null);
   }
+
+  async rpc(fn: string, payload: Record<string, unknown>) {
+    this.rpcCalls.push({ fn, payload });
+    const configured = this.rpcResults[fn];
+
+    if (Array.isArray(configured)) {
+      return (
+        configured.shift() || {
+          data: null,
+          error: { message: `missing rpc mock for ${fn}` },
+        }
+      );
+    }
+
+    if (typeof configured === "function") {
+      return configured(payload);
+    }
+
+    return configured || {
+      data: null,
+      error: { message: `missing rpc mock for ${fn}` },
+    };
+  }
+}
+
+class FakeOpenAi {
+  readonly calls: unknown[] = [];
+  private readonly responsesQueue: unknown[];
+
+  constructor(responsesQueue: unknown[]) {
+    this.responsesQueue = [...responsesQueue];
+  }
+
+  responses = {
+    create: async (payload: unknown) => {
+      this.calls.push(payload);
+      if (this.responsesQueue.length === 0) {
+        throw new Error("missing openai response mock");
+      }
+      return this.responsesQueue.shift();
+    },
+  };
+}
+
+type RpcMockEntry =
+  | { data: unknown; error: { message: string } | null }
+  | Array<{ data: unknown; error: { message: string } | null }>
+  | ((payload: Record<string, unknown>) => { data: unknown; error: { message: string } | null });
+
+function createCommercialOpportunityStageSupabase(args?: {
+  stage?: string | null;
+  rowMissing?: boolean;
+  rowId?: string | null;
+  errorMessage?: string | null;
+}) {
+  const queries: Array<{ eq: Array<{ column: string; value: unknown }> }> = [];
+
+  return {
+    queries,
+    client: {
+      from(table: string) {
+        assert.equal(table, "commercial_opportunities");
+
+        const state = {
+          eq: [] as Array<{ column: string; value: unknown }>,
+        };
+
+        return {
+          select(_selection: string) {
+            return this;
+          },
+          eq(column: string, value: unknown) {
+            state.eq.push({ column, value });
+            return this;
+          },
+          async maybeSingle() {
+            queries.push(state);
+
+            if (args?.errorMessage) {
+              return { data: null, error: { message: args.errorMessage } };
+            }
+
+            if (args?.rowMissing) {
+              return { data: null, error: null };
+            }
+
+            const filteredId =
+              state.eq.find((entry) => entry.column === "id")?.value ?? "opp-canonical";
+            const rowId =
+              Object.prototype.hasOwnProperty.call(args ?? {}, "rowId")
+                ? (args?.rowId ?? null)
+                : filteredId;
+
+            return {
+              data: {
+                id: rowId,
+                stage: args?.stage ?? "novo_lead",
+              },
+              error: null,
+            };
+          },
+        };
+      },
+    },
+  };
+}
+
+function createCanonicalQualificationReaderRow(args?: {
+  organizationId?: string;
+  storeId?: string;
+  commercialOpportunityId?: string;
+  knownFacts?: Row[];
+  missingFactGroups?: Row[];
+  conflicts?: Row[];
+  provenanceSummary?: Row;
+  canAskNextQuestion?: boolean;
+  knownFactCount?: number;
+  missingGroupCount?: number;
+  conflictCount?: number;
+}) {
+  const knownFacts = args?.knownFacts ?? [];
+  const missingFactGroups = args?.missingFactGroups ?? [];
+  const conflicts = args?.conflicts ?? [];
+
+  return {
+    organization_id: args?.organizationId ?? "org-1",
+    store_id: args?.storeId ?? "store-1",
+    commercial_opportunity_id: args?.commercialOpportunityId ?? "opp-1",
+    known_facts: knownFacts,
+    missing_fact_groups: missingFactGroups,
+    conflicts,
+    provenance_summary:
+      args?.provenanceSummary ?? {
+        knownFactCount: knownFacts.length,
+        confirmedCount: knownFacts.length,
+        inferredCount: 0,
+        conflictCount: conflicts.length,
+        messageBackedCount: 0,
+        conversationBackedCount: 0,
+        sourceCounts: {
+          system_correction: knownFacts.length,
+        },
+      },
+    can_ask_next_question: args?.canAskNextQuestion ?? missingFactGroups.length > 0,
+    known_fact_count: args?.knownFactCount ?? knownFacts.length,
+    missing_group_count: args?.missingGroupCount ?? missingFactGroups.length,
+    conflict_count: args?.conflictCount ?? conflicts.length,
+  };
+}
+
+function createCanonicalKnownFact(args: {
+  factKey: string;
+  valueKind?: string;
+  value?: unknown;
+  normalizedValueText?: string | null;
+  state?: "confirmed" | "inferred";
+  sourceType?:
+    | "incoming_customer_message"
+    | "crm_manual"
+    | "system_inference"
+    | "system_correction"
+    | "migration_backfill";
+}) {
+  return {
+    factKey: args.factKey,
+    state: args.state ?? "confirmed",
+    valueKind: args.valueKind ?? "text",
+    value: args.value ?? args.normalizedValueText ?? args.factKey,
+    normalizedValueText: args.normalizedValueText ?? null,
+    sourceType: args.sourceType ?? "system_correction",
+    sourceMessageId: null,
+    sourceConversationId: null,
+    lastEventId: null,
+    lastOperationKey: null,
+    updatedAt: null,
+  };
+}
+
+function createCanonicalMissingGroup(args: {
+  groupKey: "need" | "space" | "location" | "installation" | "payment";
+  status?: "missing" | "conflict";
+  factKeys: Array<
+    | "need_summary"
+    | "interested_product_reference"
+    | "space_text"
+    | "requested_area_m2"
+    | "location_text"
+    | "preferred_period_text"
+    | "budget_text"
+    | "decision_context"
+    | "installation_interest"
+    | "payment_interest"
+    | "technical_visit_interest"
+    | "customer_preferences_text"
+    | "relevant_objection_text"
+  >;
+}) {
+  return {
+    groupKey: args.groupKey,
+    status: args.status ?? "missing",
+    factKeys: args.factKeys,
+  };
+}
+
+function createCanonicalConflict(args: { factKey: string; valueKind?: string; candidates?: Row[] }) {
+  return {
+    factKey: args.factKey,
+    valueKind: args.valueKind ?? "text",
+    candidates:
+      args.candidates ?? [
+        {
+          value: "valor-a",
+          event_id: "event-a",
+          value_kind: args.valueKind ?? "text",
+          source_type: "incoming_customer_message",
+          normalized_value_text: "valor-a",
+          source_message_id: "msg-a",
+          source_conversation_id: "conv-a",
+        },
+        {
+          value: "valor-b",
+          event_id: "event-b",
+          value_kind: args.valueKind ?? "text",
+          source_type: "incoming_customer_message",
+          normalized_value_text: "valor-b",
+          source_message_id: "msg-b",
+          source_conversation_id: "conv-a",
+        },
+      ],
+    sourceType: "incoming_customer_message",
+    sourceMessageId: "msg-a",
+    sourceConversationId: "conv-a",
+    lastEventId: "event-a",
+    lastOperationKey: null,
+    updatedAt: null,
+  };
 }
 
 function createMessage(overrides: Partial<TestMessage>): TestMessage {
@@ -170,6 +429,176 @@ function buildCurrentStateFixtureText() {
   ].join("\n");
 }
 
+function createGenerateAiSalesReplySupabase(args?: {
+  anchorMessageContent?: string;
+  anchorMessageId?: string;
+  commercialOpportunityId?: string | null;
+  canonicalReaderResponses?: Array<{ data: unknown; error: { message: string } | null }>;
+  writerResponse?: RpcMockEntry;
+}) {
+  const anchorMessageId = args?.anchorMessageId ?? "msg-anchor";
+  const commercialOpportunityId = Object.prototype.hasOwnProperty.call(
+    args ?? {},
+    "commercialOpportunityId",
+  )
+    ? (args?.commercialOpportunityId ?? null)
+    : "opp-1";
+  const defaultReaderRow = createCanonicalQualificationReaderRow({
+    commercialOpportunityId: commercialOpportunityId ?? "opp-none",
+    knownFacts: [],
+    missingFactGroups: [],
+    canAskNextQuestion: true,
+  });
+
+  return new FakeSupabase(
+    {
+      conversations: [
+        {
+          id: "conv-1",
+          organization_id: "org-1",
+          lead_id: "lead-1",
+          status: "open",
+          is_human_active: false,
+        },
+      ],
+      leads: [
+        {
+          id: "lead-1",
+          organization_id: "org-1",
+          store_id: "store-1",
+          name: "Cliente",
+          phone: "11999999999",
+          state: "qualificacao",
+        },
+      ],
+      stores: [
+        {
+          id: "store-1",
+          organization_id: "org-1",
+          name: "Loja 1",
+        },
+      ],
+      store_onboarding_answers: [],
+      messages: [
+        createMessage({
+          id: anchorMessageId,
+          content: args?.anchorMessageContent ?? "quero uma visita tecnica para um espaco 3x4",
+          created_at: "2026-08-24T10:00:00.000Z",
+          commercial_session_context_link_id: commercialOpportunityId ? "context-1" : null,
+          commercial_context_capture_state: commercialOpportunityId ? "captured" : "no_active_session",
+          conversation_session_id: commercialOpportunityId ? "session-1" : null,
+        }),
+      ],
+      conversation_sessions: commercialOpportunityId
+        ? [
+            {
+              id: "session-1",
+              organization_id: "org-1",
+              store_id: "store-1",
+              conversation_id: "conv-1",
+              status: "active",
+            },
+          ]
+        : [],
+      commercial_session_context_links: commercialOpportunityId
+        ? [
+            {
+              id: "context-1",
+              organization_id: "org-1",
+              store_id: "store-1",
+              conversation_session_id: "session-1",
+              customer_id: null,
+              commercial_opportunity_id: commercialOpportunityId,
+              lead_customer_link_id: null,
+              status: "active",
+            },
+          ]
+        : [],
+      commercial_opportunities: commercialOpportunityId
+        ? [
+            {
+              id: commercialOpportunityId,
+              organization_id: "org-1",
+              store_id: "store-1",
+              stage: "qualificacao",
+            },
+          ]
+        : [],
+    },
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system:
+        args?.canonicalReaderResponses ??
+        [
+          {
+            data: [defaultReaderRow],
+            error: null,
+          },
+          {
+            data: [defaultReaderRow],
+            error: null,
+          },
+        ],
+      write_commercial_opportunity_qualification_fact_by_system:
+        args?.writerResponse ??
+        ((payload: Record<string, unknown>) => ({
+          data: [
+            {
+              commercial_opportunity_id: commercialOpportunityId ?? "opp-none",
+              fact_key: payload.p_fact_key,
+              event_id: "event-1",
+              current_last_event_id: "event-1",
+              current_state: payload.p_assertion_level,
+              current_value_json: payload.p_value_json,
+              normalized_value_text:
+                typeof payload.p_value_json === "string" ? payload.p_value_json : null,
+              value_kind:
+                payload.p_fact_key === "requested_area_m2"
+                  ? "number"
+                  : payload.p_fact_key === "installation_interest" ||
+                      payload.p_fact_key === "payment_interest" ||
+                      payload.p_fact_key === "technical_visit_interest"
+                    ? "boolean"
+                    : "text",
+              conflict_values_json: [],
+              changed: true,
+              outcome:
+                payload.p_assertion_level === "confirmed"
+                  ? "confirmed_created"
+                  : "inferred_created",
+              updated_at: "2026-08-24T10:00:01.000Z",
+            },
+          ],
+          error: null,
+        })),
+    },
+  );
+}
+
+function createWriterRow(args?: {
+  commercialOpportunityId?: string;
+  factKey?: string;
+  valueKind?: string;
+  currentState?: "confirmed" | "inferred" | "conflict";
+  changed?: boolean;
+  outcome?: string;
+}) {
+  return {
+    commercial_opportunity_id: args?.commercialOpportunityId ?? "opp-1",
+    fact_key: args?.factKey ?? "space_text",
+    event_id: "event-1",
+    current_last_event_id: "event-1",
+    current_state: args?.currentState ?? "confirmed",
+    current_value_json: "3x4",
+    normalized_value_text: "3x4",
+    value_kind: args?.valueKind ?? "text",
+    conflict_values_json: args?.currentState === "conflict" ? [{ value: "3x4" }, { value: "4x5" }] : [],
+    changed: args?.changed ?? true,
+    outcome: args?.outcome ?? "confirmed_created",
+    updated_at: "2026-08-24T10:00:01.000Z",
+  };
+}
+
 test("scoped recent messages query filters by conversation organization and store", async () => {
   const supabase = new FakeSupabase({
     messages: [
@@ -193,6 +622,625 @@ test("scoped recent messages query filters by conversation organization and stor
     ["msg-valid"]
   );
   assert.deepEqual(supabase.fromCalls, ["messages"]);
+});
+
+test("canonical qualification reader is called only with explicit organization, store and anchored opportunity", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "need_summary",
+                normalizedValueText: "familia",
+              }),
+            ],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(supabase.rpcCalls, [
+    {
+      fn: "read_commercial_opportunity_qualification_facts_by_system",
+      payload: {
+        p_organization_id: "org-1",
+        p_store_id: "store-1",
+        p_commercial_opportunity_id: "opp-1",
+      },
+    },
+  ]);
+});
+
+test("canonical qualification reader failure does not degrade into synthetic zero facts", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: null,
+        error: { message: "rpc exploded" },
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "qualification_reader_rpc_failed",
+    message: "rpc exploded",
+  });
+});
+
+test("canonical stage reader uses explicit anchored opportunity and wins over legacy lead state when available", async () => {
+  const harness = createCommercialOpportunityStageSupabase({
+    stage: "orcamento",
+  });
+
+  const result = await loadCanonicalCommercialOpportunityStage({
+    supabase: harness.client,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-canonical",
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    stage: "orcamento",
+  });
+  assert.deepEqual(harness.queries[0]?.eq, [
+    { column: "id", value: "opp-canonical" },
+    { column: "organization_id", value: "org-1" },
+    { column: "store_id", value: "store-1" },
+  ]);
+});
+
+test("canonical qualification payload scope mismatch is rejected", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            organizationId: "org-2",
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "qualification_reader_invalid_payload",
+    message: "Canonical qualification reader returned an invalid payload.",
+  });
+});
+
+test("canonical qualification payload counter mismatch is rejected", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "need_summary",
+                normalizedValueText: "familia",
+              }),
+            ],
+            knownFactCount: 0,
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "qualification_reader_invalid_payload",
+    message: "Canonical qualification reader returned inconsistent counters.",
+  });
+});
+
+test("canonical qualification payload rejects wrong confirmed and inferred counters for actual states", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "space_text",
+                normalizedValueText: "3x4",
+                state: "inferred",
+                sourceType: "system_inference",
+              }),
+            ],
+            provenanceSummary: {
+              knownFactCount: 1,
+              confirmedCount: 1,
+              inferredCount: 0,
+              conflictCount: 0,
+              messageBackedCount: 0,
+              conversationBackedCount: 0,
+              sourceCounts: {
+                system_inference: 1,
+              },
+            },
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "qualification_reader_invalid_payload",
+    message: "Canonical qualification reader returned inconsistent counters.",
+  });
+});
+
+test("canonical qualification payload rejects incoherent fact value kind and value", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "installation_interest",
+                valueKind: "text",
+                value: "sim",
+                normalizedValueText: "sim",
+              }),
+            ],
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "qualification_reader_invalid_payload",
+    message: "Canonical qualification reader returned an invalid payload.",
+  });
+});
+
+test("canonical qualification payload rejects invalid conflict candidate shape", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            conflicts: [
+              createCanonicalConflict({
+                factKey: "location_text",
+                candidates: [
+                  {
+                    value: "bairro a",
+                    value_kind: "text",
+                  },
+                  {
+                    value: "bairro b",
+                    event_id: "event-b",
+                    value_kind: "text",
+                    source_type: "message",
+                    normalized_value_text: "bairro b",
+                    source_message_id: "msg-b",
+                    source_conversation_id: "conv-a",
+                  },
+                ],
+              }),
+            ],
+            missingFactGroups: [
+              createCanonicalMissingGroup({
+                groupKey: "location",
+                status: "conflict",
+                factKeys: ["location_text"],
+              }),
+            ],
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "qualification_reader_invalid_payload",
+    message: "Canonical qualification reader returned an invalid payload.",
+  });
+});
+
+test("anchored canonical context does not call reader when there is no anchored opportunity", async () => {
+  const supabase = new FakeSupabase({});
+
+  const result = await loadAnchoredCanonicalCommercialContext({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    leadState: "qualified",
+    anchoredCommercialOpportunityId: null,
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    anchoredCommercialOpportunityId: null,
+    canonicalQualificationSnapshot: null,
+    crmStageForReply: "qualified",
+  });
+  assert.deepEqual(supabase.rpcCalls, []);
+  assert.deepEqual(supabase.fromCalls, []);
+});
+
+test("anchored canonical context fails closed when canonical stage lookup fails", async () => {
+  const stageHarness = createCommercialOpportunityStageSupabase({
+    errorMessage: "db down",
+  });
+  const supabase = {
+    ...stageHarness.client,
+    rpc: async () => ({
+      data: [
+        createCanonicalQualificationReaderRow({
+          commercialOpportunityId: "opp-canonical",
+          knownFacts: [
+            createCanonicalKnownFact({
+              factKey: "need_summary",
+              normalizedValueText: "familia",
+            }),
+          ],
+          canAskNextQuestion: false,
+        }),
+      ],
+      error: null,
+    }),
+  };
+
+  const result = await loadAnchoredCanonicalCommercialContext({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    leadState: "legacy-state",
+    anchoredCommercialOpportunityId: "opp-canonical",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "LOAD_CANONICAL_STAGE_FAILED",
+    message: "Canonical commercial opportunity stage lookup failed.",
+  });
+});
+
+test("anchored canonical context fails closed when canonical stage row is missing", async () => {
+  const stageHarness = createCommercialOpportunityStageSupabase({
+    rowMissing: true,
+  });
+  const supabase = {
+    ...stageHarness.client,
+    rpc: async () => ({
+      data: [
+        createCanonicalQualificationReaderRow({
+          commercialOpportunityId: "opp-canonical",
+          knownFacts: [
+            createCanonicalKnownFact({
+              factKey: "need_summary",
+              normalizedValueText: "familia",
+            }),
+          ],
+          canAskNextQuestion: false,
+        }),
+      ],
+      error: null,
+    }),
+  };
+
+  const result = await loadAnchoredCanonicalCommercialContext({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    leadState: "legacy-state",
+    anchoredCommercialOpportunityId: "opp-canonical",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "LOAD_CANONICAL_STAGE_FAILED",
+    message: "Canonical commercial opportunity stage unavailable for anchored opportunity.",
+  });
+});
+
+test("anchored canonical context uses canonical stage instead of legacy lead state", async () => {
+  const stageHarness = createCommercialOpportunityStageSupabase({
+    stage: "orcamento",
+  });
+  const supabase = {
+    ...stageHarness.client,
+    rpc: async () => ({
+      data: [
+        createCanonicalQualificationReaderRow({
+          commercialOpportunityId: "opp-canonical",
+          knownFacts: [
+            createCanonicalKnownFact({
+              factKey: "need_summary",
+              normalizedValueText: "familia",
+            }),
+          ],
+          canAskNextQuestion: false,
+        }),
+      ],
+      error: null,
+    }),
+  };
+
+  const result = await loadAnchoredCanonicalCommercialContext({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    leadState: "lead.state-antigo",
+    anchoredCommercialOpportunityId: "opp-canonical",
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.crmStageForReply, "orcamento");
+    assert.equal(result.canonicalQualificationSnapshot?.commercialOpportunityId, "opp-canonical");
+  }
+});
+
+test("anchored canonical context fails closed when canonical stage is outside the valid crm stage set", async () => {
+  const stageHarness = createCommercialOpportunityStageSupabase({
+    stage: "stage_invalido",
+  });
+  const supabase = {
+    ...stageHarness.client,
+    rpc: async () => ({
+      data: [
+        createCanonicalQualificationReaderRow({
+          commercialOpportunityId: "opp-canonical",
+          knownFacts: [
+            createCanonicalKnownFact({
+              factKey: "need_summary",
+              normalizedValueText: "familia",
+            }),
+          ],
+          canAskNextQuestion: false,
+        }),
+      ],
+      error: null,
+    }),
+  };
+
+  const result = await loadAnchoredCanonicalCommercialContext({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    leadState: "legacy-state",
+    anchoredCommercialOpportunityId: "opp-canonical",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "LOAD_CANONICAL_STAGE_FAILED",
+    message: "Canonical commercial opportunity stage unavailable for anchored opportunity.",
+  });
+});
+
+test("qualification question is suppressed when canonical core groups are already satisfied", () => {
+  const question = resolveQualificationNextBestQuestion({
+    heuristicQuestion:
+      "Me fala mais ou menos o espaco ou a medida que voce tem para colocar a piscina.",
+    snapshot: {
+      organizationId: "org-1",
+      storeId: "store-1",
+      commercialOpportunityId: "opp-1",
+      knownFacts: [],
+      missingFactGroups: [],
+      conflicts: [],
+      provenanceSummary: {
+        knownFactCount: 0,
+        confirmedCount: 0,
+        inferredCount: 0,
+        conflictCount: 0,
+        messageBackedCount: 0,
+        conversationBackedCount: 0,
+        sourceCounts: {},
+      },
+      canAskNextQuestion: false,
+      knownFactCount: 0,
+      missingGroupCount: 0,
+      conflictCount: 0,
+    },
+  });
+
+  assert.equal(question, null);
+});
+
+test("qualification question can naturally resolve a canonical conflict when the heuristic targets that group", () => {
+  const question = resolveQualificationNextBestQuestion({
+    heuristicQuestion: "Qual cidade ou bairro fica o local da piscina?",
+    snapshot: {
+      organizationId: "org-1",
+      storeId: "store-1",
+      commercialOpportunityId: "opp-1",
+      knownFacts: [],
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "location",
+          status: "conflict",
+          factKeys: ["location_text"],
+        }),
+      ],
+      conflicts: [
+        createCanonicalConflict({
+          factKey: "location_text",
+        }) as never,
+      ],
+      provenanceSummary: {
+        knownFactCount: 0,
+        confirmedCount: 0,
+        inferredCount: 0,
+        conflictCount: 1,
+        messageBackedCount: 0,
+        conversationBackedCount: 0,
+        sourceCounts: {},
+      },
+      canAskNextQuestion: true,
+      knownFactCount: 0,
+      missingGroupCount: 1,
+      conflictCount: 1,
+    },
+  });
+
+  assert.equal(
+    question,
+    "So para eu nao assumir errado: qual cidade ou bairro fica o local da piscina?",
+  );
+});
+
+test("qualification question stays null when heuristic has no question even if a canonical gap exists", () => {
+  const question = resolveQualificationNextBestQuestion({
+    heuristicQuestion: null,
+    snapshot: {
+      organizationId: "org-1",
+      storeId: "store-1",
+      commercialOpportunityId: "opp-1",
+      knownFacts: [],
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "payment",
+          factKeys: ["payment_interest"],
+        }),
+      ],
+      conflicts: [],
+      provenanceSummary: {
+        knownFactCount: 0,
+        confirmedCount: 0,
+        inferredCount: 0,
+        conflictCount: 0,
+        messageBackedCount: 0,
+        conversationBackedCount: 0,
+        sourceCounts: {},
+      },
+      canAskNextQuestion: true,
+      knownFactCount: 0,
+      missingGroupCount: 1,
+      conflictCount: 0,
+    },
+  });
+
+  assert.equal(question, null);
+});
+
+test("canonical known group already satisfied can redirect heuristic question to another canonical gap", () => {
+  const question = resolveQualificationNextBestQuestion({
+    heuristicQuestion:
+      "Me fala mais ou menos o espaco ou a medida que voce tem para colocar a piscina.",
+    snapshot: {
+      organizationId: "org-1",
+      storeId: "store-1",
+      commercialOpportunityId: "opp-1",
+      knownFacts: [
+        createCanonicalKnownFact({
+          factKey: "space_text",
+          normalizedValueText: "3x4",
+        }) as never,
+      ],
+      missingFactGroups: [
+        createCanonicalMissingGroup({
+          groupKey: "location",
+          factKeys: ["location_text"],
+        }),
+      ],
+      conflicts: [],
+      provenanceSummary: {
+        knownFactCount: 1,
+        confirmedCount: 1,
+        inferredCount: 0,
+        conflictCount: 0,
+        messageBackedCount: 0,
+        conversationBackedCount: 0,
+        sourceCounts: {
+          system_correction: 1,
+        },
+      },
+      canAskNextQuestion: true,
+      knownFactCount: 1,
+      missingGroupCount: 1,
+      conflictCount: 0,
+    },
+  });
+
+  assert.equal(question, "Qual cidade ou bairro fica o local da piscina?");
 });
 
 test("captured anchor keeps other historical context out of current commercial inference", () => {
@@ -1347,4 +2395,773 @@ test("conversations without proven historical context still build valid input fr
     scenario.responseAnchorCommercialContext?.historicalContextStatus,
     "no_active_session"
   );
+});
+
+test("canonical qualification reader helper remains read-only and calls only the system reader rpc", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "installation_interest",
+                valueKind: "boolean",
+                value: false,
+                state: "inferred",
+              }),
+            ],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.deepEqual(
+    supabase.rpcCalls.map((call) => call.fn),
+    ["read_commercial_opportunity_qualification_facts_by_system"],
+  );
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) =>
+        call.fn === "write_commercial_opportunity_qualification_fact_by_system" ||
+        call.fn === "write_commercial_opportunity_qualification_fact_by_user",
+    ),
+    false,
+  );
+});
+
+test("generateAiSalesReply writes canonical qualification facts, rereads snapshot, and aggregates usage", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [],
+            missingFactGroups: [createCanonicalMissingGroup({ groupKey: "space", factKeys: ["space_text"] })],
+            canAskNextQuestion: true,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "technical_visit_interest",
+                valueKind: "boolean",
+                value: true,
+                state: "confirmed",
+                sourceType: "incoming_customer_message",
+              }),
+              createCanonicalKnownFact({
+                factKey: "space_text",
+                normalizedValueText: "3x4",
+                sourceType: "incoming_customer_message",
+              }),
+              createCanonicalKnownFact({
+                factKey: "requested_area_m2",
+                valueKind: "number",
+                value: 12,
+                state: "confirmed",
+                sourceType: "incoming_customer_message",
+              }),
+            ],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        candidates: [
+          {
+            fact_key: "technical_visit_interest",
+            assertion_level: "confirmed",
+            value_kind: "boolean",
+            text_value: null,
+            number_value: null,
+            boolean_value: true,
+            evidence_text: "quero uma visita tecnica",
+          },
+          {
+            fact_key: "space_text",
+            assertion_level: "confirmed",
+            value_kind: "text",
+            text_value: "3x4",
+            number_value: null,
+            boolean_value: null,
+            evidence_text: "3x4",
+          },
+        ],
+      }),
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+      },
+    },
+    {
+      output_text: "Podemos seguir com a visita tecnica",
+      usage: {
+        input_tokens: 40,
+        output_tokens: 20,
+        total_tokens: 60,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(result.aiText, "Podemos seguir com a visita tecnica");
+  assert.equal(result.usage.tokensPrompt, 50);
+  assert.equal(result.usage.tokensCompletion, 25);
+  assert.equal(result.usage.totalTokens, 75);
+
+  const writerCalls = supabase.rpcCalls.filter(
+    (call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system",
+  );
+  assert.equal(writerCalls.length, 3);
+  assert.deepEqual(
+    writerCalls.map((call) => call.payload.p_fact_key),
+    ["space_text", "requested_area_m2", "technical_visit_interest"],
+  );
+  assert.deepEqual(
+    writerCalls.map((call) => call.payload.p_source_message_id),
+    ["msg-anchor", "msg-anchor", "msg-anchor"],
+  );
+  assert.deepEqual(
+    writerCalls.map((call) => call.payload.p_source_conversation_id),
+    ["conv-1", "conv-1", "conv-1"],
+  );
+  assert.deepEqual(
+    writerCalls.map((call) => call.payload.p_operation_key),
+    [
+      "p9_qfact_extract_v1:msg-anchor:space_text",
+      "p9_qfact_extract_v1:msg-anchor:requested_area_m2",
+      "p9_qfact_extract_v1:msg-anchor:technical_visit_interest",
+    ],
+  );
+  assert.equal(
+    writerCalls.every((call) => call.payload.p_created_by === "sales_ai_qualification_extractor_v1"),
+    true,
+  );
+  assert.equal(writerCalls.every((call) => call.payload.p_resolves_conflict === false), true);
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) => call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+    ).length,
+    2,
+  );
+
+  const finalOpenAiCall = openai.calls[1] as { instructions?: string };
+  assert.equal(
+    String(finalOpenAiCall.instructions || "").includes("technical_visit_interest: true"),
+    true,
+  );
+});
+
+test("generateAiSalesReply fails closed when canonical writer fails", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    writerResponse: {
+      data: null,
+      error: { message: "writer exploded" },
+    },
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({
+        candidates: [],
+      }),
+      usage: {
+        input_tokens: 3,
+        output_tokens: 1,
+        total_tokens: 4,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "WRITE_CANONICAL_QUALIFICATION_FAILED",
+    message: "writer exploded",
+  });
+  assert.equal(openai.calls.length, 1);
+});
+
+test("generateAiSalesReply skips structured extraction and writer when no explicit opportunity is anchored", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    commercialOpportunityId: null,
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: "Posso te explicar as opcoes.",
+      usage: {
+        input_tokens: 7,
+        output_tokens: 5,
+        total_tokens: 12,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(openai.calls.length, 1);
+  assert.equal(
+    supabase.rpcCalls.some(
+      (call) =>
+        call.fn === "write_commercial_opportunity_qualification_fact_by_system" ||
+        call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+    ),
+    false,
+  );
+});
+
+test("generateAiSalesReply accepts idempotent replay current from the canonical writer", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    writerResponse: (payload) => ({
+      data: [
+        createWriterRow({
+          commercialOpportunityId: "opp-1",
+          factKey: String(payload.p_fact_key),
+          valueKind: String(
+            payload.p_fact_key === "requested_area_m2"
+              ? "number"
+              : payload.p_fact_key === "space_text"
+                ? "text"
+                : "boolean",
+          ),
+          currentState: "confirmed",
+          changed: false,
+          outcome: "idempotent_replay_current",
+        }),
+      ],
+      error: null,
+    }),
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Seguimos daqui.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+});
+
+test("generateAiSalesReply accepts current_state conflict with confirmed_conflict_created outcome", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    writerResponse: (payload) => ({
+      data: [
+        createWriterRow({
+          commercialOpportunityId: "opp-1",
+          factKey: String(payload.p_fact_key),
+          valueKind: String(
+            payload.p_fact_key === "requested_area_m2"
+              ? "number"
+              : payload.p_fact_key === "space_text"
+                ? "text"
+                : "boolean",
+          ),
+          currentState: "conflict",
+          changed: true,
+          outcome: "confirmed_conflict_created",
+        }),
+      ],
+      error: null,
+    }),
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    {
+      output_text: "Preciso confirmar alguns pontos.",
+      usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+});
+
+test("generateAiSalesReply rejects structurally invalid canonical writer payload", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    writerResponse: {
+      data: [
+        createWriterRow({
+          commercialOpportunityId: "opp-1",
+          factKey: "space_text",
+          valueKind: "text",
+          currentState: "confirmed",
+          outcome: "",
+        }),
+      ],
+      error: null,
+    },
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "WRITE_CANONICAL_QUALIFICATION_FAILED",
+    message: "Canonical qualification writer returned an invalid payload.",
+  });
+});
+
+test("generateAiSalesReply fails closed when post-write canonical reader fails", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [],
+            missingFactGroups: [],
+            canAskNextQuestion: true,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: null,
+        error: { message: "post-write reader exploded" },
+      },
+    ],
+  });
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "LOAD_CANONICAL_QUALIFICATION_FAILED",
+    message: "post-write reader exploded",
+  });
+  assert.equal(openai.calls.length, 1);
+});
+
+test("generateAiSalesReply keeps deterministic facts when structured extraction fails and still continues", async () => {
+  const supabase = createGenerateAiSalesReplySupabase({
+    canonicalReaderResponses: [
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [],
+            missingFactGroups: [],
+            canAskNextQuestion: true,
+          }),
+        ],
+        error: null,
+      },
+      {
+        data: [
+          createCanonicalQualificationReaderRow({
+            commercialOpportunityId: "opp-1",
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "space_text",
+                normalizedValueText: "3x4",
+                state: "confirmed",
+                sourceType: "incoming_customer_message",
+              }),
+              createCanonicalKnownFact({
+                factKey: "requested_area_m2",
+                valueKind: "number",
+                value: 12,
+                state: "confirmed",
+                sourceType: "incoming_customer_message",
+              }),
+            ],
+            missingFactGroups: [],
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    ],
+  });
+  const openai = {
+    calls: [] as unknown[],
+    responses: {
+      create: async (payload: any) => {
+        openai.calls.push(payload);
+        if (openai.calls.length === 1) {
+          throw new Error("structured extraction exploded");
+        }
+        return {
+          output_text: "Consigo seguir com essa medida",
+          usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+        };
+      },
+    },
+  };
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(result.aiText, "Consigo seguir com essa medida");
+  assert.deepEqual(
+    supabase.rpcCalls
+      .filter((call) => call.fn === "write_commercial_opportunity_qualification_fact_by_system")
+      .map((call) => call.payload.p_fact_key),
+    ["space_text", "requested_area_m2", "technical_visit_interest"],
+  );
+  assert.equal(
+    supabase.rpcCalls.filter(
+      (call) => call.fn === "read_commercial_opportunity_qualification_facts_by_system",
+    ).length,
+    2,
+  );
+});
+
+test("generateAiSalesReply returns null-safe partial usage aggregation", async () => {
+  const supabase = createGenerateAiSalesReplySupabase();
+  const openai = new FakeOpenAi([
+    {
+      output_text: JSON.stringify({ candidates: [] }),
+      usage: {
+        input_tokens: 10,
+      },
+    },
+    {
+      output_text: "Resposta final.",
+      usage: {
+        input_tokens: 40,
+        output_tokens: 20,
+        total_tokens: 60,
+      },
+    },
+  ]);
+
+  const result = await generateAiSalesReply({
+    organizationId: "org-1",
+    storeId: "store-1",
+    conversationId: "conv-1",
+    anchorMessageId: "msg-anchor",
+    supabaseClient: supabase,
+    openaiClient: openai,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(result.usage.tokensPrompt, 50);
+  assert.equal(result.usage.tokensCompletion, null);
+  assert.equal(result.usage.totalTokens, null);
+  assert.equal(result.usage.costUsd, null);
+  assert.equal(result.usage.inputTokenPriceUsdPer1M, 0.4);
+  assert.equal(result.usage.outputTokenPriceUsdPer1M, 1.6);
+});
+
+test("inferred fact remains inferred in snapshot and representation", async () => {
+  const supabase = new FakeSupabase(
+    {},
+    {},
+    {
+      read_commercial_opportunity_qualification_facts_by_system: {
+        data: [
+          createCanonicalQualificationReaderRow({
+            knownFacts: [
+              createCanonicalKnownFact({
+                factKey: "space_text",
+                normalizedValueText: "3x4",
+                state: "inferred",
+                sourceType: "system_inference",
+              }),
+            ],
+            provenanceSummary: {
+              knownFactCount: 1,
+              confirmedCount: 0,
+              inferredCount: 1,
+              conflictCount: 0,
+              messageBackedCount: 0,
+              conversationBackedCount: 0,
+              sourceCounts: {
+                system_inference: 1,
+              },
+            },
+            canAskNextQuestion: false,
+          }),
+        ],
+        error: null,
+      },
+    },
+  );
+
+  const result = await loadCanonicalQualificationSnapshotBySystem({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(result.snapshot.knownFacts[0]?.state, "inferred");
+  assert.deepEqual(summarizeCanonicalKnownFacts(result.snapshot), [
+    "espaco ou medida registrados: 3x4 (inferido)",
+  ]);
+});
+
+test("boolean false representation stays semantically false and neutral", () => {
+  assert.equal(
+    describeCanonicalKnownFact(
+      createCanonicalKnownFact({
+        factKey: "payment_interest",
+        valueKind: "boolean",
+        value: false,
+      }) as never,
+    ),
+    "payment_interest: false",
+  );
+  assert.equal(
+    describeCanonicalKnownFact(
+      createCanonicalKnownFact({
+        factKey: "installation_interest",
+        valueKind: "boolean",
+        value: false,
+      }) as never,
+    ),
+    "installation_interest: false",
+  );
+  assert.equal(
+    describeCanonicalKnownFact(
+      createCanonicalKnownFact({
+        factKey: "technical_visit_interest",
+        valueKind: "boolean",
+        value: false,
+      }) as never,
+    ),
+    "technical_visit_interest: false",
+  );
+});
+
+test("all 13 canonical fact keys have concrete known fact representation", () => {
+  const snapshot = {
+    organizationId: "org-1",
+    storeId: "store-1",
+    commercialOpportunityId: "opp-1",
+    knownFacts: [
+      createCanonicalKnownFact({ factKey: "need_summary", normalizedValueText: "familia" }),
+      createCanonicalKnownFact({
+        factKey: "interested_product_reference",
+        normalizedValueText: "modelo x",
+      }),
+      createCanonicalKnownFact({ factKey: "space_text", normalizedValueText: "3x4" }),
+      createCanonicalKnownFact({
+        factKey: "requested_area_m2",
+        valueKind: "number",
+        value: 12,
+      }),
+      createCanonicalKnownFact({ factKey: "location_text", normalizedValueText: "campinas" }),
+      createCanonicalKnownFact({
+        factKey: "preferred_period_text",
+        normalizedValueText: "setembro",
+      }),
+      createCanonicalKnownFact({ factKey: "budget_text", normalizedValueText: "20 mil" }),
+      createCanonicalKnownFact({
+        factKey: "decision_context",
+        normalizedValueText: "decide com a familia",
+      }),
+      createCanonicalKnownFact({
+        factKey: "installation_interest",
+        valueKind: "boolean",
+        value: true,
+      }),
+      createCanonicalKnownFact({
+        factKey: "payment_interest",
+        valueKind: "boolean",
+        value: false,
+      }),
+      createCanonicalKnownFact({
+        factKey: "technical_visit_interest",
+        valueKind: "boolean",
+        value: true,
+      }),
+      createCanonicalKnownFact({
+        factKey: "customer_preferences_text",
+        normalizedValueText: "compacta",
+      }),
+      createCanonicalKnownFact({
+        factKey: "relevant_objection_text",
+        normalizedValueText: "achou caro",
+      }),
+    ] as never[],
+    missingFactGroups: [],
+    conflicts: [],
+    provenanceSummary: {
+      knownFactCount: 13,
+      confirmedCount: 13,
+      inferredCount: 0,
+      conflictCount: 0,
+      messageBackedCount: 0,
+      conversationBackedCount: 0,
+      sourceCounts: {
+        system_correction: 13,
+      },
+    },
+    canAskNextQuestion: false,
+    knownFactCount: 13,
+    missingGroupCount: 0,
+    conflictCount: 0,
+  };
+
+  const summary = summarizeCanonicalKnownFacts(snapshot as never);
+
+  assert.equal(summary.length, 13);
+  assert.equal(summary.every(Boolean), true);
+});
+
+test("different explicit opportunities keep commercialOpportunityId and snapshot isolated", async () => {
+  const stageHarness = createCommercialOpportunityStageSupabase({
+    stage: "orcamento",
+  });
+  const supabase = {
+    ...stageHarness.client,
+    rpc: async (_fn: string, payload: Record<string, unknown>) => ({
+      data: [
+        createCanonicalQualificationReaderRow({
+          commercialOpportunityId: String(payload.p_commercial_opportunity_id),
+          knownFacts: [
+            createCanonicalKnownFact({
+              factKey: "need_summary",
+              normalizedValueText: String(payload.p_commercial_opportunity_id),
+            }),
+          ],
+          canAskNextQuestion: false,
+        }),
+      ],
+      error: null,
+    }),
+  };
+
+  const first = await loadAnchoredCanonicalCommercialContext({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    leadState: "novo_lead",
+    anchoredCommercialOpportunityId: "opp-a",
+  });
+  const second = await loadAnchoredCanonicalCommercialContext({
+    supabase,
+    organizationId: "org-1",
+    storeId: "store-1",
+    leadState: "novo_lead",
+    anchoredCommercialOpportunityId: "opp-b",
+  });
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (first.ok && second.ok) {
+    assert.equal(first.anchoredCommercialOpportunityId, "opp-a");
+    assert.equal(second.anchoredCommercialOpportunityId, "opp-b");
+    assert.equal(first.canonicalQualificationSnapshot.commercialOpportunityId, "opp-a");
+    assert.equal(second.canonicalQualificationSnapshot.commercialOpportunityId, "opp-b");
+    assert.notDeepEqual(first.canonicalQualificationSnapshot, second.canonicalQualificationSnapshot);
+  }
 });

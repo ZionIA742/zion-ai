@@ -1,9 +1,17 @@
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
+import { getCanonicalCrmStage } from "@/config/crm";
 import { isSellableInventoryState } from "../catalog/availability";
 import { buildBehaviorInstructionBlock } from "./ai-sales-behavior";
 import { buildSalesMethodologyInstructionBlock } from "./ai-sales-methodology";
 import { buildSalesResponseBrain } from "./ai-sales-response-brain";
+import {
+  buildQualificationWriterOperationKey,
+  extractDeterministicQualificationCandidates,
+  extractStructuredQualificationCandidates,
+  mergeQualificationFactCandidates,
+  validateQualificationFactCandidate,
+} from "./sales-qualification-fact-extraction.js";
 
 type ConversationRow = {
   id: string;
@@ -20,6 +28,11 @@ type LeadRow = {
   name: string | null;
   phone: string | null;
   state: string | null;
+};
+
+type CommercialOpportunityStageRow = {
+  id: string;
+  stage: string | null;
 };
 
 type MessageRow = {
@@ -183,6 +196,129 @@ type PoolPhotoRow = {
   file_size_bytes: number | null;
   sort_order: number | null;
 };
+
+type CanonicalQualificationFactKey =
+  | "need_summary"
+  | "interested_product_reference"
+  | "space_text"
+  | "requested_area_m2"
+  | "location_text"
+  | "preferred_period_text"
+  | "budget_text"
+  | "decision_context"
+  | "installation_interest"
+  | "payment_interest"
+  | "technical_visit_interest"
+  | "customer_preferences_text"
+  | "relevant_objection_text";
+
+type CanonicalQualificationGroupKey =
+  | "need"
+  | "space"
+  | "location"
+  | "installation"
+  | "payment";
+
+type CanonicalQualificationFactState = "confirmed" | "inferred";
+type CanonicalQualificationGapStatus = "missing" | "conflict";
+
+type CanonicalQualificationFact = {
+  factKey: CanonicalQualificationFactKey;
+  state: CanonicalQualificationFactState;
+  valueKind: string;
+  value: unknown;
+  normalizedValueText: string | null;
+  sourceType: string | null;
+  sourceMessageId: string | null;
+  sourceConversationId: string | null;
+  lastEventId: string | null;
+  lastOperationKey: string | null;
+  updatedAt: string | null;
+};
+
+type CanonicalQualificationConflict = {
+  factKey: CanonicalQualificationFactKey;
+  valueKind: string;
+  candidates: CanonicalQualificationConflictCandidate[];
+  sourceType: string | null;
+  sourceMessageId: string | null;
+  sourceConversationId: string | null;
+  lastEventId: string | null;
+  lastOperationKey: string | null;
+  updatedAt: string | null;
+};
+
+type CanonicalQualificationConflictCandidate = {
+  value: unknown;
+  eventId: string | null;
+  valueKind: string;
+  sourceType: string | null;
+  normalizedValueText: string | null;
+  sourceMessageId: string | null;
+  sourceConversationId: string | null;
+};
+
+type CanonicalQualificationMissingGroup = {
+  groupKey: CanonicalQualificationGroupKey;
+  status: CanonicalQualificationGapStatus;
+  factKeys: CanonicalQualificationFactKey[];
+};
+
+type CanonicalQualificationProvenanceSummary = {
+  knownFactCount: number;
+  confirmedCount: number;
+  inferredCount: number;
+  conflictCount: number;
+  messageBackedCount: number;
+  conversationBackedCount: number;
+  sourceCounts: Record<string, number>;
+};
+
+type CanonicalQualificationSnapshot = {
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  knownFacts: CanonicalQualificationFact[];
+  missingFactGroups: CanonicalQualificationMissingGroup[];
+  conflicts: CanonicalQualificationConflict[];
+  provenanceSummary: CanonicalQualificationProvenanceSummary;
+  canAskNextQuestion: boolean;
+  knownFactCount: number;
+  missingGroupCount: number;
+  conflictCount: number;
+};
+
+type LoadCanonicalQualificationSnapshotResult =
+  | { ok: true; snapshot: CanonicalQualificationSnapshot }
+  | {
+      ok: false;
+      reason:
+        | "qualification_reader_rpc_failed"
+        | "qualification_reader_invalid_payload"
+        | "qualification_reader_wrong_cardinality";
+      message: string;
+    };
+
+type LoadAnchoredCanonicalCommercialContextResult =
+  | {
+      ok: true;
+      anchoredCommercialOpportunityId: null;
+      canonicalQualificationSnapshot: null;
+      crmStageForReply: string | null;
+    }
+  | {
+      ok: true;
+      anchoredCommercialOpportunityId: string;
+      canonicalQualificationSnapshot: CanonicalQualificationSnapshot;
+      crmStageForReply: string;
+    }
+  | {
+      ok: false;
+      error:
+        | "LOAD_CANONICAL_QUALIFICATION_FAILED"
+        | "LOAD_CANONICAL_STAGE_FAILED";
+      message: string;
+    };
 
 type DetectedIntent =
   | "catalog"
@@ -419,6 +555,12 @@ export type GenerateAiSalesReplyParams = {
   storeId: string;
   conversationId: string;
   anchorMessageId: string;
+  supabaseClient?: any;
+  openaiClient?: {
+    responses: {
+      create(args: unknown): Promise<unknown>;
+    };
+  };
 };
 
 export type GenerateAiSalesReplyUsage = {
@@ -909,6 +1051,390 @@ function normalizeText(value: string | null | undefined): string {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function asNullableString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function asNullableInteger(value: unknown): number | null {
+  return Number.isInteger(value) ? (value as number) : null;
+}
+
+function asNonNegativeInteger(value: unknown): number | null {
+  const parsed = asNullableInteger(value);
+  return parsed != null && parsed >= 0 ? parsed : null;
+}
+
+const CANONICAL_QUALIFICATION_SOURCE_TYPES = new Set([
+  "incoming_customer_message",
+  "crm_manual",
+  "system_inference",
+  "system_correction",
+  "migration_backfill",
+]);
+
+function parseCanonicalQualificationSourceType(value: unknown): string | null {
+  const candidate = asNullableString(value);
+  if (!candidate || !CANONICAL_QUALIFICATION_SOURCE_TYPES.has(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
+function getCanonicalQualificationExpectedValueKind(
+  factKey: CanonicalQualificationFactKey,
+): "text" | "number" | "boolean" {
+  if (factKey === "requested_area_m2") return "number";
+  if (
+    factKey === "installation_interest" ||
+    factKey === "payment_interest" ||
+    factKey === "technical_visit_interest"
+  ) {
+    return "boolean";
+  }
+  return "text";
+}
+
+function isCanonicalQualificationValueValid(
+  factKey: CanonicalQualificationFactKey,
+  valueKind: string,
+  value: unknown,
+  normalizedValueText: string | null,
+): boolean {
+  const expectedValueKind = getCanonicalQualificationExpectedValueKind(factKey);
+
+  if (valueKind !== expectedValueKind) {
+    return false;
+  }
+
+  if (expectedValueKind === "text") {
+    return typeof value === "string" && value.trim().length > 0 && !!normalizedValueText;
+  }
+
+  if (expectedValueKind === "number") {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+
+  return typeof value === "boolean";
+}
+
+function parseCanonicalQualificationFactKey(
+  value: unknown,
+): CanonicalQualificationFactKey | null {
+  const candidate = asNullableString(value);
+  switch (candidate) {
+    case "need_summary":
+    case "interested_product_reference":
+    case "space_text":
+    case "requested_area_m2":
+    case "location_text":
+    case "preferred_period_text":
+    case "budget_text":
+    case "decision_context":
+    case "installation_interest":
+    case "payment_interest":
+    case "technical_visit_interest":
+    case "customer_preferences_text":
+    case "relevant_objection_text":
+      return candidate;
+    default:
+      return null;
+  }
+}
+
+function parseCanonicalQualificationGroupKey(
+  value: unknown,
+): CanonicalQualificationGroupKey | null {
+  const candidate = asNullableString(value);
+  switch (candidate) {
+    case "need":
+    case "space":
+    case "location":
+    case "installation":
+    case "payment":
+      return candidate;
+    default:
+      return null;
+  }
+}
+
+function parseCanonicalQualificationFact(
+  value: unknown,
+): CanonicalQualificationFact | null {
+  if (!isRecord(value)) return null;
+  const factKey = parseCanonicalQualificationFactKey(value.factKey);
+  const state = asNullableString(value.state);
+  const valueKind = asNullableString(value.valueKind);
+  const normalizedValueText = asNullableString(value.normalizedValueText);
+  const sourceType = parseCanonicalQualificationSourceType(value.sourceType);
+
+  if (
+    !factKey ||
+    (state !== "confirmed" && state !== "inferred") ||
+    !valueKind ||
+    !sourceType ||
+    !isCanonicalQualificationValueValid(
+      factKey,
+      valueKind,
+      value.value,
+      normalizedValueText,
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    factKey,
+    state,
+    valueKind,
+    value: value.value,
+    normalizedValueText,
+    sourceType,
+    sourceMessageId: asNullableString(value.sourceMessageId),
+    sourceConversationId: asNullableString(value.sourceConversationId),
+    lastEventId: asNullableString(value.lastEventId),
+    lastOperationKey: asNullableString(value.lastOperationKey),
+    updatedAt: asNullableString(value.updatedAt),
+  };
+}
+
+function sumUsageNumberWhenAllPresent(
+  values: Array<number | null | undefined>,
+): number | null {
+  if (values.length === 0) return null;
+  let total = 0;
+
+  for (const value of values) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return null;
+    }
+
+    total += value;
+  }
+
+  return Number(total.toFixed(8));
+}
+
+function sharedUsageNumberWhenAllEqual(
+  values: Array<number | null | undefined>,
+): number | null {
+  if (values.length === 0) return null;
+  if (values.some((value) => typeof value !== "number" || !Number.isFinite(value))) {
+    return null;
+  }
+
+  const first = values[0] as number;
+  return values.every((value) => value === first) ? first : null;
+}
+
+function mergeOpenAiUsage(usages: GenerateAiSalesReplyUsage[]): GenerateAiSalesReplyUsage {
+  const uniqueModels = Array.from(new Set(usages.map((usage) => usage.model).filter(Boolean)));
+  const uniquePricingSources = Array.from(
+    new Set(usages.map((usage) => usage.pricingSource).filter(Boolean)),
+  );
+
+  return {
+    provider: "openai",
+    model: uniqueModels.length === 1 ? uniqueModels[0] : "multiple_openai_calls",
+    tokensPrompt: sumUsageNumberWhenAllPresent(usages.map((usage) => usage.tokensPrompt)),
+    tokensCompletion: sumUsageNumberWhenAllPresent(usages.map((usage) => usage.tokensCompletion)),
+    totalTokens: sumUsageNumberWhenAllPresent(usages.map((usage) => usage.totalTokens)),
+    costUsd: sumUsageNumberWhenAllPresent(usages.map((usage) => usage.costUsd)),
+    inputTokenPriceUsdPer1M: sharedUsageNumberWhenAllEqual(
+      usages.map((usage) => usage.inputTokenPriceUsdPer1M),
+    ),
+    outputTokenPriceUsdPer1M: sharedUsageNumberWhenAllEqual(
+      usages.map((usage) => usage.outputTokenPriceUsdPer1M),
+    ),
+    pricingSource:
+      uniquePricingSources.length === 1
+        ? uniquePricingSources[0]
+        : "aggregated_multiple_openai_calls",
+  };
+}
+
+function parseCanonicalQualificationConflict(
+  value: unknown,
+): CanonicalQualificationConflict | null {
+  if (!isRecord(value)) return null;
+  const factKey = parseCanonicalQualificationFactKey(value.factKey);
+  const valueKind = asNullableString(value.valueKind);
+  const sourceType = parseCanonicalQualificationSourceType(value.sourceType);
+  const rawCandidates = Array.isArray(value.candidates) ? value.candidates : null;
+
+  if (
+    !factKey ||
+    !valueKind ||
+    valueKind !== getCanonicalQualificationExpectedValueKind(factKey) ||
+    !sourceType ||
+    !rawCandidates
+  ) {
+    return null;
+  }
+
+  const candidates = rawCandidates.map((candidate) =>
+    parseCanonicalQualificationConflictCandidate(candidate, factKey, valueKind),
+  );
+
+  if (candidates.length !== rawCandidates.length || candidates.some((item) => !item)) {
+    return null;
+  }
+
+  return {
+    factKey,
+    valueKind,
+    candidates: candidates.filter(
+      (item): item is CanonicalQualificationConflictCandidate => !!item,
+    ),
+    sourceType,
+    sourceMessageId: asNullableString(value.sourceMessageId),
+    sourceConversationId: asNullableString(value.sourceConversationId),
+    lastEventId: asNullableString(value.lastEventId),
+    lastOperationKey: asNullableString(value.lastOperationKey),
+    updatedAt: asNullableString(value.updatedAt),
+  };
+}
+
+function parseCanonicalQualificationConflictCandidate(
+  value: unknown,
+  factKey: CanonicalQualificationFactKey,
+  conflictValueKind: string,
+): CanonicalQualificationConflictCandidate | null {
+  if (!isRecord(value)) return null;
+
+  const valueKind = asNullableString(value.value_kind);
+  const sourceType = parseCanonicalQualificationSourceType(value.source_type);
+  const normalizedValueText = asNullableString(value.normalized_value_text);
+
+  if (
+    !valueKind ||
+    !sourceType ||
+    valueKind !== conflictValueKind ||
+    !isCanonicalQualificationValueValid(
+      factKey,
+      valueKind,
+      value.value,
+      normalizedValueText,
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    !("value" in value) ||
+    !("event_id" in value) ||
+    !("source_type" in value) ||
+    !("normalized_value_text" in value) ||
+    !("source_message_id" in value) ||
+    !("source_conversation_id" in value)
+  ) {
+    return null;
+  }
+
+  return {
+    value: value.value,
+    eventId: asNullableString(value.event_id),
+    valueKind,
+    sourceType,
+    normalizedValueText,
+    sourceMessageId: asNullableString(value.source_message_id),
+    sourceConversationId: asNullableString(value.source_conversation_id),
+  };
+}
+
+function parseCanonicalQualificationMissingGroup(
+  value: unknown,
+): CanonicalQualificationMissingGroup | null {
+  if (!isRecord(value)) return null;
+  const groupKey = parseCanonicalQualificationGroupKey(value.groupKey);
+  const status = asNullableString(value.status);
+  const rawFactKeys = Array.isArray(value.factKeys) ? value.factKeys : null;
+
+  if (!groupKey || (status !== "missing" && status !== "conflict") || !rawFactKeys) {
+    return null;
+  }
+
+  const factKeys = rawFactKeys
+    .map((item) => parseCanonicalQualificationFactKey(item))
+    .filter((item): item is CanonicalQualificationFactKey => !!item);
+
+  if (factKeys.length !== rawFactKeys.length) {
+    return null;
+  }
+
+  return {
+    groupKey,
+    status,
+    factKeys,
+  };
+}
+
+function parseCanonicalQualificationProvenanceSummary(
+  value: unknown,
+): CanonicalQualificationProvenanceSummary | null {
+  if (!isRecord(value) || !isRecord(value.sourceCounts)) return null;
+
+  const knownFactCount = asNonNegativeInteger(value.knownFactCount);
+  const confirmedCount = asNonNegativeInteger(value.confirmedCount);
+  const inferredCount = asNonNegativeInteger(value.inferredCount);
+  const conflictCount = asNonNegativeInteger(value.conflictCount);
+  const messageBackedCount = asNonNegativeInteger(value.messageBackedCount);
+  const conversationBackedCount = asNonNegativeInteger(value.conversationBackedCount);
+
+  if (
+    knownFactCount == null ||
+    confirmedCount == null ||
+    inferredCount == null ||
+    conflictCount == null ||
+    messageBackedCount == null ||
+    conversationBackedCount == null
+  ) {
+    return null;
+  }
+
+  const sourceCountsEntries = Object.entries(value.sourceCounts);
+
+  if (
+    sourceCountsEntries.some(
+      ([key, count]) =>
+        !key.trim() || asNonNegativeInteger(count) == null,
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    knownFactCount,
+    confirmedCount,
+    inferredCount,
+    conflictCount,
+    messageBackedCount,
+    conversationBackedCount,
+    sourceCounts: Object.fromEntries(
+      sourceCountsEntries.map(([key, count]) => [key, asNonNegativeInteger(count)!]),
+    ),
+  };
+}
+
+function findCanonicalQualificationFact(
+  snapshot: CanonicalQualificationSnapshot,
+  factKey: CanonicalQualificationFactKey,
+) {
+  return snapshot.knownFacts.find((item) => item.factKey === factKey) || null;
+}
+
+function hasCanonicalQualificationKnownGroup(
+  snapshot: CanonicalQualificationSnapshot,
+  groupKey: CanonicalQualificationGroupKey,
+) {
+  return !snapshot.missingFactGroups.some((group) => group.groupKey === groupKey);
 }
 
 function hasMeaningfulValue(value: string | null | undefined): value is string {
@@ -1500,6 +2026,351 @@ export async function loadScopedRecentMessages(args: {
   }) as SupabaseQueryChainLike;
 
   return orderedQuery.limit(12) as QueryResultLike<MessageRow[] | null>;
+}
+
+export async function loadCanonicalCommercialOpportunityStage(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+}) {
+  const { data, error } = await args.supabase
+    .from("commercial_opportunities")
+    .select("id, stage")
+    .eq("id", args.commercialOpportunityId)
+    .eq("organization_id", args.organizationId)
+    .eq("store_id", args.storeId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("[zion-ai-sales-opportunity] canonical stage load failed", {
+      reason: "canonical_stage_lookup_failed",
+      commercialOpportunityId: args.commercialOpportunityId,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      error: error.message,
+    });
+    return {
+      ok: false as const,
+      reason: "canonical_stage_lookup_failed",
+      stage: null,
+    };
+  }
+
+  const row =
+    data && typeof data === "object"
+      ? (data as CommercialOpportunityStageRow)
+      : null;
+  const stage = getCanonicalCrmStage(row?.stage)?.id || null;
+
+  if (row?.id !== args.commercialOpportunityId || !stage) {
+    console.info("[zion-ai-sales-opportunity] canonical stage unavailable", {
+      reason: row?.id ? "canonical_stage_invalid_payload" : "canonical_stage_not_found",
+      commercialOpportunityId: args.commercialOpportunityId,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+    });
+    return {
+      ok: false as const,
+      reason: "canonical_stage_not_found",
+      stage: null,
+    };
+  }
+
+  return {
+    ok: true as const,
+    stage,
+  };
+}
+
+export async function loadCanonicalQualificationSnapshotBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+}): Promise<LoadCanonicalQualificationSnapshotResult> {
+  const { data, error } = await args.supabase.rpc(
+    "read_commercial_opportunity_qualification_facts_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+    },
+  );
+
+  if (error) {
+    return {
+      ok: false,
+      reason: "qualification_reader_rpc_failed",
+      message: error.message,
+    };
+  }
+
+  if (!Array.isArray(data) || data.length !== 1 || !isRecord(data[0])) {
+    return {
+      ok: false,
+      reason: "qualification_reader_wrong_cardinality",
+      message: "Canonical qualification reader returned unexpected cardinality.",
+    };
+  }
+
+  const row = data[0];
+  const organizationId = asNullableString(row.organization_id);
+  const storeId = asNullableString(row.store_id);
+  const commercialOpportunityId = asNullableString(row.commercial_opportunity_id);
+  const knownFacts = Array.isArray(row.known_facts)
+    ? row.known_facts.map((item) => parseCanonicalQualificationFact(item))
+    : null;
+  const missingFactGroups = Array.isArray(row.missing_fact_groups)
+    ? row.missing_fact_groups.map((item) => parseCanonicalQualificationMissingGroup(item))
+    : null;
+  const conflicts = Array.isArray(row.conflicts)
+    ? row.conflicts.map((item) => parseCanonicalQualificationConflict(item))
+    : null;
+  const provenanceSummary = parseCanonicalQualificationProvenanceSummary(
+    row.provenance_summary,
+  );
+  const canAskNextQuestion =
+    typeof row.can_ask_next_question === "boolean"
+      ? row.can_ask_next_question
+      : null;
+  const knownFactCount = asNonNegativeInteger(row.known_fact_count);
+  const missingGroupCount = asNonNegativeInteger(row.missing_group_count);
+  const conflictCount = asNonNegativeInteger(row.conflict_count);
+
+  if (
+    !organizationId ||
+    !storeId ||
+    !commercialOpportunityId ||
+    organizationId !== args.organizationId ||
+    storeId !== args.storeId ||
+    commercialOpportunityId !== args.commercialOpportunityId ||
+    !knownFacts ||
+    knownFacts.some((item) => !item) ||
+    !missingFactGroups ||
+    missingFactGroups.some((item) => !item) ||
+    !conflicts ||
+    conflicts.some((item) => !item) ||
+    !provenanceSummary ||
+    canAskNextQuestion == null ||
+    knownFactCount == null ||
+    missingGroupCount == null ||
+    conflictCount == null
+  ) {
+    return {
+      ok: false,
+      reason: "qualification_reader_invalid_payload",
+      message: "Canonical qualification reader returned an invalid payload.",
+    };
+  }
+
+  const parsedKnownFacts = knownFacts.filter(
+    (item): item is CanonicalQualificationFact => !!item,
+  );
+  const parsedMissingFactGroups = missingFactGroups.filter(
+    (item): item is CanonicalQualificationMissingGroup => !!item,
+  );
+  const parsedConflicts = conflicts.filter(
+    (item): item is CanonicalQualificationConflict => !!item,
+  );
+  const actualConfirmedCount = parsedKnownFacts.filter(
+    (item) => item.state === "confirmed",
+  ).length;
+  const actualInferredCount = parsedKnownFacts.filter(
+    (item) => item.state === "inferred",
+  ).length;
+
+  if (
+    provenanceSummary.knownFactCount !== parsedKnownFacts.length ||
+    provenanceSummary.conflictCount !== parsedConflicts.length ||
+    provenanceSummary.confirmedCount !== actualConfirmedCount ||
+    provenanceSummary.inferredCount !== actualInferredCount ||
+    knownFactCount !== parsedKnownFacts.length ||
+    missingGroupCount !== parsedMissingFactGroups.length ||
+    conflictCount !== parsedConflicts.length
+  ) {
+    return {
+      ok: false,
+      reason: "qualification_reader_invalid_payload",
+      message: "Canonical qualification reader returned inconsistent counters.",
+    };
+  }
+
+  return {
+    ok: true,
+    snapshot: {
+      organizationId,
+      storeId,
+      commercialOpportunityId,
+      knownFacts: parsedKnownFacts,
+      missingFactGroups: parsedMissingFactGroups,
+      conflicts: parsedConflicts,
+      provenanceSummary,
+      canAskNextQuestion,
+      knownFactCount,
+      missingGroupCount,
+      conflictCount,
+    },
+  };
+}
+
+export async function loadAnchoredCanonicalCommercialContext(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  leadState: string | null;
+  anchoredCommercialOpportunityId: string | null;
+}): Promise<LoadAnchoredCanonicalCommercialContextResult> {
+  const anchoredCommercialOpportunityId = String(
+    args.anchoredCommercialOpportunityId || "",
+  ).trim();
+
+  if (!anchoredCommercialOpportunityId) {
+    return {
+      ok: true,
+      anchoredCommercialOpportunityId: null,
+      canonicalQualificationSnapshot: null,
+      crmStageForReply: args.leadState,
+    };
+  }
+
+  const canonicalQualificationResult =
+    await loadCanonicalQualificationSnapshotBySystem({
+      supabase: args.supabase,
+      organizationId: args.organizationId,
+      storeId: args.storeId,
+      commercialOpportunityId: anchoredCommercialOpportunityId,
+    });
+
+  if (canonicalQualificationResult.ok === false) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_QUALIFICATION_FAILED",
+      message: canonicalQualificationResult.message,
+    };
+  }
+
+  const stageSnapshot = await loadCanonicalCommercialOpportunityStage({
+    supabase: args.supabase,
+    organizationId: args.organizationId,
+    storeId: args.storeId,
+    commercialOpportunityId: anchoredCommercialOpportunityId,
+  });
+
+  if (!stageSnapshot.ok || !stageSnapshot.stage) {
+    return {
+      ok: false,
+      error: "LOAD_CANONICAL_STAGE_FAILED",
+      message:
+        stageSnapshot.reason === "canonical_stage_lookup_failed"
+          ? "Canonical commercial opportunity stage lookup failed."
+          : "Canonical commercial opportunity stage unavailable for anchored opportunity.",
+    };
+  }
+
+  return {
+    ok: true,
+    anchoredCommercialOpportunityId,
+    canonicalQualificationSnapshot: canonicalQualificationResult.snapshot,
+    crmStageForReply: stageSnapshot.stage,
+  };
+}
+
+type CanonicalQualificationWriterRow = {
+  commercial_opportunity_id: string | null;
+  fact_key: string | null;
+  event_id: string | null;
+  current_last_event_id: string | null;
+  current_state: string | null;
+  current_value_json: unknown;
+  normalized_value_text: string | null;
+  value_kind: string | null;
+  conflict_values_json: unknown;
+  changed: boolean | null;
+  outcome: string | null;
+  updated_at: string | null;
+};
+
+function isValidQualificationWriterOutcome(value: string | null): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+async function writeCanonicalQualificationFactBySystem(args: {
+  supabase: any;
+  organizationId: string;
+  storeId: string;
+  commercialOpportunityId: string;
+  conversationId: string;
+  anchorMessageId: string;
+  candidate: {
+    factKey: string;
+    valueKind: string;
+    valueJson: string | number | boolean;
+    assertionLevel: "confirmed" | "inferred";
+    sourceType: "incoming_customer_message" | "system_inference";
+  };
+}) {
+  const { data, error } = await args.supabase.rpc(
+    "write_commercial_opportunity_qualification_fact_by_system",
+    {
+      p_organization_id: args.organizationId,
+      p_store_id: args.storeId,
+      p_commercial_opportunity_id: args.commercialOpportunityId,
+      p_operation_key: buildQualificationWriterOperationKey(
+        args.anchorMessageId,
+        args.candidate.factKey as any,
+      ),
+      p_fact_key: args.candidate.factKey,
+      p_value_json: args.candidate.valueJson,
+      p_assertion_level: args.candidate.assertionLevel,
+      p_source_type: args.candidate.sourceType,
+      p_source_message_id: args.anchorMessageId,
+      p_source_conversation_id: args.conversationId,
+      p_created_by: "sales_ai_qualification_extractor_v1",
+      p_resolves_conflict: false,
+    },
+  );
+
+  if (error) {
+    return {
+      ok: false as const,
+      message: error.message,
+    };
+  }
+
+  if (!Array.isArray(data) || data.length !== 1 || !isRecord(data[0])) {
+    return {
+      ok: false as const,
+      message: "Canonical qualification writer returned unexpected cardinality.",
+    };
+  }
+
+  const row = data[0] as CanonicalQualificationWriterRow;
+  const commercialOpportunityId = asNullableString(row.commercial_opportunity_id);
+  const factKey = asNullableString(row.fact_key);
+  const valueKind = asNullableString(row.value_kind);
+  const currentState = asNullableString(row.current_state);
+  const changed = typeof row.changed === "boolean" ? row.changed : null;
+  const outcome = asNullableString(row.outcome);
+
+  if (
+    commercialOpportunityId !== args.commercialOpportunityId ||
+    factKey !== args.candidate.factKey ||
+    valueKind !== args.candidate.valueKind ||
+    (currentState !== "confirmed" && currentState !== "inferred" && currentState !== "conflict") ||
+    changed == null ||
+    !isValidQualificationWriterOutcome(outcome)
+  ) {
+    return {
+      ok: false as const,
+      message: "Canonical qualification writer returned an invalid payload.",
+    };
+  }
+
+  return {
+    ok: true as const,
+    row,
+  };
 }
 
 function resolveHistoricalContextStatusForMessage(args: {
@@ -4277,6 +5148,97 @@ function summarizeKnownFacts(facts: ConversationFactState, lastCustomerMessage: 
   return out;
 }
 
+export function describeCanonicalKnownFact(
+  fact: CanonicalQualificationFact,
+): string | null {
+  const suffix = fact.state === "inferred" ? " (inferido)" : "";
+  const normalizedValue = fact.normalizedValueText || null;
+  const rawValue = fact.value;
+  const booleanValue = typeof rawValue === "boolean" ? rawValue : null;
+  const scalarValue =
+    typeof rawValue === "string" || typeof rawValue === "number"
+      ? String(rawValue)
+      : null;
+  const displayValue = normalizedValue || scalarValue;
+
+  if (fact.factKey === "need_summary") {
+    return displayValue
+      ? `necessidade principal registrada: ${displayValue}${suffix}`
+      : `necessidade principal registrada${suffix}`;
+  }
+  if (fact.factKey === "interested_product_reference") {
+    return displayValue
+      ? `produto de interesse registrado: ${displayValue}${suffix}`
+      : `produto de interesse registrado${suffix}`;
+  }
+  if (fact.factKey === "space_text") {
+    return displayValue
+      ? `espaco ou medida registrados: ${displayValue}${suffix}`
+      : `espaco ou medida ja registrados${suffix}`;
+  }
+  if (fact.factKey === "requested_area_m2") {
+    return displayValue
+      ? `area aproximada registrada: ${displayValue} m2${suffix}`
+      : `area aproximada registrada${suffix}`;
+  }
+  if (fact.factKey === "location_text") {
+    return displayValue
+      ? `localizacao registrada: ${displayValue}${suffix}`
+      : `localizacao ja registrada${suffix}`;
+  }
+  if (fact.factKey === "preferred_period_text") {
+    return displayValue
+      ? `momento desejado registrado: ${displayValue}${suffix}`
+      : `momento desejado ja registrado${suffix}`;
+  }
+  if (fact.factKey === "budget_text") {
+    return displayValue
+      ? `orcamento registrado: ${displayValue}${suffix}`
+      : `orcamento ja registrado${suffix}`;
+  }
+  if (fact.factKey === "decision_context") {
+    return displayValue
+      ? `contexto de decisao registrado: ${displayValue}${suffix}`
+      : `contexto de decisao ja registrado${suffix}`;
+  }
+  if (fact.factKey === "installation_interest") {
+    if (booleanValue === true) return `installation_interest: true${suffix}`;
+    if (booleanValue === false) return `installation_interest: false${suffix}`;
+    return `interesse em instalacao registrado${suffix}`;
+  }
+  if (fact.factKey === "payment_interest") {
+    if (booleanValue === true) return `payment_interest: true${suffix}`;
+    if (booleanValue === false) return `payment_interest: false${suffix}`;
+    return `preferencia de pagamento registrada${suffix}`;
+  }
+  if (fact.factKey === "technical_visit_interest") {
+    if (booleanValue === true) return `technical_visit_interest: true${suffix}`;
+    if (booleanValue === false) return `technical_visit_interest: false${suffix}`;
+    return `interesse em visita tecnica registrado${suffix}`;
+  }
+  if (fact.factKey === "customer_preferences_text") {
+    return displayValue
+      ? `preferencias adicionais registradas: ${displayValue}${suffix}`
+      : `preferencias adicionais registradas${suffix}`;
+  }
+  if (fact.factKey === "relevant_objection_text") {
+    return displayValue
+      ? `objecao relevante registrada: ${displayValue}${suffix}`
+      : `objecao relevante registrada${suffix}`;
+  }
+  return null;
+}
+
+export function summarizeCanonicalKnownFacts(
+  snapshot: CanonicalQualificationSnapshot,
+): string[] {
+  const out = snapshot.knownFacts
+    .map((fact) => describeCanonicalKnownFact(fact))
+    .filter((item): item is string => !!item);
+
+  return out.length > 0 ? out : ["ha fatos canonicos persistidos para esta oportunidade"];
+}
+
 function summarizeMissingFacts(facts: ConversationFactState, _lastCustomerMessage: string): string[] {
   const out: string[] = [];
   if (!facts.sizeKnown) out.push("espaco ou medida ainda nao esta claro");
@@ -4285,6 +5247,170 @@ function summarizeMissingFacts(facts: ConversationFactState, _lastCustomerMessag
   if (!facts.paymentInterestKnown) out.push("a forma de pagamento ainda nao esta clara");
   if (!facts.locationKnown) out.push("cidade, bairro ou local ainda nao foi confirmado");
   return out;
+}
+
+function summarizeCanonicalMissingFacts(
+  snapshot: CanonicalQualificationSnapshot,
+): string[] {
+  const out: string[] = [];
+
+  for (const group of snapshot.missingFactGroups) {
+    if (group.groupKey === "need") {
+      out.push(
+        group.status === "conflict"
+          ? "ha conflito canonico sobre necessidade ou preferencia principal"
+          : "a necessidade ou preferencia principal ainda esta em aberto na oportunidade"
+      );
+    }
+    if (group.groupKey === "space") {
+      out.push(
+        group.status === "conflict"
+          ? "ha conflito canonico sobre espaco ou medida"
+          : "espaco ou medida ainda nao estao consolidados na oportunidade"
+      );
+    }
+    if (group.groupKey === "location") {
+      out.push(
+        group.status === "conflict"
+          ? "ha conflito canonico sobre localizacao"
+          : "cidade, bairro ou local ainda nao estao consolidados na oportunidade"
+      );
+    }
+    if (group.groupKey === "installation") {
+      out.push(
+        group.status === "conflict"
+          ? "ha conflito canonico sobre interesse em instalacao"
+          : "o interesse em instalacao ainda nao esta consolidado na oportunidade"
+      );
+    }
+    if (group.groupKey === "payment") {
+      out.push(
+        group.status === "conflict"
+          ? "ha conflito canonico sobre preferencia de pagamento"
+          : "a preferencia de pagamento ainda nao esta consolidada na oportunidade"
+      );
+    }
+  }
+
+  return out;
+}
+
+function inferCanonicalQualificationQuestion(
+  snapshot: CanonicalQualificationSnapshot,
+): string | null {
+  const firstGap = snapshot.missingFactGroups[0] || null;
+  if (!firstGap) return null;
+
+  if (firstGap.groupKey === "location") {
+    return firstGap.status === "conflict"
+      ? "So para eu nao assumir errado: qual cidade ou bairro fica o local da piscina?"
+      : "Qual cidade ou bairro fica o local da piscina?";
+  }
+
+  if (firstGap.groupKey === "space") {
+    return firstGap.status === "conflict"
+      ? "So para confirmar a medida certa: qual e o espaco aproximado que voce tem para a piscina?"
+      : "Me fala mais ou menos o espaco ou a medida que voce tem para colocar a piscina.";
+  }
+
+  if (firstGap.groupKey === "need") {
+    return firstGap.status === "conflict"
+      ? "Quero alinhar certinho sua preferencia: voce busca algo mais compacto e pratico ou mais conforto?"
+      : "Voce prefere algo mais simples de manter ou uma opcao com mais conforto?";
+  }
+
+  if (firstGap.groupKey === "installation") {
+    return "Voce esta olhando so a piscina ou tambem instalacao?";
+  }
+
+  if (firstGap.groupKey === "payment") {
+    return firstGap.status === "conflict"
+      ? "So para eu considerar a condicao certa: voce pensa mais em Pix ou em parcelamento?"
+      : "Pensando no pagamento, voce imagina mais Pix ou parcelamento?";
+  }
+
+  return null;
+}
+
+function classifyQualificationQuestionGroup(
+  question: string | null,
+): CanonicalQualificationGroupKey | null {
+  const normalized = normalizeText(question);
+  if (!normalized) return null;
+
+  if (
+    normalized.includes("cidade") ||
+    normalized.includes("bairro") ||
+    normalized.includes("local")
+  ) {
+    return "location";
+  }
+
+  if (
+    normalized.includes("espaco") ||
+    normalized.includes("medida") ||
+    normalized.includes("area")
+  ) {
+    return "space";
+  }
+
+  if (normalized.includes("instalacao")) {
+    return "installation";
+  }
+
+  if (
+    normalized.includes("pix") ||
+    normalized.includes("parcelado") ||
+    normalized.includes("pagamento") ||
+    normalized.includes("condicao")
+  ) {
+    return "payment";
+  }
+
+  if (
+    normalized.includes("prefere") ||
+    normalized.includes("conforto") ||
+    normalized.includes("modelo")
+  ) {
+    return "need";
+  }
+
+  return null;
+}
+
+export function resolveQualificationNextBestQuestion(args: {
+  heuristicQuestion: string | null;
+  snapshot: CanonicalQualificationSnapshot | null;
+}): string | null {
+  if (!args.snapshot) return args.heuristicQuestion;
+
+  const heuristicGroup = classifyQualificationQuestionGroup(args.heuristicQuestion);
+  const canonicalQuestion = inferCanonicalQualificationQuestion(args.snapshot);
+  const matchingHeuristicGap =
+    heuristicGroup == null
+      ? null
+      : args.snapshot.missingFactGroups.find((group) => group.groupKey === heuristicGroup) || null;
+
+  if (!args.snapshot.canAskNextQuestion) {
+    return heuristicGroup ? null : args.heuristicQuestion;
+  }
+
+  if (!heuristicGroup) {
+    return args.heuristicQuestion;
+  }
+
+  if (hasCanonicalQualificationKnownGroup(args.snapshot, heuristicGroup)) {
+    return canonicalQuestion || null;
+  }
+
+  if (matchingHeuristicGap?.status === "conflict") {
+    return inferCanonicalQualificationQuestion({
+      ...args.snapshot,
+      missingFactGroups: [matchingHeuristicGap],
+    });
+  }
+
+  return args.heuristicQuestion;
 }
 
 function inferRecommendationPolicy(args: {
@@ -5057,6 +6183,7 @@ function inferForbiddenInThisReply(args: {
 
 function buildCommercialObjective(args: {
   facts: ConversationFactState;
+  canonicalQualificationSnapshot?: CanonicalQualificationSnapshot | null;
   orderedMessages: MessageRow[];
   lastCustomerMessage: string;
   photoOrSimulationSubtype?: PhotoOrSimulationSubtype | null;
@@ -5071,6 +6198,8 @@ function buildCommercialObjective(args: {
   bestNamedPoolMatch: MatchedPool | null;
 }): CommercialObjective {
   const facts = args.facts;
+  const canonicalQualificationSnapshot =
+    args.canonicalQualificationSnapshot ?? null;
   const alreadyHasCustomerLocationPhoto = hasCustomerLocationPhoto(args.orderedMessages);
   const intents = detectIntents(args.lastCustomerMessage);
   const paymentOrClosingSubtype = detectPaymentOrClosingSubtype(args.lastCustomerMessage);
@@ -5089,7 +6218,7 @@ function buildCommercialObjective(args: {
     paymentOrClosingSubtype,
   });
 
-  const nextBestQuestion = inferNextBestQuestion({
+  const heuristicNextBestQuestion = inferNextBestQuestion({
     pattern,
     paymentOrClosingSubtype,
     photoOrSimulationSubtype: args.photoOrSimulationSubtype,
@@ -5103,6 +6232,10 @@ function buildCommercialObjective(args: {
     lastAiListedPools: args.lastAiListedPools,
     hasCustomerLocationPhoto: alreadyHasCustomerLocationPhoto,
   });
+  const nextBestQuestion = resolveQualificationNextBestQuestion({
+    heuristicQuestion: heuristicNextBestQuestion,
+    snapshot: canonicalQualificationSnapshot,
+  });
 
   return {
     pattern,
@@ -5110,8 +6243,12 @@ function buildCommercialObjective(args: {
     intents,
     primaryIntent: inferPrimaryIntent(args.lastCustomerMessage),
     mustAnswerFirst: inferMustAnswerFirst(intents),
-    knownFacts: summarizeKnownFacts(facts, args.lastCustomerMessage),
-    missingFacts: summarizeMissingFacts(facts, args.lastCustomerMessage),
+    knownFacts: canonicalQualificationSnapshot
+      ? summarizeCanonicalKnownFacts(canonicalQualificationSnapshot)
+      : summarizeKnownFacts(facts, args.lastCustomerMessage),
+    missingFacts: canonicalQualificationSnapshot
+      ? summarizeCanonicalMissingFacts(canonicalQualificationSnapshot)
+      : summarizeMissingFacts(facts, args.lastCustomerMessage),
     nextBestQuestion,
     responseGoal: inferResponseGoal({
       pattern,
@@ -6713,7 +7850,7 @@ export async function generateAiSalesReply(
     const openaiApiKey = process.env.OPENAI_API_KEY;
     const model = process.env.ZION_AI_SALES_MODEL || "gpt-4.1-mini";
 
-    if (!supabaseUrl || !supabaseServiceKey) {
+    if (!params.supabaseClient && (!supabaseUrl || !supabaseServiceKey)) {
       return {
         ok: false,
         error: "SUPABASE_ENV_MISSING",
@@ -6722,7 +7859,7 @@ export async function generateAiSalesReply(
       };
     }
 
-    if (!openaiApiKey) {
+    if (!params.openaiClient && !openaiApiKey) {
       return {
         ok: false,
         error: "OPENAI_ENV_MISSING",
@@ -6730,15 +7867,16 @@ export async function generateAiSalesReply(
       };
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-    const openai = new OpenAI({ apiKey: openaiApiKey });
+    const supabase =
+      params.supabaseClient || createClient(supabaseUrl as string, supabaseServiceKey as string);
+    const openai = params.openaiClient || new OpenAI({ apiKey: openaiApiKey });
 
     const { data: conversation, error: conversationError } = await supabase
       .from("conversations")
       .select("id, organization_id, lead_id, status, is_human_active")
       .eq("id", conversationId)
       .eq("organization_id", organizationId)
-      .maybeSingle<ConversationRow>();
+      .maybeSingle();
 
     if (conversationError || !conversation) {
       return {
@@ -6771,7 +7909,7 @@ export async function generateAiSalesReply(
       .select("id, organization_id, store_id, name, phone, state")
       .eq("id", conversation.lead_id)
       .eq("organization_id", organizationId)
-      .maybeSingle<LeadRow>();
+      .maybeSingle();
 
     if (leadError || !lead) {
       return {
@@ -6796,7 +7934,7 @@ export async function generateAiSalesReply(
       .select("id, organization_id, name")
       .eq("id", resolvedStoreId)
       .eq("organization_id", organizationId)
-      .maybeSingle<StoreRow>();
+      .maybeSingle();
 
     if (storeError || !store) {
       return {
@@ -6894,6 +8032,125 @@ export async function generateAiSalesReply(
         commercialContextLinks: commercialSnapshotBatch.commercialContextLinks,
         resolutionFailed: commercialSnapshotBatch.resolutionFailed,
       });
+    const canonicalCommercialContextResult =
+      await loadAnchoredCanonicalCommercialContext({
+        supabase,
+        organizationId,
+        storeId: resolvedStoreId,
+        leadState: lead.state,
+        anchoredCommercialOpportunityId:
+          responseAnchorCommercialContext?.commercialOpportunityId || null,
+      });
+
+    if (!canonicalCommercialContextResult.ok) {
+      return {
+        ok: false,
+        error: canonicalCommercialContextResult.error,
+        message: canonicalCommercialContextResult.message,
+      };
+    }
+
+    let canonicalQualificationSnapshot =
+      canonicalCommercialContextResult.canonicalQualificationSnapshot;
+    const crmStageForReply = canonicalCommercialContextResult.crmStageForReply;
+    const anchoredCommercialOpportunityId =
+      responseAnchorCommercialContext?.commercialOpportunityId || null;
+    const extractionUsages: GenerateAiSalesReplyUsage[] = [];
+
+    if (anchoredCommercialOpportunityId) {
+      const deterministicCandidates = extractDeterministicQualificationCandidates(
+        lastCustomerMessage,
+      )
+        .map((candidate) =>
+          validateQualificationFactCandidate({
+            candidate,
+            anchorMessage: lastCustomerMessage,
+          }),
+        )
+        .filter((candidate) => !!candidate);
+      const structuredExtraction = await extractStructuredQualificationCandidates({
+        openai,
+        model,
+        anchorMessage: lastCustomerMessage,
+      });
+
+      if (structuredExtraction.response) {
+        extractionUsages.push(extractOpenAiUsage(structuredExtraction.response, model));
+      }
+
+      if (structuredExtraction.failureReason) {
+        console.warn("[generateAiSalesReply] structured qualification extraction dropped", {
+          anchorMessageId,
+          conversationId,
+          commercialOpportunityId: anchoredCommercialOpportunityId,
+          reason: structuredExtraction.failureReason,
+        });
+      }
+
+      const aiCandidates = structuredExtraction.candidates
+        .map((candidate) =>
+          validateQualificationFactCandidate({
+            candidate,
+            anchorMessage: lastCustomerMessage,
+          }),
+        )
+        .filter((candidate) => !!candidate);
+      const mergedCandidatesResult = mergeQualificationFactCandidates({
+        deterministicCandidates,
+        aiCandidates,
+      });
+
+      if (mergedCandidatesResult.discardedFactKeys.length > 0) {
+        console.info("[generateAiSalesReply] qualification candidate collision", {
+          anchorMessageId,
+          conversationId,
+          commercialOpportunityId: anchoredCommercialOpportunityId,
+          discardedFactKeys: mergedCandidatesResult.discardedFactKeys,
+          reason: "candidate_collision",
+        });
+      }
+
+      if (mergedCandidatesResult.mergedCandidates.length > 0) {
+        for (const candidate of mergedCandidatesResult.mergedCandidates) {
+          const writeResult = await writeCanonicalQualificationFactBySystem({
+            supabase,
+            organizationId,
+            storeId: resolvedStoreId,
+            commercialOpportunityId: anchoredCommercialOpportunityId,
+            conversationId,
+            anchorMessageId,
+            candidate,
+          });
+
+          if (!writeResult.ok) {
+            return {
+              ok: false,
+              error: "WRITE_CANONICAL_QUALIFICATION_FAILED",
+              message: writeResult.message,
+            };
+          }
+        }
+
+        const postWriteQualificationResult =
+          await loadCanonicalQualificationSnapshotBySystem({
+            supabase,
+            organizationId,
+            storeId: resolvedStoreId,
+            commercialOpportunityId: anchoredCommercialOpportunityId,
+          });
+
+        if (!postWriteQualificationResult.ok) {
+          return {
+            ok: false,
+            error: "LOAD_CANONICAL_QUALIFICATION_FAILED",
+            message: postWriteQualificationResult.message,
+          };
+        }
+
+        canonicalQualificationSnapshot = postWriteQualificationResult.snapshot;
+      }
+    }
+
     const messagesForConversationContinuity = annotatedMessages;
     const inferredCurrentCommercialMessages = selectMessagesForCurrentCommercialInference({
       annotatedMessages,
@@ -7344,6 +8601,7 @@ export async function generateAiSalesReply(
     });
     const commercialObjective = buildCommercialObjective({
       facts: conversationFacts,
+      canonicalQualificationSnapshot,
       orderedMessages: messagesForCurrentCommercialInference,
       lastCustomerMessage,
       photoOrSimulationSubtype,
@@ -7361,7 +8619,7 @@ export async function generateAiSalesReply(
     const commercialObjectiveBlock = buildCommercialObjectiveBlock(commercialObjective);
     const salesBrain = buildSalesResponseBrain({
       customerName: lead.name,
-      crmStage: lead.state,
+      crmStage: crmStageForReply,
       conversationStatus: conversation.status,
       humanActive: conversation.is_human_active,
       lastCustomerMessage,
@@ -7433,14 +8691,14 @@ export async function generateAiSalesReply(
       storeDisplayName: onboardingMap.store_display_name || null,
       storeName: store.name,
       leadName: lead.name,
-      leadState: lead.state,
+      leadState: crmStageForReply,
       conversationStatus: conversation.status,
       humanActive: conversation.is_human_active,
       onboardingMap,
       recentHistory,
       currentCommercialStateBlock: buildCurrentCommercialStateBlock({
         conversationStatus: conversation.status,
-        leadState: lead.state,
+        leadState: crmStageForReply,
         humanActive: conversation.is_human_active,
         onboardingMap,
       }),
@@ -7481,10 +8739,13 @@ export async function generateAiSalesReply(
       max_output_tokens: commercialObjective.responseMode === "objective" ? 180 : 240,
     });
 
-    const usage = extractOpenAiUsage(response, model);
+    const usage = mergeOpenAiUsage([
+      ...extractionUsages,
+      extractOpenAiUsage(response, model),
+    ]);
 
     const aiText = cleanupAiText(
-      String(response.output_text || "").trim(),
+      String((response as any)?.output_text || "").trim(),
       commercialObjective.responseMode,
       lead.name
     );
