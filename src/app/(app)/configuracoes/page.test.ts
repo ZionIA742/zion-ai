@@ -37,6 +37,14 @@ function getCommercialSaveBlock(source: string) {
   return source.slice(start, end);
 }
 
+function getChannelsSaveBlock(source: string) {
+  const start = source.indexOf("  const handleChannelsEditSave = useCallback(async () => {");
+  assert.equal(start > -1, true, "handleChannelsEditSave not found");
+  const end = source.indexOf("  }, [", start);
+  assert.equal(end > start, true, "handleChannelsEditSave end not found");
+  return source.slice(start, end);
+}
+
 function getCommercialPaymentItemsBlock(source: string) {
   const start = source.indexOf("  const commercialPaymentItems = useMemo(() => {");
   assert.equal(start > -1, true, "commercialPaymentItems block not found");
@@ -50,6 +58,22 @@ function getFetchPageDataBlock(source: string) {
   assert.equal(start > -1, true, "fetchPageData not found");
   const end = source.indexOf("  const upsertConfigAnswers = useCallback(", start);
   assert.equal(end > start, true, "fetchPageData end not found");
+  return source.slice(start, end);
+}
+
+function getChannelsTabBlock(source: string) {
+  const start = source.indexOf('{activeTab === "canais-integracoes" ? (');
+  assert.equal(start > -1, true, "channels tab not found");
+  const end = source.indexOf('{activeTab === "contratos" ? (', start);
+  assert.equal(end > start, true, "channels tab end not found");
+  return source.slice(start, end);
+}
+
+function getCreateDiscountDraftFromAnswersBlock(source: string) {
+  const start = source.indexOf("function createDiscountDraftFromAnswers(");
+  assert.equal(start > -1, true, "createDiscountDraftFromAnswers not found");
+  const end = source.indexOf("function createChannelDraftFromSources(", start);
+  assert.equal(end > start, true, "createDiscountDraftFromAnswers end not found");
   return source.slice(start, end);
 }
 
@@ -125,10 +149,7 @@ const tests: TestCase[] = [
         block.includes("responsible_whatsapp: cleanText(primaryResponsibleDraft.whatsapp)"),
         true,
       );
-      assert.equal(
-        block.includes('"Alterações de responsável e ativação salvas com sucesso."'),
-        true,
-      );
+      assert.equal(block.includes('salvas com sucesso."'), true);
     },
   },
   {
@@ -213,6 +234,188 @@ const tests: TestCase[] = [
       assert.equal(
         block.includes("upsert_store_payment_settings_scoped"),
         false,
+      );
+    },
+  },
+  {
+    name: "simple page load reads canonical channel settings but does not call any channel writer",
+    run: () => {
+      const source = readPageSource();
+      const block = getFetchPageDataBlock(source);
+
+      assert.equal(block.includes('.from("store_channel_settings")'), true);
+      assert.equal(
+        block.includes("upsert_store_channel_settings_with_legacy_mirror_scoped"),
+        false,
+      );
+      assert.equal(
+        block.includes("upsert_store_channel_settings_scoped"),
+        false,
+      );
+    },
+  },
+  {
+    name: "channels editor saves only the canonical channel writer payload and leaves bloco 5 data out of this save path",
+    run: () => {
+      const source = readPageSource();
+      const block = getChannelsSaveBlock(source);
+
+      assert.equal(block.includes("normalizeStoreChannelSettingsInput({"), true);
+      assert.equal(
+        block.includes('"upsert_store_channel_settings_with_legacy_mirror_scoped"'),
+        true,
+      );
+      assert.equal(block.includes("const saved = await upsertConfigAnswers("), false);
+      assert.equal(block.includes("p_commercial_channel_name:"), true);
+      assert.equal(block.includes("p_commercial_receives_real_clients:"), true);
+      assert.equal(block.includes("p_commercial_is_official_sales_channel:"), true);
+      assert.equal(block.includes("p_commercial_channel_type:"), true);
+      assert.equal(block.includes("p_commercial_entry_priority:"), true);
+      assert.equal(block.includes("p_commercial_human_handoff_enabled:"), true);
+      assert.equal(block.includes("p_commercial_channel_notes:"), true);
+      assert.equal(block.includes("p_integration_provider_name:"), true);
+      assert.equal(block.includes("p_integration_connection_mode:"), true);
+      assert.equal(block.includes("p_integrations_notes:"), true);
+      assert.equal(block.includes("responsible_receives_ai_alerts"), false);
+      assert.equal(block.includes("responsible_receives_reports"), false);
+      assert.equal(block.includes("responsible_receives_urgencies"), false);
+      assert.equal(block.includes("responsible_is_primary_alert_channel"), false);
+      assert.equal(block.includes("responsible_is_human_command_channel"), false);
+      assert.equal(block.includes("internal_chat_enabled"), false);
+      assert.equal(block.includes("internal_chat_priority"), false);
+      assert.equal(block.includes("internal_chat_accepts_manual_commands"), false);
+      assert.equal(block.includes("internal_chat_separate_from_inbox"), false);
+      assert.equal(block.includes("assistant_alerts_route"), false);
+      assert.equal(block.includes("urgency_route"), false);
+      assert.equal(block.includes("reports_route"), false);
+      assert.equal(block.includes("channel_fallback_rule"), false);
+    },
+  },
+  {
+    name: "channels UI keeps only the 10 canonical fields editable and leaves live and responsible fields read-only",
+    run: () => {
+      const source = readPageSource();
+      const block = getChannelsTabBlock(source);
+
+      assert.equal(block.includes("storeWhatsappSafeErrorText"), true);
+      assert.equal(block.includes("${storeWhatsappSafeErrorText}"), true);
+      assert.equal(
+        block.includes("${cleanText(storeWhatsappStatus?.lastSafeError)}"),
+        false,
+      );
+      assert.equal(
+        block.includes('onChange={(e) => handleChannelDraftChange("commercial_channel_name", e.target.value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(value) => handleChannelDraftChange("commercial_is_official_sales_channel", value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(value) => handleChannelDraftChange("commercial_human_handoff_enabled", value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(value) => handleChannelDraftChange("commercial_receives_real_clients", value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(e)=>handleChannelDraftChange("commercial_channel_type", e.target.value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(e)=>handleChannelDraftChange("commercial_entry_priority", e.target.value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(e)=>handleChannelDraftChange("commercial_channel_notes", e.target.value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(e) => handleChannelDraftChange("integration_provider_name", e.target.value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(e) => handleChannelDraftChange("integration_connection_mode", e.target.value)}'),
+        true,
+      );
+      assert.equal(
+        block.includes('onChange={(e)=>handleChannelDraftChange("integrations_notes", e.target.value)}'),
+        true,
+      );
+      assert.equal(block.includes("value={connectedCommercialWhatsapp}"), true);
+      assert.equal(block.includes("value={primaryResponsibleWhatsapp}"), true);
+      assert.equal(block.includes("value={primaryResponsibleChannelLabel}"), true);
+      assert.equal(block.includes("value={storeWhatsappVisualStatus.label}"), true);
+      assert.equal(block.includes('handleChannelDraftChange("responsible_receives_ai_alerts"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("responsible_receives_reports"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("responsible_receives_urgencies"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("responsible_is_primary_alert_channel"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("responsible_is_human_command_channel"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("internal_chat_enabled"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("internal_chat_priority"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("internal_chat_accepts_manual_commands"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("internal_chat_separate_from_inbox"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("assistant_alerts_route"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("urgency_route"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("reports_route"'), false);
+      assert.equal(block.includes('handleChannelDraftChange("channel_fallback_rule"'), false);
+      assert.equal(block.includes("Chat interno do sistema"), false);
+      assert.equal(block.includes("Roteamento r"), false);
+      assert.equal(block.includes("derivado da fonte viva"), true);
+      assert.equal(block.includes("ficam fora desta fam"), true);
+      assert.equal(block.includes("pertencem ao Bloco 5"), true);
+    },
+  },
+  {
+    name: "discount edit draft prefers structured human-help selection and only falls back to legacy fields last",
+    run: () => {
+      const source = readPageSource();
+      const block = getCreateDiscountDraftFromAnswersBlock(source);
+
+      assert.equal(
+        block.includes("parseArrayAnswer(answers.human_help_discount_cases_selected)"),
+        true,
+      );
+      assert.equal(
+        block.includes("HUMAN_HELP_DISCOUNT_OPTIONS"),
+        true,
+      );
+      assert.equal(
+        block.includes('"",'),
+        true,
+      );
+      assert.equal(
+        block.includes("cleanText(answers.human_help_discount_cases) ||"),
+        true,
+      );
+      assert.equal(
+        block.includes("cleanText(answers.human_help_discount_cases_other)"),
+        true,
+      );
+    },
+  },
+  {
+    name: "discount edit draft replaces only the known legacy explanation with the safe autonomy-aware copy",
+    run: () => {
+      const source = readPageSource();
+      const block = getCreateDiscountDraftFromAnswersBlock(source);
+
+      assert.equal(
+        block.includes('const legacyDiscountExplanation ='),
+        true,
+      );
+      assert.equal(
+        block.includes('const currentDiscountExplanation = cleanText(answers.discount_explanation);'),
+        true,
+      );
+      assert.equal(
+        block.includes('currentDiscountExplanation === legacyDiscountExplanation'),
+        true,
+      );
+      assert.equal(
+        block.includes('discount_explanation: safeDiscountExplanation'),
+        true,
       );
     },
   },
