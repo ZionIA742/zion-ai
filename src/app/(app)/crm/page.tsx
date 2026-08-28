@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CANONICAL_CRM_STAGES,
@@ -12,6 +13,13 @@ import {
 import { useStoreContext } from "@/components/StoreProvider";
 import { supabase as supabaseClient } from "@/lib/supabaseBrowser";
 import { buildCrmLeadConversationHref } from "@/lib/server/crm/lead-conversation-opportunity-context";
+import {
+  buildManualCommercialLeadCreationSnapshot,
+  buildManualCommercialLeadCreationStorageKey,
+  clearPendingManualCommercialLeadCreationOperation,
+  getOrCreatePendingManualCommercialLeadCreationOperation,
+} from "./manual-lead-create-operation";
+import { formatManualLeadPhone } from "./manual-lead-phone";
 
 type CrmOpportunityCardRow = {
   commercial_opportunity_id: string;
@@ -54,6 +62,25 @@ type BoardSection = {
 };
 
 type Nivel = "ok" | "pendente" | "critico";
+
+type ManualLeadFormState = {
+  name: string;
+  phone: string;
+};
+
+type ManualLeadCreateApiResponse = {
+  ok: true;
+  operationId: string;
+  leadId: string;
+  customerId: string;
+  customerStoreLinkId: string;
+  leadCustomerLinkId: string;
+  commercialOpportunityId: string;
+  stage: string | null;
+  primaryConversationId: string | null;
+  replayed: boolean;
+  createdAt: string | null;
+};
 
 const ATTENTION_BUCKET_ID = "__attention__";
 const FOLLOW_UP_BUCKET_ID = "__follow_up__";
@@ -152,7 +179,13 @@ function getSearchIndex(card: UiCardRow) {
     .toLowerCase();
 }
 
+function normalizeManualLeadText(value: string) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
 export default function CrmPage() {
+  const router = useRouter();
   const { loading: storeLoading, organizationId, activeStoreId } = useStoreContext();
 
   const [loading, setLoading] = useState(true);
@@ -160,10 +193,21 @@ export default function CrmPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [selectedBucketId, setSelectedBucketId] = useState<string | null>(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [manualLeadForm, setManualLeadForm] = useState<ManualLeadFormState>({
+    name: "",
+    phone: "",
+  });
+  const [manualLeadCreateError, setManualLeadCreateError] = useState<string | null>(null);
+  const [isCreatingManualLead, setIsCreatingManualLead] = useState(false);
 
   const canAutoRefresh = useMemo(() => {
     return !storeLoading && !!organizationId;
   }, [storeLoading, organizationId]);
+
+  const canOpenManualLeadModal = useMemo(() => {
+    return !storeLoading && !!organizationId;
+  }, [organizationId, storeLoading]);
 
   const boardSections = useMemo<BoardSection[]>(() => {
     return [
@@ -380,6 +424,147 @@ export default function CrmPage() {
     return selectedStage ? getStageUi(selectedStage).dot : "bg-red-500";
   }, [selectedBucketId, selectedStage]);
 
+  const openManualLeadModal = useCallback(() => {
+    setManualLeadCreateError(null);
+    setIsCreateModalOpen(true);
+  }, []);
+
+  const closeManualLeadModal = useCallback(() => {
+    if (isCreatingManualLead) return;
+    setIsCreateModalOpen(false);
+    setManualLeadCreateError(null);
+  }, [isCreatingManualLead]);
+
+  const updateManualLeadField = useCallback(
+    <K extends keyof ManualLeadFormState>(field: K, value: ManualLeadFormState[K]) => {
+      setManualLeadForm((current) => ({
+        ...current,
+        [field]: value,
+      }));
+    },
+    [],
+  );
+
+  const handleCreateManualLeadSubmit = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+
+      if (isCreatingManualLead) {
+        return;
+      }
+
+      if (!organizationId) {
+        setManualLeadCreateError(
+          "Nao foi possivel identificar a organizacao autorizada para criar o lead.",
+        );
+        return;
+      }
+
+      const name = normalizeManualLeadText(manualLeadForm.name);
+      const phone = normalizeManualLeadText(
+        formatManualLeadPhone(manualLeadForm.phone),
+      );
+
+      if (!name && !phone) {
+        setManualLeadCreateError(
+          "Informe pelo menos o nome ou o telefone do novo lead comercial.",
+        );
+        return;
+      }
+
+      const requestSnapshot = buildManualCommercialLeadCreationSnapshot({
+        name,
+        phone,
+      });
+      const storageKey = buildManualCommercialLeadCreationStorageKey({
+        organizationId,
+        storeId: activeStoreId ?? null,
+      });
+
+      let operationId: string;
+
+      try {
+        operationId = getOrCreatePendingManualCommercialLeadCreationOperation({
+          storage: window.localStorage,
+          storageKey,
+          requestSnapshot,
+          createOperationId: () => crypto.randomUUID(),
+        }).operationId;
+      } catch (error) {
+        setManualLeadCreateError(
+          error instanceof Error
+            ? error.message
+            : "Nao foi possivel preparar a operacao local do novo lead.",
+        );
+        return;
+      }
+
+      setIsCreatingManualLead(true);
+      setManualLeadCreateError(null);
+
+      try {
+        const response = await fetch("/api/crm/leads/manual", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            operationId,
+            name,
+            phone,
+          }),
+        });
+
+        const body = (await response.json().catch(() => null)) as
+          | (ManualLeadCreateApiResponse & Record<string, unknown>)
+          | { ok?: false; message?: string; error?: string }
+          | null;
+
+        if (!response.ok || !body?.ok) {
+          const message =
+            typeof body?.message === "string" && body.message.trim()
+              ? body.message.trim()
+              : "Nao foi possivel criar o novo lead comercial.";
+          throw new Error(message);
+        }
+
+        const href = buildCrmLeadConversationHref({
+          leadId: body.leadId,
+          conversationId: body.primaryConversationId,
+          opportunityId: body.commercialOpportunityId,
+        });
+
+        if (!href) {
+          throw new Error(
+            "Nao foi possivel montar a navegacao da oportunidade criada.",
+          );
+        }
+
+        clearPendingManualCommercialLeadCreationOperation({
+          storage: window.localStorage,
+          storageKey,
+        });
+        setIsCreateModalOpen(false);
+        setManualLeadForm({
+          name: "",
+          phone: "",
+        });
+        setManualLeadCreateError(null);
+        await fetchPageData({ silent: true });
+        router.push(href);
+      } catch (error) {
+        setManualLeadCreateError(
+          error instanceof Error
+            ? error.message
+            : "Nao foi possivel criar o novo lead comercial.",
+        );
+      } finally {
+        setIsCreatingManualLead(false);
+      }
+    },
+    [activeStoreId, fetchPageData, isCreatingManualLead, manualLeadForm, organizationId, router],
+  );
+
   function renderCard(card: UiCardRow, options?: { compact?: boolean; showStage?: boolean }) {
     const compact = options?.compact === true;
     const showStage = options?.showStage === true;
@@ -536,6 +721,15 @@ export default function CrmPage() {
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={openManualLeadModal}
+                disabled={!canOpenManualLeadModal}
+                className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-900 shadow-sm ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Novo lead
+              </button>
+
               <Link
                 href="/inbox"
                 className="rounded-lg bg-black px-3 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90"
@@ -843,6 +1037,105 @@ export default function CrmPage() {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isCreateModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6"
+          onClick={closeManualLeadModal}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white shadow-2xl ring-1 ring-black/10"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-black/5 px-5 py-4">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-gray-900">Novo lead</h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  Cadastre um novo lead comercial manual sem criar conversa ou mensagem ficticia.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeManualLeadModal}
+                disabled={isCreatingManualLead}
+                className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Fechar modal de novo lead"
+              >
+                X
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateManualLeadSubmit} className="px-5 py-4">
+              <div className="space-y-4">
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Nome
+                  </span>
+                  <input
+                    value={manualLeadForm.name}
+                    onChange={(event) =>
+                      updateManualLeadField("name", event.target.value)
+                    }
+                    disabled={isCreatingManualLead}
+                    placeholder="Ex.: Cliente interessado em piscina"
+                    className="w-full rounded-xl bg-white px-3 py-2 text-sm text-gray-900 ring-1 ring-black/10 outline-none transition focus:ring-2 focus:ring-black/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Telefone
+                  </span>
+                  <input
+                    value={manualLeadForm.phone}
+                    onChange={(event) =>
+                      updateManualLeadField(
+                        "phone",
+                        formatManualLeadPhone(event.target.value),
+                      )
+                    }
+                    disabled={isCreatingManualLead}
+                    inputMode="numeric"
+                    placeholder="Ex.: (11) 99999-9999"
+                    className="w-full rounded-xl bg-white px-3 py-2 text-sm text-gray-900 ring-1 ring-black/10 outline-none transition focus:ring-2 focus:ring-black/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </label>
+
+                <div className="rounded-xl bg-gray-50 px-3 py-3 text-xs text-gray-600 ring-1 ring-black/5">
+                  Preencha pelo menos nome ou telefone. O telefone informado aqui nao
+                  define identidade WhatsApp.
+                </div>
+
+                {manualLeadCreateError ? (
+                  <div className="rounded-xl bg-red-50 px-3 py-3 text-sm text-red-800 ring-1 ring-red-200">
+                    {manualLeadCreateError}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeManualLeadModal}
+                  disabled={isCreatingManualLead}
+                  className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-gray-700 ring-1 ring-black/10 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isCreatingManualLead}
+                  className="rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isCreatingManualLead ? "Criando lead..." : "Criar lead"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       ) : null}
